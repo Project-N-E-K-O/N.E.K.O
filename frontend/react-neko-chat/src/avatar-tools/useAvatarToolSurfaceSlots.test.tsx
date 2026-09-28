@@ -93,7 +93,8 @@ describe('useAvatarToolSurfaceSlots', () => {
     });
     expect(failure).toEqual(new Error('offline'));
     expect(result.current.activeToolIds).toEqual([localId, 'fist']);
-    await act(async () => result.current.deleteLocalTool(localId));
+    await act(async () => result.current.deleteLocalTool(localId, '3-100'));
+    expect(remove).toHaveBeenLastCalledWith(localId, '3-100');
     expect(result.current.activeToolIds).toEqual(['fist']);
     expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact) ?? 'null')).toEqual(['fist']);
   });

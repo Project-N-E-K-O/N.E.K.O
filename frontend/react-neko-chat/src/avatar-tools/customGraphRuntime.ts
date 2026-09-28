@@ -124,8 +124,10 @@ export function createCustomGraphRuntime(
     pendingDelays = [];
   };
 
-  const collectDueDelays = () => {
-    const now = options.scheduler.now();
+  // cutoff 由定时器回调传入：performance.now() 可能比定时器触发略慢（亚毫秒抖动），
+  // 只用 now 会漏掉与触发者同一 dueAt 的兄弟节点，让保存值更慢的分支赢。
+  const collectDueDelays = (cutoff?: number) => {
+    const now = Math.max(options.scheduler.now(), cutoff ?? -Infinity);
     [...delays.values()].forEach((ticket) => {
       if (
         ticket.epoch !== epoch
@@ -175,7 +177,7 @@ export function createCustomGraphRuntime(
         });
         // Siblings due at the same instant have their own timers queued behind
         // this one; gather them before picking a winner.
-        collectDueDelays();
+        collectDueDelays(ticket.dueAt);
         if (!activeClick) resolvePendingDelay();
       }, delayMs);
       delays.set(interactionId, { interactionId, dueAt, savedDelayMs, order, epoch: scheduleEpoch, timeoutId });

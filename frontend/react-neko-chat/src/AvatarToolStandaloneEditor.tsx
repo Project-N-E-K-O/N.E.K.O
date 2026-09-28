@@ -71,6 +71,20 @@ function closeEditorWindow() {
   window.close();
 }
 
+// Electron 把 beforeunload 里的 preventDefault 当成「取消关闭」且不给任何提示：桌面端
+// （N.E.K.O.-PC）没有 will-prevent-unload 处理，草稿未保存时 Alt+F4、任务栏关闭、托盘
+// app.quit() 都会被静默吞掉。桌面壳里只靠标题栏关闭按钮的 nekoBeforeWindowClose 询问。
+// 判定用 UA：编辑器页没有聊天窗 preload 加的 neko-electron-runtime 类，子窗口 preload 的
+// nekoWindowControl 也只在同源子窗口挂载；桌面端不改写 webContents 的 userAgent，而
+// Electron 默认 UA 恒带 "Electron/"，preload 没挂上时同样成立。
+function isElectronShell(): boolean {
+  try {
+    return /\bElectron\//.test(window.navigator.userAgent || '');
+  } catch {
+    return false;
+  }
+}
+
 export default function AvatarToolStandaloneEditor() {
   const request = readEditorRequest();
   const catalog = useLocalAvatarToolCatalog();
@@ -100,8 +114,10 @@ export default function AvatarToolStandaloneEditor() {
   }, []);
 
   useEffect(() => {
-    // Last line of defense for an edited draft: reload, a window.open(name)
-    // navigation from a reloaded opener, or closing the page.
+    // Last line of defense for an edited draft in a browser: reload, a
+    // window.open(name) navigation from a reloaded opener, or closing the page.
+    // Not in Electron, where it would silently block closing (see isElectronShell).
+    const guardUnload = !isElectronShell();
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dirtyRef.current) return;
       event.preventDefault();
@@ -115,10 +131,10 @@ export default function AvatarToolStandaloneEditor() {
       dirtyRef.current = false;
       return undefined;
     };
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    if (guardUnload) window.addEventListener('beforeunload', handleBeforeUnload);
     window.nekoBeforeWindowClose = beforeWindowClose;
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (guardUnload) window.removeEventListener('beforeunload', handleBeforeUnload);
       if (window.nekoBeforeWindowClose === beforeWindowClose) delete window.nekoBeforeWindowClose;
     };
   }, []);
@@ -184,6 +200,21 @@ export default function AvatarToolStandaloneEditor() {
   }, []);
 
   const markEdited = useCallback(() => { dirtyRef.current = true; }, []);
+
+  // 道具已在别处改过（保存或删除回了 revision 冲突）。草稿有未保存改动时先问：
+  // 拒绝就原样保留草稿、仍基于旧 revision（下次保存会再次冲突、再次询问），不把它
+  // 悄悄接到新版本上——草稿沿用的旧资源引用在新版本里不一定还在。返回是否已载入新版本。
+  const loadConflictingRevision = (currentDetail: LocalAvatarToolDetail): boolean => {
+    if (dirtyRef.current && !confirmDiscardAvatarToolEditorChanges()) return false;
+    dirtyRef.current = false;
+    setDetail(currentDetail);
+    setSpecialEnabled(!!currentDetail.special);
+    setNotice(i18n(
+      'chat.avatarToolRevisionConflict',
+      'This tool changed in another window. The latest version has been loaded.',
+    ));
+    return true;
+  };
 
   const title = request.mode === 'edit'
     ? i18n('chat.avatarToolUpdateTitle', 'Edit custom tool')
@@ -289,16 +320,11 @@ export default function AvatarToolStandaloneEditor() {
             try {
               await catalog.update(request.toolId, input as UpdateLocalAvatarToolInput);
             } catch (cause) {
-              if (cause instanceof LocalAvatarToolRevisionConflictError) {
-                dirtyRef.current = false;
-                setDetail(cause.currentDetail);
-                setSpecialEnabled(!!cause.currentDetail.special);
-                setNotice(i18n(
-                  'chat.avatarToolRevisionConflict',
-                  'This tool changed in another window. The latest version has been loaded.',
-                ));
-                return;
-              }
+              if (
+                cause instanceof LocalAvatarToolRevisionConflictError
+                && loadConflictingRevision(cause.currentDetail)
+              ) return;
+              // 保留草稿时照常报保存失败，用户知道这次没有存上。
               throw cause;
             }
             notifyOpener('updated', request.toolId);
@@ -310,8 +336,16 @@ export default function AvatarToolStandaloneEditor() {
           dirtyRef.current = false;
           closeEditorWindow();
         }}
-        onDelete={request.mode === 'edit' && request.toolId ? async () => {
-          await catalog.remove(request.toolId!);
+        onDelete={request.mode === 'edit' && request.toolId && detail ? async () => {
+          try {
+            await catalog.remove(request.toolId!, detail.revision);
+          } catch (cause) {
+            if (
+              cause instanceof LocalAvatarToolRevisionConflictError
+              && loadConflictingRevision(cause.currentDetail)
+            ) return;
+            throw cause;
+          }
           notifyOpener('deleted', request.toolId!);
           dirtyRef.current = false;
           closeEditorWindow();

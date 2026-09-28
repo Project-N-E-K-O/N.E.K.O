@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AvatarToolEditorResultMessage } from '../AvatarToolItemManager';
 import {
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   forgetPersistedAvatarToolId,
+  isLocalAvatarToolId,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
   sanitizeAvatarToolSlots,
   type AvatarToolSurface,
   type AvatarToolId,
 } from '../avatarTools';
-import { useAvatarToolSlotReconciliation } from './useAvatarToolSlotReconciliation';
+import { probeLocalAvatarTool, useAvatarToolSlotReconciliation } from './useAvatarToolSlotReconciliation';
 import type { LocalAvatarToolCatalog } from './useLocalAvatarToolCatalog';
 
 type AvatarToolSurfaceSlotsOptions = {
@@ -47,12 +48,22 @@ export function useAvatarToolSurfaceSlots({
     if (activeToolId === toolId) clearActiveTool();
   }, [activeToolId, clearActiveTool, surface]);
 
-  const applyEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
-    if (result.action === 'deleted' && result.toolId) forgetTool(result.toolId as AvatarToolId);
-  }, [forgetTool]);
+  // forgetTool 依赖当前选中的道具，异步探测回来时要用最新的那一份。
+  const forgetToolRef = useRef(forgetTool);
+  forgetToolRef.current = forgetTool;
 
-  const deleteLocalTool = useCallback(async (toolId: `local-${string}`) => {
-    await catalog.remove(toolId);
+  const applyEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    if (result.action !== 'deleted' || !result.toolId || !isLocalAvatarToolId(result.toolId)) return;
+    const toolId = result.toolId;
+    // 编辑器窗口的消息只是提示：删除必须能被独立证实（详情接口明确回 tool_not_found）
+    // 才清槽位、改持久化，否则一条误发或伪造的消息就能冲掉用户的槽位。
+    void probeLocalAvatarTool(toolId).then((status) => {
+      if (status === 'deleted') forgetToolRef.current(toolId);
+    });
+  }, []);
+
+  const deleteLocalTool = useCallback(async (toolId: `local-${string}`, baseRevision?: string) => {
+    await catalog.remove(toolId, baseRevision);
     forgetTool(toolId);
   }, [catalog.remove, forgetTool]);
 

@@ -310,10 +310,17 @@ export async function updateLocalAvatarTool(
   return putLocalAvatarTool(toolId, input, false);
 }
 
-async function deleteLocalAvatarToolRequest(toolId: LocalAvatarToolId, retry: boolean): Promise<void> {
+async function deleteLocalAvatarToolRequest(
+  toolId: LocalAvatarToolId,
+  baseRevision: string | undefined,
+  retry: boolean,
+): Promise<void> {
   const security = window.nekoLocalMutationSecurity;
   const headers = security?.getMutationHeaders ? await security.getMutationHeaders() : {};
-  const response = await fetch(`/api/avatar-tools/${encodeURIComponent(toolId)}`, {
+  // 带上编辑页载入时的 revision：道具在别处被改过时服务器回 409 tool_revision_conflict，
+  // 不会把用户没看过的新版本一起删掉。不带参数则保持旧行为（不校验）。
+  const query = baseRevision !== undefined ? `?base_revision=${encodeURIComponent(baseRevision)}` : '';
+  const response = await fetch(`/api/avatar-tools/${encodeURIComponent(toolId)}${query}`, {
     method: 'DELETE',
     credentials: 'same-origin',
     headers,
@@ -326,14 +333,17 @@ async function deleteLocalAvatarToolRequest(toolId: LocalAvatarToolId, retry: bo
   const errorCode = String(payload.error_code ?? '');
   if (!retry && response.status === 403 && errorCode === 'csrf_validation_failed' && security?.refreshToken) {
     await security.refreshToken();
-    return deleteLocalAvatarToolRequest(toolId, true);
+    return deleteLocalAvatarToolRequest(toolId, baseRevision, true);
   }
   throw new LocalAvatarToolDeleteError(errorCode || 'avatar_tool_delete_failed');
 }
 
-export async function deleteLocalAvatarTool(toolId: LocalAvatarToolId): Promise<void> {
+export async function deleteLocalAvatarTool(
+  toolId: LocalAvatarToolId,
+  baseRevision?: string,
+): Promise<void> {
   if (!LOCAL_AVATAR_TOOL_ID_PATTERN.test(toolId)) {
     throw new LocalAvatarToolDeleteError('invalid_tool_id');
   }
-  await deleteLocalAvatarToolRequest(toolId, false);
+  await deleteLocalAvatarToolRequest(toolId, baseRevision, false);
 }

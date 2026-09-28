@@ -7,6 +7,7 @@ import {
   fetchLocalAvatarToolDetailWithLimits,
   fetchLocalAvatarTools,
   LocalAvatarToolCreateError,
+  LocalAvatarToolDeleteError,
   LocalAvatarToolDetailError,
   LocalAvatarToolRevisionConflictError,
   updateLocalAvatarTool,
@@ -39,7 +40,8 @@ export type LocalAvatarToolCatalog = {
   create(input: CreateLocalAvatarToolInput): Promise<void>;
   detail(toolId: LocalAvatarToolId): Promise<LocalAvatarToolDetail>;
   update(toolId: LocalAvatarToolId, input: UpdateLocalAvatarToolInput): Promise<void>;
-  remove(toolId: LocalAvatarToolId): Promise<void>;
+  /** baseRevision：编辑页载入时的 revision；道具已被别处改过时抛 LocalAvatarToolRevisionConflictError。 */
+  remove(toolId: LocalAvatarToolId, baseRevision?: string): Promise<void>;
 };
 
 function buildValidLocalDefinitions(items: ReadonlyArray<LocalAvatarToolDto>): AvatarToolDefinition[] {
@@ -437,9 +439,9 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     await refresh().catch(() => undefined);
   }, [refresh]);
 
-  const remove = useCallback(async (toolId: LocalAvatarToolId) => {
+  const remove = useCallback(async (toolId: LocalAvatarToolId, baseRevision?: string) => {
     try {
-      await deleteLocalAvatarTool(toolId);
+      await deleteLocalAvatarTool(toolId, baseRevision);
     } catch (error) {
       const staleRefresh = refreshInFlightRef.current;
       refreshEpochRef.current += 1;
@@ -449,6 +451,21 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         await refresh();
         refreshed = true;
       } catch {}
+      // 道具在别处被改过，服务器没有删除：和保存冲突一样带上最新详情，
+      // 让编辑页决定是否载入新版本。拿不到详情就按普通删除失败处理。
+      if (
+        error instanceof LocalAvatarToolDeleteError
+        && error.message === 'tool_revision_conflict'
+      ) {
+        let currentDetail: LocalAvatarToolDetail | null = null;
+        try {
+          const response = await fetchLocalAvatarToolDetailWithLimits(toolId);
+          setLimits(response.limits);
+          currentDetail = response.detail;
+        } catch {}
+        if (currentDetail) throw new LocalAvatarToolRevisionConflictError(currentDetail);
+        throw error;
+      }
       // 列表缺席不等于删掉了：list_items 会跳过校验失败的道具，被隔离的道具
       // 同样不在列表里，但它还在磁盘上。要确认删除得拿一个明确的 tool_not_found，
       // 否则用户会看到「删除成功」而道具下次刷新又冒出来。

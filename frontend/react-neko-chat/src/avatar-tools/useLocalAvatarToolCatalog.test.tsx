@@ -1144,6 +1144,67 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(result.current.registry.has(localItem.id)).toBe(false);
   });
 
+  it('turns a delete revision conflict into the latest detail without removing the tool', async () => {
+    const localItem = {
+      id: 'local-12345678-1234-4123-8123-123456789abc',
+      recordVersion: 2, revision: '2-200',
+      name: 'Feather 2',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=2',
+      changeUrls: ['/change-000.png?v=2'],
+    };
+    const listResponse = () => new Response(JSON.stringify({ ok: true, items: [localItem], limits: LIMITS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_revision_conflict' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith(localItem.id)) {
+        return new Response(JSON.stringify({
+          ok: true,
+          limits: LIMITS,
+          detail: {
+            id: localItem.id,
+            recordVersion: 2, revision: '2-200',
+            name: 'Feather 2',
+            changeMode: 'press-swap',
+            defaultImage: { resource: 'default.png', url: '/default.png?v=2' },
+            changeItems: [{ resource: 'change-000.png', url: '/change-000.png?v=2', meaning: 'Touch' }],
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return listResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(localItem.id)).toBe(true));
+
+    let failure: unknown;
+    await act(async () => {
+      try {
+        await result.current.remove(localItem.id as `local-${string}`, '2-100');
+      } catch (error) {
+        failure = error;
+      }
+    });
+
+    expect(failure).toEqual(expect.objectContaining({
+      name: 'LocalAvatarToolRevisionConflictError',
+      currentDetail: expect.objectContaining({ revision: '2-200', name: 'Feather 2' }),
+    }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/avatar-tools/${localItem.id}?base_revision=2-100`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(result.current.registry.has(localItem.id)).toBe(true);
+  });
+
   it('rejects an uncertain delete when the tool is merely quarantined out of the list', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',

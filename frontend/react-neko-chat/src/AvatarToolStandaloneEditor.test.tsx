@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import AvatarToolStandaloneEditor from './AvatarToolStandaloneEditor';
+import { LocalAvatarToolRevisionConflictError, type LocalAvatarToolDetail } from './avatar-tools/localTools';
 
 const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 const catalog = vi.hoisted(() => ({
@@ -131,6 +132,135 @@ describe('AvatarToolStandaloneEditor', () => {
     } finally {
       confirm.mockRestore();
     }
+  });
+
+  it('leaves closing to the title-bar hook in the Electron shell, where beforeunload would block it', async () => {
+    const userAgent = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) N.E.K.O/1.0 Chrome/130.0 Electron/33.2.0 Safari/537.36',
+    );
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      render(<AvatarToolStandaloneEditor />);
+      fireEvent.change(screen.getByRole('textbox', { name: 'Tool name' }), {
+        target: { value: 'New tool' },
+      });
+      const beforeUnload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(beforeUnload);
+      // Alt+F4 / 任务栏关闭 / app.quit() 不能被静默吞掉。
+      expect(beforeUnload.defaultPrevented).toBe(false);
+      // 标题栏关闭仍然先问。
+      await expect(window.nekoBeforeWindowClose?.()).resolves.toEqual({ handled: true });
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+      userAgent.mockRestore();
+    }
+  });
+
+  describe('revision conflicts', () => {
+    const flowDetail = (revision: string, name: string): LocalAvatarToolDetail => ({
+      recordVersion: 3,
+      id: LOCAL_ID,
+      revision,
+      name,
+      images: [{ id: 'img-idle', name: '', resource: 'image-000.png', url: '/user_avatar_tools/local/image-000.png?v=1', meaning: '' }],
+      initialImageId: 'img-idle',
+      imageInteractions: {
+        initialImagePosition: { x: 0, y: 0 },
+        initialLinks: [{ to: 'ix-click', sourceSide: 'right', targetSide: 'left' }],
+        items: [{
+          id: 'ix-click', name: '', trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+          editorPosition: { x: 200, y: 0 },
+        }],
+        links: [{ from: 'ix-click', to: 'ix-click', sourceSide: 'right', targetSide: 'right' }],
+      },
+    });
+    const LATEST = flowDetail('3-200', 'Flow latest');
+    const UNSAVED = 'You have unsaved settings, are you sure you want to leave?';
+    const LOADED_NOTICE = 'This tool changed in another window. The latest version has been loaded.';
+
+    const renderEditTarget = async () => {
+      window.history.replaceState({}, '', `/avatar_tool_editor?mode=edit&toolId=${LOCAL_ID}`);
+      catalog.detail.mockResolvedValue(flowDetail('3-100', 'Flow'));
+      render(<AvatarToolStandaloneEditor />);
+      expect(await screen.findByDisplayValue('Flow')).toBeInTheDocument();
+    };
+
+    it('asks before a save conflict replaces an edited draft and keeps it when declined', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const close = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+      catalog.update.mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditTarget();
+        fireEvent.change(screen.getByRole('textbox', { name: 'Tool name' }), {
+          target: { value: 'Flow edited' },
+        });
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not save this tool');
+        expect(confirm).toHaveBeenCalledWith(UNSAVED);
+        expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('Flow edited');
+        expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
+        expect(screen.queryByText(LOADED_NOTICE)).toBeNull();
+
+        confirm.mockReturnValue(true);
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(catalog.update.mock.calls.map(([, input]) => input.baseRevision)).toEqual(['3-100', '3-100']);
+        expect(confirm).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('Flow latest');
+        expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(false);
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        confirm.mockRestore();
+        close.mockRestore();
+      }
+    });
+
+    it('loads the latest version without asking when the draft was untouched', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      catalog.update.mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditTarget();
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(confirm).not.toHaveBeenCalled();
+        expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('Flow latest');
+      } finally {
+        confirm.mockRestore();
+      }
+    });
+
+    it('deletes with the loaded revision and handles a delete conflict like a save conflict', async () => {
+      let keepDraft = true;
+      const confirm = vi.spyOn(window, 'confirm').mockImplementation(message => (
+        message === UNSAVED ? !keepDraft : true
+      ));
+      const close = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+      catalog.remove.mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditTarget();
+        fireEvent.change(screen.getByRole('textbox', { name: 'Tool name' }), {
+          target: { value: 'Flow edited' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete this tool');
+        expect(catalog.remove).toHaveBeenCalledWith(LOCAL_ID, '3-100');
+        expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('Flow edited');
+
+        keepDraft = false;
+        fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(catalog.remove).toHaveBeenLastCalledWith(LOCAL_ID, '3-100');
+        expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('Flow latest');
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        confirm.mockRestore();
+        close.mockRestore();
+      }
+    });
   });
 
   it('registers as the shared editor window and applies delegated target switches itself', () => {

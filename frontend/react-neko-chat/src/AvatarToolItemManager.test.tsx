@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager, { openAvatarToolEditorWindow } from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
-import { type LocalAvatarToolDetail } from './avatar-tools/localTools';
+import { LocalAvatarToolRevisionConflictError, type LocalAvatarToolDetail } from './avatar-tools/localTools';
 import {
   MISSING_SLOT_REPROBE_INTERVAL_MS,
   useAvatarToolSlotReconciliation,
@@ -37,6 +37,25 @@ const DETAIL: LocalAvatarToolDetail = {
     meaning: 'A gentle touch',
   }],
 };
+
+// 编辑器只把结果 postMessage 给自己的 opener；测试里用一个 opener 指回本窗口的 iframe 模拟它。
+function openedEditorWindow(): Window {
+  const frame = document.createElement('iframe');
+  document.body.appendChild(frame);
+  const editor = frame.contentWindow!;
+  (editor as unknown as { opener: Window }).opener = window;
+  return editor;
+}
+
+function detailProbeResponse(errorCode: string | null): Response {
+  return errorCode
+    ? new Response(JSON.stringify({ ok: false, error_code: errorCode }), {
+      status: 404, headers: { 'Content-Type': 'application/json' },
+    })
+    : new Response(JSON.stringify({ ok: true, limits: LIMITS, detail: DETAIL }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+}
 
 function pngBytes(width = 16, height = 16): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -145,6 +164,7 @@ describe('AvatarToolItemManager local creation', () => {
 
     fireEvent(window, new MessageEvent('message', {
       origin: window.location.origin,
+      source: openedEditorWindow(),
       data: {
         type: 'neko:avatar-tool-editor-result',
         action: 'created',
@@ -153,6 +173,75 @@ describe('AvatarToolItemManager local creation', () => {
     }));
 
     expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+  });
+
+  it('ignores editor results from windows this page did not open', async () => {
+    const onExternalEditorResult = vi.fn();
+    render(
+      <AvatarToolItemManager
+        open={false}
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        onExternalEditorResult={onExternalEditorResult}
+      />,
+    );
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const data = { type: 'neko:avatar-tool-editor-result', action: 'created', toolId: LOCAL_ID };
+    [null, window, frame.contentWindow].forEach((source) => {
+      fireEvent(window, new MessageEvent('message', { origin: window.location.origin, source, data }));
+    });
+    expect(onExternalEditorResult).not.toHaveBeenCalled();
+
+    fireEvent(window, new MessageEvent('message', {
+      origin: window.location.origin, source: openedEditorWindow(), data,
+    }));
+    expect(onExternalEditorResult).toHaveBeenCalledTimes(1);
+    frame.remove();
+  });
+
+  it.each([
+    ['keeps', 'record_invalid', [LOCAL_ID, 'fist']],
+    ['keeps', null, [LOCAL_ID, 'fist']],
+    ['clears', 'tool_not_found', ['fist']],
+  ] as const)('%s a draft slot for a deleted editor result when the detail probe answers %s', async (
+    _verb,
+    errorCode,
+    expected,
+  ) => {
+    const fetchMock = vi.fn(async () => detailProbeResponse(errorCode));
+    vi.stubGlobal('fetch', fetchMock);
+    const onSave = vi.fn();
+    try {
+      render(
+        <AvatarToolItemManager
+          open
+          activeToolIds={[LOCAL_ID, 'fist']}
+          availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+          onSave={onSave}
+          onCancel={() => undefined}
+          createLimits={LIMITS}
+        />,
+      );
+      fireEvent(window, new MessageEvent('message', {
+        origin: window.location.origin,
+        source: openedEditorWindow(),
+        data: { type: 'neko:avatar-tool-editor-result', action: 'deleted', toolId: LOCAL_ID },
+      }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+        `/api/avatar-tools/${LOCAL_ID}`,
+        expect.anything(),
+      ));
+      await act(async () => { await Promise.resolve(); });
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+        expect(onSave).toHaveBeenLastCalledWith(expected);
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('does not open creation until authoritative server limits are available', () => {
@@ -390,11 +479,126 @@ describe('AvatarToolItemManager local creation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
     await screen.findByRole('dialog', { name: 'Edit custom tool' });
     fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
-    await waitFor(() => expect(onDelete).toHaveBeenCalledWith(LOCAL_ID));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith(LOCAL_ID, '2-200'));
     expect(confirm).toHaveBeenCalledWith('Delete “My Feather”? This cannot be undone.');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(onSave).toHaveBeenCalledWith([]);
     confirm.mockRestore();
+  });
+
+  describe('revision conflicts', () => {
+    const flowDetail = (revision: string, name: string): LocalAvatarToolDetail => ({
+      recordVersion: 3,
+      id: LOCAL_ID,
+      revision,
+      name,
+      images: [{ id: 'img-idle', name: '', resource: 'image-000.png', url: '/user_avatar_tools/local/image-000.png?v=1', meaning: '' }],
+      initialImageId: 'img-idle',
+      imageInteractions: {
+        initialImagePosition: { x: 0, y: 0 },
+        initialLinks: [{ to: 'ix-click', sourceSide: 'right', targetSide: 'left' }],
+        items: [{
+          id: 'ix-click', name: '', trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+          editorPosition: { x: 200, y: 0 },
+        }],
+        links: [{ from: 'ix-click', to: 'ix-click', sourceSide: 'right', targetSide: 'right' }],
+      },
+    });
+    const LATEST = flowDetail('3-200', 'Flow latest');
+    const UNSAVED = 'You have unsaved settings, are you sure you want to leave?';
+    const LOADED_NOTICE = 'This tool changed in another window. The latest version has been loaded.';
+
+    const renderEditor = async (
+      overrides: { onUpdate?: () => Promise<void>; onDelete?: () => Promise<void> },
+    ) => {
+      render(
+        <AvatarToolItemManager
+          open
+          activeToolIds={[LOCAL_ID]}
+          availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, {
+            id: LOCAL_ID,
+            label: { kind: 'literal', value: 'Flow' },
+            iconImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+            pointerImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+          }]}
+          onSave={vi.fn()}
+          onCancel={() => undefined}
+          createLimits={LIMITS}
+          onLoadDetail={async () => flowDetail('3-100', 'Flow')}
+          onUpdate={overrides.onUpdate ?? vi.fn()}
+          onDelete={overrides.onDelete ?? vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Flow' }));
+      await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    };
+
+    it('asks before a save conflict replaces an edited draft and keeps it when declined', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const onUpdate = vi.fn().mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditor({ onUpdate });
+        fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Flow edited' } });
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not save this tool');
+        expect(confirm).toHaveBeenCalledWith(UNSAVED);
+        expect(screen.getByLabelText('Tool name')).toHaveValue('Flow edited');
+        expect(screen.queryByText(LOADED_NOTICE)).toBeNull();
+
+        // 草稿没有被接到新版本上：再保存仍带旧 revision，再次冲突、再次询问。
+        confirm.mockReturnValue(true);
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(onUpdate).toHaveBeenCalledTimes(2);
+        expect(onUpdate.mock.calls.map(([, input]) => input.baseRevision)).toEqual(['3-100', '3-100']);
+        expect(confirm).toHaveBeenCalledTimes(2);
+        expect(screen.getByLabelText('Tool name')).toHaveValue('Flow latest');
+      } finally {
+        confirm.mockRestore();
+      }
+    });
+
+    it('loads the latest version without asking when the draft was untouched', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const onUpdate = vi.fn().mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditor({ onUpdate });
+        fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(confirm).not.toHaveBeenCalled();
+        expect(screen.getByLabelText('Tool name')).toHaveValue('Flow latest');
+      } finally {
+        confirm.mockRestore();
+      }
+    });
+
+    it('deletes with the loaded revision and handles a delete conflict like a save conflict', async () => {
+      let keepDraft = true;
+      const confirm = vi.spyOn(window, 'confirm').mockImplementation(message => (
+        message === UNSAVED ? !keepDraft : true
+      ));
+      const onDelete = vi.fn().mockRejectedValue(new LocalAvatarToolRevisionConflictError(LATEST));
+      try {
+        await renderEditor({ onDelete });
+        fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Flow edited' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete this tool');
+        expect(onDelete).toHaveBeenCalledWith(LOCAL_ID, '3-100');
+        expect(screen.getByLabelText('Tool name')).toHaveValue('Flow edited');
+
+        keepDraft = false;
+        fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+        expect(await screen.findByText(LOADED_NOTICE)).toBeInTheDocument();
+        expect(onDelete).toHaveBeenLastCalledWith(LOCAL_ID, '3-100');
+        expect(screen.getByLabelText('Tool name')).toHaveValue('Flow latest');
+        expect(screen.getByRole('dialog', { name: 'Edit custom tool' })).toBeInTheDocument();
+      } finally {
+        confirm.mockRestore();
+      }
+    });
   });
 
   it('keeps the local card and draft when deletion fails', async () => {
@@ -811,6 +1015,22 @@ describe('AvatarToolItemManager local creation', () => {
       expect.objectContaining({ navigateOnReuse: true }),
     );
     expect(existing.focus).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('retargets an editor window that is still loading and has no draft hook yet', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const loading = {
+      location: { href: 'about:blank' },
+      focus: vi.fn(),
+    } as unknown as Window;
+    window.openOrFocusWindow = vi.fn((url, _name, _features, options) => {
+      expect(options?.shouldNavigateOnReuse?.(loading, url)).toBe(true);
+      return loading;
+    });
+    openAvatarToolEditorWindow('edit', LOCAL_ID);
+    expect(window.openOrFocusWindow).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 

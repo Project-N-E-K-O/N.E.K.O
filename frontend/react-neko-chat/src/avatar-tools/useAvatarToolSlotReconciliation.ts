@@ -16,13 +16,14 @@ type AvatarToolSlotReconciliationOptions = {
   onConfirmedDeleted(toolIds: ReadonlyArray<`local-${string}`>): void;
 };
 
-type LocalAvatarToolProbeResult = 'deleted' | 'retained' | 'unreachable';
+export type LocalAvatarToolProbeResult = 'deleted' | 'retained' | 'unreachable';
 
 // 没被确认删除的缺席 id 至少隔这么久才再确认一次：既不在每次 focus 时
 // 重复全量哈希，又能在隔离记录之后被删掉时最终清掉槽位。
 export const MISSING_SLOT_REPROBE_INTERVAL_MS = 60_000;
 
-async function probeLocalAvatarTool(toolId: `local-${string}`): Promise<LocalAvatarToolProbeResult> {
+/** 只有详情接口明确回 tool_not_found 才算删除；隔离记录（record_invalid 等）算仍在。 */
+export async function probeLocalAvatarTool(toolId: `local-${string}`): Promise<LocalAvatarToolProbeResult> {
   try {
     await fetchLocalAvatarToolDetail(toolId);
     return 'retained';

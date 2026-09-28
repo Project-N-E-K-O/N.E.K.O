@@ -31,6 +31,7 @@ import {
   sanitizeAvatarToolSlots,
   withAvatarToolAssetVersion,
 } from './avatarTools';
+import { probeLocalAvatarTool } from './avatar-tools/useAvatarToolSlotReconciliation';
 
 type AvatarToolSlotValue = AvatarToolId | null;
 
@@ -64,7 +65,8 @@ type AvatarToolItemManagerProps = {
   onCreate?: (input: CreateLocalAvatarToolInput) => Promise<void>;
   onLoadDetail?: (toolId: `local-${string}`) => Promise<LocalAvatarToolDetail>;
   onUpdate?: (toolId: `local-${string}`, input: UpdateLocalAvatarToolInput) => Promise<void>;
-  onDelete?: (toolId: `local-${string}`) => Promise<void>;
+  /** baseRevision：编辑页载入的 revision；道具已被别处改过时应抛 LocalAvatarToolRevisionConflictError。 */
+  onDelete?: (toolId: `local-${string}`, baseRevision: string) => Promise<void>;
   catalogAuthoritativeLoaded?: boolean;
   catalogRefreshFailed?: boolean;
   onExternalEditorResult?: (result: AvatarToolEditorResultMessage) => void;
@@ -190,6 +192,17 @@ function currentAvatarToolEditorLanguage(): string {
   }
 }
 
+// 结果消息只接受「由本窗口打开的窗口」发来的：编辑器只 postMessage 给自己的 opener。
+// 这只挡住同源的其它页面/iframe 误发；真正的保障是 deleted 结果还要经服务器证实。
+function isAvatarToolEditorResultSource(source: MessageEventSource | null): boolean {
+  if (!source || source === window) return false;
+  try {
+    return (source as Window).opener === window;
+  } catch {
+    return false;
+  }
+}
+
 export function confirmDiscardAvatarToolEditorChanges(): boolean {
   return window.confirm(i18n(
     'dialogs.unsavedChanges',
@@ -261,7 +274,9 @@ export function openAvatarToolEditorWindow(
       shouldNavigateOnReuse: (existingWindow, targetUrl) => {
         try {
           if (isSameAvatarToolEditorTarget(existingWindow.location.href, targetUrl)) return false;
-          if (!existingWindow.avatarToolEditorHasUnsavedChanges) return false;
+          // 编辑器挂载时第一件事就是装上这个钩子，之后才可能有改动；还没装上说明页面
+          // 仍在加载（或没能加载），没有草稿可丢，直接切换目标。
+          if (!existingWindow.avatarToolEditorHasUnsavedChanges) return true;
           if (!existingWindow.avatarToolEditorHasUnsavedChanges()) return true;
           if (!confirmDiscardAvatarToolEditorChanges()) return false;
           // The user already agreed to discard here; clear the editor's dirty
@@ -656,20 +671,30 @@ export default function AvatarToolItemManager({
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
+    let disposed = false;
     const handleEditorResult = (event: MessageEvent<AvatarToolEditorResultMessage>) => {
       if (event.origin !== window.location.origin) return;
+      if (!isAvatarToolEditorResultSource(event.source)) return;
       const payload = event.data;
       if (!payload || payload.type !== 'neko:avatar-tool-editor-result') return;
       if (!['created', 'updated', 'deleted'].includes(payload.action)) return;
       if (payload.toolId !== undefined && !isLocalAvatarToolId(payload.toolId)) return;
       if (payload.action === 'deleted' && typeof payload.toolId === 'string') {
-        setDraftSlots(slots => slots.map(toolId => toolId === payload.toolId ? null : toolId));
+        const deletedId = payload.toolId as `local-${string}`;
+        // 消息只是提示：删除要能独立证实（详情接口明确回 tool_not_found）才清草稿槽位。
+        void probeLocalAvatarTool(deletedId).then((status) => {
+          if (disposed || status !== 'deleted') return;
+          setDraftSlots(slots => slots.map(toolId => toolId === deletedId ? null : toolId));
+        });
       }
       window.dispatchEvent(new Event('neko:refresh-local-avatar-tools'));
       onExternalEditorResult?.(payload);
     };
     window.addEventListener('message', handleEditorResult);
-    return () => window.removeEventListener('message', handleEditorResult);
+    return () => {
+      disposed = true;
+      window.removeEventListener('message', handleEditorResult);
+    };
   }, [onExternalEditorResult]);
 
   useLayoutEffect(() => {
@@ -966,10 +991,36 @@ export default function AvatarToolItemManager({
     }
   };
 
+  // 道具已在别处改过（保存或删除回了 revision 冲突）。草稿有未保存改动时先问：
+  // 拒绝就原样保留草稿、仍基于旧 revision（下次保存会再次冲突、再次询问），不把它
+  // 悄悄接到新版本上——草稿沿用的旧资源引用在新版本里不一定还在。返回是否已载入新版本。
+  const loadConflictingRevision = (currentDetail: LocalAvatarToolDetail): boolean => {
+    if (editorDirtyRef.current && !confirmDiscardAvatarToolEditorChanges()) return false;
+    editorDirtyRef.current = false;
+    setEditDetail(currentDetail);
+    setCreateSpecialEnabled(!!currentDetail.special);
+    const fallback = 'This tool changed in another window. The latest version has been loaded.';
+    setNotice(i18n(
+      'chat.avatarToolRevisionConflict',
+      fallback,
+    ) || fallback);
+    setNoticeIsError(false);
+    return true;
+  };
+
   const deleteEditedTool = async () => {
     if (!onDelete || !editDetail) return;
     const session = managerSessionRef.current;
-    await onDelete(editDetail.id);
+    try {
+      await onDelete(editDetail.id, editDetail.revision);
+    } catch (cause) {
+      if (
+        cause instanceof LocalAvatarToolRevisionConflictError
+        && session === managerSessionRef.current
+        && loadConflictingRevision(cause.currentDetail)
+      ) return;
+      throw cause;
+    }
     if (session !== managerSessionRef.current) return;
     setDraftSlots(slots => slots.map(toolId => toolId === editDetail.id ? null : toolId));
     setEditDetail(null);
@@ -1144,17 +1195,9 @@ export default function AvatarToolItemManager({
             } catch (cause) {
               if (cause instanceof LocalAvatarToolRevisionConflictError) {
                 if (session !== managerSessionRef.current) return;
-                editorDirtyRef.current = false;
-                setEditDetail(cause.currentDetail);
-                setCreateSpecialEnabled(!!cause.currentDetail.special);
-                const fallback = 'This tool changed in another window. The latest version has been loaded.';
-                setNotice(i18n(
-                  'chat.avatarToolRevisionConflict',
-                  fallback,
-                ) || fallback);
-                setNoticeIsError(false);
-                return;
+                if (loadConflictingRevision(cause.currentDetail)) return;
               }
+              // 保留草稿时照常报保存失败，用户知道这次没有存上。
               throw cause;
             }
           } else if (view === 'create' && onCreate) {

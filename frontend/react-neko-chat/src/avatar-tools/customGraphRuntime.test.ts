@@ -232,6 +232,37 @@ describe('custom graph runtime', () => {
     runtime.destroy();
   });
 
+  it('collects floored siblings even when the clock reads slightly behind the firing timer', () => {
+    const source = profile();
+    source.initialInteractionIds = ['ix-slow', 'ix-fast'];
+    source.interactions = [
+      {
+        id: 'ix-slow',
+        trigger: { kind: 'after', delayMs: 30 },
+        actions: { complete: { kind: 'show', imageId: 'img-b' } },
+      },
+      {
+        id: 'ix-fast',
+        trigger: { kind: 'after', delayMs: 10 },
+        actions: { complete: { kind: 'show', imageId: 'img-c' } },
+      },
+    ];
+    source.links = [];
+
+    const clock = scheduler();
+    let lagMs = 0;
+    const runtime = createCustomGraphRuntime(source, {
+      // 定时器已到期，但 now() 读数落后零点几毫秒（performance.now 抖动）。
+      scheduler: { ...clock.api, now: () => clock.api.now() - lagMs },
+      onImageChange: () => undefined,
+    });
+
+    lagMs = 0.25;
+    clock.advance(CUSTOM_GRAPH_MIN_STEP_MS);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-c');
+    runtime.destroy();
+  });
+
   it('holds the clicked frame for one delay before the cycle-stop preset resumes', () => {
     const editorState = createAvatarToolInteractionPresetState({ kind: 'cycle-stop' });
     const delayItems = editorState.items.filter(item => item.kind === 'after');

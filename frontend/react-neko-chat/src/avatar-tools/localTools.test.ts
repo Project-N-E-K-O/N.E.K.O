@@ -546,6 +546,30 @@ describe('local avatar tool image change modes', () => {
     }));
   });
 
+  it('sends the loaded revision with a delete and surfaces a revision conflict', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, deletedId: TOOL_ID }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error_code: 'tool_revision_conflict' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteLocalAvatarTool(TOOL_ID, '3-123')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/avatar-tools/${TOOL_ID}?base_revision=3-123`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    await expect(deleteLocalAvatarTool(TOOL_ID, '3-123')).rejects.toEqual(expect.objectContaining({
+      name: 'LocalAvatarToolDeleteError',
+      message: 'tool_revision_conflict',
+    }));
+  });
+
   it('rejects malformed delete success responses', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,

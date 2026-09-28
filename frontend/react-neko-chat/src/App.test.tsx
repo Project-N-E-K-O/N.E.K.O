@@ -5892,24 +5892,73 @@ describe('App', () => {
     }
   });
 
-  it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
-    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId, 'fist']));
-    render(<App chatSurfaceMode="full" />);
-
-    expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+  // 编辑器窗口只 postMessage 给自己的 opener；删除还要详情接口明确回 tool_not_found 才算数。
+  // 列表请求一律失败，槽位对账不介入，只看编辑器结果这一条路径。
+  const deliverEditorDeletedResult = (localToolId: string) => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const editor = frame.contentWindow!;
+    (editor as unknown as { opener: Window }).opener = window;
     fireEvent(window, new MessageEvent('message', {
       origin: window.location.origin,
+      source: editor,
       data: {
         type: 'neko:avatar-tool-editor-result',
         action: 'deleted',
         toolId: localToolId,
       },
     }));
+  };
+  const stubDeletedToolFetch = (localToolId: string, detailErrorCode = 'tool_not_found') => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: detailErrorCode }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error('offline');
+    }));
+  };
 
-    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
-      .toEqual(['fist']);
+  it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId, 'fist']));
+    stubDeletedToolFetch(localToolId);
+    try {
+      render(<App chatSurfaceMode="full" />);
+
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      deliverEditorDeletedResult(localToolId);
+
+      expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'),
+      ).toEqual(['fist']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a slot when the editor reports a deletion the server does not confirm', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    stubDeletedToolFetch(localToolId, 'record_invalid');
+    try {
+      render(<App chatSurfaceMode="full" />);
+      deliverEditorDeletedResult(localToolId);
+
+      expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+        `/api/avatar-tools/${localToolId}`,
+        expect.anything(),
+      ));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it.each(['compact', 'full'] as const)(
@@ -5918,23 +5967,21 @@ describe('App', () => {
       const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
       const storageKey = ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[chatSurfaceMode];
       window.localStorage.setItem(storageKey, JSON.stringify([localToolId, 'fist']));
-      const { rerender } = render(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" catLocalTextOnly />);
+      stubDeletedToolFetch(localToolId);
+      try {
+        const { rerender } = render(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" catLocalTextOnly />);
 
-      fireEvent(window, new MessageEvent('message', {
-        origin: window.location.origin,
-        data: {
-          type: 'neko:avatar-tool-editor-result',
-          action: 'deleted',
-          toolId: localToolId,
-        },
-      }));
+        deliverEditorDeletedResult(localToolId);
 
-      await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) || '[]')).toEqual(['fist']));
-      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+        await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) || '[]')).toEqual(['fist']));
+        expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
 
-      // Leaving the mode must not surface a dialog the hidden result queued up.
-      rerender(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" />);
-      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+        // Leaving the mode must not surface a dialog the hidden result queued up.
+        rerender(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" />);
+        expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     },
   );
 
