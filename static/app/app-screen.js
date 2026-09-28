@@ -367,7 +367,7 @@
      * 用本次枚举结果刷新当前选中源的名称：升级前保存的选择没有名称记录，
      * 窗口标题也可能已经变了，以当前枚举为准。
      */
-    function refreshSelectedScreenSourceLabelFromSources(screens, windows) {
+    function refreshSelectedScreenSourceLabelFromSources(screens, windows, options) {
         var sourceId = S.selectedScreenSourceId;
         if (!sourceId) return;
         var screenIndex = screens.findIndex(function (s) { return s.id === sourceId; });
@@ -375,7 +375,8 @@
             ? screens[screenIndex]
             : windows.find(function (s) { return s.id === sourceId; });
         if (!source) return;
-        var nextIndex = screenIndex >= 0 ? screenIndex : null;
+        var screenIndexKnown = !options || options.screenIndexKnown !== false;
+        var nextIndex = screenIndex >= 0 && screenIndexKnown ? screenIndex : null;
         var current = selectedScreenSourceMeta;
         if (current && current.id === sourceId && current.screenIndex === nextIndex
             && current.name === String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)) {
@@ -2845,7 +2846,13 @@
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
             var selectedBeforeReconcile = S.selectedScreenSourceId;
             reconcileRememberedWindowSource(sources);
-            refreshSelectedScreenSourceLabelFromSources(screens, windows);
+            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
+            // 来源，它在结果里的位置不是物理屏幕序号。
+            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
+                && sources.length === 1;
+            refreshSelectedScreenSourceLabelFromSources(screens, windows, {
+                screenIndexKnown: !isPortalPick
+            });
 
             function previewFrameStyles() {
                 return {
@@ -3134,11 +3141,13 @@
                 screenPopup.appendChild(noWindowMatchesItem);
             }
 
-            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
-            // 来源。用户已经选过一次，直接采用，不要求在列表里再点一次。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider) && sources.length === 1) {
+            // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
+            // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
+            if (isPortalPick) {
                 var portalSource = sources[0];
-                var portalLabel = getScreenSourceDisplayName(portalSource, 0);
+                var portalLabel = portalSource.id.startsWith('screen:')
+                    ? (window.t ? window.t('app.screenSource.screens') : '屏幕')
+                    : getScreenSourceDisplayName(portalSource, null);
                 var reconciledToPortalSource = S.selectedScreenSourceId === portalSource.id
                     && selectedBeforeReconcile !== portalSource.id;
                 if (!reconciledToPortalSource) {
@@ -3148,7 +3157,7 @@
                         portalSource.id,
                         portalSource.name,
                         portalLabel,
-                        portalSource.id.startsWith('screen:') ? 0 : null
+                        null
                     )
                         .catch(function (error) {
                             console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);

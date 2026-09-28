@@ -987,6 +987,53 @@ def test_prompting_single_source_is_adopted_without_second_click(
 
 
 @pytest.mark.frontend
+def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
+    # The portal returns only the picked monitor, so its position in the
+    # result says nothing about which physical screen it is.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = [
+                { id: 'screen:3', name: 'Entire Screen', display_id: '3' },
+            ];
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail.sourceLabel);
+            });
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstLabel = window.getSelectedScreenSourceLabel();
+            // Opening the list again with the same portal answer keeps it generic.
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: window.getSelectedScreenSourceId(),
+                firstLabel,
+                label: window.getSelectedScreenSourceLabel(),
+                record: JSON.parse(
+                    window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+                ),
+                namedEvents: events.filter(Boolean),
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "screen:3",
+        "firstLabel": "",
+        "label": "",
+        "record": {"id": "screen:3"},
+        # Not even briefly announced as a numbered screen.
+        "namedEvents": [],
+    }
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("stored_id", ["window:2", "window:7"])
 def test_portal_result_already_selected_is_trusted_for_capture(
     page: Page, stored_id: str,
