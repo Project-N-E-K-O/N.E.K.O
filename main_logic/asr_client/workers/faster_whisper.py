@@ -677,6 +677,9 @@ async def faster_whisper_asr_worker(
         skip = threading.Event()
 
         def decode() -> str | None:
+            # Reaching the decoder ends this job's wait behind other sessions'
+            # decodes; the per-utterance final timeout counts from here.
+            complete_provider_warmup(request_queue)
             try:
                 if skip.is_set():
                     # Cancelled while queued: drop the PCM without decoding.
@@ -686,9 +689,18 @@ async def faster_whisper_asr_worker(
             finally:
                 pool.release_decode()
 
-        decode_future = asyncio.get_running_loop().run_in_executor(
-            pool.decoder_executor(), decode
-        )
+        # Waiting in the process-wide decode queue (behind another session's
+        # uninterruptible decode) is not recognition time either: publish it
+        # like model preparation so the runtime's final watchdog holds off
+        # until the job reaches the decoder, within the warm-up budget.
+        begin_provider_warmup(request_queue)
+        try:
+            decode_future = asyncio.get_running_loop().run_in_executor(
+                pool.decoder_executor(), decode
+            )
+        except BaseException:
+            complete_provider_warmup(request_queue)
+            raise
         handoff.submitted = True
         decode_future.add_done_callback(_consume_decode_outcome)
         try:

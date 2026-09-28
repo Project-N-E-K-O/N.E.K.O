@@ -1168,3 +1168,37 @@ async def test_handed_off_slot_is_not_returned_twice(pool) -> None:
     # The executor owns this slot now; only the decode thread gives it back.
     assert pool._decode_slots_used == 1
     pool.release_decode()
+
+
+async def test_waiting_behind_another_sessions_decode_counts_as_warmup(pool) -> None:
+    # A job queued behind another session's decode must not burn its own
+    # per-utterance final timeout: it is published as warming up until it
+    # reaches the decoder.
+    from main_logic.asr_client.warmup import provider_warmup_state
+
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    loader = _RecordingLoader(model)
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    second = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        await _next_event(first[2], "ready")
+        await _send_utterance(first[1])
+        for _ in range(100):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        await _next_event(second[2], "ready")
+        await _send_utterance(second[1])
+        await asyncio.wait_for(second[1].join(), 2)
+        await asyncio.sleep(0.05)
+        state = provider_warmup_state(second[1])
+        assert state is not None and state.pending is True
+    finally:
+        model.release.set()
+    await _next_event(second[2], "final")
+    state = provider_warmup_state(second[1])
+    assert state.pending is False and state.completed_at is not None
+    await _next_event(first[2], "final")
+    for task, requests, responses in (first, second):
+        await _shutdown(task, requests, responses)
