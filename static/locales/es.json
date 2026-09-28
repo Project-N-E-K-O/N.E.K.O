@@ -565,7 +565,8 @@
         "cameraStreamFailed": "No se pudo obtener la transmisión de la cámara",
         "characterConfigFailed": "No se pudo obtener la configuración del personaje",
         "API_ARREARS": "💥 Cuenta API en mora. Por favor recarga tu saldo.",
-        "API_QUOTA_TIME": "💥 Cuota de API gratuita agotada. Vuelva a intentarlo mañana o cambie a otra API.",
+        "API_QUOTA_TIME": "💥 Cuota de API gratuita agotada. Vuelva a intentarlo más tarde o cambie a otra API.",
+        "API_ACCESS_DENIED": "💥 El servicio gratuito denegó el acceso desde tu red actual. Se detuvo la reconexión automática.",
         "API_RATE_LIMIT": "💥 Demasiadas solicitudes (429) o límite de cuota alcanzado. Inténtelo de nuevo más tarde.",
         "API_POLICY_VIOLATION": "💥 Violación de política o bloqueo de seguridad: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexión desconectada (1008): {{msg}}",
@@ -1719,6 +1720,7 @@
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
         "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
         "doubaoTtsApiRequired": "Esta función requiere una clave de API de Doubao Speech. Guarda la clave de Doubao Speech (Volcengine) en el Libro de claves de API.",
+        "glmTtsApiRequired": "Esta función requiere una clave de API de Zhipu GLM. Guarda la clave GLM en la configuración de API Key.",
         "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
         "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
         "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
@@ -1738,6 +1740,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Clonación de voz Zhipu GLM",
             "vllm_omni": "vLLM-Omni (Clon local)"
         },
         "sourcePreset": "Predefinido",
@@ -2650,6 +2653,8 @@
             "never": "No recordar de nuevo"
         },
         "screenSource": {
+            "browserPickerHint": "Al empezar a compartir, el navegador te pedirá que elijas una pestaña, ventana o pantalla.",
+            "mobileCameraHint": "Al empezar a compartir, se usará tu cámara.",
             "notAvailable": "La selección de fuente de pantalla no está disponible en el entorno actual",
             "loading": "Cargando...",
             "noSources": "No hay fuentes de pantalla disponibles",

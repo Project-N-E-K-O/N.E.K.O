@@ -565,7 +565,8 @@
         "cameraStreamFailed": "无法获取摄像头流",
         "characterConfigFailed": "无法获取角色配置",
         "API_ARREARS": "💥 您的API已欠费。如使用第三方平台请尽快充值。",
-        "API_QUOTA_TIME": "💥 免费API限额已耗尽，请更换API或明天再试。",
+        "API_QUOTA_TIME": "💥 免费API限额已耗尽，请稍后再试或更换API。",
+        "API_ACCESS_DENIED": "💥 免费服务拒绝了当前网络的访问，已停止自动重连。",
         "API_RATE_LIMIT": "💥 API达到限额或请求过于频繁(429)，请稍后再试。",
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
@@ -1719,6 +1720,7 @@
         "mimoDirectLinkUnsupported": "MiMo 暂不支持直链克隆，请改用本地文件上传",
         "directLinkUnsupported": "当前服务商暂不支持直链克隆，请改用本地文件上传",
         "doubaoTtsApiRequired": "此功能需要豆包语音 API Key，请在 API 管理簿中填写豆包语音(火山引擎) Key",
+        "glmTtsApiRequired": "此功能需要智谱 GLM API Key，请在 API 设置中填写智谱（GLM）Key",
         "vllmOmniNotice": "本地 vLLM-Omni 服务，无需 API Key，请确保已配置本地服务地址",
         "vllmRefTextLabel": "参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）",
         "vllmRefTextHint": "逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降",
@@ -1738,6 +1740,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
             "doubao_tts": "豆包语音(火山引擎)",
+            "glm_tts": "智谱GLM声音复刻",
             "vllm_omni": "vLLM-Omni（本地克隆）"
         },
         "sourcePreset": "预制",
@@ -2650,6 +2653,8 @@
             "never": "不再提醒"
         },
         "screenSource": {
+            "browserPickerHint": "开始分享时，浏览器会让你选择标签页、窗口或屏幕。",
+            "mobileCameraHint": "开始分享时，将使用你的摄像头。",
             "notAvailable": "当前环境无法选择屏幕来源",
             "loading": "加载中...",
             "noSources": "没有可用的屏幕源",

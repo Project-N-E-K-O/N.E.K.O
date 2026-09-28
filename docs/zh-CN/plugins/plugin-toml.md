@@ -316,7 +316,7 @@ plugin/plugins/smart_notes/
 | `minimum` / `maximum` | 数字控件的上下限；`integer` 控件只接受整数。 |
 | `maxLength` | 文本输入的最大长度。 |
 | `readOnly` | 禁用该字段及其子控件的编辑。 |
-| 字符串字段的 writeOnly: true | 使用密码输入框，并遮盖 JSON 差异预览两侧的值。保存时保留真实值；这仅用于界面遮盖，不提供加密或访问控制。 |
+| 字符串字段的 writeOnly: true | 使用密码输入框，并遮盖基础值提示、变更摘要和 JSON 数据视图中的值。保存时保留真实值；这仅用于界面遮盖，不提供加密或访问控制。 |
 | `default` | 显式添加字段或数组元素时的初始值；不是运行时默认配置。 |
 | `x-title-i18n` / `x-description-i18n` | 可选的 locale 到文本映射；标准 `title`、`description` 仍为字符串。 |
 

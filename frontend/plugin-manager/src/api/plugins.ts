@@ -5,6 +5,7 @@ import { del, get, post } from './index'
 import type { AxiosRequestConfig } from 'axios'
 import type { ErrorDisplayRequestConfig } from '@/utils/request'
 import { PLUGIN_LIFECYCLE_TIMEOUT, PLUGIN_RELOAD_ALL_TIMEOUT } from '@/utils/constants'
+import { setPendingReload } from '@/utils/pendingReload'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -122,7 +123,9 @@ export function getPluginHealth(pluginId: string): Promise<PluginHealth> {
 /**
  * 启动插件
  */
-export function startPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
+export function startPlugin(
+  pluginId: string
+): Promise<{ success: boolean; plugin_id: string; message: string; already_running?: boolean }> {
   const safeId = encodeURIComponent(pluginId)
   return post(`/plugin/${safeId}/start`, undefined, {
     timeout: PLUGIN_LIFECYCLE_TIMEOUT,
@@ -183,9 +186,13 @@ export interface DeletePluginResult {
   message: string
 }
 
-export function deletePlugin(pluginId: string): Promise<DeletePluginResult> {
+export async function deletePlugin(pluginId: string): Promise<DeletePluginResult> {
   const safeId = encodeURIComponent(pluginId)
-  return del(`/plugin/${safeId}`)
+  const result = await del<DeletePluginResult>(`/plugin/${safeId}`)
+  // Uninstalling removes the profiles, and a restored built-in or later reinstall under
+  // the same id starts from the resolved configuration, so nothing is left to apply.
+  setPendingReload(pluginId, false)
+  return result
 }
 
 /**
