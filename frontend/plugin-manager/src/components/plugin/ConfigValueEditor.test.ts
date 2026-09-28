@@ -945,6 +945,22 @@ describe('ConfigValueEditor — schema review regressions', () => {
 })
 
 describe('ConfigValueEditor — schema bounds in the compact field', () => {
+  it('leaves a declared but absent number empty when blurred unchanged', async () => {
+    // Nothing to fall back to: the field must not show the text "undefined".
+    const { host, emitted } = mountEditor({}, {}, true, {
+      type: 'object',
+      properties: { count: { type: 'integer' } },
+    })
+    await nextTick()
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="count"]')!
+    input.value = '-'
+    input.dispatchEvent(new Event('input'))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+    expect(input.value).toBe('')
+    expect(emitted).toEqual([])
+  })
+
   it('commits only in-range integers while typing and fits the value on blur', async () => {
     const { host, emitted } = mountEditor({}, { count: 3 }, true, {
       type: 'object',

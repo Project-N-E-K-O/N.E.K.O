@@ -575,10 +575,14 @@ function updateNumberText(value: string) {
 function settleNumberText(event: FocusEvent) {
   const raw = (event.target as HTMLInputElement | null)?.value ?? ''
   // An incomplete number cannot be represented in TOML. Restore the last finite
-  // value instead of turning an empty edit into null or zero.
-  const settled = parseNumberText(settleNumberReading(raw, String(displayValue.value)))
+  // value instead of turning an empty edit into null or zero. A field declared only by
+  // the schema has no value yet, so it falls back to an empty field, not "undefined".
+  const current = displayValue.value
+  const previous = typeof current === 'number' && Number.isFinite(current) ? String(current) : ''
+  const reading = settleNumberReading(raw, previous)
+  const settled = parseNumberText(reading)
   if (settled === undefined) {
-    numberText.value = settleNumberReading(raw, String(displayValue.value))
+    numberText.value = reading
     return
   }
   const fitted = fitNumberToSchema(settled)
