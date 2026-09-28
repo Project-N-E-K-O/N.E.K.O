@@ -933,3 +933,36 @@ async def test_session_churn_during_a_download_shares_one_load(pool) -> None:
     assert len(load_threads) == 1
     assert pool.lease_count(spec) == 1
     await _shutdown(task, requests, responses)
+
+
+async def test_local_decodes_are_bounded_across_sessions(pool) -> None:
+    # Two sessions (e.g. an ended one whose decode still runs and its
+    # successor) share the pool's single decode thread: never two native
+    # decodes at once, whatever the session churn.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    decode_threads: list[str] = []
+    original = model.transcribe
+
+    def recording_transcribe(audio: Any, **kwargs: Any):
+        decode_threads.append(threading.current_thread().name)
+        return original(audio, **kwargs)
+
+    model.transcribe = recording_transcribe
+    loader = _RecordingLoader(model)
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    second = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        for task, requests, responses in (first, second):
+            await _next_event(responses, "ready")
+            await _send_utterance(requests)
+        await asyncio.sleep(0.2)
+        assert len(model.calls) == 1
+    finally:
+        model.release.set()
+    for task, requests, responses in (first, second):
+        await _next_event(responses, "final")
+    assert len(model.calls) == 2
+    assert all(name.startswith("faster-whisper-decode") for name in decode_threads)
+    for task, requests, responses in (first, second):
+        await _shutdown(task, requests, responses)

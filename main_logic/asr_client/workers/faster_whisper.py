@@ -295,6 +295,24 @@ class _WhisperModelPool:
         # load instead of each parking a thread of the default executor.
         self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
         self._loader_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._decoder_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+    def decoder_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """The single thread every local decode runs on, process-wide.
+
+        A session's decode cannot be interrupted once started, and a session
+        can end and a new one start while it runs. Bounding decodes per
+        session would let such churn stack native decodes; one shared thread
+        bounds them for the whole process, and queued work of a cancelled
+        session is dropped before it starts.
+        """
+        with self._state_lock:
+            if self._decoder_executor is None:
+                self._decoder_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="faster-whisper-decode",
+                )
+            return self._decoder_executor
 
     def try_lease(self, spec: _ModelSpec) -> _TranscribeModel | None:
         """Lease an already loaded model without blocking, or return None."""
@@ -493,14 +511,6 @@ def _transcribe_pcm16(
     return text
 
 
-def _release_decode_lock(lock: asyncio.Lock, decode: asyncio.Future[Any]) -> None:
-    """Free the session decode lock once its decoder thread has finished."""
-    if not decode.cancelled():
-        # Mark any error as retrieved: a cancelled caller no longer awaits it.
-        decode.exception()
-    lock.release()
-
-
 def _decodes_in_flight(pending: dict[asyncio.Task[Any], Any]) -> int:
     """Decode tasks still waiting for or running on the decoder."""
     return sum(1 for task in pending if not task.done())
@@ -533,9 +543,6 @@ async def faster_whisper_asr_worker(
     buffers: dict[_UtteranceKey, bytearray] = {}
     committed: set[_UtteranceKey] = set()
     failure_sent = False
-    # One decoder thread per session at a time: keeps a single session from
-    # occupying the shared default executor.
-    decode_lock = asyncio.Lock()
 
     async def emit_error(
         code: str,
@@ -598,25 +605,16 @@ async def faster_whisper_asr_worker(
         assert model_task is not None
         # Shield: cancelling one utterance must not cancel the shared load.
         model = await asyncio.shield(model_task)
-        await decode_lock.acquire()
         # Handing the PCM to the local decoder is this provider's transport
-        # write: from here on the audio may have been consumed. Waiting for
-        # the lock is not, so evidence starts only once it is held.
+        # write: from here on the audio may have been consumed.
+        evidence = begin_transport_write(request_queue)
         try:
-            evidence = begin_transport_write(request_queue)
-            decode = asyncio.get_running_loop().run_in_executor(
-                None, _transcribe_pcm16, model, pcm16, language
+            # Cancelling this task (a new buffer epoch, session end) drops the
+            # job if it has not started yet; one already running finishes on
+            # the pool's single decode thread, which bounds decodes process-wide.
+            text = await asyncio.get_running_loop().run_in_executor(
+                pool.decoder_executor(), _transcribe_pcm16, model, pcm16, language
             )
-        except BaseException:
-            decode_lock.release()
-            raise
-        # The decoder thread cannot be interrupted: cancelling this task (a new
-        # buffer epoch) must not let the next utterance start decoding beside
-        # it, so the lock is released when the thread finishes, not when this
-        # coroutine does.
-        decode.add_done_callback(functools.partial(_release_decode_lock, decode_lock))
-        try:
-            text = await asyncio.shield(decode)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
