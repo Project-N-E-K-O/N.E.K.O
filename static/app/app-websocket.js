@@ -3551,9 +3551,14 @@
                         );
                     }
 
+                    // 这一块归哪一轮只算一次：播放队列、speech_id→turn 登记和问候避让阀
+                    // 必须用同一个值。服务端音频头不带 turn_id 时会回退到当前这一轮，
+                    // 这样一段晚到的旧音频在各处都被算成当前这一轮：阀门等它播完，
+                    // 它的 speech-end 也同样属于这一轮，会把阀门打开，不会卡到兜底。
+                    var chunkTurnId = resolveAssistantLifecycleTurnId(response.turn_id);
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
+                        turnId: chunkTurnId,
                         shouldSkip: shouldSkip,
                         playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch,
@@ -3562,12 +3567,12 @@
                     if (!shouldSkip && window.appProactive &&
                         typeof window.appProactive.noteStartupGreetingAudio === 'function') {
                         window.appProactive.noteStartupGreetingAudio(
-                            resolveAssistantLifecycleTurnId(response.turn_id)
+                            chunkTurnId
                         );
                     }
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
+                        turnId: chunkTurnId,
                         shouldSkip: shouldSkip,
                         playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch
@@ -3582,7 +3587,7 @@
                         typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
                         window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
                             speechId || S.currentPlayingSpeechId || null,
-                            resolveAssistantLifecycleTurnId(response.turn_id)
+                            chunkTurnId
                         );
                     }
                     S.skipNextAudioBlob = false;

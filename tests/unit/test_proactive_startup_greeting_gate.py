@@ -264,12 +264,23 @@ def test_websocket_reports_each_played_audio_chunk_to_the_gate():
     start = source.index("response.type === 'audio_chunk'")
     branch = source[start:start + 6000]
     call = branch.index("window.appProactive.noteStartupGreetingAudio(")
-    # Only chunks that will play, with the chunk's own (resolved) turn id.
+    # Only chunks that will play.
     guard = branch.rindex("if (", 0, call)
     assert "!shouldSkip" in branch[guard:call]
-    assert branch[call:call + 200].split("(", 1)[1].lstrip().startswith(
-        "resolveAssistantLifecycleTurnId(response.turn_id)"
-    )
+    # The gate, the playback queue and the speech_id -> turn record use one
+    # resolved turn id. Audio headers carry no turn_id, so a late chunk of an
+    # earlier turn resolves to the current turn everywhere: the gate holds
+    # while it plays and its speech-end (same turn) opens it, instead of the
+    # gate and the speech lifecycle disagreeing until the 120 s cap.
+    assert "var chunkTurnId = resolveAssistantLifecycleTurnId(response.turn_id);" in branch
+    assert branch[call:call + 200].split("(", 1)[1].lstrip().startswith("chunkTurnId")
+    meta = branch[branch.index("S.pendingAudioChunkMetaQueue.push({"):call]
+    assert "turnId: chunkTurnId," in meta
+    remember = branch.index("rememberAssistantAudioSpeechTurn(", call)
+    assert "chunkTurnId" in branch[remember:remember + 200]
+    assert branch.count("resolveAssistantLifecycleTurnId(response.turn_id)") == 1 + branch[
+        : branch.index("var chunkTurnId")
+    ].count("resolveAssistantLifecycleTurnId(response.turn_id)")
 
 
 def test_websocket_forwards_greeting_check_done_to_the_gate():
