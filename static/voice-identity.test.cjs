@@ -123,6 +123,7 @@ function createHarness({
     statusGate,
     startGate,
     cancelGate,
+    explicitCancelGate,
     mediaGate,
     mediaError,
     selectedMicrophoneId,
@@ -283,6 +284,15 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/enrollment/cancel`) {
             if (cancelGate && call.options.keepalive) await cancelGate.promise;
+            if (explicitCancelGate && !call.options.keepalive) {
+                await new Promise((resolve, reject) => {
+                    const signal = call.options.signal;
+                    const onAbort = () => reject(new Error('aborted'));
+                    if (signal?.aborted) return onAbort();
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                    explicitCancelGate.promise.then(resolve, reject);
+                });
+            }
             if (call.options.headers.get('x-voice-identity-enrollment') === enrollmentId) {
                 enrollmentId = null;
             }
@@ -597,6 +607,9 @@ function createHarness({
             enrollmentId = null;
             enrollmentLeaseTimeoutCallback?.();
         },
+        fireEnrollmentLeaseTimer() {
+            enrollmentLeaseTimeoutCallback?.();
+        },
         async initialize() {
             await documentListeners.get('DOMContentLoaded')();
         },
@@ -775,6 +788,80 @@ test('enrollment lease expiry releases the saved-segment wait', async () => {
     assert.equal(harness.elements.get('voice-identity-message').textContent, '本次录入已过期，请重新开始。');
     assert.equal(harness.elements.get('voice-identity-next').hidden, true);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
+});
+
+test('a stalled cancellation after the local lease timer cannot keep the workflow busy', async () => {
+    const explicitCancelGate = deferred();
+    const harness = createHarness({ autoAdvance: false, explicitCancelGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+
+    harness.fireEnrollmentLeaseTimer();
+    await flush(6);
+    const cancel = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/cancel`);
+    assert.ok(cancel);
+    harness.fireStatusTimeouts();
+    await enrolling;
+    await flush(2);
+
+    assert.equal(cancel.options.signal.aborted, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '本次录入已过期，请重新开始。');
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, true);
+});
+
+test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+    const prompt = harness.elements.get('voice-identity-prompt');
+    let text = prompt.textContent;
+    let writes = 0;
+    Object.defineProperty(prompt, 'textContent', {
+        get() { return text; },
+        set(value) { writes += 1; text = value; },
+    });
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    const writesBeforeSpeech = writes;
+    const voiceState = harness.elements.get('voice-identity-voice-state');
+    const voiceStates = new Set([voiceState.textContent]);
+    for (let round = 0; round < 3; round += 1) {
+        harness.emitAudio(new Int16Array(REFERENCE_SAMPLES / 8).fill(1024));
+        await flush(4);
+        voiceStates.add(voiceState.textContent);
+        harness.emitAudio(new Int16Array(REFERENCE_SAMPLES / 8));
+        await flush(4);
+        voiceStates.add(voiceState.textContent);
+    }
+
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
+    assert.ok(voiceStates.size > 1);
+    assert.equal(writes, writesBeforeSpeech);
+    assert.equal(text, '今天我想和你分享一件趣事。');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('a segment still being checked elsewhere stays in the retry flow', async () => {
+    const harness = createHarness({
+        profileError: 'segment_in_progress',
+        profileStatus: 409,
+        autoAdvance: false,
+    });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '当前录音仍在检查，请稍后继续。');
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`), false);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
 });
 
 test('later segment prompt paints before recording starts', async () => {

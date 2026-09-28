@@ -53,6 +53,7 @@
         inconsistent_segments: ['voiceIdentity.errorInconsistentSegments', '几段声音差异较大，请按提示重新录入。'],
         voice_samples_inconsistent: ['voiceIdentity.errorVoiceSamplesInconsistent', '几段声音差异较大，请按提示重新录入。'],
         owner_verification_failed: ['voiceIdentity.errorOwnerVerificationFailed', '声纹验证未通过，请重录当前段。'],
+        segment_in_progress: ['voiceIdentity.errorSegmentInProgress', '当前录音仍在检查，请稍后继续。'],
         stale_enrollment: ['voiceIdentity.errorStaleEnrollment', '本次录入已过期，请重新开始。'],
         model_unavailable: ['voiceIdentity.errorModelUnavailable', '声纹模型暂时不可用，请检查模型资源后重试。'],
         audio_processing_unavailable: ['voiceIdentity.errorAudioProcessingUnavailable', '麦克风音频处理暂时不可用，请重启麦克风后重试。'],
@@ -615,7 +616,11 @@
                 promptIndex = 1;
             }
             const prompt = promptIndex > 0 ? fixedPrompts()[promptIndex - 1] : '';
-            elements.prompt.textContent = prompt || '';
+            // The prompt is a live region; rewriting identical text would make
+            // screen readers re-announce it on every voice-activity change.
+            if (elements.prompt.textContent !== (prompt || '')) {
+                elements.prompt.textContent = prompt || '';
+            }
             elements.prompt.hidden = !prompt;
         }
     }
@@ -996,10 +1001,21 @@
             });
             return;
         }
-        const payload = await apiRequest('/enrollment/cancel', {
-            method: 'POST',
-            headers
-        });
+        const timeoutMs = Number(config.timeoutMs);
+        const cancelController = Number.isFinite(timeoutMs) && timeoutMs > 0
+            && typeof AbortController === 'function' ? new AbortController() : null;
+        const timeoutId = cancelController
+            ? window.setTimeout(function () { cancelController.abort(); }, timeoutMs) : null;
+        let payload;
+        try {
+            payload = await apiRequest('/enrollment/cancel', {
+                method: 'POST',
+                headers,
+                signal: cancelController ? cancelController.signal : undefined
+            });
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
         state.enrollmentId = null;
         state.profileId = null;
         state.nextSegmentIndex = 1;
@@ -1070,7 +1086,9 @@
         const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
         if (!state.cancelPending && !state.closeStarted
             && state.enrollmentId && state.enrollmentId === enrollmentId) {
-            try { await cancelSession({ silent: true }); } catch (_) {}
+            try {
+                await cancelSession({ silent: true, timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+            } catch (_) {}
         }
         if (!state.cancelPending && !state.closeStarted) {
             setMessage(enrollmentErrorMessage(new Error('stale_enrollment')), true);
@@ -1273,7 +1291,7 @@
                         }
                     } catch (error) {
                         if (isStale()) return;
-                        const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
+                        const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected', 'segment_in_progress'].includes(error && error.message);
                         if (!retryable && state.enrollmentId) preserveActiveSession = true;
                         let canonical = error && error.payload && typeof error.payload === 'object'
                             ? error.payload : null;
