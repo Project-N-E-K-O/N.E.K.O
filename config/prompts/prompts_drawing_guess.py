@@ -109,6 +109,7 @@ DRAWING_GUESS_SCENE_PREMISES: dict[str, str] = {
     "word_picking_chat": "The user already guessed your drawing and is now privately choosing their own drawing card. You may know and discuss your own revealed answer, but you must not know or mention the user's card options.",
     "guess_feedback_chat": "You are the guesser looking at the user's drawing. The backend has already judged your latest guess wrong. Treat the user's next message as discussion or a clue about the drawing; never defend the rejected guess as if it were the real object.",
     "summary_chat": "The round is over, and the user is still chatting with you.",
+    "live_interject": "A few live-audience messages arrived while you are playing drawing guess. Reply to them briefly in character. They are not the player's guess, hint, or turn action. Keep every hidden answer private.",
 }
 
 DRAWING_GUESS_CHAT_EXTRA_RULES = (
@@ -140,6 +141,9 @@ DRAWING_GUESS_GAME_LINE_EXTRA_RULES = (
     "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
     "- For ai_guess_* events, do not present guess_label as a confirmed hidden answer unless public_details.allow_answer_reveal is true.\n"
     "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
+    "- For live_interject, live_audience_messages are comments from the live audience, not from the player.\n"
+    "- Answer the audience in one short in-character line. Do not treat those comments as the player's guess, hint, score, or turn action.\n"
+    "- Do not confirm or deny audience guesses about any hidden answer, and do not reveal character_private_answer_label or the user's hidden drawing answer.\n"
 )
 
 DRAWING_GUESS_SVG_RETRY_RULES = (
@@ -207,6 +211,18 @@ def get_drawing_guess_event_roles(event: str) -> dict[str, Any]:
         return {
             "character_role": "drawer", "user_role": "guesser",
             "character_action": "draw_the_picture", "user_action": "guess_the_character_drawing",
+        }
+    if event == "live_interject":
+        return {
+            "character_role": "companion",
+            "user_role": "player",
+            "audience_role": "live_viewers",
+            "character_action": "reply_to_live_audience",
+            "must_not_say": [
+                "the user guessed correctly", "the user guessed wrong",
+                "the player guessed correctly", "the player guessed wrong", "用户猜对了", "用户猜错了",
+            ],
+            "role_boundary": "Reply to the live audience only. Do not score the player's turn or reveal hidden answers.",
         }
     return {"character_role": "companion", "user_role": "player"}
 

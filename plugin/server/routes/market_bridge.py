@@ -641,6 +641,18 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
             elapsed_ms,
             _market_api_log_origin(),
         )
+    elif upstream_path.startswith("/plugins/latest-versions"):
+        # The plugin manager's update check is the only caller. Success is
+        # logged too so "did we even ask?" is answerable after the fact, not
+        # just "why did the request fail?".
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.info(
+            "[market-update-check] latest-versions query={} status={} bytes={} elapsed_ms={}",
+            request.url.query,
+            upstream.status_code,
+            len(upstream.content),
+            elapsed_ms,
+        )
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,

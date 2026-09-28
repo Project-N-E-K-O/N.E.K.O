@@ -4,13 +4,19 @@
       <div class="obj">
         <div v-for="k in objectKeys" :key="k" class="row" :class="rowClassForKey(k)">
           <div class="k">
-            <el-tag size="small" type="info">{{ k }}</el-tag>
+            <div class="field-label">
+              <span v-if="fieldTitle(k) !== k" class="field-title">{{ fieldTitle(k) }}</span>
+              <el-tag size="small" type="info">{{ k }}</el-tag>
+              <div v-if="fieldDescription(k)" class="field-description">{{ fieldDescription(k) }}</div>
+            </div>
           </div>
           <div class="v">
             <ConfigValueEditor
               :model-value="overlayChild(k)"
               @update:model-value="(val) => updateObjectKey(k, val)"
               :baseline-value="baselineChild(k)"
+              :schema="fieldSchema(k)"
+              :disabled="isReadOnly"
               :path="childPath(k)"
               :replace-semantics="replaceSemantics"
             />
@@ -18,6 +24,7 @@
           <div class="ops">
             <el-button
               v-if="!isProtectedKey(k) && isOverriddenKey(k)"
+              :disabled="isReadOnly || fieldSchema(k)?.readOnly"
               size="small"
               type="primary"
               text
@@ -27,6 +34,7 @@
             </el-button>
             <el-button
               v-else-if="!isProtectedKey(k) && isCustomKey(k)"
+              :disabled="isReadOnly || fieldSchema(k)?.readOnly"
               size="small"
               type="danger"
               text
@@ -38,7 +46,7 @@
         </div>
 
         <div class="add">
-          <el-button size="small" @click="openAddKey">
+          <el-button size="small" :disabled="isReadOnly" @click="openAddKey">
             {{ t('plugins.addField') }}
           </el-button>
         </div>
@@ -77,21 +85,29 @@
               :model-value="item"
               @update:model-value="(val) => updateArrayIndex(idx, val)"
               :baseline-value="baselineArrayItem(idx)"
+              :schema="schema?.items"
+              :disabled="isReadOnly"
               :path="childPath(String(idx))"
               :replace-semantics="true"
             />
           </div>
           <div class="ops">
-            <el-button size="small" type="danger" text @click="removeArrayIndex(idx)">
+            <el-button size="small" type="danger" text :disabled="isReadOnly" @click="removeArrayIndex(idx)">
               {{ t('common.delete') }}
             </el-button>
           </div>
         </div>
 
         <div class="add">
-          <el-button size="small" @click="addArrayItem">{{ t('plugins.addItem') }}</el-button>
+          <el-button size="small" :disabled="isReadOnly" @click="addArrayItem">{{ t('plugins.addItem') }}</el-button>
         </div>
       </div>
+    </template>
+
+    <template v-else-if="enumValues.length">
+      <el-select :model-value="displayValue" :disabled="isReadOnly" @update:model-value="emitUpdate">
+        <el-option v-for="(option, index) in enumValues" :key="index" :value="option" :label="String(option)" />
+      </el-select>
     </template>
 
     <template v-else-if="kind === 'boolean'">
@@ -102,13 +118,16 @@
 
     <template v-else-if="kind === 'number'">
       <div class="input-wrap">
-        <el-input-number v-model="numVal" :step="1" :disabled="isReadOnly" @change="emitUpdate(numVal)" />
+        <el-input-number v-model="numVal" :step="1" :disabled="isReadOnly"
+          :precision="schema?.type === 'integer' ? 0 : undefined"
+          :min="schema?.minimum" :max="schema?.maximum"
+          @change="emitUpdate(numVal)" />
       </div>
     </template>
 
     <template v-else>
       <div class="input-wrap">
-        <el-input v-model="strVal" :disabled="isReadOnly" @change="emitUpdate(strVal)" />
+        <el-input v-model="strVal" :disabled="isReadOnly" :maxlength="schema?.maxLength" @change="emitUpdate(strVal)" />
       </div>
     </template>
   </div>
@@ -118,8 +137,11 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { schemaText, schemaEnum, newSchemaValue, type ConfigEditorSchema } from './configEditorSchema'
 
 interface Props {
+  schema?: ConfigEditorSchema
+  disabled?: boolean
   modelValue: any
   path?: string
   baselineValue?: any
@@ -131,7 +153,18 @@ interface Props {
 
 const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: any): void }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const enumValues = computed(() => schemaEnum(props.schema))
+function fieldSchema(key: string) {
+  const properties = props.schema?.properties
+  return properties && Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : undefined
+}
+function fieldTitle(key: string) {
+  return schemaText(fieldSchema(key), 'title', locale.value, key)
+}
+function fieldDescription(key: string) {
+  return schemaText(fieldSchema(key), 'description', locale.value)
+}
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 function isValidKeySegment(key: string) {
@@ -167,6 +200,17 @@ function overlayChild(k: string) {
 
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
   const v = displayValue.value
+  // Never hide existing containers behind a scalar control after schema changes.
+  if (v == null || typeof v !== 'object') {
+    switch (props.schema?.type) {
+      case 'integer':
+      case 'number': return 'number'
+      case 'boolean': return 'boolean'
+      case 'string': return 'string'
+      case 'array': if (v === undefined) return 'array'; break
+      case 'object': if (v === undefined) return 'object'; break
+    }
+  }
   if (Array.isArray(v)) return 'array'
   if (v !== null && typeof v === 'object') return 'object'
   if (typeof v === 'boolean') return 'boolean'
@@ -187,7 +231,7 @@ const objectKeys = computed(() => {
     isReplacedObject.value || !props.baselineValue || typeof props.baselineValue !== 'object'
       ? {}
       : props.baselineValue
-  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)])
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b), ...Object.keys(props.schema?.properties ?? {}).filter(isValidKeySegment)])
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
   // plugin 段仍通过上方 JSON 预览完整展示，并且 profile 不能修改 plugin
@@ -213,8 +257,8 @@ const numVal = ref<number | undefined>(undefined)
 const boolVal = ref(false)
 
 watch(
-  displayValue,
-  (v) => {
+  [displayValue, () => props.schema?.type],
+  ([v]) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
     if (kind.value === 'boolean') boolVal.value = typeof v === 'boolean' ? v : false
@@ -223,7 +267,7 @@ watch(
 )
 
 function emitUpdate(v: any) {
-  emit('update:modelValue', v)
+  if (!isReadOnly.value) emit('update:modelValue', v)
 }
 
 function baselineChild(k: string) {
@@ -325,7 +369,7 @@ function isProtectedKey(k: string) {
 
 const isReadOnly = computed(() => {
   const p = props.path || ''
-  return p === 'plugin.id' || p === 'plugin.entry'
+  return props.disabled === true || props.schema?.readOnly === true || p === 'plugin.id' || p === 'plugin.entry'
 })
 
 const indentStyle = computed(() => {
@@ -412,7 +456,7 @@ function rowClassForArrayIndex(idx: number) {
 
 function addArrayItem() {
   const next = currentArray()
-  next.push('')
+  next.push(newSchemaValue(props.schema?.items))
   emitUpdate(next)
 }
 
@@ -452,7 +496,12 @@ function confirmAddKey() {
     return
   }
 
-  next[key] = initialValueByType(newType.value)
+  if (isReadOnly.value || fieldSchema(key)?.readOnly) {
+    ElMessage.warning(t('plugins.readOnlyField'))
+    return
+  }
+
+  next[key] = fieldSchema(key) ? newSchemaValue(fieldSchema(key)) : initialValueByType(newType.value)
   emitUpdate(next)
   addKeyDialog.value = false
 }
@@ -490,6 +539,17 @@ function confirmAddKey() {
   max-width: 220px;
   min-width: 120px;
 }
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+
+.field-title { font-weight: 600; }
+.field-description { color: var(--el-text-color-secondary); font-size: 12px; white-space: pre-wrap; }
 
 .v {
   min-width: 0;

@@ -210,6 +210,34 @@ await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(discoveryCount,2,'queue release retries current selection exactly once');
 retrying.handlers['runtime-inactive']();
 console.log('watch-together scene: queue release retries current playback without duplicate prefetch');
+
+for (const failureStage of ['prepare', 'preparation']) for (const failureCount of [1,2]) {
+  let attempts=0;
+  const retry=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:attempts>=2?'replacement':'transient',url:'candidate',title:'Candidate'}}));
+  const original=retry.game.media.request;
+  retry.game.media.request=async(action,payload)=>{
+    if(action==='prepare'){
+      attempts++;
+      if(failureStage==='prepare' && attempts<=failureCount)throw Error('temporary submission failure');
+      return {id:'next-job'};
+    }
+    if(action==='preparation')return {status:failureStage==='preparation' && attempts<=failureCount?'error':'ready'};
+    if(action==='history')return {analyses:[{job:'next-job',status:'ready'}]};
+    return original(action,payload);
+  };
+  retry.elements.get('prefetch-enabled').checked=true;
+  retry.elements.get('automatic-enabled').checked=false;
+  await retry.elements.get('play').onclick();
+  await waitFor(()=>retry.elements.get('next-video').disabled===false);
+  assert.equal(attempts,failureCount+1,'ordinary lookahead retries without toggling prefetch or enabling automatic playback');
+  const searches=retry.calls.filter(call=>call.action==='discover');
+  assert.equal(searches[1].payload.exclude.includes('transient'),false,'first failure retains the candidate');
+  if(failureCount===2)assert.ok(searches[2].payload.exclude.includes('transient'),'second failure excludes before replacement discovery');
+  assert.equal(retry.elements.get('automatic-enabled').checked,false);
+  assert.equal(retry.calls.filter(call=>call.action==='load').length,1,'retry never replaces current playback');
+  retry.handlers['runtime-inactive']();
+}
+console.log('watch-together scene: ordinary lookahead retries transient submission and polling failures');
 for (const terminal of [{status:'ready'},{status:'awaiting_confirmation',confirmation_required:true,confirmation_video:{title:'Old',duration:350}},{status:'error',error:'Old failure'}]) {
 const takeover=await fixture(false,false,{total_tokens:1});
 let staleDecision;

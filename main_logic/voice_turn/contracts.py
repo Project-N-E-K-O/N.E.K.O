@@ -91,6 +91,9 @@ class AsrFailureEvent:
     code: str
     provider: str
     session_epoch: int
+    # Captured before the failure callback yields, so Core can reject a late
+    # failure after a different microphone lease has taken over.
+    ingress_token: VoiceIngressToken | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +119,10 @@ class AsrStatusEvent:
     # Default keeps narrow legacy test doubles constructible; production
     # runtime call sites always provide the captured source epoch explicitly.
     session_epoch: int = -1
+    # Failure statuses may be queued across a route transition. Keep the
+    # ingress identity that produced them so the consumer can fence stale
+    # notifications without rejecting the handler's own blocked transition.
+    ingress_token: VoiceIngressToken | None = None
 
 
 @dataclass(frozen=True, slots=True)

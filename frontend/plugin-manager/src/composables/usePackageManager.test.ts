@@ -45,11 +45,11 @@ vi.mock('@/api/pluginCli', () => ({
   verifyPluginPackage: vi.fn(),
 }))
 
-const syncRegistryAndFetch = vi.hoisted(() => vi.fn(async () => ({})))
+const syncRegistryAndFetchSummaries = vi.hoisted(() => vi.fn(async () => ({})))
 
 vi.mock('@/stores/plugin', () => ({
   usePluginStore: () => ({
-    pluginsWithStatus: [
+    pluginSummariesWithStatus: [
       {
         id: 'demo_plugin',
         name: 'Demo Plugin',
@@ -58,7 +58,7 @@ vi.mock('@/stores/plugin', () => ({
         type: 'plugin',
       },
     ],
-    syncRegistryAndFetch,
+    syncRegistryAndFetchSummaries,
   }),
 }))
 
@@ -110,7 +110,7 @@ const installResponse: PluginCliInstallResponse = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  syncRegistryAndFetch.mockResolvedValue({})
+  syncRegistryAndFetchSummaries.mockResolvedValue({})
   vi.mocked(getPluginCliPlugins).mockResolvedValue({
     count: 1,
     plugins: [],
@@ -297,7 +297,7 @@ describe('usePackageManager safe installation flow', () => {
 
   it('does not duplicate warnings when registry and plugin source both return 404', async () => {
     const manager = usePackageManager()
-    syncRegistryAndFetch.mockResolvedValue({
+    syncRegistryAndFetchSummaries.mockResolvedValue({
       registryRefreshed: false,
       warningMessage: 'messages.resourceNotFound',
     })
@@ -311,7 +311,7 @@ describe('usePackageManager safe installation flow', () => {
 
   it('still reports a plugin source failure after a partial registry refresh warning', async () => {
     const manager = usePackageManager()
-    syncRegistryAndFetch.mockResolvedValue({
+    syncRegistryAndFetchSummaries.mockResolvedValue({
       registryRefreshed: true,
       warningMessage: 'messages.pluginListRefreshPartial',
     })
@@ -335,7 +335,7 @@ describe('usePackageManager safe installation flow', () => {
       confirmation_token: '',
     })
     vi.mocked(installPluginPackage).mockResolvedValue(installResponse)
-    syncRegistryAndFetch.mockResolvedValue({
+    syncRegistryAndFetchSummaries.mockResolvedValue({
       warningMessage: '插件列表刷新存在失败项: broken_plugin',
     })
 

@@ -78,7 +78,7 @@
       >
         {{ installResumeText }}
       </span>
-      <span class="market-panel__install-resume-percent">{{ installTaskPercent }}%</span>
+      <span class="market-panel__install-resume-percent">{{ installTask.percent }}%</span>
       <el-button
         size="small"
         text
@@ -210,75 +210,29 @@
       align-center
       :lock-scroll="true"
       :close-on-click-modal="false"
-      :show-close="installTaskDone"
+      :show-close="installTask.done"
+      @closed="onInstallTaskDialogClosed"
     >
-      <div class="market-install-progress">
-        <el-progress
-          :percentage="installTaskPercent"
-          :status="installTaskStatus"
-        />
-        <div class="market-install-progress__message">
-          {{ installTaskMessage }}
-        </div>
-        <div class="market-install-progress__meta">
-          <span>{{ installTaskStageLabel }}</span>
-          <span v-if="downloadProgressText">{{ downloadProgressText }}</span>
-        </div>
-        <el-alert
-          v-if="installTaskOvertime && !installTaskDone"
-          type="info"
-          :closable="false"
-          show-icon
-          :title="t('market.installTakingLonger')"
-        />
-        <el-alert
-          v-if="activeInstallTask?.rollback?.running"
-          type="warning"
-          :closable="false"
-          show-icon
-          :title="t('market.rollbackRunning')"
-        />
-        <el-alert
-          v-else-if="activeInstallTask?.rollback?.restored"
-          type="success"
-          :closable="false"
-          show-icon
-          :title="t('market.rollbackCompleted')"
-        />
-        <el-alert
-          v-else-if="installRollbackIncomplete"
-          type="error"
-          :closable="false"
-          show-icon
-          :title="t('market.rollbackIncomplete')"
-        />
-        <el-alert
-          v-if="activeInstallTask?.error"
-          type="error"
-          :closable="false"
-          show-icon
-          :title="resolveInstallTaskErrorMessage(activeInstallTask)"
-        />
-      </div>
+      <MarketInstallProgress />
       <template #footer>
         <el-button
-          v-if="!installTaskDone"
-          :loading="installTaskCancelling"
-          :disabled="activeInstallTask?.cancel_requested"
-          @click="cancelInstallTask"
+          v-if="!installTask.done"
+          :loading="installTask.cancelling"
+          :disabled="installTask.task?.cancel_requested"
+          @click="handleCancelInstall"
         >
           {{ t('market.cancelInstall') }}
         </el-button>
         <el-button
-          v-if="!installTaskDone"
-          @click="installTaskDialogVisible = false"
+          v-if="!installTask.done"
+          @click="closeInstallTaskDialog"
         >
           {{ t('market.silentInstall') }}
         </el-button>
         <el-button
-          v-if="installTaskDone"
+          v-if="installTask.done"
           type="primary"
-          @click="installTaskDialogVisible = false"
+          @click="closeInstallTaskDialog"
         >
           {{ t('common.close') }}
         </el-button>
@@ -306,6 +260,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ShoppingCart, Close, Link, Setting, Loading } from '@element-plus/icons-vue'
+import MarketInstallProgress from '@/components/plugin/MarketInstallProgress.vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import MarketPluginDetailDialog from '@/components/plugin/MarketPluginDetailDialog.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
@@ -329,7 +284,14 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
+import { fetchBridge, ensureBridgeToken, readErrorCode } from '@/api/marketBridge'
+import {
+  useMarketInstallTaskStore,
+  type MarketInstallContext,
+  type MarketInstallMode,
+} from '@/stores/marketInstallTask'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import { useUserPreferenceStore } from '@/stores/userPreference'
 import {
   isGithubReleaseDownloadUrl,
@@ -345,6 +307,7 @@ import {
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { createStaleResponseGuard } from '@/utils/staleResponseGuard'
 import {
   confirmBuiltinOverride,
   confirmManualTakeover,
@@ -389,201 +352,160 @@ const pageSize = props.embedded ? 8 : 12
 const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
-const bridgeToken = ref('')
 const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
+// Install requests keep a rejected fetch as an exception: `handleInstall`
+// opens the package URL as the manual fallback from its catch, and a `null`
+// here would be misreported as "pairing required".
+const TRANSPORT_THROWS = { throwOnTransportError: true } as const
 const detailDialogVisible = ref(false)
 const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
 
-interface MarketInstallTask {
-  task_id: string
-  status: string
-  stage: string
-  progress: number
-  message: string
-  downloaded_bytes?: number
-  total_bytes?: number | null
-  error?: string | null
-  error_code?: string | null
-  cancel_requested?: boolean
-  rollback?: {
-    running?: boolean
-    restored?: boolean
-    rollback_code?: string
-  } | null
-}
-
+const installTask = useMarketInstallTaskStore()
 const installTaskDialogVisible = ref(false)
-const activeInstallTask = ref<MarketInstallTask | null>(null)
-const activeInstallPluginName = ref('')
-const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall' | 'override_builtin'>('install')
-const installTaskCancelling = ref(false)
-const marketInstallBusy = ref(false)
-// 超过 INSTALL_OVERTIME_MS 只换文案提示，不再把任务伪造成 failed —— 那会让
-// installTaskDone 转真，把后端仍然接受的取消按钮一起抹掉。
-const installTaskOvertime = ref(false)
-const INSTALL_OVERTIME_MS = 3 * 60 * 1000
-// 800ms 一轮，连续 15 轮（约 12 秒）查不到才判定任务已消失。
-const INSTALL_MISSING_TOLERANCE = 15
+const pluginUpdates = usePluginUpdatesStore()
 
-const installTaskDone = computed(() => {
-  const status = activeInstallTask.value?.status
-  return status === 'completed' || status === 'failed' || status === 'canceled'
+// The update popup and this page keep separate installed-version snapshots;
+// an upgrade from either side must refresh the other, or it keeps offering
+// the version that was just installed.
+watch(() => pluginUpdates.completedUpgrades, () => {
+  void yankSweep().catch(() => undefined)
 })
 
-const installTaskPercent = computed(() =>
-  Math.round((activeInstallTask.value?.progress ?? 0) * 100),
-)
+// 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，关掉它不该让
+// 取消能力随之消失。文案必须是本地化的，后端 message 不进入可见文本。
+//
+// Ownership-gated: a task the update popup started must not be reachable from
+// here, otherwise this entry point would open the dialog on someone else's task
+// (and its cancel button would then act on that task).
+const showInstallResumeBar = computed(() => (
+  installTask.running
+  && installTask.owner === 'panel'
+  && !installTaskDialogVisible.value
+  && !!installTask.taskId
+))
 
-const showInstallResumeBar = computed(
-  () =>
-    marketInstallBusy.value &&
-    !installTaskDialogVisible.value &&
-    !installTaskDone.value &&
-    !!activeInstallTask.value?.task_id,
-)
-
-const installTaskStatus = computed(() => {
-  const status = activeInstallTask.value?.status
-  if (status === 'failed') return 'exception'
-  if (status === 'completed') return 'success'
-  return undefined
-})
-
-const installRollbackIncomplete = computed(() => {
-  const task = activeInstallTask.value
-  const rollbackCode = task?.rollback?.rollback_code || task?.error_code || ''
-  return rollbackCode === 'override_rollback_incomplete'
-    || rollbackCode === 'upgrade_rollback_incomplete'
+// A task the update popup started must never render inside this dialog.
+watch(() => installTask.owner, (ownerNow) => {
+  if (ownerNow && ownerNow !== 'panel') installTaskDialogVisible.value = false
 })
 
 const installTaskTitle = computed(() => {
-  const name = activeInstallPluginName.value
-  if (activeInstallMode.value !== 'install') {
-    return t('market.installDialogTitleUpgrade', { name })
+  const name = installTask.context?.name || ''
+  // Every replacement mode (upgrade / reinstall / override_builtin) reads as an
+  // upgrade, failed or not — same rule as the pre-refactor dialog.
+  const mode = installTask.context?.mode
+  const replacing = !!mode && mode !== 'install'
+  if (installTask.task?.status === 'failed') {
+    return t(replacing ? 'market.installFailedTitleUpgrade' : 'market.installFailedTitle', { name })
   }
+  if (replacing) return t('market.installDialogTitleUpgrade', { name })
   return t('market.installDialogTitle', { name })
 })
 
-const installTaskStageLabel = computed(() => {
-  const stage = activeInstallTask.value?.stage || 'pending'
-  const key = `market.installStage.${stage}`
-  const translated = t(key)
-  return translated === key ? t('market.installPreparing') : translated
-})
-
-const installTaskMessage = computed(() => {
-  const task = activeInstallTask.value
-  if (!task) return t('market.installPreparing')
-  if (task.status === 'failed') return resolveInstallTaskErrorMessage(task)
-  if (task.status === 'completed') {
-    return activeInstallMode.value === 'install'
-      ? t('market.installCompleted')
-      : t('market.installCompletedUpgrade')
-  }
-  if (task.status === 'canceled') return t('market.installCancelled')
-  return installTaskStageLabel.value
-})
-
-// 常驻面板上的文案必须是本地化的；后端 message 不进入可见文本或 title。
 const installResumeText = computed(() => {
-  if (installTaskOvertime.value) return t('market.installTakingLonger')
-  const name = activeInstallPluginName.value
-  return name ? `${name} · ${installTaskStageLabel.value}` : installTaskStageLabel.value
+  if (installTask.overtime) return t('market.installTakingLonger')
+  const name = installTask.context?.name || ''
+  const stage = t(installTask.stageLabelKey)
+  return name ? `${name} · ${stage}` : stage
 })
 
-function formatByteCount(value: number): string {
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${value} B`
+/** Guards the window between the click and the task id coming back; the store
+ *  guards everything after that. */
+const marketInstallBusy = ref(false)
+
+function marketInstallContext(
+  plugin: MarketWorkbenchItem,
+  mode: MarketInstallMode,
+): MarketInstallContext {
+  return {
+    pluginId: plugin.id,
+    name: plugin.name,
+    mode,
+    channel: narrowMarketChannel(plugin.latest_channel) === 'beta' ? 'beta' : 'stable',
+    fromVersion: getLocalInstalledVersion(plugin) || null,
+    toVersion: plugin.version || null,
+  }
 }
 
-const downloadProgressText = computed(() => {
-  const task = activeInstallTask.value
-  if (!task || task.stage !== 'download') return ''
-  const downloaded = task.downloaded_bytes ?? 0
-  if (task.total_bytes) {
-    return `${formatByteCount(downloaded)} / ${formatByteCount(task.total_bytes)}`
-  }
-  return formatByteCount(downloaded)
-})
+/** Outcomes where tracking stopped without a backend failure verdict; the
+ *  pre-refactor dialog reported these as warnings, not errors. */
+const NOTICE_ONLY_OUTCOMES = new Set(['market.installTaskLost', 'market.pairRequired'])
 
-function beginInstallTaskTracking(
-  taskId: string,
-  pluginName: string,
-  mode: 'install' | 'upgrade' | 'reinstall' | 'override_builtin' = 'install',
-) {
-  installTaskCancelling.value = false
-  installTaskOvertime.value = false
-  activeInstallPluginName.value = pluginName
-  activeInstallMode.value = mode
-  activeInstallTask.value = {
-    task_id: taskId,
-    status: 'pending',
-    stage: 'pending',
-    progress: 0,
-    message: t('market.installPreparing'),
-  }
+/** One toast per explicit user action; the panel itself shows the rest. */
+async function runInstallTask(
+  taskIdValue: string,
+  plugin: MarketWorkbenchItem,
+  mode: MarketInstallMode,
+): Promise<boolean> {
   installTaskDialogVisible.value = true
-}
-
-function markInstallTaskFailed(
-  taskId: string,
-  message: string,
-  options: { error?: string } = {},
-) {
-  activeInstallTask.value = {
-    ...(activeInstallTask.value || {
-      task_id: taskId,
-      progress: 0,
-      message,
-    }),
-    status: 'failed',
-    stage: 'failed',
-    error: options.error ?? message,
+  const outcome = await installTask.track(taskIdValue, marketInstallContext(plugin, mode), 'panel')
+  if (outcome.refused) {
+    // Another surface won the race after the pre-check; the dialog would be
+    // showing *their* task, so close it instead.
+    installTaskDialogVisible.value = false
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return false
   }
-}
-
-async function cancelInstallTask() {
-  const taskId = activeInstallTask.value?.task_id
-  if (!taskId || installTaskDone.value || installTaskCancelling.value) return
-
-  installTaskCancelling.value = true
-  try {
-    const res = await fetchBridge(`/market/tasks/${taskId}/cancel`, { method: 'POST' })
-    if (!res) {
-      ElMessage.warning(t('market.pairRequired'))
-      return
-    }
-    if (res.ok) {
-      activeInstallTask.value = (await res.json()) as MarketInstallTask
-      return
-    }
-    // 409 的 detail 是后端硬编码简体中文，别直接吐给其他语言的用户。
-    if (res.status === 409) {
-      ElMessage.warning(t('market.cancelInstallUnavailable'))
-      return
-    }
-    const err = await res.json().catch(() => ({}))
-    ElMessage.warning(resolveApiErrorMessage(err, 'market.cancelInstallUnavailable'))
-  } catch {
-    ElMessage.warning(t('market.cancelInstallUnavailable'))
-  } finally {
-    installTaskCancelling.value = false
+  if (outcome.ok) {
+    ElMessage.success(
+      mode === 'install'
+        ? t('market.installSuccess', { name: plugin.name })
+        : t('market.upgradeSuccess', { name: plugin.name }),
+    )
+    await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
+    await yankSweep().catch(() => undefined)
+    void pluginUpdates.check({ force: true })
+  } else if (outcome.canceled) {
+    ElMessage.info(t('market.installCancelled'))
+  } else if (outcome.aborted) {
+    // Dialog closed mid-install: the task keeps running server-side and the
+    // resume bar still reaches it, so say nothing.
+  } else if (outcome.errorKey && NOTICE_ONLY_OUTCOMES.has(outcome.errorKey)) {
+    // Tracking ended without a backend verdict: the task may still be fine.
+    ElMessage.warning(t(outcome.errorKey))
+  } else {
+    ElMessage.error(t(outcome.errorKey || 'market.installFailed'))
   }
+  return outcome.ok
 }
 
-function resolveInstallTaskErrorMessage(task: MarketInstallTask): string {
-  return t(resolvePluginInstallErrorKey(task.error_code))
+async function handleCancelInstall(): Promise<void> {
+  const result = await installTask.cancel('panel')
+  if (result === 'unpaired') ElMessage.warning(t('market.pairRequired'))
+  else if (result !== 'ok') ElMessage.warning(t('market.cancelInstallUnavailable'))
 }
+
+function closeInstallTaskDialog(): void {
+  installTaskDialogVisible.value = false
+}
+
+// True from opening until el-dialog's leave transition has finished: dismissing
+// on `visible` alone empties the body and flips title/footer mid-fade.
+const installTaskDialogShown = ref(false)
+watch(installTaskDialogVisible, (visible) => {
+  if (visible) installTaskDialogShown.value = true
+})
+function onInstallTaskDialogClosed(): void {
+  installTaskDialogShown.value = false
+}
+
+// Same rule as the update popup: once the dialog is gone a finished task has
+// nowhere to be shown, but while this panel still holds the slot the operation
+// is reconciling (registry sync, installed snapshot, popup re-check). Dismissing
+// then would free the slot early and let the popup upgrade against its stale
+// candidates. Re-evaluated when the slot or the task settles.
+watch(
+  () => [installTaskDialogShown.value, installTask.reservation, installTask.done] as const,
+  ([shown, reservation, done]) => {
+    if (!shown && done && reservation !== 'panel') installTask.dismiss('panel')
+  },
+)
 
 function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installFailed'): string {
-  const body = payload as { code?: unknown; error_code?: unknown; detail?: unknown } | null
-  const detail = body?.detail && typeof body.detail === 'object'
-    ? body.detail as { code?: unknown; error_code?: unknown }
-    : null
-  const code = detail?.code || detail?.error_code || body?.code || body?.error_code
+  const code = readErrorCode(payload)
   return code ? t(resolvePluginInstallErrorKey(code)) : t(fallbackKey)
 }
+
 const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 
@@ -613,9 +535,7 @@ function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'
 }
 
 // ─── 本地插件对比：slug / repo plugin_id / lock 三路配对 ───────────
-const localPluginKeys = computed(() => {
-  return localPluginIdentityKeys(pluginStore.pluginsWithStatus)
-})
+const localPluginKeys = computed(() => localPluginIdentityKeys(pluginStore.pluginSummariesWithStatus))
 
 function isInstalled(plugin: MarketPlugin): boolean {
   if (getInstalledState(plugin)) return true
@@ -744,51 +664,6 @@ function extractServerQuery(input: string): string {
   return terms.join(' ').trim()
 }
 
-async function ensureBridgeToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
-  if (bridgeToken.value && !options.forceRefresh) return bridgeToken.value
-  if (options.forceRefresh) {
-    bridgeToken.value = ''
-    localStorage.removeItem('neko_bridge_token')
-  }
-  try {
-    const res = await fetch('/market/bridge-token')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.bridge_token) {
-        bridgeToken.value = data.bridge_token
-        localStorage.setItem('neko_bridge_token', data.bridge_token)
-      }
-    }
-  } catch {
-    // 静默降级
-  }
-  if (!bridgeToken.value) {
-    bridgeToken.value = localStorage.getItem('neko_bridge_token') || ''
-  }
-  return bridgeToken.value
-}
-
-function bridgeUrl(path: string, token: string): string {
-  const separator = path.includes('?') ? '&' : '?'
-  return `${path}${separator}token=${encodeURIComponent(token)}`
-}
-
-async function fetchBridge(
-  path: string,
-  init?: RequestInit,
-  options: { retryOnForbidden?: boolean } = {},
-): Promise<Response | null> {
-  const token = await ensureBridgeToken()
-  if (!token) return null
-  let res = await fetch(bridgeUrl(path, token), init)
-  if (res.status !== 403 || options.retryOnForbidden === false) return res
-
-  const freshToken = await ensureBridgeToken({ forceRefresh: true })
-  if (!freshToken) return res
-  res = await fetch(bridgeUrl(path, freshToken), init)
-  return res
-}
-
 let loadSeq = 0
 
 async function loadPlugins() {
@@ -849,10 +724,16 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
  *   - Market 不可达 / 拉版本失败时静默不更新（不闪红，不抛错）；
  *   - 仅对"已装且 latest_install_source 非空"的条目执行版本表查询。
  */
+// Sweeps can overlap (a batch upgrade from the update popup starts one per
+// plugin): a late response must not overwrite a newer snapshot, yet a newer
+// sweep that fails must not discard an older sweep's valid data either.
+const yankSweepGuard = createStaleResponseGuard<'installed' | 'yanked'>()
+
 async function yankSweep() {
   if (!marketAvailable.value) return
+  const ticket = yankSweepGuard.begin()
   const installed = await fetchInstalledFromBridge()
-  if (installed === null) return
+  if (installed === null || !yankSweepGuard.accept('installed', ticket)) return
   const entries: InstalledMarketEntry[] = []
   const uniqueEntries = new Map<string, InstalledMarketEntry>()
   for (const item of installed) {
@@ -927,6 +808,7 @@ async function yankSweep() {
     if (marketKey) nextYanked[marketKey] = yanked
   }
 
+  if (!yankSweepGuard.accept('yanked', ticket)) return
   yankedMap.value = nextYanked
 }
 
@@ -1051,72 +933,6 @@ async function resolveInstallPayload(
   }
 }
 
-async function pollInstallTask(
-  taskId: string,
-  pluginName: string,
-  options: { mode?: 'install' | 'upgrade' | 'reinstall' | 'override_builtin' } = {},
-): Promise<boolean> {
-  const mode = options.mode ?? 'install'
-  beginInstallTaskTracking(taskId, pluginName, mode)
-
-  const overtimeAt = Date.now() + INSTALL_OVERTIME_MS
-  let consecutiveMissing = 0
-  // 面板卸载后不中止：轮询要活到任务终态，否则切走一次页面就丢掉成功提示和
-  // 注册表同步。任务消失走下面的 404 容忍收口。
-  for (;;) {
-    try {
-      const res = await fetchBridge(`/market/tasks/${taskId}`)
-      if (!res) {
-        markInstallTaskFailed(taskId, t('market.installFailed'), {
-          error: t('market.pairRequired'),
-        })
-        ElMessage.warning(t('market.pairRequired'))
-        return false
-      }
-      if (res.status === 404) {
-        // 任务只活在后端内存里：连续查不到就是它没了（服务重启 / TTL 清理），
-        // 再轮下去也不会回来。
-        consecutiveMissing += 1
-        if (consecutiveMissing >= INSTALL_MISSING_TOLERANCE) {
-          markInstallTaskFailed(taskId, t('market.installTaskLost'))
-          ElMessage.warning(t('market.installTaskLost'))
-          return false
-        }
-      }
-      if (res.ok) {
-        consecutiveMissing = 0
-        const task = (await res.json()) as MarketInstallTask
-        activeInstallTask.value = task
-
-        if (task.status === 'completed') {
-          ElMessage.success(
-            mode !== 'install'
-              ? t('market.upgradeSuccess', { name: pluginName })
-              : t('market.installSuccess', { name: pluginName }),
-          )
-          await pluginStore.syncRegistryAndFetch().catch(() => undefined)
-          await yankSweep().catch(() => undefined)
-          return true
-        }
-        if (task.status === 'failed') {
-          ElMessage.error(resolveInstallTaskErrorMessage(task))
-          return false
-        }
-        if (task.status === 'canceled') {
-          ElMessage.info(t('market.installCancelled'))
-          return false
-        }
-      }
-    } catch {
-      // 继续轮询
-    }
-    if (!installTaskOvertime.value && Date.now() >= overtimeAt) {
-      installTaskOvertime.value = true
-    }
-    await new Promise((r) => setTimeout(r, 800))
-  }
-}
-
 async function handleInstall(plugin: MarketWorkbenchItem) {
   if (marketInstallBusy.value) {
     ElMessage.warning(t('market.installAlreadyRunning'))
@@ -1129,6 +945,13 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   marketInstallBusy.value = true
   let packageUrl = ''
   try {
+    // Claimed inside the try on purpose: any early return above must not be
+    // able to leak the slot, since a leaked slot refuses every later install
+    // until the window is reloaded.
+    if (!installTask.reserve('panel')) {
+      ElMessage.warning(t('market.installAlreadyRunning'))
+      return
+    }
     const payload = await resolveInstallPayload(plugin)
     if (!payload) {
       ElMessage.warning(t('market.noDownloadUrl'))
@@ -1166,7 +989,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         mode: 'install',
         on_conflict: 'fail',
       }),
-    })
+    }, TRANSPORT_THROWS)
     if (!res) {
       ElMessage.warning(t('market.pairRequired'))
       return
@@ -1175,10 +998,10 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     if (res.ok) {
       const data = await res.json()
       if (data.task_id) {
-        await pollInstallTask(data.task_id, plugin.name)
+        await runInstallTask(data.task_id, plugin, 'install')
       } else {
         ElMessage.success(t('market.installSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+        await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 403) {
@@ -1193,6 +1016,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   } finally {
     installingId.value = null
     marketInstallBusy.value = false
+    installTask.release('panel')
   }
 }
 
@@ -1203,7 +1027,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - mode = 'upgrade' 让 bridge 走 _do_upgrade 分支（暂存旧目录 →
  *     unpack 新包 → record_market_upgrade）；
  *   - on_conflict = 'fail'：旧目录已暂存，新目录不应撞名；
- *   - 错误码识别在 pollInstallTask 内统一处理。
+ *   - 错误码识别在 runInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
   if (marketInstallBusy.value) {
@@ -1216,6 +1040,11 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
   }
   marketInstallBusy.value = true
   try {
+    // See handleInstall: claimed inside the try so `finally` always releases it.
+    if (!installTask.reserve('panel')) {
+      ElMessage.warning(t('market.installAlreadyRunning'))
+      return
+    }
     const action = getMarketAction(plugin)
     if (action.kind !== 'upgrade' && action.kind !== 'override_builtin') {
       if (action.kind === 'blocked') ElMessage.error(t('market.autoUpgradeBlocked'))
@@ -1259,7 +1088,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(installRequest),
-      })
+      }, TRANSPORT_THROWS)
       if (!confirmationResponse) {
         ElMessage.warning(t('market.pairRequired'))
         return
@@ -1287,7 +1116,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(installRequest),
-      })
+      }, TRANSPORT_THROWS)
       if (!confirmationResponse) {
         ElMessage.warning(t('market.pairRequired'))
         return
@@ -1315,7 +1144,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(installRequest),
-    })
+    }, TRANSPORT_THROWS)
     if (!res) {
       ElMessage.warning(t('market.pairRequired'))
       return
@@ -1324,10 +1153,10 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     if (res.ok) {
       const data = await res.json()
       if (data.task_id) {
-        await pollInstallTask(data.task_id, plugin.name, { mode: action.kind })
+        await runInstallTask(data.task_id, plugin, action.kind)
       } else {
         ElMessage.success(t('market.upgradeSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+        await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 400) {
@@ -1344,6 +1173,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
   } finally {
     upgradingId.value = null
     marketInstallBusy.value = false
+    installTask.release('panel')
   }
 }
 
@@ -1370,8 +1200,8 @@ async function initialize() {
     await loadPlugins()
     yankSweep().catch(() => {})
   }
-  if (pluginStore.pluginsWithStatus.length === 0) {
-    pluginStore.fetchPlugins().catch(() => {})
+  if (pluginStore.pluginSummariesWithStatus.length === 0) {
+    pluginStore.fetchPluginSummaries().catch(() => {})
   }
 }
 
@@ -1408,7 +1238,14 @@ watch(
 }
 
 .market-panel--embedded {
-  height: 100%;
+  /*
+    min-height 而不是 height：这张白纸面自带背景、圆角与阴影，这些都是画在元素自己盒子上的。
+    写成 height:100% 会被 .plugin-workbench__rail-inner > * 的 100% 钉死，面板内容一旦高于
+    抽屉，溢出的部分（后续卡片、分页条）就落在页面底色上——实测小窗口下市场列表滚到底时，
+    分页条两侧是 rgb(242,243,245) 而不是白底。min-height 让纸面随内容长高，抽屉自己是
+    滚动容器（插件管理里打开态是 overflow-y:auto），滚动行为不变。
+  */
+  min-height: 100%;
   padding: 18px 18px 24px;
   background: var(--el-bg-color);
   border-radius: 16px;

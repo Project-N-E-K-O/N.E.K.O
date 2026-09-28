@@ -1,5 +1,9 @@
 <template>
-  <div class="plugin-detail" data-yui-guide-id="plugin-detail-page">
+  <div
+    class="plugin-detail"
+    :class="{ 'plugin-detail--fill': isFillTab }"
+    data-yui-guide-id="plugin-detail-page"
+  >
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -19,7 +23,12 @@
         </div>
       </template>
 
-      <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
+      <div v-if="surfacesLoading" role="status" data-testid="surfaces-loading">{{ $t('plugins.ui.loading') }}</div>
+      <div v-else-if="surfaceLoadError" role="alert" data-testid="surfaces-error">
+        {{ surfaceLoadError }}
+        <el-button data-testid="surfaces-retry" @click="retrySurfaces">{{ $t('market.retry') }}</el-button>
+      </div>
+      <el-tabs :model-value="activeTab" @update:model-value="selectTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="displayedPanelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
             <el-alert
@@ -37,7 +46,7 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="displayedPanelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+            <el-tabs v-if="displayedPanelSurfaces.length > 1" :model-value="activePanelSurfaceId" @update:model-value="selectPanel" type="border-card">
               <el-tab-pane
                 v-for="surface in displayedPanelSurfaces"
                 :key="surface.id"
@@ -48,7 +57,7 @@
                   :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)"
                   :plugin-id="pluginId"
                   :surface="surface"
-                  :height="hostedSurfaceFrameHeight"
+                 
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
                   @open-logs="openLogsTab"
@@ -61,7 +70,7 @@
               :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)"
               :plugin-id="pluginId"
               :surface="displayedPanelSurfaces[0]!"
-              :height="hostedSurfaceFrameHeight"
+             
               :active="isSurfaceActive(displayedPanelSurfaces[0]!)"
               :activation-revision="activationRevisionFor(displayedPanelSurfaces[0]!)"
               @open-logs="openLogsTab"
@@ -87,7 +96,7 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
+            <el-tabs v-if="guideSurfaces.length > 1" :model-value="activeGuideSurfaceId" @update:model-value="selectGuide" type="border-card">
               <el-tab-pane
                 v-for="surface in guideSurfaces"
                 :key="surface.id"
@@ -97,7 +106,7 @@
                 <HostedSurfaceFrame
                   :plugin-id="pluginId"
                   :surface="surface"
-                  :height="hostedSurfaceFrameHeight"
+                 
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
                   :ref="(instance) => setGuideSurfaceFrameRef(surface.id, instance)"
@@ -110,7 +119,7 @@
               v-else
               :plugin-id="pluginId"
               :surface="guideSurfaces[0]!"
-              :height="hostedSurfaceFrameHeight"
+             
               :active="isSurfaceActive(guideSurfaces[0]!)"
               :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
               :ref="(instance) => setGuideSurfaceFrameRef(guideSurfaces[0]?.id || '', instance)"
@@ -181,7 +190,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, provide, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -200,11 +209,14 @@ import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 import {
   PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
+  SINGLE_HOSTED_PANEL_REFRESH_PASS,
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
-
-/** One immediate pass, no retries. */
-const SINGLE_REFRESH_PASS = [0] as const
+import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
+import {
+  pickPrimaryPanelSurface,
+  renderablePanelSurfaces as selectRenderablePanelSurfaces,
+} from '@/utils/pluginSurfaces'
 
 const route = useRoute()
 const router = useRouter()
@@ -218,6 +230,10 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
+let userTabIntent = false
+function selectTab(value: string | number) { userTabIntent = true; activeTab.value = String(value) }
+function selectPanel(value: string | number) { userTabIntent = true; activePanelSurfaceId.value = String(value) }
+function selectGuide(value: string | number) { userTabIntent = true; activeGuideSurfaceId.value = String(value) }
 type SurfaceMessageReceiver = {
   sendSurfaceMessage: (data: unknown) => void
   refreshContext: () => Promise<void>
@@ -225,12 +241,21 @@ type SurfaceMessageReceiver = {
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const guideSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const surfaceActivationRevisions = ref<Record<string, number>>({})
-const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
+// 撑满型 tab：面板高度由宿主容器决定，不再拿视口猜（链见 <style> 的
+// .plugin-detail--fill）。长内容 tab（info/entries/metrics/config）**不能**进这条链：
+// 被压到一屏后，.el-card 默认的 overflow:hidden 会把内容直接裁掉而不是让它滚动。
+const fillTabs = new Set(['panel', 'guide', 'logs'])
+const isFillTab = computed(() => fillTabs.has(activeTab.value))
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
+let surfaceController: AbortController | null = null
+let detailGeneration = 0
+let detailMounted = false
+const surfacesLoading = ref(false)
+const surfaceLoadError = ref('')
 
 const plugin = computed(() => {
-  return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
+  return pluginStore.getPluginById(pluginId.value)
 })
 
 const emptyPluginDisplayText: PluginDisplayText = {
@@ -250,13 +275,10 @@ const authorDisplay = computed(() => {
   return author.name || author.email || ''
 })
 
-const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
-const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surface) => surface.available !== false))
-// `auto` is accepted by the manifest but does not have a renderer yet. Do not
-// let its placeholder hide a working legacy static UI.
-const renderablePanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => surface.mode !== 'auto'))
-const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
+// 面板的选取判据统一在 utils/pluginSurfaces.ts（适配器界面页用同一份，避免两侧分叉）。
+// `auto` 在 manifest 里合法但还没有渲染器，留着它只会用占位块挡住可用的 legacy 静态 UI。
+const renderablePanelSurfaces = computed(() => selectRenderablePanelSurfaces(surfaces.value))
 // Keep every renderable panel, including the host-generated static `main`
 // compatibility surface. The separate legacy "界面" tab is what gets hidden
 // when panels exist; filtering main here would make that page unreachable.
@@ -264,11 +286,7 @@ const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)
 // A generated static `main` is inserted before declared panels by the backend.
 // Keep it accessible in the list, but let generic `?tab=panel` entry points
 // select the first declared hosted panel when one exists.
-const defaultPanelSurface = computed(() => {
-  return availableDeclaredPanelSurfaces.value.find((surface) => surface.mode === 'hosted-tsx')
-    ?? availableDeclaredPanelSurfaces.value[0]
-    ?? displayedPanelSurfaces.value[0]
-})
+const defaultPanelSurface = computed(() => pickPrimaryPanelSurface(surfaces.value))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
@@ -325,8 +343,8 @@ function syncActiveTab(requestedTab: unknown) {
   }
 }
 
-function syncSurfaceTabs() {
-  const requestedSurfaceId = typeof route.query.surface === 'string' ? route.query.surface : ''
+function syncSurfaceTabs(useRouteIntent = true) {
+  const requestedSurfaceId = useRouteIntent && typeof route.query.surface === 'string' ? route.query.surface : ''
   const requestedTab = resolveActiveTab(route.query.tab)
   if (requestedSurfaceId) {
     const panel = requestedTab !== 'guide'
@@ -342,6 +360,8 @@ function syncSurfaceTabs() {
       activeGuideSurfaceId.value = guide.id
     }
   }
+  if (!displayedPanelSurfaces.value.some(s => s.id === activePanelSurfaceId.value)) activePanelSurfaceId.value = ''
+  if (!guideSurfaces.value.some(s => s.id === activeGuideSurfaceId.value)) activeGuideSurfaceId.value = ''
   if (!activePanelSurfaceId.value && defaultPanelSurface.value) {
     activePanelSurfaceId.value = defaultPanelSurface.value.id
   }
@@ -470,7 +490,7 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
     // A plugin that emits this is demonstrably alive and has already finished
     // the mutation it is reporting, so one pass is enough — retrying would
     // just triple the IPC round trips into its process.
-    void refreshHostedSurfaceContexts(SINGLE_REFRESH_PASS)
+    void refreshHostedSurfaceContexts(SINGLE_HOSTED_PANEL_REFRESH_PASS)
     return
   }
   // Hosted surface messages have already been source/origin checked by the
@@ -486,73 +506,170 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
 }
 
 async function fetchSurfaces(): Promise<boolean> {
+  surfaceController?.abort('metadata-replaced')
+  const controller = new AbortController()
+  surfaceController = controller
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
+  const requestLocale = locale.value
+  const isCurrent = () => detailMounted && loadId === currentSurfaceLoadId
+    && currentPluginId === pluginId.value && requestLocale === locale.value
+  surfacesLoading.value = true
+  surfaceLoadError.value = ''
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId, locale.value)
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
+    const info = await getPluginUiSurfaceInfo(currentPluginId, requestLocale, {
+      signal: controller.signal, suppressErrorMessage: true, preserveMessagesOn404: true,
+    })
+    if (!isCurrent()) return false
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
   } catch (caught: any) {
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
+    if (!isCurrent()) return false
     surfaces.value = []
-    surfaceWarnings.value = [{
-      path: 'plugin.ui',
-      code: 'surface_query_failed',
-      message: caught?.response?.data?.detail || caught?.message || String(caught),
-    }]
+    const detail = caught?.response?.data?.detail
+    surfaceLoadError.value = typeof detail === 'string' && detail
+      ? detail
+      : (caught?.message || String(caught))
+    surfaceWarnings.value = [{ path: 'plugin.ui', code: 'surface_query_failed', message: surfaceLoadError.value }]
+  } finally {
+    if (surfaceController === controller) surfaceController = null
+    if (isCurrent()) surfacesLoading.value = false
   }
-  activePanelSurfaceId.value = ''
-  activeGuideSurfaceId.value = ''
-  syncSurfaceTabs()
+  syncSurfaceTabs(!userTabIntent)
+  if (!userTabIntent) syncActiveTab(route.query.tab)
+  else activeTab.value = resolveDefaultTab(activeTab.value)
   return true
 }
 
-async function refreshPluginUi(): Promise<boolean> {
-  return fetchSurfaces()
+async function retrySurfaces() {
+  await fetchSurfaces()
 }
 
-onMounted(async () => {
+async function loadDetail() {
+  const generation = ++detailGeneration
+  const currentPluginId = pluginId.value
+  const requestLocale = locale.value
+  const isCurrent = () => detailMounted && generation === detailGeneration
+    && currentPluginId === pluginId.value && requestLocale === locale.value
+  loading.value = true
   try {
-    await pluginStore.fetchPlugins()
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
+    await pluginStore.ensurePlugin(currentPluginId)
+    if (!isCurrent()) return
+    // Basic information and navigation do not wait for /surfaces or an optional
+    // renderer. Requests below retain their existing API semantics.
     loading.value = false
+    void pluginStore.fetchPluginStatus(currentPluginId)
+    await fetchSurfaces()
+  } catch (error) {
+    // The template falls back to the not-found state once loading clears.
+    if (isCurrent()) console.warn(`Failed to load plugin ${currentPluginId}:`, error)
+  } finally {
+    if (isCurrent()) loading.value = false
   }
+}
+
+onMounted(() => { detailMounted = true; void loadDetail() })
+onBeforeUnmount(() => {
+  detailMounted = false
+  surfaceController?.abort('detail-disposed')
+  surfaceController = null
+  detailGeneration += 1
+  currentSurfaceLoadId += 1
+  panelSurfaceFrameRefs.clear()
+  guideSurfaceFrameRefs.clear()
 })
 
 watch(
   () => [route.query.tab, route.query.surface],
   ([tab]) => {
+    userTabIntent = false
+    if (surfacesLoading.value) return
     syncSurfaceTabs()
     syncActiveTab(tab)
   },
 )
 
-watch(pluginId, async () => {
-  loading.value = true
-  try {
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
-    loading.value = false
-  }
-})
-
-watch(locale, () => {
-  if (!plugin.value) return
-  void refreshPluginUi().then((refreshed) => {
-    if (refreshed) syncActiveTab(route.query.tab)
-  })
-})
+watch(
+  () => [pluginId.value, locale.value],
+  ([id], previous) => {
+    surfaceController?.abort('detail-changed')
+    surfaceController = null
+    detailGeneration += 1
+    currentSurfaceLoadId += 1
+    if (id === previous?.[0] && !loading.value) {
+      // Locale only: main.ts refreshes the cached detail. Toggling `loading`
+      // here would unmount the card and drop config/panel drafts.
+      if (detailMounted) void fetchSurfaces()
+      return
+    }
+    userTabIntent = false
+    surfaces.value = []
+    surfaceWarnings.value = []
+    activePanelSurfaceId.value = ''
+    activeGuideSurfaceId.value = ''
+    activeTab.value = 'info'
+    panelSurfaceFrameRefs.clear()
+    guideSurfaceFrameRefs.clear()
+    surfaceActivationRevisions.value = {}
+    if (detailMounted) void loadDetail()
+  },
+  { flush: 'sync' },
+)
 </script>
 
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+/* ── 撑满型 tab 的高度链 ─────────────────────────────────────────────
+   目标：面板高度 = 容器剩余高度，而不是 `100vh - 常量`。
+
+   Element Plus 自己就是这条链的骨架（.el-card 是 flex 列、.el-card__body 是
+   flex:1、.el-tabs--top 是 flex 列、.el-tabs__content 是 flex-grow:1），缺的只是
+   “一个确定高度”。所以这里只做两件事：给根一个确定高度，并把中间几层的 flex
+   传递下去。判据全部来自容器，因此页头/工具栏换行/告警条/连接横幅出现都自动正确。
+
+   两个 overflow 不再需要覆写：下限移到页面根之后，没有任何元素会溢出自己的盒子，
+   也就不存在 .el-tabs__content 的 hidden / .el-card 的 hidden 裁掉内容的可能。 */
+.plugin-detail--fill {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* 窗口不够高时保持可用尺寸，由 .app-main 滚动（下限放在这里而不是面板上，
+     否则面板会溢出卡片被 .el-card 的 overflow:hidden 裁掉） */
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
+}
+
+.plugin-detail--fill :deep(.el-card) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-tabs) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-tab-pane) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 面板的直接宿主：面板自己 height:100% 要有确定高度可依 */
+.plugin-detail--fill .surface-section,
+.plugin-detail--fill [data-yui-guide-id='plugin-detail-logs'] {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .loading-container {

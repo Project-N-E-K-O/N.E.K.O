@@ -851,7 +851,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                     await websocket.close()
                     break
-                await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
+                # 「正在前往另一个终端」是说给被踢下线的这条旧连接听的。
+                # send_status 走 mgr.websocket，而它此刻已经归新窗口所有——发过去
+                # 就成了刚接走角色的那个窗口收到「角色要离开」。格式与 send_status
+                # 一致，前端按同一条 status 翻译路径显示。
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status",
+                        "message": json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}),
+                    }))
+                except Exception as send_err:
+                    logger.debug(f"CHARACTER_SWITCHING_TERMINAL 未能送达旧连接: {send_err}")
                 await websocket.close()
                 break
             action = message.get("action")
@@ -1172,6 +1182,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 mark_capture_client(lanlan_name, websocket, message)
 
             elif action == "capture_bridge_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
+            elif action == "capture_bridge_computer_use_response":
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 

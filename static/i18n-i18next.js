@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 保留主分支插件 HTML 卡片、AgentHUD 与唤醒词提示，更新网页和 Electron 的语言包缓存。
-    const LOCALE_VERSION = '2026-09-26-screen-share-hover-hints';
+    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示，以及本分支的屏幕共享悬停菜单提示语言包 key，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-screen-share-hover-hints-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

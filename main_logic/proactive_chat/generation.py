@@ -320,10 +320,15 @@ class ProactiveModelConfig:
     vision_base_url: str | None = ""
     vision_api_key: str = ""
     vision_provider_type: str | None = None
+    vision_is_custom: bool = False
 
     @property
     def has_vision_model(self) -> bool:
-        return bool(self.vision_model and self.vision_api_key)
+        # 自定义视觉端点（本地 Ollama / 局域网 OpenAI 兼容服务）常常故意不填
+        # Key，和 screenshot_utils 的判据对齐：自定义配置下空 Key 也算已配置。
+        return bool(
+            self.vision_model and (self.vision_api_key or self.vision_is_custom)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2111,16 +2116,31 @@ _PROACTIVE_HSPACE_PATTERN = rf"[{re.escape(_PROACTIVE_HORIZONTAL_SPACES)}]"
 _PROACTIVE_SOURCE_PREFIX_LABELS = (
     ("current screen observation", "CHAT"),
     ("screen observation", "CHAT"),
+    ("current screen content", "CHAT"),
+    ("current screen display", "CHAT"),
+    ("current screenshot", "CHAT"),
     ("current screen", "CHAT"),
     ("screen content", "CHAT"),
     ("screen display", "CHAT"),
+    ("screen image", "CHAT"),
     ("active window", "CHAT"),
     ("当前屏幕观察", "CHAT"),
     ("当前活跃窗口", "CHAT"),
+    ("当前屏幕内容", "CHAT"),
+    ("当前屏幕显示", "CHAT"),
+    ("当前屏幕画面", "CHAT"),
+    ("当前屏幕截图", "CHAT"),
     ("屏幕观察", "CHAT"),
     ("当前屏幕", "CHAT"),
     ("屏幕内容", "CHAT"),
     ("屏幕显示", "CHAT"),
+    ("屏幕画面", "CHAT"),
+    ("屏幕截图", "CHAT"),
+    ("当前画面", "CHAT"),
+    ("画面内容", "CHAT"),
+    ("当前窗口", "CHAT"),
+    ("窗口内容", "CHAT"),
+    ("窗口标题", "CHAT"),
     ("当前界面", "CHAT"),
     ("屏幕", "CHAT"),
     ("screenshot", "CHAT"),
@@ -2167,6 +2187,16 @@ _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset(
         "上轮未收尾话题",
         "屏幕内容",
         "屏幕显示",
+        "当前屏幕内容",
+        "当前屏幕显示",
+        "当前屏幕画面",
+        "当前屏幕截图",
+        "屏幕截图",
+        "当前画面",
+        "画面内容",
+        "当前窗口",
+        "窗口内容",
+        "窗口标题",
     }
 )
 
