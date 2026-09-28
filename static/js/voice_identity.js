@@ -550,6 +550,7 @@
         const active = state.segmentIndex > 0;
         const captureVisible = active && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
         elements.captureStatus.hidden = !captureVisible;
+        elements.captureStatus.classList.toggle('preparing', state.uiPhase === 'preparing');
         elements.captureStatus.classList.toggle('saving', state.saving);
         elements.captureStatus.classList.toggle('voice-detected', state.voiceStatus === 'detected');
         elements.captureStatus.classList.toggle('voice-quiet', state.voiceStatus === 'quiet');
@@ -748,7 +749,7 @@
         const chunks = [];
         let capturedSamples = 0;
         state.captureReady = false;
-        let startedAt = performance.now();
+        let startedAt = null;
         let finishCapture = null;
         let flushTimeoutId = null;
         const requiredSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
@@ -776,6 +777,7 @@
             throw new Error('capture_cancelled');
         }
 
+        startedAt = performance.now();
         state.voiceStatus = 'waiting';
         state.lastVoiceAt = startedAt;
         const timer = window.setInterval(function () {
@@ -1014,7 +1016,7 @@
         if (state.segmentAdvance === advance) state.segmentAdvance = null;
         if (result !== 'expired') return result === 'advance';
 
-        const reconciled = await reconcileStatus();
+        const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
         if (!state.cancelPending && !state.closeStarted
             && state.enrollmentId && state.enrollmentId === enrollmentId) {
             try { await cancelSession({ silent: true }); } catch (_) {}
@@ -1028,6 +1030,10 @@
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
         state.statusEpoch += 1;
+        const operationEpoch = state.statusEpoch;
+        const isStale = function () {
+            return operationEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted;
+        };
         let startSettled = null;
         let settleStart = null;
         let segmentRequestPending = false;
@@ -1043,7 +1049,7 @@
         render();
         try {
             await ensureMicrophone();
-            if (state.closeStarted || state.cancelPending) return;
+            if (isStale()) return;
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
             const startController = typeof AbortController === 'function'
@@ -1056,8 +1062,9 @@
                     signal: startController ? startController.signal : undefined
                 });
             } catch (error) {
+                if (operationEpoch !== state.statusEpoch) throw error;
                 const canonical = await reconcileStatus({
-                    timeoutMs: state.cancelPending || state.closeStarted
+                    timeoutMs: isStale()
                         ? CANCEL_STATUS_TIMEOUT_MS : undefined
                 });
                 if (!canonical || !state.enrollmentId) throw error;
@@ -1072,7 +1079,7 @@
             state.enrollmentId = firstString([started, started.enrollment], ['enrollment_id', 'id', 'session_id'], state.enrollmentId);
             state.profileId = firstString([started, started.enrollment], ['profile_id'], state.profileId || createProfileId());
             if (!state.enrollmentId) throw new Error('enrollment_id_missing');
-            if (state.closeStarted || state.cancelPending) { await cancelSession({ keepalive: state.closeStarted, silent: true }); return; }
+            if (isStale()) { await cancelSession({ keepalive: state.closeStarted, silent: true }); return; }
             const serverNextSegment = Number(firstScalar(
                 [started, started.enrollment], ['next_segment_index'], 1
             ));
@@ -1089,7 +1096,7 @@
                         const refreshed = await reconcileStatus();
                         if (!refreshed && !state.enrollmentId) throw new Error('status_unavailable');
                     }
-                    if (state.cancelPending || state.closeStarted) return;
+                    if (isStale()) return;
                     if (!state.enrollmentId || (
                         Number.isFinite(state.enrollmentRemainingSeconds)
                         && state.enrollmentRemainingSeconds <= 0
@@ -1102,9 +1109,9 @@
                     state.saving = false;
                     render();
                     await ensureMicrophone();
-                    if (state.cancelPending || state.closeStarted) return;
+                    if (isStale()) return;
                     await waitForPromptPaint();
-                    if (state.cancelPending || state.closeStarted) return;
+                    if (isStale()) return;
                     requireCaptureTime(recordingDurationMs);
                     state.captureReady = false;
                     state.segmentPhase = 'recording'; state.uiPhase = 'recording';
@@ -1115,7 +1122,7 @@
                         try { pcm16 = await capturePcm16(recordingDurationMs); }
                         finally { state.recording = false; }
                     } catch (error) {
-                        if (state.cancelPending || state.closeStarted) return;
+                        if (isStale()) return;
                         const retryable = ['incomplete_capture', 'speech_too_short'].includes(error && error.message);
                         if (!retryable || !state.enrollmentId) throw error;
                         state.saving = false;
@@ -1123,10 +1130,10 @@
                         setMessage(enrollmentErrorMessage(error), true);
                         render();
                         const proceed = await waitForSegmentAdvance();
-                        if (!proceed || state.cancelPending || state.closeStarted) return;
+                        if (!proceed || isStale()) return;
                         continue;
                     }
-                    if (state.cancelPending || state.closeStarted) {
+                    if (isStale()) {
                         new Uint8Array(pcm16).fill(0);
                         return;
                     }
@@ -1151,7 +1158,7 @@
                             new Uint8Array(pcm16).fill(0);
                         }
                         segmentRequestPending = false;
-                        if (state.cancelPending || state.closeStarted) return;
+                        if (isStale()) return;
                         applyStatus(payload);
                         const verification = segment === ENROLLMENT_SEGMENT_COUNT
                             ? enrollmentVerification(payload) : null;
@@ -1172,7 +1179,7 @@
                             }
                             render();
                             const proceed = await waitForSegmentAdvance();
-                            if (!proceed || state.cancelPending || state.closeStarted) return;
+                            if (!proceed || isStale()) return;
                             if (nextSegment === 1) {
                                 segment = 1;
                                 state.segmentIndex = 1;
@@ -1186,7 +1193,7 @@
                             finalSegmentCommitted = true;
                         }
                     } catch (error) {
-                        if (state.cancelPending || state.closeStarted) return;
+                        if (isStale()) return;
                         const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
                         if (!retryable && state.enrollmentId) preserveActiveSession = true;
                         let canonical = error && error.payload && typeof error.payload === 'object'
@@ -1207,7 +1214,7 @@
                                     setMessage(enrollmentErrorMessage(error), true);
                                     render();
                                     const proceed = await waitForSegmentAdvance();
-                                    if (!proceed || state.cancelPending || state.closeStarted) return;
+                                    if (!proceed || isStale()) return;
                                     segment = 1;
                                     continue segmentLoop;
                                 }
@@ -1223,7 +1230,7 @@
                         setMessage(enrollmentErrorMessage(error), true);
                         render();
                         const proceed = await waitForSegmentAdvance();
-                        if (!proceed || state.cancelPending || state.closeStarted) return;
+                        if (!proceed || isStale()) return;
                     }
                 }
                 state.saving = false;
@@ -1232,7 +1239,7 @@
                     render();
                     if (window.__voiceIdentityTestAutoAdvance && elements.next) window.setTimeout(function () { elements.next.emit('click'); }, 0);
                     const proceed = await waitForSegmentAdvance();
-                    if (!proceed || state.cancelPending || state.closeStarted) return;
+                    if (!proceed || isStale()) return;
                 }
                 segment += 1;
             }
@@ -1258,7 +1265,7 @@
             setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
             stopMicrophone();
-            if (state.cancelPending || state.closeStarted) return;
+            if (isStale()) return;
             const reconciled = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
             const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
             const profileCommitConfirmed = replacementConfirmed
@@ -1272,11 +1279,12 @@
             } else {
                 try { await cancelSession(); } catch (_) {}
                 const microphoneError = error && (error.name === 'NotAllowedError' || error.name === 'NotFoundError' || error.name === 'NotReadableError' || error.message === 'audio_worklet_unavailable' || error.message === 'media_devices_unavailable');
-                if (!state.cancelPending && !state.closeStarted) setMessage(microphoneError ? translate('voiceIdentity.microphoneDenied', '无法使用麦克风，请检查权限和设备。') : enrollmentErrorMessage(error), true);
+                if (!isStale()) setMessage(microphoneError ? translate('voiceIdentity.microphoneDenied', '无法使用麦克风，请检查权限和设备。') : enrollmentErrorMessage(error), true);
             }
         } finally {
             stopMicrophone();
             if (settleStart && state.startSettled === startSettled) { state.startSettled = null; settleStart(); }
+            if (operationEpoch !== state.statusEpoch && !state.cancelPending && !state.closeStarted) return;
             if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
             state.recording = false; state.saving = false; state.segmentPhase = 'idle'; state.uiPhase = 'idle'; state.segmentIndex = 0; state.voiceStatus = 'waiting'; state.busy = false;
             if (state.cancelReleaseWhenIdle) {
@@ -1430,6 +1438,10 @@
         });
         window.addEventListener('pageshow', async function (event) {
             if (!event.persisted) return;
+            state.statusEpoch += 1;
+            if (state.startAbort) state.startAbort.abort();
+            if (state.uploadAbort) state.uploadAbort.abort();
+            if (state.statusAbort) state.statusAbort.abort();
             state.closeStarted = false;
             state.cancelPending = false;
             state.busy = true;

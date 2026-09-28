@@ -144,6 +144,7 @@ function createHarness({
     webCryptoAvailable = true,
     initialEffectiveReason = null,
     audioContextSampleRate = 48000,
+    resumeGate,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -322,6 +323,7 @@ function createHarness({
         }
 
         async resume() {
+            if (resumeGate) await resumeGate.promise;
             this.state = 'running';
         }
 
@@ -780,8 +782,24 @@ test('the upcoming prompt is visible while the first microphone is preparing', a
     await flush(2);
     assert.equal(harness.elements.get('voice-identity-prompt').hidden, false);
     assert.notEqual(harness.elements.get('voice-identity-prompt').textContent, '');
+    assert.equal(harness.elements.get('voice-identity-capture-status').classList.contains('preparing'), true);
     mediaGate.resolve();
     await enrolling;
+});
+
+test('recording clock starts only after the audio context resumes', async () => {
+    const resumeGate = deferred();
+    const harness = createHarness({ resumeGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.equal(harness.getAudioContext().state, 'suspended');
+    assert.equal(harness.elements.get('voice-identity-timer').textContent, '');
+
+    resumeGate.resolve();
+    await enrolling;
+    assert.equal(harness.autoFinishDurations[0], REFERENCE_RECORDING_MS);
 });
 
 test('cancellation during microphone setup releases a late stream and context', async () => {
@@ -1332,6 +1350,24 @@ test('slow enrollment start uses keepalive cancellation after close wait expires
         && call.options.keepalive === true
     ));
     assert.ok(cancel);
+});
+
+test('BFCache restore invalidates the pending enrollment workflow', async () => {
+    const startGate = deferred();
+    const harness = createHarness({ startGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start`));
+
+    await harness.dispatch('pageshow', { persisted: true });
+    startGate.resolve();
+    await enrolling;
+    await flush(2);
+
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
+    assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`));
 });
 
 test('the one-click page keeps complete dark-theme overrides', () => {
