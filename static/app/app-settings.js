@@ -1322,6 +1322,9 @@
             if (_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')) {
                 S.voiceInputResourceOptimizationAuthoritative = true;
             }
+            if (_dirtySettingsKeys.has('independentAsrProviderPreference')) {
+                S.independentAsrProviderPreferenceAuthoritative = true;
+            }
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
@@ -2114,6 +2117,7 @@
                 // merge preserved — authoritative for the handshake either way.
                 S.independentAsrAuthoritative = true;
                 S.voiceInputResourceOptimizationAuthoritative = true;
+                S.independentAsrProviderPreferenceAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -2435,6 +2439,32 @@
             if (optimizationSyncAcknowledgesLocalDecision) {
                 _optimizationDecisionPendingSync = false;
             }
+            // The provider choice also rides the start_session handshake, and
+            // every save copies it along. Only an explicit change from another
+            // window may move it here; an incidental copy (possibly another
+            // window's boot default) must not replace this window's value.
+            const providerPreferenceKey = 'independentAsrProviderPreference';
+            const providerPreferenceValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, providerPreferenceKey)
+                && S[providerPreferenceKey] !== settings[providerPreferenceKey];
+            const providerPreferenceMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf(providerPreferenceKey) !== -1;
+            const providerPreferenceWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (
+                    meta.writeId === _lastAppliedSharedWriteId
+                    && providerPreferenceMarkedExplicit
+                );
+            const providerPreferenceChangedByOtherWindow = meta
+                ? (
+                    providerPreferenceValueDiffers
+                    && providerPreferenceMarkedExplicit
+                    && providerPreferenceWriteIsNewer
+                )
+                : providerPreferenceValueDiffers;
+            const providerPreferenceValueIsStale = !!meta
+                && providerPreferenceValueDiffers
+                && !providerPreferenceChangedByOtherWindow;
             const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
                 ? (
                     S.independentAsrActive === true
@@ -2465,10 +2495,17 @@
                 _lastAppliedSharedWriteId = meta.writeId;
             }
             let incoming = settings;
-            if (asrValueIsStale || optimizationValueIsStale) {
+            if (
+                asrValueIsStale
+                || optimizationValueIsStale
+                || providerPreferenceValueIsStale
+            ) {
                 incoming = Object.assign({}, settings);
                 if (asrValueIsStale) delete incoming.independentAsrEnabled;
                 if (optimizationValueIsStale) delete incoming[optimizationKey];
+                if (providerPreferenceValueIsStale) {
+                    delete incoming[providerPreferenceKey];
+                }
             }
             if (meta) {
                 for (const key of meta.changedKeys) {
@@ -2716,7 +2753,18 @@
                     );
                 }
             }
-            if (asrChangedByOtherWindow || optimizationChangedByOtherWindow) {
+            if (providerPreferenceChangedByOtherWindow) {
+                // A real cross-window provider choice: authoritative for this
+                // window's next handshake, and preserved across its pending GET.
+                S.settingsHydrated = true;
+                S.independentAsrProviderPreferenceAuthoritative = true;
+                _dirtySettingsKeys.add(providerPreferenceKey);
+            }
+            if (
+                asrChangedByOtherWindow
+                || optimizationChangedByOtherWindow
+                || providerPreferenceChangedByOtherWindow
+            ) {
                 const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
                 if (
                     asrChangedByOtherWindow

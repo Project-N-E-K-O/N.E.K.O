@@ -123,6 +123,8 @@
         // 资源优化同样参与会话路由启动，必须独立证明该键来自 server merge、
         // 本窗口显式修改或可信的跨窗口修改，不能用启动默认值覆盖持久化选择。
         voiceInputResourceOptimizationAuthoritative: false,
+        // 独立 ASR provider 偏好同样随 start_session 握手，权威条件与上面两个一致。
+        independentAsrProviderPreferenceAuthoritative: false,
         // 跨 popup generation 保存「下次会话生效」状态与当前会话的实际 ASR
         // route。否则跨窗口设置事件更新偏好后，重渲染会把偏好误报成当前 route。
         voiceSettingsPendingUntilEpoch: null,

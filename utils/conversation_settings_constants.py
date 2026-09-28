@@ -45,6 +45,26 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
 # main_logic/asr_client/_registry_meta.py (kept in sync by a unit test, since
 # utils must not import main_logic).
 INDEPENDENT_ASR_PROVIDER_PREFERENCES = frozenset({"auto", "faster_whisper"})
+
+
+def normalize_independent_asr_provider_preference_handshake(
+    value: object,
+) -> str | None:
+    """Validate the provider preference carried by a start_session handshake.
+
+    ``None`` (field absent: older frontend, or a window whose value is not yet
+    authoritative) defers to the persisted setting. Any other value that is not
+    an accepted preference is treated as ``"auto"`` so a malformed handshake can
+    never select an unintended provider.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, str) and value in INDEPENDENT_ASR_PROVIDER_PREFERENCES:
+        return value
+    return "auto"
+
+
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
 MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000

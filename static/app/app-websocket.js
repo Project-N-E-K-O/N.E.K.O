@@ -2640,6 +2640,14 @@
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
                     }
+                    // Same authority gate for the provider choice: a boot default
+                    // 'auto' must not override a persisted 'faster_whisper'.
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrProviderPreferenceAuthoritative === true) {
+                        msg.independent_asr_provider_preference = S.independentAsrProviderPreference === 'faster_whisper'
+                            ? 'faster_whisper'
+                            : 'auto';
+                        handshakeStamped = true;
+                    }
                     if (msg && msg.action === 'start_session') {
                         var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
                             ? getExplicitConversationLanguageForCurrentCharacter()

@@ -251,3 +251,22 @@ def test_dependency_missing_status_has_its_own_toast() -> None:
     )
     assert "statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'" in websocket
     assert "window.t('microphone.localAsrDependencyMissing')" in websocket
+
+
+def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() -> None:
+    state = APP_STATE.read_text(encoding="utf-8")
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+
+    assert "independentAsrProviderPreferenceAuthoritative: false" in state
+    # Granted by a merged server GET, an explicit local change, or an
+    # explicit cross-window change -- never by an unrelated save.
+    compact = " ".join(settings.split())
+    assert (
+        "S.voiceInputResourceOptimizationAuthoritative = true; "
+        "S.independentAsrProviderPreferenceAuthoritative = true;"
+    ) in compact
+    assert (
+        "if (_dirtySettingsKeys.has('independentAsrProviderPreference')) { "
+        "S.independentAsrProviderPreferenceAuthoritative = true;"
+    ) in compact
+    assert "providerPreferenceValueIsStale" in settings

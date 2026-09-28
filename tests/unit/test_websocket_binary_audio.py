@@ -1804,3 +1804,50 @@ async def test_each_start_task_keeps_its_own_voice_handshake_overrides(
         (False, True),
         (True, False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_session_forwards_normalized_provider_preference_handshake(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    shared_values: list[object] = []
+    manager.set_independent_asr_provider_preference_handshake = (
+        shared_values.append
+    )
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "faster_whisper",
+            },
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "qwen",
+            },
+            {"action": "start_session", "input_type": "text"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    deferred: list[object] = []
+    monkeypatch.setattr(websocket_router, "_fire_task", deferred.append)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*deferred)
+
+    starts = [kwargs for name, kwargs in manager.calls if name == "start_session"]
+    # Accepted value passes through, a malformed one becomes "auto", and an
+    # absent field (older frontend / non-authoritative window) stays None so
+    # the persisted setting decides.
+    assert [kwargs["provider_preference_override"] for kwargs in starts] == [
+        "faster_whisper",
+        "auto",
+        None,
+    ]
+    assert shared_values == ["faster_whisper", "qwen", None]
