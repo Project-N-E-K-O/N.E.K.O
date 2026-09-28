@@ -188,6 +188,20 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
         css_color(light_theme, "voice-success-text"),
         css_color(light_theme, "voice-panel-soft"),
     ) >= 4.5
+    # The current-segment marker keeps the same blue fill in both themes, so
+    # its text token must pass on that fill and must not be themed away.
+    assert _contrast_ratio(
+        css_color(light_theme, "voice-progress-current-text"),
+        css_color(light_theme, "voice-blue-strong"),
+    ) >= 4.5
+    assert "--voice-progress-current-text" not in dark_theme.group("body")
+    assert "--voice-blue-strong" not in dark_theme.group("body")
+    for selector in (r"\.segment-progress\s+span\.active", r"\.segment-progress\s+span\.current"):
+        assert re.search(
+            selector + r"\s*\{[^}]*color:\s*var\(--voice-progress-current-text\)[^}]*background:\s*var\(--voice-blue-strong\)",
+            stylesheet,
+            re.DOTALL,
+        )
     assert re.search(
         r"\.voice-activity-state\s*\{[^}]*color:\s*var\(--voice-muted\)",
         stylesheet,

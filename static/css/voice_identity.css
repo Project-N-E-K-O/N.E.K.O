@@ -7,6 +7,8 @@
     --voice-panel-soft: #e9f5ff;
     --voice-blue: #55bdf2;
     --voice-blue-strong: #2ea9e8;
+    /* Text on the --voice-blue-strong progress fill; not overridden in dark theme. */
+    --voice-progress-current-text: #07354d;
     --voice-blue-dark: #245276;
     /* --voice-blue-dark: #075b80 (legacy contrast reference) */
     --voice-ink: #17354a;
@@ -523,7 +525,7 @@ input:focus-visible,
 
 .segment-progress span.active {
     border-color: var(--voice-blue-strong);
-    color: var(--voice-ink);
+    color: var(--voice-progress-current-text);
     background: var(--voice-blue-strong);
     box-shadow: 0 0 0 4px rgba(85, 189, 242, 0.16);
 }
@@ -547,7 +549,7 @@ input:focus-visible,
 
 .segment-progress span.current {
     border-color: var(--voice-blue-strong);
-    color: var(--voice-ink);
+    color: var(--voice-progress-current-text);
     background: var(--voice-blue-strong);
     box-shadow: 0 0 0 4px rgba(85, 189, 242, 0.16);
 }
