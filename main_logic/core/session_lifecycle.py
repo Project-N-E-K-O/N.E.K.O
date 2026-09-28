@@ -136,6 +136,11 @@ class SessionOwnershipMixin:
 
     def _close_connection_record(self, record, *, initiating_task=None):
         record.retired = True
+        # A failed close leaves the physical state unknown and therefore keeps
+        # capacity reserved. A later retirement attempt may retry the provider
+        # close and release that slot only after a confirmed success.
+        if record.close_task is not None and record.close_task.done() and not record.closed:
+            record.close_task = None
         if record.close_task is None:
             initiating_task = initiating_task or asyncio.current_task()
             async def close():
@@ -170,10 +175,12 @@ class SessionOwnershipMixin:
                     # callback has unwound, even when provider close failed.
                     if callbacks:
                         await asyncio.gather(*callbacks, return_exceptions=True)
-                    # A provider close that raises must not strand the record:
-                    # capacity counting and pruning both key off `closed`, so
-                    # leaving it unset costs a slot for the process lifetime.
-                    record.closed = True
+                    # ``closed`` is the physical-release acknowledgement used
+                    # by capacity counting and pruning. If the authoritative
+                    # close raised, the provider may still own a live socket;
+                    # keep this record occupying its slot rather than claiming
+                    # a safe handoff we cannot prove.
+                    record.closed = close_error is None
                 if close_error is not None:
                     raise close_error
             record.close_task = self._own_cleanup_task(close())

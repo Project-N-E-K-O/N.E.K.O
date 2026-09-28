@@ -4288,6 +4288,11 @@ class _TransportMixin:
                 await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
+                # The retirement registry uses a successful close as the
+                # physical-release acknowledgement. A failed handshake may
+                # have left the provider transport live, so propagate the
+                # uncertainty and keep the capacity slot occupied.
+                raise
             finally:
                 logger.info("WebSocket connection closed")
         else:

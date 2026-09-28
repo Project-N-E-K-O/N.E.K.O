@@ -41,6 +41,12 @@ class _FakeWs:
         self.close_calls += 1
 
 
+class _FailingWs(_FakeWs):
+    async def close(self):
+        self.close_calls += 1
+        raise RuntimeError("close handshake failed")
+
+
 def _make_client():
     return OmniRealtimeClient(
         base_url="wss://example.test/realtime",
@@ -94,6 +100,17 @@ async def test_cancelled_close_still_closes_the_socket_it_detached():
 
     assert ws.close_calls == 1
     assert calls == ["realtime client closed"]
+
+
+@pytest.mark.asyncio
+async def test_close_failure_is_propagated_for_capacity_accounting():
+    client = _make_client()
+    ws = _FailingWs()
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client._release_retired_connection(ws)
+
+    assert ws.close_calls == 1
 
 
 @pytest.mark.asyncio
@@ -536,8 +553,7 @@ async def test_replacement_attaching_during_the_audio_lock_keeps_its_gemini_sess
 
 @pytest.mark.asyncio
 async def test_failing_gemini_exit_still_drops_the_references():
-    """A raised (non-cancel) exit ran to its own conclusion; the SDK has no
-    second attempt to offer, so the pre-existing behaviour stands."""
+    """A failed SDK exit is surfaced while retired references are cleared."""
     client = _make_client()
 
     class _RaisingContext:
@@ -547,7 +563,8 @@ async def test_failing_gemini_exit_still_drops_the_references():
     client._gemini_context_manager = _RaisingContext()
     client._gemini_session = object()
 
-    await client._close_gemini()
+    with pytest.raises(RuntimeError, match="sdk exit failed"):
+        await client._close_gemini()
 
     assert client._gemini_context_manager is None
     assert client._gemini_session is None

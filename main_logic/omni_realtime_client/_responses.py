@@ -999,11 +999,12 @@ class _ResponseMixin:
             # scope 下跑完；跑完之后这一轮才真正开始。
             self.note_user_turn_started()
             preparation_arbiter = None
+            preparation_token = None
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.begin_turn_preparation(stable_turn_id)
+                    preparation_token = arbiter.begin_turn_preparation(stable_turn_id)
                     preparation_arbiter = arbiter
                     # Only cancel something the provider is already acting on.
                     # Independent ASR cuts one spoken sentence into several
@@ -1022,7 +1023,7 @@ class _ResponseMixin:
                 raise
             finally:
                 if preparation_arbiter is not None:
-                    preparation_arbiter.end_turn_preparation()
+                    preparation_arbiter.end_turn_preparation(preparation_token)
         return self._connection_generation != connection_generation
 
     def _consume_cancelled_terminal(self) -> bool:

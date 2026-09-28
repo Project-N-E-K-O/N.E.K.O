@@ -652,11 +652,14 @@ class _GeminiMixin:
         await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
+        close_error = None
         try:
             await context.__aexit__(None, None, None)
         except Exception as e:
-            # A raised exit is still an exit that ran to its own conclusion —
-            # the references are dropped below either way, as before.
+            # A raised exit does not prove that the SDK transport physically
+            # exited. Retain that uncertainty for the session registry instead
+            # of acknowledging a safe handoff.
+            close_error = e
             logger.error(f"Error closing Gemini session: {e}")
 
         if self._gemini_context_manager is not context:
@@ -666,6 +669,8 @@ class _GeminiMixin:
             logger.info(
                 "Gemini close: a replacement session attached; leaving its state alone"
             )
+            if close_error is not None:
+                raise close_error
             return
 
         self._gemini_context_manager = None
@@ -692,6 +697,8 @@ class _GeminiMixin:
             self._audio_processor.reset()
 
         logger.info("Gemini Live API session closed")
+        if close_error is not None:
+            raise close_error
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""

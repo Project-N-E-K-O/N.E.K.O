@@ -122,10 +122,14 @@ async def test_close_error_finishes_retirement_bookkeeping():
     retirement = manager._session_retirements[-1]
     assert retirement.handoff_safe.is_set()
     assert retirement.cleanup_complete.is_set()
-    assert manager._connection_records == []
+    # A failed provider close leaves physical ownership uncertain. The
+    # retirement bookkeeping can finish, but its connection record must keep
+    # occupying capacity until a later close attempt succeeds.
+    assert len(manager._connection_records) == 1
+    assert not manager._connection_records[0].closed
 
-    # A later successful retirement must be able to prune the completed failed
-    # retirement instead of retaining every historical failure forever.
+    # A later successful retirement can still prune the completed retirement;
+    # the unresolved connection record remains independently fail-closed.
     successor = ControlledClient()
     successor.allow_close.set()
     manager.session = successor
