@@ -273,9 +273,33 @@
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
     // ======================== selected source label ========================
-    // 本窗口最近一次选中或枚举到的来源 { id, screenIndex, name }。窗口标题
-    // 未开启「记住窗口」时只存在这里，不落盘。
-    var selectedScreenSourceMeta = null;
+    // 本页知道的来源名称 { id, screenIndex, name }，按 id 分别存：来自本页的选择
+    // 和枚举，以及其他同源窗口的广播。显示时只取当前选中 id 的那一条，所以广播
+    // 和本地选择谁先到都不会互相覆盖。窗口标题未开启「记住窗口」时只存在这里，不落盘。
+    var MAX_KNOWN_SCREEN_SOURCE_META = 16;
+    var knownScreenSourceMeta = [];
+
+    function getKnownScreenSourceMeta(sourceId) {
+        if (!sourceId) return null;
+        for (var i = 0; i < knownScreenSourceMeta.length; i += 1) {
+            if (knownScreenSourceMeta[i].id === sourceId) return knownScreenSourceMeta[i];
+        }
+        return null;
+    }
+
+    function forgetKnownScreenSourceMeta(sourceId) {
+        knownScreenSourceMeta = knownScreenSourceMeta.filter(function (meta) {
+            return meta.id !== sourceId;
+        });
+    }
+
+    function addKnownScreenSourceMeta(meta) {
+        forgetKnownScreenSourceMeta(meta.id);
+        knownScreenSourceMeta.push(meta);
+        if (knownScreenSourceMeta.length > MAX_KNOWN_SCREEN_SOURCE_META) {
+            knownScreenSourceMeta.shift();
+        }
+    }
 
     function readPersistedScreenSourceMeta() {
         try {
@@ -286,9 +310,9 @@
     }
 
     function persistSelectedScreenSourceMeta() {
-        var meta = selectedScreenSourceMeta;
+        var meta = getKnownScreenSourceMeta(S.selectedScreenSourceId);
         try {
-            if (!meta || meta.id !== S.selectedScreenSourceId) {
+            if (!meta) {
                 localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY);
                 return;
             }
@@ -303,7 +327,7 @@
 
     // 「记住窗口」开关变化后，按新设置重写落盘记录里的窗口标题。
     function syncPersistedScreenSourceTitle() {
-        if (selectedScreenSourceMeta && selectedScreenSourceMeta.id === S.selectedScreenSourceId) {
+        if (getKnownScreenSourceMeta(S.selectedScreenSourceId)) {
             persistSelectedScreenSourceMeta();
             return;
         }
@@ -317,9 +341,7 @@
     function getSelectedScreenSourceLabel() {
         var sourceId = S.selectedScreenSourceId;
         if (!sourceId) return '';
-        var meta = selectedScreenSourceMeta && selectedScreenSourceMeta.id === sourceId
-            ? selectedScreenSourceMeta
-            : readPersistedScreenSourceMeta();
+        var meta = getKnownScreenSourceMeta(sourceId) || readPersistedScreenSourceMeta();
         var isScreen = sourceId.startsWith('screen:');
         if (meta && meta.id === sourceId
             && (!isScreen || typeof meta.screenIndex === 'number')) {
@@ -367,11 +389,11 @@
             screenSourceLabelChannel = new BroadcastChannel('neko-screen-source-label');
             screenSourceLabelChannel.onmessage = function (event) {
                 var data = event && event.data;
-                if (!data || typeof data !== 'object') return;
-                var meta = data.meta
+                var meta = data && typeof data === 'object' && data.meta
                     ? normalizeScreenSourceMeta(data.meta, data.meta.screenIndex)
                     : null;
-                selectedScreenSourceMeta = meta;
+                if (!meta) return;
+                addKnownScreenSourceMeta(meta);
                 notifyScreenSourceChanged();
             };
         }
@@ -384,13 +406,14 @@
      * S.selectedScreenSourceId；清除选择时传 null。
      */
     function rememberScreenSourceLabel(source, screenIndex) {
-        selectedScreenSourceMeta = source && source.id
+        var meta = source && source.id
             ? normalizeScreenSourceMeta({ id: String(source.id), name: source.name }, screenIndex)
             : null;
+        if (meta) addKnownScreenSourceMeta(meta);
         persistSelectedScreenSourceMeta();
         try {
-            if (screenSourceLabelChannel) {
-                screenSourceLabelChannel.postMessage({ meta: selectedScreenSourceMeta });
+            if (meta && screenSourceLabelChannel) {
+                screenSourceLabelChannel.postMessage({ meta: meta });
             }
         } catch (_) { }
         notifyScreenSourceChanged();
@@ -407,10 +430,19 @@
         var source = screenIndex >= 0
             ? screens[screenIndex]
             : windows.find(function (s) { return s.id === sourceId; });
-        if (!source) return;
+        if (!source) {
+            // 窗口已关、屏幕已拔：这次枚举证明来源不在了，不再显示它的具体名称。
+            var persisted = readPersistedScreenSourceMeta();
+            if (getKnownScreenSourceMeta(sourceId) || (persisted && persisted.id === sourceId)) {
+                forgetKnownScreenSourceMeta(sourceId);
+                persistSelectedScreenSourceMeta();
+                notifyScreenSourceChanged();
+            }
+            return;
+        }
         var nextIndex = screenIndex >= 0 ? screenIndex : null;
-        var current = selectedScreenSourceMeta;
-        if (current && current.id === sourceId && current.screenIndex === nextIndex
+        var current = getKnownScreenSourceMeta(sourceId);
+        if (current && current.screenIndex === nextIndex
             && current.name === String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)) {
             return;
         }
@@ -646,12 +678,11 @@
         }
         if (e.key === SCREEN_SOURCE_LABEL_KEY) {
             // 另一个窗口写了新记录。标题未落盘时，内存里的名称由广播保持最新；
-            // 只有落盘记录换了来源或带着不同的标题时，才丢掉本窗口缓存的名称。
+            // 落盘记录带着不同的标题时以它为准，丢掉本页知道的那条。
             var record = readPersistedScreenSourceMeta();
-            if (selectedScreenSourceMeta && !(record
-                && record.id === selectedScreenSourceMeta.id
-                && (!record.name || record.name === selectedScreenSourceMeta.name))) {
-                selectedScreenSourceMeta = null;
+            var known = record && record.name ? getKnownScreenSourceMeta(record.id) : null;
+            if (known && known.name !== record.name) {
+                forgetKnownScreenSourceMeta(record.id);
             }
             notifyScreenSourceChanged();
             return;
@@ -661,10 +692,6 @@
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
-        // 广播可能先于 storage 事件到达，已是新来源的名称要保留。
-        if (selectedScreenSourceMeta && selectedScreenSourceMeta.id !== newId) {
-            selectedScreenSourceMeta = null;
-        }
         markScreenSourceSelectionChanged();
         notifyScreenSourceChanged();
         try {
