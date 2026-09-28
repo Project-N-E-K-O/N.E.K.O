@@ -433,9 +433,14 @@
         if (!source) {
             // 窗口已关、屏幕已拔：这次枚举证明来源不在了，不再显示它的具体名称。
             var persisted = readPersistedScreenSourceMeta();
-            if (getKnownScreenSourceMeta(sourceId) || (persisted && persisted.id === sourceId)) {
+            var persistedIsThisSource = !!(persisted && persisted.id === sourceId);
+            if (getKnownScreenSourceMeta(sourceId) || persistedIsThisSource) {
                 forgetKnownScreenSourceMeta(sourceId);
-                persistSelectedScreenSourceMeta();
+                // 只删属于这个来源的落盘记录：同源的其他窗口可能刚为新选中的
+                // 来源写入了记录，本页仍持有旧 id 时不能把它一并删掉。
+                if (persistedIsThisSource) {
+                    try { localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY); } catch (_) { }
+                }
                 notifyScreenSourceChanged();
             }
             return;
