@@ -150,6 +150,9 @@ function createHarness({
     initialEffectiveReason = null,
     audioContextSampleRate = 48000,
     resumeGate,
+    initialStatusError = false,
+    pageConfigGates = {},
+    segmentInProgressOnce = null,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -173,6 +176,7 @@ function createHarness({
         'voice-identity-reenroll',
         'voice-identity-delete',
         'voice-identity-filter',
+        'voice-identity-retry',
     ];
     const elements = new Map(elementIds.map(id => [id, createElement()]));
     const documentListeners = new Map();
@@ -191,6 +195,8 @@ function createHarness({
     let serverNextSegment = initialEnrollmentNextSegment || 1;
     let remainingInconsistentReferences = inconsistentReference ? 1 : 0;
     let statusRequestCount = 0;
+    let pageConfigRequestCount = 0;
+    let pendingSegmentInProgress = segmentInProgressOnce;
     const mediaConstraintCalls = [];
     let timerId = 0;
     const statusTimeouts = new Map();
@@ -217,10 +223,22 @@ function createHarness({
 
     async function defaultRoute(call) {
         if (call.url === '/api/config/page_config') {
+            pageConfigRequestCount += 1;
+            const gate = pageConfigGates[pageConfigRequestCount];
+            if (gate) {
+                await new Promise((resolve, reject) => {
+                    const signal = call.options.signal;
+                    const onAbort = () => reject(new Error('aborted'));
+                    if (signal?.aborted) return onAbort();
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                    gate.promise.then(resolve, reject);
+                });
+            }
             return jsonResponse({ autostart_csrf_token: 'csrf-token' });
         }
         if (call.url === `${API_ROOT}/status`) {
             statusRequestCount += 1;
+            if (initialStatusError && statusRequestCount === 1) throw new Error('status_unavailable');
             if (statusGate && statusRequestCount === 1) return statusGate.promise;
             if (focusStatusGate && statusRequestCount === 2) return focusStatusGate.promise;
             if (statusGates[statusRequestCount]) return statusGates[statusRequestCount].promise;
@@ -259,6 +277,11 @@ function createHarness({
                 });
             }
             if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: profileStatus });
+            if (pendingSegmentInProgress && call.url.endsWith('/segment')) {
+                if (pendingSegmentInProgress === 'accepted') serverNextSegment = Number(segment) + 1;
+                pendingSegmentInProgress = null;
+                return jsonResponse({ error_code: 'segment_in_progress' }, { ok: false, status: 409 });
+            }
             if (segment === '3' && remainingInconsistentReferences > 0) {
                 remainingInconsistentReferences -= 1;
                 serverNextSegment = 1;
@@ -488,7 +511,7 @@ function createHarness({
                 }
             } else if (delay === 400) {
                 // Successful flush acknowledgement clears this watchdog.
-            } else if (delay === 1000) {
+            } else if (delay === 1000 || delay === 5000) {
                 // Both status and prompt-paint watchdogs are driven explicitly.
                 statusTimeouts.set(timerId, callback);
             } else if (delay === 0) {
@@ -606,6 +629,9 @@ function createHarness({
             serverNextSegment = 1;
             enrollmentId = null;
             enrollmentLeaseTimeoutCallback?.();
+        },
+        advanceServerSegment() {
+            serverNextSegment += 1;
         },
         fireEnrollmentLeaseTimer() {
             enrollmentLeaseTimeoutCallback?.();
@@ -862,6 +888,67 @@ test('a segment still being checked elsewhere stays in the retry flow', async ()
     assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`), false);
     await harness.emit('voice-identity-cancel');
     await enrolling;
+});
+
+test('a segment accepted elsewhere during the in-progress wait is adopted instead of re-recorded', async () => {
+    const harness = createHarness({ segmentInProgressOnce: 'pending', autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '当前录音仍在检查，请稍后继续。');
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+
+    harness.advanceServerSegment();
+    await harness.emit('voice-identity-next');
+    await flush(8);
+    const uploads = () => harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(uploads().length, 1);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+
+    await harness.emit('voice-identity-next');
+    await flush(8);
+    assert.equal(uploads().length, 2);
+    assert.equal(uploads()[1].options.headers.get('x-voice-identity-segment'), '2');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('an in-progress response adopts progress the service already accepted', async () => {
+    const harness = createHarness({ segmentInProgressOnce: 'accepted', autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    await harness.emit('voice-identity-next');
+    await flush(8);
+
+    const uploads = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(uploads.length, 2);
+    assert.equal(uploads[1].options.headers.get('x-voice-identity-segment'), '2');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('a stalled retry connection releases the page and keeps Retry available', async () => {
+    const stalledPageConfig = deferred();
+    const harness = createHarness({ initialStatusError: true, pageConfigGates: { 2: stalledPageConfig } });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, false);
+
+    const retrying = harness.emit('voice-identity-retry');
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, true);
+    harness.fireStatusTimeouts();
+    await retrying;
+
+    const pageConfig = harness.fetchCalls.filter(call => call.url === '/api/config/page_config').at(-1);
+    assert.equal(pageConfig.options.signal.aborted, true);
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-retry').disabled, false);
+    assert.notEqual(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('later segment prompt paints before recording starts', async () => {

@@ -24,6 +24,7 @@
     const WINDOW_CLOSE_START_WAIT_MS = 500;
     const CANCEL_STATUS_TIMEOUT_MS = 1000;
     const FINAL_STATUS_TIMEOUT_MS = 1000;
+    const RETRY_CONNECTION_TIMEOUT_MS = 5000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -148,10 +149,11 @@
         elements.filter = document.getElementById('voice-identity-filter');
     }
 
-    async function loadCsrfToken() {
+    async function loadCsrfToken(signal) {
         const response = await fetch('/api/config/page_config', {
             cache: 'no-store',
-            credentials: 'same-origin'
+            credentials: 'same-origin',
+            signal
         });
         if (!response.ok) throw new Error('page_config_unavailable');
         const payload = await response.json();
@@ -1184,12 +1186,28 @@
             segmentLoop: while (segment <= ENROLLMENT_SEGMENT_COUNT) {
                 state.segmentIndex = segment;
                 let segmentAccepted = false;
+                // Set after segment_in_progress: another submission of this
+                // segment may have been accepted while the user waited, and the
+                // service answers an already-accepted index with plain success
+                // without using the new audio, so adopt its progress first.
+                let recheckServerProgress = false;
                 while (!segmentAccepted) {
                     const recordingDurationMs = segment === ENROLLMENT_SEGMENT_COUNT
                         ? VERIFICATION_RECORDING_MS : REFERENCE_RECORDING_MS;
-                    if (segment > 1) {
+                    if (segment > 1 || recheckServerProgress) {
                         const refreshed = await reconcileStatus();
                         if (!refreshed && !state.enrollmentId) throw new Error('status_unavailable');
+                        if (isStale()) return;
+                        if (recheckServerProgress && refreshed && state.enrollmentId
+                            && state.nextSegmentIndex > segment) {
+                            recheckServerProgress = false;
+                            segment = state.nextSegmentIndex - 1;
+                            state.segmentIndex = segment;
+                            setMessage('');
+                            segmentAccepted = true;
+                            continue;
+                        }
+                        recheckServerProgress = false;
                     }
                     if (isStale()) return;
                     if (!state.enrollmentId || (
@@ -1296,7 +1314,10 @@
                         let canonical = error && error.payload && typeof error.payload === 'object'
                             ? error.payload : null;
                         if (canonical && canonical.enrollment) applyStatus(canonical);
-                        if (!retryable && (!canonical || !canonical.enrollment)) canonical = await reconcileStatus();
+                        const segmentInProgress = error && error.message === 'segment_in_progress';
+                        if ((!retryable || segmentInProgress) && (!canonical || !canonical.enrollment)) {
+                            canonical = await reconcileStatus();
+                        }
                         if (canonical && state.enrollmentId) {
                             if (!retryable) preserveActiveSession = true;
                             const canonicalNext = Number(firstScalar(
@@ -1329,6 +1350,7 @@
                         render();
                         const proceed = await waitForSegmentAdvance();
                         if (!proceed || isStale()) return;
+                        recheckServerProgress = segmentInProgress;
                     }
                 }
                 state.saving = false;
@@ -1622,9 +1644,27 @@
         state.initializationError = false;
         setMessage('');
         render();
+        // Both requests are bounded: this handler holds busy, so a stalled
+        // request would otherwise hide Retry and lock every control.
+        const pageConfigController = typeof AbortController === 'function'
+            ? new AbortController() : null;
+        let pageConfigTimeoutId = null;
+        const pageConfigTimeout = new Promise(function (resolve, reject) {
+            pageConfigTimeoutId = window.setTimeout(function () {
+                if (pageConfigController) pageConfigController.abort();
+                reject(new Error('page_config_unavailable'));
+            }, RETRY_CONNECTION_TIMEOUT_MS);
+        });
         try {
-            await loadCsrfToken();
-            const status = await reconcileStatus();
+            try {
+                await Promise.race([
+                    loadCsrfToken(pageConfigController ? pageConfigController.signal : undefined),
+                    pageConfigTimeout
+                ]);
+            } finally {
+                window.clearTimeout(pageConfigTimeoutId);
+            }
+            const status = await reconcileStatus({ timeoutMs: RETRY_CONNECTION_TIMEOUT_MS });
             if (!status) throw new Error('status_unavailable');
             state.initialized = true;
             applyStatus(status);
