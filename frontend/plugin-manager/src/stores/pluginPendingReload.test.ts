@@ -162,6 +162,24 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(false)
   })
 
+  it('reports a bulk reload as done even when the status refresh times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const result = { success: true, reloaded: ['demo'], failed: [], skipped: [], message: '' }
+      vi.mocked(reloadAllPlugins).mockResolvedValue(result)
+      // The full status request never answers, so the store's own timeout rejects it.
+      vi.mocked(getPluginStatus).mockReturnValue(new Promise(() => {}) as never)
+      const store = usePluginStore()
+
+      const reloading = store.reloadAll()
+      await vi.advanceTimersByTimeAsync(20_000)
+
+      await expect(reloading).resolves.toEqual(result)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps a flag that a profile write claimed during a bulk reload', async () => {
     setPendingReload('demo', true)
     vi.mocked(getPluginSummaries).mockResolvedValue({

@@ -383,9 +383,11 @@ export const usePluginStore = defineStore('plugin', () => {
       // flag to clear anyway.
       if (revision !== undefined) setPendingReload(pluginId, false, revision)
     }
+    // The reload already happened; a follow-up refresh that fails or times out must not
+    // turn its result into a failure for the caller.
     if (options.refresh !== false) {
-      await fetchPluginStatus()
       try {
+        await fetchPluginStatus()
         await refreshLoadedPluginData()
       } catch (err) {
         console.warn('Failed to refresh plugin data after reloading all plugins:', err)
