@@ -7,7 +7,13 @@ import ConfigValueEditor from './ConfigValueEditor.vue'
 import type { ConfigEditorSchema } from '@/types/configSchema'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ mergeLocaleMessage: vi.fn(), locale: ref('en-US'), t: (key: string) => key }),
+  useI18n: () => ({
+    mergeLocaleMessage: vi.fn(),
+    te: () => true,
+    getLocaleMessage: () => ({}),
+    locale: ref('en-US'),
+    t: (key: string) => key,
+  }),
 }))
 
 const mounted: Array<{ unmount: () => void; host: HTMLElement }> = []

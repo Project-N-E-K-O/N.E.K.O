@@ -12,7 +12,13 @@ import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ mergeLocaleMessage: vi.fn(), locale: ref('en-US'), t: (key: string) => key }),
+  useI18n: () => ({
+    mergeLocaleMessage: vi.fn(),
+    te: () => true,
+    getLocaleMessage: () => ({}),
+    locale: ref('en-US'),
+    t: (key: string) => key,
+  }),
 }))
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
