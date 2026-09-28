@@ -39,7 +39,8 @@ from utils.frontend_utils import (
     strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
     tts_chunk_ends_in_emoji,
-    tts_chunk_leading_name_hash,
+    tts_chunk_trailing_name_hash,
+    tts_first_unmuted_char,
     tts_chunk_trailing_minus,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
@@ -473,32 +474,23 @@ class TtsRuntimeMixin:
         # 下一块以数字开头时再补回去。
         pending_minus = getattr(self, "_tts_pending_minus", "")
         self._tts_pending_minus = tts_chunk_trailing_minus(text, last)
-        # C# 被切成「C」「#」时，这一块看不到前面的字母。只有「#」的一块要等
-        # 下一块再定（「C」「#」「 dev」保留，「a」「#」「b」照常换空格）。
+        # C# 可能被切开（「C」「#」「 dev」、「a#」「%」「b」）：块尾的「#」看不到
+        # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
-        self._tts_pending_name_hash = ""
-        leading_name_hash = tts_chunk_leading_name_hash(text, last)
-        if leading_name_hash and len(text) == 1:
-            self._tts_pending_name_hash = leading_name_hash
-            self._tts_symbol_gap_pending = is_tts_word_char(last)
-            return ""
-        if leading_name_hash:
-            text = text[1:]
-        cleaned = strip_tts_muted_symbols(text, leading_name_hash or last)
-        if leading_name_hash:
-            cleaned = leading_name_hash + cleaned
-        if pending_name_hash and (not cleaned or not cleaned.strip()):
-            # 暂存的 # 后面跟的整块都是会被删的符号：它确实是名字的一部分，
-            # 这就放出，不能随这一块一起被丢掉。
-            self._tts_symbol_gap_pending = False
-            self._tts_last_spoken_char = pending_name_hash
-            return pending_name_hash
+        held_name_hash = tts_chunk_trailing_name_hash(text, last)
+        cleaned = strip_tts_muted_symbols(text, last)
+        if held_name_hash and cleaned.endswith(held_name_hash):
+            cleaned = cleaned[: -len(held_name_hash)]
         if not cleaned or not cleaned.strip():
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
+            if held_name_hash:
+                self._tts_pending_name_hash = held_name_hash
             if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
             return ""
-        if pending_name_hash and not (text[:1].isascii() and text[:1].isalnum()):
+        self._tts_pending_name_hash = held_name_hash
+        next_char = tts_first_unmuted_char(text)
+        if pending_name_hash and not (next_char.isascii() and next_char.isalnum()):
             cleaned = pending_name_hash + cleaned
         elif pending_minus and cleaned[0].isdigit():
             cleaned = pending_minus + cleaned
@@ -508,7 +500,10 @@ class TtsRuntimeMixin:
             and is_tts_word_char(cleaned[0])
         ):
             cleaned = " " + cleaned
-        self._tts_symbol_gap_pending = False
+        # 块尾暂存了「#」：这里原本有个分隔，下一块以字母数字开头时补空格。
+        self._tts_symbol_gap_pending = bool(held_name_hash) and is_tts_word_char(
+            cleaned[-1]
+        )
         self._tts_last_spoken_char = cleaned[-1]
         return cleaned
 

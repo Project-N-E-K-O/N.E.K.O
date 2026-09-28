@@ -416,6 +416,8 @@ def test_strip_tts_muted_symbols(text, expected):
         ("3㎏", "3㎏"),
         # C#、F# 这类名字保留「#」；其它位置的「#」照常删
         ("C++ 和 C#", "C++ 和 C#"),
+        ("C#\U0001f600 dev", "C# dev"),
+        ("a#%b", "a b"),
         ("F#。", "F#。"),
         ("第#1名", "第1名"),
         ("a#b", "a b"),
@@ -515,8 +517,14 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         # ... but between two letters it is still a separator.
         (("a", "#", "b"), [("s1", "a"), ("s1", " b")]),
         (("标签", "#", "热门"), [("s1", "标签"), ("s1", "热门")]),
-        # The chunk after the held "#" is symbols only: the "#" is still said.
-        (("C", "#", "\U0001f600"), [("s1", "C"), ("s1", "#")]),
+        # Symbol-only chunks after a held "#" do not settle it; the next chunk
+        # with content does, as the unsplit text would.
+        (("C", "#", "\U0001f600", " dev"), [("s1", "C"), ("s1", "# dev")]),
+        (("a", "#", "%", "b"), [("s1", "a"), ("s1", " b")]),
+        (("a", "#", "%b"), [("s1", "a"), ("s1", " b")]),
+        (("a#", "%", "b"), [("s1", "a"), ("s1", " b")]),
+        (("a#", "b"), [("s1", "a"), ("s1", " b")]),
+        (("C#", " dev"), [("s1", "C"), ("s1", "# dev")]),
     ],
 )
 def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):
@@ -582,7 +590,7 @@ def test_held_name_hash_is_released_at_turn_end():
     mgr._tts_done_queued_for_turn = False
     mgr._tts_done_pending_until_ready = False
     mgr._cancel_tts_soft_flush = lambda: None
-    for chunk in ("C", "#"):
+    for chunk in ("C", "#", "\U0001f600"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert mgr._request_tts_done_locked() == "queued"
     assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "#"), (None, None)]

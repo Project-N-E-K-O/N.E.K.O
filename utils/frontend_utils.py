@@ -161,18 +161,29 @@ def _is_name_hash(symbol: str, prev_char: str, next_char: str) -> bool:
     )
 
 
-def tts_chunk_leading_name_hash(text: str, before: str = "") -> str:
-    """The "#" a streamed chunk starts with that ends a name split off before it.
+def tts_chunk_trailing_name_hash(text: str, before: str = "") -> str:
+    """The "#" a streamed chunk ends on that may belong to a name like C#.
 
-    ``before`` is the last character spoken before this chunk ("C" + "# dev").
-    The filter itself only sees this chunk, where the "#" has no letter before
-    it. For a chunk that is nothing but the sign, what follows is not known
-    yet, so the caller decides once the next chunk arrives.
+    That is a run of removable symbols reaching the end of the chunk, starting
+    with "#" right after an ASCII letter (``before`` stands in for the letter
+    when the run starts the chunk: "C" + "#"). Whether it is a name depends on
+    what follows, which only the next chunk shows ("C#" + " dev" keeps it,
+    "a#" + "b" does not), so the caller holds it until then.
     """
-    if not text or text[0] not in _TTS_HASH_SIGNS:
+    run = None
+    for run in _TTS_MUTED_SYMBOL_RE.finditer(text or ""):
+        pass
+    if run is None or run.end() != len(text) or run.group(0)[0] not in _TTS_HASH_SIGNS:
         return ""
-    next_char = text[1] if len(text) > 1 else ""
-    return text[0] if _is_name_hash(text[0], before, next_char) else ""
+    prev_char = text[run.start() - 1] if run.start() > 0 else before
+    return run.group(0)[0] if prev_char.isascii() and prev_char.isalpha() else ""
+
+
+def tts_first_unmuted_char(text: str) -> str:
+    """The first character of ``text`` that the symbol filter keeps, or ``""``."""
+    run = _TTS_MUTED_SYMBOL_RE.match(text or "")
+    index = run.end() if run is not None else 0
+    return text[index:index + 1] if text else ""
 
 
 def _muted_symbol_replacement(match, before: str = "") -> str:
@@ -190,9 +201,9 @@ def _muted_symbol_replacement(match, before: str = "") -> str:
     if len(symbol) > 1 and _is_minus_sign(symbol[-1], prev_char, next_char):
         # 「🌡️-5°C」：负号和前面的 emoji 连成了一段，emoji 删掉，负号留下。
         return symbol[-1]
-    if _is_name_hash(symbol, prev_char, next_char):
-        # C#、F# 这类名字：删掉「#」名字就变了。
-        return symbol
+    if symbol[0] in _TTS_HASH_SIGNS and _is_name_hash(symbol[0], prev_char, next_char):
+        # C#、F# 这类名字：删掉「#」名字就变了（后面紧跟的 emoji 等照删）。
+        return symbol[0]
     prev_ok = is_tts_word_char(prev_char) if prev_char else True
     next_ok = is_tts_word_char(next_char) if next_char else True
     if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
