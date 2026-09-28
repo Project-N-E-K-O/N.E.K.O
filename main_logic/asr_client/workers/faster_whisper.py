@@ -37,6 +37,7 @@ which honors ``HF_ENDPOINT`` / ``HF_HOME``; this module never pins a mirror.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import importlib
 import logging
@@ -289,6 +290,54 @@ class _WhisperModelPool:
         self._state_lock = threading.Lock()
         self._load_locks: dict[_ModelSpec, threading.Lock] = {}
         self._entries: dict[_ModelSpec, _PoolEntry] = {}
+        # One in-flight load per spec, run on the pool's own single thread:
+        # sessions that start and end while a model downloads share that one
+        # load instead of each parking a thread of the default executor.
+        self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
+        self._loader_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+    def try_lease(self, spec: _ModelSpec) -> _TranscribeModel | None:
+        """Lease an already loaded model without blocking, or return None."""
+        with self._state_lock:
+            entry = self._entries.get(spec)
+            if entry is None or entry.model is None:
+                return None
+            entry.leases += 1
+            if entry.expiry is not None:
+                entry.expiry.cancel()
+                entry.expiry = None
+            return entry.model
+
+    def ensure_loading(
+        self, spec: _ModelSpec, loader: ModelLoader
+    ) -> concurrent.futures.Future[None]:
+        """Start (or join) the load of ``spec``; the future carries no lease."""
+        with self._state_lock:
+            future = self._inflight.get(spec)
+            if future is not None:
+                return future
+            if self._loader_executor is None:
+                self._loader_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="faster-whisper-load",
+                )
+            future = self._loader_executor.submit(self._load_unleased, spec, loader)
+            self._inflight[spec] = future
+        future.add_done_callback(functools.partial(self._forget_inflight, spec))
+        return future
+
+    def _forget_inflight(
+        self, spec: _ModelSpec, future: concurrent.futures.Future[None]
+    ) -> None:
+        with self._state_lock:
+            if self._inflight.get(spec) is future:
+                del self._inflight[spec]
+
+    def _load_unleased(self, spec: _ModelSpec, loader: ModelLoader) -> None:
+        # Loaded with no lease and an idle timer running: if every session
+        # that wanted it has gone, the model is still reclaimed.
+        self.acquire(spec, loader)
+        self.release(spec)
 
     def acquire(self, spec: _ModelSpec, loader: ModelLoader) -> _TranscribeModel:
         with self._state_lock:
@@ -457,16 +506,6 @@ def _decodes_in_flight(pending: dict[asyncio.Task[Any], Any]) -> int:
     return sum(1 for task in pending if not task.done())
 
 
-def _release_abandoned_lease(
-    pool: _WhisperModelPool,
-    spec: _ModelSpec,
-    future: asyncio.Future[Any],
-) -> None:
-    if future.cancelled() or future.exception() is not None:
-        return
-    pool.release(spec)
-
-
 async def faster_whisper_asr_worker(
     request_queue: asyncio.Queue[_AsrWorkerRequest],
     response_queue: asyncio.Queue[_AsrWorkerEvent],
@@ -537,20 +576,20 @@ async def faster_whisper_asr_worker(
             pending.pop(task, None)
 
     async def acquire_model() -> _TranscribeModel:
-        loop = asyncio.get_running_loop()
         # Tell the runtime that model preparation (possibly a first download)
         # is in progress, so its per-utterance final watchdog does not count it.
         begin_provider_warmup(request_queue)
-        future = loop.run_in_executor(None, pool.acquire, spec, loader)
         try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            # The thread cannot be interrupted. If it still produces a model,
-            # hand its lease back so the idle timer can reclaim it.
-            future.add_done_callback(
-                functools.partial(_release_abandoned_lease, pool, spec)
-            )
-            raise
+            while True:
+                model = pool.try_lease(spec)
+                if model is not None:
+                    return model
+                # Shared per spec; cancelling this session only stops waiting.
+                # No lease is taken until the load is done, so there is none
+                # to hand back when the session ends mid-download.
+                await asyncio.shield(
+                    asyncio.wrap_future(pool.ensure_loading(spec, loader))
+                )
         finally:
             complete_provider_warmup(request_queue)
 

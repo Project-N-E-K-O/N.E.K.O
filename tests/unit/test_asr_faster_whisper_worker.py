@@ -884,3 +884,52 @@ async def test_shutdown_during_load_returns_the_abandoned_lease(pool) -> None:
     await asyncio.sleep(0.05)
     assert pool.loaded_count() == 1
     assert pool.lease_count(spec) == 0
+
+
+async def test_session_churn_during_a_download_shares_one_load(pool) -> None:
+    # Sessions that start and end while the model downloads must share one
+    # load on the pool's own thread, not each park a default-executor thread.
+    gate = threading.Event()
+    model = _FakeModel()
+    load_threads: list[str] = []
+
+    def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
+        load_threads.append(threading.current_thread().name)
+        gate.wait(5)
+        return model
+
+    load_jobs: list[faster_whisper._ModelSpec] = []
+    original_load = pool._load_unleased
+
+    def counting_load(spec_: faster_whisper._ModelSpec, loader_: Any) -> None:
+        load_jobs.append(spec_)
+        original_load(spec_, loader_)
+
+    pool._load_unleased = counting_load
+    spec = faster_whisper._model_spec_from_env()
+    try:
+        for _ in range(5):
+            task, requests, responses = _start_worker(AsrSessionConfig(), slow_loader, pool)
+            await _next_event(responses, "ready")
+            await _shutdown(task, requests, responses)
+    finally:
+        gate.set()
+    deadline = time.monotonic() + 2
+    while pool.loaded_count() == 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+
+    await asyncio.sleep(0.05)
+    assert len(load_jobs) == 1  # one shared job, not one queued per session
+    assert len(load_threads) == 1
+    assert load_threads[0].startswith("faster-whisper-load")
+    assert pool.loaded_count() == 1
+    assert pool.lease_count(spec) == 0
+
+    # The next session leases the already loaded model without loading again.
+    task, requests, responses = _start_worker(AsrSessionConfig(), slow_loader, pool)
+    await _next_event(responses, "ready")
+    await _send_utterance(requests)
+    await _next_event(responses, "final")
+    assert len(load_threads) == 1
+    assert pool.lease_count(spec) == 1
+    await _shutdown(task, requests, responses)
