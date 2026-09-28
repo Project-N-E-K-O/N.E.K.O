@@ -637,7 +637,7 @@ async def faster_whisper_asr_worker(
     async def acquire_model() -> _TranscribeModel:
         # Tell the runtime that model preparation (possibly a first download)
         # is in progress, so its per-utterance final watchdog does not count it.
-        begin_provider_warmup(request_queue)
+        warmup_token = begin_provider_warmup(request_queue)
         try:
             while True:
                 model = pool.try_lease(spec)
@@ -650,7 +650,7 @@ async def faster_whisper_asr_worker(
                     asyncio.wrap_future(pool.ensure_loading(spec, loader))
                 )
         finally:
-            complete_provider_warmup(request_queue)
+            complete_provider_warmup(request_queue, warmup_token)
 
     async def transcribe(
         key: _UtteranceKey,
@@ -675,11 +675,18 @@ async def faster_whisper_asr_worker(
         # only flips one attribute on it.
         evidence = delivery_evidence(request_queue)
         skip = threading.Event()
+        # Waiting in the process-wide decode queue (behind another session's
+        # uninterruptible decode) is not recognition time either: publish it
+        # like model preparation so the runtime's final watchdog holds off
+        # until the job reaches the decoder, within the warm-up budget. The
+        # token is this job's own, so a cancelled older job leaving the queue
+        # cannot end a newer job's wait.
+        queue_wait_token = begin_provider_warmup(request_queue)
 
         def decode() -> str | None:
             # Reaching the decoder ends this job's wait behind other sessions'
             # decodes; the per-utterance final timeout counts from here.
-            complete_provider_warmup(request_queue)
+            complete_provider_warmup(request_queue, queue_wait_token)
             try:
                 if skip.is_set():
                     # Cancelled while queued: drop the PCM without decoding.
@@ -689,17 +696,12 @@ async def faster_whisper_asr_worker(
             finally:
                 pool.release_decode()
 
-        # Waiting in the process-wide decode queue (behind another session's
-        # uninterruptible decode) is not recognition time either: publish it
-        # like model preparation so the runtime's final watchdog holds off
-        # until the job reaches the decoder, within the warm-up budget.
-        begin_provider_warmup(request_queue)
         try:
             decode_future = asyncio.get_running_loop().run_in_executor(
                 pool.decoder_executor(), decode
             )
         except BaseException:
-            complete_provider_warmup(request_queue)
+            complete_provider_warmup(request_queue, queue_wait_token)
             raise
         handoff.submitted = True
         decode_future.add_done_callback(_consume_decode_outcome)

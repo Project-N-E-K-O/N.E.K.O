@@ -1202,3 +1202,24 @@ async def test_waiting_behind_another_sessions_decode_counts_as_warmup(pool) -> 
     await _next_event(first[2], "final")
     for task, requests, responses in (first, second):
         await _shutdown(task, requests, responses)
+
+
+def test_warmup_ends_only_when_every_wait_has_ended() -> None:
+    # A cancelled older job leaving the decode queue must not clear the pending
+    # state of a newer job still waiting on the same session queue.
+    from main_logic.asr_client.warmup import (
+        begin_provider_warmup,
+        complete_provider_warmup,
+        provider_warmup_state,
+    )
+
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    older = begin_provider_warmup(queue)
+    newer = begin_provider_warmup(queue)
+    complete_provider_warmup(queue, older)
+    state = provider_warmup_state(queue)
+    assert state.pending is True and state.completed_at is None
+    complete_provider_warmup(queue, older)  # ending the same wait twice is harmless
+    assert state.pending is True
+    complete_provider_warmup(queue, newer)
+    assert state.pending is False and state.completed_at is not None
