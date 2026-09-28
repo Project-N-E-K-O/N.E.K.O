@@ -1334,6 +1334,7 @@
                         const segmentInProgress = error && error.message === 'segment_in_progress';
                         if ((!retryable || segmentInProgress) && (!canonical || !canonical.enrollment)) {
                             canonical = await reconcileStatus();
+                            if (isStale()) return;
                         }
                         if (canonical && state.enrollmentId) {
                             if (!retryable) preserveActiveSession = true;
@@ -1414,7 +1415,7 @@
             } else if (preserveActiveSession && state.enrollmentId) {
                 setMessage(enrollmentErrorMessage(error), true);
             } else {
-                try { await cancelSession(); } catch (_) {}
+                try { await cancelSession({ timeoutMs: CANCEL_REQUEST_TIMEOUT_MS }); } catch (_) {}
                 const microphoneError = error && (error.name === 'NotAllowedError' || error.name === 'NotFoundError' || error.name === 'NotReadableError' || error.message === 'audio_worklet_unavailable' || error.message === 'media_devices_unavailable');
                 if (!isStale()) setMessage(microphoneError ? translate('voiceIdentity.microphoneDenied', '无法使用麦克风，请检查权限和设备。') : enrollmentErrorMessage(error), true);
             }
@@ -1630,7 +1631,13 @@
                         state.busy = true;
                         render();
                         try {
-                            await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+                            const recovered = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+                            if (recovered && restoreEpoch === state.statusEpoch) {
+                                // Recovery succeeded; drop the timeout alert.
+                                state.initialized = true;
+                                state.initializationError = false;
+                                setMessage('');
+                            }
                         } finally {
                             if (restoreEpoch === state.statusEpoch) {
                                 state.busy = false;

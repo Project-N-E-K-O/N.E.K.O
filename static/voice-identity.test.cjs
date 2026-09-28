@@ -242,7 +242,16 @@ function createHarness({
             if (initialStatusError && statusRequestCount === 1) throw new Error('status_unavailable');
             if (statusGate && statusRequestCount === 1) return statusGate.promise;
             if (focusStatusGate && statusRequestCount === 2) return focusStatusGate.promise;
-            if (statusGates[statusRequestCount]) return statusGates[statusRequestCount].promise;
+            if (statusGates[statusRequestCount]) {
+                const gate = statusGates[statusRequestCount];
+                return new Promise((resolve, reject) => {
+                    const signal = call.options.signal;
+                    const onAbort = () => reject(new Error('aborted'));
+                    if (signal?.aborted) return onAbort();
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                    gate.promise.then(resolve, reject);
+                });
+            }
             if (statusFailures > 0 && statusRequestCount > 1) {
                 statusFailures -= 1;
                 throw new Error('status_transient');
@@ -945,6 +954,65 @@ test('a stalled Cancel releases the page and the next start replaces the unconfi
     assert.equal(harness.serverEnrollmentId, 'enrollment-2');
     await harness.emit('voice-identity-cancel');
     await restarting;
+});
+
+test('error cleanup after a futile lease bounds its cancellation request', async () => {
+    const explicitCancelGate = deferred();
+    const harness = createHarness({ remainingSeconds: 9, explicitCancelGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(12);
+    assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`));
+    harness.fireStatusTimeouts();
+    await enrolling;
+    await flush(4);
+
+    const cancel = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/cancel`);
+    assert.equal(cancel.options.signal.aborted, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough time remains for the next recording.');
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
+test('cancelling during the in-progress reconciliation does not install a new segment wait', async () => {
+    const inProgressStatus = deferred();
+    const harness = createHarness({
+        segmentInProgressOnce: 'pending',
+        autoAdvance: false,
+        statusGates: { 2: inProgressStatus },
+    });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length, 2);
+    harness.emit('voice-identity-cancel');
+    await flush(8);
+
+    assert.equal(harness.elements.get('voice-identity-next').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.serverEnrollmentId, null);
+    await enrolling;
+});
+
+test('a late cancellation recovery after a restore timeout clears the timeout alert', async () => {
+    const cancelGate = deferred();
+    const harness = createHarness({ initialEnrollmentNextSegment: 1, cancelGate, manualAudio: true });
+    await harness.initialize();
+
+    const closing = harness.beforeClose();
+    await flush(3);
+    const restoring = harness.dispatch('pageshow', { persisted: true });
+    await flush(4);
+    harness.fireStatusTimeouts();
+    await restoring;
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
+
+    cancelGate.resolve();
+    await closing;
+    await flush(6);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
