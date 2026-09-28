@@ -314,6 +314,151 @@ def test_glm_tts_registry_meta_matches_cogtts_runtime_behavior():
 
 
 @pytest.mark.unit
+def test_glm_clone_resolver_uses_glm_tts_model():
+    """官方 /audio/speech 文档 model 枚举仅 glm-tts：克隆音色合成必须传 glm-tts，
+    而原生 CogTTS 路径保持默认 cogtts 不变。"""
+    import inspect
+
+    from utils.glm_tts import GLM_TTS_SPEECH_MODEL
+    from utils.tts.provider_registry import DispatchContext
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            return "glm-key"
+
+    ctx = DispatchContext(
+        core_config={},
+        cm=_CM(),
+        voice_id="voice_clone_x",
+        has_custom_voice=True,
+        voice_meta_loader=lambda: {"provider": "glm_tts"},
+    )
+    worker, _, _ = tts_client._glm_clone_resolve(ctx)
+
+    assert GLM_TTS_SPEECH_MODEL == "glm-tts"
+    assert worker.keywords["model"] == "glm-tts"
+    native_default = inspect.signature(tts_client.cogtts_tts_worker).parameters["model"].default
+    assert native_default == "cogtts"
+
+
+@pytest.mark.unit
+async def test_glm_voice_clone_client_preview_uses_glm_tts_model(monkeypatch):
+    captured = {}
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["body"] = json.loads(await request.aread())
+            return httpx.Response(200, content=b"RIFFwav", headers={"content-type": "audio/wav"})
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = _Transport()
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    audio = await GlmVoiceCloneClient(api_key="glm-key").synthesize_preview("voice_x", "你好")
+
+    assert audio == b"RIFFwav"
+    assert captured["url"] == f"{GLM_TTS_DEFAULT_BASE_URL}/audio/speech"
+    assert captured["body"]["model"] == "glm-tts"
+    assert captured["body"]["voice"] == "voice_x"
+    assert captured["body"]["response_format"] == "wav"
+
+
+def _patch_glm_voice_clone_route(monkeypatch, normalized_bytes, saved):
+    from types import SimpleNamespace
+
+    from main_routers.characters_router import voice_cloning as voice_cloning_router
+
+    class _ConfigManager:
+        async def aget_core_config(self):
+            return {}
+
+        async def aget_model_api_config(self, _model_type, core_config=None):
+            return {}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "glm_tts"
+            return "glm-key-12345678"
+
+        def find_voice_by_audio_md5(self, *_args):
+            return None
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved.update(storage_key=storage_key, voice_id=voice_id, voice_data=voice_data)
+
+    async def fake_read_limited_stream(_file, _limit):
+        return io.BytesIO(b"reference audio")
+
+    def fake_normalize(_buffer, _filename):
+        return io.BytesIO(normalized_bytes), "reference.wav", {
+            "original": {"sample_rate": 16000, "channels": 1},
+            "normalized": {"sample_rate": 16000},
+        }
+
+    monkeypatch.setattr(voice_cloning_router, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(voice_cloning_router, "_read_limited_stream", fake_read_limited_stream)
+    monkeypatch.setattr(voice_cloning_router, "normalize_voice_clone_api_audio", fake_normalize)
+    monkeypatch.setattr(voice_cloning_router, "_is_local_voice_clone_tts_config", lambda *_args: False)
+    return voice_cloning_router, SimpleNamespace(filename="reference.wav")
+
+
+@pytest.mark.unit
+async def test_glm_voice_clone_route_registers_and_saves(monkeypatch):
+    saved = {}
+    router, upload = _patch_glm_voice_clone_route(monkeypatch, b"normalized wav", saved)
+    calls = {}
+
+    async def fake_clone_voice(self, audio_buffer, *, voice_name, filename, **_kwargs):
+        calls.update(base_url=self.base_url, voice_name=voice_name, filename=filename,
+                     data=audio_buffer.getvalue())
+        return "voice_clone_20260928_001"
+
+    monkeypatch.setattr(router.GlmVoiceCloneClient, "clone_voice", fake_clone_voice)
+
+    response = await router.voice_clone(
+        file=upload, prefix="Miko", ref_language="ch", provider="glm_tts", ref_text="",
+    )
+
+    assert response.status_code == 200
+    assert calls["base_url"] == GLM_TTS_DEFAULT_BASE_URL
+    assert calls["voice_name"].startswith("neko_miko_ch_")
+    assert calls["data"] == b"normalized wav"
+    assert saved["storage_key"] == f"{GLM_VOICE_STORAGE_KEY}12345678"
+    assert saved["voice_id"] == "voice_clone_20260928_001"
+    assert saved["voice_data"]["provider"] == "glm_tts"
+    assert saved["voice_data"]["glm_base_url"] == GLM_TTS_DEFAULT_BASE_URL
+
+
+@pytest.mark.unit
+async def test_glm_voice_clone_route_rejects_oversized_audio_with_413(monkeypatch):
+    from utils.glm_tts import GLM_VOICE_CLONE_MAX_AUDIO_BYTES
+
+    saved = {}
+    router, upload = _patch_glm_voice_clone_route(
+        monkeypatch, b"\0" * (GLM_VOICE_CLONE_MAX_AUDIO_BYTES + 1), saved,
+    )
+
+    async def reject_clone(*_args, **_kwargs):
+        raise AssertionError("oversized audio must not reach the GLM API")
+
+    monkeypatch.setattr(router.GlmVoiceCloneClient, "clone_voice", reject_clone)
+
+    response = await router.voice_clone(
+        file=upload, prefix="Miko", ref_language="ch", provider="glm_tts", ref_text="",
+    )
+
+    assert response.status_code == 413
+    body = json.loads(response.body)
+    assert body["code"] == "GLM_TTS_AUDIO_TOO_LARGE"
+    assert "10.0MB" in body["error"]
+    assert not saved
+
+
+@pytest.mark.unit
 def test_glm_tts_frontend_and_backend_are_wired():
     voice_clone_html = Path("templates/voice_clone.html").read_text(encoding="utf-8")
     voice_clone_js = Path("static/js/voice_clone.js").read_text(encoding="utf-8")

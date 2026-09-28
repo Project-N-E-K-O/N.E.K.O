@@ -25,12 +25,14 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None, model="cogtts"):
     """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output.
 
     base_url is optional (defaults to the official open.bigmodel.cn endpoint); the
     GLM clone resolver passes the glm_base_url persisted at registration time so
-    historical clone entries keep synthesizing against their registration endpoint."""
+    historical clone entries keep synthesizing against their registration endpoint.
+    model defaults to the native "cogtts"; the GLM clone resolver passes "glm-tts",
+    the only model the official /audio/speech docs list for cloned voices."""
     import httpx
 
     if not voice_id:
@@ -53,7 +55,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
 
         async def synthesize(text: str, speech_id: str) -> None:
             payload = {
-                "model": "cogtts",
+                "model": model,
                 "input": text[:1024],  # CogTTS最大支持1024字符
                 "voice": voice_id,
                 "response_format": "pcm",
@@ -228,7 +230,7 @@ def _glm_clone_is_selected(ctx) -> bool:
 def _glm_clone_resolve(ctx):
     from functools import partial
 
-    from utils.glm_tts import GLM_TTS_DEFAULT_BASE_URL
+    from utils.glm_tts import GLM_TTS_DEFAULT_BASE_URL, GLM_TTS_SPEECH_MODEL
 
     from .dummy import dummy_tts_worker
 
@@ -243,5 +245,5 @@ def _glm_clone_resolve(ctx):
     # 走同一条 SSE 流式 + 水印检测路径。voice_meta 里存了注册时的 glm_base_url，
     # 传给 worker 让历史条目继续用注册端点合成（缺失时回退官方默认地址）。
     base_url = str(vm.get("glm_base_url") or "").strip() or GLM_TTS_DEFAULT_BASE_URL
-    worker = partial(cogtts_tts_worker, base_url=base_url)
+    worker = partial(cogtts_tts_worker, base_url=base_url, model=GLM_TTS_SPEECH_MODEL)
     return worker, api_key, "glm_tts"

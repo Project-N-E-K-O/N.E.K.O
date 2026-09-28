@@ -788,9 +788,10 @@ async def voice_clone(
             # voice 参数官方明确支持复刻音色，dispatch 复用 cogtts worker）。
             # 上传接口限制示例音频 ≤10MB：规范化后的 WAV 可能比原文件大（重采样/转
             # PCM/单声道展开），提前预检，超限直接 413，不打远端 API、不消耗配额。
-            if normalized_buffer.getvalue() > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
+            normalized_size = len(normalized_buffer.getvalue())
+            if normalized_size > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
                 return JSONResponse({
-                    'error': f'GLM 示例音频超过 10MB 上限（规范化后 {normalized_buffer.getvalue() // (1024 * 1024)}MB），请裁剪后重试',
+                    'error': f'GLM 示例音频超过 10MB 上限（规范化后 {normalized_size / (1024 * 1024):.1f}MB），请裁剪后重试',
                     'code': 'GLM_TTS_AUDIO_TOO_LARGE',
                     'provider': provider,
                 }, status_code=413)

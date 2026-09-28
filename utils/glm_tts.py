@@ -44,7 +44,9 @@ import uuid
 from typing import Any
 
 GLM_TTS_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
-GLM_TTS_SPEECH_MODEL = "cogtts"  # 与 workers/cogtts.py 现网模型名保持一致
+# 官方 /audio/speech 文档 model 枚举仅 glm-tts；复刻音色的合成与试听都用它。
+# 原生 CogTTS 路径（workers/cogtts.py 默认 model="cogtts"）保持不变。
+GLM_TTS_SPEECH_MODEL = "glm-tts"
 GLM_VOICE_CLONE_MODEL = "glm-tts-clone"
 GLM_VOICE_STORAGE_KEY = "__GLM_TTS__"
 # voice_clone 接口「input」必填：克隆时同步生成一段试听语音。固定一句短中文即可，
