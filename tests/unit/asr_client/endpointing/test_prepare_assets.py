@@ -9,6 +9,7 @@ import pytest
 
 import main_logic.asr_client.endpointing.asset_manifest as asset_manifest
 import scripts.prepare_voice_turn_assets as preparer
+from tests.fake_clock import patch_module_clock
 
 AssetManifestError = asset_manifest.AssetManifestError
 PreparerAssetManifestError = preparer.AssetManifestError
@@ -253,3 +254,143 @@ def test_offline_verification_ignores_the_source_scheme(tmp_path):
 
     paths = prepare_assets(tmp_path, offline=True)
     assert paths[0].read_bytes() == payload
+
+
+_HF_SOURCE = "https://huggingface.co/org/repo/resolve/abc/model.onnx?download=true"
+
+
+@pytest.fixture
+def no_hf_env(monkeypatch):
+    monkeypatch.delenv("HF_ENDPOINTS", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+
+
+def test_hf_source_falls_back_to_the_mirror_by_default(no_hf_env):
+    assert preparer._download_source_candidates(_HF_SOURCE) == (
+        _HF_SOURCE,
+        "https://hf-mirror.com/org/repo/resolve/abc/model.onnx?download=true",
+    )
+
+
+def test_hf_endpoint_env_pins_a_single_mirror(no_hf_env, monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINT", "https://mirror.example/")
+    assert preparer._download_source_candidates(_HF_SOURCE) == (
+        "https://mirror.example/org/repo/resolve/abc/model.onnx?download=true",
+    )
+
+
+def test_hf_endpoints_env_replaces_the_order(no_hf_env, monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINTS", "https://a.example, https://huggingface.co")
+    monkeypatch.setenv("HF_ENDPOINT", "https://ignored.example")
+    assert preparer._download_source_candidates(_HF_SOURCE) == (
+        "https://a.example/org/repo/resolve/abc/model.onnx?download=true",
+        _HF_SOURCE,
+    )
+
+
+def test_non_hf_sources_are_never_rewritten(no_hf_env):
+    github = "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/model.onnx"
+    lookalike = "https://huggingface.co.evil.example/org/repo/model.onnx"
+    assert preparer._download_source_candidates(github) == (github,)
+    assert preparer._download_source_candidates(lookalike) == (lookalike,)
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._chunks = [payload, b""]
+
+    def read(self, _size):
+        return self._chunks.pop(0)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _fake_urlopen(monkeypatch, behaviour):
+    from urllib.error import URLError
+
+    tried = []
+
+    def urlopen(request, timeout):
+        url = request.full_url
+        tried.append(url)
+        outcome = behaviour(url)
+        if isinstance(outcome, bytes):
+            return _FakeResponse(outcome)
+        raise URLError(outcome)
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _s: None)
+    return tried
+
+
+def test_download_moves_to_the_mirror_after_the_origin_fails(tmp_path, monkeypatch, no_hf_env):
+    payload = b"reviewed model"
+    tried = _fake_urlopen(
+        monkeypatch,
+        lambda url: payload if url.startswith("https://hf-mirror.com/") else "timed out",
+    )
+    destination = tmp_path / "model.onnx"
+
+    preparer._download_verified(_HF_SOURCE, destination, hashlib.sha256(payload).hexdigest())
+
+    assert destination.read_bytes() == payload
+    assert [url.split("/")[2] for url in tried] == ["huggingface.co"] * 3 + ["hf-mirror.com"]
+
+
+def test_a_mirror_serving_other_bytes_fails_hard(tmp_path, monkeypatch, no_hf_env):
+    tried = _fake_urlopen(
+        monkeypatch,
+        lambda url: b"tampered" if url.startswith("https://hf-mirror.com/") else "timed out",
+    )
+    destination = tmp_path / "model.onnx"
+
+    with pytest.raises(PreparerAssetManifestError, match="download SHA-256 mismatch"):
+        preparer._download_verified(_HF_SOURCE, destination, "0" * 64)
+    assert not destination.exists()
+    assert not destination.with_suffix(".onnx.part").exists()
+    assert tried[-1].startswith("https://hf-mirror.com/")
+
+
+def test_all_sources_failing_reports_the_last_error(tmp_path, monkeypatch, no_hf_env):
+    tried = _fake_urlopen(monkeypatch, lambda url: "unreachable")
+
+    with pytest.raises(PreparerAssetManifestError, match="cannot download model.onnx"):
+        preparer._download_verified(_HF_SOURCE, tmp_path / "model.onnx", "0" * 64)
+    assert len(tried) == 6
+
+
+def test_truncated_origin_download_moves_to_the_mirror(tmp_path, monkeypatch, no_hf_env):
+    import http.client
+
+    payload = b"reviewed model"
+    tried = []
+
+    class _Truncated:
+        def read(self, _size):
+            raise http.client.IncompleteRead(b"rev", 11)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(request, timeout):
+        tried.append(request.full_url)
+        if request.full_url.startswith("https://hf-mirror.com/"):
+            return _FakeResponse(payload)
+        return _Truncated()
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _s: None)
+    destination = tmp_path / "model.onnx"
+
+    preparer._download_verified(_HF_SOURCE, destination, hashlib.sha256(payload).hexdigest())
+
+    assert destination.read_bytes() == payload
+    assert not destination.with_suffix(".onnx.part").exists()
+    assert [url.split("/")[2] for url in tried] == ["huggingface.co"] * 3 + ["hf-mirror.com"]

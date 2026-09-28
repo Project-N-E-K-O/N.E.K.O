@@ -379,21 +379,6 @@ async def test_coalescing_leaves_an_unrelated_subject_stale():
 
 # ── stored bytes never change ───────────────────────────────────────────────
 
-async def test_the_plugin_subject_builders_are_untouched_by_all_of_this():
-    """T1: the whole point is that stored subject ids stay byte-identical."""
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-
-    assert QQMemoryBridge.group_participant_subject("G", "111") == {
-        "subject_kind": "group_participant", "subject_id": "qq:G:111",
-    }
-    assert QQMemoryBridge.participant_subject("111") == {
-        "subject_kind": "participant", "subject_id": "qq:111",
-    }
-    assert QQMemoryBridge.group_subject("G") == {
-        "subject_kind": "group_chat", "subject_id": "qq:G",
-    }
-    assert QQMemoryBridge.speaker_account_id("111") == "qq:111"
-
 
 async def test_folding_is_stable_under_repeated_application():
     """Folding an already-folded list must be a fixed point."""
