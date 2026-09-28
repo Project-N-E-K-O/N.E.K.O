@@ -35,6 +35,7 @@ from utils.frontend_utils import (
     is_only_punctuation,
     TtsMarkdownStripper,
     TtsBracketStripper,
+    strip_tts_muted_symbols,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -318,6 +319,10 @@ class TtsRuntimeMixin:
         text = self._tts_bracket_stripper.feed(text)
         if not text:
             return
+        # 最后一道：删掉会被念出来的符号（%、#、= …），句读标点保留
+        text = strip_tts_muted_symbols(text)
+        if not text or not text.strip():
+            return
         self.tts_request_queue.put((speech_id, text))
         self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
@@ -434,6 +439,10 @@ class TtsRuntimeMixin:
         if flushed:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
+        if flushed:
+            flushed = strip_tts_muted_symbols(flushed)
+            if not flushed.strip():
+                flushed = ""
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
@@ -633,7 +642,9 @@ class TtsRuntimeMixin:
         markdown_output = markdown.feed(text) + markdown.flush()
         spoken = bracket.feed(markdown_output)
         bracket.flush()
-        return str(spoken or "").strip()
+        # 与实际朗读路径 _enqueue_tts_text_chunk 同一道符号过滤，缓存音频才和
+        # 同一句话真正念出来的一致。
+        return strip_tts_muted_symbols(str(spoken or "")).strip()
 
     def cancel_game_speech_preloads(self) -> None:
         """Cancel active/queued preload batches and wake their isolated workers."""

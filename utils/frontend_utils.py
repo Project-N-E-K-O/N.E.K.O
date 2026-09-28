@@ -52,6 +52,55 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
+# 语音合成会把这些符号念出来（「等于」「井号」「百分号」…），入队前删掉。
+# 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
+# - ``\p{S}``：数学 / 货币 / 修饰 / 其它符号（含大部分 emoji 和装饰符）
+# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号
+# ℃ / ℉ 例外：它们会被读成「摄氏度 / 华氏度」，是有意义的单位，保留。
+_TTS_MUTED_SYMBOL_RE = regex.compile(
+    r"(?:(?![℃℉])["
+    r"\p{S}"
+    r"#＃@＠&＆\*＊\+_＿\-－﹣~～`｀\|｜\\/／＼"
+    r"\^＾%％\$＄"
+    r"<>＜＞«»‹›"
+    r"•●○◆◇★☆※§¶†‡"
+    r"])+"
+)
+
+
+def _is_ascii_alnum(char: str) -> bool:
+    return char.isascii() and char.isalnum()
+
+
+def _muted_symbol_replacement(match) -> str:
+    # 夹在两个 ASCII 字母 / 数字之间的符号换成空格而不是直接删：
+    # 「3~5」「9/28」「well-known」删成「35」「928」「wellknown」会被念成另一个数 / 词。
+    # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是 ASCII 字母数字」处理。
+    text = match.string
+    start, end = match.span()
+    prev_char = text[start - 1] if start > 0 else ""
+    next_char = text[end] if end < len(text) else ""
+    prev_ok = _is_ascii_alnum(prev_char) if prev_char else True
+    next_ok = _is_ascii_alnum(next_char) if next_char else True
+    if prev_ok and next_ok and (_is_ascii_alnum(prev_char) or _is_ascii_alnum(next_char)):
+        return " "
+    return ""
+
+
+def strip_tts_muted_symbols(text: str) -> str:
+    """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
+
+    Letters, digits, whitespace and sentence punctuation survive, as do the
+    temperature units. A symbol between two ASCII letters/digits becomes a space
+    so the neighbours are not read as one number or word. Safe for streaming
+    chunks: the chunk's own leading/trailing whitespace is left alone.
+    """
+    if not text:
+        return text
+    cleaned = _TTS_MUTED_SYMBOL_RE.sub(_muted_symbol_replacement, text)
+    # 删掉符号留下的连续空格压成一个，不动块首块尾原有的空格。
+    return regex.sub(r" {2,}", " ", cleaned)
+
 def estimate_speech_time(text, unit_duration=0.2):
     # Per-class duration coefficients (heuristic, not corpus-calibrated):
     #   - Chinese hanzi: 1.5 units/char (polysyllabic, slower TTS)

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper
+from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper, strip_tts_muted_symbols
 
 
 # ============================================================================
@@ -345,3 +345,83 @@ def test_markdown_chained_with_bracket_image_dropped():
     out += br.feed(md.flush())
     out += br.flush()
     assert out == "前  后"
+
+
+# ---------------------------------------------------------------------------
+# strip_tts_muted_symbols：会被念出来的符号在入队前删掉
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 会被念成「百分号 / 井号 / 等于 …」的符号删掉
+        ("进度100%的人", "进度100的人"),
+        ("标签#热门", "标签热门"),
+        ("邮箱@测试", "邮箱测试"),
+        ("开心＝开心了", "开心开心了"),
+        ("表情😀好", "表情好"),
+        ("温度≈25", "温度25"),
+        # 摄氏度 / 华氏度会被读成单位，保留
+        ("温度≈25℃", "温度25℃"),
+        ("华氏77℉", "华氏77℉"),
+        # 夹在 ASCII 字母数字之间的换成空格，免得连成另一个数 / 词
+        ("3~5天", "3 5天"),
+        ("9/28号", "9 28号"),
+        ("价格￥10$5", "价格10 5"),
+        ("well-known", "well known"),
+        ("A+B*C", "A B C"),
+        # 句读标点、撇号保留
+        ("你好，世界！", "你好，世界！"),
+        ("他说：“好的。”", "他说：“好的。”"),
+        ("Hello, world! Don't.", "Hello, world! Don't."),
+        ("没有符号", "没有符号"),
+        ("", ""),
+    ],
+)
+def test_strip_tts_muted_symbols(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_strip_tts_muted_symbols_at_chunk_edges():
+    # 流式分块的首尾空格属于拼接用，不能吃掉。
+    assert strip_tts_muted_symbols(" 你好=") == " 你好"
+    assert strip_tts_muted_symbols("=世界 ") == "世界 "
+    # 分块正好切在两个数字之间的符号上：留空格，下一块接上时不会连成一个数。
+    assert strip_tts_muted_symbols("3~") + strip_tts_muted_symbols("5天") == "3 5天"
+    assert strip_tts_muted_symbols("%") == ""
+
+
+def _bare_tts_runtime():
+    import queue
+
+    from main_logic.core import LLMSessionManager
+    from utils.frontend_utils import TtsStreamNormalizer
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.tts_request_queue = queue.Queue()
+    mgr._tts_stream_normalizer = TtsStreamNormalizer()
+    mgr._tts_markdown_stripper = TtsMarkdownStripper()
+    mgr._tts_bracket_stripper = TtsBracketStripper()
+    mgr._tts_norm_speech_id = None
+    mgr._tts_normalize_enabled = False
+    mgr._remember_tts_replay_chunk = lambda *_a: None
+    mgr._remember_tts_sent_chunk = lambda *_a: None
+    mgr._remember_pending_ai_voice_echo = lambda *_a: None
+    mgr._arm_tts_soft_flush = lambda *_a: None
+    return mgr
+
+
+def _drain(q):
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    return items
+
+
+def test_enqueue_drops_spoken_symbols_and_symbol_only_chunks():
+    mgr = _bare_tts_runtime()
+    mgr._enqueue_tts_text_chunk("s1", "进度100%，")
+    mgr._enqueue_tts_text_chunk("s1", "#")
+    mgr._enqueue_tts_text_chunk("s1", "温度25℃")
+    assert _drain(mgr.tts_request_queue) == [("s1", "进度100，"), ("s1", "温度25℃")]
