@@ -1432,7 +1432,15 @@ async def test_character_management_and_recent_save_regression():
         async def _noop_any(*args, **kwargs):
             return None
 
-        with patch("utils.config_manager._config_manager", cm):
+        # set_current_catgirl POSTs set_agent_enabled=False to the real tool
+        # server on 127.0.0.1:48915; left unpatched, every run of this test
+        # turns off the cat paw of the N.E.K.O instance running on this machine.
+        # Patched on agent_router so the crud reload below imports the mock.
+        force_disable_agent = AsyncMock(return_value=True)
+        with patch("utils.config_manager._config_manager", cm), patch(
+            "main_routers.agent_router.force_disable_agent_for_character_switch",
+            force_disable_agent,
+        ):
             init_shared_state(
                 role_state={},
                 steamworks=None,
@@ -1497,6 +1505,10 @@ async def test_character_management_and_recent_save_regression():
             )
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
+            assert [call.args[0] for call in force_disable_agent.await_args_list] == [
+                "测试角色",
+                initial_name,
+            ]
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
