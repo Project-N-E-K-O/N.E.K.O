@@ -299,7 +299,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=av"
+          # PyAV wheel 的 .so/.pyd 旁带 Cython 纯 Python 模式 .py 源码（首行 import cython）；
+          # --include-package 会遍历目录把这些 .py 编进去盖掉扩展模块，冻结后 import 失败。
+          # 用 --include-module 走正常 import 解析，优先选扩展模块。
+          NUITKA_OPTS="$NUITKA_OPTS --include-module=av"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"

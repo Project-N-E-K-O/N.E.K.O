@@ -474,7 +474,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=av"
+          # PyAV wheel 的 .so/.pyd 旁带 Cython 纯 Python 模式 .py 源码（首行 import cython）；
+          # --include-package 会遍历目录把这些 .py 编进去盖掉扩展模块，冻结后 import 失败。
+          # 用 --include-module 走正常 import 解析，优先选扩展模块。
+          NUITKA_OPTS="$NUITKA_OPTS --include-module=av"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
@@ -625,7 +628,9 @@ jobs:
           rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           rem 纯数据目录，漏了引导页内容/图片打包后 404。
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=av
+          rem PyAV wheel 的 .pyd 旁带 Cython 纯 Python 模式 .py 源码；--include-package 会把这些 .py
+          rem 编进去盖掉 .pyd，冻结后 import cython 失败。用 --include-module 走正常解析选 .pyd。
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-module=av
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
