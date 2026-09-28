@@ -666,12 +666,17 @@ def test_disabling_remember_strips_title_from_a_record_this_page_did_not_write(
 
     result = page.evaluate(
         """() => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail.sourceLabel);
+            });
             const before = window.getSelectedScreenSourceLabel();
             window.setScreenSourceTitleMatchEnabled(false);
             return {
                 before,
                 record: JSON.parse(window.__storedValues.get('selectedScreenSourceLabel')),
                 after: window.getSelectedScreenSourceLabel(),
+                events,
             };
         }"""
     )
@@ -680,6 +685,52 @@ def test_disabling_remember_strips_title_from_a_record_this_page_did_not_write(
         "before": "Editor",
         "record": {"id": "window:2"},
         "after": "app.screenSource.windows",
+        # This page gets no storage event for its own write; the row must refresh.
+        "events": ["app.screenSource.windows"],
+    }
+
+
+@pytest.mark.frontend
+def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            function syncFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            async function pickEditorHere() {
+                document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const cached = await pickEditorHere();
+            // Same id, newer title written by another window.
+            const renamed = syncFromOtherWindow(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2', name: 'Browser' })
+            );
+            await pickEditorHere();
+            // Another window moves away and back to the id this page cached,
+            // without a label record this page can trust.
+            syncFromOtherWindow('selectedScreenSourceId', 'screen:1');
+            window.__storedValues.delete('selectedScreenSourceLabel');
+            const back = syncFromOtherWindow('selectedScreenSourceId', 'window:2');
+            return { cached, back, renamed };
+        }"""
+    )
+
+    assert result == {
+        "cached": "Editor",
+        "back": "app.screenSource.windows",
+        "renamed": "Browser",
     }
 
 
