@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import os
 import shutil
@@ -135,7 +136,9 @@ def _download_verified(source: str, destination: Path, expected_sha256: str) -> 
             except AssetManifestError:
                 temporary.unlink(missing_ok=True)
                 raise
-            except (OSError, TimeoutError, URLError) as exc:
+            # IncompleteRead：连接在声明的 Content-Length 之前被断开（大文件常见），
+            # 它不是 OSError，漏掉的话既不会重试也到不了下一个镜像。
+            except (OSError, TimeoutError, URLError, http.client.IncompleteRead) as exc:
                 last_error = exc
                 temporary.unlink(missing_ok=True)
                 if attempt < 2:

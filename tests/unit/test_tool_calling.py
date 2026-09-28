@@ -2469,6 +2469,33 @@ async def test_offline_openai_tools_unsupported_is_not_retried_after_first_chunk
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_request_specific_tools_refusal_is_not_sticky():
+    """"tool use is not supported with images" is about THIS request: retry it
+    without tools, but later text-only turns keep their tools."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append(set(overrides))
+        if len(seen) == 1:
+            raise RuntimeError("Error code: 400 - tool use is not supported with images")
+        yield LLMStreamChunk(content="ok", finish_reason="stop")
+
+    client = _tools_declining_client(astream)
+    texts = [
+        ch.content
+        async for ch in client._astream_openai_with_tools([{"role": "user", "content": "hi"}])
+        if getattr(ch, "content", None)
+    ]
+
+    assert "".join(texts) == "ok"
+    assert "tools" not in seen[1]
+    assert client._openai_tools_unsupported is False
+    assert client._openai_tools_payload() is not None
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_unrelated_error_is_not_treated_as_tools_unsupported():
     calls = []
 

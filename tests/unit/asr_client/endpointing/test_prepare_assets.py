@@ -361,3 +361,36 @@ def test_all_sources_failing_reports_the_last_error(tmp_path, monkeypatch, no_hf
     with pytest.raises(PreparerAssetManifestError, match="cannot download model.onnx"):
         preparer._download_verified(_HF_SOURCE, tmp_path / "model.onnx", "0" * 64)
     assert len(tried) == 6
+
+
+def test_truncated_origin_download_moves_to_the_mirror(tmp_path, monkeypatch, no_hf_env):
+    import http.client
+
+    payload = b"reviewed model"
+    tried = []
+
+    class _Truncated:
+        def read(self, _size):
+            raise http.client.IncompleteRead(b"rev", 11)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(request, timeout):
+        tried.append(request.full_url)
+        if request.full_url.startswith("https://hf-mirror.com/"):
+            return _FakeResponse(payload)
+        return _Truncated()
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _s: None)
+    destination = tmp_path / "model.onnx"
+
+    preparer._download_verified(_HF_SOURCE, destination, hashlib.sha256(payload).hexdigest())
+
+    assert destination.read_bytes() == payload
+    assert not destination.with_suffix(".onnx.part").exists()
+    assert [url.split("/")[2] for url in tried] == ["huggingface.co"] * 3 + ["hf-mirror.com"]

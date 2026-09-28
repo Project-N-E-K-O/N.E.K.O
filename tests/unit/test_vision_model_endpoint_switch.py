@@ -169,3 +169,82 @@ async def test_tool_image_route_same_id_same_endpoint_needs_no_switch(recorded_c
 
     assert await client.prepare_for_tool_images() is True
     assert recorded_creates == []
+
+
+@pytest.mark.asyncio
+async def test_same_url_and_key_but_another_protocol_still_switches(recorded_creates) -> None:
+    client = _bare_client(
+        model="claude-sonnet",
+        base_url="https://gateway.example/v1",
+        api_key="key",
+        provider_type="openai",
+        vision_model="claude-sonnet",
+        vision_base_url="https://gateway.example/v1",
+        vision_api_key="key",
+        vision_provider_type="anthropic",
+    )
+
+    await client.switch_model("claude-sonnet", use_vision_config=True)
+
+    assert len(recorded_creates) == 1
+    # The active protocol follows the switch, so a repeat is a no-op.
+    assert client.provider_type == "anthropic"
+    await client.switch_model("claude-sonnet", use_vision_config=True)
+    assert len(recorded_creates) == 1
+
+
+@pytest.mark.asyncio
+async def test_cosmetically_different_urls_are_the_same_route(recorded_creates) -> None:
+    client = _bare_client(
+        model="gpt-4o",
+        base_url="https://API.example/v1/",
+        api_key="key",
+        vision_model="gpt-4o",
+        vision_base_url="https://api.example:443/v1",
+        vision_api_key="key",
+    )
+
+    await client.switch_model("gpt-4o", use_vision_config=True)
+    assert await client.prepare_for_tool_images() is True
+    assert recorded_creates == []
+
+
+@pytest.mark.asyncio
+async def test_cosmetic_url_difference_keeps_route_bound_signatures(recorded_creates) -> None:
+    history = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "extra_content": {"google": {"thought_signature": "sig"}}}],
+        }
+    ]
+    client = _bare_client(
+        model="gemini-flash",
+        base_url="https://gw.example/v1/",
+        api_key="key",
+        vision_model="gemini-pro",
+        vision_base_url="https://gw.example/v1",
+        vision_api_key="key",
+        _conversation_history=history,
+    )
+
+    await client.switch_model("gemini-pro", use_vision_config=True)
+
+    assert len(recorded_creates) == 1
+    assert "extra_content" in history[0]["tool_calls"][0]
+
+
+@pytest.mark.asyncio
+async def test_tool_image_route_switches_same_id_on_another_protocol(recorded_creates) -> None:
+    client = _bare_client(
+        model="claude-sonnet",
+        base_url="https://gateway.example/v1",
+        api_key="key",
+        provider_type="openai",
+        vision_model="claude-sonnet",
+        vision_base_url="https://gateway.example/v1",
+        vision_api_key="key",
+        vision_provider_type="anthropic",
+    )
+
+    assert await client.prepare_for_tool_images() is True
+    assert len(recorded_creates) == 1

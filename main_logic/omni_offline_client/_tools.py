@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    _same_route,
     LLMStreamChunk,
     List,
     OnToolCallCallback,
@@ -107,27 +108,35 @@ class _ToolingMixin:
         return [t.to_openai_chat() for t in self._tool_definitions]
 
     @staticmethod
-    def _is_openai_tools_unsupported_error(exc: BaseException) -> bool:
-        """Whether ``exc`` is an endpoint refusing the ``tools`` parameter
-        itself (e.g. Ollama vision models: 400 "... does not support tools")."""
+    def _classify_openai_tools_refusal(exc: BaseException) -> Optional[str]:
+        """How an endpoint refused the ``tools`` parameter, if it did.
+
+        ``"model"``: the model has no tool support at all (Ollama vision models:
+        400 "... does not support tools"), so every later request would fail
+        the same way. ``"request"``: tools were refused for something specific
+        to this request (e.g. "tool use is not supported with images"); plain
+        text turns may still use them. ``None``: not a tools refusal.
+        """
         msg = str(exc or "").lower()
         if "does not support tools" in msg or "does not support function" in msg:
-            return True
-        if "tools" in msg and "not support" in msg:
-            return True
-        if "tool use" in msg and ("unsupported" in msg or "not supported" in msg):
-            return True
-        return False
+            return "model"
+        if ("tools" in msg and "not support" in msg) or (
+            "tool use" in msg and ("unsupported" in msg or "not supported" in msg)
+        ):
+            return "request"
+        return None
 
     async def _astream_declining_tools(self, messages, overrides: dict):
         """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
 
-        If the request fails before the first chunk with a tools-unsupported
-        error, mark the session, strip ``tools`` / ``tool_choice`` from
-        ``overrides`` in place (so later rounds of the caller's loop and its
-        forced-finalize call go without them too) and re-issue the same
-        request once. Any other failure, or one after a chunk was already
-        received, propagates unchanged.
+        If the request fails before the first chunk because the endpoint
+        refused ``tools``, strip ``tools`` / ``tool_choice`` from ``overrides``
+        in place (so later rounds of the caller's loop and its forced-finalize
+        call go without them too) and re-issue the same request once. Only a
+        model-wide refusal also marks the session, so later turns stop sending
+        tools; a refusal tied to this request leaves later turns alone. Any
+        other failure, or one after a chunk was already received, propagates
+        unchanged.
         """
         received_any = False
         try:
@@ -136,18 +145,19 @@ class _ToolingMixin:
                 yield chunk
             return
         except Exception as exc:
-            if (
-                received_any
-                or "tools" not in overrides
-                or not self._is_openai_tools_unsupported_error(exc)
-            ):
+            refusal = None
+            if not received_any and "tools" in overrides:
+                refusal = self._classify_openai_tools_refusal(exc)
+            if refusal is None:
                 raise
             logger.warning(
                 "OpenAI-compat model %s declined tools (%s); retrying this "
-                "request without tools and disabling them for the session",
+                "request without tools%s",
                 getattr(self, "model", None), exc,
+                " and disabling them for the session" if refusal == "model" else "",
             )
-        self._openai_tools_unsupported = True
+        if refusal == "model":
+            self._openai_tools_unsupported = True
         overrides.pop("tools", None)
         overrides.pop("tool_choice", None)
         async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
@@ -321,12 +331,15 @@ class _ToolingMixin:
         vision_model = getattr(self, "vision_model", "") or ""
         if not vision_model:
             return False
-        # 同一个模型 id 只有在端点也相同时才算「已经在视觉槽上」；视觉槽配了
-        # 另一个 URL / Key 时照样要走下面的切换。
-        if (
-            vision_model == self.model
-            and (getattr(self, "vision_base_url", None) or None) == (getattr(self, "base_url", None) or None)
-            and (getattr(self, "vision_api_key", None) or None) == (getattr(self, "api_key", None) or None)
+        # 同一个模型 id 只有在路由（URL / Key / 协议）也相同时才算「已经在视觉
+        # 槽上」；视觉槽配了另一条路由时照样要走下面的切换。
+        if vision_model == self.model and _same_route(
+            getattr(self, "vision_base_url", None),
+            getattr(self, "vision_api_key", None),
+            getattr(self, "vision_provider_type", None),
+            getattr(self, "base_url", None),
+            getattr(self, "api_key", None),
+            getattr(self, "provider_type", None),
         ):
             return True
         on_genai = bool(
