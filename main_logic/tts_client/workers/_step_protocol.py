@@ -663,6 +663,9 @@ def run_step_protocol_tts_worker(
             while True:
                 if permanent_rejection:
                     logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
+                    # 退出前等不到被拒轮次的收尾请求：直接补发它的 audio_done
+                    # （主进程已记为投递失败），完成等待方不必干等超时。
+                    audio_done.emit(rejected_speech_id)
                     response_queue.put(("__ready__", False))
                     break
                 if pending_finish_retry_speech_id is not None:

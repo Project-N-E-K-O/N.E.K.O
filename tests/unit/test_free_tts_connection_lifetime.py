@@ -573,7 +573,11 @@ def test_permanent_rejection_hands_retry_policy_to_the_core(monkeypatch, close):
     # No connect for speech-2: the worker reported not-ready and exited, so
     # the core's NO_RETRY gate decides from here.
     assert len(connects) == 2
-    assert list(responses.queue)[-1] == ("__ready__", False)
+    items = list(responses.queue)
+    assert items[-1] == ("__ready__", False)
+    # The rejected round's terminal never gets processed; its stream end is
+    # still signalled before the worker exits.
+    assert items[-2] == ("__audio_done__", "speech-1")
 
 
 @pytest.mark.parametrize(
