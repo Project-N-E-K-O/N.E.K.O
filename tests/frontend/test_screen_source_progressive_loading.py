@@ -736,6 +736,56 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
 
 
 @pytest.mark.frontend
+def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            function syncLabelRecord(value) {
+                if (value === null) {
+                    window.__storedValues.delete('selectedScreenSourceLabel');
+                } else {
+                    window.__storedValues.set('selectedScreenSourceLabel', value);
+                }
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key: 'selectedScreenSourceLabel',
+                    newValue: value,
+                }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            async function pick(sourceId) {
+                document.querySelector(
+                    '.screen-source-option[data-source-id="' + sourceId + '"]'
+                ).click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const windowLabel = await pick('window:2');
+            // Another window found window:2 gone and deleted its record.
+            const afterRemoval = syncLabelRecord(null);
+            const screenLabel = await pick('screen:1');
+            // Another window saw the same screen id at a different position.
+            const afterReindex = syncLabelRecord(
+                JSON.stringify({ id: 'screen:1', screenIndex: 1 })
+            );
+            return { windowLabel, afterRemoval, screenLabel, afterReindex };
+        }"""
+    )
+
+    assert result == {
+        "windowLabel": "Editor",
+        "afterRemoval": "app.screenSource.windows",
+        "screenLabel": "Screen 1",
+        "afterReindex": "Screen 2",
+    }
+
+
+@pytest.mark.frontend
 def test_window_title_reaches_other_windows_by_broadcast_not_storage(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
