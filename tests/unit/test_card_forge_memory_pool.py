@@ -133,6 +133,8 @@ _INTERACTION_LOG = (
         (_INTERACTION_LOG, True),
         ("记录755DF5AE-4FA0-4E25-BCAD-832E8A80CAAE完成", True),
         ("在2026-09-25T20:06同步了一次状态", True),
+        ("２０２６-０９-２５T２０:０６", False),
+        ("2026-09-25T20:060", False),
         ("2026-09-25 晚上 20:06 和主人一起看了电影", False),
         ("主人的生日是 2026-09-25", False),
         ("主人喜欢 hash-abc 这种命名", False),

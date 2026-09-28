@@ -231,12 +231,13 @@ _FORGE_WIRE_ID_PREFIX = "__neko_forge_id_v1__:"
 # Machine-generated log rows (e.g. imported interaction logs) carry UUIDs or
 # ISO-8601 timestamps that natural-language memories practically never do.
 # Lookarounds instead of word boundaries: CJK text counts as word characters.
+# ASCII digit classes only: Python's digit class also accepts full-width digits.
 _MACHINE_LOG_PATTERNS = (
     re.compile(
         r"(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])",
         re.IGNORECASE,
     ),
-    re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}"),
+    re.compile(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?![0-9])"),
 )
 
 
