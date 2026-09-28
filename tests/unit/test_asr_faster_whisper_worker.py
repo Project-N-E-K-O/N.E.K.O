@@ -276,6 +276,45 @@ async def test_decoding_is_serialized_per_session(pool) -> None:
     await _shutdown(task, requests, responses)
 
 
+async def test_cancelled_decode_keeps_the_next_one_waiting_for_its_thread(pool) -> None:
+    # A new buffer epoch cancels the old task, but its decoder thread keeps
+    # running; the next utterance must not decode beside it.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    await _send_utterance(requests, buffer_epoch=0, utterance_id=1)
+    for _ in range(100):
+        if model.calls:
+            break
+        await asyncio.sleep(0.01)
+    await _send_utterance(requests, buffer_epoch=1, utterance_id=2)
+    await asyncio.wait_for(requests.join(), 2)
+    await asyncio.sleep(0.1)
+    assert len(model.calls) == 1
+
+    model.release.set()
+    final = await _next_event(responses, "final")
+    assert (final.buffer_epoch, final.utterance_id) == (1, 2)
+    assert len(model.calls) == 2
+    await _shutdown(task, requests, responses, buffer_epoch=1)
+
+
+def test_backlog_counts_only_decodes_still_in_flight() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        finished = loop.create_future()
+        finished.set_result(None)
+        waiting = loop.create_future()
+        pending = {finished: "a", waiting: "b"}
+        assert faster_whisper._decodes_in_flight(pending) == 1
+        waiting.cancel()
+    finally:
+        loop.close()
+
+
 async def test_decode_backlog_is_bounded(pool) -> None:
     model = _FakeModel(_segment("x"))
     model.release.clear()
