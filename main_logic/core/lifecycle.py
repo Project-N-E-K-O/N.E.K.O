@@ -736,14 +736,15 @@ class LifecycleMixin:
                     or 'invalid_api_key' in error_str.lower()
                     or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif classify_provider_failure_text(error_str) == 'API_QUOTA_TIME':
-                # Free servers reject a spent quota with a close frame right
-                # after the handshake, which can land inside start_session.
-                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif '429' in error_str:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
             elif 'HTTP 503' in error_str:
                 await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            elif classify_provider_failure_text(error_str) == 'API_QUOTA_TIME':
+                # Free servers reject a spent quota with a close frame right
+                # after the handshake, which can land inside start_session.
+                # Kept after 429 so "429 ... quota exceeded" stays a rate limit.
+                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif 'All connection attempts failed' in error_str:
                 await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
             else:

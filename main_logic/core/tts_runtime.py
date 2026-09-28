@@ -1491,6 +1491,9 @@ class TtsRuntimeMixin:
             self._tts_respawn_task.cancel()
             self._tts_respawn_task = None
         self._last_tts_respawn_time = now
+        # 错误码只描述上一个 worker 的失败。新 worker 若不带 __error__ 直接报未
+        # 就绪（如握手超时），沿用旧的配额/限流码会误停定时重试或误推退避。
+        self._last_tts_error_code = ''
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
         self._start_tts_thread(

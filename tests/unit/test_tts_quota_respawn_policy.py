@@ -216,6 +216,26 @@ def test_implicit_respawn_keeps_the_plain_cooldown_for_quota():
     assert len(mgr.started) == 1
 
 
+@pytest.mark.asyncio
+async def test_replacement_failure_without_error_does_not_inherit_quota_code(respawn_delays):
+    mgr = _make_mgr()
+    _arm_implicit_respawn(mgr)
+    mgr.tts_response_queue.put(_error("API_QUOTA_TIME"))
+    mgr.tts_response_queue.put(("__ready__", False))
+    await _drain(mgr)
+    assert respawn_delays == []
+
+    # The next reply respawns; that worker times out without an __error__.
+    mgr.tts_pending_chunks = [("sid-next", "first chunk")]
+    LLMSessionManager._respawn_tts_worker(mgr)
+    assert mgr._last_tts_error_code == ""
+    mgr.tts_response_queue.put(("__ready__", False))
+    await _drain(mgr)
+    assert await _wait_for(lambda: len(respawn_delays) == 1)
+
+    assert respawn_delays == [TTS_RESPAWN_DELAY_SECONDS]
+
+
 def test_session_retry_reset_clears_rate_limit_and_quota_state():
     mgr = _make_mgr()
     mgr._tts_rate_limit_backoff_level = 5

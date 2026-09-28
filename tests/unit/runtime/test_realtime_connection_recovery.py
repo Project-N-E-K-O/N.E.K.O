@@ -527,6 +527,40 @@ async def test_quota_disconnect_ends_session_without_the_auto_restart_marker(mes
     )
 
 
+@pytest.mark.parametrize(
+    ("error_text", "expected_code"),
+    (
+        (
+            "received 1008 (policy violation) Total daily connection time limit reached; "
+            "then sent 1008 (policy violation) Total daily connection time limit reached",
+            "API_QUOTA_TIME",
+        ),
+        # A paid provider's 429 that mentions quota stays a rate limit.
+        ("server rejected WebSocket connection: HTTP 429 quota exceeded", "API_RATE_LIMIT_SESSION"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_session_start_failure_distinguishes_quota_from_429(error_text, expected_code):
+    manager = object.__new__(LLMSessionManager)
+    manager.session_start_failure_count = 0
+    manager.session_start_max_failures = 3
+    manager._session_start_circuit_open = False
+    manager.memory_server_port = 48912
+    manager.send_status = AsyncMock()
+    manager.send_session_failed = AsyncMock()
+    manager.cleanup = AsyncMock()
+    manager.input_cache_lock = asyncio.Lock()
+    manager.pending_input_data = []
+    manager._clear_pending_context_appends = lambda: None
+
+    await manager._handle_session_start_exception(
+        RuntimeError(error_text), "audio", diag_start=0.0
+    )
+
+    codes = [json.loads(call.args[0])["code"] for call in manager.send_status.await_args_list]
+    assert codes == ["SESSION_START_FAILED", expected_code]
+
+
 @pytest.mark.asyncio
 async def test_unannounced_server_disconnect_still_ends_the_frontend_session():
     manager = object.__new__(LLMSessionManager)
