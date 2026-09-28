@@ -1223,3 +1223,33 @@ def test_warmup_ends_only_when_every_wait_has_ended() -> None:
     assert state.pending is True
     complete_provider_warmup(queue, newer)
     assert state.pending is False and state.completed_at is not None
+
+
+async def test_waiting_behind_own_earlier_decode_does_not_pause_its_watchdog(pool) -> None:
+    # Warm-up state is session-wide. A later turn queued behind this session's
+    # own running decode must not publish it, or it would pause the earlier
+    # turn's final watchdog and a stuck decode would run on the warm-up budget.
+    from main_logic.asr_client.warmup import provider_warmup_state
+
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    try:
+        await _next_event(responses, "ready")
+        await _send_utterance(requests, utterance_id=1)
+        for _ in range(100):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        await _send_utterance(requests, utterance_id=2)
+        await asyncio.wait_for(requests.join(), 2)
+        await asyncio.sleep(0.05)
+        state = provider_warmup_state(requests)
+        assert state is not None and state.pending is False
+    finally:
+        model.release.set()
+    for _ in range(2):
+        await _next_event(responses, "final")
+    await _shutdown(task, requests, responses)

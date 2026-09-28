@@ -656,6 +656,7 @@ async def faster_whisper_asr_worker(
         key: _UtteranceKey,
         pcm16: bytes,
         handoff: _DecodeHandoff,
+        queue_wait_is_warmup: bool,
     ) -> _AsrWorkerEvent:
         # The process-wide decode slot was taken at commit. Once the job is
         # handed to the executor, the decode thread gives it back when the job
@@ -675,18 +676,28 @@ async def faster_whisper_asr_worker(
         # only flips one attribute on it.
         evidence = delivery_evidence(request_queue)
         skip = threading.Event()
-        # Waiting in the process-wide decode queue (behind another session's
-        # uninterruptible decode) is not recognition time either: publish it
-        # like model preparation so the runtime's final watchdog holds off
-        # until the job reaches the decoder, within the warm-up budget. The
-        # token is this job's own, so a cancelled older job leaving the queue
-        # cannot end a newer job's wait.
-        queue_wait_token = begin_provider_warmup(request_queue)
+        # Waiting in the process-wide decode queue behind ANOTHER session's
+        # uninterruptible decode is not this session's recognition time:
+        # publish it like model preparation so the runtime's final watchdog
+        # holds off until the job reaches the decoder, within the warm-up
+        # budget. Warm-up is session-wide, so it is published only when this
+        # session has no earlier decode in flight: otherwise it would also
+        # pause that earlier turn's watchdog, and a stuck decode of this
+        # session would run on the warm-up budget instead of the final
+        # timeout. The token is this job's own, so a cancelled older job
+        # leaving the queue cannot end a newer job's wait.
+        queue_wait_token = (
+            begin_provider_warmup(request_queue) if queue_wait_is_warmup else None
+        )
+
+        def end_queue_wait() -> None:
+            if queue_wait_token is not None:
+                complete_provider_warmup(request_queue, queue_wait_token)
 
         def decode() -> str | None:
             # Reaching the decoder ends this job's wait behind other sessions'
             # decodes; the per-utterance final timeout counts from here.
-            complete_provider_warmup(request_queue, queue_wait_token)
+            end_queue_wait()
             try:
                 if skip.is_set():
                     # Cancelled while queued: drop the PCM without decoding.
@@ -701,7 +712,7 @@ async def faster_whisper_asr_worker(
                 pool.decoder_executor(), decode
             )
         except BaseException:
-            complete_provider_warmup(request_queue, queue_wait_token)
+            end_queue_wait()
             raise
         handoff.submitted = True
         decode_future.add_done_callback(_consume_decode_outcome)
@@ -871,8 +882,18 @@ async def faster_whisper_asr_worker(
                                 elif pcm16:
                                     committed.add(key)
                                     handoff = _DecodeHandoff()
+                                    # 本会话已有解码在跑时，排队是在等自己的上一句，
+                                    # 不算准备期（否则会暂停上一句的看门狗）。
+                                    queue_wait_is_warmup = (
+                                        _decodes_in_flight(pending) == 0
+                                    )
                                     task = asyncio.create_task(
-                                        transcribe(key, bytes(pcm16), handoff),
+                                        transcribe(
+                                            key,
+                                            bytes(pcm16),
+                                            handoff,
+                                            queue_wait_is_warmup,
+                                        ),
                                         name="faster-whisper-asr-transcribe",
                                     )
                                     # A task cancelled before it first runs never
