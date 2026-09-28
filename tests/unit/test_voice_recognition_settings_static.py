@@ -301,3 +301,22 @@ def test_settings_hydrated_event_fires_after_the_server_merge() -> None:
     telemetry_at = source.index("new CustomEvent('neko:telemetry-branch-resolved'")
     assert source.count("neko:conversation-settings-hydrated") == 1
     assert merged_log_at < dispatch_at < telemetry_at
+
+
+def test_server_authoritative_provider_preference_is_not_filtered_as_stale() -> None:
+    # A peer window's server merge carries the provider preference as a
+    # server-authoritative key (not an explicit change); discarding it as stale
+    # would pin this window to an outdated preference forever.
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("const providerPreferenceValueIsStale = !!meta")
+    stale_rule = source[start:source.index(";", start)]
+    assert "!providerPreferenceServerAuthoritative" in stale_rule
+    authoritative = source[
+        source.index("const providerPreferenceServerAuthoritative = !!meta"):start
+    ]
+    assert "meta.serverAuthoritativeKeys.indexOf(providerPreferenceKey) !== -1" in authoritative
+    assert "Number.isInteger(meta.serverRevision)" in authoritative

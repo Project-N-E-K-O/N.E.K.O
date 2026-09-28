@@ -2469,9 +2469,18 @@
                     && providerPreferenceWriteIsNewer
                 )
                 : providerPreferenceValueDiffers;
+            // A peer's server merge (e.g. another device changed the persisted
+            // provider) lists the key as server-authoritative without marking
+            // it explicit. Leave such a value to the server-revision check
+            // below instead of discarding it here as a stale boot default.
+            const providerPreferenceServerAuthoritative = !!meta
+                && Number.isInteger(meta.serverRevision)
+                && Array.isArray(meta.serverAuthoritativeKeys)
+                && meta.serverAuthoritativeKeys.indexOf(providerPreferenceKey) !== -1;
             const providerPreferenceValueIsStale = !!meta
                 && providerPreferenceValueDiffers
-                && !providerPreferenceChangedByOtherWindow;
+                && !providerPreferenceChangedByOtherWindow
+                && !providerPreferenceServerAuthoritative;
             const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
                 ? (
                     S.independentAsrActive === true
