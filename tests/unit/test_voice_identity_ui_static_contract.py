@@ -169,6 +169,7 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert ".switch input:focus-visible + .switch-track" in stylesheet
     assert "--voice-blue-dark: #075b80" in stylesheet
     assert "--voice-danger: #b4233b" in stylesheet
+    assert "--voice-success-text: #166b52" in stylesheet
     assert "--voice-muted: #536b7b" in stylesheet
     assert "--voice-focus: #082f45" in stylesheet
     assert "--voice-focus: #8edcff" in stylesheet
@@ -183,8 +184,17 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
         css_color(dark_theme, "voice-muted"),
         css_color(dark_theme, "voice-panel-soft"),
     ) >= 4.5
+    assert _contrast_ratio(
+        css_color(light_theme, "voice-success-text"),
+        css_color(light_theme, "voice-panel-soft"),
+    ) >= 4.5
     assert re.search(
         r"\.voice-activity-state\s*\{[^}]*color:\s*var\(--voice-muted\)",
+        stylesheet,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"\.capture-status\.voice-detected\s+\.voice-activity-state\s*\{[^}]*color:\s*var\(--voice-success-text\)",
         stylesheet,
         re.DOTALL,
     )
@@ -262,6 +272,7 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "embedding" not in script.lower()
     assert "similarity" not in script.lower()
     assert "window.addEventListener('localechange', render)" in script
+    assert "reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS })" in script
     assert "needsLowPass = this.targetSampleRate < this.originalSampleRate" in processor
     assert "createLowPassFilter()" in processor
     assert "applyLowPassFilter(audioData)" in processor

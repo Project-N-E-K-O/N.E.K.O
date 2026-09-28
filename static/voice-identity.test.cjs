@@ -820,6 +820,21 @@ test('cancellation during microphone setup releases a late stream and context', 
     assert.equal(harness.fetchCalls.some(call => call.url.endsWith('/enrollment/start')), false);
 });
 
+test('cancelling while microphone permission is pending releases the controls immediately', async () => {
+    const mediaGate = deferred();
+    const harness = createHarness({ mediaGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(2);
+    await harness.emit('voice-identity-cancel');
+
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
+    mediaGate.resolve();
+    await enrolling;
+});
+
 test('resumed enrollment shows the canonical segment prompt before microphone setup', async () => {
     const harness = createHarness({ initialEnrollmentNextSegment: 3 });
     await harness.initialize();

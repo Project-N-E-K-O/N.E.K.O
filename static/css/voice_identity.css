@@ -15,6 +15,7 @@
     --voice-panel: #ffffff;
     --voice-danger: #b4233b;
     --voice-success: #198c6a;
+    --voice-success-text: #166b52;
     --voice-focus: #145679;
     /* linear-gradient(to right, #4bd4fd, #17a7ff) legacy action gradient */
     /* --voice-focus: #082f45 (legacy contrast reference) */
@@ -47,6 +48,7 @@
     --voice-danger: #ff8d9b;
     --voice-focus: #8edcff;
     --voice-success: #6fe0b6;
+    --voice-success-text: #6fe0b6;
 }
 
 * {
@@ -648,7 +650,7 @@ input:focus-visible,
 }
 
 .capture-status.voice-detected .voice-activity-state {
-    color: var(--voice-success);
+    color: var(--voice-success-text);
 }
 
 .capture-status.voice-quiet .voice-activity-state,

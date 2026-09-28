@@ -1298,6 +1298,7 @@
     async function cancelEnrollment(options) {
         const config = options || {};
         const pendingStart = state.startSettled;
+        const waitingForMicrophone = !pendingStart && !state.enrollmentId && state.busy;
         state.statusEpoch += 1;
         state.cancelPending = true;
         if (state.statusAbort) state.statusAbort.abort();
@@ -1330,7 +1331,17 @@
                 }
             }
         } finally {
-            if (!state.busy) state.cancelPending = false;
+            if (waitingForMicrophone && !state.enrollmentId) {
+                state.busy = false;
+                state.cancelPending = false;
+                state.cancelReleaseWhenIdle = false;
+                state.recording = false;
+                state.saving = false;
+                state.segmentPhase = 'idle';
+                state.uiPhase = 'idle';
+                state.segmentIndex = 0;
+                state.voiceStatus = 'waiting';
+            } else if (!state.busy) state.cancelPending = false;
             else state.cancelReleaseWhenIdle = true;
             render();
         }
@@ -1446,15 +1457,18 @@
             state.cancelPending = false;
             state.busy = true;
             render();
-            const reconciled = await reconcileStatus();
-            if (!reconciled) {
-                setMessage(
-                    translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
-                    true
-                );
+            try {
+                const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+                if (!reconciled) {
+                    setMessage(
+                        translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
+                        true
+                    );
+                }
+            } finally {
+                state.busy = false;
+                render();
             }
-            state.busy = false;
-            render();
         });
     }
 
