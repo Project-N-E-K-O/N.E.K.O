@@ -1299,6 +1299,14 @@ def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
                         numbered: /Screen \d/.test(text),
                     };
                 })(),
+                // Clicking the already-selected option does not number it either.
+                afterClick: await (async () => {
+                    document.querySelector(
+                        '.screen-source-option[data-source-id="screen:3"]'
+                    ).click();
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    return window.getSelectedScreenSourceLabel();
+                })(),
                 // Hovering the row again shows which source is chosen.
                 deferredSummaryShown: await (async () => {
                     const popup = document.getElementById('live2d-popup-screen');
@@ -1318,6 +1326,7 @@ def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
         # Not even briefly announced as a numbered screen.
         "numberedEvents": [],
         "optionText": {"generic": True, "numbered": False},
+        "afterClick": "app.screenSource.screens",
         "deferredSummaryShown": True,
     }
 

@@ -3133,7 +3133,13 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name, displayName, screenIndex);
+                    // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
+                    await selectScreenSource(
+                        source.id,
+                        source.name,
+                        displayName,
+                        isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
+                    );
                 });
 
                 option.addEventListener('mouseenter', function () {
