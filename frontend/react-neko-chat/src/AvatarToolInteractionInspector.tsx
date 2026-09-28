@@ -21,6 +21,7 @@ type AvatarToolInteractionInspectorProps = {
   busy?: boolean;
   maxDelayMs: number;
   maxNameChars: number;
+  maxInteractions?: number;
 };
 
 function defaultInteractionLabel(
@@ -110,6 +111,12 @@ export function formatAvatarToolInteractionIssue(
         'chat.avatarToolInteractionAmbiguousClick',
         '{{interaction}} conflicts with another mouse click {{position}}.',
         { interaction: label, position: waitingPositionLabel(state, issue.waitingAfterId) },
+      );
+    case 'too-many-interactions':
+      return i18n(
+        'chat.avatarToolInteractionTooMany',
+        'This flow has {{count}} interactions. Remove some so there are no more than {{max}}.',
+        { count: String(issue.interactionCount ?? ''), max: String(issue.maxInteractions ?? '') },
       );
     case 'ambiguous-delay':
       return i18n(
@@ -263,6 +270,7 @@ export default function AvatarToolInteractionInspector({
   busy = false,
   maxDelayMs,
   maxNameChars,
+  maxInteractions = Number.POSITIVE_INFINITY,
 }: AvatarToolInteractionInspectorProps) {
   const { state, dispatch, issues } = useAvatarToolInteractionEditor();
   const selectedItem = state.items.find(item => item.id === state.selectedInteractionId) ?? null;
@@ -441,11 +449,12 @@ export default function AvatarToolInteractionInspector({
           <div className="avatar-tool-interaction-inspector-actions">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || state.items.length >= maxInteractions}
               onClick={() => dispatch({
                 type: 'duplicate-interaction',
                 sourceId: selectedItem.id,
                 duplicate: duplicateAvatarToolInteractionDraft(selectedItem, state.items),
+                maxInteractions,
               })}
             >
               {i18n('chat.avatarToolInteractionDuplicate', 'Duplicate')}

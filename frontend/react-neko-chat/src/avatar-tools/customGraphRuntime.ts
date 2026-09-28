@@ -46,6 +46,11 @@ type DelayTicket = {
 
 type PendingDelay = Omit<DelayTicket, 'timeoutId'>;
 
+// Saved records may carry any delay >= 1ms, but every step re-renders the
+// whole chat surface, so a 1ms cycle would repaint it hundreds of times a
+// second. Only playback is floored; the stored value is left untouched.
+export const CUSTOM_GRAPH_MIN_STEP_MS = 50;
+
 export function getCustomGraphImageFrameIndex(
   profile: CustomGraphProfile,
   imageId: AvatarToolImageId,
@@ -140,7 +145,8 @@ export function createCustomGraphRuntime(
     waitingInteractionIds.forEach((interactionId) => {
       const interaction = interactionsById.get(interactionId);
       if (!interaction || interaction.trigger.kind !== 'after') return;
-      const dueAt = options.scheduler.now() + interaction.trigger.delayMs;
+      const delayMs = Math.max(CUSTOM_GRAPH_MIN_STEP_MS, interaction.trigger.delayMs);
+      const dueAt = options.scheduler.now() + delayMs;
       const order = nextDelayOrder++;
       const timeoutId = options.scheduler.setTimeout(() => {
         const ticket = delays.get(interactionId);
@@ -154,7 +160,7 @@ export function createCustomGraphRuntime(
         delays.delete(interactionId);
         pendingDelays.push({ interactionId, dueAt: ticket.dueAt, order: ticket.order, epoch: ticket.epoch });
         if (!activeClick) resolvePendingDelay();
-      }, interaction.trigger.delayMs);
+      }, delayMs);
       delays.set(interactionId, { interactionId, dueAt, order, epoch: scheduleEpoch, timeoutId });
     });
   };

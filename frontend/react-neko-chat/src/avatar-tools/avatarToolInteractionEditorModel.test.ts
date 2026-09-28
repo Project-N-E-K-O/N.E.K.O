@@ -481,6 +481,36 @@ describe('avatar tool interaction editor model', () => {
     expect(removed.initialImageTargetIds).toEqual([]);
   });
 
+  it('does not add or duplicate interactions past the interaction limit and reports an over-limit graph', () => {
+    const initial = standardGraph();
+    const source = initial.items[0];
+    expect(avatarToolInteractionEditorReducer(initial, {
+      type: 'duplicate-interaction',
+      sourceId: source.id,
+      duplicate: { ...source, id: 'ix-click-copy', position: { x: 44, y: 44 } },
+      maxInteractions: 3,
+    })).toBe(initial);
+    expect(avatarToolInteractionEditorReducer(initial, {
+      type: 'add',
+      interaction: { ...source, id: 'ix-click-new', position: { x: 88, y: 88 } },
+      maxInteractions: 3,
+    })).toBe(initial);
+    expect(avatarToolInteractionEditorReducer(initial, {
+      type: 'add',
+      interaction: { ...source, id: 'ix-click-new', position: { x: 88, y: 88 } },
+      maxInteractions: 4,
+    }).items).toHaveLength(4);
+
+    const images = [IMAGE_A, IMAGE_B, IMAGE_C];
+    expect(validateAvatarToolInteractionGraph(initial, images, undefined, undefined, undefined, 3)).toEqual([]);
+    expect(validateAvatarToolInteractionGraph(initial, images, undefined, undefined, undefined, 2)).toEqual([{
+      key: 'interaction:too-many',
+      code: 'too-many-interactions',
+      interactionCount: 3,
+      maxInteractions: 2,
+    }]);
+  });
+
   it('renames an interaction without changing its type or stable id', () => {
     const initial = standardGraph();
     const renamed = avatarToolInteractionEditorReducer(initial, {

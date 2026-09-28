@@ -5912,6 +5912,32 @@ describe('App', () => {
       .toEqual(['fist']);
   });
 
+  it.each(['compact', 'full'] as const)(
+    'keeps the %s management dialog closed for a standalone editor result in cat local text mode',
+    async (chatSurfaceMode) => {
+      const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+      const storageKey = ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[chatSurfaceMode];
+      window.localStorage.setItem(storageKey, JSON.stringify([localToolId, 'fist']));
+      const { rerender } = render(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" catLocalTextOnly />);
+
+      fireEvent(window, new MessageEvent('message', {
+        origin: window.location.origin,
+        data: {
+          type: 'neko:avatar-tool-editor-result',
+          action: 'deleted',
+          toolId: localToolId,
+        },
+      }));
+
+      await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) || '[]')).toEqual(['fist']));
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+      // Leaving the mode must not surface a dialog the hidden result queued up.
+      rerender(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" />);
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+    },
+  );
+
   it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
     const onAvatarToolStateChange = vi.fn();
     const { container } = render(

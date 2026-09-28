@@ -31,6 +31,9 @@ export type AvatarToolRoutePlanOptions = {
   previousRoutes?: ReadonlyMap<string, AvatarToolPlannedEdgeRoute>;
   previousBoxes?: ReadonlyMap<string, AvatarToolRouteNodeBox>;
   changedNodeIds?: ReadonlySet<string>;
+  // While a node is being dragged, skip the exhaustive port-offset search and the obstacle-free
+  // retry so each frame stays cheap; callers re-plan without this flag once the drag ends.
+  interactive?: boolean;
 };
 
 export type AvatarToolEdgeLineStyle = 'orthogonal' | 'curved';
@@ -930,6 +933,7 @@ function connectionRouteWithFlexiblePorts(
   preferredTargetOffset: number,
   obstacles: readonly AvatarToolRouteNodeBox[],
   existingRoutes: readonly (readonly AvatarToolRoutePoint[])[],
+  exhaustive = true,
 ): AvatarToolRoutePoint[] | null {
   const existingSegments = prepareRouteSegments(existingRoutes);
   const alignedOffsets = alignedFacingLaneOffsets(
@@ -1016,6 +1020,7 @@ function connectionRouteWithFlexiblePorts(
     ));
     return preferredCandidates[0].points;
   }
+  if (!exhaustive) return null;
 
   const candidates = sourceOffsets.flatMap(sourceOffset => targetOffsets.map(targetOffset => ({
     sourceOffset,
@@ -1481,7 +1486,8 @@ export function planAvatarToolEdgeRoutes(
       preferredTargetOffset,
       obstacles,
       existingRoutes,
-    ) ?? connectionRoute(
+      !options.interactive,
+    ) ?? (options.interactive ? null : connectionRoute(
       sourceBox,
       targetBox,
       choice.sourcePosition,
@@ -1490,7 +1496,7 @@ export function planAvatarToolEdgeRoutes(
       0,
       [],
       existingRoutes,
-    );
+    ));
     const points = routedPoints
       && !pointEquals(routedPoints[0], routedPoints[routedPoints.length - 1])
       ? routedPoints

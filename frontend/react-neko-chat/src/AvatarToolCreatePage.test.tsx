@@ -78,7 +78,8 @@ describe('AvatarToolCreatePage image references and v3 conversion', () => {
       baseRevision: '2-100',
       initialImageId: 'img-v2-default',
       images: [
-        expect.objectContaining({ id: 'img-v2-default', meaning: '' }),
+        // v3 按「按下前显示的图片」取描述，所以 v2 的描述要挪到默认图上才能保持原行为。
+        expect.objectContaining({ id: 'img-v2-default', meaning: '变化图片' }),
         expect.objectContaining({ id: 'img-v2-change-000', meaning: '变化图片' }),
       ],
       imageInteractions: {
@@ -137,9 +138,10 @@ describe('AvatarToolCreatePage image references and v3 conversion', () => {
       recordVersion: 3,
       baseRevision: '2-200',
       images: [
-        expect.objectContaining({ id: 'img-v2-default', image: { resource: 'default.png', url: '/default.png' }, meaning: '' }),
-        expect.objectContaining({ id: 'img-v2-change-000', image: { resource: 'change-000.png', url: '/change-000.png' }, meaning: '第一张' }),
-        expect.objectContaining({ id: 'img-v2-change-001', image: { resource: 'change-001.png', url: '/change-001.png' }, meaning: '' }),
+        // 第 k 次点击在 v2 发送第 k 张变化图的描述；v3 捕获按下前的图片，因此每条描述前移一格。
+        expect.objectContaining({ id: 'img-v2-default', image: { resource: 'default.png', url: '/default.png' }, meaning: '第一张' }),
+        expect.objectContaining({ id: 'img-v2-change-000', image: { resource: 'change-000.png', url: '/change-000.png' }, meaning: '' }),
+        expect.objectContaining({ id: 'img-v2-change-001', image: { resource: 'change-001.png', url: '/change-001.png' }, meaning: '第三张' }),
         expect.objectContaining({ id: 'img-v2-change-002', image: { resource: 'change-002.png', url: '/change-002.png' }, meaning: '第三张' }),
       ],
       imageInteractions: {
@@ -315,7 +317,8 @@ describe('AvatarToolCreatePage image references and v3 conversion', () => {
       </AvatarToolInteractionEditorProvider>,
     );
 
-    expect(screen.getByText('变化图片')).toBeVisible();
+    expect(document.querySelector('[data-avatar-tool-image-id="img-v2-default"]')).toHaveTextContent('变化图片');
+    expect(document.querySelector('[data-avatar-tool-image-id="img-v2-change-000"]')).toHaveTextContent('变化图片');
     expect(screen.getByText('Choose an initial image.')).toBeVisible();
     expect(document.querySelector('[data-avatar-tool-image-id="img-v2-default"]')).not.toHaveTextContent('default.png');
     expect(document.querySelector('[data-avatar-tool-image-id="img-v2-change-000"]')).not.toHaveTextContent('change-000.png');

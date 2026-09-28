@@ -1545,7 +1545,11 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
-     * @param {{navigateOnReuse?: boolean, onReuse?: Function, shouldNavigateOnReuse?: Function}} [options] - 复用同名窗口时的行为
+     * @param {{navigateOnReuse?: boolean, onReuse?: Function, shouldNavigateOnReuse?: Function, preserveGeometryOnReuse?: boolean, delegateNavigationToSharedWindow?: boolean}} [options] - 复用同名窗口时的行为
+     *   - preserveGeometryOnReuse: 复用已有窗口时不按 features 重设尺寸/位置（保留用户拖动后的窗口）
+     *   - delegateNavigationToSharedWindow: navigateOnReuse 时若没有本地 handle 但同名窗口已在共享登记中活跃，
+     *     不再用 window.open(name) 直接导航（会丢掉目标页未保存内容），而是把目标 URL 以
+     *     { type: 'neko:navigate-on-reuse', url } 消息发给该窗口，由它自行确认后跳转
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features, options) {
@@ -1574,17 +1578,25 @@
                     || normalizedOptions.shouldNavigateOnReuse(existingWindow, targetUrl) !== false)) {
                 navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
             }
-            applyOpenedWindowFeatures(existingWindow, features);
+            if (!normalizedOptions.preserveGeometryOnReuse) {
+                applyOpenedWindowFeatures(existingWindow, features);
+            }
             requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
         }
 
-        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(effectiveWindowName)) {
+        const delegateNavigation = !!(normalizedOptions.navigateOnReuse
+            && normalizedOptions.delegateNavigationToSharedWindow);
+        if ((!normalizedOptions.navigateOnReuse || delegateNavigation)
+            && isSharedNamedWindowActive(effectiveWindowName)) {
             if (typeof normalizedOptions.onReuse === 'function') {
                 normalizedOptions.onReuse();
             }
-            requestSharedNamedWindowFocus(effectiveWindowName);
+            requestSharedNamedWindowFocus(
+                effectiveWindowName,
+                delegateNavigation ? { type: 'neko:navigate-on-reuse', url: targetUrl } : undefined
+            );
             return createSharedNamedWindowProxy(effectiveWindowName);
         }
 

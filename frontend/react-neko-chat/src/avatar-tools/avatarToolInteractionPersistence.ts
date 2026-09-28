@@ -93,8 +93,17 @@ export function validateAvatarToolInteractionGraph(
   ),
   maxDelayMs = Number.MAX_SAFE_INTEGER,
   maxNameChars = Number.MAX_SAFE_INTEGER,
+  maxInteractions = Number.MAX_SAFE_INTEGER,
 ): AvatarToolInteractionValidationIssue[] {
   const issues: AvatarToolInteractionValidationIssue[] = [];
+  if (state.items.length > maxInteractions) {
+    issues.push({
+      key: 'interaction:too-many',
+      code: 'too-many-interactions',
+      interactionCount: state.items.length,
+      maxInteractions,
+    });
+  }
   const interactionIds = new Set(state.items.map(item => item.id));
   const imageIdSet = new Set(imageIds);
   const validInitialImageTargetIds = state.initialImageTargetIds.filter(id => interactionIds.has(id));

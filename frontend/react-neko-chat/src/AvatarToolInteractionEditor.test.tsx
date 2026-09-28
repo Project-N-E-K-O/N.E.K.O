@@ -5,6 +5,7 @@ import AvatarToolCreatePage from './AvatarToolCreatePage';
 import AvatarToolEditorWorkspace from './AvatarToolEditorWorkspace';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import { LocalAvatarToolCreateError } from './avatar-tools/localTools';
+import type { AvatarToolInteractionEditorState } from './avatar-tools/avatarToolInteractionEditorModel';
 import type {
   CreateLocalAvatarToolInput,
   LocalAvatarToolDetail,
@@ -39,10 +40,12 @@ function validPng(name: string): File {
 }
 
 let connectInitialImageToSelected: () => void = () => undefined;
+let resetInteractionState: (state: AvatarToolInteractionEditorState) => void = () => undefined;
 let saveTool = vi.fn(async (_input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput) => undefined);
 
 function InteractionTestBridge() {
   const { state, dispatch } = useAvatarToolInteractionEditor();
+  resetInteractionState = next => dispatch({ type: 'reset', state: next });
   connectInitialImageToSelected = () => {
     if (state.selectedInteractionId) {
       dispatch({
@@ -56,16 +59,16 @@ function InteractionTestBridge() {
   return null;
 }
 
-function renderEditor(initialDetail?: LocalAvatarToolDetail) {
+function renderEditor(initialDetail?: LocalAvatarToolDetail, limits: LocalAvatarToolLimits = LIMITS) {
   render(
     <AvatarToolEditorWorkspace
       title="Create custom tool"
       dialogRef={createRef<HTMLElement>()}
-      limits={LIMITS}
+      limits={limits}
     >
       <InteractionTestBridge />
       <AvatarToolCreatePage
-        limits={LIMITS}
+        limits={limits}
         initialDetail={initialDetail}
         onSpecialEnabledChange={() => undefined}
         onSave={saveTool}
@@ -119,6 +122,34 @@ describe('avatar tool editor interaction flow', () => {
     expect(interactionSettings).toHaveFocus();
     fireEvent.keyDown(interactionSettings, { key: 'ArrowRight' });
     expect(toolSettings).toHaveFocus();
+  });
+
+  it('keeps a selected interaction when Backspace is pressed outside the canvas', async () => {
+    renderEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    act(() => connectInitialImageToSelected());
+    const node = document.querySelector<HTMLElement>('.react-flow__node[data-id^="ix-"]')!;
+    fireEvent.click(node);
+    expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(1);
+
+    const toolSettings = screen.getByRole('tab', { name: 'Tool settings' });
+    fireEvent.click(toolSettings);
+    toolSettings.focus();
+    fireEvent.keyDown(toolSettings, { key: 'Backspace' });
+    fireEvent.keyUp(toolSettings, { key: 'Backspace' });
+    fireEvent.keyDown(document.body, { key: 'Delete' });
+    fireEvent.keyUp(document.body, { key: 'Delete' });
+    await act(async () => undefined);
+    expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(1);
+    expect(document.querySelectorAll('.react-flow__edge.is-initial-link')).toHaveLength(1);
+
+    node.focus();
+    fireEvent.keyDown(node, { key: 'Backspace' });
+    fireEvent.keyUp(node, { key: 'Backspace' });
+    await waitFor(() => (
+      expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(0)
+    ));
+    expect(document.querySelectorAll('.react-flow__edge.is-initial-link')).toHaveLength(0);
   });
 
   it('applies a connected flow preset before any image is added', () => {
@@ -212,9 +243,10 @@ describe('avatar tool editor interaction flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
     fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: ' mouse CLICK 1 ' } });
     expect(screen.getByLabelText('Interaction name')).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByText(
+    // The earlier failed submit keeps the interaction issue list live, so the message may appear twice.
+    expect(screen.getAllByText(
       '“mouse CLICK 1” is already used by another interaction. Choose a different name.',
-    )).toBeVisible();
+    )[0]).toBeVisible();
 
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
     expect(screen.getAllByText(/already used by another interaction/).length).toBeGreaterThanOrEqual(1);
@@ -380,7 +412,7 @@ describe('avatar tool editor interaction flow', () => {
 
   it('returns a rejected image upload to the matching image field', async () => {
     saveTool = vi.fn(async () => {
-      throw new LocalAvatarToolCreateError('image_invalid', { field: 'image', index: 0 });
+      throw new LocalAvatarToolCreateError('resource_reference_invalid', { field: 'image', index: 0 });
     });
     renderEditor();
     fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Broken image' } });
@@ -397,6 +429,38 @@ describe('avatar tool editor interaction flow', () => {
     expect(rejectedImageField.nextElementSibling).toHaveTextContent(
       'Could not save this tool. Please try again.',
     );
+  });
+
+  it.each([
+    ['image_animated', 'image', 'This image cannot be used. Please choose another PNG.'],
+    ['image_too_large', 'image', 'The image must be no larger than 8 MB.'],
+    ['upload_too_large', 'image', 'The image must be no larger than 8 MB.'],
+    [
+      'image_pixels_exceeded',
+      'image',
+      'The image dimensions are too large. Choose a PNG with no more than 16000000 total pixels.',
+    ],
+    ['audio_too_long', 'normal_sound', 'The MP3 must be no longer than 10 seconds.'],
+    ['upload_too_large', 'normal_sound', 'The MP3 must be no larger than 5 MB.'],
+    ['audio_not_mp3', 'normal_sound', 'This sound cannot be used. Choose another MP3.'],
+    ['resource_reference_invalid', 'normal_sound', 'Could not save this tool. Please try again.'],
+  ])('explains a rejected %s upload on %s at the field and above the form', async (code, field, message) => {
+    saveTool = vi.fn(async () => {
+      throw new LocalAvatarToolCreateError(code, { field, index: field === 'image' ? 0 : undefined });
+    });
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Rejected media' } });
+    await addImage(validPng('A.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    act(() => connectInitialImageToSelected());
+
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    await waitFor(() => expect(saveTool).toHaveBeenCalledTimes(1));
+    const fieldSelector = field === 'image' ? '[data-error-key^="image_file:"]' : `[data-error-key="${field}"]`;
+    await waitFor(() => expect(document.querySelector('.avatar-tool-create-error')).toHaveTextContent(message));
+    const fieldElement = document.querySelector(fieldSelector)!;
+    expect(field === 'image' ? fieldElement.nextElementSibling : fieldElement).toHaveTextContent(message);
   });
 
   it('lets a delayed switch finish without changing the current image', async () => {
@@ -467,6 +531,72 @@ describe('avatar tool editor interaction flow', () => {
     fireEvent.change(screen.getByLabelText('Wait time'), { target: { value: '800' } });
     await waitFor(() => expect(screen.queryByText(/Interaction issues:/)).not.toBeInTheDocument());
     expect(screen.queryByText('Fix the interaction flow before saving.')).not.toBeInTheDocument();
+  });
+
+  it('clears interaction markers shown with content errors once the flow is fixed', async () => {
+    renderEditor();
+    await addImage(validPng('A.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    expect(await screen.findByText('Please enter a tool name.')).toBeVisible();
+    expect(document.querySelector('.avatar-tool-initial-image-node')).toHaveClass('has-error');
+
+    fireEvent.click(document.querySelector('[data-avatar-tool-interaction-id]')!);
+    act(() => connectInitialImageToSelected());
+    await waitFor(() => (
+      expect(document.querySelector('.avatar-tool-initial-image-node')).not.toHaveClass('has-error')
+    ));
+    expect(screen.queryByText(/Interaction issues:/)).not.toBeInTheDocument();
+  });
+
+  it('stops duplicating at the interaction limit and lists an over-limit flow as a real issue', async () => {
+    const limits = { ...LIMITS, maxInteractions: 3 };
+    renderEditor(undefined, limits);
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Capped' } });
+    await addImage(validPng('A.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    expect(screen.getByRole('button', { name: 'Duplicate' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    expect(screen.getByRole('button', { name: 'Mouse click' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Duplicate' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+    expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(3);
+
+    // A stored or externally edited flow can still arrive above the limit.
+    act(() => resetInteractionState({
+      items: ['ix-a', 'ix-b', 'ix-c', 'ix-d'].map((id, index) => ({
+        id: id as `ix-${string}`,
+        kind: 'mouse-click' as const,
+        position: { x: index * 260, y: 0 },
+        press: { kind: 'keep' as const },
+        release: { kind: 'keep' as const },
+      })),
+      links: [['ix-a', 'ix-b'], ['ix-b', 'ix-c'], ['ix-c', 'ix-d']].map(([from, to]) => ({
+        id: `link-${from}-${to}` as `link-${string}`,
+        from: from as `ix-${string}`,
+        to: to as `ix-${string}`,
+        sourceSide: 'right' as const,
+        targetSide: 'left' as const,
+      })),
+      initialImageTargetIds: ['ix-a'],
+      initialImageLinkSides: { 'ix-a': { sourceSide: 'right', targetSide: 'left' } },
+      initialImagePosition: { x: -180, y: 0 },
+      selectedInteractionId: 'ix-b',
+      selectedLinkId: null,
+      selectedInitialLinkTargetId: null,
+    }));
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+    const tooMany = 'This flow has 4 interactions. Remove some so there are no more than 3.';
+    expect(await screen.findByText(tooMany)).toBeVisible();
+    expect(screen.getByText('Interaction issues: 1')).toBeVisible();
+    expect(saveTool).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: 'Renamed' } });
+    await act(async () => undefined);
+    expect(screen.getByText(tooMany)).toBeVisible();
+    expect(screen.getByText('Fix the interaction flow before saving.')).toBeVisible();
   });
 
   it('does not present an initial-image connection error as a button with no action', async () => {

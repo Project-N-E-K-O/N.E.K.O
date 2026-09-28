@@ -16,6 +16,7 @@ import {
   planAvatarToolEdgeRoutes,
 } from './avatar-tools/avatarToolEdgeRouter';
 import { findAvailableAvatarToolInteractionPosition } from './avatar-tools/avatarToolInteractionEditorModel';
+import { planAvatarToolCanvasRoutes } from './AvatarToolInteractionCanvas';
 import type { LocalAvatarToolLimits } from './avatar-tools/localTools';
 
 const LIMITS: LocalAvatarToolLimits = {
@@ -495,6 +496,43 @@ describe('AvatarToolEditorWorkspace', () => {
     expect(nextRoutes.get('a-c')).not.toBe(previousRoutes.get('a-c'));
     expect(nextRoutes.get('d-e')).toBe(previousRoutes.get('d-e'));
     expect(nextRoutes.get('a-b')!.points[0].y).toBeGreaterThan(nextRoutes.get('a-c')!.points[0].y);
+  });
+
+  it('skips the exhaustive port search while dragging and restores it for the final route', () => {
+    const boxes = new Map([
+      ['a', { x: 0, y: 0, width: 228, height: 104 }],
+      ['blocker', { x: 236, y: 40, width: 30, height: 24 }],
+      ['c', { x: 600, y: 0, width: 228, height: 104 }],
+    ]);
+    const edges = [{
+      id: 'a-c',
+      source: 'a',
+      target: 'c',
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    }];
+
+    const final = planAvatarToolEdgeRoutes(edges, boxes).get('a-c')!;
+    const dragging = planAvatarToolEdgeRoutes(edges, boxes, { interactive: true }).get('a-c')!;
+    // The centered port is blocked, so only the exhaustive search finds the shifted port.
+    expect(final.points[0]).toEqual({ x: 228, y: 16 });
+    expect(dragging.points[0]).toEqual({ x: 228, y: 52 });
+    expect(dragging.sourcePosition).toBe(Position.Right);
+    expect(dragging.targetPosition).toBe(Position.Left);
+    expect(planAvatarToolEdgeRoutes(edges, boxes, { interactive: false })).toEqual(
+      planAvatarToolEdgeRoutes(edges, boxes),
+    );
+
+    // Dropping re-plans from the last committed layout, not from the cheaper drag drafts.
+    const caches = { latest: null, committed: null };
+    const withTarget = (x: number) => new Map([...boxes, ['c', { x, y: 0, width: 228, height: 104 }]]);
+    planAvatarToolCanvasRoutes(caches, edges, withTarget(900), 'topology', false);
+    planAvatarToolCanvasRoutes(caches, edges, withTarget(750), 'topology', true);
+    const lastDragFrame = planAvatarToolCanvasRoutes(caches, edges, withTarget(600), 'topology', true);
+    expect(lastDragFrame.get('a-c')!.points[0]).toEqual({ x: 228, y: 52 });
+    const dropped = planAvatarToolCanvasRoutes(caches, edges, withTarget(600), 'topology', false);
+    expect(dropped).toEqual(planAvatarToolEdgeRoutes(edges, withTarget(600)));
+    expect(dropped.get('a-c')).toEqual(final);
   });
 
   it('keeps a clear facing connection straight without endpoint doglegs', () => {
@@ -1075,6 +1113,26 @@ describe('AvatarToolEditorWorkspace', () => {
       </AvatarToolInteractionEditorProvider>,
     );
     expect(screen.getByRole('button', { name: 'Curve' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('deletes the selected connection only from inside the canvas', () => {
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <PreparedCanvas />
+        <button type="button">Outside</button>
+      </AvatarToolInteractionEditorProvider>,
+    );
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    outside.focus();
+    fireEvent.keyDown(outside, { key: 'Delete' });
+    fireEvent.keyUp(outside, { key: 'Delete' });
+    expect(document.querySelector('.react-flow__edge[data-id="link-a-b"]')).toBeInTheDocument();
+
+    const edge = document.querySelector<HTMLElement>('.react-flow__edge[data-id="link-a-b"]')!;
+    edge.focus();
+    fireEvent.keyDown(edge, { key: 'Delete' });
+    expect(document.querySelector('.react-flow__edge[data-id="link-a-b"]')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.react-flow__node[data-id^="ix-"]')).toHaveLength(4);
   });
 
   it('keeps movement free and aligns a node only when its dropped position is committed', () => {

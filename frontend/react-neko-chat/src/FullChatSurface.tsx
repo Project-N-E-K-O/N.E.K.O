@@ -614,8 +614,9 @@ export default function FullChatSurface({
 
   const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
     applyEditorResult(result);
-    setAvatarToolManagerOpen(true);
-  }, [applyEditorResult]);
+    // 输入区隐藏或猫咪本地文字模式下道具入口不可见，编辑器回传的结果只落槽位，不拉起管理弹窗。
+    if (!catLocalTextOnly && !composerHidden) setAvatarToolManagerOpen(true);
+  }, [applyEditorResult, catLocalTextOnly, composerHidden]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -3174,7 +3175,7 @@ export default function FullChatSurface({
       {compactChoiceLayerNode}
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <AvatarToolItemManager
-        open={!composerHidden && avatarToolManagerOpen}
+        open={!composerHidden && !catLocalTextOnly && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
         availableTools={localAvatarToolCatalog.items}
         runnableToolIds={localAvatarToolCatalog.registry.validIds}

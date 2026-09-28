@@ -545,12 +545,16 @@ def test_i18n_script_prefers_manual_ui_language_override_without_persisting_it()
 
 
 @pytest.mark.unit
-def test_i18n_script_syncs_ui_language_between_same_origin_windows():
+def test_i18n_script_syncs_ui_language_only_into_the_avatar_tool_editor_window():
+    # Behavior is exercised in test_i18n_cross_window_language_follow.py; this pins
+    # that the follow stays scoped to the editor page and yields to the server override.
     script = I18N_JS.read_text(encoding="utf-8")
 
-    assert "window.addEventListener('storage', (event) =>" in script
+    assert "window.addEventListener('storage', followCrossWindowLanguage)" in script
+    assert "window.addEventListener('storage', (event) =>" not in script
     assert "event.key !== 'i18nextLng'" in script
-    assert "normalizeSupportedLanguageCode(event.newValue)" in script
+    assert "classList.contains('avatar-tool-editor-page')" in script
+    assert "if (serverUiLanguageOverride) return;" in script
     assert "void i18next.changeLanguage(language)" in script
 
 

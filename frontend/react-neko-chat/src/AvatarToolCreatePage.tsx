@@ -267,6 +267,7 @@ export default function AvatarToolCreatePage({
         item => avatarToolInteractionDisplayName(interactionState, item),
         limits.maxDelayMs,
         limits.maxNameChars,
+        limits.maxInteractions,
       );
       setInteractionIssues(nextIssues);
       if (nextIssues.length === 0) {
@@ -274,7 +275,7 @@ export default function AvatarToolCreatePage({
         setInteractionSubmitFailed(false);
       }
     }
-  }, [graphRevision, limits.maxDelayMs, limits.maxNameChars]); // Revalidate semantic and naming edits after a failed submit; layout does not change validity.
+  }, [graphRevision, limits.maxDelayMs, limits.maxInteractions, limits.maxNameChars]); // Revalidate semantic and naming edits after a failed submit; layout does not change validity.
 
   const actualImageReferences = useMemo(() => {
     const references: Partial<Record<AvatarToolImageId, string[]>> = {};
@@ -354,6 +355,37 @@ export default function AvatarToolCreatePage({
       'chat.avatarToolCreateImageInvalidError',
       'This image cannot be used. Please choose another PNG.',
     );
+  };
+
+  // Maps server media and probability rejections to the matching field message; structural or
+  // transient codes (resource references, manifests) keep the generic save error.
+  const mediaCreateErrorMessage = (cause: LocalAvatarToolCreateError): string | null => {
+    const code = cause.message;
+    if (cause.field === 'image' || cause.field === 'special_image') {
+      if (code === 'image_too_large' || code === 'upload_too_large') return imageValidationMessage('too-large');
+      if (code === 'image_pixels_exceeded') return imageValidationMessage('too-many-pixels');
+      return code.startsWith('image_') ? imageValidationMessage('invalid') : null;
+    }
+    if (cause.field === 'normal_sound' || cause.field === 'special_sound') {
+      const audioCode = code.startsWith('special_') ? code.slice('special_'.length) : code;
+      if (audioCode === 'audio_too_large' || audioCode === 'upload_too_large') {
+        return i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
+          size: formatLimit(limits.maxAudioBytes),
+        });
+      }
+      if (audioCode === 'audio_too_long') {
+        return i18n('chat.avatarToolCreateAudioDurationError', 'The MP3 must be no longer than {{seconds}} seconds.', {
+          seconds: String(Math.round(limits.maxAudioDurationMs / 1000)),
+        });
+      }
+      return audioCode.startsWith('audio_')
+        ? i18n('chat.avatarToolCreateAudioInvalidError', 'This sound cannot be used. Choose another MP3.')
+        : null;
+    }
+    if (cause.field === 'special_probability' && code === 'special_probability_invalid') {
+      return i18n('chat.avatarToolCreateSpecialProbabilityInvalid', 'Choose a trigger chance from 1% to 100%.');
+    }
+    return null;
   };
 
   const validateAndAcceptImage = async (
@@ -591,6 +623,7 @@ export default function AvatarToolCreatePage({
       item => avatarToolInteractionDisplayName(interactionState, item),
       limits.maxDelayMs,
       limits.maxNameChars,
+      limits.maxInteractions,
     );
     if (
       interactionState.items.length > limits.maxInteractions
@@ -613,7 +646,8 @@ export default function AvatarToolCreatePage({
         });
       }
       setActivePane('content');
-      setInteractionSubmitFailed(false);
+      // Keep revalidating the interaction markers shown alongside the content errors.
+      setInteractionSubmitFailed(nextInteractionIssues.length > 0);
       showFieldErrors(nextErrors);
       return;
     }
@@ -730,7 +764,7 @@ export default function AvatarToolCreatePage({
         setError(i18n('chat.avatarToolInteractionFixBeforeSave', 'Fix the interaction flow before saving.'));
       } else if (cause instanceof LocalAvatarToolCreateError && cause.field) {
         let fieldKey = cause.field;
-        let fieldMessage = saveError;
+        let fieldMessage = mediaCreateErrorMessage(cause) ?? saveError;
         if (cause.field === 'image' && cause.index !== undefined && images[cause.index]) {
           const imageId = images[cause.index].id;
           fieldKey = `image_file:${imageId}`;
@@ -776,10 +810,10 @@ export default function AvatarToolCreatePage({
         ]);
         if (contentFields.has(fieldKey) || fieldKey.startsWith('image_')) {
           setActivePane('content');
-          setError(saveError);
+          setError(fieldMessage);
           showFieldErrors({ [fieldKey]: fieldMessage });
         } else {
-          setError(saveError);
+          setError(fieldMessage);
         }
       } else {
         setError(saveError);
@@ -1177,6 +1211,7 @@ export default function AvatarToolCreatePage({
               busy={busy}
               maxDelayMs={limits.maxDelayMs}
               maxNameChars={limits.maxNameChars}
+              maxInteractions={limits.maxInteractions}
             />
           </div>
         )}

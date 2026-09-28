@@ -73,7 +73,8 @@ export type AvatarToolInteractionValidationCode =
   | 'duplicate-link'
   | 'unreachable'
   | 'ambiguous-click'
-  | 'ambiguous-delay';
+  | 'ambiguous-delay'
+  | 'too-many-interactions';
 
 export type AvatarToolInteractionValidationIssue = {
   key: string;
@@ -84,11 +85,13 @@ export type AvatarToolInteractionValidationIssue = {
   waitingAfterId?: AvatarToolInteractionId;
   delayMs?: number;
   maxNameChars?: number;
+  interactionCount?: number;
+  maxInteractions?: number;
 };
 
 export type AvatarToolInteractionEditorAction =
   | { type: 'reset'; state: AvatarToolInteractionEditorState }
-  | { type: 'add'; interaction: AvatarToolInteractionDraft }
+  | { type: 'add'; interaction: AvatarToolInteractionDraft; maxInteractions?: number }
   | { type: 'select-interaction'; interactionId: AvatarToolInteractionId | null }
   | { type: 'select-link'; linkId: AvatarToolInteractionLinkId | null }
   | { type: 'select-initial-link'; interactionId: AvatarToolInteractionId | null }
@@ -108,4 +111,9 @@ export type AvatarToolInteractionEditorAction =
   | { type: 'connect'; link: AvatarToolInteractionLinkDraft }
   | { type: 'remove-link'; linkId: AvatarToolInteractionLinkId }
   | { type: 'remove-interaction'; interactionId: AvatarToolInteractionId }
-  | { type: 'duplicate-interaction'; sourceId: AvatarToolInteractionId; duplicate: AvatarToolInteractionDraft };
+  | {
+    type: 'duplicate-interaction';
+    sourceId: AvatarToolInteractionId;
+    duplicate: AvatarToolInteractionDraft;
+    maxInteractions?: number;
+  };

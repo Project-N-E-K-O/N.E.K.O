@@ -10,6 +10,37 @@ import {
 } from './avatar-tools/localTools';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
 import { getAvatarToolItemLabel, isLocalAvatarToolId } from './avatarTools';
+import {
+  AVATAR_TOOL_EDITOR_WINDOW_NAME,
+  confirmDiscardAvatarToolEditorChanges,
+  isSameAvatarToolEditorTarget,
+} from './AvatarToolItemManager';
+
+declare global {
+  interface Window {
+    nekoBeforeWindowClose?: () => unknown;
+  }
+}
+
+const SHARED_WINDOW_REGISTRY_KEY = `neko:named-window:${AVATAR_TOOL_EDITOR_WINDOW_NAME}`;
+const SHARED_WINDOW_FOCUS_KEY = `neko:named-window-focus:${AVATAR_TOOL_EDITOR_WINDOW_NAME}`;
+const SHARED_WINDOW_CHANNEL = 'neko:named-window';
+const SHARED_WINDOW_HEARTBEAT_MS = 1000;
+
+type SharedWindowMessage = {
+  type?: unknown;
+  windowName?: unknown;
+  timestamp?: unknown;
+  payload?: { type?: unknown; url?: unknown } | null;
+};
+
+function restoreAndFocusEditorWindow() {
+  try {
+    const control = (window as unknown as { nekoWindowControl?: { restore?: () => unknown } }).nekoWindowControl;
+    if (typeof control?.restore === 'function') void Promise.resolve(control.restore()).catch(() => undefined);
+  } catch (_) {}
+  try { window.focus(); } catch (_) {}
+}
 
 type EditorMode = 'create' | 'edit';
 type EditorResultAction = 'created' | 'updated' | 'deleted';
@@ -60,6 +91,90 @@ export default function AvatarToolStandaloneEditor() {
       if (window.avatarToolEditorHasUnsavedChanges === hasUnsavedChanges) {
         delete window.avatarToolEditorHasUnsavedChanges;
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Last line of defense for an edited draft: reload, a window.open(name)
+    // navigation from a reloaded opener, or closing the page.
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    // The desktop title-bar close button (window_controls.js) asks this hook
+    // first; confirming discards the draft so beforeunload stays quiet.
+    const beforeWindowClose = async () => {
+      if (!dirtyRef.current) return undefined;
+      if (!confirmDiscardAvatarToolEditorChanges()) return { handled: true };
+      dirtyRef.current = false;
+      return undefined;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.nekoBeforeWindowClose = beforeWindowClose;
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (window.nekoBeforeWindowClose === beforeWindowClose) delete window.nekoBeforeWindowClose;
+    };
+  }, []);
+
+  useEffect(() => {
+    // Register in the shared named-window registry (static/common_dialogs.js)
+    // so an opener without a live handle focuses this editor and delegates the
+    // target switch here instead of navigating over an unsaved draft.
+    let lastMessageTimestamp: unknown = null;
+    const markActive = () => {
+      try {
+        window.localStorage.setItem(SHARED_WINDOW_REGISTRY_KEY, JSON.stringify({
+          url: window.location.href,
+          timestamp: Date.now(),
+        }));
+      } catch (_) {}
+    };
+    const clearActive = () => {
+      try { window.localStorage.removeItem(SHARED_WINDOW_REGISTRY_KEY); } catch (_) {}
+    };
+    const handleMessage = (data: SharedWindowMessage | null | undefined) => {
+      if (!data || data.windowName !== AVATAR_TOOL_EDITOR_WINDOW_NAME) return;
+      if (data.type !== 'neko:named-window-focus' && data.type !== 'neko:named-window-message') return;
+      // common_dialogs.js sends each request over BroadcastChannel and storage.
+      if (data.timestamp !== undefined && data.timestamp === lastMessageTimestamp) return;
+      lastMessageTimestamp = data.timestamp;
+      restoreAndFocusEditorWindow();
+      const payload = data.payload;
+      if (payload?.type !== 'neko:navigate-on-reuse' || typeof payload.url !== 'string') return;
+      try {
+        const target = new URL(payload.url, window.location.href);
+        if (target.origin !== window.location.origin || target.pathname !== window.location.pathname) return;
+        if (isSameAvatarToolEditorTarget(window.location.href, target.href)) return;
+        if (dirtyRef.current && !confirmDiscardAvatarToolEditorChanges()) return;
+        dirtyRef.current = false;
+        window.location.replace(target.href);
+      } catch (_) {}
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== SHARED_WINDOW_FOCUS_KEY || !event.newValue) return;
+      try { handleMessage(JSON.parse(event.newValue) as SharedWindowMessage); } catch (_) {}
+    };
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel === 'function') {
+        channel = new BroadcastChannel(SHARED_WINDOW_CHANNEL);
+        channel.onmessage = (event: MessageEvent) => handleMessage(event.data as SharedWindowMessage);
+      }
+    } catch (_) {
+      channel = null;
+    }
+    markActive();
+    const heartbeat = window.setInterval(markActive, SHARED_WINDOW_HEARTBEAT_MS);
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('pagehide', clearActive);
+    return () => {
+      window.clearInterval(heartbeat);
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('pagehide', clearActive);
+      try { channel?.close(); } catch (_) {}
+      clearActive();
     };
   }, []);
 

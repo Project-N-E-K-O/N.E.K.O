@@ -1,5 +1,5 @@
 import type { CustomGraphProfile } from './catalog';
-import { createCustomGraphRuntime } from './customGraphRuntime';
+import { CUSTOM_GRAPH_MIN_STEP_MS, createCustomGraphRuntime } from './customGraphRuntime';
 import {
   buildLocalAvatarToolImageInteractions,
   createAvatarToolInteractionPresetState,
@@ -167,6 +167,38 @@ describe('custom graph runtime', () => {
     expect(clock.size).toBe(1);
     delayed.destroy();
     expect(clock.size).toBe(0);
+  });
+
+  it('floors a saved 1ms two-image cycle to the minimum playback step', () => {
+    vi.useFakeTimers();
+    try {
+      const source = profile();
+      source.initialInteractionIds = ['ix-to-b'];
+      source.interactions = [
+        { id: 'ix-to-b', trigger: { kind: 'after', delayMs: 1 }, actions: { complete: { kind: 'show', imageId: 'img-b' } } },
+        { id: 'ix-to-a', trigger: { kind: 'after', delayMs: 1 }, actions: { complete: { kind: 'show', imageId: 'img-a' } } },
+      ];
+      source.links = [{ from: 'ix-to-b', to: 'ix-to-a' }, { from: 'ix-to-a', to: 'ix-to-b' }];
+      const onImageChange = vi.fn();
+      const runtime = createCustomGraphRuntime(source, {
+        scheduler: {
+          now: () => Date.now(),
+          setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+          clearTimeout: timeoutId => window.clearTimeout(timeoutId),
+        },
+        onImageChange,
+      });
+
+      vi.advanceTimersByTime(CUSTOM_GRAPH_MIN_STEP_MS - 1);
+      expect(onImageChange).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onImageChange).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1000 - CUSTOM_GRAPH_MIN_STEP_MS);
+      expect(onImageChange).toHaveBeenCalledTimes(1000 / CUSTOM_GRAPH_MIN_STEP_MS);
+      runtime.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('holds the clicked frame for one delay before the cycle-stop preset resumes', () => {

@@ -1,4 +1,5 @@
 import type {
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -22,6 +23,7 @@ type AvatarToolEditorWorkspaceProps = {
   backButtonRef?: RefObject<HTMLButtonElement>;
   onBack?(): void;
   showHeader?: boolean;
+  onKeyDown?(event: ReactKeyboardEvent<HTMLElement>): void;
   onPointerDown?(event: ReactPointerEvent<HTMLElement>): void;
   onMouseDown?(event: ReactMouseEvent<HTMLElement>): void;
   onInteractionEdit?(): void;
@@ -35,6 +37,7 @@ export default function AvatarToolEditorWorkspace({
   backButtonRef,
   onBack,
   showHeader = true,
+  onKeyDown,
   onPointerDown,
   onMouseDown,
   onInteractionEdit,
@@ -50,6 +53,7 @@ export default function AvatarToolEditorWorkspace({
         aria-label={showHeader ? undefined : title}
         aria-labelledby={showHeader ? 'avatar-tool-editor-workspace-title' : undefined}
         tabIndex={-1}
+        onKeyDown={onKeyDown}
         onPointerDown={onPointerDown}
         onMouseDown={onMouseDown}
         onClick={(event) => event.stopPropagation()}
@@ -99,7 +103,7 @@ export default function AvatarToolEditorWorkspace({
               <h3>{i18n('chat.avatarToolWorkspaceEditorTitle', 'Tool editor')}</h3>
               <p className="avatar-tool-workspace-content-note">{i18n(
                 'chat.avatarToolCreatePrivacy',
-                'Images and sounds stay on this device; during interactions, the current image or surprise prompt is sent to the model.',
+                'Images and sounds stay on this device. During interactions, the prompt text for the current image or surprise is sent to the model, and the tool\'s name is saved to the character\'s memory and may come up in later conversations.',
               )}</p>
             </div>
             <div className="avatar-tool-workspace-settings-body">

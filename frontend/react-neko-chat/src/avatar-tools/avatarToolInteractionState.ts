@@ -99,7 +99,10 @@ export function avatarToolInteractionEditorReducer(
     case 'reset':
       return action.state;
     case 'add':
-      if (hasInteraction(state, action.interaction.id)) return state;
+      if (
+        hasInteraction(state, action.interaction.id)
+        || state.items.length >= (action.maxInteractions ?? Number.POSITIVE_INFINITY)
+      ) return state;
       return {
         ...state,
         items: [...state.items, action.interaction],
@@ -257,7 +260,11 @@ export function avatarToolInteractionEditorReducer(
       };
     }
     case 'duplicate-interaction':
-      if (!hasInteraction(state, action.sourceId) || hasInteraction(state, action.duplicate.id)) return state;
+      if (
+        !hasInteraction(state, action.sourceId)
+        || hasInteraction(state, action.duplicate.id)
+        || state.items.length >= (action.maxInteractions ?? Number.POSITIVE_INFINITY)
+      ) return state;
       return {
         ...state,
         items: [...state.items, action.duplicate],

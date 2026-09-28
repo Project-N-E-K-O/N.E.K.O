@@ -88,10 +88,21 @@ export function readPersistedActiveAvatarToolIds(surface: AvatarToolSurface = 'c
 
   try {
     const rawValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[surface]);
-    if (rawValue === null || typeof rawValue === 'undefined') {
-      return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
+    if (rawValue !== null && typeof rawValue !== 'undefined') {
+      return sanitizeAvatarToolSlots(JSON.parse(rawValue));
     }
-    return sanitizeAvatarToolSlots(JSON.parse(rawValue));
+    // v0.9.0 及更早版本 Full 和 Compact 共用 compact 这把 key。Full 第一次读不到
+    // 自己的 key 时继承旧值，并当场落盘成 Full 自己的一份：之后 Compact 再怎么
+    // 保存都不会渗进 Full。两边都没有就给默认值，不写盘。
+    if (surface === 'full') {
+      const legacyValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact);
+      if (legacyValue !== null && typeof legacyValue !== 'undefined') {
+        const legacySlots = sanitizeAvatarToolSlots(JSON.parse(legacyValue));
+        window.localStorage?.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify(legacySlots));
+        return legacySlots;
+      }
+    }
+    return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   } catch {
     return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   }

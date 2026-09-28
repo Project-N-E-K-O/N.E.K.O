@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示、免费服务拒绝访问提示、屏幕共享悬停菜单提示、智谱 GLM 声音复刻文案，以及自定义道具 v3 编辑器文案，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-28-avatar-tool-v3-glm-voice-clone-merge';
+    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示、免费服务拒绝访问提示、屏幕共享悬停菜单提示、智谱 GLM 声音复刻文案，以及自定义道具 v3 编辑器文案（含互动数量上限提示），递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-avatar-tool-v3-review-fixes';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -391,9 +391,13 @@
         }
     }
 
+    // 服务端 uiLanguage 强制覆盖；生效时本窗口不跟随其他窗口写入的 i18nextLng。
+    let serverUiLanguageOverride = null;
+
     // 获取初始语言：uiLanguage 强制覆盖 > URL 参数 > Steam 设置 > localStorage / 浏览器设置 > 默认中文
     async function getInitialLanguage() {
         const serverLanguages = await getServerLanguagePreferences();
+        serverUiLanguageOverride = serverLanguages.uiLanguage || null;
         if (serverLanguages.uiLanguage) {
             return serverLanguages.uiLanguage;
         }
@@ -897,6 +901,21 @@
     }
 
     /**
+     * 同源独立窗口（自定义道具编辑器）收不到主窗口派发的 localechange，只能靠
+     * i18nextLng 的 storage 事件跟随主窗口语言。这是编辑器页面的显式选择：其他
+     * 页面有自己的语言入口，启动时也会写 i18nextLng，若都跟随会被任意窗口带着
+     * 切换语言；服务端 uiLanguage 覆盖生效时同样不跟随。
+     */
+    function followCrossWindowLanguage(event) {
+        if (event.key !== 'i18nextLng' || !event.newValue) return;
+        if (serverUiLanguageOverride) return;
+        if (!document.body || !document.body.classList.contains('avatar-tool-editor-page')) return;
+        const language = normalizeSupportedLanguageCode(event.newValue);
+        if (!language || language === i18next.language) return;
+        void i18next.changeLanguage(language);
+    }
+
+    /**
      * 导出正常函数（初始化成功后使用）
      */
     function exportNormalFunctions() {
@@ -929,14 +948,7 @@
             window.dispatchEvent(new CustomEvent('localechange'));
         });
 
-        // 同源独立窗口（例如自定义道具编辑器）不会收到另一个窗口派发的
-        // localechange；通过 i18nextLng 的 storage 事件跟随主窗口语言变化。
-        window.addEventListener('storage', (event) => {
-            if (event.key !== 'i18nextLng' || !event.newValue) return;
-            const language = normalizeSupportedLanguageCode(event.newValue);
-            if (!language || language === i18next.language) return;
-            void i18next.changeLanguage(language);
-        });
+        window.addEventListener('storage', followCrossWindowLanguage);
 
         // 导出语言切换函数
         window.changeLanguage = function (lng) {

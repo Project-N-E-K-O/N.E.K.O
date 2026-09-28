@@ -97,6 +97,12 @@ type AvatarToolRoutePlanCache = {
   boxes: ReadonlyMap<string, AvatarToolRouteNodeBox>;
   routes: ReadonlyMap<string, AvatarToolPlannedEdgeRoute>;
 };
+export type AvatarToolRoutePlanCaches = {
+  latest: AvatarToolRoutePlanCache | null;
+  // Last plan made outside a drag. Drag frames use cheaper draft routes, so the plan after a drop
+  // starts from this baseline instead of from the drafts.
+  committed: AvatarToolRoutePlanCache | null;
+};
 
 const AVATAR_TOOL_INITIAL_IMAGE_NODE_ID = 'avatar-tool-initial-image';
 const AVATAR_TOOL_INITIAL_CONNECTION_EDGE_PREFIX = 'avatar-tool-initial-connection:';
@@ -130,6 +136,44 @@ export function snapAvatarToolNodePosition(position: { x: number; y: number }): 
     x: Math.round(position.x / AVATAR_TOOL_NODE_SNAP_GRID[0]) * AVATAR_TOOL_NODE_SNAP_GRID[0],
     y: Math.round(position.y / AVATAR_TOOL_NODE_SNAP_GRID[1]) * AVATAR_TOOL_NODE_SNAP_GRID[1],
   };
+}
+
+export function planAvatarToolCanvasRoutes(
+  caches: AvatarToolRoutePlanCaches,
+  edges: readonly AvatarToolRouteEdge[],
+  boxes: ReadonlyMap<string, AvatarToolRouteNodeBox>,
+  topologyKey: string,
+  dragging: boolean,
+): ReadonlyMap<string, AvatarToolPlannedEdgeRoute> {
+  const previous = dragging ? caches.latest : caches.committed;
+  const changedNodeIds = new Set<string>();
+  if (previous?.topologyKey === topologyKey) {
+    boxes.forEach((box, nodeId) => {
+      const oldBox = previous.boxes.get(nodeId);
+      if (
+        !oldBox
+        || box.x !== oldBox.x
+        || box.y !== oldBox.y
+        || box.width !== oldBox.width
+        || box.height !== oldBox.height
+      ) changedNodeIds.add(nodeId);
+    });
+  }
+  const routes = planAvatarToolEdgeRoutes(
+    edges,
+    boxes,
+    previous?.topologyKey === topologyKey
+      ? {
+        previousRoutes: previous.routes,
+        previousBoxes: previous.boxes,
+        changedNodeIds,
+        interactive: dragging,
+      }
+      : { interactive: dragging },
+  );
+  caches.latest = { topologyKey, boxes, routes };
+  if (!dragging) caches.committed = caches.latest;
+  return routes;
 }
 
 const AVATAR_TOOL_CONNECTION_POSITIONS = [
@@ -572,7 +616,7 @@ export function AvatarToolInteractionCanvas({
   const presetTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overviewPositionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overviewOpenButtonRef = useRef<HTMLButtonElement | null>(null);
-  const routePlanCacheRef = useRef<AvatarToolRoutePlanCache | null>(null);
+  const routePlanCachesRef = useRef<AvatarToolRoutePlanCaches>({ latest: null, committed: null });
   useLayoutEffect(() => {
     const refreshLocalizedContent = () => setLocaleRevision(revision => revision + 1);
     window.addEventListener('localechange', refreshLocalizedContent);
@@ -714,39 +758,14 @@ export function AvatarToolInteractionCanvas({
       ...AVATAR_TOOL_INTERACTION_NODE_SIZE,
     }] as const),
   ]), [routingGeometryKey]);
-  const plannedRoutes = useMemo(() => {
-    const previous = routePlanCacheRef.current;
-    const changedNodeIds = new Set<string>();
-    if (previous?.topologyKey === routingTopologyKey) {
-      positionById.forEach((box, nodeId) => {
-        const oldBox = previous.boxes.get(nodeId);
-        if (
-          !oldBox
-          || box.x !== oldBox.x
-          || box.y !== oldBox.y
-          || box.width !== oldBox.width
-          || box.height !== oldBox.height
-        ) changedNodeIds.add(nodeId);
-      });
-    }
-    const routes = planAvatarToolEdgeRoutes(
-      routeSeeds,
-      positionById,
-      previous?.topologyKey === routingTopologyKey
-        ? {
-          previousRoutes: previous.routes,
-          previousBoxes: previous.boxes,
-          changedNodeIds,
-        }
-        : undefined,
-    );
-    routePlanCacheRef.current = {
-      topologyKey: routingTopologyKey,
-      boxes: positionById,
-      routes,
-    };
-    return routes;
-  }, [positionById, routeSeeds, routingGeometryKey, routingTopologyKey]);
+  const routeDragging = draggingNodeIds.size > 0;
+  const plannedRoutes = useMemo(() => planAvatarToolCanvasRoutes(
+    routePlanCachesRef.current,
+    routeSeeds,
+    positionById,
+    routingTopologyKey,
+    routeDragging,
+  ), [positionById, routeDragging, routeSeeds, routingGeometryKey, routingTopologyKey]);
 
   const edges = useMemo<AvatarToolCanvasEdge[]>(() => {
     return routeSeeds.map((seed) => {
@@ -842,7 +861,11 @@ export function AvatarToolInteractionCanvas({
       ...state.items,
       { position: state.initialImagePosition },
     ]);
-    dispatch({ type: 'add', interaction: createAvatarToolInteractionDraft(kind, position) });
+    dispatch({
+      type: 'add',
+      interaction: createAvatarToolInteractionDraft(kind, position),
+      maxInteractions: limits.maxInteractions,
+    });
   }, [dispatch, flow, limits?.maxInteractions, state.initialImagePosition, state.items]);
 
   const applyPreset = useCallback((kind: AvatarToolInteractionPresetKind) => {
@@ -954,6 +977,43 @@ export function AvatarToolInteractionCanvas({
     return !state.links.some(link => link.from === connection.source && link.to === connection.target);
   }, [limits?.maxLinks, state.initialImageTargetIds, state.items, state.links]);
 
+  // xyflow's deleteKeyCode listens on the whole document, so a node that stays selected after
+  // switching to Tool settings would be deleted by Backspace there. Delete only from inside the flow.
+  const handleCanvasKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Backspace' && event.key !== 'Delete') return;
+    if (
+      event.defaultPrevented
+      || event.nativeEvent.isComposing
+      || event.ctrlKey
+      || event.metaKey
+      || event.altKey
+      || event.shiftKey
+    ) return;
+    const target = event.target;
+    if (
+      !(target instanceof Element)
+      || !target.closest('.react-flow')
+      || target.closest('input, select, textarea, button, [contenteditable], .nokey')
+    ) return;
+    // Canvas selection is single and mirrors the editor state, so this matches xyflow's removal:
+    // removing an interaction also drops its links and its initial connection.
+    if (state.selectedInteractionId) {
+      dispatch({ type: 'remove-interaction', interactionId: state.selectedInteractionId });
+    } else if (state.selectedLinkId) {
+      dispatch({ type: 'remove-link', linkId: state.selectedLinkId });
+    } else if (state.selectedInitialLinkTargetId) {
+      dispatch({ type: 'remove-initial-link', interactionId: state.selectedInitialLinkTargetId });
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }, [
+    dispatch,
+    state.selectedInitialLinkTargetId,
+    state.selectedInteractionId,
+    state.selectedLinkId,
+  ]);
+
   const ariaLabelConfig = {
     'node.a11yDescription.default': i18n(
       'chat.avatarToolWorkspaceNodeA11y',
@@ -972,7 +1032,12 @@ export function AvatarToolInteractionCanvas({
   };
 
   return (
-    <div ref={canvasRef} className="avatar-tool-workspace-canvas" data-testid="avatar-tool-workspace-canvas">
+    <div
+      ref={canvasRef}
+      className="avatar-tool-workspace-canvas"
+      data-testid="avatar-tool-workspace-canvas"
+      onKeyDown={handleCanvasKeyDown}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1061,7 +1126,7 @@ export function AvatarToolInteractionCanvas({
         connectionMode={ConnectionMode.Loose}
         nodeTypes={avatarToolNodeTypes}
         edgeTypes={avatarToolEdgeTypes}
-        deleteKeyCode={['Backspace', 'Delete']}
+        deleteKeyCode={null}
         selectionOnDrag
         selectNodesOnDrag={false}
         nodesFocusable

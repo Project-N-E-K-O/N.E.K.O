@@ -1,10 +1,12 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -75,7 +77,7 @@ const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 460;
 const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 680;
 const AVATAR_TOOL_CREATE_FALLBACK_HEIGHT = 780;
 const AVATAR_TOOL_CREATE_SPECIAL_FALLBACK_HEIGHT = 1040;
-const AVATAR_TOOL_EDITOR_WINDOW_NAME = 'neko_avatar_tool_editor_singleton';
+export const AVATAR_TOOL_EDITOR_WINDOW_NAME = 'neko_avatar_tool_editor_singleton';
 const AVATAR_TOOL_EDITOR_PREFERRED_WIDTH = 1280;
 const AVATAR_TOOL_EDITOR_PREFERRED_HEIGHT = 900;
 const AVATAR_TOOL_EDITOR_SCREEN_GUTTER = 48;
@@ -143,8 +145,11 @@ declare global {
       options?: {
         navigateOnReuse?: boolean;
         shouldNavigateOnReuse?: (existingWindow: Window, targetUrl: string) => boolean;
+        preserveGeometryOnReuse?: boolean;
+        delegateNavigationToSharedWindow?: boolean;
       },
     ) => Window | null;
+    buildCenteredPopupFeatures?: (windowWidth: number, windowHeight: number) => string;
     avatarToolEditorHasUnsavedChanges?: () => boolean;
   }
 }
@@ -184,6 +189,23 @@ function currentAvatarToolEditorLanguage(): string {
   }
 }
 
+export function confirmDiscardAvatarToolEditorChanges(): boolean {
+  return window.confirm(i18n(
+    'dialogs.unsavedChanges',
+    'You have unsaved settings, are you sure you want to leave?',
+  ));
+}
+
+/** Whether two editor URLs open the same create/edit target. Throws on invalid URLs. */
+export function isSameAvatarToolEditorTarget(currentHref: string, targetHref: string): boolean {
+  const current = new URL(currentHref);
+  const target = new URL(targetHref);
+  return current.origin === target.origin
+    && current.pathname === target.pathname
+    && current.searchParams.get('mode') === target.searchParams.get('mode')
+    && current.searchParams.get('toolId') === target.searchParams.get('toolId');
+}
+
 export function openAvatarToolEditorWindow(
   mode: 'create' | 'edit',
   toolId?: string,
@@ -205,39 +227,42 @@ export function openAvatarToolEditorWindow(
     AVATAR_TOOL_EDITOR_PREFERRED_HEIGHT,
     availableHeight - Math.min(AVATAR_TOOL_EDITOR_SCREEN_GUTTER, availableHeight - 1),
   ));
-  const left = Math.round(Math.max(0, (availableWidth - width) / 2));
-  const top = Math.round(Math.max(0, (availableHeight - height) / 2));
-  const features = [
-    'toolbar=no',
-    'location=no',
-    'status=no',
-    'menubar=no',
-    'scrollbars=no',
-    'resizable=yes',
-    `width=${width}`,
-    `height=${height}`,
-    `left=${left}`,
-    `top=${top}`,
-  ].join(',');
+  let features: string;
+  if (typeof window.buildCenteredPopupFeatures === 'function') {
+    // The shared helper adds the current display's availLeft/availTop, so the
+    // editor opens on the monitor that hosts the chat window.
+    features = window.buildCenteredPopupFeatures(width, height).replace(/scrollbars=yes/, 'scrollbars=no');
+  } else {
+    const left = Math.round(Math.max(0, (availableWidth - width) / 2));
+    const top = Math.round(Math.max(0, (availableHeight - height) / 2));
+    features = [
+      'toolbar=no',
+      'location=no',
+      'status=no',
+      'menubar=no',
+      'scrollbars=no',
+      'resizable=yes',
+      `width=${width}`,
+      `height=${height}`,
+      `left=${left}`,
+      `top=${top}`,
+    ].join(',');
+  }
   const popup = typeof window.openOrFocusWindow === 'function'
     ? window.openOrFocusWindow(url.href, AVATAR_TOOL_EDITOR_WINDOW_NAME, features, {
       navigateOnReuse: true,
+      // Keep a user-moved or resized editor where it is on every Edit click.
+      preserveGeometryOnReuse: true,
+      // Without a live handle (e.g. after the opener reloaded), let the
+      // registered editor apply its own unsaved-changes check instead of
+      // navigating it blindly through window.open(name).
+      delegateNavigationToSharedWindow: true,
       shouldNavigateOnReuse: (existingWindow, targetUrl) => {
         try {
-          const current = new URL(existingWindow.location.href);
-          const target = new URL(targetUrl);
-          if (
-            current.origin === target.origin
-            && current.pathname === target.pathname
-            && current.searchParams.get('mode') === target.searchParams.get('mode')
-            && current.searchParams.get('toolId') === target.searchParams.get('toolId')
-          ) return false;
+          if (isSameAvatarToolEditorTarget(existingWindow.location.href, targetUrl)) return false;
           if (!existingWindow.avatarToolEditorHasUnsavedChanges) return false;
           if (!existingWindow.avatarToolEditorHasUnsavedChanges()) return true;
-          return window.confirm(i18n(
-            'dialogs.unsavedChanges',
-            'You have unsaved settings, are you sure you want to leave?',
-          ));
+          return confirmDiscardAvatarToolEditorChanges();
         } catch {
           // An uninspectable window must not silently replace an unknown draft.
           return false;
@@ -517,6 +542,21 @@ function resolveAnchoredDialogPosition(
   }, dialogSize, viewport);
 }
 
+// Escape inside these belongs to the control itself (close a menu, leave a
+// field), never to "leave the editor and discard the draft".
+const AVATAR_TOOL_EDITOR_ESCAPE_OWNER_SELECTOR = [
+  'input',
+  'textarea',
+  'select',
+  '[contenteditable]:not([contenteditable="false"])',
+  '.avatar-tool-preset-picker',
+  '.avatar-tool-overview-dock',
+].join(',');
+
+function isAvatarToolEditorEscapeOwner(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest(AVATAR_TOOL_EDITOR_ESCAPE_OWNER_SELECTOR);
+}
+
 function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
   return Array.from(container.querySelectorAll<HTMLElement>(AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR))
@@ -574,6 +614,8 @@ export default function AvatarToolItemManager({
   const wasOpenRef = useRef(false);
   const previousActiveToolIdsRef = useRef(activeToolIds);
   const editRequestRef = useRef(0);
+  // 内嵌编辑器草稿是否被用户改动过；离开编辑页（Esc / 返回）前据此确认。
+  const editorDirtyRef = useRef(false);
   // 保存请求在途时对话框仍可关闭。用户关掉再开、开始新一轮编辑后，旧请求完成
   // 时若无条件收尾，就会把新会话切回库页并丢掉他正在填的表单。
   const managerSessionRef = useRef(0);
@@ -712,17 +754,12 @@ export default function AvatarToolItemManager({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.isComposing) {
+        // 编辑页的 Esc 走 React onKeyDown（handleEditorKeyDown）：原生监听先于
+        // React 委托触发，在这里 stopPropagation 会让预设菜单等内层 Esc 永远收不到。
+        if (view !== 'library') return;
         event.preventDefault();
         event.stopPropagation();
-        if (view === 'library') {
-          onCancel();
-        } else {
-          setCreateSpecialEnabled(false);
-          setEditDetail(null);
-          setNotice('');
-          setNoticeIsError(false);
-          setView('library');
-        }
+        onCancel();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -757,6 +794,8 @@ export default function AvatarToolItemManager({
   useLayoutEffect(() => {
     const previousView = previousViewRef.current;
     previousViewRef.current = view;
+    // 每次进出编辑页都从干净草稿开始计算未保存状态。
+    if (previousView !== view) editorDirtyRef.current = false;
     if (!open) return;
     if (view !== 'library') {
       workspaceBackButtonRef.current?.focus({ preventScroll: true });
@@ -937,12 +976,25 @@ export default function AvatarToolItemManager({
     onSave(compactSlots(draftSlots));
   };
 
+  const markEditorEdited = useCallback(() => { editorDirtyRef.current = true; }, []);
+
   const returnToLibrary = () => {
+    if (editorDirtyRef.current && !confirmDiscardAvatarToolEditorChanges()) return;
     setCreateSpecialEnabled(false);
     setEditDetail(null);
     setNotice('');
     setNoticeIsError(false);
     setView('library');
+  };
+
+  const handleEditorKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || event.nativeEvent.isComposing) return;
+    // Keep the editor's Escape away from outer chat shortcuts, but let inner
+    // controls (preset menu, overview dock, text fields) own it first.
+    event.stopPropagation();
+    if (event.defaultPrevented || isAvatarToolEditorEscapeOwner(event.target)) return;
+    event.preventDefault();
+    returnToLibrary();
   };
 
   const startDialogDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1060,6 +1112,8 @@ export default function AvatarToolItemManager({
       dialogRef={dialogRef}
       backButtonRef={workspaceBackButtonRef}
       onBack={returnToLibrary}
+      onKeyDown={handleEditorKeyDown}
+      onInteractionEdit={markEditorEdited}
       onPointerDown={stopModelDrag}
       onMouseDown={stopModelDrag}
     >
@@ -1073,6 +1127,7 @@ export default function AvatarToolItemManager({
           .filter(tool => tool.id !== editDetail?.id)
           .map(getToolLabel)}
         notice={view === 'edit' ? notice : ''}
+        onEdit={markEditorEdited}
         onSpecialEnabledChange={setCreateSpecialEnabled}
         onCancel={returnToLibrary}
         showCancelAction={false}
@@ -1084,6 +1139,7 @@ export default function AvatarToolItemManager({
             } catch (cause) {
               if (cause instanceof LocalAvatarToolRevisionConflictError) {
                 if (session !== managerSessionRef.current) return;
+                editorDirtyRef.current = false;
                 setEditDetail(cause.currentDetail);
                 setCreateSpecialEnabled(!!cause.currentDetail.special);
                 const fallback = 'This tool changed in another window. The latest version has been loaded.';

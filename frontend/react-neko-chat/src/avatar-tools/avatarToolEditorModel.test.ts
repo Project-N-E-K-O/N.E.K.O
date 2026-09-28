@@ -5,6 +5,12 @@ import {
   type AvatarToolImageDraft,
   type AvatarToolImageId,
 } from './avatarToolEditorModel';
+import {
+  buildLocalAvatarToolImageInteractions,
+  createAvatarToolInteractionEditorState,
+} from './avatarToolInteractionEditorModel';
+import type { CustomGraphProfile } from './catalog';
+import { createCustomGraphRuntime } from './customGraphRuntime';
 import type { LocalAvatarToolDetail } from './localTools';
 
 const DETAIL: LocalAvatarToolDetail = {
@@ -69,9 +75,61 @@ describe('avatar tool image editor model', () => {
       'img-v2-change-000',
       'img-v2-change-001',
     ]);
-    expect(first.images.map(image => image.meaning)).toEqual(['', 'A', '']);
+    expect(first.images.map(image => image.meaning)).toEqual(['A', '', '']);
     expect(first.initialImageId).toBe('img-v2-default');
     expect(first.selectedImageId).toBe('img-v2-default');
+  });
+
+  it.each([
+    ['press-swap', ['M0'], ['M0', 'M0', 'M0', 'M0', 'M0', 'M0']],
+    ['click-advance', ['M0'], ['M0', 'M0', 'M0', 'M0', 'M0', 'M0']],
+    ['click-advance', ['M0', 'M1'], ['M0', 'M1', 'M1', 'M1', 'M1', 'M1']],
+    ['click-advance', ['M0', 'M1', 'M2'], ['M0', 'M1', 'M2', 'M2', 'M2', 'M2']],
+  ] as const)('keeps v2 %s meanings %j per click after the v3 conversion', (changeMode, meanings, expected) => {
+    const detail: LocalAvatarToolDetail = {
+      ...DETAIL,
+      changeMode,
+      changeItems: meanings.map((meaning, index) => ({
+        resource: `change-00${index}.png`, url: `/change-00${index}.png`, meaning,
+      })),
+    };
+    const imageState = createAvatarToolImageEditorState(detail);
+    const graph = buildLocalAvatarToolImageInteractions(createAvatarToolInteractionEditorState(detail));
+    if (!graph || !imageState.initialImageId) throw new Error('v2 fixture must convert');
+    const meaningById = new Map(imageState.images.map(image => [image.id, image.meaning]));
+    const profile: CustomGraphProfile = {
+      kind: 'custom-graph',
+      revision: '3-1',
+      images: imageState.images.map((image, frameIndex) => ({
+        id: image.id, frameIndex, hasMeaning: !!image.meaning.trim(),
+      })),
+      initialImageId: imageState.initialImageId,
+      initialInteractionIds: graph.initialLinks.map(link => link.to),
+      interactions: graph.items.map(item => ({ id: item.id, trigger: item.trigger, actions: item.actions })),
+      links: graph.links.map(link => ({ from: link.from, to: link.to })),
+      burst: {
+        key: 'v2', windowMs: 1800, rapidThreshold: 3, normalIntensity: 'normal', rapidIntensity: 'rapid',
+      },
+      touchZone: 'release',
+      touchZones: ['ear', 'head', 'face', 'body'],
+    };
+    const runtime = createCustomGraphRuntime(profile, {
+      scheduler: { now: () => 0, setTimeout: () => 0, clearTimeout: () => undefined },
+      onImageChange: () => undefined,
+    });
+
+    // Same capture rule as runtime.ts: the image shown before the press, or the
+    // current image once the click chain has ended.
+    const sent = Array.from({ length: 6 }, () => {
+      const started = runtime.beginClick();
+      const snapshot = runtime.getSnapshot();
+      const pressCaptured = started ? snapshot.activeClick?.capturedImageId : snapshot.currentImageId;
+      const completion = started ? runtime.completeClick() : null;
+      const capturedImageId = completion?.capturedImageId ?? pressCaptured;
+      const image = profile.images.find(candidate => candidate.id === capturedImageId);
+      return image?.hasMeaning ? meaningById.get(image.id) : null;
+    });
+    expect(sent).toEqual(expected);
   });
 
   it('keeps one valid initial image and enforces the current image limit', () => {
@@ -97,7 +155,7 @@ describe('avatar tool image editor model', () => {
     const replacement = new File(['replacement'], 'replacement.png', { type: 'image/png' });
     const next = avatarToolImageEditorReducer(initial, { type: 'replace', imageId, file: replacement });
 
-    expect(next.images[1]).toMatchObject({ id: imageId, image: replacement, meaning: 'A' });
+    expect(next.images[1]).toMatchObject({ id: imageId, image: replacement, meaning: initial.images[1].meaning });
     expect(next.images[1].imageResource).toBeUndefined();
     expect(next.images[1].imageUrl).toBeUndefined();
     expect(next.selectedImageId).toBe(imageId);

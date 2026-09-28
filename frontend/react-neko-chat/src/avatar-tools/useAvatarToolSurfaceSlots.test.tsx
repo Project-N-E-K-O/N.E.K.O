@@ -38,6 +38,44 @@ describe('useAvatarToolSurfaceSlots', () => {
     full.unmount();
   });
 
+  it('lets Full inherit the pre-split shared slots once and then keep its own copy', () => {
+    const catalog = {
+      items: [], authoritativeLoaded: false, remove: vi.fn(), refresh: vi.fn(),
+    } as unknown as LocalAvatarToolCatalog;
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact, JSON.stringify(['hammer', 'fist']));
+    const full = renderHook(() => useAvatarToolSurfaceSlots({
+      catalog, activeToolId: null, clearActiveTool: vi.fn(), managerOpen: false, surface: 'full',
+    }));
+    expect(full.result.current.activeToolIds).toEqual(['hammer', 'fist']);
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) ?? 'null'))
+      .toEqual(['hammer', 'fist']);
+
+    const compact = renderHook(() => useAvatarToolSurfaceSlots({
+      catalog, activeToolId: null, clearActiveTool: vi.fn(), managerOpen: false, surface: 'compact',
+    }));
+    act(() => compact.result.current.saveSlots(['lollipop']));
+    full.unmount();
+    const remountedFull = renderHook(() => useAvatarToolSurfaceSlots({
+      catalog, activeToolId: null, clearActiveTool: vi.fn(), managerOpen: false, surface: 'full',
+    }));
+    expect(remountedFull.result.current.activeToolIds).toEqual(['hammer', 'fist']);
+    compact.unmount();
+    remountedFull.unmount();
+  });
+
+  it('gives Full the defaults without writing when neither slot key exists', () => {
+    const catalog = {
+      items: [], authoritativeLoaded: false, remove: vi.fn(), refresh: vi.fn(),
+    } as unknown as LocalAvatarToolCatalog;
+    const full = renderHook(() => useAvatarToolSurfaceSlots({
+      catalog, activeToolId: null, clearActiveTool: vi.fn(), managerOpen: false, surface: 'full',
+    }));
+    expect(full.result.current.activeToolIds).toEqual(['lollipop', 'fist', 'hammer']);
+    expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBeNull();
+    expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact)).toBeNull();
+    full.unmount();
+  });
+
   it('keeps a local slot when deletion fails and removes only that ID after success', async () => {
     const localId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact, JSON.stringify([localId, 'fist']));

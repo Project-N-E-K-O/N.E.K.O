@@ -3,7 +3,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager, { openAvatarToolEditorWindow } from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
 import { type LocalAvatarToolDetail } from './avatar-tools/localTools';
-import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
+import {
+  MISSING_SLOT_REPROBE_INTERVAL_MS,
+  useAvatarToolSlotReconciliation,
+} from './avatar-tools/useAvatarToolSlotReconciliation';
 import chatStyles from './styles.css?raw';
 
 const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
@@ -252,6 +255,8 @@ describe('AvatarToolItemManager local creation', () => {
       status: 404, headers: { 'Content-Type': 'application/json' },
     }));
     vi.stubGlobal('fetch', fetchMock);
+    let clock = 1_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     function Harness({ items }: { items: ReadonlyArray<AvatarToolItem> }) {
       const [activeToolIds, setActiveToolIds] = useState<AvatarToolId[]>([LOCAL_ID, 'fist']);
       const onConfirmedDeleted = useCallback((ids: ReadonlyArray<`local-${string}`>) => {
@@ -271,17 +276,25 @@ describe('AvatarToolItemManager local creation', () => {
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       fireEvent.click(document.querySelector('[data-avatar-tool-id="fist"] .avatar-tool-manager-remove')!);
       fireEvent.click(document.querySelector('[data-avatar-tool-library-id="hammer"]')!);
+      // 冷却期内的目录刷新不重复探测已答复过的隔离记录。
+      rerender(<Harness items={[...AVAILABLE_COMPACT_AVATAR_TOOLS]} />);
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      clock += MISSING_SLOT_REPROBE_INTERVAL_MS;
       rerender(<Harness items={[...AVAILABLE_COMPACT_AVATAR_TOOLS]} />);
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
       expect(onSave).toHaveBeenLastCalledWith([LOCAL_ID, 'hammer']);
 
+      // 冷却过后仍会再确认，隔离记录之后被删掉时槽位最终会被清掉。
       errorCode = 'tool_not_found';
+      clock += MISSING_SLOT_REPROBE_INTERVAL_MS;
       rerender(<Harness items={[...AVAILABLE_COMPACT_AVATAR_TOOLS]} />);
       await waitFor(() => expect(screen.getByTestId('saved-slots')).toHaveTextContent(/^fist$/));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
       expect(onSave).toHaveBeenLastCalledWith(['hammer']);
     } finally {
+      nowSpy.mockRestore();
       vi.unstubAllGlobals();
     }
   });
@@ -595,7 +608,10 @@ describe('AvatarToolItemManager local creation', () => {
     });
     expect(screen.getByLabelText('Interaction description for tool image 1 (optional)')).toHaveValue('这是 A');
 
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
     expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create tool' })).toHaveFocus();
     expect(document.querySelector('[data-avatar-tool-library-id="fist"]')).toHaveAttribute('aria-pressed', 'true');
@@ -603,6 +619,117 @@ describe('AvatarToolItemManager local creation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(onSave).toHaveBeenCalledWith(['lollipop', 'fist']);
+  });
+
+  function renderInlineCreateWorkspace(onCancel = vi.fn()) {
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={onCancel}
+        createLimits={LIMITS}
+        onCreate={async () => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    return {
+      onCancel,
+      workspace: screen.getByRole('dialog', { name: 'Create custom tool' }),
+    };
+  }
+
+  it('lets the preset menu and text fields own Escape inside the inline editor', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      const { onCancel } = renderInlineCreateWorkspace();
+      fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Sequential switch' }), { key: 'Escape' });
+      expect(screen.queryByRole('button', { name: 'Sequential switch' })).toBeNull();
+      expect(screen.getByRole('dialog', { name: 'Create custom tool' })).toBeInTheDocument();
+
+      const nameInput = screen.getByLabelText('Tool name');
+      fireEvent.change(nameInput, { target: { value: 'Draft' } });
+      fireEvent.keyDown(nameInput, { key: 'Escape' });
+      expect(screen.getByRole('dialog', { name: 'Create custom tool' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Tool name')).toHaveValue('Draft');
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onCancel).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('asks before Escape or Back discards an edited inline draft', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      const { workspace, onCancel } = renderInlineCreateWorkspace();
+      fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Draft' } });
+
+      fireEvent.keyDown(workspace, { key: 'Escape' });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm).toHaveBeenCalledWith('You have unsaved settings, are you sure you want to leave?');
+      fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(screen.getByLabelText('Tool name')).toHaveValue('Draft');
+
+      confirm.mockReturnValue(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+      expect(confirm).toHaveBeenCalledTimes(3);
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(onCancel).not.toHaveBeenCalled();
+
+      // A fresh editor session starts clean again.
+      fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+      fireEvent.keyDown(screen.getByRole('dialog', { name: 'Create custom tool' }), { key: 'Escape' });
+      expect(confirm).toHaveBeenCalledTimes(3);
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(onCancel).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('leaves an untouched inline editor with Escape without asking', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      const { workspace, onCancel } = renderInlineCreateWorkspace();
+      fireEvent.keyDown(workspace, { key: 'Escape' });
+      expect(confirm).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(onCancel).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(screen.getByRole('dialog', { name: 'Manage tools' }), { key: 'Escape' });
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('centers the desktop editor on the current display and keeps a moved editor on reuse', () => {
+    const buildCenteredPopupFeatures = vi.fn((width: number, height: number) => (
+      `width=${width},height=${height},left=1960,top=90,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`
+    ));
+    window.buildCenteredPopupFeatures = buildCenteredPopupFeatures;
+    const popup = { focus: vi.fn() } as unknown as Window;
+    window.openOrFocusWindow = vi.fn(() => popup);
+    try {
+      openAvatarToolEditorWindow('create');
+      expect(buildCenteredPopupFeatures).toHaveBeenCalledWith(1280, 900);
+      expect(window.openOrFocusWindow).toHaveBeenCalledWith(
+        expect.stringContaining('mode=create'),
+        'neko_avatar_tool_editor_singleton',
+        'width=1280,height=900,left=1960,top=90,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=no',
+        expect.objectContaining({
+          navigateOnReuse: true,
+          preserveGeometryOnReuse: true,
+          delegateNavigationToSharedWindow: true,
+        }),
+      );
+    } finally {
+      delete window.buildCenteredPopupFeatures;
+    }
   });
 
   it('opens the desktop editor as a separate management page without changing the compact host', () => {

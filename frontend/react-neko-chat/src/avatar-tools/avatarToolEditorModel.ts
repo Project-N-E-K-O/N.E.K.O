@@ -61,6 +61,13 @@ export function createAvatarToolImageEditorState(
       selectedImageId: detail.initialImageId,
     };
   }
+  // v2 sent the meaning of the image shown AFTER a click (press-swap: always
+  // change 0; click-advance: the next change, clamped at the last one). v3
+  // sends the meaning of the image captured BEFORE the press, so each v2
+  // meaning moves one image earlier: the default image carries change 0 and
+  // change i carries change i+1 (the last change keeps its own meaning).
+  const changeMeanings = detail?.changeItems.map(item => item.meaning) ?? [];
+  const lastChangeIndex = changeMeanings.length - 1;
   const images: AvatarToolImageDraft[] = detail ? [
     {
       id: 'img-v2-default',
@@ -68,7 +75,7 @@ export function createAvatarToolImageEditorState(
       image: null,
       imageResource: detail.defaultImage.resource,
       imageUrl: detail.defaultImage.url,
-      meaning: '',
+      meaning: changeMeanings[0] ?? '',
     },
     ...detail.changeItems.map((item, index) => ({
       id: `img-v2-change-${String(index).padStart(3, '0')}` as AvatarToolImageId,
@@ -76,7 +83,9 @@ export function createAvatarToolImageEditorState(
       image: null,
       imageResource: item.resource,
       imageUrl: item.url,
-      meaning: item.meaning,
+      meaning: detail.changeMode === 'click-advance'
+        ? changeMeanings[Math.min(index + 1, lastChangeIndex)]
+        : item.meaning,
     })),
   ] : [];
   const firstImageId = images[0]?.id ?? null;
