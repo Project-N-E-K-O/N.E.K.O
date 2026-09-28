@@ -1182,6 +1182,14 @@
                 if (state.unconfirmedCancelEnrollmentId === unsettledCloseEnrollmentId) {
                     state.unconfirmedCancelEnrollmentId = null;
                 }
+                // The old session is gone; forget it locally so a Cancel
+                // during the replacement start cannot target the old ID and
+                // then adopt (and keep) the new server session.
+                if (state.enrollmentId === unsettledCloseEnrollmentId) {
+                    state.enrollmentId = null;
+                    state.profileId = null;
+                    state.nextSegmentIndex = 1;
+                }
                 if (isStale()) return;
             }
             let started;

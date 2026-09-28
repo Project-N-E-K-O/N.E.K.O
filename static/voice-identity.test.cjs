@@ -154,6 +154,7 @@ function createHarness({
     pageConfigGates = {},
     segmentInProgressOnce = null,
     cancelCsrfFailureOnce = false,
+    startGates = {},
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -197,6 +198,7 @@ function createHarness({
     let remainingInconsistentReferences = inconsistentReference ? 1 : 0;
     let statusRequestCount = 0;
     let pageConfigRequestCount = 0;
+    let startRequestCount = 0;
     let pendingSegmentInProgress = segmentInProgressOnce;
     const mediaConstraintCalls = [];
     let timerId = 0;
@@ -260,10 +262,13 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/enrollment/start`) {
             if (startGate) await startGate.promise;
+            startRequestCount += 1;
             if (!enrollmentId) {
                 enrollmentSerial += 1;
                 enrollmentId = `enrollment-${enrollmentSerial}`;
             }
+            // Session created server-side; the response itself is delayed.
+            if (startGates[startRequestCount]) await startGates[startRequestCount].promise;
             if (startResponseErrorAfterAbort) {
                 await new Promise((resolve, reject) => {
                     const signal = call.options.signal;
@@ -1110,6 +1115,42 @@ test('a stalled preflight cancellation before restart is bounded and keeps the p
     );
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
     assert.equal(harness.mediaStreams.at(-1).track.stopped, true);
+});
+
+test('cancelling a replacement start after the preflight cancels the new session', async () => {
+    const explicitCancelGate = deferred();
+    const replacementStart = deferred();
+    const harness = createHarness({
+        autoAdvance: false,
+        explicitCancelGate,
+        startGates: { 2: replacementStart },
+    });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emit('voice-identity-cancel');
+    await enrolling;
+    await flush(4);
+    harness.fireStatusTimeouts();
+    await flush(8);
+    assert.equal(harness.serverEnrollmentId, 'enrollment-1');
+    explicitCancelGate.resolve();
+
+    const restarting = harness.emit('voice-identity-start');
+    await flush(8);
+    assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+    harness.emit('voice-identity-cancel');
+    await flush(8);
+    // Even while the replacement start response is still outstanding, the
+    // cancellation must reach the new session rather than the old ID.
+    assert.equal(harness.serverEnrollmentId, null);
+    replacementStart.resolve();
+    await restarting;
+    await flush(8);
+
+    assert.equal(harness.serverEnrollmentId, null);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
