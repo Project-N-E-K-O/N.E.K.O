@@ -605,8 +605,18 @@ async def test_failing_gemini_exit_still_drops_the_references():
             if self.fail:
                 raise RuntimeError("sdk exit failed")
 
+    class _RetryableSession:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("transport close failed")
+
     context = _RaisingContext()
-    session = object()
+    session = _RetryableSession()
     client._gemini_context_manager = context
     client._gemini_session = session
     client.ws = session
@@ -615,14 +625,17 @@ async def test_failing_gemini_exit_still_drops_the_references():
         await client._close_gemini()
 
     assert context.exit_calls == 1
+    assert session.close_calls == 1
     assert client._gemini_context_manager is context
     assert client._gemini_session is session
     assert client.ws is session
 
     context.fail = False
+    session.fail = False
     await client._close_gemini()
 
     assert context.exit_calls == 2
+    assert session.close_calls == 2
     assert client._gemini_context_manager is None
     assert client._gemini_session is None
     assert client.ws is None

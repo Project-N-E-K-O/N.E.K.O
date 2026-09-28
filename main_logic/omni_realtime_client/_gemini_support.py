@@ -663,6 +663,8 @@ class _GeminiMixin:
         await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
+        context_key = id(context)
+        retry_transport = context_key in self._gemini_close_retry_contexts
         close_error = None
         try:
             await context.__aexit__(None, None, None)
@@ -673,6 +675,31 @@ class _GeminiMixin:
             close_error = e
             logger.error(f"Error closing Gemini session: {e}")
 
+        if close_error is not None or retry_transport:
+            # google-genai's asynccontextmanager can be exhausted after a
+            # failed __aexit__; a second exit may return without touching its
+            # WebSocket. The retained AsyncSession owns the actual socket, so
+            # use its close() as the physical-release confirmation.
+            session_close = getattr(session, "close", None)
+            if not callable(session_close):
+                if close_error is None:
+                    close_error = RuntimeError(
+                        "Gemini session has no retryable close operation"
+                    )
+            else:
+                try:
+                    await session_close()
+                except Exception as e:
+                    logger.error(f"Error closing Gemini transport: {e}")
+                    if close_error is None:
+                        close_error = e
+                else:
+                    self._gemini_close_retry_contexts.discard(context_key)
+                    # The SDK context reported an error, but the retained
+                    # session has now confirmed the underlying transport is
+                    # closed, which is the ownership condition we need.
+                    close_error = None
+
         if close_error is not None:
             # Keep the failed context and session attached so a later
             # retirement attempt can retry the authoritative SDK exit.  The
@@ -682,6 +709,7 @@ class _GeminiMixin:
                 logger.warning(
                     "Gemini close failed; retaining the context for a later retry"
                 )
+            self._gemini_close_retry_contexts.add(context_key)
             raise close_error
 
         if self._gemini_context_manager is not context:
