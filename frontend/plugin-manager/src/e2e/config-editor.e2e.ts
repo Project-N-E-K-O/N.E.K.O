@@ -157,31 +157,40 @@ test('switching to configuration does not animate the detail card layout', async
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}?tab=info`)
   await expect(page.locator('[data-yui-guide-id="plugin-detail-card"]')).toBeVisible()
 
+  type Sampling = Window & { flexAnimated?: boolean; stopSampling?: boolean; sampled?: boolean }
+  // Sample until told to stop rather than for a fixed time: the click below may first wait
+  // for actionability, and a sampler that ended before the switch would pass vacuously.
   await page.evaluate(() => {
-    ;(window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated = false
-    const started = performance.now()
+    const state = window as Sampling
+    state.flexAnimated = false
+    state.stopSampling = false
+    state.sampled = false
     const sample = () => {
       const card = document.querySelector('[data-yui-guide-id="plugin-detail-card"]')
       if (
         card?.getAnimations().some((animation) => {
           const effect = animation.effect
-          return effect instanceof KeyframeEffect && effect.getKeyframes().some((frame) => 'flexGrow' in frame)
+          return (
+            effect instanceof KeyframeEffect &&
+            effect.getKeyframes().some((frame) => 'flexGrow' in frame)
+          )
         })
       ) {
-        ;(window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated = true
+        state.flexAnimated = true
       }
-      if (performance.now() - started < 600) requestAnimationFrame(sample)
+      if (state.stopSampling) state.sampled = true
+      else requestAnimationFrame(sample)
     }
     requestAnimationFrame(sample)
   })
   await page.getByRole('tab', { name: '配置' }).click()
   await expect(page.locator('.plugin-config-editor')).toBeVisible()
   await page.waitForTimeout(650)
-  expect(
-    await page.evaluate(
-      () => (window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated
-    )
-  ).toBe(false)
+  await page.evaluate(() => {
+    ;(window as Sampling).stopSampling = true
+  })
+  await page.waitForFunction(() => (window as Sampling).sampled === true)
+  expect(await page.evaluate(() => (window as Sampling).flexAnimated)).toBe(false)
 })
 
 test('saving a profile keeps the existing form visible during refresh', async ({ page }) => {
@@ -215,7 +224,12 @@ test('saving a profile keeps the existing form visible during refresh', async ({
     return route.fulfill({
       json: {
         plugin_id: PLUGIN_ID,
-        profile: { name: 'default', path: 'profiles/default.toml', resolved_path: null, exists: true },
+        profile: {
+          name: 'default',
+          path: 'profiles/default.toml',
+          resolved_path: null,
+          exists: true,
+        },
         config: { search: { max_results: saved ? 9 : 8 } },
       },
     })

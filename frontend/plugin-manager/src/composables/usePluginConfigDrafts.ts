@@ -389,6 +389,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     names,
     active,
     loading,
+    ready,
     saving,
     error,
     changes,

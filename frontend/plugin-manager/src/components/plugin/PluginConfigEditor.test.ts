@@ -475,6 +475,35 @@ describe('virtual default materialization', () => {
   })
 })
 
+describe('manual refresh', () => {
+  it('hides the form while a discarding refresh is in flight', async () => {
+    const { host } = await mountEditor()
+    const input = () =>
+      host.querySelector<HTMLInputElement>('input[aria-label="search.max_results"]')
+    input()!.value = '9'
+    input()!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
+    const reload = deferred<Awaited<ReturnType<typeof configApi.getPluginEffectiveBaseConfig>>>()
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockReturnValue(reload.promise)
+    host
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="plugins.configUi.configData / common.refresh"]'
+      )!
+      .click()
+    await vi.waitFor(() => expect(document.querySelector('.el-dropdown-menu__item')).not.toBeNull())
+    ;[...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')]
+      .find((item) => item.textContent?.includes('common.refresh'))!
+      .click()
+    // The draft is about to be cleared, so nothing may stay editable until it is.
+    await vi.waitFor(() => expect(host.querySelector('.el-skeleton')).not.toBeNull())
+    expect(input()).toBeNull()
+    reload.resolve({ plugin_id: 'test', config: { search: { max_results: 8 } } } as never)
+    await vi.waitFor(() => expect(input()?.value).toBe('8'))
+    expect(host.querySelector('.el-skeleton')).toBeNull()
+  })
+})
+
 describe('pending state synchronisation', () => {
   it('clears the warning when the plugin is reloaded elsewhere', async () => {
     setPendingReload('test', true)

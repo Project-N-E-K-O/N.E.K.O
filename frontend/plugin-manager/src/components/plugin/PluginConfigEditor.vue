@@ -182,7 +182,14 @@
           :closable="false"
           class="config-error"
         />
-        <el-skeleton v-if="(loading && !current?.loaded) || current?.loading" :rows="6" animated />
+        <!-- A refresh that keeps drafts (after a save) leaves the form in place to avoid a
+             flicker. A discarding refresh (`ready` is false) hides it: the records it shows
+             are about to be cleared, so edits typed meanwhile would be silently lost. -->
+        <el-skeleton
+          v-if="(loading && (!ready || !current?.loaded)) || current?.loading"
+          :rows="6"
+          animated
+        />
         <template v-else-if="current?.loaded">
           <div v-if="search || filter !== 'all'" class="search-scope">
             {{ t('plugins.configUi.searchScope') }}
@@ -396,6 +403,7 @@ const {
   current,
   names,
   loading,
+  ready,
   saving,
   error,
   configPath,
