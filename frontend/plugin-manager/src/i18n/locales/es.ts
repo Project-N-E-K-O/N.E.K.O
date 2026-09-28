@@ -336,6 +336,7 @@ export default {
     installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
+    configSchemaInvalid: 'El esquema de configuración del complemento no es válido. Se muestra el editor de configuración genérico.',
     title: 'Plugins',
     name: 'Nombre del plugin',
     id: 'ID del plugin',
@@ -429,6 +430,7 @@ export default {
     addItem: 'Añadir elemento',
     fieldName: 'Nombre del campo',
     fieldNameRequired: 'El nombre del campo es obligatorio',
+    readOnlyField: 'Este campo es de solo lectura y no se puede añadir.',
     invalidFieldKey: 'Nombre de campo no válido',
     fieldType: 'Tipo de campo',
     duplicateFieldKey: 'El nombre del campo ya existe. Elige otro.',

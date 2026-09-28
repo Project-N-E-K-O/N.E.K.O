@@ -1,0 +1,644 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "plugin_runtime": {
+      "type": "object",
+      "title": "Runtime settings",
+      "description": "Plugin availability and automatic startup settings.",
+      "x-title-i18n": {
+        "zh-CN": "运行设置",
+        "zh-TW": "執行設定",
+        "en": "Runtime settings",
+        "ja": "実行設定",
+        "ko": "실행 설정",
+        "ru": "Настройки запуска",
+        "es": "Ajustes de ejecución",
+        "pt": "Configurações de execução"
+      },
+      "x-description-i18n": {
+        "zh-CN": "插件的启用与自动启动设置。",
+        "zh-TW": "外掛程式的啟用與自動啟動設定。",
+        "en": "Plugin availability and automatic startup settings.",
+        "ja": "プラグインの有効化と自動起動の設定。",
+        "ko": "플러그인 활성화 및 자동 시작 설정입니다.",
+        "ru": "Доступность плагина и его автоматический запуск.",
+        "es": "Disponibilidad del complemento e inicio automático.",
+        "pt": "Disponibilidade do plugin e inicialização automática."
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable plugin",
+          "description": "Allow this plugin to be loaded.",
+          "x-title-i18n": {
+            "zh-CN": "启用插件",
+            "zh-TW": "啟用外掛程式",
+            "en": "Enable plugin",
+            "ja": "プラグインを有効化",
+            "ko": "플러그인 활성화",
+            "ru": "Включить плагин",
+            "es": "Activar complemento",
+            "pt": "Ativar plugin"
+          },
+          "x-description-i18n": {
+            "zh-CN": "是否允许加载此插件。",
+            "zh-TW": "是否允許載入此外掛程式。",
+            "en": "Allow this plugin to be loaded.",
+            "ja": "このプラグインの読み込みを許可します。",
+            "ko": "이 플러그인을 로드할 수 있도록 합니다.",
+            "ru": "Разрешить загрузку этого плагина.",
+            "es": "Permitir que se cargue este complemento.",
+            "pt": "Permitir o carregamento deste plugin."
+          },
+          "default": true
+        },
+        "auto_start": {
+          "type": "boolean",
+          "title": "Start automatically",
+          "description": "Start this plugin when the plugin system starts.",
+          "x-title-i18n": {
+            "zh-CN": "自动启动",
+            "zh-TW": "自動啟動",
+            "en": "Start automatically",
+            "ja": "自動起動",
+            "ko": "자동 시작",
+            "ru": "Автоматический запуск",
+            "es": "Iniciar automáticamente",
+            "pt": "Iniciar automaticamente"
+          },
+          "x-description-i18n": {
+            "zh-CN": "插件系统启动时自动启动此插件。",
+            "zh-TW": "外掛程式系統啟動時自動啟動此外掛程式。",
+            "en": "Start this plugin when the plugin system starts.",
+            "ja": "プラグインシステムの起動時に自動起動します。",
+            "ko": "플러그인 시스템이 시작될 때 자동으로 시작합니다.",
+            "ru": "Запускать плагин при запуске системы плагинов.",
+            "es": "Iniciar este complemento al arrancar el sistema de complementos.",
+            "pt": "Iniciar este plugin quando o sistema de plugins iniciar."
+          },
+          "default": true
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "title": "Web search settings",
+      "description": "Configure search sources, caching, request pacing, and retries.",
+      "x-title-i18n": {
+        "zh-CN": "网络搜索设置",
+        "zh-TW": "網路搜尋設定",
+        "en": "Web search settings",
+        "ja": "ウェブ検索設定",
+        "ko": "웹 검색 설정",
+        "ru": "Настройки веб-поиска",
+        "es": "Ajustes de búsqueda web",
+        "pt": "Configurações de pesquisa na web"
+      },
+      "x-description-i18n": {
+        "zh-CN": "配置搜索来源、缓存、请求频率与重试。",
+        "zh-TW": "設定搜尋來源、快取、請求頻率與重試。",
+        "en": "Configure search sources, caching, request pacing, and retries.",
+        "ja": "検索元、キャッシュ、リクエスト間隔、再試行を設定します。",
+        "ko": "검색 소스, 캐시, 요청 간격 및 재시도를 설정합니다.",
+        "ru": "Источники поиска, кэширование, интервалы запросов и повторы.",
+        "es": "Configura fuentes, caché, frecuencia de solicitudes y reintentos.",
+        "pt": "Configure fontes, cache, intervalos de solicitações e tentativas."
+      },
+      "properties": {
+        "backend": {
+          "type": "string",
+          "title": "Search source",
+          "description": "Auto tries AnySearch first, then falls back by region; a fixed source disables cross-engine fallback.",
+          "x-title-i18n": {
+            "zh-CN": "搜索来源",
+            "zh-TW": "搜尋來源",
+            "en": "Search source",
+            "ja": "検索元",
+            "ko": "검색 소스",
+            "ru": "Источник поиска",
+            "es": "Fuente de búsqueda",
+            "pt": "Fonte de pesquisa"
+          },
+          "x-description-i18n": {
+            "zh-CN": "自动模式优先使用 AnySearch，失败后按地区回退；指定来源后不跨引擎回退。",
+            "zh-TW": "自動模式優先使用 AnySearch，失敗後依地區切換；指定來源後不跨引擎切換。",
+            "en": "Auto tries AnySearch first, then falls back by region; a fixed source disables cross-engine fallback.",
+            "ja": "自動では AnySearch を優先し、失敗時は地域に応じて切り替えます。固定指定では切り替えません。",
+            "ko": "자동 모드는 AnySearch를 우선 사용하고 실패 시 지역별로 대체합니다. 소스 지정 시 다른 엔진으로 전환하지 않습니다.",
+            "ru": "Автоматический режим сначала использует AnySearch, затем резервный источник по региону; фиксированный источник отключает переключение.",
+            "es": "El modo automático usa AnySearch primero y cambia según la región si falla; una fuente fija desactiva el cambio.",
+            "pt": "O modo automático tenta AnySearch primeiro e usa outra fonte conforme a região se falhar; uma fonte fixa desativa a troca."
+          },
+          "enum": [
+            "auto",
+            "anysearch",
+            "baidu",
+            "duckduckgo"
+          ],
+          "default": "auto"
+        },
+        "anysearch_api_key": {
+          "type": "string",
+          "title": "AnySearch API key",
+          "description": "Optional; leave empty for anonymous access with lower limits.",
+          "x-title-i18n": {
+            "zh-CN": "AnySearch API 密钥",
+            "zh-TW": "AnySearch API 金鑰",
+            "en": "AnySearch API key",
+            "ja": "AnySearch API キー",
+            "ko": "AnySearch API 키",
+            "ru": "Ключ API AnySearch",
+            "es": "Clave API de AnySearch",
+            "pt": "Chave de API do AnySearch"
+          },
+          "x-description-i18n": {
+            "zh-CN": "可选；留空使用匿名访问，额度较低。",
+            "zh-TW": "選填；留空使用匿名存取，額度較低。",
+            "en": "Optional; leave empty for anonymous access with lower limits.",
+            "ja": "任意。空欄では制限の厳しい匿名アクセスを使います。",
+            "ko": "선택 사항입니다. 비워 두면 한도가 낮은 익명 접근을 사용합니다.",
+            "ru": "Необязательно; пустое значение включает анонимный доступ с меньшими лимитами.",
+            "es": "Opcional; déjala vacía para acceso anónimo con límites menores.",
+            "pt": "Opcional; deixe vazio para acesso anônimo com limites menores."
+          },
+          "default": ""
+        },
+        "max_results": {
+          "type": "integer",
+          "title": "Maximum results",
+          "description": "Default result limit; the search source may impose a lower limit.",
+          "x-title-i18n": {
+            "zh-CN": "最多返回结果数",
+            "zh-TW": "最多傳回結果數",
+            "en": "Maximum results",
+            "ja": "最大結果数",
+            "ko": "최대 결과 수",
+            "ru": "Максимум результатов",
+            "es": "Máximo de resultados",
+            "pt": "Máximo de resultados"
+          },
+          "x-description-i18n": {
+            "zh-CN": "未指定数量时的结果上限；搜索来源可能采用更低上限。",
+            "zh-TW": "未指定數量時的結果上限；搜尋來源可能採用更低上限。",
+            "en": "Default result limit; the search source may impose a lower limit.",
+            "ja": "件数未指定時の上限です。検索元によってはさらに制限されます。",
+            "ko": "개수를 지정하지 않았을 때의 상한입니다. 검색 소스가 더 낮은 한도를 적용할 수 있습니다.",
+            "ru": "Лимит по умолчанию; источник поиска может ограничивать результаты сильнее.",
+            "es": "Límite predeterminado; la fuente puede aplicar un límite menor.",
+            "pt": "Limite padrão; a fonte pode aplicar um limite menor."
+          },
+          "minimum": 1,
+          "maximum": 50,
+          "default": 8
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "title": "Request timeout (seconds)",
+          "description": "Positive timeout for one network request; the overall search deadline still applies.",
+          "x-title-i18n": {
+            "zh-CN": "单次请求超时（秒）",
+            "zh-TW": "單次請求逾時（秒）",
+            "en": "Request timeout (seconds)",
+            "ja": "リクエストのタイムアウト（秒）",
+            "ko": "요청 제한 시간(초)",
+            "ru": "Тайм-аут запроса (секунды)",
+            "es": "Tiempo de espera por solicitud (segundos)",
+            "pt": "Tempo limite por solicitação (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "单次网络请求的等待时间，必须为正数；总搜索时限仍然适用。",
+            "zh-TW": "單次網路請求的等待時間，必須為正數；總搜尋時限仍然適用。",
+            "en": "Positive timeout for one network request; the overall search deadline still applies.",
+            "ja": "1 回の通信の待ち時間を正の数で指定します。検索全体の制限も適用されます。",
+            "ko": "네트워크 요청 하나의 제한 시간을 양수로 지정합니다. 전체 검색 제한도 적용됩니다.",
+            "ru": "Положительное время ожидания одного запроса; общий лимит поиска также действует.",
+            "es": "Tiempo positivo para una solicitud; también se aplica el límite total de búsqueda.",
+            "pt": "Tempo positivo para uma solicitação; o limite total da pesquisa também se aplica."
+          },
+          "default": 15
+        },
+        "total_timeout_seconds": {
+          "type": "number",
+          "title": "Total search timeout (seconds)",
+          "description": "Overall budget including retries and fallback sources, from 5 to 25 seconds.",
+          "x-title-i18n": {
+            "zh-CN": "总搜索时限（秒）",
+            "zh-TW": "總搜尋時限（秒）",
+            "en": "Total search timeout (seconds)",
+            "ja": "検索全体のタイムアウト（秒）",
+            "ko": "전체 검색 제한 시간(초)",
+            "ru": "Общий тайм-аут поиска (секунды)",
+            "es": "Tiempo total de búsqueda (segundos)",
+            "pt": "Tempo total de pesquisa (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "包括重试和备用搜索来源在内的总时间预算，范围为 5–25 秒。",
+            "zh-TW": "包括重試和備用搜尋來源在內的總時間預算，範圍為 5–25 秒。",
+            "en": "Overall budget including retries and fallback sources, from 5 to 25 seconds.",
+            "ja": "再試行と代替検索を含む全体の制限時間です。5～25 秒。",
+            "ko": "재시도와 대체 검색을 포함한 전체 제한 시간입니다. 5~25초입니다.",
+            "ru": "Общий лимит с повторами и резервными источниками: 5–25 секунд.",
+            "es": "Límite total con reintentos y fuentes alternativas: de 5 a 25 segundos.",
+            "pt": "Limite total com tentativas e fontes alternativas: de 5 a 25 segundos."
+          },
+          "minimum": 5,
+          "maximum": 25,
+          "default": 25
+        },
+        "cache_ttl_seconds": {
+          "type": "number",
+          "title": "Result cache lifetime (seconds)",
+          "description": "How long identical queries reuse fresh results; 0 disables the fresh-cache period.",
+          "x-title-i18n": {
+            "zh-CN": "结果缓存有效期（秒）",
+            "zh-TW": "結果快取有效期（秒）",
+            "en": "Result cache lifetime (seconds)",
+            "ja": "結果キャッシュの有効期間（秒）",
+            "ko": "결과 캐시 유효 기간(초)",
+            "ru": "Срок действия кэша (секунды)",
+            "es": "Vigencia de la caché (segundos)",
+            "pt": "Validade do cache (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "相同查询直接复用结果的时间；0 表示不保留新鲜缓存。",
+            "zh-TW": "相同查詢直接重用結果的時間；0 表示不保留新鮮快取。",
+            "en": "How long identical queries reuse fresh results; 0 disables the fresh-cache period.",
+            "ja": "同じ検索結果をそのまま再利用する期間です。0 で有効期間を無効にします。",
+            "ko": "동일한 검색에 최신 캐시를 재사용하는 기간입니다. 0은 최신 캐시 기간을 비활성화합니다.",
+            "ru": "Срок повторного использования свежих результатов; 0 отключает этот период.",
+            "es": "Tiempo de reutilización de resultados recientes; 0 desactiva este período.",
+            "pt": "Tempo de reutilização de resultados recentes; 0 desativa esse período."
+          },
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 120
+        },
+        "stale_ttl_seconds": {
+          "type": "number",
+          "title": "Stale cache retention (seconds)",
+          "description": "Extra retention after fresh results expire, for use during throttling or failures.",
+          "x-title-i18n": {
+            "zh-CN": "过期缓存保留时间（秒）",
+            "zh-TW": "過期快取保留時間（秒）",
+            "en": "Stale cache retention (seconds)",
+            "ja": "期限切れキャッシュの保持期間（秒）",
+            "ko": "만료된 캐시 보관 기간(초)",
+            "ru": "Хранение устаревшего кэша (секунды)",
+            "es": "Retención de caché vencida (segundos)",
+            "pt": "Retenção de cache expirado (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "新鲜缓存到期后额外保留多久，以便请求受限或失败时复用。",
+            "zh-TW": "新鮮快取到期後額外保留多久，以便請求受限或失敗時重用。",
+            "en": "Extra retention after fresh results expire, for use during throttling or failures.",
+            "ja": "有効期限後も保持する追加時間です。制限や失敗時に再利用します。",
+            "ko": "최신 캐시 만료 후 추가 보관 시간입니다. 요청 제한이나 실패 시 재사용합니다.",
+            "ru": "Дополнительное хранение после истечения свежести, для сбоев или ограничения запросов.",
+            "es": "Tiempo adicional tras vencer la caché reciente, para fallos o límites de solicitudes.",
+            "pt": "Tempo extra após expirar o cache recente, para falhas ou limites de solicitações."
+          },
+          "minimum": 0,
+          "maximum": 86400,
+          "default": 600
+        },
+        "cache_entries": {
+          "type": "integer",
+          "title": "Maximum cache entries",
+          "description": "Maximum cached queries retained per search source.",
+          "x-title-i18n": {
+            "zh-CN": "缓存条目上限",
+            "zh-TW": "快取項目上限",
+            "en": "Maximum cache entries",
+            "ja": "キャッシュ件数の上限",
+            "ko": "최대 캐시 항목 수",
+            "ru": "Максимум записей кэша",
+            "es": "Máximo de entradas en caché",
+            "pt": "Máximo de entradas no cache"
+          },
+          "x-description-i18n": {
+            "zh-CN": "每个搜索来源最多保留的查询缓存数量。",
+            "zh-TW": "每個搜尋來源最多保留的查詢快取數量。",
+            "en": "Maximum cached queries retained per search source.",
+            "ja": "検索元ごとに保持する検索キャッシュの最大件数です。",
+            "ko": "검색 소스별로 보관할 최대 검색 캐시 수입니다.",
+            "ru": "Максимум сохранённых запросов для каждого источника поиска.",
+            "es": "Máximo de consultas guardadas por fuente de búsqueda.",
+            "pt": "Máximo de consultas armazenadas por fonte de pesquisa."
+          },
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 128
+        },
+        "min_interval_seconds": {
+          "type": "number",
+          "title": "AnySearch request interval (seconds)",
+          "description": "Minimum spacing between requests to AnySearch.",
+          "x-title-i18n": {
+            "zh-CN": "AnySearch 请求间隔（秒）",
+            "zh-TW": "AnySearch 請求間隔（秒）",
+            "en": "AnySearch request interval (seconds)",
+            "ja": "AnySearch のリクエスト間隔（秒）",
+            "ko": "AnySearch 요청 간격(초)",
+            "ru": "Интервал запросов AnySearch (секунды)",
+            "es": "Intervalo de solicitudes de AnySearch (segundos)",
+            "pt": "Intervalo de solicitações do AnySearch (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "连续向 AnySearch 发起请求的最短间隔。",
+            "zh-TW": "連續向 AnySearch 發出請求的最短間隔。",
+            "en": "Minimum spacing between requests to AnySearch.",
+            "ja": "AnySearch への連続リクエストの最小間隔です。",
+            "ko": "AnySearch에 연속 요청을 보내는 최소 간격입니다.",
+            "ru": "Минимальный интервал между запросами к AnySearch.",
+            "es": "Intervalo mínimo entre solicitudes a AnySearch.",
+            "pt": "Intervalo mínimo entre solicitações ao AnySearch."
+          },
+          "minimum": 0,
+          "maximum": 10,
+          "default": 0.75
+        },
+        "baidu_min_interval_seconds": {
+          "type": "number",
+          "title": "Baidu request interval (seconds)",
+          "description": "Minimum spacing for Baidu; runtime also caps it according to the total search timeout.",
+          "x-title-i18n": {
+            "zh-CN": "百度请求间隔（秒）",
+            "zh-TW": "百度請求間隔（秒）",
+            "en": "Baidu request interval (seconds)",
+            "ja": "Baidu のリクエスト間隔（秒）",
+            "ko": "Baidu 요청 간격(초)",
+            "ru": "Интервал запросов Baidu (секунды)",
+            "es": "Intervalo de solicitudes de Baidu (segundos)",
+            "pt": "Intervalo de solicitações do Baidu (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "百度连续请求的最短间隔；运行时还会根据总搜索时限下调上限。",
+            "zh-TW": "百度連續請求的最短間隔；執行時還會依總搜尋時限調低上限。",
+            "en": "Minimum spacing for Baidu; runtime also caps it according to the total search timeout.",
+            "ja": "Baidu への最小間隔です。検索全体の制限時間に応じて上限も調整されます。",
+            "ko": "Baidu 요청의 최소 간격입니다. 실행 시 전체 검색 제한에 따라 상한도 조정됩니다.",
+            "ru": "Минимальный интервал для Baidu; верхний предел также зависит от общего тайм-аута поиска.",
+            "es": "Intervalo mínimo para Baidu; el límite superior también depende del tiempo total de búsqueda.",
+            "pt": "Intervalo mínimo para Baidu; o limite superior também depende do tempo total de pesquisa."
+          },
+          "minimum": 3,
+          "maximum": 20,
+          "default": 15
+        },
+        "duckduckgo_min_interval_seconds": {
+          "type": "number",
+          "title": "DuckDuckGo request interval (seconds)",
+          "description": "Minimum spacing between requests to DuckDuckGo.",
+          "x-title-i18n": {
+            "zh-CN": "DuckDuckGo 请求间隔（秒）",
+            "zh-TW": "DuckDuckGo 請求間隔（秒）",
+            "en": "DuckDuckGo request interval (seconds)",
+            "ja": "DuckDuckGo のリクエスト間隔（秒）",
+            "ko": "DuckDuckGo 요청 간격(초)",
+            "ru": "Интервал запросов DuckDuckGo (секунды)",
+            "es": "Intervalo de solicitudes de DuckDuckGo (segundos)",
+            "pt": "Intervalo de solicitações do DuckDuckGo (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "连续向 DuckDuckGo 发起请求的最短间隔。",
+            "zh-TW": "連續向 DuckDuckGo 發出請求的最短間隔。",
+            "en": "Minimum spacing between requests to DuckDuckGo.",
+            "ja": "DuckDuckGo への連続リクエストの最小間隔です。",
+            "ko": "DuckDuckGo에 연속 요청을 보내는 최소 간격입니다.",
+            "ru": "Минимальный интервал между запросами к DuckDuckGo.",
+            "es": "Intervalo mínimo entre solicitudes a DuckDuckGo.",
+            "pt": "Intervalo mínimo entre solicitações ao DuckDuckGo."
+          },
+          "minimum": 1,
+          "maximum": 15,
+          "default": 3
+        },
+        "cooldown_seconds": {
+          "type": "number",
+          "title": "Standard cooldown (seconds)",
+          "description": "Pause requests after rate limiting from AnySearch or Baidu.",
+          "x-title-i18n": {
+            "zh-CN": "常规限流冷却时间（秒）",
+            "zh-TW": "一般流量限制冷卻時間（秒）",
+            "en": "Standard cooldown (seconds)",
+            "ja": "通常のクールダウン（秒）",
+            "ko": "일반 요청 제한 대기 시간(초)",
+            "ru": "Обычная пауза при ограничении (секунды)",
+            "es": "Pausa estándar por limitación (segundos)",
+            "pt": "Pausa padrão por limitação (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "AnySearch 或百度触发限流后暂停请求的时间。",
+            "zh-TW": "AnySearch 或百度觸發流量限制後暫停請求的時間。",
+            "en": "Pause requests after rate limiting from AnySearch or Baidu.",
+            "ja": "AnySearch または Baidu で制限された後の待機時間です。",
+            "ko": "AnySearch 또는 Baidu의 요청 제한 후 대기 시간입니다.",
+            "ru": "Пауза после ограничения запросов AnySearch или Baidu.",
+            "es": "Pausa tras una limitación de solicitudes de AnySearch o Baidu.",
+            "pt": "Pausa após uma limitação de solicitações do AnySearch ou Baidu."
+          },
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 60
+        },
+        "duckduckgo_cooldown_seconds": {
+          "type": "number",
+          "title": "DuckDuckGo initial cooldown (seconds)",
+          "description": "Initial pause after DuckDuckGo blocks requests; repeated blocks increase it.",
+          "x-title-i18n": {
+            "zh-CN": "DuckDuckGo 初始冷却（秒）",
+            "zh-TW": "DuckDuckGo 初始冷卻（秒）",
+            "en": "DuckDuckGo initial cooldown (seconds)",
+            "ja": "DuckDuckGo の初回クールダウン（秒）",
+            "ko": "DuckDuckGo 초기 대기 시간(초)",
+            "ru": "Начальная пауза DuckDuckGo (секунды)",
+            "es": "Pausa inicial de DuckDuckGo (segundos)",
+            "pt": "Pausa inicial do DuckDuckGo (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "DuckDuckGo 被限制后的初始等待时间；连续受限时逐步延长。",
+            "zh-TW": "DuckDuckGo 受限制後的初始等待時間；連續受限時逐步延長。",
+            "en": "Initial pause after DuckDuckGo blocks requests; repeated blocks increase it.",
+            "ja": "DuckDuckGo に制限された際の初期待機時間です。連続すると延長されます。",
+            "ko": "DuckDuckGo 요청 차단 후 초기 대기 시간입니다. 연속 차단 시 늘어납니다.",
+            "ru": "Начальная пауза после блокировки DuckDuckGo; повторные блокировки её увеличивают.",
+            "es": "Pausa inicial tras un bloqueo de DuckDuckGo; aumenta con bloqueos repetidos.",
+            "pt": "Pausa inicial após um bloqueio do DuckDuckGo; aumenta com bloqueios repetidos."
+          },
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 300
+        },
+        "duckduckgo_max_cooldown_seconds": {
+          "type": "number",
+          "title": "DuckDuckGo maximum cooldown (seconds)",
+          "description": "Cooldown cap for repeated blocks; the effective value is never below the initial cooldown.",
+          "x-title-i18n": {
+            "zh-CN": "DuckDuckGo 冷却上限（秒）",
+            "zh-TW": "DuckDuckGo 冷卻上限（秒）",
+            "en": "DuckDuckGo maximum cooldown (seconds)",
+            "ja": "DuckDuckGo の最大クールダウン（秒）",
+            "ko": "DuckDuckGo 최대 대기 시간(초)",
+            "ru": "Максимальная пауза DuckDuckGo (секунды)",
+            "es": "Pausa máxima de DuckDuckGo (segundos)",
+            "pt": "Pausa máxima do DuckDuckGo (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "连续受限时冷却时间的上限，实际值不会低于初始冷却时间。",
+            "zh-TW": "連續受限時冷卻時間的上限，實際值不會低於初始冷卻時間。",
+            "en": "Cooldown cap for repeated blocks; the effective value is never below the initial cooldown.",
+            "ja": "連続制限時の待機上限です。初期待機時間を下回ることはありません。",
+            "ko": "연속 차단 시 대기 시간의 상한입니다. 실제 값은 초기 대기 시간보다 낮지 않습니다.",
+            "ru": "Предел паузы при повторных блокировках; фактически не ниже начальной паузы.",
+            "es": "Límite de pausa ante bloqueos repetidos; nunca será menor que la pausa inicial.",
+            "pt": "Limite da pausa em bloqueios repetidos; nunca será menor que a pausa inicial."
+          },
+          "minimum": 300,
+          "maximum": 86400,
+          "default": 3600
+        },
+        "queue_wait_seconds": {
+          "type": "number",
+          "title": "Request queue wait (seconds)",
+          "description": "Maximum wait for the same search source to become available.",
+          "x-title-i18n": {
+            "zh-CN": "请求排队等待（秒）",
+            "zh-TW": "請求排隊等候（秒）",
+            "en": "Request queue wait (seconds)",
+            "ja": "リクエスト待ち行列の待機時間（秒）",
+            "ko": "요청 대기열 제한 시간(초)",
+            "ru": "Ожидание в очереди (секунды)",
+            "es": "Espera en cola de solicitudes (segundos)",
+            "pt": "Espera na fila de solicitações (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "等待同一搜索来源空闲的最长时间。",
+            "zh-TW": "等候同一搜尋來源空閒的最長時間。",
+            "en": "Maximum wait for the same search source to become available.",
+            "ja": "同じ検索元が利用可能になるまでの最大待ち時間です。",
+            "ko": "같은 검색 소스를 사용할 수 있을 때까지 기다리는 최대 시간입니다.",
+            "ru": "Максимальное ожидание освобождения того же источника поиска.",
+            "es": "Espera máxima hasta que la misma fuente esté disponible.",
+            "pt": "Espera máxima até que a mesma fonte esteja disponível."
+          },
+          "minimum": 0.1,
+          "maximum": 5,
+          "default": 2
+        },
+        "retry_attempts": {
+          "type": "integer",
+          "title": "Maximum attempts",
+          "description": "Includes the first request; 1 disables retries. Only transient network or server errors are retried.",
+          "x-title-i18n": {
+            "zh-CN": "最多尝试次数",
+            "zh-TW": "最多嘗試次數",
+            "en": "Maximum attempts",
+            "ja": "最大試行回数",
+            "ko": "최대 시도 횟수",
+            "ru": "Максимум попыток",
+            "es": "Máximo de intentos",
+            "pt": "Máximo de tentativas"
+          },
+          "x-description-i18n": {
+            "zh-CN": "包含首次请求；1 表示不重试。仅重试临时网络或服务器错误。",
+            "zh-TW": "包含首次請求；1 表示不重試。僅重試暫時性網路或伺服器錯誤。",
+            "en": "Includes the first request; 1 disables retries. Only transient network or server errors are retried.",
+            "ja": "初回を含みます。1 で再試行なし。一時的な通信・サーバーエラーのみ再試行します。",
+            "ko": "최초 요청을 포함합니다. 1이면 재시도하지 않습니다. 일시적 네트워크·서버 오류만 재시도합니다.",
+            "ru": "Включает первый запрос; 1 отключает повторы. Повторяются только временные сетевые или серверные ошибки.",
+            "es": "Incluye la primera solicitud; 1 desactiva los reintentos. Solo se reintentan errores temporales de red o servidor.",
+            "pt": "Inclui a primeira solicitação; 1 desativa novas tentativas. Apenas erros temporários de rede ou servidor são repetidos."
+          },
+          "minimum": 1,
+          "maximum": 3,
+          "default": 2
+        },
+        "retry_base_delay_seconds": {
+          "type": "number",
+          "title": "Standard retry base delay (seconds)",
+          "description": "Base delay for retrying transient errors from AnySearch and Baidu.",
+          "x-title-i18n": {
+            "zh-CN": "常规重试基础延迟（秒）",
+            "zh-TW": "一般重試基礎延遲（秒）",
+            "en": "Standard retry base delay (seconds)",
+            "ja": "通常の再試行の基本待機時間（秒）",
+            "ko": "일반 재시도 기본 지연(초)",
+            "ru": "Базовая задержка повтора (секунды)",
+            "es": "Demora base de reintento (segundos)",
+            "pt": "Atraso base entre tentativas (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "AnySearch 和百度临时错误重试的基础等待时间。",
+            "zh-TW": "AnySearch 與百度暫時性錯誤重試的基礎等候時間。",
+            "en": "Base delay for retrying transient errors from AnySearch and Baidu.",
+            "ja": "AnySearch と Baidu の一時的なエラー再試行時の基本待機時間です。",
+            "ko": "AnySearch와 Baidu의 일시적 오류 재시도를 위한 기본 대기 시간입니다.",
+            "ru": "Базовая задержка повтора временных ошибок AnySearch и Baidu.",
+            "es": "Demora base para reintentar errores temporales de AnySearch y Baidu.",
+            "pt": "Atraso base para repetir erros temporários do AnySearch e Baidu."
+          },
+          "minimum": 0,
+          "maximum": 5,
+          "default": 0.5
+        },
+        "duckduckgo_retry_base_delay_seconds": {
+          "type": "number",
+          "title": "DuckDuckGo retry base delay (seconds)",
+          "description": "Base delay for retrying transient errors from DuckDuckGo.",
+          "x-title-i18n": {
+            "zh-CN": "DuckDuckGo 重试延迟（秒）",
+            "zh-TW": "DuckDuckGo 重試延遲（秒）",
+            "en": "DuckDuckGo retry base delay (seconds)",
+            "ja": "DuckDuckGo の再試行待機時間（秒）",
+            "ko": "DuckDuckGo 재시도 기본 지연(초)",
+            "ru": "Задержка повтора DuckDuckGo (секунды)",
+            "es": "Demora de reintento de DuckDuckGo (segundos)",
+            "pt": "Atraso entre tentativas do DuckDuckGo (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "DuckDuckGo 临时错误重试的基础等待时间。",
+            "zh-TW": "DuckDuckGo 暫時性錯誤重試的基礎等候時間。",
+            "en": "Base delay for retrying transient errors from DuckDuckGo.",
+            "ja": "DuckDuckGo の一時的なエラー再試行時の基本待機時間です。",
+            "ko": "DuckDuckGo의 일시적 오류 재시도를 위한 기본 대기 시간입니다.",
+            "ru": "Базовая задержка повтора временных ошибок DuckDuckGo.",
+            "es": "Demora base para reintentar errores temporales de DuckDuckGo.",
+            "pt": "Atraso base para repetir erros temporários do DuckDuckGo."
+          },
+          "minimum": 0.5,
+          "maximum": 5,
+          "default": 2
+        },
+        "duckduckgo_fallback_delay_seconds": {
+          "type": "number",
+          "title": "DuckDuckGo fallback interval (seconds)",
+          "description": "Delay before switching from DuckDuckGo HTML to Lite when fallback is allowed.",
+          "x-title-i18n": {
+            "zh-CN": "DuckDuckGo 备用端点间隔（秒）",
+            "zh-TW": "DuckDuckGo 備用端點間隔（秒）",
+            "en": "DuckDuckGo fallback interval (seconds)",
+            "ja": "DuckDuckGo の代替エンドポイント間隔（秒）",
+            "ko": "DuckDuckGo 대체 엔드포인트 간격(초)",
+            "ru": "Интервал резервного адреса DuckDuckGo (секунды)",
+            "es": "Intervalo de alternativa de DuckDuckGo (segundos)",
+            "pt": "Intervalo de alternativa do DuckDuckGo (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "DuckDuckGo HTML 端点允许回退时，切换到 Lite 端点前的等待时间。",
+            "zh-TW": "DuckDuckGo HTML 端點允許切換時，改用 Lite 端點前的等候時間。",
+            "en": "Delay before switching from DuckDuckGo HTML to Lite when fallback is allowed.",
+            "ja": "切り替え可能な場合、DuckDuckGo HTML から Lite に移る前の待ち時間です。",
+            "ko": "대체가 허용될 때 DuckDuckGo HTML에서 Lite로 전환하기 전 대기 시간입니다.",
+            "ru": "Ожидание перед переходом с DuckDuckGo HTML на Lite, если переход разрешён.",
+            "es": "Espera antes de cambiar de DuckDuckGo HTML a Lite cuando se permite.",
+            "pt": "Espera antes de trocar de DuckDuckGo HTML para Lite quando permitido."
+          },
+          "minimum": 1,
+          "maximum": 15,
+          "default": 3
+        }
+      }
+    }
+  }
+}

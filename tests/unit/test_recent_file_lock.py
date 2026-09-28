@@ -1466,6 +1466,109 @@ def test_review_stops_before_retry_after_identity_changes(tmp_path, monkeypatch)
     assert calls == 1
 
 
+
+class _CapRejected(Exception):
+    status_code = 400
+
+
+def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_path):
+    """A model whose output limit is below the review cap must still be reviewed.
+
+    The first request asks for MEMORY_REVIEW_OUTPUT_MAX_TOKENS; an endpoint
+    with a 4096 limit rejects it with a 400 before generating. The review then
+    retries once at LLM_OUTPUT_GUARD_MAX_TOKENS instead of failing every pass.
+    """
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    caps: list[int] = []
+
+    class _CapLimitedLLM(_ReviewLLM):
+        def __init__(self, cap: int):
+            super().__init__(_review_corrected())
+            self._cap = cap
+
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            if self._cap > LLM_OUTPUT_GUARD_MAX_TOKENS:
+                raise _CapRejected(
+                    "Error code: 400 - max_tokens is too large: "
+                    f"{self._cap}. This model supports at most 4096 completion tokens."
+                )
+            return await super().ainvoke(prompt, **kwargs)
+
+    def _factory(max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
+        caps.append(max_completion_tokens)
+        return _CapLimitedLLM(max_completion_tokens)
+
+    setattr(mgr, "_get_review_llm", _factory)
+
+    status, _fingerprint = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "patched"
+    assert caps == [MEMORY_REVIEW_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS]
+    assert "hi 1 fixed" in [m.content for m in _read_disk(path)]
+
+
+def test_review_fallback_cap_exhaustion_is_reported_as_output_exhausted(tmp_path):
+    """After the lower-cap retry, an empty reply at that cap is output exhaustion."""
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+
+    class _ExhaustedLLM:
+        def __init__(self, cap: int):
+            self._cap = cap
+
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            if self._cap > LLM_OUTPUT_GUARD_MAX_TOKENS:
+                raise _CapRejected(f"Error code: 400 - Range of max_tokens should be [1, {LLM_OUTPUT_GUARD_MAX_TOKENS}]")
+
+            class _R:
+                content = ""
+                response_metadata = {
+                    "finish_reason": "stop",
+                    "token_usage": {"completion_tokens": LLM_OUTPUT_GUARD_MAX_TOKENS},
+                }
+
+            return _R()
+
+        async def aclose(self) -> None:
+            return None
+
+    setattr(
+        mgr,
+        "_get_review_llm",
+        lambda max_completion_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS: _ExhaustedLLM(max_completion_tokens),
+    )
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result == ('output_exhausted', None)
+
+def test_review_does_not_retry_unrelated_bad_request(tmp_path):
+    """Only a rejected output cap earns the lower-cap retry."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    calls = 0
+
+    class _BadRequestLLM(_ReviewLLM):
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            raise _CapRejected("Error code: 400 - invalid api key format")
+
+    setattr(mgr, "_get_review_llm", lambda *a, **k: _BadRequestLLM(_review_corrected()))
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result == ('failed', None)
+    assert calls == 1
+
 # ─────────────── T10: review commit is one atomic RMW ───────────────
 
 

@@ -44,19 +44,37 @@ def test_review_response_does_not_treat_short_empty_response_as_output_limit():
     assert _review_response_hit_output_limit(response) is False
 
 
-def test_review_response_detects_empty_response_at_shared_output_guard():
+def test_review_response_detects_empty_response_at_review_output_cap():
+    from config import MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+    from memory.recent import _review_response_hit_output_limit
+
+    response = SimpleNamespace(
+        content="",
+        response_metadata={
+            "token_usage": {"output_tokens": MEMORY_REVIEW_OUTPUT_MAX_TOKENS},
+        },
+    )
+
+    assert _review_response_hit_output_limit(response) is True
+
+
+
+def test_review_response_detects_empty_response_at_fallback_cap():
+    """After the lower-cap retry, exhaustion is judged against that cap."""
     from config import LLM_OUTPUT_GUARD_MAX_TOKENS
     from memory.recent import _review_response_hit_output_limit
 
     response = SimpleNamespace(
         content="",
         response_metadata={
-            "token_usage": {"output_tokens": LLM_OUTPUT_GUARD_MAX_TOKENS},
+            "token_usage": {"completion_tokens": LLM_OUTPUT_GUARD_MAX_TOKENS},
         },
     )
 
-    assert _review_response_hit_output_limit(response) is True
-
+    assert _review_response_hit_output_limit(response) is False
+    assert _review_response_hit_output_limit(
+        response, LLM_OUTPUT_GUARD_MAX_TOKENS,
+    ) is True
 
 def test_review_llm_leaves_thinking_on_model_default():
     from memory.recent import CompressedRecentHistoryManager

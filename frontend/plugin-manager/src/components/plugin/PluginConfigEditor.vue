@@ -42,6 +42,15 @@
       style="margin-bottom: 12px"
     />
 
+    <el-alert
+      v-if="schemaInvalid && !loading"
+      :title="t('plugins.configSchemaInvalid')"
+      type="warning"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 12px"
+    />
+
     <el-skeleton v-if="loading" :rows="8" animated />
 
     <div v-else class="config-layout">
@@ -139,6 +148,7 @@
           <PluginConfigForm
             :model-value="profileDraftConfig"
             :baseline-value="baseConfig"
+            :schema="configSchema"
             @update:model-value="updateProfileDraft"
           />
         </div>
@@ -165,6 +175,7 @@ import {
 } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
+import type { ConfigEditorSchema } from '@/types/configSchema'
 import { isRequestTimeout } from '@/utils/request'
 
 interface Props {
@@ -183,6 +194,8 @@ const error = ref<string | null>(null)
 const configPath = ref<string | undefined>(undefined)
 const lastModified = ref<string | undefined>(undefined)
 
+const schemaInvalid = ref(false)
+const configSchema = ref<ConfigEditorSchema | undefined>(undefined)
 const baseConfig = ref<Record<string, any> | null>(null)
 const effectiveConfig = ref<Record<string, any> | null>(null)
 const profilesState = ref<any | null>(null)
@@ -505,6 +518,8 @@ async function loadAll() {
     configPath.value = (baseRes as any).config_path || (effectiveRes as any).config_path
     lastModified.value = (baseRes as any).last_modified || (effectiveRes as any).last_modified
 
+    configSchema.value = baseRes.config_schema ?? undefined
+    schemaInvalid.value = baseRes.warnings?.some((warning) => warning.code === 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID') ?? false
     baseConfig.value = (baseRes.config || {}) as Record<string, any>
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes

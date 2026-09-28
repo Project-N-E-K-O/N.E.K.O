@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入主分支独立 ASR 恢复提示，并新增 Electron 悬浮按钮「去设置页登录」提示，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-27-social-settings-login-prompt';
+    // 合入主分支 locale key 同步与独立 ASR 恢复提示，并新增 Electron 悬浮按钮「去设置页登录」提示，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-social-settings-login-prompt-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
