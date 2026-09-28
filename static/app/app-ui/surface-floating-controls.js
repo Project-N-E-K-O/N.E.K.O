@@ -1094,12 +1094,16 @@
                 }
                 const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
+                // 只有明确判定为未登录才提示去设置页登录；delegate 超时且 auth-status
+                // 兜底也失败时状态未知，已登录用户不能被误提示。
+                let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';
                 if (initialNativeHandoff.loginState === 'unknown') {
                     try {
                         const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                            communityLoggedOut = !communityLoggedIn;
                         }
                     } catch (statusErr) {
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
@@ -1108,7 +1112,6 @@
                 if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
-                    let oauthLaunched = false;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -1127,10 +1130,7 @@
                                         expiresInSec * 1000
                                     );
                                 }
-                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
-                                    await window.electronShell.openExternal(authUrl);
-                                    oauthLaunched = true;
-                                } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
@@ -1140,10 +1140,9 @@
                                         );
                                     }
                                 } else {
-                                    oauthLaunched = true;
                                     browserOAuthStarted = true;
                                 }
-                                if (oauthLaunched && typeof window.showStatusToast === 'function') {
+                                if (browserOAuthStarted && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
                                     const oauthPrompt = (typeof window.t === 'function')
                                         ? window.t(oauthPromptKey)
@@ -1160,14 +1159,12 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
-                            || (!isElectron && browserOAuthStarted);
-                        if (shouldWaitForOAuth) {
+                        if (browserOAuthStarted) {
                             releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
                                 browserOAuthTimeoutMs,
-                                !isElectron
+                                true
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();
@@ -1179,11 +1176,7 @@
                                     refreshedTargetUrl,
                                     refreshedHandoff.nativeDelegate
                                 );
-                                if (isElectron) {
-                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
-                                        console.warn('[social] failed to refresh Electron community window after OAuth');
-                                    }
-                                } else if (popupRef) {
+                                if (popupRef) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
                                         console.warn('[social] failed to navigate browser community window after OAuth');
                                         closePopup();
@@ -1209,7 +1202,7 @@
                         }
                     }
                 } else {
-                    if (!communityLoggedIn && typeof window.showStatusToast === 'function') {
+                    if (communityLoggedOut && typeof window.showStatusToast === 'function') {
                         const settingsPromptKey = 'app.socialSettingsLoginPrompt';
                         const settingsPrompt = (typeof window.t === 'function')
                             ? window.t(settingsPromptKey)

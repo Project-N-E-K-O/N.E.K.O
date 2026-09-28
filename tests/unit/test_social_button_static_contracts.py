@@ -65,7 +65,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "let socialOpenRequestReleased = false;" in listener
     assert listener.count("releaseSocialOpenRequestForFlow();") == 2
     assert "if (!socialOpenRequestReleased)" in listener
-    # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
+    # Community opens in-app (Electron framed child / browser tab).
     helper_start = listener.index("const openElectronSocialWindow = (targetUrl) => {")
     helper_end = listener.index("const fetchNativeSyncTicket = async () => {", helper_start)
     electron_helper = listener[helper_start:helper_end]
@@ -140,7 +140,8 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "fetch('/api/card-drop/oauth/start'"
     )
-    assert "openExternal(authUrl)" in listener
+    # 桌面端改由设置页登录，悬浮按钮不再从这里拉起外部浏览器 OAuth。
+    assert "openExternal(authUrl)" not in listener
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
@@ -178,6 +179,11 @@ def test_social_open_request_is_deduped_before_fetching_config():
     main_flow = listener[helper_end:]
     assert "let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';" in main_flow
     assert "if (initialNativeHandoff.loginState === 'unknown')" in main_flow
+    # 状态未知（delegate 超时且 auth-status 兜底失败）时不能提示去设置页登录。
+    assert "let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';" in main_flow
+    assert "communityLoggedOut = !communityLoggedIn;" in main_flow
+    assert "if (communityLoggedOut && typeof window.showStatusToast === 'function')" in main_flow
+    assert "if (!communityLoggedIn && typeof window.showStatusToast" not in main_flow
     assert main_flow.index("fetch('/api/card-drop/auth-status'") < main_flow.index(
         "await completeInitialCommunityHandoff("
     )
@@ -614,11 +620,11 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         listener,
     )
     assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
-    assert "openElectronSocialWindow(refreshedTargetUrl.toString())" in listener
-    assert "const shouldWaitForOAuth = (isElectron && oauthLaunched)" in listener
-    assert "|| (!isElectron && browserOAuthStarted);" in listener
+    # 外层已经限定 !isElectron，块内不再保留桌面端分支。
+    assert "openElectronSocialWindow(refreshedTargetUrl.toString())" not in listener
+    assert "oauthLaunched" not in listener
     assert re.search(
-        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
+        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*true\s*\)",
         listener,
     )
     assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
@@ -631,7 +637,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         "await waitForOAuthCompletion("
     )
     assert re.search(
-        r"else if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
+        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
         r"closePopup\(\);",
         listener,
     )

@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from utils import social_base
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -37,7 +38,6 @@ _OAUTH_PENDING_FILENAME = "community_oauth_pending.json"
 _OAUTH_PENDING_TTL_SEC = 600
 _OAUTH_REDIRECT_PATH = "/oauth/callback"
 _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
-_DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _oauth_start_lock = asyncio.Lock()
@@ -91,10 +91,7 @@ def _desktop_client_id() -> str:
 
 
 def _auth_public_url() -> str:
-    raw = (os.environ.get("NEKO_AUTH_URL") or "").strip().rstrip("/")
-    if raw:
-        return raw
-    return _DEFAULT_AUTH_URL
+    return social_base.auth_public_url()
 
 
 def _main_server_port() -> int:

@@ -209,6 +209,75 @@ async function liveRecordingTakesOverCase() {
          'the real recording keeps its own stream');
 }
 
+
+function watchdogTimers(timers) {
+  return timers.filter((timer) => timer.delay === 20000);
+}
+
+async function watchdogReleasesAbandonedProbeCase() {
+  // The settings window can die without sending stop (crash, reload, force
+  // close). The page must release the mic on its own.
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts');
+  const armed = watchdogTimers(timers);
+  assert(armed.length === 1 && !armed[0].cleared, 'a settings start arms one watchdog');
+
+  armed[0].callback();
+  assert(!isLive(env.streams[0]) && env.contexts[0].state === 'closed',
+         'the watchdog must release an abandoned probe');
+
+  const env2 = loadModule();
+  const timers2 = env2.captureTimeouts();
+  await env2.win.startSettingsMicVolumeTest();
+  env2.win.stopSettingsMicVolumeTest();
+  assert(watchdogTimers(timers2).every((timer) => timer.cleared),
+         'an explicit stop must disarm the watchdog');
+}
+
+async function probeResumesAfterLiveEndsCase() {
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
+  await env.mod.startMicCapture();
+  assert(!isLive(env.streams[0]), 'the probe yields to real recording');
+
+  // Real recording ends while the settings test window is still open.
+  env.S.isRecording = false;
+  env.S.inputAnalyser = null;
+  const streamsBefore = env.streams.length;
+  assert(env.mod.sampleMicVolumeLevel({ liveOnly: true }).recording === false,
+         'a liveOnly sample reports idle once recording ends');
+  await settle();
+  assert(env.streams.length === streamsBefore, 'a liveOnly sample must not rebuild the probe');
+
+  env.mod.sampleMicVolumeLevel();
+  env.mod.sampleMicVolumeLevel();
+  await settle(10);
+  assert(env.streams.length === streamsBefore + 1 && isLive(env.streams[streamsBefore]),
+         'a settings sample rebuilds exactly one probe after recording ends');
+  const probeContext = env.contexts[env.contexts.length - 1];
+  assert(probeContext.state !== 'closed', 'the rebuilt probe has an open context');
+
+  const armed = watchdogTimers(timers);
+  assert(armed.length === 1, 'rebuilding the probe must not extend the watchdog');
+  armed[0].callback();
+  assert(!isLive(env.streams[streamsBefore]) && probeContext.state === 'closed',
+         'the original watchdog still bounds the rebuilt probe');
+}
+
+async function liveOnlySampleIgnoresProbeCase() {
+  // The floating-button volume bar samples with liveOnly: it must not read,
+  // yield, or rebuild the settings probe.
+  const env = loadModule();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts');
+  const sample = env.mod.sampleMicVolumeLevel({ liveOnly: true });
+  assert(sample.recording === false && sample.percent === 0,
+         'a liveOnly sample must not report the probe level');
+  assert(isLive(env.streams[0]) && env.contexts[0].state !== 'closed',
+         'a liveOnly sample must leave the probe running');
+}
+
 (async () => {
   await stopDuringPermissionCase();
   await overlappingStartsCase();
@@ -218,6 +287,9 @@ async function liveRecordingTakesOverCase() {
   await contextConstructionFailureCase();
   await resumeFailureCase();
   await liveRecordingTakesOverCase();
+  await watchdogReleasesAbandonedProbeCase();
+  await probeResumesAfterLiveEndsCase();
+  await liveOnlySampleIgnoresProbeCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

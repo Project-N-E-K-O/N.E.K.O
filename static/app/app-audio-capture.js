@@ -1297,13 +1297,24 @@
     // 每次 start / stop 都递增。start 跨 await 回来时比对一次：
     // 过期就只关掉自己拿到的流，不碰别人的 probe，也不再发布。
     let settingsMicVolumeGeneration = 0;
+    // 设置页 15 秒后会自己发 stop；窗口被关、崩溃或重载时 stop 发不出来，
+    // 主页面到点自己释放，不让麦克风一直被占着。
+    const SETTINGS_MIC_VOLUME_TEST_MAX_MS = 20000;
+    let settingsMicVolumeWatchdog = null;
 
-    function stopSettingsMicTestStream(stream) {
-        try {
-            if (stream && typeof stream.getTracks === 'function') {
-                stream.getTracks().forEach(function (track) { track.stop(); });
-            }
-        } catch (_) {}
+    function clearSettingsMicVolumeWatchdog() {
+        if (settingsMicVolumeWatchdog === null) return;
+        clearTimeout(settingsMicVolumeWatchdog);
+        settingsMicVolumeWatchdog = null;
+    }
+
+    // 只由设置页发起的 start 布置；让位后重建 probe 不续期，保证总时长有上限。
+    function armSettingsMicVolumeWatchdog() {
+        clearSettingsMicVolumeWatchdog();
+        settingsMicVolumeWatchdog = setTimeout(function () {
+            settingsMicVolumeWatchdog = null;
+            stopSettingsMicVolumeTest();
+        }, SETTINGS_MIC_VOLUME_TEST_MAX_MS);
     }
 
     // 正式录音已接管时，临时 probe 立即让位，避免两路流同时占着麦克风。
@@ -1324,7 +1335,7 @@
         const probe = settingsMicVolumeTest;
         settingsMicVolumeTest = null;
         if (!probe || probe.mode !== 'probe') return;
-        stopSettingsMicTestStream(probe.stream);
+        stopMicrophoneStreamTracks(probe.stream);
         try {
             if (probe.context && probe.context.state !== 'closed') probe.context.close();
         } catch (_) {}
@@ -2509,11 +2520,15 @@
     // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
     let micVolumeSampleBuffer = null;
 
-    function sampleMicVolumeLevel() {
+    // liveOnly：主页面弹窗只反映真正送给 AI 的音量，不借设置页试麦的 probe，
+    // 否则没在录音时弹窗也会显示“正在收音”。
+    function sampleMicVolumeLevel(options) {
+        const liveOnly = !!(options && options.liveOnly);
         if (S.isRecording && S.inputAnalyser) yieldSettingsMicVolumeProbeToLive();
-        const analyser = (S.isRecording && S.inputAnalyser)
-            ? S.inputAnalyser
-            : (settingsMicVolumeTest && settingsMicVolumeTest.analyser);
+        else if (!liveOnly) resumeSettingsMicVolumeProbeAfterLive();
+        let analyser = null;
+        if (S.isRecording && S.inputAnalyser) analyser = S.inputAnalyser;
+        else if (!liveOnly && settingsMicVolumeTest) analyser = settingsMicVolumeTest.analyser;
         if (!analyser) {
             return { recording: false, percent: 0, tone: 'idle' };
         }
@@ -2601,7 +2616,7 @@
                 return;
             }
 
-            const sample = sampleMicVolumeLevel();
+            const sample = sampleMicVolumeLevel({ liveOnly: true });
             if (sample.recording) {
                 // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
                 cachedBarFill.style.width = `${sample.percent}%`;
@@ -2745,6 +2760,17 @@
         }
     }
 
+    function settingsMicTestConstraints(deviceId) {
+        const audio = {
+            noiseSuppression: false,
+            echoCancellation: true,
+            autoGainControl: true,
+            channelCount: 1,
+        };
+        if (deviceId) audio.deviceId = { exact: deviceId };
+        return { audio };
+    }
+
     async function startSettingsMicVolumeTest() {
         const generation = ++settingsMicVolumeGeneration;
         const isCurrent = function () { return generation === settingsMicVolumeGeneration; };
@@ -2753,38 +2779,24 @@
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
         }
-        const audio = {
-            noiseSuppression: false,
-            echoCancellation: true,
-            autoGainControl: true,
-            channelCount: 1,
-        };
-        if (S.selectedMicrophoneId) audio.deviceId = { exact: S.selectedMicrophoneId };
+        // 和正式录音同一套判定：拿到的音轨已 ended 时合成 NotReadableError，
+        // 只有设备类错误才退回默认麦克风；权限拒绝 / 安全 / 中止类错误直接抛出。
         let stream = null;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio });
+            stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(S.selectedMicrophoneId));
         } catch (error) {
             if (!isCurrent()) return { ok: false };
-            // 与正式录音 openMicrophoneStreamWithFallback 同一口径：只有设备类错误才退回默认麦克风，
-            // 权限拒绝 / 安全 / 中止类错误直接抛出，避免再弹一次权限框或打开用户没选的设备。
             if (!S.selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
-            const fallback = {
-                noiseSuppression: false,
-                echoCancellation: true,
-                autoGainControl: true,
-                channelCount: 1,
-            };
-            stream = await navigator.mediaDevices.getUserMedia({ audio: fallback });
+            stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
         }
-        if (!stream) throw new Error('microphone unavailable');
         // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
         if (!isCurrent()) {
-            stopSettingsMicTestStream(stream);
+            stopMicrophoneStreamTracks(stream);
             return { ok: false };
         }
         // 等待期间正式录音已启动：直接用正式录音的 analyser。
         if (S.isRecording && S.inputAnalyser) {
-            stopSettingsMicTestStream(stream);
+            stopMicrophoneStreamTracks(stream);
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
         }
@@ -2806,8 +2818,14 @@
             if (context.state === 'suspended') {
                 try { await context.resume(); } catch (_) {}
             }
-            // resume 期间被 stop / 取代时，probe 已由对方释放。
-            if (settingsMicVolumeTest !== probe) return { ok: false };
+            if (settingsMicVolumeTest !== probe) {
+                // resume 期间正式录音接管：probe 已让位，正式录音的 analyser 可用，不算失败。
+                if (isCurrent() && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'live') {
+                    return { ok: true, mode: 'live' };
+                }
+                // 被 stop / 新一轮 start 取代：probe 已由对方释放。
+                return { ok: false };
+            }
             // 仍未运行的 context 采不到任何数据，与其一直显示静音，不如如实报失败。
             if (context.state !== 'running') {
                 releaseSettingsMicVolumeProbe();
@@ -2816,14 +2834,29 @@
             return { ok: true, mode: 'probe' };
         } catch (error) {
             if (probe && settingsMicVolumeTest === probe) settingsMicVolumeTest = null;
-            stopSettingsMicTestStream(stream);
+            stopMicrophoneStreamTracks(stream);
             try { if (context && context.state !== 'closed') context.close(); } catch (_) {}
             throw error;
         }
     }
 
+    // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
+    // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
+    let settingsMicVolumeResumePending = false;
+
+    function resumeSettingsMicVolumeProbeAfterLive() {
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
+        if (S.isRecording && S.inputAnalyser) return;
+        if (settingsMicVolumeResumePending) return;
+        settingsMicVolumeResumePending = true;
+        startSettingsMicVolumeTest()
+            .catch(function () {})
+            .finally(function () { settingsMicVolumeResumePending = false; });
+    }
+
     function stopSettingsMicVolumeTest() {
         settingsMicVolumeGeneration += 1;
+        clearSettingsMicVolumeWatchdog();
         releaseSettingsMicVolumeProbe();
         return { ok: true };
     }
@@ -2831,6 +2864,7 @@
     // 内部抛错路径只会清理本次自己创建的资源；这里不能再无条件 release，
     // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
     window.startSettingsMicVolumeTest = async function () {
+        armSettingsMicVolumeWatchdog();
         try {
             return await startSettingsMicVolumeTest();
         } catch (_) {

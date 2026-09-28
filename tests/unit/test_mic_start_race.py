@@ -96,6 +96,9 @@ function loadModule() {
   // genuinely throws in the field once starts have leaked.
   let captureContextThrows = false;
   let runDeferredTimeouts = false;
+  // When set, timers are recorded instead of dropped so a case can fire one
+  // by hand (e.g. the settings mic-test watchdog).
+  let capturedTimeouts = null;
 
   class FakeMediaStream {
     constructor(id, track) {
@@ -168,7 +171,11 @@ function loadModule() {
     createMediaStreamSource() { return makeNode(this, { __kind: 'source' }); }
     createGain() { return makeNode(this, { __kind: 'gain', gain: { value: 0 } }); }
     createAnalyser() {
-      return makeNode(this, { __kind: 'analyser', fftSize: 0, smoothingTimeConstant: 0 });
+      return makeNode(this, {
+        __kind: 'analyser', fftSize: 0, smoothingTimeConstant: 0,
+        // A steady mid-level signal, so any sample of this analyser is non-zero.
+        getFloatTimeDomainData(buffer) { buffer.fill(0.5); },
+      });
     }
     resume() { return Promise.resolve(); }
   }
@@ -198,11 +205,18 @@ function loadModule() {
     // Every module-scope timer here is a deferred UI/permission side effect
     // (mic permission pre-request, floating list render). Suppressing them
     // keeps the harness to the capture pipeline and lets node exit cleanly.
-    setTimeout: (callback) => {
+    setTimeout: (callback, delay) => {
+      if (capturedTimeouts) {
+        const timer = { callback, delay, cleared: false };
+        capturedTimeouts.push(timer);
+        return timer;
+      }
       if (runDeferredTimeouts) Promise.resolve().then(callback);
       return 0;
     },
-    clearTimeout: () => {},
+    clearTimeout: (timer) => {
+      if (timer && typeof timer === 'object') timer.cleared = true;
+    },
     setInterval: () => 0,
     clearInterval: () => {},
     requestAnimationFrame: () => 0,
@@ -354,6 +368,10 @@ function loadModule() {
     },
     enableDeferredTimeouts() {
       runDeferredTimeouts = true;
+    },
+    captureTimeouts() {
+      capturedTimeouts = [];
+      return capturedTimeouts;
     },
     // stopProactiveChatSchedule is the LAST thing on the success path, so this
     // throws only after the pipeline has committed and published.
