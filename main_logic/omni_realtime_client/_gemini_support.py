@@ -537,6 +537,17 @@ class _GeminiMixin:
             and getattr(self, "_gemini_external_submit_task", None) is None
         ):
             return
+        # A completed close task may have failed while the SDK context was
+        # still retained for a physical-close retry.  Do not keep awaiting the
+        # same failed task forever; the next caller must get a fresh attempt.
+        close_task = getattr(self, "_gemini_close_task", None)
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            if close_error is not None or self._gemini_context_manager is not None:
+                self._gemini_close_task = None
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
     def _detach_for_gemini_close(self):
@@ -662,6 +673,17 @@ class _GeminiMixin:
             close_error = e
             logger.error(f"Error closing Gemini session: {e}")
 
+        if close_error is not None:
+            # Keep the failed context and session attached so a later
+            # retirement attempt can retry the authoritative SDK exit.  The
+            # connection registry will keep its capacity slot occupied until
+            # one such retry completes successfully.
+            if self._gemini_context_manager is context:
+                logger.warning(
+                    "Gemini close failed; retaining the context for a later retry"
+                )
+            raise close_error
+
         if self._gemini_context_manager is not context:
             # A replacement session attached while the SDK exit ran. Its
             # references — and the client-wide state below — are not ours to
@@ -669,8 +691,6 @@ class _GeminiMixin:
             logger.info(
                 "Gemini close: a replacement session attached; leaving its state alone"
             )
-            if close_error is not None:
-                raise close_error
             return
 
         self._gemini_context_manager = None
@@ -697,8 +717,6 @@ class _GeminiMixin:
             self._audio_processor.reset()
 
         logger.info("Gemini Live API session closed")
-        if close_error is not None:
-            raise close_error
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""

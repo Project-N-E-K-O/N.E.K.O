@@ -475,6 +475,15 @@ async def test_gemini_close_leaves_a_replacement_session_alone():
     assert client.ws is replacement_session
     assert replacement_context.exit_calls == 0
 
+    # The completed retirement task belongs to the old context. A later close
+    # must be allowed to create a new task for the replacement context.
+    replacement_context.release.set()
+    await asyncio.wait_for(client._close_gemini(), timeout=5)
+    assert replacement_context.exit_calls == 1
+    assert client._gemini_context_manager is None
+    assert client._gemini_session is None
+    assert client.ws is None
+
 
 @pytest.mark.asyncio
 async def test_retired_gemini_context_is_exited_even_after_a_reconnect():
@@ -553,19 +562,37 @@ async def test_replacement_attaching_during_the_audio_lock_keeps_its_gemini_sess
 
 @pytest.mark.asyncio
 async def test_failing_gemini_exit_still_drops_the_references():
-    """A failed SDK exit is surfaced while retired references are cleared."""
+    """A failed SDK exit keeps ownership until a later retry succeeds."""
     client = _make_client()
 
     class _RaisingContext:
-        async def __aexit__(self, *exc_info):
-            raise RuntimeError("sdk exit failed")
+        def __init__(self):
+            self.exit_calls = 0
+            self.fail = True
 
-    client._gemini_context_manager = _RaisingContext()
-    client._gemini_session = object()
+        async def __aexit__(self, *exc_info):
+            self.exit_calls += 1
+            if self.fail:
+                raise RuntimeError("sdk exit failed")
+
+    context = _RaisingContext()
+    session = object()
+    client._gemini_context_manager = context
+    client._gemini_session = session
+    client.ws = session
 
     with pytest.raises(RuntimeError, match="sdk exit failed"):
         await client._close_gemini()
 
+    assert context.exit_calls == 1
+    assert client._gemini_context_manager is context
+    assert client._gemini_session is session
+    assert client.ws is session
+
+    context.fail = False
+    await client._close_gemini()
+
+    assert context.exit_calls == 2
     assert client._gemini_context_manager is None
     assert client._gemini_session is None
     assert client.ws is None
