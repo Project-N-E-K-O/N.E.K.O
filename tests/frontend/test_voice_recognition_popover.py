@@ -10,10 +10,10 @@ APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
 VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
-    "window:resize",
     "window:scroll",
 )
 VOICE_POPOVER_GLOBAL_LISTENERS = (
+    "window:resize",
     "window:voice-input-lifecycle-changed",
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
@@ -210,6 +210,7 @@ def _install_voice_popover_harness(
     function ensureMicPopupScrollbarStyle() {}
     function attachTransientMicPopupScrollbar() { return () => {}; }
     window.__screenToggleCalls = 0;
+    function isScreenShareActive() { return !!window.__screenActive; }
     function createScreenShareToggleButton() {
         const button = document.createElement('button');
         button.type = 'button';
@@ -682,6 +683,457 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
+def test_screen_source_hover_respects_current_provider(
+    page: Page, capability: bool | str,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    # Desktop shells may inject their bridge after the menu was rendered.
+    page.evaluate(
+        """(capability) => {
+            window.getDesktopCaptureProvider = () => capability === 'browser'
+                ? null : {
+                    getSources() {},
+                    sourceEnumerationMayPrompt: capability === 'unknown'
+                        ? undefined : capability,
+                };
+            window.__sourceRenderCalls = 0;
+            const render = window.renderFloatingScreenSourceList;
+            window.renderFloatingScreenSourceList = (...args) => {
+                window.__sourceRenderCalls += 1;
+                return render(...args);
+            };
+        }""",
+        capability,
+    )
+    action = page.locator('[data-neko-mic-main-action="screen"]')
+    action.hover()
+    page.wait_for_timeout(50)
+    expected = 1 if capability is False or capability == "browser" else 0
+    assert page.evaluate("window.__sourceRenderCalls") == expected
+    assert page.evaluate("window.__voicePopoverTest.panels()") == expected
+    action.click()
+    page.wait_for_function("window.__sourceRenderCalls === 1")
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+def test_browser_screen_hover_waits_for_explicit_share_click(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.__browserPickerCalls = 0;
+            navigator.mediaDevices.getDisplayMedia = () => {
+                window.__browserPickerCalls += 1;
+                throw new Error('hover must not capture');
+            };
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator('.neko-mic-subwindow[data-neko-mic-action-key="screen"]')
+    panel.wait_for(state="visible", timeout=1500)
+    assert page.evaluate("window.__browserPickerCalls") == 0
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    assert panel.locator('.neko-screen-source-title-match-toggle').count() == 0
+    panel.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("operation", ["start", "stop", "cancel"])
+def test_browser_panel_rechecks_late_desktop_bridge(page: Page, operation: str) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate("""async () => {
+        navigator.mediaDevices.getDisplayMedia = () => {};
+        await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+    }""")
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.locator('[data-neko-browser-screen-share]').wait_for(state="visible")
+    page.evaluate("""(operation) => {
+        window.getDesktopCaptureProvider = () => ({
+            getSources() {}, sourceEnumerationMayPrompt: false,
+        });
+        window.__screenActive = operation === 'stop';
+        window.isScreenSharingStartPending = () => operation === 'cancel';
+    }""", operation)
+    page.locator('[data-neko-browser-screen-share]').click()
+    if operation == "start":
+        page.locator('.screen-source-title-filter').wait_for(state="visible", timeout=1500)
+        assert page.evaluate("window.__screenToggleCalls") == 0
+        assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+        page.evaluate("window.__voicePopoverTest.popup().remove()")
+        page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+    else:
+        assert page.evaluate("window.__screenToggleCalls") == 1
+        assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("display_media", [False, True])
+def test_mobile_share_panel_describes_camera(page: Page, display_media: bool) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate("""async (displayMedia) => {
+        window.appUtils.isMobile = () => true;
+        if (displayMedia) navigator.mediaDevices.getDisplayMedia = () => {};
+        await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+    }""", display_media)
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator('.neko-mic-subwindow')
+    panel.wait_for(state="visible")
+    assert 'app.screenSource.mobileCameraHint' in panel.inner_text()
+    assert 'app.screenSource.browserPickerHint' not in panel.inner_text()
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    panel.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("shared_helper", [False, True])
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("width", [320, 800])
+def test_screen_panel_remains_usable_without_side_space(
+    page: Page, shared_helper: bool, opens_left: bool, width: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": width, "height": 800})
+    page.evaluate("""async (opensLeft) => {
+        navigator.mediaDevices.getDisplayMedia = () => {};
+        const popup = window.__voicePopoverTest.popup();
+        await window.renderFloatingMicList(popup);
+        popup.dataset.opensLeft = String(opensLeft);
+        popup.style.left = opensLeft ? '8px' : (innerWidth - popup.offsetWidth - 8) + 'px';
+        window.__voicePopoverTest.action('screen').click();
+    }""", opens_left)
+    # Include the shared helper's delayed collision check.
+    page.wait_for_timeout(350)
+    result = page.evaluate("""() => {
+        const panel = window.__voicePopoverTest.ownedPanels()[0];
+        const rect = panel.getBoundingClientRect();
+        const close = panel.querySelector('[aria-label="Close"]').getBoundingClientRect();
+        return { width: rect.width, left: rect.left, right: rect.right,
+            closeLeft: close.left, closeRight: close.right };
+    }""")
+    assert result['width'] >= 240
+    assert result['left'] >= 0
+    assert result['right'] <= width
+    assert 0 <= result['closeLeft'] < result['closeRight'] <= width
+    page.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("shared_helper", [False, True])
+@pytest.mark.parametrize("owner_top", [120, 180])
+def test_stacked_screen_panel_avoids_owner_in_short_viewport(
+    page: Page, opens_left: bool, shared_helper: bool, owner_top: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.evaluate("""async ({opensLeft, ownerTop}) => {
+        const test = window.__voicePopoverTest;
+        await window.renderFloatingMicList(test.popup());
+        const popup = test.popup();
+        popup.dataset.opensLeft = String(opensLeft);
+        Object.assign(popup.style, {top: ownerTop + 'px', height: '350px',
+            left: opensLeft ? '8px' : (innerWidth - popup.offsetWidth - 8) + 'px'});
+        const render = window.renderFloatingScreenSourceList;
+        window.renderFloatingScreenSourceList = async (container) => {
+            await render(container);
+            const spacer = document.createElement('div');
+            spacer.style.cssText = 'height:400px;flex-shrink:0';
+            container.appendChild(spacer);
+            const last = document.createElement('button');
+            last.id = 'last-screen-source';last.textContent = 'last source';
+            last.onclick = () => { window.__lastSourceClicked = true; };
+            container.appendChild(last);
+        };
+        test.action('screen').click();
+    }""", {"opensLeft": opens_left, "ownerTop": owner_top})
+    page.wait_for_timeout(350)
+    result = page.evaluate("""() => {
+        const test = window.__voicePopoverTest;
+        const a = test.popup().getBoundingClientRect();
+        const b = test.ownedPanels()[0].getBoundingClientRect();
+        return {clear: b.bottom <= a.top || b.top >= a.bottom,
+            withinViewport: b.top >= 0 && b.bottom <= innerHeight,
+            height: b.height};
+    }""")
+    assert result['clear']
+    assert result['withinViewport']
+    assert result['height'] >= 64
+    page.locator('#last-screen-source').click()
+    assert page.evaluate('window.__lastSourceClicked')
+    page.set_viewport_size({"width": 900, "height": 1100})
+    page.wait_for_timeout(350)
+    restored = page.locator('.neko-mic-subwindow').bounding_box()
+    assert restored and restored['height'] >= 300
+    page.locator('.neko-mic-subwindow [aria-label="Close"]').click()
+    assert page.evaluate('window.__voicePopoverTest.panels()') == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("shared_helper", [False, True])
+def test_screen_and_device_panels_follow_owner_direction(
+    page: Page, opens_left: bool, shared_helper: bool,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": 1100, "height": 800})
+    result = page.evaluate(
+        """async (opensLeft) => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            const popup = test.popup();
+            Object.assign(popup.style, { left: '560px' });
+            popup.dataset.opensLeft = String(opensLeft);
+            async function snapshot(key) {
+                test.action(key).click();
+                await new Promise(requestAnimationFrame);
+                const panel = test.ownedPanels()[0];
+                const rect = panel.getBoundingClientRect();
+                const owner = popup.getBoundingClientRect();
+                return {
+                    side: rect.left >= owner.right ? 'right'
+                        : rect.right <= owner.left ? 'left' : 'overlap',
+                    withinViewport: rect.left >= 0 && rect.right <= innerWidth,
+                };
+            }
+            return { device: await snapshot('device'), screen: await snapshot('screen') };
+        }""",
+        opens_left,
+    )
+    expected = {"side": "left" if opens_left else "right", "withinViewport": True}
+    assert result == {"device": expected, "screen": expected}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("box_sizing", ["border-box", "content-box"])
+@pytest.mark.parametrize("scale", [1, 1.25])
+def test_shared_stacked_panel_bounds_include_padding_and_scale(
+    page: Page, box_sizing: str, scale: float,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        f'<div id="live2d-floating-buttons" style="width:0;height:0;transform:scale({scale})"></div>'
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        f'<div id="panel" style="position:fixed;width:360px;height:320px;padding:8px;'
+        f'border:1px solid;box-sizing:{box_sizing}"><div style="height:500px">content</div></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    result = page.evaluate("""async () => {
+        const owner = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = owner;
+        window.AvatarPopupUI.positionSidePanel(panel, owner);
+        window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        const a = owner.getBoundingClientRect(), initial = panel.getBoundingClientRect();
+        const initiallyClear = initial.bottom <= a.top || initial.top >= a.bottom;
+        // A newly visible floating button exercises the delayed collision pass.
+        const button = document.createElement('button');
+        button.id = 'live2d-btn-test';
+        button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+        document.body.appendChild(button);
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const b = panel.getBoundingClientRect(), c = button.getBoundingClientRect();
+        return {initiallyClear, clear: b.bottom <= a.top || b.top >= a.bottom,
+            buttonClear: b.bottom <= c.top || b.top >= c.bottom,
+            inBounds: b.top >= 0 && b.bottom <= innerHeight,
+            scrollable: panel.scrollHeight > panel.clientHeight};
+    }""")
+    assert result == {"initiallyClear": True, "clear": True, "buttonClear": True,
+                      "inBounds": True, "scrollable": True}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("final_state", ["visible", "hidden", "detached"])
+def test_side_panel_reposition_invalidates_older_collision_callbacks(
+    page: Page, final_state: str,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        '<div id="panel" style="position:fixed;width:360px;height:320px;box-sizing:border-box"></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    result = page.evaluate("""(finalState) => {
+        const popup = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = popup;
+        const originalSet = window.setTimeout, originalClear = window.clearTimeout;
+        const pending = new Map(), scheduled = [];
+        let nextId = 0, maxPending = 0;
+        window.setTimeout = (fn, delay) => {
+            const id = ++nextId;
+            const timer = {id, fn, delay};
+            pending.set(id, timer);scheduled.push(timer);
+            maxPending = Math.max(maxPending, pending.size);
+            return id;
+        };
+        window.clearTimeout = id => { pending.delete(id); };
+        function position() {
+            window.AvatarPopupUI.positionSidePanel(panel, popup);
+            window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        }
+        function snapshot() { return [panel.style.left, panel.style.top, panel.style.maxHeight]; }
+        try {
+            position();
+            const old = scheduled[0];
+            Object.assign(popup.style, {top: '250px', height: '120px'});
+            for (let i = 0; i < 100; i++) position();
+            const latest = scheduled[scheduled.length - 1];
+            const button = document.createElement('button');
+            button.id = 'live2d-btn-test';
+            button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+            document.body.appendChild(button);
+            const beforeOld = snapshot();
+            // Exercise a superseded callback even if cancellation raced its dispatch.
+            old.fn();
+            const oldDidNotMove = JSON.stringify(snapshot()) === JSON.stringify(beforeOld);
+            if (finalState === 'hidden') panel.style.display = 'none';
+            if (finalState === 'detached') panel.remove();
+            const beforeLatest = snapshot();
+            pending.delete(latest.id);latest.fn();
+            const a = popup.getBoundingClientRect(), b = panel.getBoundingClientRect();
+            return {oldDidNotMove, maxPending, pending: pending.size,
+                handleReleased: panel._nekoPositionCheckTimer == null,
+                latestHandled: finalState === 'visible'
+                    ? b.top >= a.bottom && b.bottom <= innerHeight
+                    : JSON.stringify(snapshot()) === JSON.stringify(beforeLatest),
+                delays: [...new Set(scheduled.map(timer => timer.delay))]};
+        } finally {
+            pending.clear();window.setTimeout = originalSet;window.clearTimeout = originalClear;
+        }
+    }""", final_state)
+    assert result['oldDidNotMove']
+    assert result['maxPending'] == 1
+    assert result['pending'] == 0
+    assert result['handleReleased']
+    assert result['latestHandled']
+    assert result['delays'] == [300]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("final_width", [700, 1200])
+def test_delayed_stacked_collision_uses_current_viewport_without_rescheduling(
+    page: Page, final_width: int,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        '<div id="panel" style="position:fixed;width:360px;height:320px;box-sizing:border-box"></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    page.evaluate("""() => {
+        const popup = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = popup;
+        const originalSet = window.setTimeout;
+        const timers = [];
+        window.setTimeout = (fn, delay) => {timers.push({fn, delay}); return timers.length;};
+        window.__collisionTest = {originalSet, timers};
+        window.AvatarPopupUI.positionSidePanel(panel, popup);
+        window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+    }""")
+    try:
+        page.set_viewport_size({"width": final_width, "height": 900})
+        result = page.evaluate("""() => {
+            const popup = document.getElementById('live2d-popup-mic');
+            const panel = document.getElementById('panel');
+            Object.assign(popup.style, {left: innerWidth > 1000 ? '560px' : '8px',
+                top: '250px', height: '120px'});
+            const button = document.createElement('button');
+            button.id = 'live2d-btn-test';
+            button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+            document.body.appendChild(button);
+            const revision = panel._nekoPositionRevision;
+            const {timers} = window.__collisionTest;
+            timers[0].fn();
+            const a = popup.getBoundingClientRect(), b = panel.getBoundingClientRect();
+            return {currentPosition: innerWidth > 1000
+                ? b.right <= a.left && b.top === a.top : b.top >= a.bottom,
+                restoredHeight: b.height === 320,
+                inBounds: b.left >= 0 && b.right <= innerWidth && b.bottom <= innerHeight,
+                onlyInitialPlacementBeforeCallback: revision === 1,
+                scheduled: timers.length, handleReleased: panel._nekoPositionCheckTimer == null};
+        }""")
+    finally:
+        page.evaluate("""() => {
+            window.setTimeout = window.__collisionTest.originalSet;
+            delete window.__collisionTest;
+        }""")
+    assert result == {"currentPosition": True, "restoredHeight": True, "inBounds": True,
+                      "onlyInitialPlacementBeforeCallback": True,
+                      "scheduled": 1, "handleReleased": True}
+
+
+@pytest.mark.frontend
+def test_screen_source_hover_panel_lifecycle(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.getDesktopCaptureProvider = () => ({
+                getSources() {}, sourceEnumerationMayPrompt: false,
+            });
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    panel = page.locator('.neko-mic-subwindow[data-neko-mic-action-key="screen"]')
+    screen.hover()
+    panel.wait_for(state="visible")
+    panel.locator('.screen-source-title-filter').fill('Editor')
+    page.locator('#outside-target').hover()
+    page.wait_for_timeout(360)
+    assert panel.count() == 1
+    screen.hover()
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    panel.hover()
+    page.locator('[data-neko-mic-main-action="device"]').hover()
+    assert panel.count() == 0
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    screen.hover()
+    panel.wait_for(state="visible")
+    page.evaluate("window.__voicePopoverTest.popup().remove()")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    assert not {
+        key: value for key, value in page.evaluate(
+            "window.__voicePopoverTest.listenerBalance"
+        ).items() if value
+    }
+
+
+@pytest.mark.frontend
 def test_screen_source_subwindow_header_has_remember_window_toggle(
     page: Page,
 ) -> None:
@@ -764,7 +1216,8 @@ def test_screen_source_subwindow_ignores_leave_and_closes_on_parent_return(
     page.wait_for_timeout(360)
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
 
-    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    # Return to a non-action area: hovering the screen entry now reopens it.
+    page.locator('.mic-gain-container').hover()
     page.wait_for_function("window.__voicePopoverTest.panels() === 0")
 
 
