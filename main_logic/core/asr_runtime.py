@@ -2643,7 +2643,6 @@ class AsrRuntimeMixin:
         # re-entries such as hot swap), else the shared handshake field, else
         # the persisted setting. The handshake wins because the persisted value
         # is stale while the settings POST is still in flight or has failed.
-        provider_preference_handshake = provider_preference_override
         if provider_preference_override is ...:
             provider_preference_handshake = getattr(
                 self,
