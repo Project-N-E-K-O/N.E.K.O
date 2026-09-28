@@ -369,7 +369,9 @@ class _LifecycleMixin:
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
-            if self.vision_model and self.vision_model != self.model:
+            # 不要求 vision_model != model：同一个模型 id 配了不同的视觉 URL / Key
+            # 也要切；id 和端点都相同时 switch_model 自己会直接返回。
+            if self.vision_model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
@@ -955,4 +957,6 @@ class _LifecycleMixin:
                 logger.warning(f"OmniOfflineClient.close: genai client close failed: {e}")
             self._genai_client = None
         self._genai_tools_unsupported = False
+        self._openai_tools_unsupported = False
+        self._openai_tools_unsupported_with_images = False
         logger.info("OmniOfflineClient closed")
