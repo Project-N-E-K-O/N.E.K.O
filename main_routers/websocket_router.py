@@ -324,6 +324,38 @@ def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
     return True
 
 
+async def _send_greeting_check_done(websocket: WebSocket) -> None:
+    """Tell the window that sent ``greeting_check`` that it has settled.
+
+    The frontend holds proactive chat off until the greeting turn ends. When no
+    greeting turn comes (a refresh, a recent conversation, a voice session,
+    ...) this lets it resume at once instead of waiting out its fallback cap.
+    A window that already saw the greeting turn start ignores it.
+    """
+    try:
+        await websocket.send_text(json.dumps({"type": "greeting_check_done"}))
+    except Exception:
+        # Best-effort: a window that is already gone has no gate to release,
+        # and a live one still falls back to its own cap.
+        pass
+
+
+def _send_greeting_check_done_when_settled(
+    lanlan_name: str, websocket: WebSocket
+) -> None:
+    """Send ``greeting_check_done`` once the character's greeting task ends.
+
+    A coalesced request waits on the task already in flight.
+    """
+    task = _greeting_tasks.get(lanlan_name)
+    if task is None or task.done():
+        _fire_task(_send_greeting_check_done(websocket))
+        return
+    task.add_done_callback(
+        lambda _task: _fire_task(_send_greeting_check_done(websocket))
+    )
+
+
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
     """Reduce one untrusted cat-greeting check to canonical inputs.
 
@@ -1278,6 +1310,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                 lanlan_name
                             ].trigger_new_character_greeting,
                         )
+                        _send_greeting_check_done_when_settled(lanlan_name, websocket)
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
                         _schedule_greeting_task(
@@ -1291,8 +1324,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if render_language
                             else session_manager[lanlan_name].trigger_greeting,
                         )
+                        _send_greeting_check_done_when_settled(lanlan_name, websocket)
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
+                    await _send_greeting_check_done(websocket)
 
             elif action == "cat_greeting_check":
                 # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。

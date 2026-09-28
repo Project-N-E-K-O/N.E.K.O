@@ -612,7 +612,10 @@
     //      上一轮排队晚到的音频块 turnId 对不上，不算。
     //      turn-end 之后 STARTUP_GREETING_TEXT_ONLY_GRACE_MS 内既没收到音频也没开始
     //      播放，才按纯文本问候开阀。
-    //   2. 兜底：后端判定不问候（刷新重连 ≤15s 等）时不会有任何 turn，
+    //   2. 后端判定不问候（刷新重连 ≤15s、距上次对话不到 15 分钟、语音会话中等）时
+    //      不会有任何 turn：问候任务结束后后端回 greeting_check_done，这时问候这一轮
+    //      还没开始就立刻开阀，不白等。
+    //   3. 兜底：旧后端 / 消息丢失时收不到 greeting_check_done，
     //      STARTUP_GREETING_GATE_MAX_MS 内还没有 turn 开始就自动开阀。问候已经开始
     //      的话等它的结束事件，不因文本 / 合成慢而提前开阀；只留一个更宽的
     //      STARTUP_GREETING_TURN_MAX_MS 防止事件丢失时卡死主动搭话。
@@ -691,6 +694,15 @@
         gate.audioArrived = true;
     }
     mod.noteStartupGreetingAudio = noteStartupGreetingAudio;
+
+    // 后端的问候任务结束了（问候说完，或者判定不问候）。这一轮已经开始的话继续
+    // 跟着它的语音事件走；还没开始就说明这次没有问候，立刻开阀。
+    function noteStartupGreetingCheckDone() {
+        var gate = S && S._startupGreetingGate;
+        if (!gate || gate.turnStarted) return;
+        _releaseStartupGreetingGate('后端这次没有问候');
+    }
+    mod.noteStartupGreetingCheckDone = noteStartupGreetingCheckDone;
     window.addEventListener('neko-assistant-turn-end', function (event) {
         var gate = S && S._startupGreetingGate;
         if (!gate || !gate.turnStarted || gate.turnEndedAt) return;

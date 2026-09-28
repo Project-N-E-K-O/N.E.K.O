@@ -3,12 +3,15 @@
 ``greeting_check`` arms a gate in app-proactive.js. It follows the first
 assistant turn that STARTED after arming: it opens when that turn's speech
 ends (or is cancelled / unavailable), a few seconds after its text ends if no
-speech ever starts, and at the latest after ``STARTUP_GREETING_GATE_MAX_MS``
-(the backend may decide not to greet at all, in which case no turn arrives). While it holds, both proactive timer
-branches skip exactly like the "assistant is speaking" guard.
+speech ever starts, and as soon as the backend reports ``greeting_check_done``
+before any greeting turn started (it decided not to greet: a refresh, a recent
+conversation, ...). ``STARTUP_GREETING_GATE_MAX_MS`` is the fallback when that
+report never arrives. While it holds, both proactive timer branches skip
+exactly like the "assistant is speaking" guard.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -149,6 +152,22 @@ out.startedTurnPast45s = P.isStartupGreetingGateHolding();
 now += 60_000;
 out.startedTurnAtLostEventCap = P.isStartupGreetingGateHolding();
 
+// 9. The backend settled the check without a greeting (refresh, recent
+//    conversation, ...): the gate opens at once instead of waiting 45 s.
+P.armStartupGreetingGate('ws-open');
+now += 1_000;
+P.noteStartupGreetingCheckDone();
+out.checkDoneWithoutGreeting = P.isStartupGreetingGateHolding();
+
+// 9b. The greeting turn already started: its end, not the check, opens it.
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start', 'greeting-turn');
+P.noteStartupGreetingCheckDone();
+out.checkDoneAfterGreetingStarted = P.isStartupGreetingGateHolding();
+fire('neko-assistant-speech-start', 'greeting-turn');
+fire('neko-assistant-speech-end', 'greeting-turn');
+out.checkDoneThenSpeechEnd = P.isStartupGreetingGateHolding();
+
 process.stdout.write(JSON.stringify(out));
 process.exit(0);
 """
@@ -187,6 +206,9 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "lateTurnAtItsOwnCap": False,
         "startedTurnPast45s": True,
         "startedTurnAtLostEventCap": False,
+        "checkDoneWithoutGreeting": False,
+        "checkDoneAfterGreetingStarted": True,
+        "checkDoneThenSpeechEnd": False,
     }
 
 
@@ -248,3 +270,83 @@ def test_websocket_reports_each_played_audio_chunk_to_the_gate():
     assert branch[call:call + 200].split("(", 1)[1].lstrip().startswith(
         "resolveAssistantLifecycleTurnId(response.turn_id)"
     )
+
+
+def test_websocket_forwards_greeting_check_done_to_the_gate():
+    source = WEBSOCKET_JS.read_text(encoding="utf-8")
+    start = source.index("response.type === 'greeting_check_done'")
+    branch = source[start:start + 400]
+    assert "window.appProactive.noteStartupGreetingCheckDone()" in branch
+
+
+ROUTER_PY = REPO_ROOT / "main_routers" / "websocket_router.py"
+
+
+def test_every_greeting_check_outcome_reports_done():
+    source = ROUTER_PY.read_text(encoding="utf-8")
+    start = source.index('elif action == "greeting_check":')
+    end = source.index('elif action == "cat_greeting_check":', start)
+    handler = source[start:end]
+    scheduled = handler.count("_schedule_greeting_task(")
+    assert scheduled == 2
+    # Each scheduled greeting reports once its task settles ...
+    assert handler.count("_send_greeting_check_done_when_settled(lanlan_name, websocket)") == scheduled
+    # ... and the refresh / reconnect skip reports at once.
+    skip = handler[handler.index("→ skip (refresh/reconnect)"):]
+    assert "await _send_greeting_check_done(websocket)" in skip
+
+
+def test_greeting_check_done_waits_for_the_greeting_task():
+    import main_routers.websocket_router as websocket_router
+
+    class _Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_text(self, text):
+            self.sent.append(json.loads(text))
+
+    class _ClosedSocket:
+        async def send_text(self, text):
+            raise RuntimeError("closed")
+
+    done = [{"type": "greeting_check_done"}]
+
+    async def settle():
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    async def scenario():
+        websocket_router._greeting_tasks.clear()
+        release = asyncio.Event()
+
+        async def greeting():
+            await release.wait()
+
+        first, second, late = _Socket(), _Socket(), _Socket()
+        try:
+            assert websocket_router._schedule_greeting_task("Test", "ordinary", greeting)
+            websocket_router._send_greeting_check_done_when_settled("Test", first)
+            # Another window's request coalesces onto the task in flight.
+            assert not websocket_router._schedule_greeting_task("Test", "ordinary", greeting)
+            websocket_router._send_greeting_check_done_when_settled("Test", second)
+            await settle()
+            assert first.sent == [] and second.sent == []
+
+            release.set()
+            await settle()
+            assert first.sent == done and second.sent == done
+
+            # Nothing in flight any more: reported right away.
+            websocket_router._send_greeting_check_done_when_settled("Test", late)
+            await settle()
+            assert late.sent == done
+            # A window that is already gone is ignored.
+            await websocket_router._send_greeting_check_done(_ClosedSocket())
+        finally:
+            release.set()
+            for task in list(websocket_router._greeting_tasks.values()):
+                task.cancel()
+            websocket_router._greeting_tasks.clear()
+
+    asyncio.run(scenario())

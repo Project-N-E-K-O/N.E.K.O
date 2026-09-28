@@ -3660,6 +3660,14 @@
                         var ss = screenshotButton(); if (ss) ss.disabled = false;
                     }
 
+                // -------- greeting_check_done --------
+                // 后端的问候任务结束了；没有问候时让主动搭话的避让阀立刻打开。
+                } else if (response.type === 'greeting_check_done') {
+                    if (window.appProactive &&
+                        typeof window.appProactive.noteStartupGreetingCheckDone === 'function') {
+                        window.appProactive.noteStartupGreetingCheckDone();
+                    }
+
                 // -------- catgirl_switched --------
                 } else if (response.type === 'catgirl_switched') {
                     var newCatgirl = response.new_catgirl;
