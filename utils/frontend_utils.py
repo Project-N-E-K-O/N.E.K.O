@@ -158,6 +158,23 @@ def _kept_symbols(symbol: str, prev_char: str, next_char: str) -> str | None:
     return None
 
 
+_TTS_SYMBOL_RUN_KEEP = 32
+
+
+def tts_compact_symbol_run(run: str) -> str:
+    """Shorten held symbols without changing how ``_kept_symbols`` judges them.
+
+    Only the first character (a name "#") and whether the rest is all emoji
+    matter, so a long run keeps its first character plus one representative
+    of the rest; plain truncation could drop the one "%" that decides it.
+    """
+    if len(run) <= _TTS_SYMBOL_RUN_KEEP:
+        return run
+    rest = run[1:]
+    sample = "\u2605" if _TTS_EMOJI_RUN_RE.fullmatch(rest) else "%"
+    return run[0] + sample
+
+
 def _trailing_symbol_run(text: str):
     run = None
     for run in _TTS_MUTED_SYMBOL_RE.finditer(text or ""):

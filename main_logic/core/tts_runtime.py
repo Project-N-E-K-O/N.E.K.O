@@ -42,6 +42,7 @@ from utils.frontend_utils import (
     tts_chunk_trailing_name_hash,
     tts_first_unmuted_char,
     tts_chunk_trailing_minus,
+    tts_compact_symbol_run,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -503,7 +504,9 @@ class TtsRuntimeMixin:
                 self._tts_pending_name_hash = held_name_hash
             if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
-            self._tts_deferred_symbols = (deferred_symbols + text)[-16:]
+            self._tts_deferred_symbols = tts_compact_symbol_run(
+                deferred_symbols + text
+            )
             return ""
         # 本块尾暂存的「#」也算作还没念出的符号：「C#」「-」「5」与「C#-5」一样。
         self._tts_deferred_symbols = held_name_hash
