@@ -1329,7 +1329,7 @@ async def admin_control(payload: Dict[str, Any]):
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+            logger.warning(f"[Agent] Error cleaning browser-use adapter during end_all: {e}")
         # A disable-triggered close is itself tracked above and may have been
         # cancelled by this drain. Retry teardown after dispatches quiesce so
         # keep-alive Chromium cannot survive end_all.

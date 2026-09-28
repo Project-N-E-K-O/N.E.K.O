@@ -359,7 +359,6 @@ class BrowserUseAdapter:
       - Overlay is maintained by a parallel asyncio task that injects it
         every 2 seconds via CDP Runtime.evaluate, so it persists across
         all page navigations.
-      - Session-aware Agent reuse for multi-turn task execution.
       - Automatic session cleanup on error or explicit close.
     """
 

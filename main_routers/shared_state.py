@@ -91,11 +91,10 @@ class _RoleStateFieldView(MutableMapping):
         if lanlan_name not in session_id: ...
         if lanlan in session_manager: ...
 
-    For optional fields (session_id / sync_process / session_manager) this
-    matches the historical "dict had no key" state. For always-present fields
-    (sync_message_queue / sync_shutdown_event / websocket_lock) the values are
-    never ``None`` after ``_ensure_character_slots`` so contains is equivalent
-    to ``k in role_state``.
+    For lazily-populated fields (session_id / session_manager) this matches
+    the historical "dict had no key" state; sync_message_queue is created
+    eagerly with each slot, so for it contains is equivalent to
+    ``k in role_state``.
 
     ``__delitem__(k)`` clears the field by setting it to ``None``; it does
     NOT remove the underlying ``role_state`` entry. Removing the whole
@@ -105,10 +104,8 @@ class _RoleStateFieldView(MutableMapping):
     ``websocket_router``), which means "this catgirl no longer has a live
     session" — not "delete the catgirl".
 
-    Note on ``websocket_lock``: external consumers must NEVER assign through
-    this view (would strand any coroutine already waiting on the old Lock).
-    No consumer does today. The view does not actively block writes — it
-    relies on convention + code review.
+    The view does not actively block writes — it relies on convention +
+    code review.
     """
 
     __slots__ = ("_role_state", "_field")

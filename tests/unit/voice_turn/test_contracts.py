@@ -29,15 +29,17 @@ def _turn_token(*, session_epoch: int = 1, turn_id: int = 2) -> VoiceTurnToken:
 
 
 def test_unavailable_carries_no_decision():
-    evaluation = TurnEvaluation(
-        status=EvaluationStatus.UNAVAILABLE,
-        decision=None,
-        probability=None,
-        generation=1,
-        activity_seq=2,
-        reason="model_missing",
-    )
-    assert evaluation.decision is None
+    # UNAVAILABLE 不得携带语义结果：带上 decision 会被构造契约直接拒绝，
+    # 而不是静默吞掉（吞掉会让上层把「模型缺失」误读成回合结论）。
+    with pytest.raises(ValueError, match="non-OK evaluations must not carry"):
+        TurnEvaluation(
+            status=EvaluationStatus.UNAVAILABLE,
+            decision=TurnDecision.COMPLETE,
+            probability=None,
+            generation=1,
+            activity_seq=2,
+            reason="model_missing",
+        )
 
 
 def test_ok_evaluation_requires_probability_and_decision():

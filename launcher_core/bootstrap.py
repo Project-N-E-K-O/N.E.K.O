@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import sys
 import os
-import io  # noqa: F401  (re-exported by the root launcher facade)
-import signal  # noqa: F401  (re-exported by the root launcher facade)
 
 # Preserve the historical root launcher.py path after moving this code.
 _IMPLEMENTATION_FILE = __file__

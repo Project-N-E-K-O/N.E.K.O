@@ -79,12 +79,12 @@ from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
     ToolResult,
+    # _MAX_TOOL_IMAGE_B64_BYTES / _MAX_TOOL_IMAGES 在此仅作再导出：
+    # 测试从 router 导入它们做边界断言，生产消费方在 main_logic.tool_calling。
     _MAX_TOOL_IMAGE_B64_BYTES,
     _MAX_TOOL_IMAGES,
     looks_like_tool_envelope,
-    parse_tool_images,
     tool_result_from_envelope,
-    tool_result_output_payload,
 )
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger

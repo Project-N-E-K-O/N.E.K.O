@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Awaitable, Callable
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import TypeAlias
 
 
 class TurnDecision(Enum):
@@ -164,15 +164,3 @@ class TurnEvaluation:
         elif self.decision is not None or self.probability is not None:
             raise ValueError("non-OK evaluations must not carry a semantic result")
 
-
-@runtime_checkable
-class TurnDetector(Protocol):
-    """Contract consumed by the future ASR Controller."""
-
-    async def on_speech_started(self) -> None: ...
-
-    async def evaluate(self, audio_tail: bytes) -> TurnEvaluation: ...
-
-    async def reset(self) -> None: ...
-
-    async def close(self) -> None: ...

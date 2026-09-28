@@ -1,6 +1,8 @@
 # quota_rules.yaml — N.E.K.O.Servers 社交平台配额掉落规则（NEKO 本地）。
 #
-# 规则只触发"UX 掉落动画"和"调云端 drop-hint"两件事；真实配额由 Servers 仲裁。
+# 本文件目前只是规则来源的留档：本地 drop 判定与授予路径已移至私有
+# NEKO-PC Electron 的 forge-dropper，NEKO 侧 dropper 是兼容 no-op
+# （见 main_logic/quota/dropper.py）。真实配额由 Servers 仲裁。
 # 详见 N.E.K.O.Servers/.claude/contracts/quota-rules.md。
 #
 # M2-j v1 只实现 word_count + keywords 两类规则；emotion 留待后续真接情感判定模块。

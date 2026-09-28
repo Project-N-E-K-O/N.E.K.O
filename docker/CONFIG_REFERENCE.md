@@ -62,7 +62,7 @@
 | 评论服务器端口 | `COMMENTER_SERVER_PORT` | - | `48914` | 评论服务 |
 | 工具服务器端口 | `TOOL_SERVER_PORT` | `NEKO_TOOL_SERVER_PORT` | `48915` | Agent 服务 |
 
-### 5. 模型配置
+### 4. 模型配置
 
 > 历史上的 `ROUTER_MODEL` / `SEMANTIC_MODEL` / `RERANKER_MODEL` /
 > `SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 全部退环境
@@ -77,7 +77,7 @@ API 提供商与默认模型在 `config/__init__.py` 的 `DEFAULT_CORE_API_PROFI
 覆写（已删除未消费的 `NEKO_SUMMARY_MODEL` / `NEKO_CORRECTION_MODEL`
 / `NEKO_EMOTION_MODEL` / `NEKO_VISION_MODEL`）。
 
-### 6. API 提供商详细配置
+### 5. API 提供商详细配置
 
 这些配置定义在 `config/__init__.py` 的 `DEFAULT_CORE_API_PROFILES` 和 `DEFAULT_ASSIST_API_PROFILES`。
 
@@ -99,7 +99,7 @@ API 提供商与默认模型在 `config/__init__.py` 的 `DEFAULT_CORE_API_PROFI
 - `EMOTION_MODEL` - 情感模型
 - `VISION_MODEL` - 视觉模型
 
-### 7. Computer Use（键鼠控制）配置
+### 6. Computer Use（键鼠控制）配置
 
 Computer Use 功能允许 AI 控制鼠标和键盘操作。此功能需要视觉模型支持。
 
@@ -145,7 +145,7 @@ Computer Use 会根据 `assistApi` 自动选择对应提供商的视觉模型：
 
 > **注意**：如果不指定 API Key，系统会自动使用 `assistApi` 对应提供商的 API Key。
 
-### 8. 自定义模型配置（高级）
+### 7. 自定义模型配置（高级）
 
 这些配置允许为每个模型指定不同的提供商、URL 和 API Key。
 

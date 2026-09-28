@@ -18,14 +18,13 @@ History
 --------
 This module originally carried two responsibilities:
 
-1. Reading/writing ``memory/{name}/settings.json``. Still in use —
+1. Reading ``memory/{name}/settings.json``. Still in use —
    ``memory_server.py`` and the testbench/dump tools call ``get_settings`` /
    ``load_settings`` to merge the legacy on-disk fields into the prompt.
 2. Using an LLM to extract new settings from conversations + run LLM
    contradiction resolution. Fully superseded by the evidence / reflection
-   pipeline — see the "old module disabled (insufficient performance)" note in
-   ``memory_server.py::process_history``; ``extract_and_update_settings`` and
-   ``detect_and_resolve_contradictions`` have no callers left.
+   pipeline; ``extract_and_update_settings`` and
+   ``detect_and_resolve_contradictions`` had no callers left.
 
 To keep these two dead methods from dragging along retired hard-coded
 constants like ``SETTING_PROPOSER_MODEL`` / ``SETTING_VERIFIER_MODEL`` (and to

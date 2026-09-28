@@ -649,8 +649,6 @@ class DirectTaskExecutor:
         if not latest_text and latest_attachments:
             latest_text = "请分析用户提供的图片内容，并根据图片完成任务。"
         return latest_text, latest_attachments
-    
-    
 
     def _extract_latest_user_intent(self, conversation: str) -> str:
         """Extract the latest user request from formatted conversation text."""

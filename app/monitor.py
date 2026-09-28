@@ -363,7 +363,7 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
 
                 elif msg_type == "turn end":
                     # 处理回合结束：字幕已随每个 gemini_response 增量广播，
-                    # 此处只标记清空（origin 的日译分支随 S33 死码一并移除）。
+                    # 此处只标记清空。
                     global should_clear_next
                     should_clear_next = True
 

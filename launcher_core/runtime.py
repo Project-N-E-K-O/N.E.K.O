@@ -62,8 +62,6 @@ from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_P
 from utils import parent_guard, single_instance
 from utils.port_utils import (
     probe_neko_health,
-    acquire_startup_lock,
-    release_startup_lock,
     get_hyperv_excluded_ranges,
     is_port_in_excluded_range,
     set_port_probe_reuse,
