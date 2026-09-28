@@ -260,19 +260,23 @@ def _probe_model(model: _TranscribeModel) -> None:
         break
 
 
-def _fetch_model_weights(module: Any, model_name: str) -> str:
+def _fetch_model_weights(
+    module: Any, model_name: str, *, local_only: bool = False
+) -> str:
     """Download (or find in the cache) a model's weights; blocking.
 
-    Runs before any device attempt, so a network failure ends the load at once
-    instead of being retried for every CUDA/CPU candidate (each of which would
-    otherwise sit through its own download timeout). A local model directory
-    is used as is.
+    Runs before any device attempt, so a network failure is not retried for
+    every CUDA/CPU candidate (each of which would otherwise sit through its own
+    download timeout). With ``local_only`` only the local cache is consulted.
+    A local model directory is used as is.
     """
 
     download_model = getattr(module, "download_model", None)
     if download_model is None or os.path.isdir(model_name):
         return model_name
     try:
+        if local_only:
+            return str(download_model(model_name, local_files_only=True))
         return str(download_model(model_name))
     except Exception as exc:
         logger.warning("faster-whisper model download failed model=%s: %s", model_name, exc)
@@ -285,20 +289,33 @@ def _fetch_model_weights(module: Any, model_name: str) -> str:
 def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
     """Load one model, falling back from CUDA to CPU; blocking.
 
-    Only device errors move on to the next candidate; a download failure ends
-    the load (see ``_fetch_model_weights``).
+    A device error moves on to the next candidate. After a failed download
+    nothing else is downloaded: a later candidate is tried only if its model
+    is already in the local cache (e.g. a cached CPU model while the larger
+    CUDA model could not be fetched).
     """
 
     module = _import_faster_whisper()
     whisper_model_cls = module.WhisperModel
     last_error: BaseException | None = None
+    download_error: _LocalAsrFailure | None = None
     fetched: dict[str, str] = {}
+    unavailable: set[str] = set()
     for device, compute_type in _device_candidates(spec):
         model_name = spec.model or (
             _DEFAULT_MODEL_CUDA if device == "cuda" else _DEFAULT_MODEL_CPU
         )
+        if model_name in unavailable:
+            continue
         if model_name not in fetched:
-            fetched[model_name] = _fetch_model_weights(module, model_name)
+            try:
+                fetched[model_name] = _fetch_model_weights(
+                    module, model_name, local_only=download_error is not None
+                )
+            except _LocalAsrFailure as exc:
+                unavailable.add(model_name)
+                download_error = download_error or exc
+                continue
         model = None
         try:
             model = whisper_model_cls(
@@ -331,10 +348,12 @@ def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
             compute_type,
         )
         return model
+    if download_error is not None and last_error is None:
+        raise download_error
     raise _LocalAsrFailure(
         "ASR_LOCAL_MODEL_LOAD_FAILED",
         "faster-whisper model could not be loaded",
-    ) from last_error
+    ) from (last_error or download_error)
 
 
 @dataclass(slots=True)
@@ -511,15 +530,21 @@ def _normalize_hallucination_candidate(text: str) -> str:
     return collapsed.strip(_HALLUCINATION_EDGE_CHARS)
 
 
-def _is_silence_hallucination(text: str, segments: list[Any]) -> bool:
+def _is_silence_hallucination(
+    text: str, segments: list[Any], extra_phrases: Iterable[str] = ()
+) -> bool:
     """Return whether a whole transcript is a known low-confidence hallucination.
 
     Both conditions are required: the complete transcript must equal a known
-    phrase, and Whisper itself must have signalled weak evidence of speech.
+    phrase (or one of ``extra_phrases``, such as the priming text the model may
+    repeat), and Whisper itself must have signalled weak evidence of speech.
     A confidently recognized "thank you" is kept.
     """
 
-    if _normalize_hallucination_candidate(text) not in WHISPER_SILENCE_HALLUCINATIONS:
+    candidate = _normalize_hallucination_candidate(text)
+    if candidate not in WHISPER_SILENCE_HALLUCINATIONS and candidate not in {
+        _normalize_hallucination_candidate(phrase) for phrase in extra_phrases
+    }:
         return False
     no_speech = [
         float(value)
@@ -574,12 +599,10 @@ def _transcribe_pcm16(
     # none for CJK, so plain concatenation preserves both.
     text = "".join(str(getattr(segment, "text", "") or "") for segment in segments)
     text = " ".join(text.split())
-    if not text or _is_silence_hallucination(text, segments):
-        return ""
-    if initial_prompt and _normalize_hallucination_candidate(
-        text
-    ) == _normalize_hallucination_candidate(initial_prompt):
-        # The model repeated its own priming text instead of hearing speech.
+    # On silence the model may repeat its own priming text; like the other
+    # known hallucinations it is only dropped when confidence is low.
+    extra = (initial_prompt,) if initial_prompt else ()
+    if not text or _is_silence_hallucination(text, segments, extra):
         return ""
     return text
 

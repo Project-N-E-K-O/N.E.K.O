@@ -206,6 +206,28 @@ async def test_warmup_finished_before_seal_keeps_the_plain_final_timeout(
     assert time.monotonic() - armed_at < 1.5
 
 
+async def test_provider_final_watchdog_reads_warmup_as_one_snapshot(
+    monkeypatch,
+) -> None:
+    # A session that offers the locked snapshot is read through it only: the
+    # separate getters could straddle a wait that begins in between.
+    runtime, asr = _warming_runtime(monkeypatch, final_ms=100, warmup_ms=60_000)
+    asr.provider_warmup_pending = False
+    asr.provider_warmup_completed_at = time.monotonic() - 30
+    asr.provider_warmup_snapshot = (True, None)
+
+    await _start_and_seal_turn(runtime, "faster_whisper")
+    watchdog = runtime._asr_final_watchdog_task
+    armed_at = time.monotonic()
+    while time.monotonic() < armed_at + 0.4:
+        await asyncio.sleep(0.01)
+        assert runtime._asr_route_mode == "independent"
+
+    asr.provider_warmup_snapshot = (False, time.monotonic())
+    await asyncio.wait_for(watchdog, 5)
+    assert "ASR_PROVIDER_FINAL_TIMEOUT" in _sent_status_codes(runtime)
+
+
 async def test_final_does_not_double_count_sampled_streaming_wire_audio() -> None:
     runtime = _Runtime()
     session = SimpleNamespace(is_ready=True, provider_wire_audio_ms=480)

@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import main_logic.asr_client.runtime as runtime_module
 import main_logic.core as core_module
-from main_logic.asr_client.runtime import _provider_failure_reason
 from tests.support.asr_fakes import _Runtime, _selection
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
@@ -31,8 +31,6 @@ def _sent_statuses(runtime: _Runtime) -> list[dict]:
 
 
 async def _start_with_session(monkeypatch, session) -> tuple[_Runtime, list[dict]]:
-    import main_logic.asr_client.runtime as runtime_module
-
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     selection = _selection("soniox", "provider")
@@ -79,7 +77,7 @@ def _session(*, warming_up: bool):
     ],
 )
 async def test_provider_failure_reason_is_the_leading_code(message, reason) -> None:
-    assert _provider_failure_reason(message) == reason
+    assert runtime_module._provider_failure_reason(message) == reason
 
 
 async def test_provider_failure_code_is_forwarded_as_reason(monkeypatch) -> None:
@@ -137,3 +135,87 @@ async def test_connecting_while_the_provider_prepares_is_announced(
         assert codes.index("ASR_INDEPENDENT_PREPARING") > codes.index(
             "ASR_INDEPENDENT_READY"
         )
+
+
+async def test_failure_right_after_ready_keeps_its_code_through_connect() -> None:
+    # The worker reports ready and fails before the caller has adopted the
+    # session (e.g. a broken local install that fails at once). connect()
+    # must surface the worker's code, not a generic one.
+    from main_logic.asr_client._infra import (
+        AsrSessionConfig,
+        _AsrWorkerEvent,
+        _RealtimeAsrSessionImpl,
+    )
+
+    async def failing_after_ready(request_queue, response_queue, _api_key, _config):
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=0,
+                error_code="ASR_LOCAL_MODEL_LOAD_FAILED",
+                error_message="faster-whisper model could not be loaded",
+            )
+        )
+        while True:
+            request = await request_queue.get()
+            request_queue.task_done()
+            if request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=failing_after_ready,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="manual"),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        await session.connect()
+    assert str(excinfo.value).startswith("ASR_LOCAL_MODEL_LOAD_FAILED:")
+    await session.close()
+
+
+async def test_start_failure_carries_the_provider_code_as_reason(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    session = type("Provider", (), {})()
+    session.connect = AsyncMock(
+        side_effect=RuntimeError(
+            "ASR_LOCAL_MODEL_LOAD_FAILED: faster-whisper model could not be loaded"
+        )
+    )
+    session.close = AsyncMock()
+
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("soniox", "provider")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, *, selection, **kwargs: session,
+    )
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock())
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    failures = [
+        status for status in _sent_statuses(runtime)
+        if status.get("code", "").startswith("ASR_INDEPENDENT_")
+        and status.get("code") != "ASR_INDEPENDENT_READY"
+    ]
+    assert failures
+    assert all(
+        status["details"].get("reason") == "ASR_LOCAL_MODEL_LOAD_FAILED"
+        for status in failures
+    )

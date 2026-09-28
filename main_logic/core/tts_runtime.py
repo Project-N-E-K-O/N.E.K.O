@@ -39,6 +39,7 @@ from utils.frontend_utils import (
     strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
     tts_chunk_ends_in_emoji,
+    tts_chunk_leading_name_hash,
     tts_chunk_trailing_minus,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
@@ -435,6 +436,7 @@ class TtsRuntimeMixin:
         self._tts_symbol_gap_pending = False
         self._tts_prev_chunk_ended_emoji = False
         self._tts_pending_minus = ""
+        self._tts_pending_name_hash = ""
 
     def _strip_tts_symbols_across_chunks(self, text: str) -> str:
         """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
@@ -445,17 +447,20 @@ class TtsRuntimeMixin:
         ``35``. When that happens between an ASCII letter/digit and the next
         chunk's ASCII letter/digit, the next chunk gets a leading space instead.
         A minus sign cut off at the end of a chunk ("x = -" + "5") is likewise
-        re-attached when the next chunk starts with a digit.
+        re-attached when the next chunk starts with a digit, and the "#" of a
+        name split off its letter ("C" + "#" + " dev") is kept.
         Returns ``""`` when nothing is left to speak.
         """
         if text and not text.strip():
             # 纯空白分块原样放行（不经 normalizer 的流式 provider 靠它分隔
             # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
+            pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
             self._tts_symbol_gap_pending = False
             self._tts_prev_chunk_ended_emoji = False
             self._tts_pending_minus = ""
+            self._tts_pending_name_hash = ""
             self._tts_last_spoken_char = text[-1]
-            return text
+            return pending_name_hash + text
         if getattr(self, "_tts_prev_chunk_ended_emoji", False):
             # 上一块以 emoji 结尾：这块开头的零宽连接符 / 变体选择符是被切开的
             # 复合 emoji 的残余，一并删掉。
@@ -463,18 +468,33 @@ class TtsRuntimeMixin:
             if not text:
                 return ""
         self._tts_prev_chunk_ended_emoji = tts_chunk_ends_in_emoji(text)
-        cleaned = strip_tts_muted_symbols(text)
         last = getattr(self, "_tts_last_spoken_char", "")
         # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
         # 下一块以数字开头时再补回去。
         pending_minus = getattr(self, "_tts_pending_minus", "")
         self._tts_pending_minus = tts_chunk_trailing_minus(text, last)
+        # C# 被切成「C」「#」时，这一块看不到前面的字母。只有「#」的一块要等
+        # 下一块再定（「C」「#」「 dev」保留，「a」「#」「b」照常换空格）。
+        pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
+        self._tts_pending_name_hash = ""
+        leading_name_hash = tts_chunk_leading_name_hash(text, last)
+        if leading_name_hash and len(text) == 1:
+            self._tts_pending_name_hash = leading_name_hash
+            self._tts_symbol_gap_pending = is_tts_word_char(last)
+            return ""
+        if leading_name_hash:
+            text = text[1:]
+        cleaned = strip_tts_muted_symbols(text)
+        if leading_name_hash:
+            cleaned = leading_name_hash + cleaned
         if not cleaned or not cleaned.strip():
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
             if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
             return ""
-        if pending_minus and cleaned[0].isdigit():
+        if pending_name_hash and not (text[:1].isascii() and text[:1].isalnum()):
+            cleaned = pending_name_hash + cleaned
+        elif pending_minus and cleaned[0].isdigit():
             cleaned = pending_minus + cleaned
         elif (
             getattr(self, "_tts_symbol_gap_pending", False)

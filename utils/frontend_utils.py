@@ -151,6 +151,30 @@ def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
     return "" if is_tts_word_char(prev_char) else text[-1]
 
 
+def _is_name_hash(symbol: str, prev_char: str, next_char: str) -> bool:
+    # C#、F# 这类名字：紧跟英文字母、后面不再接英文字母数字的「#」。
+    return (
+        symbol in _TTS_HASH_SIGNS
+        and prev_char.isascii()
+        and prev_char.isalpha()
+        and not (next_char.isascii() and next_char.isalnum())
+    )
+
+
+def tts_chunk_leading_name_hash(text: str, before: str = "") -> str:
+    """The "#" a streamed chunk starts with that ends a name split off before it.
+
+    ``before`` is the last character spoken before this chunk ("C" + "# dev").
+    The filter itself only sees this chunk, where the "#" has no letter before
+    it. For a chunk that is nothing but the sign, what follows is not known
+    yet, so the caller decides once the next chunk arrives.
+    """
+    if not text or text[0] not in _TTS_HASH_SIGNS:
+        return ""
+    next_char = text[1] if len(text) > 1 else ""
+    return text[0] if _is_name_hash(text[0], before, next_char) else ""
+
+
 def _muted_symbol_replacement(match) -> str:
     # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
     # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
@@ -163,12 +187,7 @@ def _muted_symbol_replacement(match) -> str:
     next_char = text[end] if end < len(text) else ""
     if _is_minus_sign(symbol, prev_char, next_char):
         return symbol
-    if (
-        symbol in _TTS_HASH_SIGNS
-        and prev_char.isascii()
-        and prev_char.isalpha()
-        and not (next_char.isascii() and next_char.isalnum())
-    ):
+    if _is_name_hash(symbol, prev_char, next_char):
         # C#、F# 这类名字：删掉「#」名字就变了。
         return symbol
     prev_ok = is_tts_word_char(prev_char) if prev_char else True

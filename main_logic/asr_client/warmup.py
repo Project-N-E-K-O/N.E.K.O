@@ -36,6 +36,19 @@ def provider_warmup_state(queue: object) -> ProviderWarmupState | None:
     return state if isinstance(state, ProviderWarmupState) else None
 
 
+def provider_warmup_snapshot(queue: object) -> tuple[bool, float | None]:
+    """``(pending, completed_at)`` read together under the state's lock.
+
+    A wait may begin or end on a worker thread between two separate reads, so
+    a reader that needs both must take them in one snapshot.
+    """
+    state = provider_warmup_state(queue)
+    if state is None:
+        return False, None
+    with state.lock:
+        return bool(state.pending), state.completed_at
+
+
 def ensure_provider_warmup_state(queue: object) -> ProviderWarmupState:
     """Return the queue's warm-up state, creating it if needed.
 

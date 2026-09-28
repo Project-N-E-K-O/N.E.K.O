@@ -29,7 +29,7 @@ import numpy as np
 import soxr
 
 from .delivery import delivery_evidence, log_delivery_phase
-from .warmup import provider_warmup_state
+from .warmup import provider_warmup_snapshot, provider_warmup_state
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -401,6 +401,10 @@ class _RealtimeAsrSessionImpl:
         self._closing_event = asyncio.Event()
         self._callback_close_event = asyncio.Event()
         self._connection_error_reported = False
+        # "<ASR_CODE>: <message>" of the failure that ended the session, so a
+        # failure right after "ready" still reaches connect()'s caller with
+        # its provider code instead of a generic one.
+        self._failure_error: str | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -435,6 +439,11 @@ class _RealtimeAsrSessionImpl:
         # sees the wait over also sees its completion time.
         with state.lock:
             return bool(state.pending)
+
+    @property
+    def provider_warmup_snapshot(self) -> tuple[bool, float | None]:
+        """``(pending, completed_at)`` taken together; see provider_warmup_snapshot()."""
+        return provider_warmup_snapshot(self._request_queue)
 
     @property
     def provider_warmup_completed_at(self) -> float | None:
@@ -522,7 +531,10 @@ class _RealtimeAsrSessionImpl:
 
             worker_task = self._worker_task
             if self._state is not _SessionState.READY or worker_task is None:
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
+                )
             if worker_task.done():
                 await self._fail(
                     "ASR_WORKER_FAILED",
@@ -1540,6 +1552,7 @@ class _RealtimeAsrSessionImpl:
         )
         safe_message = self._sanitize_error(message)
         error = f"{safe_code}: {safe_message}"
+        self._failure_error = error
         if self._ready_future is not None and not self._ready_future.done():
             self._ready_future.set_exception(RuntimeError(error))
         if (

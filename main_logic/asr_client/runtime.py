@@ -104,6 +104,28 @@ _PROVIDER_WARMUP_POLL_SECONDS = 0.5
 _PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
 
 
+def _provider_warmup_snapshot(asr_session: Any) -> tuple[bool, float | None]:
+    """``(pending, completed_at)`` of a provider session's warm-up, read at once.
+
+    Sessions expose one locked snapshot; separate reads could straddle a wait
+    that begins on a worker thread in between (pending read before it began,
+    completion time read after). Sessions without warm-up report none.
+    """
+
+    snapshot = getattr(asr_session, "provider_warmup_snapshot", None)
+    if (
+        isinstance(snapshot, tuple)
+        and len(snapshot) == 2
+        and isinstance(snapshot[0], bool)
+    ):
+        return snapshot
+    completed_at = getattr(asr_session, "provider_warmup_completed_at", None)
+    return (
+        getattr(asr_session, "provider_warmup_pending", False) is True,
+        completed_at if isinstance(completed_at, (int, float)) else None,
+    )
+
+
 def _provider_failure_reason(message: str) -> str:
     """The provider's own failure code from a connection-error message.
 
@@ -2172,7 +2194,7 @@ class IndependentAsrRuntime:
             if asr_session is not None:
                 await self._close_asr_session(asr_session)
             raise
-        except Exception:
+        except Exception as exc:
             if detector_ref is not None and self._asr_detector is detector_ref:
                 self._asr_detector = None
                 try:
@@ -2195,6 +2217,9 @@ class IndependentAsrRuntime:
                     provider,
                     session_epoch=epoch,
                     expected_identity=failure_identity,
+                    # A provider that failed while connecting (e.g. its local
+                    # model could not load) says why in the error it raised.
+                    reason=_provider_failure_reason(str(exc)),
                 )
                 if not delivered or not operation_is_current():
                     return stale_result(provider)
@@ -3463,6 +3488,8 @@ class IndependentAsrRuntime:
             if max_attempts is None:
                 max_attempts = policy.connect_max_attempts
 
+            # The provider's own code from the latest failed attempt, if any.
+            last_failure_reason = ""
             for attempt in range(max_attempts):
                 if not self._runtime_identity_matches(identity):
                     return
@@ -3588,13 +3615,14 @@ class IndependentAsrRuntime:
                         except Exception:
                             pass
                     raise
-                except Exception:
+                except Exception as exc:
                     logger.info(
                         "[voice-recovery] transport_failed attempt=%s "
                         "session_epoch=%s reason=ASR_INDEPENDENT_FAILED",
                         attempt + 1,
                         identity.session_epoch,
                     )
+                    last_failure_reason = _provider_failure_reason(str(exc))
                     if candidate is not None and self._asr_session is candidate:
                         adopted_identity = self._capture_runtime_identity()
                         await self._handle_independent_asr_error(
@@ -3602,6 +3630,7 @@ class IndependentAsrRuntime:
                             adopted_identity.provider or "unknown",
                             status_code="ASR_INDEPENDENT_FAILED",
                             expected_identity=adopted_identity,
+                            failure_reason=last_failure_reason,
                         )
                         return
                     if candidate is not None:
@@ -3647,6 +3676,7 @@ class IndependentAsrRuntime:
                 identity.provider or "unknown",
                 status_code="ASR_INDEPENDENT_FAILED",
                 expected_identity=identity,
+                failure_reason=last_failure_reason,
             )
 
     async def _abort_transport(
@@ -3938,9 +3968,11 @@ class IndependentAsrRuntime:
                     # downloading) is not recognition time: wait it out within
                     # its own budget, then count the final timeout from the
                     # moment the provider became ready.
-                    session = self._asr_session
+                    warmup_pending, completed_at = _provider_warmup_snapshot(
+                        self._asr_session
+                    )
                     now = time.monotonic()
-                    if getattr(session, "provider_warmup_pending", False) is True:
+                    if warmup_pending:
                         warmup_deadline = sealed_at + warmup_timeout_s
                         if now >= warmup_deadline:
                             status_code = "ASR_PROVIDER_WARMUP_TIMEOUT"
@@ -3950,13 +3982,8 @@ class IndependentAsrRuntime:
                             warmup_deadline,
                         )
                         continue
-                    completed_at = getattr(
-                        session,
-                        "provider_warmup_completed_at",
-                        None,
-                    )
                     if (
-                        isinstance(completed_at, (int, float))
+                        completed_at is not None
                         and completed_at + timeout_s > now
                     ):
                         deadline = completed_at + timeout_s

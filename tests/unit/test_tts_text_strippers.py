@@ -501,6 +501,13 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         (("温度", "-", "很低"), [("s1", "温度"), ("s1", "很低")]),
         # Between two numbers it stays a range separator.
         (("3", "-", "5天"), [("s1", "3"), ("s1", " 5天")]),
+        # The "#" of a name split off its letter is kept ...
+        (("C", "#", " developer"), [("s1", "C"), ("s1", "# developer")]),
+        (("C", "#", "。"), [("s1", "C"), ("s1", "#。")]),
+        (("C", "#", " ", "dev"), [("s1", "C"), ("s1", "# "), ("s1", "dev")]),
+        # ... but between two letters it is still a separator.
+        (("a", "#", "b"), [("s1", "a"), ("s1", " b")]),
+        (("标签", "#", "热门"), [("s1", "标签"), ("s1", "热门")]),
     ],
 )
 def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):

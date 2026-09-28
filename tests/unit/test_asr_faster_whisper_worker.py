@@ -226,16 +226,27 @@ async def test_traditional_chinese_sessions_prime_traditional_script(
     await _shutdown(task, requests, responses)
 
 
-async def test_echoed_priming_text_is_dropped(pool) -> None:
+@pytest.mark.parametrize(("confident", "expected_empty"), [(False, True), (True, False)])
+async def test_echoed_priming_text_is_dropped_only_when_unconfident(
+    pool, confident, expected_empty
+) -> None:
+    # Silence often comes back as the priming sentence itself; a user who
+    # really says it, recognized with confidence, is still heard.
     from config.prompts.prompts_voice import WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT
 
-    model = _FakeModel(_segment(WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT))
+    segment = (
+        _segment(WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT)
+        if confident
+        else _segment(WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT, no_speech_prob=0.8)
+    )
+    model = _FakeModel(segment)
     task, requests, responses = _start_worker(
         AsrSessionConfig(language="zh-TW"), _RecordingLoader(model), pool
     )
     await _next_event(responses, "ready")
     await _send_utterance(requests)
-    assert (await _next_event(responses, "final")).text == ""
+    text = (await _next_event(responses, "final")).text
+    assert (text == "") is expected_empty
     await _shutdown(task, requests, responses)
 
 
@@ -801,12 +812,18 @@ def test_auto_device_without_gpu_honors_explicit_compute(
     assert constructed == [("base", "cpu", expected_compute)]
 
 
-def _install_downloading_whisper(monkeypatch, *, download_error=None, cuda_ok=False):
+def _install_downloading_whisper(
+    monkeypatch, *, download_error=None, cuda_ok=False, cached=()
+):
     downloads: list[str] = []
     constructed: list[tuple[str, str, str]] = []
 
-    def download_model(name: str) -> str:
-        downloads.append(name)
+    def download_model(name: str, local_files_only: bool = False) -> str:
+        downloads.append(name + (" (cache)" if local_files_only else ""))
+        if local_files_only:
+            if name not in cached:
+                raise FileNotFoundError(name + " is not cached")
+            return "/cache/" + name
         if download_error is not None:
             raise download_error
         return "/cache/" + name
@@ -840,9 +857,21 @@ def test_download_failure_ends_the_load_without_trying_other_candidates(monkeypa
     with pytest.raises(faster_whisper._LocalAsrFailure) as excinfo:
         faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
     assert excinfo.value.code == "ASR_LOCAL_MODEL_LOAD_FAILED"
-    # One download attempt; no CUDA retry and no CPU model download.
-    assert downloads == ["medium"]
+    # One network attempt; the CPU model is only looked up in the local cache.
+    assert downloads == ["medium", "base (cache)"]
     assert constructed == []
+
+
+def test_download_failure_still_uses_a_cached_cpu_model(monkeypatch) -> None:
+    downloads, constructed = _install_downloading_whisper(
+        monkeypatch,
+        download_error=ConnectionError("huggingface.co unreachable"),
+        cached=("base",),
+    )
+    model = faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+    assert model.device == "cpu"
+    assert downloads == ["medium", "base (cache)"]
+    assert constructed == [("/cache/base", "cpu", "int8")]
 
 
 def test_device_failure_reuses_the_downloaded_weights(monkeypatch) -> None:
@@ -1418,6 +1447,37 @@ def test_session_reads_warmup_state_under_its_lock() -> None:
         state.pending = True
     complete_provider_warmup(queue, token)
     assert state.pending is False and state.completed_at is not None
+
+
+def test_warmup_snapshot_is_taken_under_the_lock() -> None:
+    from main_logic.asr_client._infra import _RealtimeAsrSessionImpl
+    from main_logic.asr_client.warmup import (
+        begin_provider_warmup,
+        complete_provider_warmup,
+        provider_warmup_state,
+    )
+
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    token = begin_provider_warmup(queue)
+    state = provider_warmup_state(queue)
+    session_view = SimpleNamespace(_request_queue=queue)
+    results: list[Any] = []
+    with state.lock:
+        reader = threading.Thread(
+            target=lambda: results.append(
+                _RealtimeAsrSessionImpl.provider_warmup_snapshot.fget(session_view)
+            )
+        )
+        reader.start()
+        reader.join(0.1)
+        assert reader.is_alive()  # waits for the writer's whole update
+        state.completed_at = 123.0
+        state.pending = False
+    reader.join(2)
+    assert results == [(False, 123.0)]
+    state.pending = True
+    complete_provider_warmup(queue, token)
+    assert _RealtimeAsrSessionImpl.provider_warmup_snapshot.fget(session_view)[0] is False
 
 
 def test_warmup_ends_only_when_every_wait_has_ended() -> None:
