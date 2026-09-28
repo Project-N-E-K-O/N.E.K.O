@@ -2670,6 +2670,7 @@
             "rememberWindow": "Lembrar janela",
             "rememberedWindowUnavailable": "Não foi possível identificar exclusivamente a janela lembrada. Selecione uma fonte de tela novamente",
             "selected": "Selecionado {{source}}",
+            "current": "Atual: {{source}}",
             "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
             "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente",
             "clickToChoose": "Clique para escolher uma fonte de tela",

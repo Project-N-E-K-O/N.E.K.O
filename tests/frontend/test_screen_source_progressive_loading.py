@@ -1630,6 +1630,86 @@ def test_direct_enumeration_failure_offers_retry_when_requested(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("prompting", [True, False])
+def test_cancelled_portal_keeps_current_source_and_offers_retry(
+    page: Page, prompting: bool,
+) -> None:
+    # Cancelling the system dialog makes the portal return an empty list. The
+    # selection is unchanged, so the panel must not look like it vanished.
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=prompting,
+        initial_storage={
+            "selectedScreenSourceId": "window:2",
+            "selectedScreenSourceLabel": '{"id":"window:2"}',
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            window.__desktopProvider.getSources = async () => [];
+            const rendered = await window.renderFloatingScreenSourceList(popup, {
+                retryOnFailure: true,
+            });
+            const summary = popup.querySelector('.screen-source-current');
+            return {
+                rendered,
+                noSourcesShown: popup.textContent.includes('app.screenSource.noSources'),
+                summary: summary && !summary.hidden ? summary.textContent : null,
+                retryButtons: popup.querySelectorAll(
+                    '[data-neko-screen-source-deferred-load]'
+                ).length,
+                selected: window.getSelectedScreenSourceId(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "rendered": False,
+        # Only a provider that does not prompt can really have no sources.
+        "noSourcesShown": not prompting,
+        "summary": "app.screenSource.current",
+        "retryButtons": 1,
+        "selected": "window:2",
+    }
+
+
+@pytest.mark.frontend
+def test_portal_pick_does_not_blank_the_current_label_before_adopting(
+    page: Page,
+) -> None:
+    # The portal result omits the current source by design; that must not be
+    # read as "the current source disappeared" before the new one is adopted.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            await window.renderFloatingScreenSourceList(popup);
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const labels = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                labels.push(event.detail.sourceLabel);
+            });
+            window.__metadataSources = [
+                { id: 'window:9', name: 'Browser', display_id: '' },
+            ];
+            await window.renderFloatingScreenSourceList(popup);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return { labels, selected: window.getSelectedScreenSourceId() };
+        }"""
+    )
+
+    assert result["selected"] == "window:9"
+    assert "app.screenSource.genericWindow" not in result["labels"]
+    assert result["labels"][-1] == "Browser"
+
+
+@pytest.mark.frontend
 def test_deferred_load_button_returns_after_failed_enumeration(page: Page) -> None:
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
@@ -1748,8 +1828,8 @@ def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) ->
         """async () => {
             const previousT = window.t;
             window.t = (key, options = {}) => (
-                key === 'app.screenSource.selected'
-                    ? `Selected ${options.source}`
+                key === 'app.screenSource.current'
+                    ? `Current: ${options.source}`
                     : previousT(key, options)
             );
             const popup = document.getElementById('live2d-popup-screen');
@@ -1795,7 +1875,7 @@ def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) ->
         "selected": [
             {
                 "cls": "screen-source-current",
-                "text": "Selected Screen 1",
+                "text": "Current: Screen 1",
                 "title": "Screen 1",
                 "hidden": False,
             },
@@ -1803,7 +1883,7 @@ def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) ->
         ],
         "otherWindowPicked": {
             "cls": "screen-source-current",
-            "text": "Selected Editor",
+            "text": "Current: Editor",
             "title": "Editor",
             "hidden": False,
         },

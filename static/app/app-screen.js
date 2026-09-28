@@ -484,15 +484,17 @@
     // 语言切换后屏幕名称要按新语言重算。
     window.addEventListener('localechange', notifyScreenSourceChanged);
 
-    // 延迟枚举面板里的「已选择 <来源>」。面板开着时来源可能在别处（其他窗口、
+    // 延迟枚举面板里的「当前来源：<来源>」。面板开着时来源可能在别处（其他窗口、
     // 自动回退）变化；这里只注册一个模块级监听，刷新页面上现存的摘要，
-    // 面板反复开关不会累积监听器。
+    // 面板反复开关不会累积监听器。常驻状态行用「标签：值」的写法，不复用
+    // 描述一次事件的 toast 模板 app.screenSource.selected（西语、葡语配上
+    // 阴性名词会出现性数不一致）。
     function renderScreenSourceSummary(summary) {
         var currentLabel = getSelectedScreenSourceLabel();
         summary.hidden = !currentLabel;
         summary.textContent = !currentLabel ? '' : (window.t
-            ? window.t('app.screenSource.selected', { source: currentLabel })
-            : '已选择 ' + currentLabel);
+            ? window.t('app.screenSource.current', { source: currentLabel })
+            : '当前来源：' + currentLabel);
         summary.title = currentLabel;
     }
     window.addEventListener('neko:screen-source-changed', function () {
@@ -2903,10 +2905,12 @@
             }
         }
 
-        // 用户取消系统对话框或列来源失败：保留提示，放回按钮以便重试。
-        // 无论这次是从延迟按钮还是直接点击（含键盘）触发的都适用。
+        // 用户取消系统对话框或列来源失败：保留提示，放回当前来源摘要和按钮以便
+        // 重试——选择本身没有变，面板不应看起来像来源没了。无论这次是从延迟
+        // 按钮还是直接点击（含键盘）触发的都适用。
         function appendRetryButtonIfRequested() {
             if (renderOptions.retryOnFailure === true) {
+                appendCurrentSourceSummary(screenPopup);
                 appendDeferredLoadButton(screenPopup, renderOptions);
             }
         }
@@ -2987,13 +2991,19 @@
             screenPopup.innerHTML = '';
 
             if (!sources || sources.length === 0) {
-                var noSourcesItem = document.createElement('div');
-                noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
-                noSourcesItem.style.padding = '12px';
-                noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
-                noSourcesItem.style.fontSize = '13px';
-                noSourcesItem.style.textAlign = 'center';
-                screenPopup.appendChild(noSourcesItem);
+                // 会弹系统对话框的桌面端返回空列表，基本就是用户取消了对话框；
+                // 这时「没有可用的屏幕源」会误导，只留当前来源和重试按钮。
+                var portalCancelled = renderOptions.retryOnFailure === true
+                    && sourceListEnumerationMayPrompt(desktopProvider);
+                if (!portalCancelled) {
+                    var noSourcesItem = document.createElement('div');
+                    noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
+                    noSourcesItem.style.padding = '12px';
+                    noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
+                    noSourcesItem.style.fontSize = '13px';
+                    noSourcesItem.style.textAlign = 'center';
+                    screenPopup.appendChild(noSourcesItem);
+                }
                 appendRetryButtonIfRequested();
                 return false;
             }
