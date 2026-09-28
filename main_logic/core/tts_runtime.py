@@ -1289,7 +1289,10 @@ class TtsRuntimeMixin:
                 GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
             handler_task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(handler_task), timeout=1.0)
+                await asyncio.wait_for(
+                    asyncio.shield(handler_task),
+                    timeout=TTS_FRAME_WRITE_TIMEOUT_SECONDS + 1.0,
+                )
             except asyncio.CancelledError:
                 if not handler_task.done() or asyncio.current_task().cancelling():
                     raise
