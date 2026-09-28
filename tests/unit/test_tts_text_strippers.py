@@ -508,3 +508,20 @@ def test_joiner_in_text_after_plain_chunk_is_kept():
     for chunk in ("\u0915\u094d", "\u200d\u0937"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d"), ("s1", "\u200d\u0937")]
+
+
+def test_joiner_after_a_non_emoji_symbol_is_kept():
+    # 天城文被「%」切开：前一块以「%」结尾（不是 emoji），下一块开头的零宽连接符
+    # 属于文字本身，不能当成 emoji 残余删掉。
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u0915\u094d%", "\u200d\u0937"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d"), ("s1", "\u200d\u0937")]
+
+
+def test_trailing_symbol_between_digit_chunks_keeps_the_gap():
+    # 「3%」「5」：末尾的「%」左边是数字、右边是块尾，直接换成空格，不会拼成「35」。
+    mgr = _bare_tts_runtime()
+    for chunk in ("3%", "5"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "3 "), ("s1", "5")]

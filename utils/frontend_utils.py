@@ -79,15 +79,15 @@ _TTS_MUTED_SYMBOL_RE = regex.compile(
 # 复合 emoji 被流式切开（「👩」「‍💻」）时，后一块开头的零宽连接符 / 变体选择符
 # 前面已经没有符号，上面的正则不会删它。由调用方记住上一块是否以被删的符号结尾，
 # 再用下面两个函数处理。
-_TTS_TRAILING_MUTED_RE = regex.compile(
-    r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r"|[\u200d\ufe0e\ufe0f\u20e3])\Z"
-)
+# 只认 emoji 类符号（\p{So}，温度单位除外）或连接符结尾：「%」「#」这类删掉的符号
+# 后面紧跟的零宽连接符属于正常文字（如天城文 क्%ष 被切开），不能当 emoji 残余删掉。
+_TTS_TRAILING_EMOJI_RE = regex.compile(r"(?:(?![℃℉])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
 _TTS_LEADING_JOINERS_RE = regex.compile(r"\A[\u200d\ufe0e\ufe0f\u20e3]+")
 
 
-def tts_chunk_ends_in_muted_symbol(text: str) -> bool:
-    """Whether ``text`` ends in a symbol (or emoji joiner) the TTS filter drops."""
-    return bool(text) and _TTS_TRAILING_MUTED_RE.search(text) is not None
+def tts_chunk_ends_in_emoji(text: str) -> bool:
+    """Whether ``text`` ends in an emoji symbol or joiner the TTS filter drops."""
+    return bool(text) and _TTS_TRAILING_EMOJI_RE.search(text) is not None
 
 
 def strip_leading_emoji_joiners(text: str) -> str:
