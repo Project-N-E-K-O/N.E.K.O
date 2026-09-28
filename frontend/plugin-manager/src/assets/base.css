@@ -36,18 +36,27 @@
   --section-gap: 160px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-background: var(--vt-c-black);
-    --color-background-soft: var(--vt-c-black-soft);
-    --color-background-mute: var(--vt-c-black-mute);
+/* 暗色变量跟【应用自己的主题开关】（html.dark），不跟 prefers-color-scheme。
 
-    --color-border: var(--vt-c-divider-dark-2);
-    --color-border-hover: var(--vt-c-divider-dark-1);
+   这里原先写的是 @media (prefers-color-scheme: dark) { :root { … } }——那是 Vue
+   脚手架模板带来的（见本文件首行的出处注释），它只看系统偏好。而本应用其余所有
+   暗色（Element Plus 变量、页头/侧栏/标题栏）都跟 html.dark。两个开关不同源，
+   "系统深色 + 应用里选浅色"时就会分叉：body 变 #181818，而卡片/标签仍是浅色，
+   于是半透明毛玻璃的页头叠在黑底上渲染成灰色（实测 rgb(174,174,174)，只有这一行
+   变色，不透明的卡片不受影响）。
 
-    --color-heading: var(--vt-c-text-dark-1);
-    --color-text: var(--vt-c-text-dark-2);
-  }
+   改成 html.dark 后"跟随系统"的行为不丢：initDarkMode() 在没有用户偏好时会采用
+   系统偏好并给 <html> 加上 .dark（见 composables/useDarkMode.ts）。 */
+html.dark {
+  --color-background: var(--vt-c-black);
+  --color-background-soft: var(--vt-c-black-soft);
+  --color-background-mute: var(--vt-c-black-mute);
+
+  --color-border: var(--vt-c-divider-dark-2);
+  --color-border-hover: var(--vt-c-divider-dark-1);
+
+  --color-heading: var(--vt-c-text-dark-1);
+  --color-text: var(--vt-c-text-dark-2);
 }
 
 *,

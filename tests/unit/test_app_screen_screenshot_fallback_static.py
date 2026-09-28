@@ -7,6 +7,21 @@ APP_SCREEN_JS = Path(__file__).resolve().parents[2] / "static" / "app" / "app-sc
 
 
 @pytest.mark.unit
+def test_shared_screen_frame_wait_is_bounded_and_cleans_up_video():
+    source = APP_SCREEN_JS.read_text(encoding="utf-8")
+    capture = source.split("async function captureFrameFromStream(stream, jpegQuality, fullResolution)", 1)[1].split(
+        "mod.captureFrameFromStream = captureFrameFromStream;", 1
+    )[0]
+
+    assert "setTimeout(function ()" in capture
+    assert "video.removeEventListener('loadeddata', onLoaded);" in capture
+    assert "if (!loaded) return null;" in capture
+    assert "finally {" in capture
+    assert "video.srcObject = null;" in capture
+    assert "video.remove();" in capture
+
+
+@pytest.mark.unit
 def test_backend_screenshot_remains_a_safe_one_shot_fallback():
     source = APP_SCREEN_JS.read_text(encoding="utf-8")
     fallback = source.split("async function fetchBackendScreenshot()", 1)[1].split(

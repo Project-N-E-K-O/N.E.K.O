@@ -483,6 +483,10 @@
             if (!block || typeof block !== 'object') return;
             if (memeOnly && block.type !== 'image') return;
             if (musicOnly && !isMusicExportBlock(message, block)) return;
+            if (block.type === 'html_card') {
+                if (block.summary) parts.push(String(block.summary));
+                return;
+            }
             if (block.type === 'text') {
                 if (block.text) parts.push(String(block.text));
                 return;
@@ -530,6 +534,10 @@
             if (!block || typeof block !== 'object') return;
             if (memeOnly && block.type !== 'image') return;
             if (musicOnly && !isMusicExportBlock(message, block)) return;
+            if (block.type === 'html_card') {
+                if (block.summary) lines.push(escapeMarkdown(block.summary));
+                return;
+            }
             if (block.type === 'text') {
                 if (block.text) lines.push(String(block.text));
                 return;

@@ -1642,6 +1642,7 @@ class PluginUiQueryService:
         kind: str = "panel",
         surface_id: str = "main",
         locale: str | None = None,
+        _card_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
@@ -1653,30 +1654,33 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-            surface = _find_surface(surfaces, kind=kind, surface_id=surface_id)
-            if surface is None:
-                logger.warning(
-                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=surface_not_found",
-                    plugin_id, kind, surface_id, action_id,
-                )
-                raise ServerDomainError(
-                    code="PLUGIN_UI_SURFACE_NOT_FOUND",
-                    message=f"UI surface '{kind}:{surface_id}' not found",
-                    status_code=404,
-                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
-                )
-            if not _surface_allows_action_call(surface):
-                logger.warning(
-                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=missing_action_permission",
-                    plugin_id, kind, surface_id, action_id,
-                )
-                raise ServerDomainError(
-                    code="PLUGIN_UI_ACTION_FORBIDDEN",
-                    message=f"UI surface '{kind}:{surface_id}' is not allowed to call plugin actions",
-                    status_code=403,
-                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "action_id": action_id},
-                )
+            if _card_context is not None:
+                surface = {"id": "__chat_card__", "context": "__chat_card__"}
+            else:
+                surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+                surface = _find_surface(surfaces, kind=kind, surface_id=surface_id)
+                if surface is None:
+                    logger.warning(
+                        "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=surface_not_found",
+                        plugin_id, kind, surface_id, action_id,
+                    )
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_SURFACE_NOT_FOUND",
+                        message=f"UI surface '{kind}:{surface_id}' not found",
+                        status_code=404,
+                        details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
+                    )
+                if not _surface_allows_action_call(surface):
+                    logger.warning(
+                        "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=missing_action_permission",
+                        plugin_id, kind, surface_id, action_id,
+                    )
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_ACTION_FORBIDDEN",
+                        message=f"UI surface '{kind}:{surface_id}' is not allowed to call plugin actions",
+                        status_code=403,
+                        details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "action_id": action_id},
+                    )
 
             entry_ids = _entry_ids_from_meta(plugin_meta)
             if not entry_ids:
@@ -1758,6 +1762,8 @@ class PluginUiQueryService:
                     dict(raw_context) if isinstance(raw_context, Mapping) else {}
                 )
                 hosted_run_id = uuid.uuid4().hex
+                if _card_context is not None:
+                    trigger_context = dict(_card_context)
                 trigger_context["run_id"] = hosted_run_id
                 trigger_args["_ctx"] = trigger_context
                 try:

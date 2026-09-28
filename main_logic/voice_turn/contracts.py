@@ -61,6 +61,21 @@ class VoiceTurnToken:
 
 
 @dataclass(frozen=True, slots=True)
+class PreserveUnsentPrefix:
+    """Require lossless local ownership of one authorized input batch."""
+
+    ingress: VoiceIngressToken
+    batch_id: str
+    start_sequence: int
+
+
+class AsrDeliveryStage(Enum):
+    """Local admission never claims that a socket or Provider accepted PCM."""
+
+    LOCAL_ACCEPTED = "local_accepted"
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceTranscriptEvent:
     """One route-authorized logical transcript for a Core-side consumer."""
 
@@ -76,6 +91,9 @@ class AsrFailureEvent:
     code: str
     provider: str
     session_epoch: int
+    # Captured before the failure callback yields, so Core can reject a late
+    # failure after a different microphone lease has taken over.
+    ingress_token: VoiceIngressToken | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +119,10 @@ class AsrStatusEvent:
     # Default keeps narrow legacy test doubles constructible; production
     # runtime call sites always provide the captured source epoch explicitly.
     session_epoch: int = -1
+    # Failure statuses may be queued across a route transition. Keep the
+    # ingress identity that produced them so the consumer can fence stale
+    # notifications without rejecting the handler's own blocked transition.
+    ingress_token: VoiceIngressToken | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +139,13 @@ class AsrSubmitResult:
     """Explicit submit disposition so Core never inspects runtime state."""
 
     status: AsrSubmitStatus
+    delivery_stage: AsrDeliveryStage | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "delivery_stage",
+            AsrDeliveryStage.LOCAL_ACCEPTED if self.status is AsrSubmitStatus.ACCEPTED else None,
+        )
 
 
 VoiceTranscriptCallback: TypeAlias = Callable[

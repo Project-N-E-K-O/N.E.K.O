@@ -1,0 +1,693 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -47,6 +47,10 @@
+ 
+ option(SHERPA_ONNX_ENABLE_PYTHON "Whether to build Python" OFF)
+ option(SHERPA_ONNX_ENABLE_TESTS "Whether to build tests" OFF)
++option(SHERPA_ONNX_NEKO_KWS_TESTS "Build standalone KWS regression tests" OFF)
++if(SHERPA_ONNX_NEKO_KWS_TESTS)
++  enable_testing()
++endif()
+ option(SHERPA_ONNX_ENABLE_CHECK "Whether to build with assert" OFF)
+ option(BUILD_SHARED_LIBS "Whether to build shared libraries" OFF)
+ option(SHERPA_ONNX_ENABLE_PORTAUDIO "Whether to build with portaudio" ON)
+--- a/sherpa-onnx/csrc/transducer-keyword-decoder.h
++++ b/sherpa-onnx/csrc/transducer-keyword-decoder.h
+@@ -9,6 +9,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "sherpa-onnx/csrc/neko-kws-decoder.h"
+ #include "sherpa-onnx/csrc/online-stream.h"
+ #include "sherpa-onnx/csrc/online-transducer-model.h"
+ 
+@@ -32,6 +33,9 @@
+ 
+   // used only in modified beam_search
+   Hypotheses hyps;
++
++  // Score of the complete representative alignment, separate from log-sum.
++  neko_kws::PathScores alignment_scores;
+ };
+ 
+ class TransducerKeywordDecoder {
+--- a/sherpa-onnx/csrc/transducer-keyword-decoder.cc
++++ b/sherpa-onnx/csrc/transducer-keyword-decoder.cc
+@@ -23,8 +23,7 @@
+   std::vector<int64_t> blanks(context_size, -1);
+   blanks.back() = blank_id;
+ 
+-  Hypotheses blank_hyp({{blanks, 0}});
+-  r.hyps = std::move(blank_hyp);
++  neko_kws::Initialize(&r.hyps, &r.alignment_scores, blanks);
+   return r;
+ }
+ 
+@@ -51,10 +50,13 @@
+   blanks.back() = 0;  // blank_id is hardcoded to 0
+ 
+   std::vector<Hypotheses> cur;
++  std::vector<neko_kws::PathScores> cur_scores;
+   for (auto &r : *result) {
+     cur.push_back(std::move(r.hyps));
++    cur_scores.push_back(std::move(r.alignment_scores));
+   }
+   std::vector<Hypothesis> prev;
++  std::vector<double> prev_scores;
+ 
+   for (int32_t t = 0; t != num_frames; ++t) {
+     // Due to merging paths with identical token sequences,
+@@ -63,12 +65,21 @@
+     int32_t num_hyps =
+         hyps_row_splits.back();  // total num hyps for all utterance
+     prev.clear();
+-    for (auto &hyps : cur) {
++    prev_scores.clear();
++    for (size_t b = 0; b < cur.size(); ++b) {
++      auto &hyps = cur[b];
++#if SHERPA_ONNX_NEKO_KWS_MERGE
++      neko_kws::ValidateScores(hyps, cur_scores[b]);
++#endif
+       for (auto &h : hyps) {
++#if SHERPA_ONNX_NEKO_KWS_MERGE
++        prev_scores.push_back(neko_kws::PathScore(cur_scores[b], h.second));
++#endif
+         prev.push_back(std::move(h.second));
+       }
+     }
+     cur.clear();
++    cur_scores.clear();
+     cur.reserve(batch_size);
+ 
+     Ort::Value decoder_input = model_->BuildDecoderInput(prev);
+@@ -110,6 +121,8 @@
+           TopkIndex(p_logprob, vocab_size * (end - start), max_active_paths_);
+ 
+       Hypotheses hyps;
++      std::unordered_map<std::string, Hypothesis> merged;
++      neko_kws::PathScores next_scores;
+       for (auto k : topk) {
+         int32_t hyp_index = k / vocab_size + start;
+         int32_t new_token = k % vocab_size;
+@@ -141,34 +154,34 @@
+           ++new_hyp.num_trailing_blanks;
+         }
+         new_hyp.log_prob = p_logprob[k] + context_score;
++#if SHERPA_ONNX_NEKO_KWS_MERGE
++        const double path_score = prev_scores[hyp_index] +
++            logprobs[hyp_index * vocab_size + new_token] + context_score;
++        neko_kws::Add(&merged, &next_scores, std::move(new_hyp), path_score);
++#else
+         hyps.Add(std::move(new_hyp));
++#endif
+       }  // for (auto k : topk)
+ 
+-      auto best_hyp = hyps.GetMostProbable(false);
+-
+-      auto status = ss[b]->GetContextGraph()->IsMatched(best_hyp.context_state);
+-      bool matched = std::get<0>(status);
+-      const ContextState *matched_state = std::get<1>(status);
+-
+-      if (matched) {
+-        float ys_prob = 0.0;
+-        for (int32_t i = 0; i < matched_state->level; ++i) {
+-          ys_prob += best_hyp.ys_probs[i];
+-        }
+-        ys_prob /= matched_state->level;
+-        if (best_hyp.num_trailing_blanks > num_trailing_blanks_ &&
+-            ys_prob >= matched_state->ac_threshold) {
+-          auto &r = (*result)[b];
+-          r.tokens = {best_hyp.ys.end() - matched_state->level,
+-                      best_hyp.ys.end()};
+-          r.timestamps = {best_hyp.timestamps.end() - matched_state->level,
+-                          best_hyp.timestamps.end()};
+-          r.keyword = matched_state->phrase;
+-
+-          hyps = Hypotheses({{blanks, 0, ss[b]->GetContextGraph()->Root()}});
+-        }
++#if SHERPA_ONNX_NEKO_KWS_MERGE
++      hyps = Hypotheses(std::move(merged));
++#endif
++      const auto match = neko_kws::Select(
++          hyps, *ss[b]->GetContextGraph(), num_trailing_blanks_,
++          SHERPA_ONNX_NEKO_KWS_CANDIDATES != 0);
++      if (match.hypothesis) {
++        const auto &best_hyp = *match.hypothesis;
++        const auto n = match.state->level;
++        auto &r = (*result)[b];
++        r.tokens = {best_hyp.ys.end() - n, best_hyp.ys.end()};
++        r.timestamps = {best_hyp.timestamps.end() - n,
++                        best_hyp.timestamps.end()};
++        r.keyword = match.state->phrase;
++        neko_kws::Initialize(&hyps, &next_scores, blanks,
++                             ss[b]->GetContextGraph()->Root());
+       }
+       cur.push_back(std::move(hyps));
++      cur_scores.push_back(std::move(next_scores));
+       p_logprob += (end - start) * vocab_size;
+     }  // for (int32_t b = 0; b != batch_size; ++b)
+   }
+@@ -178,6 +191,7 @@
+     auto best_hyp = hyps.GetMostProbable(false);
+     auto &r = (*result)[b];
+     r.hyps = std::move(hyps);
++    r.alignment_scores = std::move(cur_scores[b]);
+     r.num_trailing_blanks = best_hyp.num_trailing_blanks;
+     r.frame_offset += num_frames;
+   }
+--- a/sherpa-onnx/csrc/CMakeLists.txt
++++ b/sherpa-onnx/csrc/CMakeLists.txt
+@@ -903,3 +903,26 @@
+   DEPENDS ${sources})
+ 
+ add_custom_target(check DEPENDS clang-tidy-check)
++
++# N.E.K.O KWS corrections are always enabled in release wheels. Disabled
++# variants exist only for explicit, independently identified ablation builds.
++option(SHERPA_ONNX_NEKO_KWS_MERGE "Preserve whole KWS alignment metadata" ON)
++option(SHERPA_ONNX_NEKO_KWS_CANDIDATES "Check all eligible KWS candidates" ON)
++option(SHERPA_ONNX_NEKO_KWS_ABLATION "Allow non-release KWS ablation builds" OFF)
++option(SHERPA_ONNX_NEKO_KWS_TESTS "Build standalone KWS regression tests" OFF)
++if(NOT SHERPA_ONNX_NEKO_KWS_ABLATION AND
++   (NOT SHERPA_ONNX_NEKO_KWS_MERGE OR NOT SHERPA_ONNX_NEKO_KWS_CANDIDATES))
++  message(FATAL_ERROR "Disabling KWS fixes requires an explicit ablation build")
++endif()
++target_compile_definitions(sherpa-onnx-core PRIVATE
++  SHERPA_ONNX_NEKO_KWS_MERGE=$<BOOL:${SHERPA_ONNX_NEKO_KWS_MERGE}>
++  SHERPA_ONNX_NEKO_KWS_CANDIDATES=$<BOOL:${SHERPA_ONNX_NEKO_KWS_CANDIDATES}>)
++if(SHERPA_ONNX_ENABLE_TESTS OR SHERPA_ONNX_NEKO_KWS_TESTS)
++  enable_testing()
++  add_executable(neko-kws-decoder-test neko-kws-decoder-test.cc)
++  target_link_libraries(neko-kws-decoder-test PRIVATE sherpa-onnx-core)
++  add_test(NAME neko-kws-decoder-test COMMAND $<TARGET_FILE:neko-kws-decoder-test>)
++  # Real-model fixtures are supplied explicitly; do not silently skip in CTest.
++  add_executable(neko-kws-lifecycle-test neko-kws-lifecycle-test.cc)
++  target_link_libraries(neko-kws-lifecycle-test PRIVATE sherpa-onnx-core)
++endif()
+--- /dev/null
++++ b/sherpa-onnx/csrc/neko-kws-decoder.h
+@@ -0,0 +1,137 @@
++// KWS-only alignment bookkeeping and candidate acceptance.
++// Shared ASR Hypotheses::Add intentionally remains unchanged.
++#ifndef SHERPA_ONNX_CSRC_NEKO_KWS_DECODER_H_
++#define SHERPA_ONNX_CSRC_NEKO_KWS_DECODER_H_
++
++#include <algorithm>
++#include <cmath>
++#include <stdexcept>
++#include <tuple>
++#include <unordered_map>
++#include <utility>
++
++#include "sherpa-onnx/csrc/hypothesis.h"
++
++namespace sherpa_onnx {
++namespace neko_kws {
++
++using PathScores = std::unordered_map<std::string, double>;
++
++// Used only at a genuine empty-stream / accepted-keyword initialization.
++inline void Initialize(Hypotheses *hyps, PathScores *scores,
++                       const std::vector<int64_t> &blanks,
++                       const ContextState *root = nullptr) {
++  Hypothesis h(blanks, 0, root);
++  scores->clear();
++  scores->emplace(h.Key(), 0.0);
++  *hyps = Hypotheses({std::move(h)});
++}
++
++inline double PathScore(const PathScores &scores, const Hypothesis &h) {
++  auto it = scores.find(h.Key());
++  if (it == scores.end()) {
++    throw std::logic_error("KWS alignment score missing for active hypothesis");
++  }
++  if (std::isnan(it->second) || it->second == INFINITY) {
++    throw std::logic_error("KWS invalid alignment score");
++  }
++  return it->second;
++}
++
++inline void ValidateScores(const Hypotheses &hyps, const PathScores &scores) {
++  if (hyps.Size() != scores.size()) {
++    throw std::logic_error("KWS hypotheses and alignment scores out of sync");
++  }
++  for (const auto &entry : hyps) PathScore(scores, entry.second);
++}
++
++// Equal-score paths use metadata order, never unordered_map iteration order.
++// Equal token sequences in one deterministic context graph share context state.
++inline bool EarlierMetadata(const Hypothesis &a, const Hypothesis &b) {
++  return std::tie(a.timestamps, a.ys_probs, a.num_trailing_blanks) <
++         std::tie(b.timestamps, b.ys_probs, b.num_trailing_blanks);
++}
++
++inline void Add(std::unordered_map<std::string, Hypothesis> *hyps,
++                PathScores *scores, Hypothesis h, double path_score) {
++  if (std::isnan(path_score) || path_score == INFINITY ||
++      std::isnan(h.log_prob) || h.log_prob == INFINITY) {
++    throw std::logic_error("KWS invalid merge score");
++  }
++  const auto key = h.Key();
++  auto it = hyps->find(key);
++  if (it == hyps->end()) {
++    hyps->emplace(key, std::move(h));
++    if (!scores->emplace(key, path_score).second) {
++      throw std::logic_error("KWS orphan alignment score");
++    }
++    return;
++  }
++  const double old_path_score = PathScore(*scores, it->second);
++  const double total = LogAdd<double>()(it->second.log_prob, h.log_prob);
++  if (path_score > old_path_score ||
++      (path_score == old_path_score && EarlierMetadata(h, it->second))) {
++    it->second = std::move(h);
++    scores->at(key) = path_score;
++  }
++  it->second.log_prob = total;
++}
++
++inline const ContextState *Eligible(const Hypothesis &h,
++                                    const ContextGraph &graph,
++                                    int32_t required_blanks) {
++  if (!h.context_state || !std::isfinite(h.log_prob)) return nullptr;
++  const auto status = graph.IsMatched(h.context_state);
++  const auto *state = status.second;
++  if (!status.first || !state || state->level <= 0 ||
++      h.num_trailing_blanks <= required_blanks) return nullptr;
++  const auto n = static_cast<size_t>(state->level);
++  if (h.ys.size() < n || h.ys_probs.size() < n || h.timestamps.size() < n ||
++      !std::isfinite(state->ac_threshold)) return nullptr;
++  float mean = 0;
++  // Preserve upstream prefix probability indexing in this change.
++  for (size_t i = 0; i < n; ++i) {
++    if (!std::isfinite(h.ys_probs[i]) || h.ys_probs[i] < 0 ||
++        h.ys_probs[i] > 1) return nullptr;
++    mean += h.ys_probs[i];
++  }
++  auto first = h.timestamps.end() - n;
++  if (*first < 0 || !std::is_sorted(first, h.timestamps.end())) return nullptr;
++  return mean / n >= state->ac_threshold ? state : nullptr;
++}
++
++struct Match {
++  const Hypothesis *hypothesis = nullptr;
++  const ContextState *state = nullptr;
++};
++
++inline Match Select(const Hypotheses &hyps, const ContextGraph &graph,
++                    int32_t required_blanks, bool all_candidates) {
++  Match best;
++  if (!all_candidates) {
++    // Preserve upstream ranking/tie behavior in the ablation baseline.
++    const auto top = hyps.GetMostProbable(false);
++    for (const auto &entry : hyps) {
++      if (entry.first == top.Key()) {
++        const auto *state = Eligible(entry.second, graph, required_blanks);
++        return {state ? &entry.second : nullptr, state};
++      }
++    }
++    return best;
++  }
++  for (const auto &entry : hyps) {
++    const auto &h = entry.second;
++    auto *state = Eligible(h, graph, required_blanks);
++    if (state && (!best.hypothesis ||
++        h.log_prob > best.hypothesis->log_prob ||
++        (h.log_prob == best.hypothesis->log_prob &&
++         h.ys < best.hypothesis->ys))) {
++      best = {&h, state};
++    }
++  }
++  return best;
++}
++
++}  // namespace neko_kws
++}  // namespace sherpa_onnx
++#endif  // SHERPA_ONNX_CSRC_NEKO_KWS_DECODER_H_
+--- /dev/null
++++ b/sherpa-onnx/csrc/neko-kws-decoder-test.cc
+@@ -0,0 +1,168 @@
++#include "sherpa-onnx/csrc/neko-kws-decoder.h"
++
++#include <iostream>
++#include <limits>
++#include <stdexcept>
++
++using namespace sherpa_onnx;  // NOLINT
++
++void Check(bool ok, const char *message) {
++  if (!ok) throw std::runtime_error(message);
++}
++
++template <typename F>
++void MustThrow(F f) {
++  bool caught = false;
++  try { f(); } catch (const std::logic_error &) { caught = true; }
++  Check(caught, "corrupt score state did not fail explicitly");
++}
++
++Hypothesis Make(const ContextState *state, double aggregate, float probability,
++                int32_t time = 2, int32_t blanks = 2) {
++  Hypothesis h({-1, 0, 1, 2}, aggregate, state);
++  h.ys_probs = {probability, probability};
++  h.timestamps = {time, time + 1};
++  h.num_trailing_blanks = blanks;
++  return h;
++}
++
++int main() {
++  try {
++    ContextGraph graph({{1, 2}}, 1.0f, 0.25f, {}, {"wake"});
++    auto *prefix = std::get<1>(graph.ForwardOneStep(graph.Root(), 1));
++    auto *word = std::get<1>(graph.ForwardOneStep(prefix, 2));
++
++    // Direct production helper tests: order independence and whole metadata.
++    for (bool reverse : {false, true}) {
++      auto weak = Make(word, -3, 0.2f, 10, 4);
++      auto strong = Make(word, -2, 0.8f, 20, 2);
++      std::unordered_map<std::string, Hypothesis> merged;
++      neko_kws::PathScores scores;
++      neko_kws::Add(&merged, &scores, reverse ? strong : weak, reverse ? -2 : -3);
++      neko_kws::Add(&merged, &scores, reverse ? weak : strong, reverse ? -3 : -2);
++      auto h = merged.at(strong.Key());
++      Check(std::abs(h.log_prob - std::log(std::exp(-3.) + std::exp(-2.))) < 1e-10,
++            "aggregate score changed");
++      Check(h.ys_probs == strong.ys_probs && h.timestamps == strong.timestamps &&
++            h.num_trailing_blanks == strong.num_trailing_blanks &&
++            h.context_state == strong.context_state, "metadata was mixed");
++      Check(neko_kws::PathScore(scores, h) == -2, "path became aggregate");
++      // A competing path beats the representative, but not its aggregate.
++      auto next = Make(word, -1.8, 0.7f, 30, 3);
++      neko_kws::Add(&merged, &scores, next, -1.8);
++      Check(merged.at(next.Key()).timestamps == next.timestamps,
++            "multi-round merge confused path and aggregate scores");
++    }
++    for (bool reverse : {false, true}) {
++      auto early = Make(word, -2, 0.6f, 4);
++      auto late = Make(word, -2, 0.9f, 8);
++      std::unordered_map<std::string, Hypothesis> merged;
++      neko_kws::PathScores scores;
++      neko_kws::Add(&merged, &scores, reverse ? early : late, -2);
++      neko_kws::Add(&merged, &scores, reverse ? late : early, -2);
++      Check(merged.at(early.Key()).timestamps == early.timestamps,
++            "equal-score tie depends on merge order");
++    }
++
++    // Boundary counterexample: best whole path is not highest keyword mean.
++    auto low_mean = Make(word, -1, 0.2f);
++    auto high_mean = Make(word, -2, 0.9f);
++    std::unordered_map<std::string, Hypothesis> merged;
++    neko_kws::PathScores scores;
++    neko_kws::Add(&merged, &scores, low_mean, -1);
++    neko_kws::Add(&merged, &scores, high_mean, -2);
++    Check(!neko_kws::Eligible(merged.at(low_mean.Key()), graph, 1),
++          "wrongly selected maximum token probabilities");
++
++    // First candidate incomplete, second complete: production selection fixes it.
++    auto valid = Make(word, -2, 0.5f);
++    auto top = Make(prefix, -1, 0.9f);
++    top.ys = {-1, 0, 1};
++    Hypotheses candidates(std::vector<Hypothesis>{top, valid});
++    Check(!neko_kws::Select(candidates, graph, 1, false).hypothesis,
++          "baseline unexpectedly accepts second candidate");
++    auto selected = neko_kws::Select(candidates, graph, 1, true);
++    Check(selected.hypothesis && selected.hypothesis->Key() == valid.Key(),
++          "eligible second candidate was missed");
++    // Invalid candidates cannot bypass confidence / blank / shape checks.
++    for (int fault = 0; fault < 9; ++fault) {
++      auto h = valid;
++      if (fault == 0) h.ys_probs = {0.1f, 0.1f};
++      if (fault == 1) h.num_trailing_blanks = 1;
++      if (fault == 2) h.ys_probs.clear();
++      if (fault == 3) h.timestamps.clear();
++      if (fault == 4) h.ys_probs[0] = std::numeric_limits<float>::quiet_NaN();
++      if (fault == 5) h.timestamps = {4, 3};
++      if (fault == 6) h.timestamps = {-1, 3};
++      if (fault == 7) h.log_prob = std::numeric_limits<double>::infinity();
++      if (fault == 8) h.ys.clear();
++      Check(!neko_kws::Eligible(h, graph, 1), "invalid candidate accepted");
++    }
++    auto other = valid;
++    other.ys.insert(other.ys.begin(), 8);
++    other.log_prob = -1;
++    other.timestamps = {10, 11};
++    Hypotheses two(std::vector<Hypothesis>{valid, other});
++    selected = neko_kws::Select(two, graph, 1, true);
++    Check(selected.hypothesis && selected.hypothesis->timestamps == other.timestamps,
++          "selection did not use highest eligible aggregate or own timestamps");
++    Check(neko_kws::Select(two, graph, 1, false).hypothesis->Key() == other.Key(),
++          "first eligible candidate changed");
++    other.log_prob = valid.log_prob;
++    for (bool reverse : {false, true}) {
++      Hypotheses tied(reverse ? std::vector<Hypothesis>{other, valid} :
++                                std::vector<Hypothesis>{valid, other});
++      Check(neko_kws::Select(tied, graph, 1, true).hypothesis->ys == valid.ys,
++            "candidate tie is not deterministic");
++    }
++
++    // Two independent streams and repeated accepted-hit/stream initialization.
++    Hypotheses stream_a, stream_b;
++    neko_kws::PathScores scores_a, scores_b;
++    neko_kws::Initialize(&stream_a, &scores_a, {-1, 0}, graph.Root());
++    neko_kws::Initialize(&stream_b, &scores_b, {-1, 0}, graph.Root());
++    for (int repeat = 0; repeat < 3; ++repeat) {
++      neko_kws::ValidateScores(stream_a, scores_a);
++      Check(neko_kws::PathScore(scores_a, stream_a.begin()->second) == 0,
++            "empty stream score not zero");
++      scores_a.begin()->second = -20;
++      Check(scores_b.begin()->second == 0, "stream score leakage");
++      neko_kws::Initialize(&stream_a, &scores_a, {-1, 0}, graph.Root());
++      Check(stream_a.Size() == 1 && scores_a.size() == 1, "reset leaked state");
++    }
++    scores_a.clear();
++    MustThrow([&] { neko_kws::PathScore(scores_a, stream_a.begin()->second); });
++    MustThrow([&] { neko_kws::ValidateScores(stream_a, scores_a); });
++    scores_a.emplace("orphan", 0);
++    MustThrow([&] { neko_kws::ValidateScores(stream_a, scores_a); });
++    // Returning to context root forgets tokens, but is not a new stream:
++    // preserve the complete path score rather than silently reseeding zero.
++    Hypothesis root_path({-1, 0}, -12, graph.Root());
++    merged.clear(); scores.clear();
++    neko_kws::Add(&merged, &scores, root_path, -15);
++    Check(neko_kws::PathScore(scores, root_path) == -15,
++          "context-root transition reseeded the path score");
++    // Per-frame next maps contain only survivors; no historical scores leak.
++    for (int frame = 0; frame < 20; ++frame) {
++      std::unordered_map<std::string, Hypothesis> next;
++      neko_kws::PathScores next_scores;
++      auto survivor = merged.begin()->second;
++      neko_kws::Add(&next, &next_scores, survivor,
++                    neko_kws::PathScore(scores, survivor) - 0.1);
++      merged = std::move(next);
++      scores = std::move(next_scores);
++      Check(merged.size() == 1 && scores.size() == 1,
++            "next-frame score storage grew with history");
++    }
++    // Preserve the currently shipped prefix-probability policy explicitly.
++    auto prefix_probability = valid;
++    prefix_probability.ys_probs = {0.1f, 0.1f, 0.9f, 0.9f};
++    Check(!neko_kws::Eligible(prefix_probability, graph, 1),
++          "this change silently switched prefix probabilities to suffix");
++    std::cout << "KWS production helper regressions passed\n";
++  } catch (const std::exception &e) {
++    std::cerr << e.what() << '\n';
++    return 1;
++  }
++  return 0;
++}
+--- /dev/null
++++ b/sherpa-onnx/csrc/neko-kws-lifecycle-test.cc
+@@ -0,0 +1,193 @@
++#include <algorithm>
++#include <cmath>
++#include <iostream>
++#include <memory>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++#include <nlohmann/json.hpp>
++#include "sherpa-onnx/csrc/keyword-spotter.h"
++#include "sherpa-onnx/csrc/transducer-keyword-decoder.h"
++#include "sherpa-onnx/csrc/wave-reader.h"
++
++using namespace sherpa_onnx;  // NOLINT
++using nlohmann::json;
++
++void Require(bool value, const char *message) {
++  if (!value) throw std::runtime_error(message);
++}
++
++struct Input {
++  std::string name;
++  std::vector<float> pcm;
++  std::vector<std::pair<float, float>> calls;
++};
++
++void Append(Input *input, const std::vector<float> &pcm, float silence) {
++  input->pcm.resize(input->pcm.size() + static_cast<size_t>(16000 * silence));
++  float start = input->pcm.size() / 16000.f;
++  input->pcm.insert(input->pcm.end(), pcm.begin(), pcm.end());
++  input->calls.push_back({start, input->pcm.size() / 16000.f});
++}
++
++struct Live {
++  std::unique_ptr<OnlineStream> stream;
++  size_t offset = 0;
++  std::vector<KeywordResult> hits;
++  int reset_conditions = 0;
++  int confirmed_silence_resets = 0;
++  int explicit_resets = 0;
++  int max_hyps = 0;
++};
++
++json Run(KeywordSpotter *spotter, const std::vector<Input> &inputs, bool batch,
++         bool explicit_reset, const std::vector<size_t> &chunks) {
++  std::vector<Live> streams(inputs.size());
++  for (auto &s : streams) s.stream = spotter->CreateStream();
++  int batch_two_calls = 0;
++  for (;;) {
++    bool fed = false;
++    for (size_t i = 0; i < streams.size(); ++i) {
++      auto &s = streams[i];
++      size_t count = std::min(chunks[i], inputs[i].pcm.size() - s.offset);
++      if (count) {
++        s.stream->AcceptWaveform(16000, inputs[i].pcm.data() + s.offset, count);
++        s.offset += count;
++        fed = true;
++      }
++    }
++    for (;;) {
++      std::vector<OnlineStream *> ready;
++      std::vector<size_t> indices;
++      std::vector<int> old_frames;
++      std::vector<bool> silence_reset_expected;
++      for (size_t i = 0; i < streams.size(); ++i) {
++        auto &s = streams[i];
++        if (spotter->IsReady(s.stream.get())) {
++          ready.push_back(s.stream.get()); indices.push_back(i);
++          auto &r = s.stream->GetKeywordResult(false);
++          old_frames.push_back(r.frame_offset);
++          silence_reset_expected.push_back(explicit_reset && r.num_trailing_blanks * 0.04f > 1.5f);
++          // This is the condition used by native automatic silence Reset.
++          if (r.num_trailing_blanks * 0.04f > 1.5f) ++s.reset_conditions;
++          if (!batch) break;
++        }
++      }
++      if (ready.empty()) break;
++      if (ready.size() == 2) ++batch_two_calls;
++      spotter->DecodeStreams(ready.data(), ready.size());
++      for (size_t j = 0; j < ready.size(); ++j) {
++        auto &s = streams[indices[j]];
++        auto &state = s.stream->GetKeywordResult(false);
++        Require(state.frame_offset > old_frames[j], "frame clock failed across decode/reset");
++        if (silence_reset_expected[j]) {
++          Require(state.num_trailing_blanks <= state.frame_offset - old_frames[j],
++                  "silence reset did not clear old trailing blank state");
++          ++s.confirmed_silence_resets;
++        }
++        neko_kws::ValidateScores(state.hyps, state.alignment_scores);
++        Require(state.hyps.Size() <= 8 && state.hyps.Size() > 0, "beam storage unbounded");
++        s.max_hyps = std::max(s.max_hyps, state.hyps.Size());
++        auto result = spotter->GetResult(s.stream.get());  // exactly one consuming read
++        if (!result.keyword.empty()) {
++          Require(!result.timestamps.empty(), "hit has no timestamps");
++          Require(std::is_sorted(result.timestamps.begin(), result.timestamps.end()),
++                  "hit timestamps not monotonic");
++          if (!s.hits.empty()) Require(result.timestamps.front() > s.hits.back().timestamps.back(),
++                                       "repeated hit overlaps prior keyword");
++          s.hits.push_back(result);
++          if (explicit_reset) {
++            int clock = state.frame_offset;
++            spotter->Reset(s.stream.get());
++            auto &empty = s.stream->GetKeywordResult(false);
++            Require(empty.frame_offset == clock, "explicit reset lost cumulative clock");
++            Require(empty.hyps.Size() == 1 && empty.alignment_scores.size() == 1,
++                    "explicit reset retained old candidates");
++            Require(empty.alignment_scores.begin()->second == 0,
++                    "explicit reset failed to reseed empty alignment");
++            ++s.explicit_resets;
++          }
++        }
++      }
++    }
++    if (!fed) break;
++  }
++  json rows = json::array();
++  for (size_t i = 0; i < streams.size(); ++i) {
++    auto &s = streams[i];
++    std::vector<int> counts(inputs[i].calls.size());
++    json hits = json::array();
++    for (const auto &h : s.hits) {
++      int matched = -1;
++      for (size_t k = 0; k < inputs[i].calls.size(); ++k) {
++        const auto &interval = inputs[i].calls[k];
++        if (h.timestamps.front() >= interval.first && h.timestamps.back() <= interval.second) {
++          Require(matched == -1, "hit maps to two calls"); matched = k;
++        }
++      }
++      Require(matched >= 0, "hit outside original utterance interval");
++      ++counts[matched];
++      hits.push_back(json::parse(h.AsJsonString()));
++    }
++    for (auto count : counts) Require(count == 1, "call missed or duplicated");
++    rows.push_back({{"name", inputs[i].name}, {"duration", inputs[i].pcm.size()/16000.0},
++                    {"calls", inputs[i].calls}, {"hits", hits},
++                    {"trailing_blank_condition_observations", s.reset_conditions},
++                    {"confirmed_silence_resets", s.confirmed_silence_resets},
++                    {"explicit_resets", s.explicit_resets}, {"max_hypotheses", s.max_hyps}});
++  }
++  if (batch && inputs.size() == 2) Require(batch_two_calls > 0, "no actual batch-two decode");
++  return {{"batch", batch}, {"explicit_reset", explicit_reset},
++          {"chunks", chunks}, {"batch_two_decode_calls", batch_two_calls}, {"streams", rows}};
++}
++
++int main(int argc, char **argv) {
++  try {
++    ParseOptions options(
++        "Native KWS lifecycle regression. Supply the same model flags as "
++        "sherpa-onnx-keyword-spotter followed by three positive PCM16 mono "
++        "16kHz WAVs: NAME.wav COMMAND.wav ACCEPTED_NEAR.wav. Requires a "
++        "combined-fix library and --max-active-paths=8. The WAVs must include "
++        "their natural recorded endings; this harness adds no tail padding.");
++    KeywordSpotterConfig config;
++    config.Register(&options);
++    options.Read(argc, argv);
++    Require(config.Validate(), "invalid config");
++    Require(config.max_active_paths == 8, "lifecycle fixture contract requires paths=8");
++    KeywordSpotter spotter(config);
++    std::vector<std::vector<float>> clips;
++    for (int i = 1; i <= options.NumArgs(); ++i) {
++      int rate = 0; bool ok = false;
++      clips.push_back(ReadWave(options.GetArg(i), &rate, &ok));
++      Require(ok && rate == 16000, "invalid input wave");
++    }
++    Require(clips.size() == 3, "need name command near WAVs");
++    json runs = json::array();
++    // No tail padding and no InputFinished calls: only original WAV content.
++    for (int prefix : {0, 12, 45}) {
++      Input input; input.name = "name-prefix" + std::to_string(prefix);
++      Append(&input, clips[0], prefix);
++      runs.push_back(Run(&spotter, {input}, false, true, {320}));
++      std::cerr << "prefix " << prefix << " passed\n";
++    }
++    Input a; a.name = "repeated-name-command-near";
++    Append(&a, clips[0], 12); Append(&a, clips[1], 2); Append(&a, clips[2], 2);
++    Input b; b.name = "independent-near-name-command";
++    Append(&b, clips[2], 0); Append(&b, clips[0], 45); Append(&b, clips[1], 2);
++    for (bool reset : {false, true}) {
++      runs.push_back(Run(&spotter, {a, b}, false, reset, {320, 960}));
++      runs.push_back(Run(&spotter, {a, b}, true, reset, {320, 960}));
++      std::cerr << "repeated and batch reset=" << reset << " passed\n";
++    }
++    std::cout << json({{"status", "passed"}, {"runs", runs},
++                       {"threshold", config.keywords_threshold},
++                       {"keywords_score", config.keywords_score},
++                       {"max_active_paths", config.max_active_paths},
++                       {"num_trailing_blanks", config.num_trailing_blanks},
++                       {"tail_padding_samples", 0}, {"input_finished", false}}).dump(2) << '\n';
++  } catch (const std::exception &e) {
++    std::cerr << "FAILED: " << e.what() << '\n';
++    return 1;
++  }
++}

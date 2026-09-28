@@ -10,6 +10,7 @@ import json
 import math
 import multiprocessing
 import os
+import socket
 import sys
 import threading
 import time
@@ -17,12 +18,19 @@ import hashlib
 import types
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Iterator, Optional, Type
 
+from config import (
+    MAIN_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    USER_PLUGIN_SERVER_PORT,
+)
 from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
 from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.model_gateway_access import model_gateway_access
 from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
@@ -91,6 +99,137 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 
 
 _TIMEOUT_UNSET = object()
+
+
+# ============================================================================
+# fork 后丢掉继承来的宿主 HTTP socket
+# ============================================================================
+
+# 插件进程是裸 multiprocessing.Process 起的，POSIX 上即 fork：子进程整份继承宿主
+# 的 fd 表，其中就有宿主各个 HTTP 服务的监听 socket 和每一条已 accept 的浏览器
+# 连接。子进程从不读它们，而 TCP socket 是在**最后一个引用**关闭时才断开的——
+# 于是宿主自己 close() 之后不再发 FIN，对端（浏览器，以及走 httpx 连接池的内部
+# 调用方）把这条连接当成空闲 keep-alive 留在池子里复用，下一个请求就堆进内核接收
+# 缓冲、没有任何人读，永久挂死。表现就是插件管理页转圈点不动、刷新一下又好了、
+# 再用一会儿又卡。
+#
+# 判据是「本地端口属于本进程在 serve 的 HTTP 服务端口」：监听 socket 和从它 accept
+# 出来的连接共用同一个本地端口，而任何客户端 socket 的本地端口都是临时端口，所以
+# 这条判据天然只命中宿主的 HTTP 服务，不会误伤别的 socket。
+#
+# 四个端口都要丢，因为 fork 出插件进程的那个进程是谁取决于拓扑：源码运行是
+# agent_server 进程 fork（只有 agent / 插件两个服务在里面），而打包版默认走 merged
+# 拓扑（见 launcher_core.runtime._should_use_merged_mode），main / memory / agent /
+# 插件四个服务同进程——于是 48911（主界面）和 48912（记忆服务）的监听与已 accept
+# 连接同样被子进程继承。只丢后两个的话，主界面一样会被黑洞化。
+# 端口常量随 NEKO_* 环境与 config 全局在每个进程导入前对齐（launcher 的
+# _reload_runtime_config_from_env / _sync_runtime_config_globals），这里读到的是
+# 本进程实际 bind 的值；将来若有新拓扑把别的 HTTP 服务并进来，这里是唯一改动点。
+#
+# 不写成「枚举本进程所有监听 socket」：libzmq 的 TCP 监听也是普通 AF_INET 监听
+# socket，同样挂在本进程的 fd 表上，而 ZMQ 是刻意不能替它关的（见下）。
+#
+# ZMQ 一律不碰：它们挂在 zmq.Context.instance() 这个进程级单例上，fork 之后
+# libzmq 的记账里还留着这些 fd 号，替它把 fd 关掉，号码一旦被复用，zmq_ctx_term
+# 就会去关一个无关的 fd。AF_UNIX 也不碰——state.plugin_response_map 那套 Manager
+# proxy 就是故意让子进程继承的。
+#
+# 客户端方向的继承面不在这次收口里：子进程同样可能继承到宿主发往这些端口的客户端
+# socket（本地端口是临时端口，判据不命中）。它不会让别人挂住，只是让那条连接晚一个
+# keepalive 周期才断，先不动。
+_HOST_HTTP_PORTS = frozenset({
+    MAIN_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    USER_PLUGIN_SERVER_PORT,
+})
+_INET_FAMILIES = frozenset({socket.AF_INET, socket.AF_INET6})
+
+_INHERITED_HOST_SOCKETS_CLOSED = 0
+
+
+def _iter_open_fds() -> Iterator[int]:
+    """本进程当前持有的 fd（跳过 stdio）。
+
+    只有能列「本进程 fd 目录」的平台才谈得上靠 fork 继承：Linux 是 /proc/self/fd，
+    macOS / BSD 是 fdescfs 的 /dev/fd（同样是按进程、同样只列数字）。两个都没有时
+    什么都不枚举——典型是 Windows 的 spawn：子进程 re-exec，宿主的 fd 根本带不过去，
+    钩子在那里无事可做。macOS 上 multiprocessing 默认也是 spawn，但打包版走 merged
+    拓扑并显式用 fork（app/main_server/__init__.py 的 set_start_method），所以
+    /dev/fd 不是可选项而是覆盖面的一部分。
+    """
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                fd = int(entry)
+            except ValueError:
+                continue
+            if fd > 2:
+                yield fd
+        return
+
+
+def _is_host_http_socket(fd: int) -> bool:
+    """这个 fd 是不是宿主的某个 HTTP 服务 socket（监听 socket，或它 accept 出来的连接）。
+
+    fd 归调用方：这里只借一个包装对象看一眼，detach 保证它析构时不会再关一次。
+    家族用包装对象的 ``.family`` 判：CPython 在只给 fileno 时是用 getsockname() 的
+    sa_family 反推的（见 Modules/socketmodule.c 的 sock_initobj），不依赖 SO_DOMAIN，
+    而 Windows 与 Darwin 的 socket 头文件都没有 SO_DOMAIN。
+    """
+    try:
+        probe = socket.socket(fileno=fd)
+    except OSError:
+        return False  # 管道 / 文件 / epoll / signalfd…… 本来就不是 socket
+    try:
+        # AF_UNIX 的 getsockname() 给的是路径字符串（未命名时是空串），所以家族要判在
+        # 取端口之前——短路的 `and` 保证那里永远不会去下标一个字符串。
+        return probe.family in _INET_FAMILIES and probe.getsockname()[1] in _HOST_HTTP_PORTS
+    except OSError:
+        return False
+    finally:
+        probe.detach()
+
+
+def _close_inherited_host_sockets() -> None:
+    """丢掉宿主的 HTTP 服务 socket（注册在 after_in_child 上）。
+
+    fork 之后立刻跑，早于子进程建立的任何 socket，也早于插件代码。这里不能抛
+    异常——它跑在 fork 钩子里，抛出去就是子进程带着半关的 fd 表继续跑
+    （CPython 只把它当 unraisable 打到 stderr，不会停住子进程）。
+
+    关的动作（os.close）与判定分开，是因为判定要在所有平台都能被测试卡住，
+    而 os.close 一个裸 socket fd 是 POSIX 的事；反正这个钩子本身也只在有 fork 的
+    平台上会被触发。
+    """
+    global _INHERITED_HOST_SOCKETS_CLOSED
+    closed = 0
+    for fd in _iter_open_fds():
+        if not _is_host_http_socket(fd):
+            continue
+        try:
+            os.close(fd)
+            closed += 1
+        except OSError:
+            pass
+    _INHERITED_HOST_SOCKETS_CLOSED = closed
+
+
+def inherited_host_sockets_closed() -> int:
+    """上一次 fork 里丢掉的宿主 socket 数，供子进程启动日志观测。"""
+    return _INHERITED_HOST_SOCKETS_CLOSED
+
+
+_FORK_SOCKET_HOOK_REGISTERED = False
+
+if hasattr(os, "register_at_fork"):
+    # POSIX only；spawn 平台子进程自己 re-exec，继承面根本不存在。
+    os.register_at_fork(after_in_child=_close_inherited_host_sockets)
+    _FORK_SOCKET_HOOK_REGISTERED = True
 
 
 # ============================================================================
@@ -735,6 +874,20 @@ def _deep_merge(base: dict, updates: dict) -> None:
             base[key] = value
 
 
+async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> Any:
+    """Release this loop's HTTP client before an asyncio.run loop closes."""
+    try:
+        return await awaitable
+    finally:
+        models = getattr(ctx, "_models", None)
+        if models is not None:
+            try:
+                await models.aclose()
+            except Exception as exc:
+                # Cleanup must not replace a plugin result or hide its error.
+                logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -746,6 +899,8 @@ def _plugin_process_runner(
     startup_options: dict[str, object] | None = None,
     message_uplink_endpoint: str = "",
     image_uplink_endpoint: str | None = None,
+    *,
+    model_gateway_options: dict[str, str] | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     uplink_token = str(uplink_token or "").strip()
@@ -765,6 +920,15 @@ def _plugin_process_runner(
         _setup_logging_interception(logger, project_root)
     except Exception as e:
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
+
+    # 宿主是 fork 出来的，fd 表整份跟了过来；宿主的 HTTP socket 已在 fork 钩子里
+    # 丢掉（见文件顶部 _close_inherited_host_sockets），这里只留一条可观测的痕迹。
+    released_sockets = inherited_host_sockets_closed()
+    if released_sockets:
+        logger.info(
+            "[Plugin Process] released {} host socket(s) inherited over fork",
+            released_sockets,
+        )
     
     # ── ZMQ child-side transport ─────────────────────────────────
     child_transport_kwargs: dict[str, object] = {}
@@ -829,7 +993,12 @@ def _plugin_process_runner(
             _image_transport=child_transport,
             _entry_map=None,
             _instance=None,
+            _model_gateway_base_url=(model_gateway_options or {}).get("base_url", ""),
+            _model_gateway_token=(model_gateway_options or {}).get("token", ""),
         )
+        # The context owns this instance's credential from now on.
+        if model_gateway_options is not None:
+            model_gateway_options.clear()
         # Cleared until the downlink loop starts reading. Uploads launched by
         # timer / custom-event handlers before that point would have no reader
         # for their reply, so they wait here instead of timing out (Codex).
@@ -1206,7 +1375,7 @@ def _plugin_process_runner(
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
-                    asyncio.run(_run_startup_with_downlink(startup_fn))
+                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_startup_with_downlink(startup_fn)))
             except (KeyboardInterrupt, SystemExit):
                 # 系统级中断，直接抛出
                 raise
@@ -1230,7 +1399,7 @@ def _plugin_process_runner(
             try:
                 logger.info("[Plugin Process] Executing unfreeze lifecycle (restored from frozen state)...")
                 with ctx._handler_scope("lifecycle.unfreeze"):
-                    asyncio.run(unfreeze_fn())
+                    asyncio.run(_run_with_model_client_cleanup(ctx, unfreeze_fn()))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1255,7 +1424,7 @@ def _plugin_process_runner(
             while not stop_event.is_set():
                 try:
                     with ctx._handler_scope(f"timer.{fn_name}"):
-                        asyncio.run(fn())
+                        asyncio.run(_run_with_model_client_cleanup(ctx, fn()))
                 except (KeyboardInterrupt, SystemExit):
                     # 系统级中断，停止定时任务
                     logger.info("Timer '{}' interrupted, stopping", fn_name)
@@ -1290,7 +1459,7 @@ def _plugin_process_runner(
             """执行自动启动的自定义事件"""
             try:
                 with ctx._handler_scope(f"{event_type}.{fn_name}"):
-                    asyncio.run(fn())
+                    asyncio.run(_run_with_model_client_cleanup(ctx, fn()))
             except (KeyboardInterrupt, SystemExit):
                 logger.info("Custom event '{}' (type: {}) interrupted", fn_name, event_type)
             except Exception:
@@ -1441,6 +1610,7 @@ def _plugin_process_runner(
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
 
             run_id = None
+            lanlan_name = None
             try:
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
@@ -1469,7 +1639,7 @@ def _plugin_process_runner(
                     args=args,
                 )
 
-                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
+                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id), ctx._lanlan_scope(lanlan_name):
                     result = await _run_with_watchdog(
                         method(**call_args), entry_id, timeout_seconds,
                     )
@@ -1521,6 +1691,7 @@ def _plugin_process_runner(
 
             logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
 
+            lanlan_name = None
             try:
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
@@ -1543,7 +1714,7 @@ def _plugin_process_runner(
                     ret["error"] = f"Custom event '{event_type}.{event_id}' must be 'async def'."
                     return
 
-                with ctx._handler_scope(f"{event_type}.{event_id}"):
+                with ctx._handler_scope(f"{event_type}.{event_id}"), ctx._lanlan_scope(lanlan_name):
                     result = await _run_with_watchdog(
                         method(**args),
                         f"{event_type}.{event_id}",
@@ -1590,6 +1761,10 @@ def _plugin_process_runner(
                 # 时，宿主仍然要拿得到 api.call 的授权白名单，否则面板上每个按钮
                 # 都会返回一条与真实原因无关的 500。
                 actions = _collect_ui_actions()
+                if context_id == "__chat_card__":
+                    # Card buttons need the UI-action list, not a panel's state provider.
+                    ret.update(success=True, data={"state": {}, "actions": actions})
+                    return
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
 
                 provider = ui_context_map.get(context_id)
@@ -1809,19 +1984,30 @@ def _plugin_process_runner(
                     except Exception:
                         pass
                     task = asyncio.create_task(_handle_trigger(msg))
-                    if run_id:
-                        _run_tasks[run_id] = task
+                    # Register every trigger so shutdown cancels it before the
+                    # model clients close; only run_id keys are cancellable by CANCEL_RUN.
+                    task_key = run_id if run_id else f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+                    _run_tasks[task_key] = task
+                    task.add_done_callback(
+                        lambda _t, key=task_key: _run_tasks.pop(key, None) if _run_tasks.get(key) is _t else None
+                    )
                     continue
 
-            # Loop exited — cancel any in-flight tasks
-            for t in _run_tasks.values():
-                if not t.done():
-                    t.cancel()
-            if _run_tasks:
-                await asyncio.gather(*_run_tasks.values(), return_exceptions=True)
-                _run_tasks.clear()
+        async def _command_loop_with_cleanup():
+            try:
+                await _async_command_loop()
+            finally:
+                # Also clean up when transport/handler dispatch raises. Close
+                # model clients only after their request tasks have unwound.
+                tasks = list(_run_tasks.values())
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    _run_tasks.clear()
 
-        asyncio.run(_async_command_loop())
+        asyncio.run(_run_with_model_client_cleanup(ctx, _command_loop_with_cleanup()))
 
         # 触发生命周期：shutdown（尽力而为），并停止所有定时任务
         try:
@@ -1839,7 +2025,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(result)
+                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1868,7 +2054,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(result)
+                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
         except BaseException:
             pass
         try:
@@ -1922,6 +2108,10 @@ class PluginHost:
 
         self._process_stop_event: Any = multiprocessing.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
+        self._model_gateway_token = ""
+        self._model_gateway_starting = False
+        # Mutated only for launch; no credentials enter environment/config/logs.
+        self._model_gateway_options: dict[str, str] = {}
         if source_only:
             self._startup_options["source_only"] = True
 
@@ -1942,6 +2132,8 @@ class PluginHost:
                 plugin_id, e
             )
 
+        # POSIX 上这就是 fork：子进程整份继承宿主的 fd 表。宿主的 HTTP socket 由
+        # _close_inherited_host_sockets 在子进程里丢掉（见文件顶部）。
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(
@@ -1960,7 +2152,8 @@ class PluginHost:
                     self.transport,
                     "image_uplink_endpoint",
                     None,
-                )
+                ),
+                "model_gateway_options": self._model_gateway_options,
             },
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,
@@ -2003,10 +2196,37 @@ class PluginHost:
         if should_wait_for_startup:
             await self.comm_manager.prepare_startup_wait()
 
+        start_task: asyncio.Task | None = None
         try:
+            from config.network import resolve_user_plugin_base
+
+            self._model_gateway_starting = True
+            self._model_gateway_token = model_gateway_access.issue(
+                self.plugin_id, self._model_gateway_is_alive,
+            )
+            self._model_gateway_options.update({
+                "base_url": f"{resolve_user_plugin_base()}/api/models/v1",
+                "token": self._model_gateway_token,
+            })
             _refresh_child_storage_layout_env(self.logger)
-            await asyncio.to_thread(self.process.start)
-        except Exception:
+            start_task = asyncio.create_task(asyncio.to_thread(self.process.start))
+            await asyncio.shield(start_task)
+        except asyncio.CancelledError:
+            self._revoke_model_gateway_access()
+            # Canceling to_thread does not stop spawn or its argument pickling.
+            # Keep launch options and transport intact until the worker exits,
+            # then stop any child it created. Repeated caller cancellation must
+            # not cancel this cleanup or clear arguments underneath the worker.
+            cleanup_task = asyncio.create_task(self._finish_cancelled_start(start_task))
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    continue
+            cleanup_task.result()
+            raise
+        except BaseException:
+            self._revoke_model_gateway_access()
             self.logger.error(
                 "Plugin {} process failed to start, shutting down comm_manager",
                 self.plugin_id,
@@ -2018,10 +2238,16 @@ class PluginHost:
                 pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             raise
+        finally:
+            self._model_gateway_starting = False
+            # multiprocessing has copied these arguments into the child. Do not
+            # leave launch credentials for future forked sibling plugins.
+            self._model_gateway_options.clear()
         self.logger.info("Plugin {} process started (pid: {})", self.plugin_id, self.process.pid)
 
         # 验证进程状态
         if not self.process.is_alive():
+            self._revoke_model_gateway_access()
             exitcode = self.process.exitcode
             self.logger.error(
                 "Plugin {} process is not alive after startup (exitcode: {})",
@@ -2059,6 +2285,9 @@ class PluginHost:
                         startup_result["startup_error"],
                     )
                 return startup_result
+            except asyncio.CancelledError:
+                await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+                raise
             except TimeoutError as exc:
                 self.logger.error(
                     "Plugin {} startup timed out after {}s",
@@ -2084,7 +2313,18 @@ class PluginHost:
                     str(exc),
                 ) from exc
 
+    async def _finish_cancelled_start(self, start_task: asyncio.Task | None) -> None:
+        if start_task is not None:
+            try:
+                await start_task
+            except Exception:
+                # The original caller remains cancelled whether spawn finishes
+                # successfully or fails. Both paths still require teardown.
+                pass
+        await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+
     async def _abort_startup_after_failure(self, timeout: float) -> None:
+        self._revoke_model_gateway_access()
         try:
             if getattr(self, "_process_stop_event", None) is not None:
                 self._process_stop_event.set()
@@ -2099,11 +2339,11 @@ class PluginHost:
             await self.comm_manager.shutdown(timeout=timeout)
         except Exception:
             pass
+        await asyncio.to_thread(self._shutdown_process, timeout)
         try:
             self.transport.close()
         except Exception:
             pass
-        await asyncio.to_thread(self._shutdown_process, timeout)
     
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
@@ -2115,6 +2355,7 @@ class PluginHost:
         3. 关闭进程
         """
         self.logger.info(f"Shutting down plugin {self.plugin_id}")
+        self._revoke_model_gateway_access()
 
         # Set out-of-band stop event first so the child can exit promptly.
         try:
@@ -2147,6 +2388,7 @@ class PluginHost:
         
         注意：这个方法不会等待异步任务完成，建议使用 shutdown()
         """
+        self._revoke_model_gateway_access()
         try:
             if getattr(self, "_process_stop_event", None) is not None:
                 self._process_stop_event.set()
@@ -2275,7 +2517,23 @@ class PluginHost:
 
     def is_alive(self) -> bool:
         """检查进程是否存活"""
-        return self.process.is_alive() and self.process.exitcode is None
+        alive = self.process.is_alive() and self.process.exitcode is None
+        if not alive and not getattr(self, "_model_gateway_starting", False):
+            self._revoke_model_gateway_access()
+        return alive
+
+    def _model_gateway_is_alive(self) -> bool:
+        # A spawned child can make its startup request just before start()
+        # returns and multiprocessing publishes the parent-side process handle.
+        return self._model_gateway_starting or (
+            self.process.is_alive() and self.process.exitcode is None
+        )
+
+    def _revoke_model_gateway_access(self) -> None:
+        token = getattr(self, "_model_gateway_token", "")
+        self._model_gateway_token = ""
+        if token:
+            model_gateway_access.revoke(token)
     
     def health_check(self) -> HealthCheckResponse:
         """执行健康检查，返回详细状态"""
@@ -2322,6 +2580,7 @@ class PluginHost:
         result = await self.comm_manager.send_freeze_command(timeout=timeout)
         
         if result.get("success"):
+            self._revoke_model_gateway_access()
             await asyncio.to_thread(self._shutdown_process, timeout)
             await self.comm_manager.shutdown(timeout=timeout)
             state.remove_downlink_sender(self.plugin_id)
@@ -2342,6 +2601,7 @@ class PluginHost:
         Returns:
             True 如果成功关闭，False 如果超时或出错
         """
+        self._revoke_model_gateway_access()
         if not self.process.is_alive():
             self.logger.info(f"Plugin {self.plugin_id} process already stopped")
             return True

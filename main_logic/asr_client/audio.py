@@ -28,6 +28,11 @@ class AudioRingBuffer:
         self._audio = bytearray()
 
     @property
+    def byte_count(self) -> int:
+        """Inspect capacity without allocating a copy of buffered PCM."""
+        return len(self._audio)
+
+    @property
     def duration_ms(self) -> int:
         return len(self._audio) * 1_000 // (self._sample_rate_hz * 2)
 

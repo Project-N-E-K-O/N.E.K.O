@@ -756,8 +756,16 @@ async def voice_clone(
             }
 
         else:  # cosyvoice / cosyvoice_intl
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model(provider)
+            from utils.api_config_loader import (
+                get_cosyvoice_clone_model,
+                get_cosyvoice_user_preferred_model,
+            )
+            # 音色注册会绑定 target_model（复刻音色不能跨模型使用），优先采用
+            # 用户在 TTS 端点填写的 cosyvoice-v* 模型，未填/填了别家 ID 时回退默认。
+            clone_model = (
+                get_cosyvoice_user_preferred_model(provider)
+                or get_cosyvoice_clone_model(provider)
+            )
             language_hints = qwen_language_hints(ref_language)
             dashscope_base_url = (cosyvoice_runtime or {}).get('base_url', '')
             client = QwenVoiceCloneClient(
@@ -1135,8 +1143,15 @@ async def voice_clone_direct(request: Request):
                 dashscope_base_url=base_url,
             )
 
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model(provider)
+            from utils.api_config_loader import (
+                get_cosyvoice_clone_model,
+                get_cosyvoice_user_preferred_model,
+            )
+            # 同上：音色注册绑定 target_model，跟随用户在 TTS 端点填写的模型。
+            clone_model = (
+                get_cosyvoice_user_preferred_model(provider)
+                or get_cosyvoice_clone_model(provider)
+            )
             voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
