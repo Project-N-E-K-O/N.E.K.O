@@ -1,17 +1,18 @@
 <template>
   <Transition
     appear
-    @before-enter="beforeSectionEnter"
+    :css="false"
+    @leave-cancelled="cancel"
     @enter="enterSection"
-    @after-enter="afterSectionEnter"
-    @before-leave="beforeSectionLeave"
     @leave="leaveSection"
-    @after-leave="afterSectionLeave"
   >
     <section
       v-if="items.length > 0"
       class="grid-section"
-      :class="sectionClass"
+      :class="[
+        sectionClass,
+        { 'grid-section--large': items.length > motionPolicy.largeList },
+      ]"
       :data-yui-guide-id="sectionGuideId"
     >
       <div
@@ -36,7 +37,11 @@
       </div>
 
       <TransitionGroup
-        name="grid-item"
+        :css="false"
+        :move-class="motionPhase === 'filter' || items.length > motionPolicy.largeList ? 'grid-item-still' : 'grid-item-move'"
+        @enter="enterItem"
+        @leave="leaveItem"
+        @leave-cancelled="element => { cancel(element); clearLeavingItemStyles(element) }"
         tag="div"
         class="grid-section__grid"
         :class="gridLayoutClass"
@@ -49,7 +54,7 @@
           class="grid-section__item"
           :class="itemClass(item)"
           :data-yui-guide-id="itemGuideIdFor(item, index)"
-          :style="itemMotionStyle(index)"
+          :data-motion-index="index"
         >
           <Transition name="check-pop">
             <button
@@ -99,7 +104,8 @@
 <script setup lang="ts" generic="T extends { id: string }">
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useAnimatedGridTransition } from '@/composables/useAnimatedGridTransition'
+import { useGridMotionController } from '@/motion/grid'
+import { motionPolicy } from '@/motion/policy'
 import type { LayoutMode } from '@/composables/useGridWorkbench'
 
 const props = withDefaults(defineProps<{
@@ -112,11 +118,14 @@ const props = withDefaults(defineProps<{
   variant?: string
   /** 可选：用于 data-yui-guide-id 的前缀（如 "plugin-list"）。 */
   guidePrefix?: string
+  /** Lightweight updates used while the user is actively filtering. */
+  motionPhase?: 'initial' | 'filter'
 }>(), {
   title: undefined,
   icon: undefined,
   variant: 'default',
   guidePrefix: undefined,
+  motionPhase: 'initial',
 })
 
 defineEmits<{
@@ -126,17 +135,11 @@ defineEmits<{
 const { t } = useI18n()
 
 const {
-  itemMotionStyle,
-  pinLeavingItem,
-  clearLeavingItemStyles,
-  beforeSectionEnter,
-  enterSection,
-  afterSectionEnter,
-  beforeSectionLeave,
-  leaveSection,
-  afterSectionLeave,
-} = useAnimatedGridTransition()
-
+  pinLeavingItem, clearLeavingItemStyles, enterSection, leaveSection,
+  enterItem, leaveItem, cancel,
+} = useGridMotionController({
+  phase: () => props.motionPhase,
+})
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 
 const headerClass = computed(() => {
@@ -163,8 +166,10 @@ function itemGuideIdFor(item: T, index: number): string | undefined {
     : `${props.guidePrefix}-card-${item.id}`
 }
 
+const selectedIdSet = computed(() => new Set(props.selectedIds))
+
 function isItemSelected(id: string): boolean {
-  return props.selectedIds.includes(id)
+  return selectedIdSet.value.has(id)
 }
 
 function itemClass(item: T) {
@@ -232,7 +237,43 @@ function itemClass(item: T) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  will-change: transform, opacity;
+}
+
+/* Swallows hover while scrolling. A shield instead of pointer-events on the
+   grid: that inherited toggle restyles every card node at scroll start/stop. */
+[data-scrolling] .grid-section__grid::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
+/* Keep the full DOM for selection, tutorial anchors, and keyboard navigation,
+ * while letting Chromium skip layout/paint work for far-off cards in large
+ * registries. The placeholder height tracks a typical card so the scroll
+ * track barely moves before an item is first measured; `auto` keeps the real
+ * size afterwards.
+ *
+ * The paint containment this implies clips the hover shadow/lift and the
+ * select badge. The clip margin is scoped to the states that paint outside
+ * the card: on every item it costs ~15% scroll fps under CPU throttling.
+ * Dropping it waits out the card's 0.24s shadow fade. */
+.grid-section--large .grid-section__item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 0px auto 200px;
+  transition: overflow-clip-margin 0s 0.24s allow-discrete;
+}
+
+/* Select badge sits 6px outside, plus its own shadow. */
+.grid-section--large .grid-section__item--selection-mode {
+  overflow-clip-margin: 20px;
+  transition-delay: 0s;
+}
+
+/* Hover and selected shadows reach 48px below the card. */
+.grid-section--large .grid-section__item:is(:hover, :focus-within, .grid-section__item--selected) {
+  overflow-clip-margin: 48px;
+  transition-delay: 0s;
 }
 
 .grid-section__select {
@@ -303,7 +344,7 @@ function itemClass(item: T) {
   width: 14px;
   height: 14px;
   color: #fff;
-  animation: check-draw 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: check-draw var(--motion-duration-normal) var(--motion-ease-spring) forwards;
 }
 
 @keyframes check-draw {
@@ -319,14 +360,14 @@ function itemClass(item: T) {
 
 .check-pop-enter-active {
   transition:
-    opacity 0.22s ease,
-    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+    opacity var(--motion-duration-normal) var(--motion-ease-standard),
+    transform var(--motion-duration-emphasis) var(--motion-ease-spring);
 }
 
 .check-pop-leave-active {
   transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-fast) var(--motion-ease-exit);
 }
 
 .check-pop-enter-from {
@@ -394,53 +435,15 @@ function itemClass(item: T) {
   flex-direction: column;
 }
 
-.grid-item-enter-active,
-.grid-item-leave-active {
-  transition:
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    filter 0.24s ease;
-}
-
-.grid-item-enter-active {
-  transition-delay: var(--item-stagger-delay, 0ms);
-}
-
-.grid-item-enter-from {
-  opacity: 0;
-  transform: scale(0.95) translateY(12px);
-  filter: blur(6px);
-}
-
-.grid-item-leave-to {
-  opacity: 0;
-  transform: scale(0.94) translateY(-12px);
-  filter: blur(6px);
-}
-
-.grid-item-enter-to,
-.grid-item-leave-from {
-  opacity: 1;
-  transform: scale(1) translateY(0);
-  filter: blur(0);
-}
-
-.grid-item-leave-active {
-  position: absolute;
-  z-index: 0;
-  pointer-events: none;
-  margin: 0;
-}
-
 .grid-item-move {
-  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .count-fade-enter-active,
 .count-fade-leave-active {
   transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .count-fade-enter-from,
@@ -450,8 +453,6 @@ function itemClass(item: T) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .grid-item-enter-active,
-  .grid-item-leave-active,
   .grid-item-move,
   .count-fade-enter-active,
   .count-fade-leave-active {

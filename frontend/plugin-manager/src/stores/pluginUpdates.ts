@@ -3,7 +3,7 @@
  *
  * Data path (no new backend surface is involved):
  *
- *   pluginStore.plugins[]  →  install_source.source_detail
+ *   pluginStore.pluginSummaries[]  →  install_source.source_detail
  *       { plugin_market_id, version, channel }
  *   marketVersions.ensureFresh()  →  GET /market/catalog/api/v1/plugins/latest-versions
  *   hasNewerVersion(current, latest)
@@ -102,7 +102,9 @@ function markPopupShown(): void {
  * transaction, and a bare `builtin` has no Market identity at all, so neither
  * belongs in a list whose only action is "upgrade from Market".
  */
-export function collectMarketUpdateTargets(plugins: readonly PluginMeta[]): MarketUpdateTarget[] {
+export function collectMarketUpdateTargets(
+  plugins: readonly Pick<PluginMeta, 'id' | 'name' | 'version' | 'install_source'>[],
+): MarketUpdateTarget[] {
   const byPluginId = new Map<string, MarketUpdateTarget>()
   for (const plugin of plugins) {
     const source = plugin.install_source
@@ -200,15 +202,20 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     const marketVersions = useMarketVersionsStore()
 
     try {
-      if (pluginStore.plugins.length === 0) await pluginStore.fetchPlugins()
-      if (pluginStore.plugins.length === 0) {
-        if (pluginStore.error) {
+      // Summaries carry install_source, so the boot check never pulls the
+      // full plugin list the list page deliberately avoids.
+      if (pluginStore.pluginSummaries.length === 0) {
+        try {
+          await pluginStore.fetchPluginSummaries()
+        } catch (err) {
           // Fetch failed: keep the previous snapshot rather than pretending
           // nothing is installed.
           checkFailed.value = true
-          updateLog.warn('check skipped: plugin list unavailable', pluginStore.error)
+          updateLog.warn('check skipped: plugin list unavailable', err)
           return
         }
+      }
+      if (pluginStore.pluginSummaries.length === 0) {
         // A successful fetch with no plugins at all: that is a real no-target
         // result, so the stale candidate list has to go — otherwise rows for
         // uninstalled plugins stay clickable and the bridge rejects them.
@@ -219,7 +226,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         return
       }
 
-      const targets = collectMarketUpdateTargets(pluginStore.pluginsWithStatus)
+      const targets = collectMarketUpdateTargets(pluginStore.pluginSummaries)
       updateLog.info('check start', {
         force: options.force === true,
         targets: targets.map((t) => `${t.pluginId}@${t.currentVersion}/${t.channel}`),
@@ -341,7 +348,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
    *  the upgrade fetches and submits the release from `candidate.channel`, so a
    *  plugin that switched channel would be pulled back onto the old one. */
   function installedVersionNow(candidate: MarketUpdateCandidate): string | null {
-    const target = collectMarketUpdateTargets(usePluginStore().pluginsWithStatus)
+    const target = collectMarketUpdateTargets(usePluginStore().pluginSummaries)
       .find((entry) => entry.pluginId === candidate.pluginId)
     if (!target || target.marketId !== candidate.marketId || target.channel !== candidate.channel) {
       return null
@@ -372,7 +379,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       from: chained ? previous.from : candidate.currentVersion,
       to: candidate.latestVersion,
     })
-    await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {
+    await usePluginStore().syncRegistryAndFetchSummaries().catch((err: unknown) => {
       // The backend upgrade itself succeeded, so this stays a success; the
       // floor recorded above keeps later checks from re-offering the release.
       updateLog.warn('registry sync failed after upgrade', err)

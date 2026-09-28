@@ -182,6 +182,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-23-plugin-html-content-main-merge",
         "2026-09-23-voice-wake-word-plugin-html-main",
         "2026-09-27-glm-voice-clone",
+        "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-locale-key-sync",
     }
 )

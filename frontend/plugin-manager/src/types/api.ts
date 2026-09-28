@@ -144,6 +144,10 @@ export interface PluginMeta {
   status?: string
   list_actions?: PluginListAction[]
   install_source?: PluginInstallSource
+  /** Present on summary cards; full detail responses may omit these derived values. */
+  entry_count?: number
+  dependency_count?: number
+  has_input_schema?: boolean
 }
 
 /**

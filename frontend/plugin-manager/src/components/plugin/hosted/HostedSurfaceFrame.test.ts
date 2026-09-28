@@ -14,9 +14,10 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock('@/api/plugins', () => apiMocks)
 
+const localeRef = ref('zh-CN')
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    locale: { value: 'zh-CN' },
+    locale: localeRef,
     t: (key: string) => key,
   }),
 }))
@@ -120,6 +121,10 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
   app.mount(container)
   await nextTick()
   await flushPromises()
+  if (initialSurface.mode === 'hosted-tsx' || initialSurface.mode === 'markdown') {
+    await vi.dynamicImportSettled()
+    await nextTick()
+  }
 
   const iframe = container.querySelector('iframe') as HTMLIFrameElement | null
   if (!iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
@@ -203,11 +208,61 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     apiMocks.getPluginHostedSurfaceContext.mockReset()
     apiMocks.getPluginHostedSurfaceSource.mockReset()
     apiMocks.parseHostedDocument.mockReset()
+    localeRef.value = 'zh-CN'
   })
 
   afterEach(() => {
     while (mountedFrames.length > 0) mountedFrames.pop()?.unmount()
     vi.useRealTimers()
+  })
+
+  it('reloads a static iframe on a locale change but not on a title change', async () => {
+    const frame = await mountFrame()
+    const original = frame.iframe()
+
+    await frame.setSurface({ ...makeSurface(), title: '伴学' })
+    expect(frame.iframe()).toBe(original)
+    expect(frame.iframe()?.getAttribute('title')).toBe('伴学')
+
+    localeRef.value = 'en-US'
+    await nextTick()
+    expect(frame.iframe()).not.toBe(original)
+  })
+
+  it('follows the app locale for markdown without asking to apply it', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({ source: 'Guide', dependencies: [] })
+    const frame = await mountFrame({ ...makeSurface('onboarding'), kind: 'docs', mode: 'markdown', url: undefined } as PluginUiSurface)
+    await flushPromises()
+
+    localeRef.value = 'en-US'
+    await nextTick()
+    expect(document.querySelector('[data-testid="surface-locale-pending"]')).toBeNull()
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenLastCalledWith(
+      'study_companion',
+      expect.objectContaining({ locale: 'en-US' }),
+      expect.anything(),
+    )
+    expect(frame.iframe()?.getAttribute('srcdoc')).toContain('lang="en-US"')
+  })
+
+  it('keeps a hosted TSX document on a locale change until the user applies it', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({
+      source: 'export default function Panel() { return null }',
+      dependencies: [],
+    })
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ entries: [] })
+    await mountFrame({ ...makeSurface('note-exporter'), mode: 'hosted-tsx', url: undefined })
+    await flushPromises()
+    const loads = apiMocks.getPluginHostedSurfaceSource.mock.calls.length
+
+    localeRef.value = 'en-US'
+    await nextTick()
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(loads)
+    expect(document.querySelector('[data-testid="surface-locale-pending"]')).not.toBeNull()
   })
 
   it('preserves native modal dialogs for static plugin surfaces', async () => {
@@ -729,6 +784,10 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
         id: 'onboarding',
         locale: 'zh-CN',
       },
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        suppressErrorMessage: true,
+      }),
     )
     frame.unmount()
   })

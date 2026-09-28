@@ -71,7 +71,7 @@ describe('PluginActions UI action', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = usePluginStore()
-    store.plugins = [{
+    store.pluginSummaries = [{
       id: 'demo',
       name: 'Demo',
       description: 'Demo',
@@ -110,7 +110,7 @@ describe('PluginActions UI action', () => {
       const pinia = createPinia()
       setActivePinia(pinia)
       const store = usePluginStore()
-      store.plugins = [{
+      store.pluginSummaries = [{
         id: 'demo',
         name: 'Demo',
         description: 'Demo',
@@ -147,7 +147,7 @@ describe('PluginActions UI action', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = usePluginStore()
-    store.plugins = [{
+    store.pluginSummaries = [{
       id: 'demo',
       name: 'Demo',
       description: 'Demo',
@@ -196,7 +196,7 @@ describe('PluginActions runtime mutations', () => {
       const pinia = createPinia()
       setActivePinia(pinia)
       const store = usePluginStore()
-      store.plugins = [{
+      store.pluginSummaries = [{
         id: 'demo',
         name: 'Demo',
         description: 'Demo',
@@ -239,7 +239,7 @@ describe('PluginActions runtime mutations', () => {
       const pinia = createPinia()
       setActivePinia(pinia)
       const store = usePluginStore()
-      store.plugins = [{
+      store.pluginSummaries = [{
         id: 'demo',
         name: 'Demo',
         description: 'Demo',

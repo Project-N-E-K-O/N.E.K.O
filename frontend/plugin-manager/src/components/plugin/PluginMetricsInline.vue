@@ -184,10 +184,6 @@ watch([() => props.pluginId, isRunning], ([newId, running]) => {
 </script>
 
 <style scoped>
-.metrics-bar {
-  will-change: height, opacity, margin-top;
-}
-
 .metrics-bar__cells {
   display: flex;
   gap: 6px;
