@@ -761,9 +761,10 @@ def test_overlong_window_title_is_not_saved_as_a_truncated_label(page: Page) -> 
         }"""
     )
 
-    # Same rule as the remembered title: rejected outright, never truncated.
+    # Same rule as the remembered title: never persisted (nor truncated),
+    # but this session still shows the full title.
     assert result == {
-        "label": "app.screenSource.windows",
+        "label": "x" * 600,
         "record": {"id": "window:2"},
         "rememberedTitle": None,
     }
