@@ -5,7 +5,7 @@ import inspect
 import json
 import os
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -1432,15 +1432,8 @@ async def test_character_management_and_recent_save_regression():
         async def _noop_any(*args, **kwargs):
             return None
 
-        # set_current_catgirl POSTs set_agent_enabled=False to the real tool
-        # server on 127.0.0.1:48915; left unpatched, every run of this test
-        # turns off the cat paw of the N.E.K.O instance running on this machine.
-        # Patched on agent_router so the crud reload below imports the mock.
         force_disable_agent = AsyncMock(return_value=True)
-        with patch("utils.config_manager._config_manager", cm), patch(
-            "main_routers.agent_router.force_disable_agent_for_character_switch",
-            force_disable_agent,
-        ):
+        with patch("utils.config_manager._config_manager", cm), ExitStack() as stack:
             init_shared_state(
                 role_state={},
                 steamworks=None,
@@ -1454,6 +1447,18 @@ async def test_character_management_and_recent_save_regression():
             )
 
             characters_router_module = reload_module("main_routers.characters_router.crud")
+            # set_current_catgirl POSTs set_agent_enabled=False to the real tool
+            # server on 127.0.0.1:48915; left unpatched, every run of this test
+            # turns off the cat paw of the N.E.K.O instance running on this
+            # machine. Patched on crud after the reload so the real function is
+            # restored for later tests sharing the loaded module.
+            stack.enter_context(
+                patch.object(
+                    characters_router_module,
+                    "force_disable_agent_for_character_switch",
+                    force_disable_agent,
+                )
+            )
             memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
