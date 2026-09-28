@@ -12,7 +12,7 @@ import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ mergeLocaleMessage: vi.fn(), t: (key: string) => key }),
+  useI18n: () => ({ mergeLocaleMessage: vi.fn(), locale: ref('en-US'), t: (key: string) => key }),
 }))
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
@@ -705,6 +705,61 @@ describe('async operation lifecycle isolation', () => {
     // 不应该显示错误（因为插件 ID 已经改变）
     expect(host.querySelector('.config-error')).toBeNull()
     vi.useRealTimers()
+    unmount()
+  })
+})
+
+// Ported from #3191, which added schema support against the earlier editor.
+describe('schema integration', () => {
+  const baseConfig = {
+    plugin_runtime: { enabled: true },
+    search: { max_results: 8 },
+    cache: { ttl: 120 },
+    plugin: { id: 'test' },
+  }
+
+  it('labels fields from the schema without writing anything on load', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: {
+        type: 'object',
+        properties: {
+          search: {
+            type: 'object',
+            properties: {
+              max_results: {
+                type: 'integer',
+                title: 'Result count',
+                description: 'How many results to return',
+              },
+            },
+          },
+        },
+      },
+    } as never)
+    const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig')
+    const { host, unmount } = await mountEditor()
+
+    const row = host.querySelector<HTMLElement>('[data-config-path="search.max_results"]')!
+    expect(row.querySelector('label')?.textContent?.trim()).toBe('Result count')
+    expect(row.querySelector('.field-key')?.textContent).toBe('max_results')
+    expect(row.textContent).toContain('How many results to return')
+    expect(upsert).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('warns about an invalid schema and keeps generic editing available', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: null,
+      warnings: [{ code: 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID' }],
+    } as never)
+    const { host, unmount } = await mountEditor()
+
+    expect(host.textContent).toContain('plugins.configSchemaInvalid')
+    expect(host.querySelector('input[aria-label="search.max_results"]')).not.toBeNull()
     unmount()
   })
 })

@@ -3395,7 +3395,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 681065,
+  "source_bytes": 701873,
   "source_files": [
     ".github/workflows/release.yml",
     ".github/workflows/verify.yml",
@@ -3426,6 +3426,7 @@
     "_recipe.py",
     "_routing.py",
     "_write_confirmation.py",
+    "config.schema.json",
     "docs/quickstart.tsx",
     "locales/en.json",
     "locales/es.json",
@@ -3472,5 +3473,5 @@
     "tests/test_smoke.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "978d120201d72cfc139bbfc27335bb8a2dd2ad26edd7d42768830b2c5aacdbff"
+  "source_sha256": "52a281b7cad4aff8cbfd33fbe2379df195f6a2add4644e917633667dd191b2b2"
 }

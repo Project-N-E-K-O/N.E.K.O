@@ -21,15 +21,29 @@
         >
           <div class="k">
             <template v-if="compact"
-              ><label :for="inputIdFor(k)" :title="childPath(k) + ' · ' + valueType(k)">{{
-                k
-              }}</label
-              ><span
-                v-if="changedKey(k)"
-                class="unsaved-dot"
-                :title="t('plugins.configUi.unsaved')"
-            /></template>
-            <el-tag v-else size="small" type="info">{{ k }}</el-tag>
+              ><div class="field-label">
+                <span class="field-name"
+                  ><label :for="inputIdFor(k)" :title="childPath(k) + ' · ' + valueType(k)">{{
+                    fieldTitle(k)
+                  }}</label
+                  ><code v-if="fieldTitle(k) !== k" class="field-key">{{ k }}</code
+                  ><span
+                    v-if="changedKey(k)"
+                    class="unsaved-dot"
+                    :title="t('plugins.configUi.unsaved')"
+                /></span>
+                <div v-if="fieldDescription(k)" class="field-description">
+                  {{ fieldDescription(k) }}
+                </div>
+              </div></template
+            >
+            <div v-else class="field-label">
+              <span v-if="fieldTitle(k) !== k" class="field-title">{{ fieldTitle(k) }}</span>
+              <el-tag size="small" type="info">{{ k }}</el-tag>
+              <div v-if="fieldDescription(k)" class="field-description">
+                {{ fieldDescription(k) }}
+              </div>
+            </div>
           </div>
           <div class="v">
             <div :class="{ 'field-value-line': compact && !containerKey(k) }">
@@ -44,6 +58,8 @@
                   :model-value="overlayChild(k)"
                   @update:model-value="(val) => updateObjectKey(k, val)"
                   :baseline-value="baselineChild(k)"
+                  :schema="fieldSchema(k)"
+                  :disabled="isReadOnly"
                   :path="childPath(k)"
                   :replace-semantics="replacesBaseline"
                   :compact="compact"
@@ -60,9 +76,9 @@
                 inline
                 :path="childPath(k)"
                 :type="valueType(k)"
-                :can-undo="!replacesBaseline && changedKey(k)"
-                :can-restore="isOverriddenKey(k)"
-                :can-delete="isDeletableKey(k)"
+                :can-undo="!fieldReadOnly(k) && !replacesBaseline && changedKey(k)"
+                :can-restore="!fieldReadOnly(k) && isOverriddenKey(k)"
+                :can-delete="!fieldReadOnly(k) && isDeletableKey(k)"
                 :baseline="baselineChild(k)"
                 @command="fieldCommand(k, $event)"
               />
@@ -79,14 +95,15 @@
               v-if="compact && !isProtectedKey(k)"
               :path="childPath(k)"
               :type="valueType(k)"
-              :can-undo="!replacesBaseline && changedKey(k)"
-              :can-restore="isOverriddenKey(k)"
-              :can-delete="isDeletableKey(k)"
+              :can-undo="!fieldReadOnly(k) && !replacesBaseline && changedKey(k)"
+              :can-restore="!fieldReadOnly(k) && isOverriddenKey(k)"
+              :can-delete="!fieldReadOnly(k) && isDeletableKey(k)"
               :baseline="baselineChild(k)"
               @command="fieldCommand(k, $event)"
             />
             <el-button
               v-else-if="!isProtectedKey(k) && isOverriddenKey(k)"
+              :disabled="fieldReadOnly(k)"
               size="small"
               type="primary"
               text
@@ -96,6 +113,7 @@
             </el-button>
             <el-button
               v-else-if="!isProtectedKey(k) && isCustomKey(k)"
+              :disabled="fieldReadOnly(k)"
               size="small"
               type="danger"
               text
@@ -107,7 +125,7 @@
         </div>
 
         <div class="add">
-          <el-button size="small" :text="compact" @click="openAddKey">
+          <el-button size="small" :text="compact" :disabled="isReadOnly" @click="openAddKey">
             {{ t('plugins.addField') }}
           </el-button>
         </div>
@@ -156,6 +174,8 @@
               :model-value="item"
               @update:model-value="(val) => updateArrayIndex(idx, val)"
               :baseline-value="baselineArrayItem(idx)"
+              :schema="schema?.items"
+              :disabled="isReadOnly"
               :path="childPath(String(idx))"
               :replace-semantics="true"
               :compact="compact"
@@ -168,15 +188,43 @@
             />
           </div>
           <div class="ops">
-            <el-button size="small" type="danger" text @click="removeArrayIndex(idx)">
+            <el-button
+              size="small"
+              type="danger"
+              text
+              :disabled="isReadOnly"
+              @click="removeArrayIndex(idx)"
+            >
               {{ t('common.delete') }}
             </el-button>
           </div>
         </div>
 
         <div class="add">
-          <el-button size="small" @click="addArrayItem">{{ t('plugins.addItem') }}</el-button>
+          <el-button size="small" :disabled="isReadOnly" @click="addArrayItem">{{
+            t('plugins.addItem')
+          }}</el-button>
         </div>
+      </div>
+    </template>
+
+    <template v-else-if="enumValues.length">
+      <div class="input-wrap">
+        <!-- A stored value outside the enum still shows as-is and is never rewritten on load. -->
+        <el-select
+          :id="inputId"
+          :aria-label="path"
+          :model-value="displayValue"
+          :disabled="isReadOnly"
+          @update:model-value="emitUpdate"
+        >
+          <el-option
+            v-for="(option, index) in enumValues"
+            :key="index"
+            :value="option"
+            :label="String(option)"
+          />
+        </el-select>
       </div>
     </template>
 
@@ -211,6 +259,9 @@
           :aria-label="path"
           v-model="numVal"
           :step="1"
+          :precision="schema?.type === 'integer' ? 0 : undefined"
+          :min="schema?.minimum"
+          :max="schema?.maximum"
           :value-on-clear="displayValue"
           :disabled="isReadOnly"
           @update:model-value="emitNumberUpdate"
@@ -224,6 +275,7 @@
           :id="inputId"
           :aria-label="path"
           v-model="strVal"
+          :maxlength="schema?.maxLength"
           :type="strVal.includes('\n') ? 'textarea' : 'text'"
           :autosize="{ minRows: 2, maxRows: 8 }"
           :disabled="isReadOnly"
@@ -250,9 +302,19 @@ import {
   type ConfigFilter,
 } from '@/utils/configEditor'
 import { parseNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
+import {
+  newSchemaValue,
+  schemaEnum,
+  schemaText,
+  type ConfigEditorSchema,
+} from './configEditorSchema'
 
 interface Props {
   modelValue: any
+  // Optional form annotations from the plugin's config.schema.json. They label and type
+  // fields but never supply values: defaults are used only for explicit additions.
+  schema?: ConfigEditorSchema
+  disabled?: boolean
   path?: string
   baselineValue?: any
   // 数组在后端是整体替换，数组项内部没有「未覆盖就继承基线」这回事：
@@ -272,7 +334,23 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: any): void
   (e: 'undo', path: string[]): void
 }>()
-const { t } = useConfigEditorI18n()
+const { t, locale } = useConfigEditorI18n()
+const enumValues = computed(() => schemaEnum(props.schema))
+function fieldSchema(key: string): ConfigEditorSchema | undefined {
+  const properties = props.schema?.properties
+  return properties && Object.prototype.hasOwnProperty.call(properties, key)
+    ? properties[key]
+    : undefined
+}
+function fieldTitle(key: string) {
+  return schemaText(fieldSchema(key), 'title', locale.value, key)
+}
+function fieldDescription(key: string) {
+  return schemaText(fieldSchema(key), 'description', locale.value)
+}
+function fieldReadOnly(key: string) {
+  return isReadOnly.value || fieldSchema(key)?.readOnly === true
+}
 function inputIdFor(k: string) {
   return 'config-field-' + encodeURIComponent(JSON.stringify([...(props.segments || []), k]))
 }
@@ -369,6 +447,25 @@ function overlayChild(k: string) {
 
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
   const v = displayValue.value
+  // An absent field takes its declared type; existing containers are never hidden
+  // behind a scalar control after a schema change.
+  if (v == null || typeof v !== 'object') {
+    switch (props.schema?.type) {
+      case 'integer':
+      case 'number':
+        return 'number'
+      case 'boolean':
+        return 'boolean'
+      case 'string':
+        return 'string'
+      case 'array':
+        if (v === undefined) return 'array'
+        break
+      case 'object':
+        if (v === undefined) return 'object'
+        break
+    }
+  }
   if (Array.isArray(v)) return 'array'
   if (v !== null && typeof v === 'object') return 'object'
   if (typeof v === 'boolean') return 'boolean'
@@ -396,8 +493,15 @@ const objectKeys = computed(() => {
       : props.baselineValue
   // In the compact page, keep the base configuration's order stable while
   // editing; append profile-only fields instead of promoting every edited key.
+  // Declared fields are listed even when absent; spellings that could not be written as a
+  // plain key are ignored, and undeclared existing fields always stay.
+  const declared = Object.keys(props.schema?.properties ?? {}).filter(
+    (key) => !key.includes('.') && !FORBIDDEN_KEYS.has(key)
+  )
   const keys = new Set<string>(
-    props.compact ? [...Object.keys(b), ...Object.keys(a)] : [...Object.keys(a), ...Object.keys(b)]
+    props.compact
+      ? [...Object.keys(b), ...Object.keys(a), ...declared]
+      : [...Object.keys(a), ...Object.keys(b), ...declared]
   )
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
@@ -426,8 +530,8 @@ const numberText = ref('')
 const boolVal = ref(false)
 
 watch(
-  displayValue,
-  (v) => {
+  [displayValue, () => props.schema?.type],
+  ([v]) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') {
       numVal.value = typeof v === 'number' ? v : undefined
@@ -442,21 +546,44 @@ watch(
   { immediate: true }
 )
 
+// Schema bounds for the compact text field. While typing, only values that already
+// satisfy them are committed (clamping mid-edit would rewrite "1" before "15" is done);
+// blur rounds and clamps what is left.
+function numberFitsSchema(value: number) {
+  const s = props.schema
+  if (s?.type === 'integer' && !Number.isInteger(value)) return false
+  if (typeof s?.minimum === 'number' && value < s.minimum) return false
+  if (typeof s?.maximum === 'number' && value > s.maximum) return false
+  return true
+}
+function fitNumberToSchema(value: number) {
+  const s = props.schema
+  let next = s?.type === 'integer' ? Math.round(value) : value
+  if (typeof s?.minimum === 'number') next = Math.max(next, s.minimum)
+  if (typeof s?.maximum === 'number') next = Math.min(next, s.maximum)
+  return next
+}
+
 function updateNumberText(value: string) {
   // The raw edit is authoritative:
   // it may not parse yet ("-", "1.", "1e"), but keeping it lets the user finish
   // typing. Only finite values reach the model.
   numberText.value = value
   const parsed = parseNumberText(value)
-  if (parsed !== undefined) emitNumberUpdate(parsed)
+  if (parsed !== undefined && numberFitsSchema(parsed)) emitNumberUpdate(parsed)
 }
 function settleNumberText(event: FocusEvent) {
   const raw = (event.target as HTMLInputElement | null)?.value ?? ''
   // An incomplete number cannot be represented in TOML. Restore the last finite
   // value instead of turning an empty edit into null or zero.
-  numberText.value = settleNumberReading(raw, String(displayValue.value))
-  const parsed = parseNumberText(numberText.value)
-  if (parsed !== undefined) emitNumberUpdate(parsed)
+  const settled = parseNumberText(settleNumberReading(raw, String(displayValue.value)))
+  if (settled === undefined) {
+    numberText.value = settleNumberReading(raw, String(displayValue.value))
+    return
+  }
+  const fitted = fitNumberToSchema(settled)
+  numberText.value = String(fitted)
+  emitNumberUpdate(fitted)
 }
 
 function emitNumberUpdate(value: number | null | undefined) {
@@ -467,7 +594,7 @@ function emitNumberUpdate(value: number | null | undefined) {
 }
 
 function emitUpdate(v: any) {
-  emit('update:modelValue', v)
+  if (!isReadOnly.value) emit('update:modelValue', v)
 }
 
 function baselineChild(k: string) {
@@ -586,7 +713,12 @@ function isProtectedKey(k: string) {
   return isProtectedPath([...(props.segments || []), k])
 }
 
-const isReadOnly = computed(() => isProtectedPath(props.segments || []))
+const isReadOnly = computed(
+  () =>
+    props.disabled === true ||
+    props.schema?.readOnly === true ||
+    isProtectedPath(props.segments || [])
+)
 
 const indentStyle = computed(() => {
   if (props.compact) return {}
@@ -677,7 +809,7 @@ function rowClassForArrayIndex(idx: number) {
 
 function addArrayItem() {
   const next = currentArray()
-  next.push('')
+  next.push(newSchemaValue(props.schema?.items))
   emitUpdate(next)
 }
 
@@ -717,7 +849,13 @@ function confirmAddKey() {
     return
   }
 
-  next[key] = initialValueByType(newType.value)
+  if (isReadOnly.value || fieldSchema(key)?.readOnly) {
+    ElMessage.warning(t('plugins.readOnlyField'))
+    return
+  }
+
+  const declared = fieldSchema(key)
+  next[key] = declared ? newSchemaValue(declared) : initialValueByType(newType.value)
   // An explicitly empty nested table replaces its base table. Its first field would
   // turn it back into a merge and bring every base field back, so keep the replacement
   // explicit.
@@ -764,6 +902,35 @@ function confirmAddKey() {
   flex: 0 0 160px;
   max-width: 220px;
   min-width: 120px;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.field-title {
+  font-weight: 600;
+}
+.field-description {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: pre-wrap;
+}
+.field-name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.field-key {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
 }
 
 .v {

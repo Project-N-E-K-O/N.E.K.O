@@ -4160,6 +4160,43 @@ async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
     assert sess.get("turn_detection") == {"type": "server_vad"}, (
         "GLM 必须同时传 turn_detection"
     )
+    assert sess.get("beta_fields") == {
+        "chat_mode": "video_passive",
+        "auto_search": True,
+    }, (
+        "GLM 局部 session.update 必须带回 beta_fields，否则服务端把 "
+        "video_passive 打回 audio，下游重连超限后关掉连接"
+    )
+
+
+def test_glm_realtime_gateway_model_keeps_allowlisted_names():
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    public = "wss://open.bigmodel.cn/api/paas/v4/realtime"
+    assert glm_realtime_gateway_model("glm-realtime-air", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("glm-realtime-flash", public) == "glm-realtime-flash"
+    assert glm_realtime_gateway_model("glm-realtime", public) == "glm-realtime"
+    assert glm_realtime_gateway_model("glm-realtime-plus", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("  glm-realtime-plus  ", public) == "glm-realtime-air"
+
+
+def test_glm_realtime_gateway_model_leaves_custom_endpoints_alone():
+    """A proxy or self-hosted endpoint may route by ?model=; keep the configured name."""
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    for url in ("wss://proxy.example.com/v4/realtime", "ws://127.0.0.1:8080/realtime", ""):
+        assert glm_realtime_gateway_model("glm-realtime-plus", url) == "glm-realtime-plus"
+
+
+@pytest.mark.asyncio
+async def test_realtime_glm_partial_update_pins_requested_model():
+    """Omitting model resets the GLM session to glm-realtime; Plus must ride every update."""
+    client, sent = _make_rt_client("glm")
+    client.model = "glm-realtime-plus"
+    await client.update_session({"tools": []})
+    sess = sent[0]["session"]
+    assert sess["model"] == "glm-realtime-plus"
+    assert "beta_fields" in sess
 
 
 @pytest.mark.asyncio

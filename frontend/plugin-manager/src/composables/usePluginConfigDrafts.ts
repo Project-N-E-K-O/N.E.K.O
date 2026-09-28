@@ -11,6 +11,7 @@ import {
   type ConfigObject,
 } from '@/utils/configEditor'
 import { hasPendingReload, setPendingReload, subscribePendingReload } from '@/utils/pendingReload'
+import type { ConfigEditorSchema } from '@/types/configSchema'
 
 interface ProfileDraft {
   original: ConfigObject
@@ -22,6 +23,10 @@ interface ProfileDraft {
 
 export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const base = ref<ConfigObject>({})
+  // Form annotations from the plugin's config.schema.json; an invalid schema is reported
+  // and the generic editor is used instead.
+  const schema = ref<ConfigEditorSchema>()
+  const schemaInvalid = ref(false)
   const effective = ref<ConfigObject>({})
   const profiles = ref<api.PluginProfilesState | null>(null)
   const configPath = ref<string>()
@@ -141,6 +146,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
         requests.clear()
       }
       base.value = baseResult.config || {}
+      schema.value = baseResult.config_schema ?? undefined
+      schemaInvalid.value =
+        baseResult.warnings?.some(
+          (warning) => warning.code === 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID'
+        ) ?? false
       effective.value = effectiveResult.config || {}
       profiles.value = profileResult
       ready.value = true
@@ -340,6 +350,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       selected.value = null
       profiles.value = null
       base.value = {}
+      schema.value = undefined
+      schemaInvalid.value = false
       effective.value = {}
       ready.value = false
       configPath.value = undefined
@@ -365,6 +377,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   return {
     base,
+    schema,
+    schemaInvalid,
     effective,
     profiles,
     configPath,

@@ -1,3 +1,5 @@
+import type { ConfigEditorSchema } from './configSchema'
+
 /**
  * API 相关类型定义
  */
@@ -298,6 +300,8 @@ export interface LogFile {
 
 // 插件配置
 export interface PluginConfig {
+  config_schema?: ConfigEditorSchema | null
+  warnings?: Array<{ code: string }>
   plugin_id: string
   config: Record<string, any>
   last_modified: string

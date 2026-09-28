@@ -174,6 +174,14 @@
           :closable="false"
           class="config-error"
         />
+        <el-alert
+          v-if="schemaInvalid && !loading"
+          :title="t('plugins.configSchemaInvalid')"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="config-error"
+        />
         <el-skeleton v-if="loading || current?.loading" :rows="6" animated />
         <template v-else-if="current?.loaded">
           <div v-if="search || filter !== 'all'" class="search-scope">
@@ -194,6 +202,7 @@
             :key="pluginId + ':' + selected"
             :model-value="current.draft"
             :baseline-value="base"
+            :schema="schema"
             :search="search"
             :filter="filter"
             :changes="changes"
@@ -376,6 +385,8 @@ const pluginStore = usePluginStore()
 const drafts = usePluginConfigDrafts(toRef(props, 'pluginId'))
 const {
   base,
+  schema,
+  schemaInvalid,
   effective,
   profiles,
   selected,
