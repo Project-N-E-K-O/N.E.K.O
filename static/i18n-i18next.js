@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 在 GLM 声音复刻、屏幕共享悬停提示、免费语音配额/拒绝访问提示等 key 之上，新增屏幕来源「点击选择」按钮，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-28-screen-source-click-to-choose';
+    // 在屏幕来源「点击选择」按钮之上，新增列出来源后的「重新选择」按钮，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-screen-source-choose-again';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

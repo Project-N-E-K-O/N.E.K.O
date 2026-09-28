@@ -2670,7 +2670,8 @@
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
             "captureFailed": "Screen capture stopped. Check system permissions or select the source again",
-            "clickToChoose": "Click to choose a screen source"
+            "clickToChoose": "Click to choose a screen source",
+            "chooseAgain": "Choose a different screen source"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",

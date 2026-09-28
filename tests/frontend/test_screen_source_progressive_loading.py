@@ -884,7 +884,8 @@ def test_deferred_enumeration_waits_for_the_load_button(page: Page) -> None:
         "callsAfterClick": 1,
         "deferredRenders": [True],
         "options": 2,
-        "loadButtons": 0,
+        # Prompting providers keep a "choose again" button after listing.
+        "loadButtons": 1,
     }
 
 
@@ -1071,7 +1072,103 @@ def test_deferred_load_button_returns_after_failed_enumeration(page: Page) -> No
         "renders": [False, True],
         "calls": 2,
         "options": 2,
-        "loadButtons": 0,
+        "loadButtons": 1,
+    }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(("prompting", "choose_again"), [(True, True), (False, False)])
+def test_listed_sources_keep_a_choose_again_button_for_prompting_providers(
+    page: Page, prompting: bool, choose_again: bool,
+) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=prompting)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const renders = [];
+            await window.renderFloatingScreenSourceList(popup, {
+                onDeferredRender: (value) => renders.push(value),
+            });
+            const buttons = () => Array.from(
+                popup.querySelectorAll('[data-neko-screen-source-deferred-load]')
+            );
+            const before = {
+                texts: buttons().map((button) => button.textContent),
+                calls: window.__captureCalls.length,
+            };
+            if (!buttons().length) return { before };
+            buttons()[0].click();
+            for (let i = 0; i < 20 && !renders.length; i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            return {
+                before,
+                renders,
+                callsAfterClick: window.__captureCalls.length,
+                options: popup.querySelectorAll('.screen-source-option').length,
+                buttonsAfterClick: buttons().length,
+            };
+        }"""
+    )
+
+    if choose_again:
+        assert result == {
+            "before": {"texts": ["app.screenSource.chooseAgain"], "calls": 1},
+            "renders": [True],
+            "callsAfterClick": 2,
+            "options": 2,
+            "buttonsAfterClick": 1,
+        }
+    else:
+        # Windows/macOS list everything and fetch thumbnails; no extra button.
+        assert result["before"]["texts"] == []
+
+
+@pytest.mark.frontend
+def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            const previousT = window.t;
+            window.t = (key, options = {}) => (
+                key === 'app.screenSource.selected'
+                    ? `Selected ${options.source}`
+                    : previousT(key, options)
+            );
+            const popup = document.getElementById('live2d-popup-screen');
+            const snapshot = () => Array.from(popup.children).map((node) => ({
+                cls: node.className,
+                text: node.textContent,
+                title: node.title || '',
+            }));
+            await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
+            const nothingSelected = snapshot();
+            await window.renderFloatingScreenSourceList(popup);
+            document.querySelector('.screen-source-option[data-source-id="screen:1"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
+            return { nothingSelected, selected: snapshot() };
+        }"""
+    )
+
+    assert result == {
+        "nothingSelected": [
+            {
+                "cls": "screen-source-deferred-load",
+                "text": "app.screenSource.clickToChoose",
+                "title": "",
+            },
+        ],
+        "selected": [
+            {"cls": "screen-source-current", "text": "Selected Screen 1", "title": "Screen 1"},
+            {
+                "cls": "screen-source-deferred-load",
+                "text": "app.screenSource.clickToChoose",
+                "title": "",
+            },
+        ],
     }
 
 

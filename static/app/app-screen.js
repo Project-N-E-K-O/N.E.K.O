@@ -2727,18 +2727,41 @@
         // 分享对话框，先只放一个按钮，用户点击后再枚举。
         if (renderOptions.deferEnumeration === true) {
             screenPopup.innerHTML = '';
+            appendCurrentSourceSummary(screenPopup);
             appendDeferredLoadButton(screenPopup, renderOptions);
             return true;
         }
 
-        function appendDeferredLoadButton(targetPopup, deferredOptions) {
+        // 延迟枚举时列表是空的，在按钮上方显示当前选中的来源。
+        function appendCurrentSourceSummary(targetPopup) {
+            var currentLabel = getSelectedScreenSourceLabel();
+            if (!currentLabel) return;
+            var summary = document.createElement('div');
+            summary.className = 'screen-source-current';
+            summary.textContent = window.t
+                ? window.t('app.screenSource.selected', { source: currentLabel })
+                : '已选择 ' + currentLabel;
+            summary.title = currentLabel;
+            Object.assign(summary.style, {
+                padding: '4px 12px 8px',
+                color: 'var(--neko-popup-text-sub)',
+                fontSize: '12px',
+                textAlign: 'center',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+            });
+            targetPopup.appendChild(summary);
+        }
+
+        function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
             var deferredLoadButton = document.createElement('button');
             deferredLoadButton.type = 'button';
             deferredLoadButton.className = 'screen-source-deferred-load';
             deferredLoadButton.dataset.nekoScreenSourceDeferredLoad = '';
-            deferredLoadButton.textContent = window.t
+            deferredLoadButton.textContent = buttonText || (window.t
                 ? window.t('app.screenSource.clickToChoose')
-                : '点击选择屏幕来源';
+                : '点击选择屏幕来源');
             Object.assign(deferredLoadButton.style, {
                 width: '100%',
                 padding: '12px',
@@ -2772,6 +2795,7 @@
                     });
             });
             targetPopup.appendChild(deferredLoadButton);
+            return deferredLoadButton;
         }
 
         try {
@@ -3142,6 +3166,14 @@
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
+                // 换来源要重新枚举（Wayland 下会再次弹出系统对话框）。保留同一个
+                // 按钮，点击设置行时 _nekoOnExplicitOpen 也能找到它。
+                var chooseAgainButton = appendDeferredLoadButton(
+                    screenPopup,
+                    renderOptions,
+                    window.t ? window.t('app.screenSource.chooseAgain') : '重新选择屏幕来源'
+                );
+                chooseAgainButton.style.marginTop = '6px';
                 return true;
             }
 

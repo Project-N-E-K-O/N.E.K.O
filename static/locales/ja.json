@@ -2670,7 +2670,8 @@
             "selected": "{{source}}を選択しました",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください",
-            "clickToChoose": "クリックして画面ソースを選択"
+            "clickToChoose": "クリックして画面ソースを選択",
+            "chooseAgain": "別の画面ソースを選択"
         },
         "deviceSwitchFailed": "デバイスの切り替えに失敗しました",
         "deviceSwitching": "デバイスを切り替え中...",
