@@ -266,6 +266,23 @@ def run_step_protocol_tts_worker(
             pending_text_buffer = ""
             return True
 
+        def _signal_permanent_rejection_exit() -> None:
+            """Close out the rejected round and hand retry policy to the core."""
+            logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
+            # 退出后等不到被拒轮次的收尾请求：直接补发它的 audio_done（主进程
+            # 已记为投递失败），完成等待方不必干等超时。
+            audio_done.emit(rejected_speech_id)
+            response_queue.put(("__ready__", False))
+
+        def _close_rejected_round_after_terminal(bound_speech_id) -> None:
+            """Emit audio_done for a round rejected after its terminal request.
+
+            Once ``tts.text.done`` went out no terminal queue item is left to
+            reach the rejected-round branch, so the receiver closes the stream.
+            """
+            if text_done_sent and bound_speech_id == current_speech_id:
+                audio_done.emit(bound_speech_id)
+
         def _round_finished(event_type) -> bool:
             """Whether this event is the last one the socket will carry.
 
@@ -386,6 +403,7 @@ def run_step_protocol_tts_worker(
                         # surfaced and ends this speech like a connect rejection.
                         if _report_server_close(closed_exc, bound_speech_id):
                             rejected_speech_id = bound_speech_id
+                            _close_rejected_round_after_terminal(bound_speech_id)
                     except asyncio.CancelledError:
                         cancelled = True
                         raise
@@ -662,11 +680,7 @@ def run_step_protocol_tts_worker(
             loop = asyncio.get_running_loop()
             while True:
                 if permanent_rejection:
-                    logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
-                    # 退出前等不到被拒轮次的收尾请求：直接补发它的 audio_done
-                    # （主进程已记为投递失败），完成等待方不必干等超时。
-                    audio_done.emit(rejected_speech_id)
-                    response_queue.put(("__ready__", False))
+                    _signal_permanent_rejection_exit()
                     break
                 if pending_finish_retry_speech_id is not None:
                     control_request = None
@@ -702,6 +716,11 @@ def run_step_protocol_tts_worker(
                 text_staged_for_reconnect = False
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
+                if permanent_rejection:
+                    # 阻塞在取队列期间，接收任务可能已上报了永久拒绝。
+                    _signal_permanent_rejection_exit()
                     break
 
                 if sid == _FINISH_RETRY_SENTINEL:
@@ -983,6 +1002,7 @@ def run_step_protocol_tts_worker(
                                 # like a connect rejection.
                                 if _report_server_close(closed_exc, bound_speech_id):
                                     rejected_speech_id = bound_speech_id
+                                    _close_rejected_round_after_terminal(bound_speech_id)
                             except asyncio.CancelledError:
                                 cancelled = True
                                 raise

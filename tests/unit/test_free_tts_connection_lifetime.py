@@ -580,6 +580,62 @@ def test_permanent_rejection_hands_retry_policy_to_the_core(monkeypatch, close):
     assert items[-2] == ("__audio_done__", "speech-1")
 
 
+def test_permanent_close_while_waiting_for_requests_blocks_the_next_speech(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    speech = _Socket(
+        [{"type": "tts.connection.done", "data": {"session_id": "speech"}}],
+    )
+    unused = _speech_socket("unused", final_events=[])
+    connects = _install_sockets(monkeypatch, _warmup_socket(), speech, unused)
+    responses = queue.Queue()
+
+    def server_denies_access():
+        speech._server_close = Close(1008, "Access denied: IP is blacklisted")
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            server_denies_access,
+            _observe({}, "reported", lambda: bool(_errors(responses))),
+            ("speech-2", _OPENING),
+        ),
+        responses,
+    )
+
+    assert len(connects) == 2
+    assert [error["code"] for error in _errors(responses)] == ["API_ACCESS_DENIED"]
+    assert list(responses.queue)[-1] == ("__ready__", False)
+
+
+def test_rejection_after_the_terminal_still_closes_the_stream(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    speech = _speech_socket("speech", final_events=[])
+    _install_sockets(monkeypatch, _warmup_socket(), speech)
+    responses = queue.Queue()
+    observations = {}
+
+    def server_spends_quota():
+        speech._server_close = Close(1008, "Total connection time limit reached for today")
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            server_spends_quota,
+            _observe(
+                observations,
+                "stream_closed",
+                lambda: ("__audio_done__", "speech-1") in list(responses.queue),
+            ),
+        ),
+        responses,
+    )
+
+    assert [event["type"] for event in speech.sent][-1] == "tts.text.done"
+    assert [error["code"] for error in _errors(responses)] == ["API_QUOTA_TIME"]
+    assert observations == {"stream_closed": True}
+
+
 @pytest.mark.parametrize(
     ("close", "expected_code"),
     (
