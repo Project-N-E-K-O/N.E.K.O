@@ -249,6 +249,10 @@ def run_step_protocol_tts_worker(
                 return False
             if speech_id is not None and speech_id == rejected_speech_id:
                 return True
+            if speech_id is not None:
+                # 把错误钉到被拒的那一轮：主进程按约定把紧随其后的 __error__
+                # 记到这个 speech_id，而不是此刻可能已切到下一轮的 current_speech_id。
+                response_queue.put(("__tts_sentence_failed__", speech_id, ""))
             _enqueue_error(response_queue, classified)
             if classified["code"] in _PERMANENT_REJECTION_CODES:
                 permanent_rejection = True

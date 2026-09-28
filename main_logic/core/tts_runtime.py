@@ -1379,6 +1379,7 @@ class TtsRuntimeMixin:
         self._tts_rate_limit_retry_at = 0.0
         self._tts_quota_blocked = False
         self._tts_quota_stale_speech_ids = None
+        self._tts_quota_from_server_close = False
         notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
         if notified_error_keys is not None:
             notified_error_keys.clear()
@@ -1517,6 +1518,7 @@ class TtsRuntimeMixin:
         # 错误码只描述上一个 worker 的失败。新 worker 若不带 __error__ 直接报未
         # 就绪（如握手超时），沿用旧的配额/限流码会误停定时重试或误推退避。
         self._last_tts_error_code = ''
+        self._tts_quota_from_server_close = False
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
         self._start_tts_thread(
@@ -2060,6 +2062,7 @@ class TtsRuntimeMixin:
                             self._tts_retry_notify_count = 0
                             self._tts_rate_limit_backoff_level = 0
                             self._tts_rate_limit_retry_at = 0.0
+                            self._tts_quota_from_server_close = False
                             if getattr(self, '_tts_quota_blocked', False):
                                 # 配额期间缓存里有之前各轮被拒回复的残尾；只丢掉触发
                                 # 这次重试那一刻已判为旧轮次的 speech_id，之后合法排队
@@ -2102,7 +2105,9 @@ class TtsRuntimeMixin:
                                     dropped = {chunk[0] for chunk in self.tts_pending_chunks}
                                     self.tts_pending_chunks.clear()
                                 self._fail_dropped_tts_speech(dropped)
-                            elif _last_code == 'API_QUOTA_TIME':
+                            elif _last_code == 'API_QUOTA_TIME' and getattr(
+                                self, '_tts_quota_from_server_close', False
+                            ):
                                 # 服务端不告知恢复时间（按 IP 滚动 24h 窗口），定时
                                 # 重拉只会一直被拒。不定时重试；每次回复首 chunk 的
                                 # 隐式 respawn 照常放行，窗口一到期下一句就恢复。
@@ -2189,9 +2194,15 @@ class TtsRuntimeMixin:
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
+                        # 免费服务 worker 按关闭帧分类的拒绝会带 data.close_code
+                        _from_server_close = False
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
+                                _close_data = _parsed.get('data')
+                                _from_server_close = (
+                                    isinstance(_close_data, dict) and 'close_code' in _close_data
+                                )
                                 # 结构化错误：关键词匹配只看 data.message，避免元数据误判
                                 _keyword_target = ""
                                 # 先检查顶层 code
@@ -2244,6 +2255,13 @@ class TtsRuntimeMixin:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                        # 只有免费服务按关闭帧判定的日配额才停定时重试；付费 / 自定义
+                        # provider 的 "429 quota exceeded" 同样归为配额，但常是可恢复的
+                        # 每分钟限流，保留原有的定时重试。
+                        self._tts_quota_from_server_close = (
+                            self._last_tts_error_code == 'API_QUOTA_TIME'
+                            and _from_server_close
+                        )
                         # Telemetry：TTS 失败。code 是已归一化的低基数枚举
                         # （API_ARREARS / API_KEY_REJECTED / TTS_CONNECTION_FAILED ...）。
                         # 首日听不到语音是核心体验断裂，D1 流失重要信号。

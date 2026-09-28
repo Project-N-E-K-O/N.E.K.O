@@ -64,8 +64,16 @@ def _make_mgr():
     return mgr
 
 
-def _error(code):
-    return ("__error__", json.dumps({"code": code, "data": {"message": "server close"}}))
+def _error(code, *, close_code=None):
+    data = {"message": "server close"}
+    if close_code is not None:
+        data["close_code"] = close_code
+    return ("__error__", json.dumps({"code": code, "data": data}))
+
+
+def _free_quota_error():
+    """What the free TTS worker reports for the server's daily-quota close."""
+    return _error("API_QUOTA_TIME", close_code=1008)
 
 
 async def _wait_for(predicate, timeout=2.0):
@@ -111,7 +119,7 @@ def respawn_delays(monkeypatch):
 async def test_quota_not_ready_schedules_no_timed_respawn(respawn_delays):
     mgr = _make_mgr()
     mgr.tts_pending_chunks = [("sid-old", "rejected reply")]
-    mgr.tts_response_queue.put(_error("API_QUOTA_TIME"))
+    mgr.tts_response_queue.put(_free_quota_error())
     mgr.tts_response_queue.put(("__ready__", False))
 
     await _drain(mgr)
@@ -124,10 +132,34 @@ async def test_quota_not_ready_schedules_no_timed_respawn(respawn_delays):
     assert json.loads(mgr.send_status.await_args.args[0])["code"] == "API_QUOTA_TIME"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        # A paid / custom provider's unstructured 429 that mentions quota.
+        ("__error__", "HTTP 429: quota exceeded for this minute"),
+        # Structured quota without the free server's close-frame origin.
+        ("__error__", json.dumps({"code": "API_QUOTA_TIME", "data": {"message": "quota"}})),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_free_quota_errors_keep_the_timed_retry(respawn_delays, error):
+    mgr = _make_mgr()
+    mgr.tts_pending_chunks = [("sid-live", "waiting for a retry")]
+    mgr.tts_response_queue.put(error)
+    mgr.tts_response_queue.put(("__ready__", False))
+
+    await _drain(mgr)
+    assert await _wait_for(lambda: len(respawn_delays) == 1)
+
+    assert respawn_delays == [TTS_RESPAWN_DELAY_SECONDS]
+    assert getattr(mgr, "_tts_quota_blocked", False) is False
+    assert mgr.tts_pending_chunks == [("sid-live", "waiting for a retry")]
+
+
 @pytest.mark.asyncio
 async def test_quota_does_not_block_the_implicit_respawn_on_the_next_reply():
     mgr = _make_mgr()
-    mgr.tts_response_queue.put(_error("API_QUOTA_TIME"))
+    mgr.tts_response_queue.put(_free_quota_error())
     mgr.tts_response_queue.put(("__ready__", False))
 
     await _drain(mgr)
@@ -217,7 +249,7 @@ async def test_discarded_cached_speech_resolves_its_completion_waiter(code):
     mgr._bg_tasks = set()
     completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-game")
     mgr.tts_pending_chunks = [("sid-game", "mirrored line")]
-    mgr.tts_response_queue.put(_error(code))
+    mgr.tts_response_queue.put(_error(code, close_code=1008))
     mgr.tts_response_queue.put(("__ready__", False))
 
     await _drain(mgr)
@@ -297,7 +329,7 @@ def test_implicit_respawn_keeps_the_plain_cooldown_for_quota():
 async def test_replacement_failure_without_error_does_not_inherit_quota_code(respawn_delays):
     mgr = _make_mgr()
     _arm_implicit_respawn(mgr)
-    mgr.tts_response_queue.put(_error("API_QUOTA_TIME"))
+    mgr.tts_response_queue.put(_free_quota_error())
     mgr.tts_response_queue.put(("__ready__", False))
     await _drain(mgr)
     assert respawn_delays == []

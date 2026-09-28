@@ -351,6 +351,11 @@ def test_quota_rejected_speech_is_reported_once_and_not_retried_per_chunk(monkey
             "message": "Total daily connection time limit reached",
         },
     }]
+    # The error is pinned to the rejected round, not to whatever round the
+    # core considers current when it reads the error.
+    items = list(responses.queue)
+    error_at = next(i for i, item in enumerate(items) if item[0] == "__error__")
+    assert items[error_at - 1] == ("__tts_sentence_failed__", "speech-1", "")
     assert ("__reconnecting__", "TTS_RECONNECTING") not in list(responses.queue)
     assert next_speech.sent[0]["type"] == "tts.create"
     # The dropped terminal still closes the stream, so completion waiters
