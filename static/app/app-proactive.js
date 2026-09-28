@@ -599,6 +599,52 @@
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
 
+    // 开屏 / 切角色问候的避让阀（双保险）。
+    //
+    // greeting_check 发出后，后端要先生成问候文本、再合成语音，这段时间里
+    // _isAssistantSpeaking() 还是 false —— 主动搭话的定时器恰好到点就会插进来，
+    // 和问候叠成两段语音。所以 greeting_check 一发出就关阀：
+    //   1. 事件：发出之后开始的那一轮 assistant turn 结束（neko-assistant-turn-end），
+    //      阀门打开；之后的音频播放仍由 _isAssistantSpeaking() 挡住。
+    //      只认「关阀之后才开始」的 turn，免得上一轮残留的 turn-end 提前开阀。
+    //   2. 兜底：后端判定不问候（刷新重连 ≤15s 等）时不会有任何 turn，
+    //      最迟 STARTUP_GREETING_GATE_MAX_MS 后自动开阀，绝不卡死主动搭话。
+    // 阀门关着时，定时器到点按「AI 正在说话」同样处理：跳过本次、不计数、排下一 tick。
+    var STARTUP_GREETING_GATE_MAX_MS = 45000;
+
+    function armStartupGreetingGate(reason) {
+        if (!S) return;
+        S._startupGreetingGate = {
+            armedAt: Date.now(),
+            reason: reason || '',
+            turnStarted: false
+        };
+    }
+    mod.armStartupGreetingGate = armStartupGreetingGate;
+
+    function isStartupGreetingGateHolding() {
+        var gate = S && S._startupGreetingGate;
+        if (!gate) return false;
+        if (Date.now() - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
+            S._startupGreetingGate = null;
+            console.log('[ProactiveChat] 问候避让阀超时自动打开（' + (STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候完成）');
+            return false;
+        }
+        return true;
+    }
+    mod.isStartupGreetingGateHolding = isStartupGreetingGateHolding;
+
+    window.addEventListener('neko-assistant-turn-start', function () {
+        var gate = S && S._startupGreetingGate;
+        if (gate) gate.turnStarted = true;
+    });
+    window.addEventListener('neko-assistant-turn-end', function () {
+        var gate = S && S._startupGreetingGate;
+        if (!gate || !gate.turnStarted) return;
+        S._startupGreetingGate = null;
+        console.log('[ProactiveChat] 问候这一轮已结束，打开问候避让阀（' + (gate.reason || '-') + '）');
+    });
+
     // 给 proactive skip 日志带上 _isAssistantSpeaking 用到的全部输入 + 音频队列长度。
     // gate 卡死时直接看 log 就能判断哪个 flag 粘住、队列是不是真的空，
     // 不用让用户手动到 DevTools 抓快照（手动解锁前一刷新就把证据擦了）。
@@ -771,6 +817,11 @@
                     scheduleProactiveChat();
                     return;
                 }
+                if (isStartupGreetingGateHolding()) {
+                    console.log('[ProactiveChat] 语音模式：问候还没说完，本次 nudge 跳过（不计数），继续下一 tick');
+                    scheduleProactiveChat();
+                    return;
+                }
                 // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
                 // 刚说完，不发主动文本触发。与后端 _user_recent_activity_time guard
                 // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
@@ -930,6 +981,11 @@
             // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
             if (_isAssistantSpeaking()) {
                 console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick', _dumpSpeakingGateState());
+                scheduleProactiveChat();
+                return;
+            }
+            if (isStartupGreetingGateHolding()) {
+                console.log('[ProactiveChat] 文本模式：问候还没说完，本次跳过（不累加退避），继续下一 tick');
                 scheduleProactiveChat();
                 return;
             }

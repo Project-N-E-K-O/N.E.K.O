@@ -6169,6 +6169,10 @@
                 };
                 if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
                 S.socket.send(JSON.stringify(greetingMessage));
+                // 问候生成期间主动搭话不插话：问候那一轮结束或 45 秒兜底后才放行。
+                if (window.appProactive && typeof window.appProactive.armStartupGreetingGate === 'function') {
+                    window.appProactive.armStartupGreetingGate(greetingReason);
+                }
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
