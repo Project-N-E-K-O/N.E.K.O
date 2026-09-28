@@ -2663,7 +2663,7 @@
             "genericScreen": "Pantalla",
             "genericWindow": "Ventana",
             "screenLabel": "Pantalla {{index}}",
-            "windows": "Ventanas",
+            "windows": "ventanas",
             "titleFilterPlaceholder": "Filtrar títulos de ventanas",
             "titleFilterAriaLabel": "Filtrar ventanas por título",
             "noWindowMatches": "No hay ventanas coincidentes",

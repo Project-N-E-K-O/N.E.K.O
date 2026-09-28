@@ -2663,7 +2663,7 @@
             "genericScreen": "Tela",
             "genericWindow": "Janela",
             "screenLabel": "Tela {{index}}",
-            "windows": "Janelas",
+            "windows": "Windows",
             "titleFilterPlaceholder": "Filtrar títulos das janelas",
             "titleFilterAriaLabel": "Filtrar janelas por título",
             "noWindowMatches": "Nenhuma janela correspondente",
