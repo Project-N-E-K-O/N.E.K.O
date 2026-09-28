@@ -301,7 +301,7 @@ Details worth knowing:
 - Only **running** plugins are reloaded; a plugin you stopped stays stopped.
 - Sources are syntax-checked before the reload. A broken edit keeps the current instance running and logs a warning; the next save retries.
 - The debounce window (`NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE`, default 1.5s) absorbs multi-file saves; the poll interval is `NEKO_PLUGIN_HOT_RELOAD_INTERVAL` (default 1.0s).
-- Auto reloads take the same lock as the manual button. If you are mid-operation, the auto reload waits and retries instead of interrupting.
+- Auto reloads take the same lock as the manual button. If you are mid-operation, the auto reload waits up to the debounce window for the lock, then defers by one debounce window and retries instead of interrupting.
 
 ## 10. Build only when you are ready to deliver
 

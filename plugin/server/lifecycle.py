@@ -468,6 +468,10 @@ class ServerLifecycleService:
         # would make every delivery-path start a no-op for the new run.
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
+        # 同样重置插件操作门闩：关停时置位的门闩会让 start_plugin 拒绝启动，
+        # 重启后必须放开，否则所有插件启动都会吃 409。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = False
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -822,6 +826,12 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
+        # 关停门闩：在动任何插件宿主之前置位，让 start_plugin 拒绝启动新插件。
+        # 被 asyncio.shield 保护的 in-flight reload 若在 host 快照之后才注册新
+        # host，那个子进程就是没人停止的孤儿。startup() 开头会重置。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = True
+
         try:
             emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:

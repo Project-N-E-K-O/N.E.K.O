@@ -26,8 +26,9 @@ root) plus every development-mode registration's `source_dir`. Watched files:
 
 - A reload is the existing `reload_plugin` transaction (stop + start, i.e. the
   plugin subprocess is replaced). Auto reloads and manual button clicks take
-  the same operation lock; on `PluginOperationBusy` the auto reload defers by
-  one debounce window and retries.
+  the same operation lock; the auto reload waits up to the debounce window for
+  the lock, and on `PluginOperationBusy` defers by one debounce window and
+  retries.
 - Changes must be quiet for `NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE` seconds
   (default 1.5) before the reload fires, so multi-file saves and in-progress
   writes do not reload half-written code. The scan runs every
@@ -49,7 +50,9 @@ root) plus every development-mode registration's `source_dir`. Watched files:
   Windows / macOS / Linux alike.
 - Started at the end of `ServerLifecycleService.startup()` and stopped at the
   top of `_shutdown_internal()`, before any plugin host is torn down, so an
-  auto reload cannot race the shutdown.
+  auto reload cannot race the shutdown. A shutdown latch additionally rejects
+  plugin starts once teardown begins, so an in-flight reload can no longer
+  register a host nobody will stop.
 - New settings (also exported through the admin API allowlist):
   `PLUGIN_HOT_RELOAD`, `PLUGIN_HOT_RELOAD_INTERVAL`,
   `PLUGIN_HOT_RELOAD_DEBOUNCE`.
@@ -58,5 +61,6 @@ root) plus every development-mode registration's `source_dir`. Watched files:
 
 `plugin/tests/unit/server/test_plugin_hot_reload_service.py` covers: change
 detection with debounce, first-scan baselining, syntax-error and
-broken-manifest protection, no auto-start of stopped plugins, busy retry,
+broken-manifest protection, no auto-start of stopped plugins (including the
+in-lock recheck), busy retry under real lock contention, the shutdown latch,
 idempotent stop, and restart rebaselining.

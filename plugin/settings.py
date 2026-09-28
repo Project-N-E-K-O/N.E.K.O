@@ -315,6 +315,10 @@ PLUGIN_HOT_RELOAD_INTERVAL = _get_float_env("NEKO_PLUGIN_HOT_RELOAD_INTERVAL", 1
 # Env: NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE, default=1.5
 PLUGIN_HOT_RELOAD_DEBOUNCE = _get_float_env("NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE", 1.5)
 
+# 轮询间隔的硬下限（非 env）。hot_reload_service 的最小 tick 也取这个值，
+# 保证「校验允许的最小间隔」与「实际休眠下限」不会各自漂移。
+PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS = 0.05
+
 # 单个插件优雅关闭的超时时间
 # Env: NEKO_PLUGIN_SHUTDOWN_TIMEOUT, default=1.5
 # 用于 ``host.shutdown``，超过后会进入更激进的终止流程。
@@ -801,8 +805,11 @@ def validate_config() -> None:
     if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT > 300:
         raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT is unreasonably large (max: 300s)")
 
-    if not math.isfinite(PLUGIN_HOT_RELOAD_INTERVAL) or not 0.05 <= PLUGIN_HOT_RELOAD_INTERVAL <= 60:
-        raise ValueError("PLUGIN_HOT_RELOAD_INTERVAL must be in [0.05, 60] seconds")
+    if not math.isfinite(PLUGIN_HOT_RELOAD_INTERVAL) or not PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS <= PLUGIN_HOT_RELOAD_INTERVAL <= 60:
+        raise ValueError(
+            f"PLUGIN_HOT_RELOAD_INTERVAL must be in "
+            f"[{PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS}, 60] seconds"
+        )
     if not math.isfinite(PLUGIN_HOT_RELOAD_DEBOUNCE) or not 0.0 <= PLUGIN_HOT_RELOAD_DEBOUNCE <= 60:
         raise ValueError("PLUGIN_HOT_RELOAD_DEBOUNCE must be in [0, 60] seconds")
 

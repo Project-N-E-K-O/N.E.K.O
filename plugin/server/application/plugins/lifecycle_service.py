@@ -123,6 +123,12 @@ _CLEAR_TOOLS_BUDGET_SECONDS = 2.0
 # 一小段的代价只在 main_server 真的卡住时才付。
 _MIN_TOOL_CLEANUP_TIMEOUT = 0.25
 
+# 关停门闩：ServerLifecycleService._shutdown_internal 在动任何插件宿主之前置位，
+# startup() 在开头重置。置位后 start_plugin 拒绝启动新插件——被 asyncio.shield
+# 保护的 in-flight reload 若在 host 快照/清空之后才注册新 host，那个子进程就是
+# 没人停止的孤儿。与 _delivery_path_shutting_down 同模式：关停置位、启动重置。
+_operations_shutting_down = False
+
 
 def _resolve_python_requirements(
     conf: Any,
@@ -507,6 +513,11 @@ def _plugin_is_running_sync(plugin_id: str) -> bool:
         return plugin_id in state.plugin_hosts
 
 
+# 公开别名：hot_reload_service 等跨模块调用方应使用不带下划线的名字，
+# 避免私有符号被外部依赖。
+plugin_is_running_sync = _plugin_is_running_sync
+
+
 def _list_running_plugin_ids_sync() -> list[str]:
     with state.acquire_plugin_hosts_read_lock():
         return [plugin_id for plugin_id in state.plugin_hosts.keys()]
@@ -618,13 +629,38 @@ def _resolve_plugin_config_path_sync(
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
+    rejected_by_shutdown_latch = False
     with state.acquire_plugin_hosts_write_lock():
-        if plugin_id in state.plugin_hosts:
-            existing_host = state.plugin_hosts.get(plugin_id)
-            if existing_host is not None and existing_host is not host:
-                logger.warning("Plugin {} already exists in plugin_hosts, replacing host", plugin_id)
-        state.plugin_hosts[plugin_id] = host
-        current_count = len(state.plugin_hosts)
+        if _operations_shutting_down:
+            # 门闩的权威检查点。start_plugin 入口那次检查只负责快速失败（省掉
+            # 一次 spawn），挡不住"入口检查通过之后、注册之前"关停置闩的窗口。
+            # 这里的检查与注册落在同一个写锁临界区内，而 _shutdown_hosts 的
+            # 快照（读锁）和 Phase 4 的清空（写锁）拿的是同一把锁：关停置闩后
+            # 才注册的 host 要么早于快照（会被正常关停），要么在这里被拒绝，
+            # 不存在漏网的孤儿进程。抛出后 start_plugin 的 except
+            # ServerDomainError 分支会走 _cleanup_started_host 收掉已 spawn
+            # 的子进程。
+            rejected_by_shutdown_latch = True
+        else:
+            if plugin_id in state.plugin_hosts:
+                existing_host = state.plugin_hosts.get(plugin_id)
+                if existing_host is not None and existing_host is not host:
+                    logger.warning("Plugin {} already exists in plugin_hosts, replacing host", plugin_id)
+            state.plugin_hosts[plugin_id] = host
+            current_count = len(state.plugin_hosts)
+    if rejected_by_shutdown_latch:
+        # 在锁外抛：ServerDomainError 是 frozen dataclass，拒绝属性赋值，
+        # 从生成器式 context manager 的 with 块内抛出会被 gen.throw 的
+        # __traceback__ 赋值退化成 TypeError（见 operation_lock 里
+        # bounded_operation_wait 为什么写成类而不是 @contextmanager）。
+        # 检查本身仍在写锁临界区内，与快照/清空互斥的保证不受影响。
+        raise _to_domain_error(
+            code="PLUGIN_OPERATION_SHUTTING_DOWN",
+            message="Server is shutting down; plugin start rejected",
+            status_code=409,
+            plugin_id=plugin_id,
+            error_type="ServerShuttingDown",
+        )
     state.invalidate_snapshot_cache("hosts")
     return current_count
 
@@ -875,6 +911,18 @@ class PluginLifecycleService:
         persist_user_intent: bool = False,
         start_deadline: float | None = None,
     ) -> dict[str, object]:
+        if _operations_shutting_down:
+            # 关停已经开始了：这时候拉起的插件会落在 host 快照之后，变成没人
+            # 停止的孤儿进程。这里是快速失败（省掉 spawn）；权威的检查点在
+            # _register_or_replace_host_sync 的注册临界区里，兜住"这里通过
+            # 之后、注册之前"置闩的窗口（见 _operations_shutting_down 注释）。
+            raise _to_domain_error(
+                code="PLUGIN_OPERATION_SHUTTING_DOWN",
+                message="Server is shutting down; plugin start rejected",
+                status_code=409,
+                plugin_id=plugin_id,
+                error_type="ServerShuttingDown",
+            )
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
         current_plugin_id = plugin_id
@@ -1551,7 +1599,20 @@ class PluginLifecycleService:
             ) from exc
 
     @serialized_plugin_operation
-    async def reload_plugin(self, plugin_id: str) -> dict[str, object]:
+    async def reload_plugin(
+        self,
+        plugin_id: str,
+        *,
+        only_if_running: bool = False,
+    ) -> dict[str, object]:
+        """Restart a plugin (stop + start). When ``only_if_running`` is set, a
+        plugin that is no longer running is left stopped instead of started.
+
+        ``only_if_running`` 是给热重载 watcher 用的：watcher 在锁外查过 running，
+        但那次查询和这次复查之间插件可能被用户停掉。没有这个参数的话，
+        reload 的 start 半边会把它拉起来并持久化自启意图——把"改了代码"偷换成
+        "改变了我的启动意图"。
+        """
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
 
         development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
@@ -1566,6 +1627,16 @@ class PluginLifecycleService:
             except ServerDomainError as error:
                 if error.status_code != 404:
                     raise
+        elif only_if_running:
+            # 复查发现插件已经停了（watcher 锁外检查之后用户 Stop 了它）：
+            # 不 start，不持久化自启意图。返回 skipped 让调用方知道这一轮没做。
+            _emit_lifecycle_event(event_type="plugin_reload_skipped", plugin_id=plugin_id)
+            return {
+                "success": True,
+                "plugin_id": plugin_id,
+                "skipped": True,
+                "message": "Plugin not running",
+            }
 
         # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
         # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
