@@ -747,6 +747,7 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
     result = page.evaluate(
         """async () => {
             function syncLabelRecord(value) {
+                const oldValue = window.__storedValues.get('selectedScreenSourceLabel') || null;
                 if (value === null) {
                     window.__storedValues.delete('selectedScreenSourceLabel');
                 } else {
@@ -754,6 +755,7 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
                 }
                 window.dispatchEvent(new StorageEvent('storage', {
                     key: 'selectedScreenSourceLabel',
+                    oldValue,
                     newValue: value,
                 }));
                 return window.getSelectedScreenSourceLabel();
@@ -773,7 +775,18 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
             const afterReindex = syncLabelRecord(
                 JSON.stringify({ id: 'screen:1', screenIndex: 1 })
             );
-            return { windowLabel, afterRemoval, screenLabel, afterReindex };
+            // Another window deletes the record of a source this page is not
+            // using; this page's own cached name must survive.
+            const keptScreen = await pick('screen:1');
+            window.__storedValues.set(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2' })
+            );
+            const afterOtherRemoval = syncLabelRecord(null);
+            return {
+                windowLabel, afterRemoval, screenLabel, afterReindex,
+                keptScreen, afterOtherRemoval,
+            };
         }"""
     )
 
@@ -782,6 +795,8 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
         "afterRemoval": "app.screenSource.windows",
         "screenLabel": "Screen 1",
         "afterReindex": "Screen 2",
+        "keptScreen": "Screen 1",
+        "afterOtherRemoval": "Screen 1",
     }
 
 

@@ -688,7 +688,12 @@
             // 缓存的当前来源名称；屏幕序号变了也以落盘记录为准。
             var record = readPersistedScreenSourceMeta();
             if (!record) {
-                forgetKnownScreenSourceMeta(S.selectedScreenSourceId);
+                // 只丢被删记录对应的那个来源：本页可能选着另一个仍然有效的来源。
+                var removedRecord = null;
+                try { removedRecord = JSON.parse(e.oldValue || 'null'); } catch (_) { }
+                if (removedRecord && removedRecord.id === S.selectedScreenSourceId) {
+                    forgetKnownScreenSourceMeta(removedRecord.id);
+                }
             } else {
                 var known = getKnownScreenSourceMeta(record.id);
                 var recordScreenIndex = typeof record.screenIndex === 'number'
