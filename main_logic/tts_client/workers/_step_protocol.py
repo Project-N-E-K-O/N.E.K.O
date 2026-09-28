@@ -47,6 +47,8 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Main")
 
 _FINISH_RETRY_SENTINEL = "__step_finish_retry__"
+# Request-queue ids that are control messages, not speech rounds.
+_NON_SPEECH_REQUEST_IDS = frozenset({TTS_SHUTDOWN_SENTINEL, "__interrupt__", _FINISH_RETRY_SENTINEL})
 
 # Lanlan free servers finish the WebSocket handshake first and only then apply
 # their limits, so a rejection arrives as a close frame, never as an HTTP
@@ -266,12 +268,39 @@ def run_step_protocol_tts_worker(
             pending_text_buffer = ""
             return True
 
-        def _signal_permanent_rejection_exit() -> None:
-            """Close out the rejected round and hand retry policy to the core."""
+        def _signal_permanent_rejection_exit(dequeued_speech_id=None) -> None:
+            """Close out every round the exiting worker drops, then hand retry
+            policy to the core.
+
+            The rejected round was already marked failed through its error.
+            Rounds that are still queued (dequeued, deferred, or waiting in
+            the request queue) get a speech-scoped failure marker first, so
+            their completion waiters resolve as failed instead of timing out.
+            """
             logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
-            # 退出后等不到被拒轮次的收尾请求：直接补发它的 audio_done（主进程
-            # 已记为投递失败），完成等待方不必干等超时。
             audio_done.emit(rejected_speech_id)
+            dropped_speech_ids = []
+            pending_requests = list(deferred_requests)
+            deferred_requests.clear()
+            while True:
+                try:
+                    pending_requests.append(request_queue.get_nowait())
+                except queue_module.Empty:
+                    break
+                except (AttributeError, NotImplementedError):
+                    break
+            for candidate in [dequeued_speech_id] + [req[0] for req in pending_requests]:
+                if (
+                    candidate is None
+                    or candidate in _NON_SPEECH_REQUEST_IDS
+                    or candidate == rejected_speech_id
+                    or candidate in dropped_speech_ids
+                ):
+                    continue
+                dropped_speech_ids.append(candidate)
+            for dropped_speech_id in dropped_speech_ids:
+                response_queue.put(("__tts_sentence_failed__", dropped_speech_id, ""))
+                audio_done.emit(dropped_speech_id)
             response_queue.put(("__ready__", False))
 
         def _close_rejected_round_after_terminal(bound_speech_id) -> None:
@@ -719,8 +748,9 @@ def run_step_protocol_tts_worker(
                     break
 
                 if permanent_rejection:
-                    # 阻塞在取队列期间，接收任务可能已上报了永久拒绝。
-                    _signal_permanent_rejection_exit()
+                    # 阻塞在取队列期间，接收任务可能已上报了永久拒绝；刚取出的
+                    # 这一轮也要收尾，不能静默丢掉。
+                    _signal_permanent_rejection_exit(sid)
                     break
 
                 if sid == _FINISH_RETRY_SENTINEL:

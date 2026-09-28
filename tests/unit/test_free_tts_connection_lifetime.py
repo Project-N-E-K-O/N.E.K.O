@@ -576,8 +576,13 @@ def test_permanent_rejection_hands_retry_policy_to_the_core(monkeypatch, close):
     items = list(responses.queue)
     assert items[-1] == ("__ready__", False)
     # The rejected round's terminal never gets processed; its stream end is
-    # still signalled before the worker exits.
-    assert items[-2] == ("__audio_done__", "speech-1")
+    # still signalled before the worker exits, and the still-queued round is
+    # closed out as failed.
+    assert items[-4:-1] == [
+        ("__audio_done__", "speech-1"),
+        ("__tts_sentence_failed__", "speech-2", ""),
+        ("__audio_done__", "speech-2"),
+    ]
 
 
 def test_permanent_close_while_waiting_for_requests_blocks_the_next_speech(monkeypatch):
@@ -597,14 +602,24 @@ def test_permanent_close_while_waiting_for_requests_blocks_the_next_speech(monke
             ("speech-1", _OPENING),
             server_denies_access,
             _observe({}, "reported", lambda: bool(_errors(responses))),
+            # speech-2 is only the dequeued request; speech-3 is still queued.
             ("speech-2", _OPENING),
+            ("speech-3", _OPENING),
+            ("speech-3", " More of the dropped reply."),
+            (None, None),
         ),
         responses,
     )
 
     assert len(connects) == 2
     assert [error["code"] for error in _errors(responses)] == ["API_ACCESS_DENIED"]
-    assert list(responses.queue)[-1] == ("__ready__", False)
+    items = list(responses.queue)
+    assert items[-1] == ("__ready__", False)
+    # Every round the exiting worker drops is closed out as failed, so its
+    # completion waiter resolves instead of timing out.
+    for dropped in ("speech-2", "speech-3"):
+        failed_at = items.index(("__tts_sentence_failed__", dropped, ""))
+        assert items[failed_at + 1] == ("__audio_done__", dropped)
 
 
 def test_rejection_after_the_terminal_still_closes_the_stream(monkeypatch):
