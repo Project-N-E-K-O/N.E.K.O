@@ -283,3 +283,21 @@ def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() ->
         "S.independentAsrProviderPreferenceAuthoritative = true;"
     ) in compact
     assert "providerPreferenceValueIsStale" in settings
+
+
+def test_settings_hydrated_event_fires_after_the_server_merge() -> None:
+    # The open voice panel re-decides its local-ASR switch on this event; fired
+    # before the merge it would still read the boot default preference.
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js").read_text(
+        encoding="utf-8"
+    )
+    dispatch_at = source.index("new CustomEvent('neko:conversation-settings-hydrated')")
+    # Both anchors live in the same GET-merge callback: the merge log line comes
+    # after every server value is copied into S, and the telemetry broadcast is
+    # the callback's documented "all settings merged" point.
+    merged_log_at = source.index("已从服务器合并对话设置")
+    telemetry_at = source.index("new CustomEvent('neko:telemetry-branch-resolved'")
+    assert source.count("neko:conversation-settings-hydrated") == 1
+    assert merged_log_at < dispatch_at < telemetry_at

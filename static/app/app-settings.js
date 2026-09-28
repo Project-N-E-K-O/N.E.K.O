@@ -2118,11 +2118,6 @@
                 S.independentAsrAuthoritative = true;
                 S.voiceInputResourceOptimizationAuthoritative = true;
                 S.independentAsrProviderPreferenceAuthoritative = true;
-                // An open voice panel decided its local-ASR switch from the boot
-                // default; let it re-decide now that the persisted preference is in.
-                try {
-                    window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
-                } catch (_) {}
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -2313,6 +2308,13 @@
                         window.scheduleProactiveChat();
                     }
                 }
+
+                // An open voice panel decided its local-ASR switch from the boot
+                // default; let it re-decide now that every server value is merged
+                // into S (dispatching earlier would still show the boot default).
+                try {
+                    window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
+                } catch (_) {}
 
                 // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播 settings-ready
                 // 信号——必须放在所有设置合并（server merge + saveSettings）之后。否则被缓存的
