@@ -1671,6 +1671,9 @@
             } finally {
                 window.clearTimeout(pageConfigTimeoutId);
             }
+            // A restore may have taken over while the token was loading; a
+            // stale retry must not issue (and apply) its own status read.
+            if (retryEpoch !== state.statusEpoch) return;
             const status = await reconcileStatus({ timeoutMs: RETRY_CONNECTION_TIMEOUT_MS });
             if (retryEpoch !== state.statusEpoch) return;
             if (!status) throw new Error('status_unavailable');

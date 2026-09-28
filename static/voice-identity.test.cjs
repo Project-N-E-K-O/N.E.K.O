@@ -888,6 +888,29 @@ test('a BFCache restore supersedes an in-flight connection retry', async () => {
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
+test('a retry superseded while loading its token does not read status afterwards', async () => {
+    const slowPageConfig = deferred();
+    const harness = createHarness({ initialStatusError: true, pageConfigGates: { 2: slowPageConfig } });
+    await harness.initialize();
+
+    const retrying = harness.emit('voice-identity-retry');
+    await flush(2);
+    await harness.dispatch('pageshow', { persisted: true });
+    await flush(2);
+    const statusReadsAfterRestore = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length;
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+
+    slowPageConfig.resolve();
+    await retrying;
+    await flush(4);
+
+    assert.equal(
+        harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length,
+        statusReadsAfterRestore,
+    );
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
