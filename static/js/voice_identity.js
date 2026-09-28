@@ -1538,6 +1538,11 @@
                         translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                         true
                     );
+                    // The keepalive request may never settle after a BFCache
+                    // restore. Do not leave the restored page permanently
+                    // locked; a late completion is still reconciled below
+                    // unless a newer operation has taken over this epoch.
+                    state.cancelPending = false;
                     state.busy = false;
                     render();
                     closeCancellation.then(async function () {

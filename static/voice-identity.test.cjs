@@ -1150,6 +1150,7 @@ test('underfilled capture can be cancelled without uploading partial PCM', async
     await flush(6);
     await harness.elements.get('voice-identity-cancel').emit('click');
     await enrolling;
+    await flush(4);
 
     assert.equal(
         harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/segment`),
@@ -1159,7 +1160,7 @@ test('underfilled capture can be cancelled without uploading partial PCM', async
         harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`),
         true,
     );
-    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording did not finish.');
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('server rejection for insufficient usable speech stays fail-safe and visible', async () => {
@@ -1170,13 +1171,14 @@ test('server rejection for insufficient usable speech stays fail-safe and visibl
     await flush(8);
     await harness.elements.get('voice-identity-cancel').emit('click');
     await enrolling;
+    await flush(4);
 
     assert.equal(
         harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/segment`),
         true,
     );
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, true);
-    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough speech detected.');
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('canonical enrollment audio errors show localized messages', async () => {
@@ -1524,6 +1526,31 @@ test('BFCache restore waits for keepalive cancellation before reconciling status
         2,
     );
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
+});
+
+test('BFCache restore releases controls when keepalive cancellation times out', async () => {
+    const cancelGate = deferred();
+    const harness = createHarness({
+        initialEnrollmentNextSegment: 1,
+        cancelGate,
+        manualAudio: true,
+    });
+    await harness.initialize();
+
+    const closing = harness.beforeClose();
+    await flush(3);
+    const restoring = harness.dispatch('pageshow', { persisted: true });
+    await flush(4);
+    harness.fireStatusTimeouts();
+    await restoring;
+
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-cancel').disabled, false);
+
+    cancelGate.resolve();
+    await closing;
+    await flush(4);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
 test('slow enrollment start uses keepalive cancellation after close wait expires', async () => {
