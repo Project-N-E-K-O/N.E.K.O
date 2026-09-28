@@ -69,6 +69,7 @@ async function ensureVrmModulesLoaded() {
         '/static/vrm/vrm-core.js',
         '/static/vrm/vrm-expression.js',
         '/static/vrm/vrm-animation.js',
+        '/static/avatar/avatar-touch-gestures.js',
         '/static/vrm/vrm-interaction.js',
         '/static/vrm/vrm-cursor-follow.js',
         '/static/vrm/vrm-manager.js'
@@ -125,6 +126,7 @@ async function ensureMmdModulesLoaded() {
         '/static/mmd/mmd-core.js',
         '/static/mmd/mmd-animation.js',
         '/static/mmd/mmd-expression.js',
+        '/static/avatar/avatar-touch-gestures.js',
         '/static/mmd/mmd-interaction.js',
         '/static/mmd/mmd-cursor-follow.js',
         '/static/mmd/mmd-manager.js'
@@ -549,6 +551,13 @@ async function destroyLive2DPreviewContext() {
     try {
         await clearLive2DPreview();
     } finally {
+        try {
+            if (typeof manager.cleanupEventListeners === 'function') {
+                manager.cleanupEventListeners();
+            }
+        } catch (cleanupError) {
+            console.warn('[CharacterCard] 清理 Live2D 预览事件监听器失败:', cleanupError);
+        }
         manager._isLoadingModel = false;
         manager._modelLoadState = 'idle';
         manager._isModelReadyForInteraction = false;

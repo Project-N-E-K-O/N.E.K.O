@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build && npm run sync-css",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:music",
+    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs",
     "sync-css": "node scripts/sync-css.mjs"
   },
   "dependencies": {

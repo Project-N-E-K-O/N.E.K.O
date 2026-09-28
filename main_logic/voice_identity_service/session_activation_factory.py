@@ -5,8 +5,13 @@ from __future__ import annotations
 import copy
 import threading
 
+from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS, wake_word_model_dir
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_input.activation import ActivationGeneration
+from main_logic.voice_input.wake_word.sherpa_backend import (
+    SherpaWakeWordConfig,
+    SherpaWakeWordDetector,
+)
 
 from .activation_runtime import (
     ActivationStatusCallback,
@@ -46,6 +51,7 @@ class OwnerVoiceSessionActivationFactory:
         self._enforce = enforce
         self._noise_reduction_enabled = noise_reduction_enabled
         self._config = config
+        self._wake_model_dir = wake_word_model_dir() if enforce else None
         self._lock = threading.Lock()
         self._scorer_generation = 0
         self._closed = False
@@ -83,6 +89,18 @@ class OwnerVoiceSessionActivationFactory:
             )
         finally:
             profile.close()
+        # Construction is lightweight; the runtime owns async prepare/close and
+        # rejects configured detector failures without opening input authority.
+        wake_detector = (
+            SherpaWakeWordDetector(
+                SherpaWakeWordConfig(
+                    model_dir=self._wake_model_dir,
+                    keywords=DEFAULT_WAKE_WORD_KEYWORDS,
+                )
+            )
+            if self._wake_model_dir is not None
+            else None
+        )
         return VoiceSessionActivationRuntime(
             generation,
             scorer,
@@ -90,6 +108,7 @@ class OwnerVoiceSessionActivationFactory:
             config=self._config,
             status_callback=status_callback,
             enabled=self._enforce,
+            wake_detector=wake_detector,
         )
 
     def close(self) -> None:

@@ -71,6 +71,7 @@ class _CaptureCapabilities:
     capture_source_as_data_url: bool
     capture_source_without_neko: bool
     capture_desktop_region_as_data_url: bool
+    capture_computer_use_screen: bool
 
 
 @dataclass
@@ -109,6 +110,7 @@ def _build_capabilities(payload: dict[str, Any]) -> _CaptureCapabilities:
         capture_desktop_region_as_data_url=_coerce_bool(
             caps.get("captureDesktopRegionAsDataUrl")
         ),
+        capture_computer_use_screen=_coerce_bool(caps.get("captureComputerUseScreen")),
     )
 
 
@@ -204,6 +206,11 @@ def has_region_capture_client(lanlan_name: str | None = None) -> bool:
     except CaptureBridgeError:
         return False
     return client is not None
+
+
+def has_computer_use_capture_client() -> bool:
+    """True when a renderer advertises full-screen ComputerUse capture."""
+    return any(client.capabilities.capture_computer_use_screen for client in _clients.values())
 
 
 def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
@@ -338,6 +345,37 @@ async def request_capture_screenshot(
             _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
 
         return _validate_response_payload(response)
+
+
+async def request_computer_use_screenshot(*, timeout: float = 25.0) -> dict[str, Any]:
+    """Request one full-screen frame from the desktop renderer."""
+    if _interactive_capture_active:
+        raise CaptureBridgeError("interactive_capture_busy")
+    async with _capture_semaphore:
+        if _interactive_capture_active:
+            raise CaptureBridgeError("interactive_capture_busy")
+        candidates = [
+            client for client in _clients.values()
+            if client.capabilities.capture_computer_use_screen
+        ]
+        if not candidates:
+            raise CaptureBridgeError("no renderer available")
+        client = max(candidates, key=lambda item: item.registered_at)
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        _pending_by_client.setdefault(client.lanlan_name, {})[request_id] = future
+        try:
+            await client.websocket.send_text(_dumps({
+                "type": "capture_bridge_computer_use_request",
+                "request_id": request_id,
+            }))
+            try:
+                response = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise CaptureBridgeError("renderer response timeout") from exc
+            return _validate_response_payload(response)
+        finally:
+            _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
 
 
 async def request_capture_region(
