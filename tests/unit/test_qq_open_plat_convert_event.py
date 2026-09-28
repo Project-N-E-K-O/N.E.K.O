@@ -19,7 +19,7 @@ actually comes from.
 
 import pytest
 
-from utils.connection.onebot.qq_open_plat import QQOpenPlatformConnection
+from utils.connection.qq.open_platform import QQOpenPlatformConnection
 
 
 def _connection() -> QQOpenPlatformConnection:

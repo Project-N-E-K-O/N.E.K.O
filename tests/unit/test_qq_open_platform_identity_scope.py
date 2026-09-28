@@ -16,7 +16,7 @@
 
 The fail-closed alarm lives in the qq_auto_reply plugin's message dispatcher;
 its tests left this repository with the plugin. The probe itself is part of
-``utils.connection.onebot.qq_open_plat`` and is tested here.
+``utils.connection.qq.open_platform`` and is tested here.
 
 Both subjects under test are pure observation.  The point of these tests is
 as much to pin what they must NOT do (leak chat content, change a permission
@@ -33,8 +33,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from utils.connection.onebot import qq_open_plat as open_plat_mod
-from utils.connection.onebot.qq_open_plat import (
+from utils.connection.qq import open_platform as open_plat_mod
+from utils.connection.qq.open_platform import (
     QQOpenPlatformConnection,
     build_identity_probe_line,
 )

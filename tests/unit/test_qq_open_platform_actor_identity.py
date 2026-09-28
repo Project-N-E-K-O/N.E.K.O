@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import pytest
 
-from utils.connection.onebot.qq_open_plat import (
+from utils.connection.qq.open_platform import (
     QQOpenPlatformConnection,
     _C2C_ACTOR_ID_KEYS,
     _GROUP_ACTOR_ID_KEYS,

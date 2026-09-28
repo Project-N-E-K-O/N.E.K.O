@@ -2,7 +2,7 @@
 
 Covers OneBotClient's forward branch: dial URL / auth, receive -> normalization,
 ``call_action`` echo correlation, connect/disconnect state, and the
-``create_onebot_connection`` mode dispatch. The reverse mode (``websockets.serve``)
+``create_qq_connection`` mode dispatch. The reverse mode (``websockets.serve``)
 and the open-platform channel are not covered here; see their own regression
 tests.
 
@@ -17,7 +17,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-from utils.connection.onebot import create_onebot_connection
+from utils.connection.qq import create_qq_connection
 from utils.connection.onebot.onebot_client import OneBotClient
 
 
@@ -299,7 +299,7 @@ def test_forward_disconnect_cancels_receive_task_and_closes_ws():
     asyncio.run(run())
 
 
-# ---- create_onebot_connection dispatch ----------------------------------
+# ---- create_qq_connection dispatch ----------------------------------
 
 
 def _settings(mode: str) -> dict:
@@ -313,7 +313,7 @@ def _settings(mode: str) -> dict:
 
 
 def test_factory_dispatches_napcat_forward():
-    client = create_onebot_connection(_settings("napcat_forward"))
+    client = create_qq_connection(_settings("napcat_forward"))
     assert isinstance(client, OneBotClient)
     assert client.direction == "forward"
     assert client.mode == "napcat_forward"
@@ -322,13 +322,13 @@ def test_factory_dispatches_napcat_forward():
 
 
 def test_factory_defaults_to_reverse():
-    client = create_onebot_connection(_settings("napcat"))
+    client = create_qq_connection(_settings("napcat"))
     assert isinstance(client, OneBotClient)
     assert client.direction == "reverse"
     assert client.mode == "napcat"
 
 
 def test_factory_accepts_a_settings_reader():
-    client = create_onebot_connection(lambda: _settings("napcat_forward"))
+    client = create_qq_connection(lambda: _settings("napcat_forward"))
     assert isinstance(client, OneBotClient)
     assert client.direction == "forward"
