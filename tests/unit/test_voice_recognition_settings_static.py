@@ -224,6 +224,22 @@ def test_local_asr_preference_is_a_shared_conversation_setting() -> None:
     assert "faster_whisper" not in runtime
 
 
+def test_frontend_provider_preference_values_match_the_backend_allowlist() -> None:
+    from utils.conversation_settings_constants import (
+        INDEPENDENT_ASR_PROVIDER_PREFERENCES,
+    )
+
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    body = settings.split(
+        "function _normalizeIndependentAsrProviderPreference(value)",
+        maxsplit=1,
+    )[1].split("}", maxsplit=1)[0]
+    match = re.search(r"return \[([^\]]*)\]\.indexOf\(value\)", body)
+    assert match is not None
+    values = set(re.findall(r"'([^']*)'", match.group(1)))
+    assert values == set(INDEPENDENT_ASR_PROVIDER_PREFERENCES)
+
+
 def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
     source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
     voice_panel = source.split(
@@ -264,6 +280,49 @@ def test_dependency_missing_status_has_its_own_toast() -> None:
     )
     assert "statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'" in websocket
     assert "window.t('microphone.localAsrDependencyMissing')" in websocket
+
+
+def _independent_asr_status_block() -> str:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    ).replace(chr(13) + chr(10), chr(10))
+    return websocket.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)", 1
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+
+
+def test_preparing_status_informs_without_tearing_the_route_down() -> None:
+    block = _independent_asr_status_block()
+    preparing = block.split("if (statusCode === 'ASR_INDEPENDENT_PREPARING')", 1)[1]
+    preparing = preparing.split("return;", 1)[0]
+    assert "window.t('microphone.localAsrPreparing')" in preparing
+    assert "tearDownBlockedVoiceRoute" not in preparing
+    # Handled before the terminal-failure tail, which would tear it down.
+    assert block.index("'ASR_INDEPENDENT_PREPARING'") < block.index(
+        "tearDownBlockedVoiceRoute();"
+    )
+
+
+def test_model_load_failure_reason_has_its_own_toast() -> None:
+    block = _independent_asr_status_block()
+    terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
+    branch = terminal.split(
+        "statusDetails.reason === 'ASR_LOCAL_MODEL_LOAD_FAILED'", 1
+    )[1].split("return;", 1)[0]
+    assert "window.t('microphone.localAsrModelLoadFailed')" in branch
+    # Checked before the generic fallback text of the same tail.
+    assert terminal.index("'ASR_LOCAL_MODEL_LOAD_FAILED'") < terminal.index(
+        "microphone.independentAsrFallback"
+    )
+
+
+def test_local_model_copy_exists_in_every_locale_and_names_hf_endpoint() -> None:
+    for locale in LOCALES:
+        microphone = json.loads(
+            (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
+        )["microphone"]
+        assert microphone.get("localAsrPreparing"), locale
+        assert "HF_ENDPOINT" in microphone.get("localAsrModelLoadFailed", ""), locale
 
 
 def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() -> None:

@@ -1135,7 +1135,7 @@ class LifecycleMixin:
         request_id,
         handshake_override,
         resource_optimization_override,
-        provider_preference_override=None,
+        provider_preference_override,
     ):
         """Handle a start request that collides with an in-flight start_session.
 

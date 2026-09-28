@@ -1048,7 +1048,9 @@
         "voiceResourceOptimizationHintOff": "持續保持語音辨識，可能增加網路和資源用量",
         "localAsr": "本機語音辨識",
         "localAsrHint": "在本機用 faster-whisper 辨識語音；需要另外安裝 faster-whisper，首次使用會下載模型",
-        "localAsrDependencyMissing": "本機語音辨識需要 faster-whisper，但尚未安裝，本次語音輸入已停止。請先安裝，或關閉本機語音辨識，然後重新開始語音會話。"
+        "localAsrDependencyMissing": "本機語音辨識需要 faster-whisper，但尚未安裝，本次語音輸入已停止。請先安裝，或關閉本機語音辨識，然後重新開始語音會話。",
+        "localAsrPreparing": "正在準備本機語音辨識模型，首次使用需要下載，可能要幾分鐘。這段期間說的話會在模型就緒後再辨識。",
+        "localAsrModelLoadFailed": "本機語音辨識模型載入失敗，本次語音輸入已停止。首次使用需要從 HuggingFace 下載模型；如果連不上，可以設定環境變數 HF_ENDPOINT（例如 https://hf-mirror.com）後重新啟動，或關閉本機語音辨識。"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",

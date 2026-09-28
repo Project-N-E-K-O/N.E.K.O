@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
@@ -99,6 +100,22 @@ _CONNECT_CLEANUP_TIMEOUT_SECONDS = 2.0
 # How often the provider-final watchdog re-checks a provider that is still
 # warming up (see provider_warmup_timeout_ms).
 _PROVIDER_WARMUP_POLL_SECONDS = 0.5
+
+_PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
+
+
+def _provider_failure_reason(message: str) -> str:
+    """The provider's own failure code from a connection-error message.
+
+    Sessions report ``"<ASR_CODE>: <sanitized message>"``; the code is passed
+    on as an opaque reason for the client. Generic worker failures carry no
+    extra information and are dropped.
+    """
+
+    match = _PROVIDER_FAILURE_REASON_RE.match(str(message or ""))
+    if match is None or match.group(1) == "ASR_WORKER_FAILED":
+        return ""
+    return match.group(1)
 
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
@@ -1904,10 +1921,14 @@ class IndependentAsrRuntime:
                     text, epoch, candidate_provider
                 )
 
-            async def on_error(_message: str) -> None:
+            async def on_error(message: str) -> None:
                 if not is_adopted_candidate():
                     return
-                await self._handle_independent_asr_error(epoch, candidate_provider)
+                await self._handle_independent_asr_error(
+                    epoch,
+                    candidate_provider,
+                    failure_reason=_provider_failure_reason(message),
+                )
 
             async def on_status(_message: str) -> None:
                 # Provider status strings are intentionally not forwarded verbatim.
@@ -2114,6 +2135,18 @@ class IndependentAsrRuntime:
                 return stale_result(provider)
             delivered = await self._send_asr_status(
                 "ASR_INDEPENDENT_READY",
+                provider,
+                session_epoch=epoch,
+                expected_identity=start_identity,
+            )
+            if (
+                not delivered
+                or not operation_is_current()
+                or not self._runtime_identity_matches(start_identity)
+            ):
+                return stale_result(provider)
+            delivered = await self._announce_provider_preparing(
+                self._asr_session,
                 provider,
                 session_epoch=epoch,
                 expected_identity=start_identity,
@@ -3479,6 +3512,13 @@ class IndependentAsrRuntime:
                         expected_identity=connected_identity,
                     )
                     if not self._runtime_identity_matches(connected_identity):
+                        return
+                    if not await self._announce_provider_preparing(
+                        candidate,
+                        connected_identity.provider or "unknown",
+                        session_epoch=connected_identity.session_epoch,
+                        expected_identity=connected_identity,
+                    ):
                         return
                     if (
                         self._asr_pending_speech_confirmed
@@ -4984,6 +5024,7 @@ class IndependentAsrRuntime:
         *,
         status_code: str = "ASR_INDEPENDENT_FAILED",
         expected_identity: _AsrRuntimeIdentity | None = None,
+        failure_reason: str = "",
     ) -> None:
         if epoch != self._asr_session_epoch or (
             expected_identity is not None
@@ -5080,6 +5121,7 @@ class IndependentAsrRuntime:
                         provider=provider,
                         session_epoch=failure_epoch,
                         ingress_token=failure_ingress_token,
+                        reason=failure_reason,
                     )
                 )
             except Exception:
@@ -5095,6 +5137,7 @@ class IndependentAsrRuntime:
                 session_epoch=failure_epoch,
                 expected_identity=failure_identity,
                 ingress_token=failure_ingress_token,
+                reason=failure_reason,
             )
         finally:
             # A dispatcher can report its own failure from inside its worker.
@@ -5114,6 +5157,31 @@ class IndependentAsrRuntime:
                 self.display_name,
             )
 
+    async def _announce_provider_preparing(
+        self,
+        asr_session: Any,
+        provider: str,
+        *,
+        session_epoch: int,
+        expected_identity: _AsrRuntimeIdentity,
+    ) -> bool:
+        """Tell the client a connected provider is still preparing.
+
+        A provider may connect before it can recognize speech (a local model
+        loading, or downloading on first use). Returns whether the runtime
+        identity still matches, like ``_send_asr_status``; True with nothing
+        sent when the provider is ready.
+        """
+
+        if getattr(asr_session, "provider_warmup_pending", False) is not True:
+            return self._runtime_identity_matches(expected_identity)
+        return await self._send_asr_status(
+            "ASR_INDEPENDENT_PREPARING",
+            provider,
+            session_epoch=session_epoch,
+            expected_identity=expected_identity,
+        )
+
     async def _send_asr_status(
         self,
         code: str,
@@ -5122,6 +5190,7 @@ class IndependentAsrRuntime:
         session_epoch: int,
         expected_identity: _AsrRuntimeIdentity,
         ingress_token: VoiceIngressToken | None = None,
+        reason: str = "",
     ) -> bool:
         if (
             session_epoch != expected_identity.session_epoch
@@ -5135,6 +5204,7 @@ class IndependentAsrRuntime:
                     provider=provider,
                     session_epoch=session_epoch,
                     ingress_token=ingress_token,
+                    reason=reason,
                 )
             )
         except Exception:

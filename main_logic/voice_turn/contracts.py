@@ -94,6 +94,10 @@ class AsrFailureEvent:
     # Captured before the failure callback yields, so Core can reject a late
     # failure after a different microphone lease has taken over.
     ingress_token: VoiceIngressToken | None = None
+    # The provider's own ``ASR_*`` failure code when it reported one (e.g. a
+    # local model that failed to load). Opaque to Core: only forwarded so the
+    # client can explain the failure; ``code`` stays the routing decision.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +127,8 @@ class AsrStatusEvent:
     # ingress identity that produced them so the consumer can fence stale
     # notifications without rejecting the handler's own blocked transition.
     ingress_token: VoiceIngressToken | None = None
+    # Provider failure detail for the client; see AsrFailureEvent.reason.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

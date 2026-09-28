@@ -201,6 +201,45 @@ async def test_commit_emits_one_final_and_duplicate_commit_is_ignored(pool) -> N
 
 
 @pytest.mark.parametrize(
+    ("session_language", "primed"),
+    [
+        ("zh-TW", True), ("zh-HK", True), ("zh-Hant-TW", True),
+        ("zh-CN", False), ("zh", False), ("ja", False), ("auto", False),
+    ],
+)
+async def test_traditional_chinese_sessions_prime_traditional_script(
+    pool, session_language, primed
+) -> None:
+    from config.prompts.prompts_voice import WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT
+
+    model = _FakeModel(_segment("你好"))
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language=session_language), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    await _send_utterance(requests)
+    await _next_event(responses, "final")
+    if primed:
+        assert model.calls[0]["initial_prompt"] == WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT
+    else:
+        assert "initial_prompt" not in model.calls[0]
+    await _shutdown(task, requests, responses)
+
+
+async def test_echoed_priming_text_is_dropped(pool) -> None:
+    from config.prompts.prompts_voice import WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT
+
+    model = _FakeModel(_segment(WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT))
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-TW"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    await _send_utterance(requests)
+    assert (await _next_event(responses, "final")).text == ""
+    await _shutdown(task, requests, responses)
+
+
+@pytest.mark.parametrize(
     ("session_language", "expected"),
     [("zh-TW", "zh"), ("ja", "ja"), ("en-US", "en"), ("auto", None)],
 )
@@ -762,6 +801,71 @@ def test_auto_device_without_gpu_honors_explicit_compute(
     assert constructed == [("base", "cpu", expected_compute)]
 
 
+def _install_downloading_whisper(monkeypatch, *, download_error=None, cuda_ok=False):
+    downloads: list[str] = []
+    constructed: list[tuple[str, str, str]] = []
+
+    def download_model(name: str) -> str:
+        downloads.append(name)
+        if download_error is not None:
+            raise download_error
+        return "/cache/" + name
+
+    class _ProbeModel:
+        def __init__(self, device: str) -> None:
+            self.device = device
+
+        def transcribe(self, audio: Any, **kwargs: Any):
+            if self.device == "cuda" and not cuda_ok:
+                raise RuntimeError("Library cublas64_12.dll is not found")
+            return iter(()), SimpleNamespace()
+
+    def whisper_model(path: str, *, device: str, compute_type: str) -> _ProbeModel:
+        constructed.append((path, device, compute_type))
+        return _ProbeModel(device)
+
+    monkeypatch.setattr(
+        faster_whisper,
+        "_import_faster_whisper",
+        lambda: SimpleNamespace(WhisperModel=whisper_model, download_model=download_model),
+    )
+    monkeypatch.setattr(faster_whisper, "_cuda_device_count", lambda: 1)
+    return downloads, constructed
+
+
+def test_download_failure_ends_the_load_without_trying_other_candidates(monkeypatch) -> None:
+    downloads, constructed = _install_downloading_whisper(
+        monkeypatch, download_error=ConnectionError("huggingface.co unreachable")
+    )
+    with pytest.raises(faster_whisper._LocalAsrFailure) as excinfo:
+        faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+    assert excinfo.value.code == "ASR_LOCAL_MODEL_LOAD_FAILED"
+    # One download attempt; no CUDA retry and no CPU model download.
+    assert downloads == ["medium"]
+    assert constructed == []
+
+
+def test_device_failure_reuses_the_downloaded_weights(monkeypatch) -> None:
+    downloads, constructed = _install_downloading_whisper(monkeypatch, cuda_ok=False)
+    model = faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+    assert model.device == "cpu"
+    # medium is fetched once for both CUDA attempts; base only for the CPU one.
+    assert downloads == ["medium", "base"]
+    assert constructed == [
+        ("/cache/medium", "cuda", "float16"),
+        ("/cache/medium", "cuda", "int8_float16"),
+        ("/cache/base", "cpu", "int8"),
+    ]
+
+
+def test_local_model_directory_is_not_downloaded(monkeypatch, tmp_path) -> None:
+    downloads, constructed = _install_downloading_whisper(monkeypatch, cuda_ok=True)
+    monkeypatch.setenv("NEKO_WHISPER_MODEL", str(tmp_path))
+    faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+    assert downloads == []
+    assert constructed == [(str(tmp_path), "cuda", "float16")]
+
+
 def test_all_candidates_failing_reports_model_load_failure(monkeypatch) -> None:
     def broken(*_args: Any, **_kwargs: Any):
         raise OSError("download failed")
@@ -801,8 +905,6 @@ async def test_model_is_shared_across_workers_and_leases_are_returned(pool) -> N
     # Reconnects within the idle window reuse the loaded model.
     assert loader.calls == 1
     assert pool.loaded_count() == 1
-    assert await asyncio.to_thread(pool.release_idle) == 1
-    assert pool.loaded_count() == 0
 
 
 def test_idle_model_is_released_after_timeout() -> None:
@@ -862,6 +964,85 @@ async def test_worker_publishes_model_warmup_on_its_queue(pool) -> None:
     )
     assert completed_at is not None and completed_at >= before_ready
     await _shutdown(task, requests, responses)
+
+
+class _ReadyProbeQueue(asyncio.Queue):
+    """Response queue that records the warm-up state the moment "ready" is put.
+
+    That is before the worker yields to the loop, so before its background
+    load task has run at all.
+    """
+
+    def __init__(self, requests: asyncio.Queue, *, fail_ready: bool = False) -> None:
+        super().__init__()
+        self._requests = requests
+        self._fail_ready = fail_ready
+        self.pending_at_ready: bool | None = None
+
+    async def put(self, item: _AsrWorkerEvent) -> None:
+        if item.kind == "ready":
+            from main_logic.asr_client.warmup import provider_warmup_state
+
+            state = provider_warmup_state(self._requests)
+            self.pending_at_ready = state is not None and state.pending
+            if self._fail_ready:
+                raise RuntimeError("ready could not be delivered")
+        await super().put(item)
+
+
+def _start_probed_worker(pool, loader, *, fail_ready: bool = False):
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses = _ReadyProbeQueue(requests, fail_ready=fail_ready)
+    task = asyncio.create_task(
+        faster_whisper.faster_whisper_asr_worker(
+            requests, responses, "", AsrSessionConfig(language="zh-CN"),
+            model_loader=loader, model_pool=pool,
+        )
+    )
+    return task, requests, responses
+
+
+async def test_warmup_is_published_before_ready_only_when_the_model_must_load(pool) -> None:
+    gate = threading.Event()
+    model = _FakeModel(_segment("好"))
+
+    def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
+        gate.wait(5)
+        return model
+
+    task, requests, responses = _start_probed_worker(pool, slow_loader)
+    await _next_event(responses, "ready")
+    assert responses.pending_at_ready is True
+    gate.set()
+    await _send_utterance(requests)
+    await _next_event(responses, "final")
+    await _shutdown(task, requests, responses)
+
+    # The model is now loaded: a new session starts without any warm-up.
+    task, requests, responses = _start_probed_worker(pool, slow_loader)
+    await _next_event(responses, "ready")
+    assert responses.pending_at_ready is False
+    await _shutdown(task, requests, responses)
+
+
+async def test_warmup_taken_before_ready_ends_even_if_the_load_never_ran(pool) -> None:
+    # "ready" fails to go out, so the worker ends before its load task ever
+    # ran: that task never reaches its own cleanup, the worker's must.
+    from main_logic.asr_client.warmup import provider_warmup_state
+
+    gate = threading.Event()
+
+    def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
+        gate.wait(5)
+        return _FakeModel()
+
+    task, requests, responses = _start_probed_worker(pool, slow_loader, fail_ready=True)
+    try:
+        await asyncio.wait_for(task, 3)
+        assert responses.pending_at_ready is True
+        assert provider_warmup_state(requests).pending is False
+    finally:
+        gate.set()
 
 
 async def test_shutdown_during_load_returns_the_abandoned_lease(pool) -> None:

@@ -6155,6 +6155,7 @@ class AsrRuntimeMixin:
                     code=event.code,
                     provider=event.provider,
                     session_epoch=event.session_epoch,
+                    reason=event.reason,
                     # The failure token was validated before this handler's
                     # own independent -> blocked transition. Rebase only its
                     # route generation to that transition so the status still
@@ -6266,6 +6267,8 @@ class AsrRuntimeMixin:
                 "provider": event.provider,
                 "session_epoch": event.session_epoch,
             }
+            if event.reason:
+                status_details["reason"] = event.reason
             if event.code in {
                 "ASR_INDEPENDENT_FAILED",
                 "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",

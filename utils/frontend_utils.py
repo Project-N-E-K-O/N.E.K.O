@@ -52,21 +52,25 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
-# 语音合成会把这些符号念出来（「等于」「井号」「百分号」…），入队前删掉。
+# 语音合成会把这些符号念出来（「井号」「竖线」「百分号」…），入队前删掉：
+# - ``\p{S}`` 里的 emoji、装饰符、箭头、修饰符号等
+# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号（# @ & * _ | / \ % ~ 〜 等）
 # 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
-# - ``\p{S}``：数学 / 货币 / 修饰 / 其它符号（含大部分 emoji 和装饰符）
-# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号
-# ℃ / ℉ / ° 例外：它们会被读成「摄氏度 / 华氏度 / 度」，是有意义的单位，保留。
-# 「22°C」「72°F」里的度数符号也是 °，删掉会剩下被念成字母的「C」「F」。
+# 删掉会改变意思、TTS 本来就念得对的符号保留：
+# - 货币符号（``\p{Sc}``）：「$100」「€20」念成「一百美元」「二十欧元」；
+# - 常用运算符 + − × ÷ = ≠ ≈ ± ≤ ≥：算式要念得出来；
+# - 温度 / 度数 ℃ ℉ °（「22°C」的度数符号也是 °），以及 CJK 兼容单位
+#   （U+3380–33FF，如 ㎡ ㎏ ㎞）；
+# - 负号和 C# 这类名字里的 #：见 ``_muted_symbol_replacement``。
 # 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
 # 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
 # 天城文等文字里正常使用的零宽连接符不受影响。
-_TTS_KEPT_UNIT_SYMBOLS = "℃℉°"
+_TTS_KEPT_SYMBOLS = "℃℉°+＋−×÷=＝≠≈±≤≥\u3380-\u33ff"
 _TTS_MUTED_SYMBOL_CLASS = (
-    r"(?![" + _TTS_KEPT_UNIT_SYMBOLS + r"])["
+    r"(?![" + _TTS_KEPT_SYMBOLS + r"])(?!\p{Sc})["
     r"\p{S}"
-    r"#＃@＠&＆\*＊\+_＿\-－﹣~～`｀\|｜\\/／＼"
-    r"\^＾%％\$＄"
+    r"#＃@＠&＆\*＊_＿\-－﹣~～〜`｀\|｜\\/／＼"
+    r"\^＾%％"
     r"<>＜＞«»‹›"
     r"•●○◆◇★☆※§¶†‡"
     r"]"
@@ -81,10 +85,10 @@ _TTS_MUTED_SYMBOL_RE = regex.compile(
 # 复合 emoji 被流式切开（「👩」「‍💻」）时，后一块开头的零宽连接符 / 变体选择符
 # 前面已经没有符号，上面的正则不会删它。由调用方记住上一块是否以被删的符号结尾，
 # 再用下面两个函数处理。
-# 只认 emoji 类符号（\p{So}，温度 / 度数单位除外）或连接符结尾：「%」「#」这类删掉的符号
+# 只认 emoji 类符号（\p{So}，保留的单位除外）或连接符结尾：「%」「#」这类删掉的符号
 # 后面紧跟的零宽连接符属于正常文字（如天城文 क्%ष 被切开），不能当 emoji 残余删掉。
 _TTS_TRAILING_EMOJI_RE = regex.compile(
-    r"(?:(?![" + _TTS_KEPT_UNIT_SYMBOLS + r"])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
+    r"(?:(?![" + _TTS_KEPT_SYMBOLS + r"])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
 _TTS_LEADING_JOINERS_RE = regex.compile(r"\A[\u200d\ufe0e\ufe0f\u20e3]+")
 
 
@@ -120,6 +124,33 @@ def is_tts_word_char(char: str) -> bool:
     )
 
 
+_TTS_MINUS_SIGNS = frozenset("-－﹣")
+_TTS_HASH_SIGNS = frozenset("#＃")
+
+
+def _is_minus_sign(symbol: str, prev_char: str, next_char: str) -> bool:
+    # 数字前、且前面不是字母数字的「-」是负号（「-5」「温度-5℃」「x = -3」）；
+    # 「3-5」「well-known」里夹在字母数字之间的是连接号，照常换成空格。
+    return (
+        symbol in _TTS_MINUS_SIGNS
+        and next_char.isdigit()
+        and not is_tts_word_char(prev_char)
+    )
+
+
+def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
+    """The minus sign a streamed chunk ends with, or ``""``.
+
+    ``before`` is the last character spoken before this chunk, for a chunk that
+    is nothing but the sign. The caller re-attaches it when the next chunk
+    starts with a digit ("温度-" + "5℃"); the filter itself cannot see that far.
+    """
+    if not text or text[-1] not in _TTS_MINUS_SIGNS:
+        return ""
+    prev_char = text[-2] if len(text) > 1 else before
+    return "" if is_tts_word_char(prev_char) else text[-1]
+
+
 def _muted_symbol_replacement(match) -> str:
     # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
     # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
@@ -127,8 +158,19 @@ def _muted_symbol_replacement(match) -> str:
     # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是字母数字」处理。
     text = match.string
     start, end = match.span()
+    symbol = match.group(0)
     prev_char = text[start - 1] if start > 0 else ""
     next_char = text[end] if end < len(text) else ""
+    if _is_minus_sign(symbol, prev_char, next_char):
+        return symbol
+    if (
+        symbol in _TTS_HASH_SIGNS
+        and prev_char.isascii()
+        and prev_char.isalpha()
+        and not (next_char.isascii() and next_char.isalnum())
+    ):
+        # C#、F# 这类名字：删掉「#」名字就变了。
+        return symbol
     prev_ok = is_tts_word_char(prev_char) if prev_char else True
     next_ok = is_tts_word_char(next_char) if next_char else True
     if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
@@ -139,8 +181,9 @@ def _muted_symbol_replacement(match) -> str:
 def strip_tts_muted_symbols(text: str) -> str:
     """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
 
-    Letters, digits, whitespace and sentence punctuation survive, as do the
-    temperature and degree units. A symbol between two letters/digits of a
+    Letters, digits, whitespace and sentence punctuation survive, as do
+    currency signs, common arithmetic operators, temperature / degree / CJK
+    units, a minus sign before a number and the "#" of names like C#. A symbol between two letters/digits of a
     space-delimited script becomes a space so the neighbours are not read as
     one number or word. Safe for streaming chunks: the chunk's own
     leading/trailing whitespace is left alone.

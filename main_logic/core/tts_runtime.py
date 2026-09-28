@@ -39,6 +39,7 @@ from utils.frontend_utils import (
     strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
     tts_chunk_ends_in_emoji,
+    tts_chunk_trailing_minus,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -433,6 +434,7 @@ class TtsRuntimeMixin:
         self._tts_last_spoken_char = ""
         self._tts_symbol_gap_pending = False
         self._tts_prev_chunk_ended_emoji = False
+        self._tts_pending_minus = ""
 
     def _strip_tts_symbols_across_chunks(self, text: str) -> str:
         """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
@@ -442,6 +444,8 @@ class TtsRuntimeMixin:
         chunk filters to nothing, and dropping it would glue the neighbours into
         ``35``. When that happens between an ASCII letter/digit and the next
         chunk's ASCII letter/digit, the next chunk gets a leading space instead.
+        A minus sign cut off at the end of a chunk ("温度-" + "5℃") is likewise
+        re-attached when the next chunk starts with a digit.
         Returns ``""`` when nothing is left to speak.
         """
         if text and not text.strip():
@@ -449,6 +453,7 @@ class TtsRuntimeMixin:
             # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
             self._tts_symbol_gap_pending = False
             self._tts_prev_chunk_ended_emoji = False
+            self._tts_pending_minus = ""
             self._tts_last_spoken_char = text[-1]
             return text
         if getattr(self, "_tts_prev_chunk_ended_emoji", False):
@@ -460,12 +465,18 @@ class TtsRuntimeMixin:
         self._tts_prev_chunk_ended_emoji = tts_chunk_ends_in_emoji(text)
         cleaned = strip_tts_muted_symbols(text)
         last = getattr(self, "_tts_last_spoken_char", "")
+        # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
+        # 下一块以数字开头时再补回去。
+        pending_minus = getattr(self, "_tts_pending_minus", "")
+        self._tts_pending_minus = tts_chunk_trailing_minus(text, last)
         if not cleaned or not cleaned.strip():
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
             if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
             return ""
-        if (
+        if pending_minus and cleaned[0].isdigit():
+            cleaned = pending_minus + cleaned
+        elif (
             getattr(self, "_tts_symbol_gap_pending", False)
             and is_tts_word_char(last)
             and is_tts_word_char(cleaned[0])

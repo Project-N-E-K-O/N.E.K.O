@@ -1048,7 +1048,9 @@
         "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用",
         "localAsr": "本地语音识别",
         "localAsrHint": "在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型",
-        "localAsrDependencyMissing": "本地语音识别需要 faster-whisper，但尚未安装，本次语音输入已停止。请先安装，或关闭本地语音识别，然后重新开始语音会话。"
+        "localAsrDependencyMissing": "本地语音识别需要 faster-whisper，但尚未安装，本次语音输入已停止。请先安装，或关闭本地语音识别，然后重新开始语音会话。",
+        "localAsrPreparing": "正在准备本地语音识别模型，首次使用需要下载，可能要几分钟。这期间说的话会在模型就绪后再识别。",
+        "localAsrModelLoadFailed": "本地语音识别模型加载失败，本次语音输入已停止。首次使用需要从 HuggingFace 下载模型；如果连不上，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",

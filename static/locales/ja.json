@@ -1048,7 +1048,9 @@
         "voiceResourceOptimizationHintOff": "音声認識を常時維持するため、通信量とリソース使用量が増える場合があります",
         "localAsr": "ローカル音声認識",
         "localAsrHint": "faster-whisper を使ってこのコンピューター上で音声を認識します。faster-whisper の別途インストールが必要で、初回利用時にモデルをダウンロードします",
-        "localAsrDependencyMissing": "ローカル音声認識には faster-whisper が必要ですが、インストールされていません。今回の音声入力は停止しました。インストールするか、ローカル音声認識をオフにしてから、新しい音声セッションを開始してください。"
+        "localAsrDependencyMissing": "ローカル音声認識には faster-whisper が必要ですが、インストールされていません。今回の音声入力は停止しました。インストールするか、ローカル音声認識をオフにしてから、新しい音声セッションを開始してください。",
+        "localAsrPreparing": "ローカル音声認識モデルを準備しています。初回はダウンロードが必要で、数分かかることがあります。その間に話した内容は、モデルの準備ができてから認識されます。",
+        "localAsrModelLoadFailed": "ローカル音声認識モデルを読み込めませんでした。今回の音声入力は停止しました。初回利用時は HuggingFace からモデルをダウンロードします。接続できない場合は、環境変数 HF_ENDPOINT（例: https://hf-mirror.com）を設定してから再起動するか、ローカル音声認識をオフにしてください。"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",

@@ -27,8 +27,7 @@ Model lifetime: loaded models live in a process-wide pool keyed by the
 requested model spec. Every running worker holds one lease. When the last lease
 is released the model is kept for ``_MODEL_IDLE_RELEASE_SECONDS`` so that the
 per-turn reconnects done by resource optimization reuse it, then it is dropped
-from a timer thread. ``release_idle_faster_whisper_models`` drops idle models
-immediately.
+from a timer thread.
 
 Weights are fetched by faster-whisper through huggingface_hub on first use,
 which honors ``HF_ENDPOINT`` / ``HF_HOME``; this module never pins a mirror.
@@ -49,7 +48,10 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from config.prompts.prompts_voice import WHISPER_SILENCE_HALLUCINATIONS
+from config.prompts.prompts_voice import (
+    WHISPER_SILENCE_HALLUCINATIONS,
+    WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT,
+)
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import (
@@ -173,6 +175,23 @@ def _session_language(config: AsrSessionConfig) -> str | None:
         return None
 
 
+_TRADITIONAL_CHINESE_REGIONS = frozenset({"zh-tw", "zh-hk", "zh-mo"})
+
+
+def _session_initial_prompt(config: AsrSessionConfig) -> str | None:
+    """Priming text that keeps Traditional Chinese sessions in Traditional script.
+
+    Whisper has a single ``zh`` language code and tends to answer in Simplified
+    characters; a short Traditional sentence as ``initial_prompt`` steers the
+    script. Other languages get no priming text.
+    """
+
+    normalized = str(config.language or "").strip().lower().replace("_", "-")
+    if normalized in _TRADITIONAL_CHINESE_REGIONS or normalized.startswith("zh-hant"):
+        return WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT
+    return None
+
+
 def _model_spec_from_env() -> _ModelSpec:
     model = str(os.getenv(_MODEL_ENV, "") or "").strip() or None
     device = str(os.getenv(_DEVICE_ENV, "") or "").strip().lower() or "auto"
@@ -241,20 +260,49 @@ def _probe_model(model: _TranscribeModel) -> None:
         break
 
 
+def _fetch_model_weights(module: Any, model_name: str) -> str:
+    """Download (or find in the cache) a model's weights; blocking.
+
+    Runs before any device attempt, so a network failure ends the load at once
+    instead of being retried for every CUDA/CPU candidate (each of which would
+    otherwise sit through its own download timeout). A local model directory
+    is used as is.
+    """
+
+    download_model = getattr(module, "download_model", None)
+    if download_model is None or os.path.isdir(model_name):
+        return model_name
+    try:
+        return str(download_model(model_name))
+    except Exception as exc:
+        logger.warning("faster-whisper model download failed model=%s: %s", model_name, exc)
+        raise _LocalAsrFailure(
+            "ASR_LOCAL_MODEL_LOAD_FAILED",
+            "faster-whisper model could not be downloaded",
+        ) from exc
+
+
 def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
-    """Load one model, falling back from CUDA to CPU; blocking."""
+    """Load one model, falling back from CUDA to CPU; blocking.
+
+    Only device errors move on to the next candidate; a download failure ends
+    the load (see ``_fetch_model_weights``).
+    """
 
     module = _import_faster_whisper()
     whisper_model_cls = module.WhisperModel
     last_error: BaseException | None = None
+    fetched: dict[str, str] = {}
     for device, compute_type in _device_candidates(spec):
         model_name = spec.model or (
             _DEFAULT_MODEL_CUDA if device == "cuda" else _DEFAULT_MODEL_CPU
         )
+        if model_name not in fetched:
+            fetched[model_name] = _fetch_model_weights(module, model_name)
         model = None
         try:
             model = whisper_model_cls(
-                model_name,
+                fetched[model_name],
                 device=device,
                 compute_type=compute_type,
             )
@@ -440,23 +488,10 @@ class _WhisperModelPool:
         del model
         logger.info("faster-whisper model released after idling")
 
-    def release_idle(self) -> int:
-        """Drop every model without active leases now; blocking."""
-
-        dropped: list[_TranscribeModel | None] = []
+    def is_loaded(self, spec: _ModelSpec) -> bool:
         with self._state_lock:
-            for spec, entry in list(self._entries.items()):
-                if entry.leases:
-                    continue
-                if entry.expiry is not None:
-                    entry.expiry.cancel()
-                    entry.expiry = None
-                del self._entries[spec]
-                dropped.append(entry.model)
-                entry.model = None
-        count = len(dropped)
-        dropped.clear()
-        return count
+            entry = self._entries.get(spec)
+            return entry is not None and entry.model is not None
 
     def loaded_count(self) -> int:
         with self._state_lock:
@@ -469,12 +504,6 @@ class _WhisperModelPool:
 
 
 _MODEL_POOL = _WhisperModelPool(idle_release_seconds=_MODEL_IDLE_RELEASE_SECONDS)
-
-
-async def release_idle_faster_whisper_models() -> int:
-    """Drop cached local ASR models that no running session is using."""
-
-    return await asyncio.to_thread(_MODEL_POOL.release_idle)
 
 
 def _normalize_hallucination_candidate(text: str) -> str:
@@ -515,6 +544,7 @@ def _transcribe_pcm16(
     model: _TranscribeModel,
     pcm16: bytes,
     language: str | None,
+    initial_prompt: str | None = None,
 ) -> str:
     """Decode one utterance; blocking, run it in a worker thread."""
 
@@ -523,6 +553,9 @@ def _transcribe_pcm16(
     audio = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
     if audio.size == 0:
         return ""
+    options: dict[str, Any] = {}
+    if initial_prompt:
+        options["initial_prompt"] = initial_prompt
     segments_iter, _info = model.transcribe(
         audio,
         language=language,
@@ -533,6 +566,7 @@ def _transcribe_pcm16(
         vad_filter=False,
         condition_on_previous_text=False,
         without_timestamps=True,
+        **options,
     )
     # The generator performs the actual decoding lazily.
     segments = list(segments_iter)
@@ -541,6 +575,11 @@ def _transcribe_pcm16(
     text = "".join(str(getattr(segment, "text", "") or "") for segment in segments)
     text = " ".join(text.split())
     if not text or _is_silence_hallucination(text, segments):
+        return ""
+    if initial_prompt and _normalize_hallucination_candidate(
+        text
+    ) == _normalize_hallucination_candidate(initial_prompt):
+        # The model repeated its own priming text instead of hearing speech.
         return ""
     return text
 
@@ -599,6 +638,7 @@ async def faster_whisper_asr_worker(
     pool = model_pool or _MODEL_POOL
     spec = _model_spec_from_env()
     language = _session_language(config)
+    initial_prompt = _session_initial_prompt(config)
     last_generation = 0
     current_generation = 0
     current_buffer_epoch = 0
@@ -611,6 +651,9 @@ async def faster_whisper_asr_worker(
     # in the decoder's FIFO order. Mutated on the loop and the decode thread.
     decode_chain: list[_QueuedDecode] = []
     decode_chain_lock = threading.Lock()
+    # Warm-up taken before "ready"; also ended in the final cleanup, since a
+    # load task cancelled before it first runs never reaches its own finally.
+    initial_warmup: object | None = None
     failure_sent = False
 
     async def emit_error(
@@ -651,15 +694,19 @@ async def faster_whisper_asr_worker(
         for task in tasks:
             pending.pop(task, None)
 
-    async def acquire_model() -> _TranscribeModel:
-        # Tell the runtime that model preparation (possibly a first download)
-        # is in progress, so its per-utterance final watchdog does not count it.
-        warmup_token = begin_provider_warmup(request_queue)
+    async def acquire_model(warmup_token: object | None) -> _TranscribeModel:
+        # While the model is prepared (possibly a first download) the runtime
+        # sees a warm-up in progress, so its per-utterance final watchdog does
+        # not count it and the client can be told. The token is usually taken
+        # before "ready" (see below); one is taken here if the model turned out
+        # not to be loaded after all.
         try:
             while True:
                 model = pool.try_lease(spec)
                 if model is not None:
                     return model
+                if warmup_token is None:
+                    warmup_token = begin_provider_warmup(request_queue)
                 # Shared per spec; cancelling this session only stops waiting.
                 # No lease is taken until the load is done, so there is none
                 # to hand back when the session ends mid-download.
@@ -667,7 +714,8 @@ async def faster_whisper_asr_worker(
                     asyncio.wrap_future(pool.ensure_loading(spec, loader))
                 )
         finally:
-            complete_provider_warmup(request_queue, warmup_token)
+            if warmup_token is not None:
+                complete_provider_warmup(request_queue, warmup_token)
 
     async def transcribe(
         key: _UtteranceKey,
@@ -739,7 +787,7 @@ async def faster_whisper_asr_worker(
                     # Cancelled while queued: drop the PCM without decoding.
                     return None
                 begin_transport_write(request_queue)
-                return _transcribe_pcm16(model, pcm16, language)
+                return _transcribe_pcm16(model, pcm16, language, initial_prompt)
             finally:
                 leave_decoder()
                 pool.release_decode()
@@ -788,9 +836,13 @@ async def faster_whisper_asr_worker(
             return
 
         # Load in the background: the first download can take far longer than
-        # the session ready timeout. Commits wait for this task.
+        # the session ready timeout. Commits wait for this task. A model that
+        # still has to be loaded is published as warming up before "ready", so
+        # the runtime can tell the client right when the session connects.
+        if not pool.is_loaded(spec):
+            initial_warmup = begin_provider_warmup(request_queue)
         model_task = asyncio.create_task(
-            acquire_model(),
+            acquire_model(initial_warmup),
             name="faster-whisper-asr-load",
         )
         await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
@@ -986,10 +1038,14 @@ async def faster_whisper_asr_worker(
                     request_queue.task_done()
         await cancel_pending()
         buffers.clear()
+        if initial_warmup is not None:
+            complete_provider_warmup(request_queue, initial_warmup)
         if model_task is not None:
             if not model_task.done():
-                # acquire_model hands the lease back itself once the thread
-                # finishes.
+                # Cancelled while waiting for the shared load: no lease was
+                # taken yet (try_lease is synchronous), so there is none to
+                # release. The load itself keeps running in the background and
+                # is reclaimed by the pool's idle timer.
                 model_task.cancel()
                 await asyncio.gather(model_task, return_exceptions=True)
             elif not model_task.cancelled() and model_task.exception() is None:

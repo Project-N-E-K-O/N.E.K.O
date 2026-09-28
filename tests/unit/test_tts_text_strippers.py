@@ -359,7 +359,7 @@ def test_markdown_chained_with_bracket_image_dropped():
         ("进度100%的人", "进度100的人"),
         ("标签#热门", "标签热门"),
         ("邮箱@测试", "邮箱测试"),
-        ("开心＝开心了", "开心开心了"),
+        ("开心/开心了", "开心开心了"),
         ("表情😀好", "表情好"),
         # 复合 emoji 的变体选择符 / 零宽连接符 / 键帽组合符不留残渣
         ("好\u2764\ufe0f呀", "好呀"),
@@ -367,9 +367,9 @@ def test_markdown_chained_with_bracket_image_dropped():
         ("1\ufe0f\u20e3号", "1号"),
         # 天城文里正常使用的零宽连接符保留
         ("\u0915\u094d\u200d\u0937", "\u0915\u094d\u200d\u0937"),
-        ("温度≈25", "温度25"),
+        ("温度≈25", "温度≈25"),
         # 摄氏度 / 华氏度会被读成单位，保留
-        ("温度≈25℃", "温度25℃"),
+        ("温度≈25℃", "温度≈25℃"),
         ("华氏77℉", "华氏77℉"),
         # 用度数符号拼的单位（22°C / 72°F）和单独的度数同样保留
         ("气温22°C", "气温22°C"),
@@ -378,9 +378,9 @@ def test_markdown_chained_with_bracket_image_dropped():
         # 夹在 ASCII 字母数字之间的换成空格，免得连成另一个数 / 词
         ("3~5天", "3 5天"),
         ("9/28号", "9 28号"),
-        ("价格￥10$5", "价格10 5"),
+        ("价格￥10$5", "价格￥10$5"),
         ("well-known", "well known"),
-        ("A+B*C", "A B C"),
+        ("A+B*C", "A+B C"),
         # 句读标点、撇号保留
         ("你好，世界！", "你好，世界！"),
         ("他说：“好的。”", "他说：“好的。”"),
@@ -393,10 +393,49 @@ def test_strip_tts_muted_symbols(text, expected):
     assert strip_tts_muted_symbols(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 货币符号保留：TTS 念成「一百美元」，删掉就丢了单位
+        ("$100", "$100"),
+        ("€20", "€20"),
+        # 数字前的负号保留，零下不能变零上；夹在数字之间的仍是连接号
+        ("温度-5℃", "温度-5℃"),
+        ("-5度", "-5度"),
+        ("x = -3", "x = -3"),
+        ("3-5天", "3 5天"),
+        # 常用运算符保留，算式念得出来
+        ("±5", "±5"),
+        ("约≈3", "约≈3"),
+        ("2+2=4", "2+2=4"),
+        ("3×4", "3×4"),
+        ("10÷2", "10÷2"),
+        ("1≤x≥0≠2", "1≤x≥0≠2"),
+        # CJK 兼容单位保留
+        ("50㎡", "50㎡"),
+        ("3㎏", "3㎏"),
+        # C#、F# 这类名字保留「#」；其它位置的「#」照常删
+        ("C++ 和 C#", "C++ 和 C#"),
+        ("F#。", "F#。"),
+        ("第#1名", "第1名"),
+        ("a#b", "a b"),
+        # 〜（U+301C）和 ~ / ～ 一样处理
+        ("好的〜", "好的"),
+        ("好的～", "好的"),
+        ("3〜5天", "3 5天"),
+        # emoji、装饰符、箭头仍然删
+        ("好的→下一步", "好的下一步"),
+        ("★重点★", "重点"),
+    ],
+)
+def test_filter_keeps_symbols_that_carry_meaning(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
 def test_strip_tts_muted_symbols_at_chunk_edges():
     # 流式分块的首尾空格属于拼接用，不能吃掉。
-    assert strip_tts_muted_symbols(" 你好=") == " 你好"
-    assert strip_tts_muted_symbols("=世界 ") == "世界 "
+    assert strip_tts_muted_symbols(" 你好#") == " 你好"
+    assert strip_tts_muted_symbols("#世界 ") == "世界 "
     # 分块正好切在两个数字之间的符号上：留空格，下一块接上时不会连成一个数。
     assert strip_tts_muted_symbols("3~") + strip_tts_muted_symbols("5天") == "3 5天"
     assert strip_tts_muted_symbols("%") == ""
@@ -448,9 +487,27 @@ def test_enqueue_keeps_the_gap_a_symbol_only_chunk_stood_for():
 
 def test_symbol_only_chunk_between_cjk_adds_no_space():
     mgr = _bare_tts_runtime()
-    for chunk in ("开心", "＝", "开心了"):
+    for chunk in ("开心", "／", "开心了"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert _drain(mgr.tts_request_queue) == [("s1", "开心"), ("s1", "开心了")]
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (("温度", "-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        (("温度-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        # A minus not followed by a digit is dropped, as before.
+        (("温度", "-", "很低"), [("s1", "温度"), ("s1", "很低")]),
+        # Between two numbers it stays a range separator.
+        (("3", "-", "5天"), [("s1", "3"), ("s1", " 5天")]),
+    ],
+)
+def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):
+    mgr = _bare_tts_runtime()
+    for chunk in chunks:
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == expected
 
 
 def test_symbol_gap_does_not_leak_into_the_next_speech():
@@ -537,11 +594,11 @@ def test_trailing_symbol_between_digit_chunks_keeps_the_gap():
         # 靠空格分词的文字（西里尔、希腊、天城文、韩文）：符号换成空格，词不粘在一起
         # 汉字、假名、泰文这类不用空格分词的文字：直接删
         ("\u043f\u043e-\u0440\u0443\u0441\u0441\u043a\u0438", "\u043f\u043e \u0440\u0443\u0441\u0441\u043a\u0438"),
-        ("\u03b1+\u03b2", "\u03b1 \u03b2"),
+        ("\u03b1/\u03b2", "\u03b1 \u03b2"),
         ("\u0938\u094c%\u0926\u094b", "\u0938\u094c \u0926\u094b"),
         ("\ud55c\uad6d-\uc5b4", "\ud55c\uad6d \uc5b4"),
         ("\u0e20\u0e32\u0e29\u0e32-\u0e44\u0e17\u0e22", "\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22"),
-        ("\u306d\u3053=\u3044\u306c", "\u306d\u3053\u3044\u306c"),
+        ("\u306d\u3053/\u3044\u306c", "\u306d\u3053\u3044\u306c"),
     ],
 )
 def test_symbol_between_non_ascii_words_follows_the_script(text, expected):
