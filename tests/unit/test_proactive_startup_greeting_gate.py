@@ -1,9 +1,10 @@
 """Proactive chat must not talk over the startup / character-switch greeting.
 
-``greeting_check`` arms a gate in app-proactive.js. It opens when the first
-assistant turn that STARTED after arming ends, and at the latest after
-``STARTUP_GREETING_GATE_MAX_MS`` (the backend may decide not to greet at all,
-in which case no turn ever arrives). While it holds, both proactive timer
+``greeting_check`` arms a gate in app-proactive.js. It follows the first
+assistant turn that STARTED after arming: it opens when that turn's speech
+ends (or is cancelled / unavailable), a few seconds after its text ends if no
+speech ever starts, and at the latest after ``STARTUP_GREETING_GATE_MAX_MS``
+(the backend may decide not to greet at all, in which case no turn arrives). While it holds, both proactive timer
 branches skip exactly like the "assistant is speaking" guard.
 """
 from __future__ import annotations
@@ -58,17 +59,39 @@ out.idle = P.isStartupGreetingGateHolding();
 P.armStartupGreetingGate('ws-open');
 out.armed = P.isStartupGreetingGateHolding();
 
-// 3. A turn-end left over from a turn that started BEFORE arming must not open it.
+// 3. Events from a turn that started BEFORE arming must not open it.
 fire('neko-assistant-turn-end');
-out.afterStaleTurnEnd = P.isStartupGreetingGateHolding();
+fire('neko-assistant-speech-end');
+out.afterStaleEvents = P.isStartupGreetingGateHolding();
 
-// 4. The greeting turn starts and ends: gate opens.
+// 4. Greeting text ends before its first audio chunk: still held through the
+//    gap, then speech plays past the text-only grace and its end opens the gate.
 fire('neko-assistant-turn-start');
-out.duringGreetingTurn = P.isStartupGreetingGateHolding();
 fire('neko-assistant-turn-end');
-out.afterGreetingTurn = P.isStartupGreetingGateHolding();
+out.textEndedNoSpeechYet = P.isStartupGreetingGateHolding();
+now += 1_000;
+fire('neko-assistant-speech-start');
+now += 10_000;
+out.speakingPastTextGrace = P.isStartupGreetingGateHolding();
+fire('neko-assistant-speech-end');
+out.afterSpeechEnd = P.isStartupGreetingGateHolding();
 
-// 5. No greeting ever arrives (backend skipped): opens by itself at 45 s.
+// 5. Text-only greeting (no speech ever starts): opens after the grace.
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start');
+fire('neko-assistant-turn-end');
+now += 4_999;
+out.textOnlyBeforeGrace = P.isStartupGreetingGateHolding();
+now += 1;
+out.textOnlyAtGrace = P.isStartupGreetingGateHolding();
+
+// 6. TTS unavailable for the greeting turn: opens at once.
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start');
+fire('neko-assistant-speech-unavailable');
+out.afterSpeechUnavailable = P.isStartupGreetingGateHolding();
+
+// 7. No greeting ever arrives (backend skipped): opens by itself at 45 s.
 P.armStartupGreetingGate('ws-open');
 now += 44_999;
 out.justBeforeCap = P.isStartupGreetingGateHolding();
@@ -88,16 +111,20 @@ def node_path():
     return path
 
 
-def test_gate_opens_on_greeting_turn_end_or_after_45_seconds(node_path, monkeypatch):
+def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_path, monkeypatch):
     monkeypatch.setenv("PROACTIVE_JS", str(PROACTIVE_JS))
     result = run_node_script(node_path, _HARNESS, capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         "idle": False,
         "armed": True,
-        "afterStaleTurnEnd": True,
-        "duringGreetingTurn": True,
-        "afterGreetingTurn": False,
+        "afterStaleEvents": True,
+        "textEndedNoSpeechYet": True,
+        "speakingPastTextGrace": True,
+        "afterSpeechEnd": False,
+        "textOnlyBeforeGrace": True,
+        "textOnlyAtGrace": False,
+        "afterSpeechUnavailable": False,
         "justBeforeCap": True,
         "atCap": False,
     }

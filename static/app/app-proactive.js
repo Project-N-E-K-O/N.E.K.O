@@ -604,20 +604,25 @@
     // greeting_check 发出后，后端要先生成问候文本、再合成语音，这段时间里
     // _isAssistantSpeaking() 还是 false —— 主动搭话的定时器恰好到点就会插进来，
     // 和问候叠成两段语音。所以 greeting_check 一发出就关阀：
-    //   1. 事件：发出之后开始的那一轮 assistant turn 结束（neko-assistant-turn-end），
-    //      阀门打开；之后的音频播放仍由 _isAssistantSpeaking() 挡住。
-    //      只认「关阀之后才开始」的 turn，免得上一轮残留的 turn-end 提前开阀。
+    //   1. 事件：只认「关阀之后才开始」的那一轮 assistant turn（免得上一轮残留的
+    //      事件提前开阀）。它的语音播完（speech-end / cancel / unavailable）时开阀。
+    //      文本 turn 结束时语音可能还没开始（首个音频块晚到），这段空窗里
+    //      _isAssistantSpeaking() 为 false，所以 turn-end 本身不开阀；turn-end 之后
+    //      STARTUP_GREETING_TEXT_ONLY_GRACE_MS 内仍没有语音开始，才按纯文本问候开阀。
     //   2. 兜底：后端判定不问候（刷新重连 ≤15s 等）时不会有任何 turn，
     //      最迟 STARTUP_GREETING_GATE_MAX_MS 后自动开阀，绝不卡死主动搭话。
     // 阀门关着时，定时器到点按「AI 正在说话」同样处理：跳过本次、不计数、排下一 tick。
     var STARTUP_GREETING_GATE_MAX_MS = 45000;
+    var STARTUP_GREETING_TEXT_ONLY_GRACE_MS = 5000;
 
     function armStartupGreetingGate(reason) {
         if (!S) return;
         S._startupGreetingGate = {
             armedAt: Date.now(),
             reason: reason || '',
-            turnStarted: false
+            turnStarted: false,
+            turnEndedAt: 0,
+            speechStarted: false
         };
     }
     mod.armStartupGreetingGate = armStartupGreetingGate;
@@ -625,14 +630,27 @@
     function isStartupGreetingGateHolding() {
         var gate = S && S._startupGreetingGate;
         if (!gate) return false;
-        if (Date.now() - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
+        var now = Date.now();
+        if (now - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
             S._startupGreetingGate = null;
             console.log('[ProactiveChat] 问候避让阀超时自动打开（' + (STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候完成）');
+            return false;
+        }
+        if (gate.turnEndedAt && !gate.speechStarted
+                && now - gate.turnEndedAt >= STARTUP_GREETING_TEXT_ONLY_GRACE_MS) {
+            _releaseStartupGreetingGate('问候没有语音，按纯文本结束');
             return false;
         }
         return true;
     }
     mod.isStartupGreetingGateHolding = isStartupGreetingGateHolding;
+
+    function _releaseStartupGreetingGate(why) {
+        var gate = S && S._startupGreetingGate;
+        if (!gate) return;
+        S._startupGreetingGate = null;
+        console.log('[ProactiveChat] 打开问候避让阀：' + why + '（' + (gate.reason || '-') + '）');
+    }
 
     window.addEventListener('neko-assistant-turn-start', function () {
         var gate = S && S._startupGreetingGate;
@@ -640,9 +658,21 @@
     });
     window.addEventListener('neko-assistant-turn-end', function () {
         var gate = S && S._startupGreetingGate;
-        if (!gate || !gate.turnStarted) return;
-        S._startupGreetingGate = null;
-        console.log('[ProactiveChat] 问候这一轮已结束，打开问候避让阀（' + (gate.reason || '-') + '）');
+        if (!gate || !gate.turnStarted || gate.turnEndedAt) return;
+        gate.turnEndedAt = Date.now();
+    });
+    window.addEventListener('neko-assistant-speech-start', function () {
+        var gate = S && S._startupGreetingGate;
+        if (gate && gate.turnStarted) gate.speechStarted = true;
+    });
+    ['neko-assistant-speech-end', 'neko-assistant-speech-cancel', 'neko-assistant-speech-unavailable'].forEach(function (name) {
+        window.addEventListener(name, function () {
+            var gate = S && S._startupGreetingGate;
+            if (!gate || !gate.turnStarted) return;
+            // cancel / unavailable 可能在语音开始前就到（被打断、TTS 连不上），同样说明
+            // 这一轮不会再有问候语音了。
+            _releaseStartupGreetingGate('问候语音已结束');
+        });
     });
 
     // 给 proactive skip 日志带上 _isAssistantSpeaking 用到的全部输入 + 音频队列长度。
