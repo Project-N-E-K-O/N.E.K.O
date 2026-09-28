@@ -35,6 +35,7 @@ from utils.frontend_utils import (
     is_only_punctuation,
     TtsMarkdownStripper,
     TtsBracketStripper,
+    is_tts_word_char,
     strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
     tts_chunk_ends_in_emoji,
@@ -461,13 +462,13 @@ class TtsRuntimeMixin:
         last = getattr(self, "_tts_last_spoken_char", "")
         if not cleaned or not cleaned.strip():
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
-            if text and text.strip() and last.isascii() and last.isalnum():
+            if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
             return ""
         if (
             getattr(self, "_tts_symbol_gap_pending", False)
-            and last.isascii() and last.isalnum()
-            and cleaned[0].isascii() and cleaned[0].isalnum()
+            and is_tts_word_char(last)
+            and is_tts_word_char(cleaned[0])
         ):
             cleaned = " " + cleaned
         self._tts_symbol_gap_pending = False

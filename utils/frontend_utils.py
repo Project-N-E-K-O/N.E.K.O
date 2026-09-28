@@ -95,21 +95,40 @@ def strip_leading_emoji_joiners(text: str) -> str:
     return _TTS_LEADING_JOINERS_RE.sub("", text) if text else text
 
 
-def _is_ascii_alnum(char: str) -> bool:
-    return char.isascii() and char.isalnum()
+# 不靠空格分词的文字（汉字、假名、泰文等）：这些字之间删掉符号后不补空格。
+_TTS_UNSPACED_SCRIPT_RE = regex.compile(
+    r"[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}\p{Lao}\p{Khmer}\p{Myanmar}]"
+)
+_TTS_WORD_CHAR_RE = regex.compile(r"[\p{L}\p{N}\p{M}]")
+
+
+def is_tts_word_char(char: str) -> bool:
+    """Whether a removed symbol next to ``char`` should leave a space behind.
+
+    Letters and digits of space-delimited scripts (Latin, Cyrillic, Greek,
+    Hangul, Devanagari, ...) qualify; scripts written without spaces between
+    words (Han, kana, Thai, ...) do not.
+    """
+    return (
+        len(char) == 1
+        # 组合标记也算：天城文等词尾常是元音符号（ौ），它不是 isalnum。
+        and _TTS_WORD_CHAR_RE.match(char) is not None
+        and _TTS_UNSPACED_SCRIPT_RE.match(char) is None
+    )
 
 
 def _muted_symbol_replacement(match) -> str:
-    # 夹在两个 ASCII 字母 / 数字之间的符号换成空格而不是直接删：
-    # 「3~5」「9/28」「well-known」删成「35」「928」「wellknown」会被念成另一个数 / 词。
-    # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是 ASCII 字母数字」处理。
+    # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
+    # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
+    # 会被念成另一个数 / 词。汉字、假名这类本来就不用空格分词的文字不补。
+    # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是字母数字」处理。
     text = match.string
     start, end = match.span()
     prev_char = text[start - 1] if start > 0 else ""
     next_char = text[end] if end < len(text) else ""
-    prev_ok = _is_ascii_alnum(prev_char) if prev_char else True
-    next_ok = _is_ascii_alnum(next_char) if next_char else True
-    if prev_ok and next_ok and (_is_ascii_alnum(prev_char) or _is_ascii_alnum(next_char)):
+    prev_ok = is_tts_word_char(prev_char) if prev_char else True
+    next_ok = is_tts_word_char(next_char) if next_char else True
+    if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
         return " "
     return ""
 
@@ -118,8 +137,9 @@ def strip_tts_muted_symbols(text: str) -> str:
     """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
 
     Letters, digits, whitespace and sentence punctuation survive, as do the
-    temperature units. A symbol between two ASCII letters/digits becomes a space
-    so the neighbours are not read as one number or word. Safe for streaming
+    temperature units. A symbol between two letters/digits of a space-delimited
+    script becomes a space so the neighbours are not read as one number or word.
+    Safe for streaming
     chunks: the chunk's own leading/trailing whitespace is left alone.
     """
     if not text:

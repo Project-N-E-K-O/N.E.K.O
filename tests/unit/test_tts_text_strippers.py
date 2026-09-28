@@ -512,11 +512,11 @@ def test_joiner_in_text_after_plain_chunk_is_kept():
 
 def test_joiner_after_a_non_emoji_symbol_is_kept():
     # 天城文被「%」切开：前一块以「%」结尾（不是 emoji），下一块开头的零宽连接符
-    # 属于文字本身，不能当成 emoji 残余删掉。
+    # 属于文字本身，不能当成 emoji 残余删掉；「%」本身按词间分隔换成空格。
     mgr = _bare_tts_runtime()
     for chunk in ("\u0915\u094d%", "\u200d\u0937"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
-    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d"), ("s1", "\u200d\u0937")]
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d "), ("s1", "\u200d\u0937")]
 
 
 def test_trailing_symbol_between_digit_chunks_keeps_the_gap():
@@ -525,3 +525,27 @@ def test_trailing_symbol_between_digit_chunks_keeps_the_gap():
     for chunk in ("3%", "5"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert _drain(mgr.tts_request_queue) == [("s1", "3 "), ("s1", "5")]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 靠空格分词的文字（西里尔、希腊、天城文、韩文）：符号换成空格，词不粘在一起
+        # 汉字、假名、泰文这类不用空格分词的文字：直接删
+        ("\u043f\u043e-\u0440\u0443\u0441\u0441\u043a\u0438", "\u043f\u043e \u0440\u0443\u0441\u0441\u043a\u0438"),
+        ("\u03b1+\u03b2", "\u03b1 \u03b2"),
+        ("\u0938\u094c%\u0926\u094b", "\u0938\u094c \u0926\u094b"),
+        ("\ud55c\uad6d-\uc5b4", "\ud55c\uad6d \uc5b4"),
+        ("\u0e20\u0e32\u0e29\u0e32-\u0e44\u0e17\u0e22", "\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22"),
+        ("\u306d\u3053=\u3044\u306c", "\u306d\u3053\u3044\u306c"),
+    ],
+)
+def test_symbol_between_non_ascii_words_follows_the_script(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_symbol_only_chunk_between_cyrillic_chunks_keeps_the_gap():
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u043f\u043e", "-", "\u0440\u0443\u0441\u0441\u043a\u0438"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u043f\u043e"), ("s1", " \u0440\u0443\u0441\u0441\u043a\u0438")]
