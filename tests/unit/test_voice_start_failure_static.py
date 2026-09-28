@@ -792,19 +792,14 @@ def test_screen_share_toggle_has_blue_wave_and_four_point_sparkles():
     assert "waveFx.deactivate" in toggle_factory
     assert ".replay(" not in toggle_factory
 
-    # The full toggle keeps its knob/wave; the inline variant is a settings-row chevron.
+    # Full and inline variants keep matching knob positions and wave origins.
     assert ".neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}" in styles
     assert ".neko-share-toggle-btn.neko-share-toggle-mini" in styles
-    assert (
-        ".neko-share-toggle-mini .neko-share-toggle-wave,"
-        ".neko-share-toggle-mini .neko-share-toggle-knob,"
-        ".neko-share-toggle-mini .neko-share-toggle-sparkles{display:none;}"
-    ) in styles
-    assert ".neko-share-toggle-mini.is-active{color:var(--neko-popup-accent,#4f8cff);}" in styles
-    assert "label.textContent = mini ? '\\u203A' : accessibleLabel;" in toggle_factory
-    assert "button.setAttribute('aria-label', accessibleLabel);" in toggle_factory
+    assert ".neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}" in styles
     assert "--neko-share-wave-x:20px" in styles
+    assert "--neko-share-wave-x:12px" in styles
     assert "--neko-share-wave-radius:148%" in styles
+    assert "--neko-share-wave-radius:116%" in styles
     assert "prefers-reduced-motion:reduce" in styles
 
     prune = _js_function_block(source, "pruneShareToggleButtons")
