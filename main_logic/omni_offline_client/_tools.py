@@ -272,7 +272,13 @@ class _ToolingMixin:
         vision_model = getattr(self, "vision_model", "") or ""
         if not vision_model:
             return False
-        if vision_model == self.model:
+        # 同一个模型 id 只有在端点也相同时才算「已经在视觉槽上」；视觉槽配了
+        # 另一个 URL / Key 时照样要走下面的切换。
+        if (
+            vision_model == self.model
+            and (getattr(self, "vision_base_url", None) or None) == (getattr(self, "base_url", None) or None)
+            and (getattr(self, "vision_api_key", None) or None) == (getattr(self, "api_key", None) or None)
+        ):
             return True
         on_genai = bool(
             getattr(self, "_use_genai_sdk", False)

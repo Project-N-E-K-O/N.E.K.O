@@ -171,10 +171,8 @@ class _StreamingMixin:
             self._model_switch_lock = lock
 
         async with lock:
-            if not new_model or new_model == self.model:
+            if not new_model:
                 return
-
-            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
             if use_vision_config:
@@ -185,6 +183,18 @@ class _StreamingMixin:
                 base_url = self.base_url
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
+
+            # 模型 id 相同也不能直接返回：视觉槽可以填和对话槽同一个模型 id、却指向
+            # 另一个 URL / Key（例如本地 Ollama 专门跑多模态的那一台）。只比 id 的话
+            # 截图帧会一直打在纯文本端点上。id 和端点都没变才是真正的 no-op。
+            if (
+                new_model == self.model
+                and (base_url or None) == (self.base_url or None)
+                and (api_key or None) == (self.api_key or None)
+            ):
+                return
+
+            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -693,8 +703,11 @@ class _StreamingMixin:
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
-            # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
+            # (cannot switch back because image data remains in conversation history).
+            # Do not require vision_model != model: the same id on a different
+            # vision URL/key must still switch; switch_model itself is a no-op
+            # when both the id and the endpoint already match.
+            if self.vision_model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
