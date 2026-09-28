@@ -36,3 +36,18 @@ export function newSchemaValue(schema?: ConfigEditorSchema): unknown {
     default: return ''
   }
 }
+
+/** Redact display copies only; configuration values and save payloads stay intact. */
+export function redactConfigSecrets(value: unknown, schema?: ConfigEditorSchema): unknown {
+  if (value === undefined) return undefined
+  if (schema?.writeOnly) return '********'
+  if (Array.isArray(value)) return value.map((item) => redactConfigSecrets(item, schema?.items))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      const field = schema?.properties && Object.prototype.hasOwnProperty.call(schema.properties, key)
+        ? schema.properties[key] : undefined
+      return [key, redactConfigSecrets(child, field)]
+    }))
+  }
+  return value
+}

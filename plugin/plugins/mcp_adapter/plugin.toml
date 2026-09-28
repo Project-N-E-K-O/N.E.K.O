@@ -50,10 +50,6 @@ persist_mode = "auto"
 
 [mcp_servers]
 
-[adapter]
-mode = "gateway"
-priority = 0
-
 [mcp_adapter]
 connect_timeout = 30
 tool_timeout = 60

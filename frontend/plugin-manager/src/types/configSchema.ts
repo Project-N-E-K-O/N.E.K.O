@@ -11,6 +11,7 @@ export interface ConfigEditorSchema {
   maximum?: number
   maxLength?: number
   readOnly?: boolean
+  writeOnly?: boolean
   'x-title-i18n'?: Record<string, string>
   'x-description-i18n'?: Record<string, string>
 }

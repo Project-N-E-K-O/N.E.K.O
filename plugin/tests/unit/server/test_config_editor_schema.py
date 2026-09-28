@@ -138,3 +138,25 @@ def test_supported_scalar_enum_values_are_preserved(manifest: Path) -> None:
     }}}
     manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
     assert load_config_editor_schema(manifest) == (schema, [])
+
+
+@pytest.mark.parametrize("field", [
+    {"type": "string", "writeOnly": "true"},
+    {"type": "number", "writeOnly": True},
+    {"writeOnly": True},
+])
+def test_invalid_secret_controls_warn(manifest: Path, field: dict) -> None:
+    schema = {"type": "object", "properties": {"credential": field}}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    loaded, warnings = load_config_editor_schema(manifest)
+    assert loaded is None
+    assert warnings[0]["code"] == "PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID"
+
+
+def test_secret_annotations_survive_schema_loading(manifest: Path) -> None:
+    schema = {"type": "object", "properties": {
+        "credential": {"type": "string", "writeOnly": True, "default": ""},
+        "label": {"type": "string", "writeOnly": False},
+    }}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    assert load_config_editor_schema(manifest) == (schema, [])

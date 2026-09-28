@@ -185,7 +185,8 @@
             "es": "Token para API protegidas. Vacío usa NEKO_CLAUDE_COMPANION_TOKEN o genera uno temporal si no está definido.",
             "pt": "Token para APIs protegidas. Vazio usa NEKO_CLAUDE_COMPANION_TOKEN ou gera um temporário se não estiver definido."
           },
-          "default": ""
+          "default": "",
+          "writeOnly": true
         }
       }
     }

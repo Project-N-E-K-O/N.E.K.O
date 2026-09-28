@@ -312,6 +312,7 @@ plugin/plugins/smart_notes/
 | `minimum` / `maximum` | 数値入力の上下限。`integer` は整数のみを受け付けます。 |
 | `maxLength` | テキスト入力の最大文字数。 |
 | `readOnly` | 項目と子コントロールの編集を無効にします。 |
+| 文字列項目の writeOnly: true | パスワード入力を使い、JSON 差分の両側で値をマスクします。保存には実際の値を使用します。表示のマスクであり、暗号化やアクセス制御ではありません。 |
 | `default` | 項目や配列要素を明示的に追加する際の初期値。実行時設定の既定値ではありません。 |
 | `x-title-i18n` / `x-description-i18n` | 任意の locale とテキストの対応表。標準の `title` と `description` は文字列のままです。 |
 

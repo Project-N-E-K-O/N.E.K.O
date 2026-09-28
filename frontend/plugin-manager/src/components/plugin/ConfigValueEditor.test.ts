@@ -507,3 +507,30 @@ describe('ConfigValueEditor — schema review regressions', () => {
     }
   })
 })
+
+describe('ConfigValueEditor confidential controls', () => {
+  it('masks enum-backed secrets instead of exposing them in a dropdown', async () => {
+    const { host, emitted } = mountEditor(undefined, 'fixture-secret', {
+      type: 'string', writeOnly: true, enum: ['fixture-secret'],
+    })
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.type).toBe('password')
+    expect(host.querySelector('.el-select')).toBeNull()
+    expect(host.textContent).not.toContain('fixture-secret')
+    typeInto(input, 'fixture-replacement')
+    await nextTick()
+    expect(lastEmit(emitted)).toBe('fixture-replacement')
+  })
+
+  it('does not expose an existing container when its schema declares a secret string', async () => {
+    const { host, emitted } = mountEditor(undefined, { token: 'fixture-secret' }, {
+      type: 'string', writeOnly: true,
+    })
+    await nextTick()
+    expect(host.querySelector('input')!.type).toBe('password')
+    expect(host.querySelector('input')!.disabled).toBe(true)
+    expect(host.textContent).not.toContain('fixture-secret')
+    expect(emitted).toEqual([])
+  })
+})

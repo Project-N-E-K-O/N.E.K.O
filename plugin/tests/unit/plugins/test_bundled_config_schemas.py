@@ -141,18 +141,18 @@ def test_remaining_schemas_preserve_open_maps_and_zero_sentinels() -> None:
     assert netease["enabled"]["default"] is False
     claude = _schema("claude_companion")["properties"]["claude_companion"]["properties"]
     assert claude["api_token"]["default"] == ""
+    assert claude["api_token"]["writeOnly"] is True
     assert claude["cooldown_seconds"]["minimum"] == 0
     assert (claude["port"]["minimum"], claude["port"]["maximum"]) == (1, 65535)
 
 
 def test_remaining_schemas_match_runtime_mode_choices() -> None:
     from plugin.plugins.proactive_controller import _VALID_MODES
-    from plugin.sdk.adapter.base import AdapterMode
     from plugin.sdk.shared.storage.state import PluginStatePersistence
 
     proactive = _schema("proactive_controller")["properties"]["proactive_controller"]["properties"]
     assert proactive["default_mode_on_first_run"]["enum"] == list(_VALID_MODES)
     mcp = _schema("mcp_adapter")["properties"]
-    assert set(mcp["adapter"]["properties"]["mode"]["enum"]) == {mode.value for mode in AdapterMode}
+    assert "adapter" not in mcp
     assert set(mcp["plugin_state"]["properties"]["backend"]["enum"]) == PluginStatePersistence.VALID_BACKENDS
     assert set(mcp["plugin_state"]["properties"]["persist_mode"]["enum"]) == {"auto", "manual", "off"}

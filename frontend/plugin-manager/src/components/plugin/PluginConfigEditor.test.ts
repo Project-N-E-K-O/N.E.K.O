@@ -72,3 +72,43 @@ describe('PluginConfigEditor schema integration', () => {
     expect(host.querySelector('.pcf input')).not.toBeNull()
   })
 })
+
+describe('PluginConfigEditor confidential values', () => {
+  it.each([false, true])('masks baseline and draft secrets but saves real edits (override=%s)', async (overridden) => {
+    const baseline = { auth: { token: 'fixture-baseline-token' }, servers: [{ token: 'fixture-array-token' }] }
+    api.getPluginConfig.mockResolvedValue({ config: baseline })
+    api.getPluginEffectiveBaseConfig.mockResolvedValue({
+      config: baseline,
+      config_schema: { type: 'object', properties: {
+        auth: { type: 'object', properties: {
+          token: { type: 'string', title: 'Access token', writeOnly: true },
+        } },
+        servers: { type: 'array', items: { type: 'object', properties: {
+          token: { type: 'string', writeOnly: true },
+        } } },
+      } },
+    })
+    api.getPluginProfileConfig.mockResolvedValue({
+      config: overridden ? { auth: { token: 'fixture-profile-token' } } : {},
+    })
+    const host = await mount()
+    const inputs = host.querySelectorAll<HTMLInputElement>('input[type="password"]')
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]!.value).toBe(overridden ? 'fixture-profile-token' : 'fixture-baseline-token')
+    expect(inputs[1]!.value).toBe('fixture-array-token')
+    expect(host.querySelector('.diff-body')!.textContent).toContain('********')
+    expect(host.textContent).not.toContain('fixture-')
+    inputs[0]!.value = 'fixture-edited-token'
+    inputs[0]!.dispatchEvent(new Event('input'))
+    inputs[0]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    expect(host.textContent).not.toContain('fixture-')
+    const save = Array.from(host.querySelectorAll('button')).find((node) => node.textContent?.trim() === 'common.save')!
+    save.click()
+    await vi.waitFor(() => expect(api.upsertPluginProfileConfig).toHaveBeenCalledWith(
+      'demo', 'draft', { auth: { token: 'fixture-edited-token' } }, false,
+    ))
+    expect(baseline.auth.token).toBe('fixture-baseline-token')
+    expect(baseline.servers[0]!.token).toBe('fixture-array-token')
+  })
+})

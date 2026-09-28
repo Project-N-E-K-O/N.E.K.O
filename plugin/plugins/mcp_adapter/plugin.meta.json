@@ -1559,7 +1559,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 284099,
+  "source_bytes": 279891,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -1580,5 +1580,5 @@
     "transport.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "cc7ddd55b61a6d2508e9d30104a61918b4bd2903d4eb8e67083890a67ac708dc"
+  "source_sha256": "0c87ec50139c50589d5f48926b74b6e751e39972618b64449cf34b1d5a176052"
 }

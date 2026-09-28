@@ -312,6 +312,7 @@ For example, a schema for the `[notes]` section:
 | `minimum` / `maximum` | Numeric control bounds; `integer` controls accept only integers. |
 | `maxLength` | Maximum text input length. |
 | `readOnly` | Disables editing of the field and its child controls. |
+| String fields with writeOnly: true | Uses a password input and masks the value in both JSON diff panes. Real values are retained for saving; this is display masking, not encryption or access control. |
 | `default` | Initial value when explicitly adding a field or array item; not a runtime configuration default. |
 | `x-title-i18n` / `x-description-i18n` | Optional locale-to-text maps. Standard `title` and `description` remain strings. |
 

@@ -176,6 +176,7 @@ import {
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
 import type { ConfigEditorSchema } from '@/types/configSchema'
+import { redactConfigSecrets } from './configEditorSchema'
 import { isRequestTimeout } from '@/utils/request'
 
 interface Props {
@@ -310,7 +311,7 @@ interface DiffRow {
 const currentConfigJson = computed(() => {
   if (!effectiveConfig.value) return ''
   try {
-    return JSON.stringify(effectiveConfig.value, null, 2)
+    return JSON.stringify(redactConfigSecrets(effectiveConfig.value, configSchema.value), null, 2)
   } catch {
     return ''
   }
@@ -324,7 +325,7 @@ const diffRows = computed<DiffRow[]>(() => {
 
   if (!left && effectiveConfig.value) {
     try {
-      left = JSON.stringify(effectiveConfig.value, null, 2)
+      left = JSON.stringify(redactConfigSecrets(effectiveConfig.value, configSchema.value), null, 2)
     } catch {
       left = ''
     }
@@ -332,7 +333,7 @@ const diffRows = computed<DiffRow[]>(() => {
 
   if (!right && previewConfig.value) {
     try {
-      right = JSON.stringify(previewConfig.value, null, 2)
+      right = JSON.stringify(redactConfigSecrets(previewConfig.value, configSchema.value), null, 2)
     } catch {
       right = ''
     }
@@ -468,7 +469,7 @@ const previewConfig = computed<Record<string, any> | null>(() => {
 const previewConfigJson = computed(() => {
   if (!previewConfig.value) return ''
   try {
-    return JSON.stringify(previewConfig.value, null, 2)
+    return JSON.stringify(redactConfigSecrets(previewConfig.value, configSchema.value), null, 2)
   } catch {
     return ''
   }

@@ -1,6 +1,14 @@
 <template>
   <div class="cve" :style="indentStyle">
-    <template v-if="kind === 'object'">
+    <template v-if="schema?.writeOnly">
+      <div class="input-wrap">
+        <el-input v-model="strVal" type="password" autocomplete="new-password"
+          :disabled="isReadOnly || kind !== 'string'" :maxlength="schema?.maxLength"
+          @change="emitUpdate(strVal)" />
+      </div>
+    </template>
+
+    <template v-else-if="kind === 'object'">
       <div class="obj">
         <div v-for="k in objectKeys" :key="k" class="row" :class="rowClassForKey(k)">
           <div class="k">
