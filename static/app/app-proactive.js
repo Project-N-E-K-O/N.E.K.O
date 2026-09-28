@@ -626,6 +626,7 @@
             armedAt: Date.now(),
             reason: reason || '',
             turnStarted: false,
+            turnStartedAt: 0,
             turnEndedAt: 0,
             speechStarted: false,
             speechIdAtTurnStart: null,
@@ -642,7 +643,8 @@
             _releaseStartupGreetingGate((STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候开始');
             return false;
         }
-        if (gate.turnStarted && now - gate.armedAt >= STARTUP_GREETING_TURN_MAX_MS) {
+        // 从问候这一轮开始时起算：前面等生成的时间不该占用这一轮的防卡死额度。
+        if (gate.turnStarted && now - gate.turnStartedAt >= STARTUP_GREETING_TURN_MAX_MS) {
             _releaseStartupGreetingGate('问候超过' + (STARTUP_GREETING_TURN_MAX_MS / 1000) + '秒仍未结束，按事件丢失处理');
             return false;
         }
@@ -676,6 +678,7 @@
         var gate = S && S._startupGreetingGate;
         if (!gate || gate.turnStarted) return;
         gate.turnStarted = true;
+        gate.turnStartedAt = Date.now();
         gate.turnId = event && event.detail && event.detail.turnId ? event.detail.turnId : null;
         gate.speechIdAtTurnStart = S.currentPlayingSpeechId || null;
     });

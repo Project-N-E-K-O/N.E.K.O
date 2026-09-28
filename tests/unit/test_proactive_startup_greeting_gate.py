@@ -122,6 +122,16 @@ out.justBeforeCap = P.isStartupGreetingGateHolding();
 now += 1;
 out.atCap = P.isStartupGreetingGateHolding();
 
+// 7b. The lost-event cap counts from the turn start, not from greeting_check:
+//     a turn that starts 40 s in still gets its full 120 s.
+P.armStartupGreetingGate('ws-open');
+now += 40_000;
+fire('neko-assistant-turn-start');
+now += 100_000;
+out.lateTurnStillWithinItsOwnCap = P.isStartupGreetingGateHolding();
+now += 20_000;
+out.lateTurnAtItsOwnCap = P.isStartupGreetingGateHolding();
+
 // 8. A greeting that has started is not cut off at 45 s (slow generation /
 //    synthesis); only the wider lost-event cap opens it.
 P.armStartupGreetingGate('ws-open');
@@ -164,6 +174,8 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "greetingTurnSpeechEnd": False,
         "justBeforeCap": True,
         "atCap": False,
+        "lateTurnStillWithinItsOwnCap": True,
+        "lateTurnAtItsOwnCap": False,
         "startedTurnPast45s": True,
         "startedTurnAtLostEventCap": False,
     }
