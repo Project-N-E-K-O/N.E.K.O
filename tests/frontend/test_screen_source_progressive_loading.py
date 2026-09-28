@@ -867,6 +867,41 @@ def test_source_missing_from_enumeration_drops_its_name(
 
 
 @pytest.mark.frontend
+def test_missing_source_keeps_another_windows_label_record(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            // Another window already selected screen:1 and wrote its record;
+            // this page has not processed that storage event yet.
+            const otherRecord = JSON.stringify({ id: 'screen:1', screenIndex: 0 });
+            window.__storedValues.set('selectedScreenSourceLabel', otherRecord);
+            window.__metadataSources = window.__metadataSources.filter(
+                (source) => source.id !== 'window:2'
+            );
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return {
+                kept: window.__storedValues.get('selectedScreenSourceLabel') === otherRecord,
+                label: window.getSelectedScreenSourceLabel(),
+            };
+        }"""
+    )
+
+    assert result == {"kept": True, "label": "app.screenSource.windows"}
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize(
     ("source_id", "expected_label"),
     [("window:2", "Editor"), ("screen:1", "Screen 1")],
