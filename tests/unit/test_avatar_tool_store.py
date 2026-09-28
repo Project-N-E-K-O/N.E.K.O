@@ -1261,21 +1261,28 @@ def test_delete_preserves_an_unconfirmed_moved_version_across_restart(
     if restored_inline:
         assert restarted.get_detail(tool_id)["name"] == "Replaced"
         return
+    if not republish_final:
+        # 正式路径空着：启动恢复撤销这次证实不了的删除，把副本原样挪回，
+        # 道具重新出现、可以再删一次，而不是无限期占着这个 ID 和配额。
+        assert not deleting.exists()
+        assert not (store.root / f".{tool_id}.deleting.unverified").exists()
+        assert (final / "record.json").read_bytes() == new_record, "startup lost the moved version"
+        assert restarted.get_detail(tool_id)["name"] == "Replaced"
+        assert restarted.delete_tool(tool_id) == tool_id
+        return
     assert (deleting / "record.json").is_file(), "startup deleted an unconfirmed moved version"
     assert (deleting / "record.json").read_bytes() == new_record
     assert restarted._current_storage_bytes() >= sum(
         path.stat().st_size for path in deleting.iterdir() if path.is_file()
     )
-    if republish_final:
-        assert (final / "synced-note.txt").read_bytes() == b"another publication"
-    else:
-        assert not final.exists()
-    with pytest.raises(AvatarToolStoreError) as blocked:
-        if republish_final:
-            restarted.delete_tool(tool_id)
-        else:
-            restarted.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
-    assert (blocked.value.code, blocked.value.status_code) == ("tool_delete_pending", 409)
+    assert (final / "synced-note.txt").read_bytes() == b"another publication"
+    for blocked_operation in (
+        lambda: restarted.delete_tool(tool_id),
+        lambda: restarted.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()]),
+    ):
+        with pytest.raises(AvatarToolStoreError) as blocked:
+            blocked_operation()
+        assert (blocked.value.code, blocked.value.status_code) == ("tool_delete_pending", 409)
     other = restarted.create_tool_v3(
         manifest=_v3_manifest(f"local-{uuid.uuid4()}", name="Other"), uploads=[_png()]
     )
@@ -1532,6 +1539,8 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     else:
         marker.write_bytes(b"{")
     retained_record = (deleting / "record.json").read_bytes()
+    # 同步客户端在正式路径上又发布了一份：恢复不能挪回覆盖它，只能保留副本。
+    shutil.copytree(deleting, final)
 
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
@@ -1546,8 +1555,6 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert_pending(lambda: restarted.create_tool_v3(
         manifest=_v3_manifest(blocked_id), uploads=[_png()]
     ))
-    assert not final.exists()
-    shutil.copytree(deleting, final)
     republished = restarted.get_detail(blocked_id)
     assert_pending(lambda: restarted.update_tool_v3(
         blocked_id,
@@ -4016,8 +4023,13 @@ def test_a_foreign_occupant_at_the_final_path_defers_instead_of_being_deleted(
         assert kind != "dir", "the stale backup was published over a foreign occupant"
         # 而 backup 可能是这个道具仅存的副本，也不能顺手清掉。
         assert backup.is_dir(), "the only surviving copy was cleaned up"
-        # 两条路都走不了，就必须留在待恢复状态，别宣称恢复完成。
-        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+        # 两条路都走不了，但这是只关系到这一个 ID 的持久状态：不能把整个存储根
+        # 挂在待恢复上，而是单独拦住这个 ID 的写入。
+        assert root_key not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+        with pytest.raises(AvatarToolStoreError) as blocked:
+            store.create_tool_v3(manifest=_v3_manifest(tool["id"]), uploads=[_png()])
+        assert (blocked.value.code, blocked.value.status_code) == ("tool_recovery_pending", 409)
+        assert backup.is_dir()
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
 
@@ -4587,3 +4599,220 @@ def test_an_unexpected_validator_error_is_normalized_to_an_invalid_record(tmp_pa
     assert store.list_items() == [healthy]
     assert store._occupied_tool_slots() == 1
     assert broken_id in avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()]
+
+
+def test_delete_with_a_stale_base_revision_keeps_the_newer_version(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    opened = store.create_tool_v3(manifest=_v3_manifest(tool_id, name="r1"), uploads=[_png()])
+    # 另一个窗口保存出 r2；旧修改页仍拿着 r1。
+    saved = store.update_tool_v3(
+        tool_id,
+        base_revision=opened["revision"],
+        manifest=_v3_manifest(tool_id, name="r2"),
+        uploads=[_png()],
+    )
+    assert saved["revision"] != opened["revision"]
+
+    for stale in (opened["revision"], "", "not-a-revision"):
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.delete_tool(tool_id, base_revision=stale)
+        assert (raised.value.code, raised.value.status_code) == ("tool_revision_conflict", 409)
+    assert store.get_detail(tool_id)["name"] == "r2"
+    assert sorted(path.name for path in store.root.iterdir()) == [tool_id]
+
+    assert store.delete_tool(tool_id, base_revision=saved["revision"]) == tool_id
+    assert not (store.root / tool_id).exists()
+
+    # 不带 base_revision 保持原有行为。
+    legacy = store.create_tool_v3(manifest=_v3_manifest(tool_id, name="legacy"), uploads=[_png()])
+    assert store.delete_tool(legacy["id"]) == tool_id
+
+
+def test_delete_with_a_base_revision_still_removes_a_provably_invalid_record(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    opened = store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    (store.root / tool_id / "record.json").write_bytes(b"{not json")
+
+    assert store.delete_tool(tool_id, base_revision=opened["revision"]) == tool_id
+    assert not (store.root / tool_id).exists()
+
+
+def test_delete_with_a_base_revision_refuses_when_the_record_is_temporarily_unreadable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    opened = store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+
+    def unreadable(*_args, **_kwargs):
+        raise avatar_tool_store._record_temporarily_unreadable()
+
+    monkeypatch.setattr(store, "_read_record_from_directory", unreadable)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id, base_revision=opened["revision"])
+    assert (raised.value.code, raised.value.status_code) == ("avatar_tools_directory_unavailable", 503)
+    assert (store.root / tool_id / "record.json").is_file()
+
+
+@pytest.mark.parametrize("artifact", ("backup", "updating"))
+def test_a_foreign_final_next_to_update_artifacts_blocks_only_its_own_tool_id(
+    tmp_path, monkeypatch, artifact
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    blocked_id, other_id, new_id = (f"local-{uuid.uuid4()}" for _ in range(3))
+    store.create_tool_v3(manifest=_v3_manifest(blocked_id, name="Blocked"), uploads=[_png()])
+    other = store.create_tool_v3(manifest=_v3_manifest(other_id, name="Other"), uploads=[_png()])
+    final = store.root / blocked_id
+    leftover = store.root / f".{blocked_id}.{artifact}"
+    shutil.copytree(final, leftover)
+    shutil.rmtree(final)
+    final.write_bytes(b"placed by a sync client")
+
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    recovery_runs = 0
+    real_recover = AvatarToolStore._recover_interrupted_mutations
+
+    def counting_recover(self):
+        nonlocal recovery_runs
+        recovery_runs += 1
+        return real_recover(self)
+
+    monkeypatch.setattr(AvatarToolStore, "_recover_interrupted_mutations", counting_recover)
+    for _ in range(3):
+        assert [item["id"] for item in restarted.list_items()] == [other_id]
+    updated = restarted.update_tool_v3(
+        other_id,
+        base_revision=other["revision"],
+        manifest=_v3_manifest(other_id, name="Other 2"),
+        uploads=[_png()],
+    )
+    assert updated["name"] == "Other 2"
+    restarted.create_tool_v3(manifest=_v3_manifest(new_id, name="New"), uploads=[_png()])
+    assert restarted.delete_tool(new_id) == new_id
+    assert recovery_runs == 0, "a per-tool anomaly kept re-running the full recovery"
+
+    def assert_blocked(operation):
+        with pytest.raises(AvatarToolStoreError) as raised:
+            operation()
+        assert (raised.value.code, raised.value.status_code) == ("tool_recovery_pending", 409)
+
+    assert_blocked(lambda: restarted.create_tool_v3(
+        manifest=_v3_manifest(blocked_id, name="Blocked"), uploads=[_png()]
+    ))
+    assert_blocked(lambda: restarted.update_tool_v3(
+        blocked_id,
+        base_revision=other["revision"],
+        manifest=_v3_manifest(blocked_id, name="Changed"),
+        uploads=[_png()],
+    ))
+    assert_blocked(lambda: restarted.delete_tool(blocked_id))
+    assert leftover.is_dir()
+    assert final.read_bytes() == b"placed by a sync client"
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    # 占位文件被移走后，同 ID 的下一次写入先跑恢复：backup 回滚成原道具
+    # （同一份创建的重试直接返回它），纯 .updating 残留被清掉后正常创建。
+    final.unlink()
+    recreated = restarted.create_tool_v3(
+        manifest=_v3_manifest(blocked_id, name="Blocked"), uploads=[_png()]
+    )
+    assert recreated["name"] == "Blocked"
+    assert not leftover.exists()
+    assert sorted(item["id"] for item in restarted.list_items()) == sorted([blocked_id, other_id])
+
+
+@pytest.mark.parametrize("flavour", ("identity-mismatch", "corrupt-marker"))
+@pytest.mark.parametrize("restore_fails_once", (False, True))
+def test_recovery_undoes_an_unverifiable_deletion_when_the_final_path_is_free(
+    tmp_path, monkeypatch, flavour, restore_fails_once
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id, other_id = (f"local-{uuid.uuid4()}" for _ in range(2))
+    store.create_tool_v3(manifest=_v3_manifest(tool_id, name="Moved"), uploads=[_png()])
+    store.create_tool_v3(manifest=_v3_manifest(other_id, name="Other"), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    real_replace = os.replace
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def crash_after_move(source, destination, *args, **kwargs):
+        result = real_replace(source, destination, *args, **kwargs)
+        if Path(destination) == deleting:
+            raise SimulatedCrash()
+        return result
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", crash_after_move)
+    with pytest.raises(SimulatedCrash):
+        store.delete_tool(tool_id)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+
+    # 比如存储根被复制迁移过：st_dev/st_ino 变了，授权永远对不上。
+    if flavour == "identity-mismatch":
+        record_path = deleting / "record.json"
+        record_path.write_bytes(record_path.read_bytes())
+    else:
+        marker.write_bytes(b"{")
+    moved_files = {path.name: path.read_bytes() for path in deleting.iterdir()}
+
+    def refuse_restore(source, destination, *args, **kwargs):
+        if Path(source) == deleting:
+            raise OSError(errno.EACCES, "restore refused")
+        return real_replace(source, destination, *args, **kwargs)
+
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    if restore_fails_once:
+        monkeypatch.setattr("utils.avatar_tool_store.os.replace", refuse_restore)
+        restarted.initialize()
+        # 挪回做不到是暂时问题：保留副本和授权，留在待恢复状态重试。
+        assert restarted._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+        assert {path.name: path.read_bytes() for path in deleting.iterdir()} == moved_files
+        assert marker.exists()
+        assert not final.exists()
+        monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+        items = restarted.list_items()
+    else:
+        restarted.initialize()
+        items = restarted.list_items()
+
+    # 证实不了的删除被撤销：道具原样回来、用户可以再删一次，不再无限期占着
+    # 这个 ID 和看不见的配额。
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert {path.name: path.read_bytes() for path in final.iterdir()} == moved_files
+    assert sorted(item["id"] for item in items) == sorted([tool_id, other_id])
+    assert restarted.delete_tool(tool_id) == tool_id
+    assert sorted(path.name for path in store.root.iterdir()) == [other_id]
+
+
+@pytest.mark.parametrize("failing_step", ("write-fence", "ensure-directory"))
+def test_initialize_keeps_the_root_pending_after_any_unexpected_failure(
+    tmp_path, monkeypatch, failing_step
+):
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError(f"unexpected {failing_step} failure")
+
+    if failing_step == "write-fence":
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", unexpected)
+    else:
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        monkeypatch.setattr(store, "_ensure_directory", unexpected)
+    with pytest.raises(RuntimeError):
+        store.initialize()
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS

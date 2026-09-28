@@ -561,6 +561,48 @@ def test_delete_removes_the_created_tool_and_returns_its_id(tmp_path, monkeypatc
     assert client.get("/api/avatar-tools").json()["items"] == []
 
 
+def test_delete_honours_an_optional_base_revision_query_parameter(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    opened = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(_v3_manifest(tool_id, name="r1")))),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    ).json()["item"]
+    saved = client.put(
+        f"/api/avatar-tools/{tool_id}",
+        files=[
+            ("base_revision", (None, opened["revision"])),
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(_v3_manifest(
+                tool_id, source={"kind": "resource", "name": "image-000.png"}, name="r2",
+            )))),
+        ],
+    ).json()["item"]
+
+    stale = client.delete(f"/api/avatar-tools/{tool_id}", params={"base_revision": opened["revision"]})
+    assert stale.status_code == 409
+    assert stale.json() == {
+        "ok": False,
+        "error_code": "tool_revision_conflict",
+        "error": "Avatar tool changed after the edit page was opened",
+    }
+    duplicated = client.delete(
+        f"/api/avatar-tools/{tool_id}?base_revision={saved['revision']}&base_revision={saved['revision']}"
+    )
+    assert duplicated.status_code == 400
+    assert duplicated.json()["error_code"] == "request_fields_invalid"
+    assert (manager.avatar_tools_dir / tool_id / "record.json").is_file()
+
+    current = client.delete(f"/api/avatar-tools/{tool_id}", params={"base_revision": saved["revision"]})
+    assert current.status_code == 200
+    assert current.json() == {"ok": True, "deletedId": tool_id}
+    assert client.get("/api/avatar-tools").json()["items"] == []
+
+
 def test_delete_reports_missing_and_invalid_ids(tmp_path, monkeypatch):
     client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
     missing = "local-12345678-1234-4123-8123-123456789abc"

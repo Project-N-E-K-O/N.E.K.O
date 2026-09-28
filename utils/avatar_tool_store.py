@@ -555,12 +555,15 @@ class AvatarToolStore:
             return
         raise _storage_total_unavailable()
 
-    def _require_no_pending_delete(self, tool_id: str) -> None:
-        """Refuse to mutate an ID whose unconfirmed deletion is still retained.
+    def _require_no_pending_recovery(self, tool_id: str) -> None:
+        """Refuse to mutate an ID whose recovery artifacts are still unresolved.
 
         Recovery keeps a ``.deleting`` directory whose identity does not match its
-        authorization, because it may hold a newer version published concurrently.
-        That copy concerns this ID only, so it blocks this ID rather than the store.
+        authorization while the final path is occupied, because it may hold a newer
+        version published concurrently. It likewise keeps ``.backup`` / ``.updating``
+        while a non-directory occupies the final path, since the backup may be the
+        only surviving copy. These artifacts concern this ID only, so they block this
+        ID rather than the whole store.
         """
         deleting_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.deleting")
         if probe_error is not None:
@@ -571,11 +574,42 @@ class AvatarToolStore:
                 "An unconfirmed deletion of this avatar tool is still pending",
                 status_code=409,
             )
+        for attempt in range(2):
+            staged = False
+            for suffix in ("backup", "updating"):
+                staged_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.{suffix}")
+                if probe_error is not None:
+                    raise _storage_total_unavailable() from probe_error
+                staged = staged or staged_kind == "dir"
+            if not staged:
+                return
+            final_kind, _, probe_error = _probe_entry(self.root / tool_id)
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+            if final_kind == "dir":
+                # 正式目录在：残留属于已完成（或已由恢复判定过）的修改，修改发布和
+                # 删除都会先清掉同 ID 的 backup / updating。
+                return
+            if final_kind != "absent" or attempt:
+                break
+            # 正式目录确实不在：这是恢复能处理的状态（拿 backup 回滚或清掉无用
+            # 残留），比如占位的普通文件已被用户移走。登记待恢复并立即跑一轮，
+            # 不能在 backup 还没回滚时就在同一个 ID 上创建新记录。
+            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+            self._require_recovery_complete_for_mutation()
+        raise AvatarToolStoreError(
+            "tool_recovery_pending",
+            "An interrupted change of this avatar tool is still awaiting recovery",
+            status_code=409,
+        )
 
     def initialize(self) -> None:
         """Prepare the store once and recover interrupted mutations."""
         with _STORE_LOCK:
             root_key = self._root_key()
+            # 先登记待恢复，只有恢复确实走完才撤销：初始化里任何一步（包括写围栏
+            # 检查本身）抛出意外异常，都让存储根留在待恢复状态，由首次存储操作重试。
+            _RECOVERY_PENDING_ROOTS.add(root_key)
             try:
                 assert_cloudsave_writable(
                     self.config_manager,
@@ -583,29 +617,18 @@ class AvatarToolStore:
                     target="avatar_tools",
                 )
             except MaintenanceModeError:
-                _RECOVERY_PENDING_ROOTS.add(root_key)
                 return
             try:
                 self._ensure_directory()
                 recovered = self._recover_interrupted_mutations()
-            except AvatarToolStoreError:
-                _RECOVERY_PENDING_ROOTS.add(root_key)
-                raise
             except OSError as exc:
-                _RECOVERY_PENDING_ROOTS.add(root_key)
                 raise AvatarToolStoreError(
                     "avatar_tools_directory_unavailable",
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
-            except Exception:
-                # 意外异常同样说明恢复没走完；留在待恢复状态，写入继续被拦住。
-                _RECOVERY_PENDING_ROOTS.add(root_key)
-                raise
             if recovered:
                 _RECOVERY_PENDING_ROOTS.discard(root_key)
-            else:
-                _RECOVERY_PENDING_ROOTS.add(root_key)
 
     def quarantine(self, tool_id: str) -> None:
         # 消费点（详情页、静态资源、互动）逐字节校验时发现内容和 record 里的
@@ -712,13 +735,16 @@ class AvatarToolStore:
                 # 正式目录的名字被一个非本模块创建的东西占着（同步客户端或手工
                 # 操作留下的普通文件、软链接）。两个方向都不能走：拿 backup 覆盖
                 # 要先删掉用户的东西，违反「恢复不替用户删除正式目录」；直接清掉
-                # backup 又可能丢掉这个道具仅存的副本。保留现场，留待下次。
+                # backup 又可能丢掉这个道具仅存的副本。保留现场，但不判恢复未完成：
+                # 这是持久状态，只关系到这一个 ID，由 _require_no_pending_recovery
+                # 单独拦住同 ID 的写入。算成全局未完成的话，所有道具的创建、修改、
+                # 删除会一直 503，而且每次列表都要重跑一遍带 hash 的恢复。
                 logger.warning(
-                    "Avatar tool final path %s is not a directory (%s); deferring recovery",
+                    "Avatar tool final path %s is not a directory (%s); keeping its "
+                    "update artifacts and blocking only this tool",
                     final,
                     final_kind,
                 )
-                complete = False
                 continue
             final_condemned = False
 
@@ -873,10 +899,26 @@ class AvatarToolStore:
                 if marker_kind != "absent":
                     try:
                         if not self._delete_authorization_matches(candidate, marker):
-                            # 保留副本，但不判恢复未完成：它只关系到这一个 ID，由
-                            # _require_no_pending_delete 单独拦住同 ID 的写入。算成
-                            # 全局未完成的话，身份永远对不上的副本会让所有道具的
-                            # 创建、修改、删除一直 503。
+                            # 授权绑定了 st_dev/st_ino，存储根被复制或迁移后永远对不
+                            # 上。证实不了的删除就撤销，而不是无限期保留：正式路径确实
+                            # 空着时把副本挪回原位（与删除路径同一套顺序和「不覆盖」
+                            # 规则），道具重新出现，用户可以再删一次；否则它会一直
+                            # 拦住这个 ID、在看不见的地方占着配额。
+                            final = self.root / LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(
+                                candidate.name
+                            ).group(1)
+                            final_kind, _, probe_error = _probe_entry(final)
+                            if probe_error is not None:
+                                complete = False
+                                continue
+                            if final_kind == "absent":
+                                if not self._restore_unauthorized_delete(candidate, final, marker):
+                                    complete = False
+                                continue
+                            # 正式路径被占着：保留副本，但不判恢复未完成。它只关系到
+                            # 这一个 ID，由 _require_no_pending_recovery 单独拦住同 ID
+                            # 的写入；算成全局未完成的话，所有道具的创建、修改、删除
+                            # 会一直 503。
                             logger.warning("Preserving unconfirmed avatar tool deletion %s", candidate)
                             continue
                         marker.unlink()
@@ -1868,7 +1910,12 @@ class AvatarToolStore:
                     total += entry_size
         return total
 
-    def delete_tool(self, tool_id: str) -> str:
+    def delete_tool(self, tool_id: str, *, base_revision: str | None = None) -> str:
+        """Delete a published tool, optionally only while it is still at ``base_revision``.
+
+        Omitting ``base_revision`` skips the revision check. A provably invalid record
+        has no newer valid version to protect, so it stays deletable with any base.
+        """
         if not is_local_avatar_tool_id(tool_id):
             raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
 
@@ -1881,6 +1928,7 @@ class AvatarToolStore:
                     target=f"avatar_tools/{tool_id}",
                 )
                 self._require_recovery_complete_for_mutation()
+            self._require_no_pending_recovery(tool_id)
             directory = self.root / tool_id
             directory_kind, _, directory_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
@@ -1909,6 +1957,33 @@ class AvatarToolStore:
             record_kind, _, record_identity, probe_error = _probe_entry_state(record_path)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
+            if base_revision is not None:
+                # 旧修改页带着打开时的 revision 来删：另一个窗口已经保存出新版本时
+                # 必须按冲突拒绝，不能把别人的新版本一起删掉。这次读取落在上面的
+                # 身份观察和下面的重验之间，读取期间的改写同样会被重验拦住。
+                try:
+                    current = self._read_record_from_directory(
+                        tool_id, directory, verify_resources=False
+                    )
+                except AvatarToolStoreError as exc:
+                    if exc.transient:
+                        raise _storage_total_unavailable() from exc
+                    if exc.code != "record_invalid":
+                        raise
+                    # 被证伪的记录没有「更新的有效版本」需要保护，照常允许删除，
+                    # 否则坏道具在界面上就再也删不掉了。
+                    current = None
+                except OSError as exc:
+                    raise _storage_total_unavailable() from exc
+                if current is not None and (
+                    not _REVISION_PATTERN.fullmatch(base_revision)
+                    or base_revision != self.record_revision(current)
+                ):
+                    raise AvatarToolStoreError(
+                        "tool_revision_conflict",
+                        "Avatar tool changed after the edit page was opened",
+                        status_code=409,
+                    )
 
             if not recovery_pending:
                 assert_cloudsave_writable(
@@ -1917,7 +1992,6 @@ class AvatarToolStore:
                     target=f"avatar_tools/{tool_id}",
                 )
             deleting = self.root / f".{tool_id}.deleting"
-            self._require_no_pending_delete(tool_id)
             backup = self.root / f".{tool_id}.backup"
             backup_kind, _, probe_error = _probe_entry(backup)
             if probe_error is not None:
@@ -2385,7 +2459,7 @@ class AvatarToolStore:
                 target="avatar_tools",
             )
             self._require_recovery_complete_for_mutation()
-            self._require_no_pending_delete(tool_id)
+            self._require_no_pending_recovery(tool_id)
             final = self.root / tool_id
             final_kind, _, probe_error = _probe_entry(final)
             if probe_error is not None:
@@ -2686,7 +2760,7 @@ class AvatarToolStore:
                 target=f"avatar_tools/{tool_id}",
             )
             self._require_recovery_complete_for_mutation()
-            self._require_no_pending_delete(tool_id)
+            self._require_no_pending_recovery(tool_id)
             current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
             current_revision = self.record_revision(current)
@@ -2846,7 +2920,7 @@ class AvatarToolStore:
                 target=f"avatar_tools/{tool_id}",
             )
             self._require_recovery_complete_for_mutation()
-            self._require_no_pending_delete(tool_id)
+            self._require_no_pending_recovery(tool_id)
             current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
             current_revision = self.record_revision(current)

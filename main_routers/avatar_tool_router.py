@@ -493,7 +493,20 @@ async def delete_avatar_tool(request: Request, tool_id: str):
 
     store = get_avatar_tool_store(get_config_manager())
     try:
-        deleted_tool_id = await asyncio.to_thread(store.delete_tool, tool_id)
+        # 可选的 ?base_revision=：带上时只删除仍停在该 revision 的记录，旧修改页
+        # 不能删掉另一个窗口刚保存的新版本；不带时保持原有行为。
+        base_revisions = request.query_params.getlist("base_revision")
+        if len(base_revisions) > 1:
+            raise AvatarToolStoreError(
+                "request_fields_invalid",
+                "Avatar tool request fields are invalid",
+                field="base_revision",
+            )
+        deleted_tool_id = await asyncio.to_thread(
+            store.delete_tool,
+            tool_id,
+            base_revision=base_revisions[0] if base_revisions else None,
+        )
     except AvatarToolStoreError as exc:
         return _error_response(exc)
     except MaintenanceModeError as exc:
