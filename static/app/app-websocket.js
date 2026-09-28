@@ -3937,6 +3937,15 @@
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
+                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.localAsrDependencyMissing')
+                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
+                                );
+                                return;
+                            }
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
                                     window.t

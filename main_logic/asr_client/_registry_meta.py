@@ -36,6 +36,7 @@ class AsrProviderAvailability(str, Enum):
     IMPLEMENTED = "implemented"
     BLOCKED_BACKEND = "blocked_backend"
     MISSING_CREDENTIALS = "missing_credentials"
+    MISSING_DEPENDENCY = "missing_dependency"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,17 @@ class AsrProviderMeta:
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
+    # Local providers run without an API key; cloud providers must never be
+    # constructed without their credential slot.
+    requires_credential: bool = True
+    # Only user-selectable providers may be chosen through the persisted
+    # ``independentAsrProviderPreference`` conversation setting. Everything
+    # else is reached through ``CORE_ASR_ROUTES``.
+    user_selectable: bool = False
+    # Import name of an optional package the worker needs. Selection probes it
+    # with ``importlib.util.find_spec`` (no import) and reports
+    # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
+    optional_dependency: str | None = None
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -101,6 +113,10 @@ class AsrProviderMeta:
         if self.connect_retry_cap_seconds < self.connect_retry_base_seconds:
             raise ValueError(
                 "connect_retry_cap_seconds must cover the retry base"
+            )
+        if self.user_selectable and self.requires_credential:
+            raise ValueError(
+                "user-selectable providers must not require a Core credential"
             )
 
 
@@ -243,6 +259,28 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         implementation_status="implemented",
         replay_policy="provider_managed",
         connect_max_attempts=3,
+    ),
+    # Local faster-whisper. It is never a Core route: users opt in through the
+    # voice-recognition settings, and Core capability (``free`` disables
+    # independent ASR entirely) is still checked before this preference.
+    "faster_whisper": AsrProviderMeta(
+        provider_key="faster_whisper",
+        category="segmented_request",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
+        implementation_status="implemented",
+        requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
+        # The watchdog starts at the turn seal. The first turn of a session may
+        # still be waiting for the model to load (or, on first use, download),
+        # and CPU decoding of a long utterance takes several seconds.
+        provider_final_timeout_ms=120_000,
+        requires_credential=False,
+        user_selectable=True,
+        optional_dependency="faster_whisper",
     ),
     "free": AsrProviderMeta(
         provider_key="free",

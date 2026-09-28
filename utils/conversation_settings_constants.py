@@ -37,8 +37,14 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "textGuardMaxLength",
     "noiseReductionEnabled",
     "independentAsrEnabled",
+    "independentAsrProviderPreference",
     "voiceInputResourceOptimizationEnabled",
 })
+# Accepted values for ``independentAsrProviderPreference``. "auto" follows the
+# Core route; every other value must be a user-selectable provider key in
+# main_logic/asr_client/_registry_meta.py (kept in sync by a unit test, since
+# utils must not import main_logic).
+INDEPENDENT_ASR_PROVIDER_PREFERENCES = frozenset({"auto", "faster_whisper"})
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
 MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000

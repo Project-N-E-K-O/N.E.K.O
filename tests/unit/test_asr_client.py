@@ -222,6 +222,7 @@ def test_phase2_registry_routes_and_capabilities():
         "glm",
         "gemini",
         "soniox",
+        "faster_whisper",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"

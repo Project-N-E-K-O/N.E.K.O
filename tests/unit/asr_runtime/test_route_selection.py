@@ -310,3 +310,89 @@ async def test_free_core_uses_native_asr_when_preferences_are_unreadable(
     assert runtime._asr_route_mode == "native"
     start_mock.assert_not_awaited()
     assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_free_core_ignores_persisted_local_asr_preference(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "faster_whisper",
+            }
+        ),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "native"
+    start_mock.assert_not_awaited()
+    assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_local_asr_preference_reaches_resolver_and_reports_missing_dependency(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client as asr_client
+    import main_logic.asr_client.runtime as runtime_module
+    from main_logic.asr_client._registry_meta import AsrProviderAvailability
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "faster_whisper",
+            }
+        ),
+    )
+    resolver = MagicMock(
+        return_value=asr_client._AsrSelection(
+            provider_key="faster_whisper",
+            endpointing_mode="manual",
+            availability=AsrProviderAvailability.MISSING_DEPENDENCY,
+        )
+    )
+    builder = MagicMock()
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(runtime_module, "_create_asr_session_from_selection", builder)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    resolver.assert_called_once_with("gemini", provider_preference="faster_whisper")
+    builder.assert_not_called()
+    assert runtime._asr_route_mode == "blocked"
+    statuses = [call.args[0] for call in runtime.send_status.await_args_list]
+    assert any("ASR_INDEPENDENT_DEPENDENCY_MISSING" in status for status in statuses)
+    assert not any("ASR_INDEPENDENT_UNAVAILABLE" in status for status in statuses)
+
+
+async def test_auto_preference_resolves_exactly_like_no_preference(monkeypatch) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "auto",
+            }
+        ),
+    )
+    resolver = MagicMock(side_effect=RuntimeError("stop after resolve"))
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    resolver.assert_called_once_with("gemini")

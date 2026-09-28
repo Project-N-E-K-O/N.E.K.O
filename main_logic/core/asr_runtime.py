@@ -2643,6 +2643,12 @@ class AsrRuntimeMixin:
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.
             "user_language": getattr(self, "user_language", None),
+            # Persisted provider choice ("auto" follows the Core route). The
+            # route capability check above already ran, so a Core without
+            # independent-ASR support never reaches this preference.
+            "provider_preference": settings.get(
+                "independentAsrProviderPreference"
+            ),
         }
         if self._speaker_shadow_factory is not None:
             start_kwargs["speaker_shadow_factory"] = self._speaker_shadow_factory

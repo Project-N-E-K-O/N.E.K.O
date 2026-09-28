@@ -604,9 +604,90 @@ def test_voice_popover_toggles_have_accessible_names_and_hints(
         }"""
     )
 
-    assert len(result) == 2
+    # noise reduction, resource optimization, local speech recognition
+    assert len(result) == 3
     assert all(item["labelId"] and item["labelText"] for item in result)
     assert all(item["hintId"] and item["hintText"] for item in result)
+
+
+@pytest.mark.frontend
+def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const localInput = panel.querySelectorAll('input[type="checkbox"]')[2];
+            const initial = {
+                checked: localInput.checked,
+                disabled: localInput.disabled,
+            };
+
+            localInput.checked = true;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterEnable = {
+                preference: state.independentAsrProviderPreference,
+                saveCalls: window.__saveCalls,
+                pendingEpoch: state.voiceSettingsPendingUntilEpoch,
+            };
+
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterDisable = state.independentAsrProviderPreference;
+
+            // Master switch off: the provider choice cannot be edited.
+            const asrInput = test.voiceToggle();
+            asrInput.checked = false;
+            asrInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const masterOffDisabled = localInput.disabled;
+            asrInput.checked = true;
+            asrInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            // Free Core: the effective view is off and edits are ignored.
+            state.independentAsrProviderPreference = 'faster_whisper';
+            state.coreApiSupportsIndependentAsr = false;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const freeView = {
+                checked: localInput.checked,
+                disabled: localInput.disabled,
+            };
+            const saveCallsBefore = window.__saveCalls;
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const freeAfterChange = {
+                preference: state.independentAsrProviderPreference,
+                saveCalls: window.__saveCalls - saveCallsBefore,
+            };
+            return {
+                initial,
+                afterEnable,
+                afterDisable,
+                masterOffDisabled,
+                freeView,
+                freeAfterChange,
+            };
+        }"""
+    )
+
+    assert result["initial"] == {"checked": False, "disabled": False}
+    assert result["afterEnable"]["preference"] == "faster_whisper"
+    assert result["afterEnable"]["saveCalls"] >= 1
+    assert result["afterEnable"]["pendingEpoch"] == 11
+    assert result["afterDisable"] == "auto"
+    assert result["masterOffDisabled"] is True
+    assert result["freeView"] == {"checked": False, "disabled": True}
+    assert result["freeAfterChange"] == {
+        "preference": "faster_whisper",
+        "saveCalls": 0,
+    }
 
 
 @pytest.mark.frontend

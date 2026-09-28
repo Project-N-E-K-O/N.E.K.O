@@ -56,8 +56,14 @@ class _HotSwapRuntimeStub:
         route_key: str,
         resource_optimization_enabled: bool,
         user_language: str | None = None,
+        provider_preference: str | None = None,
     ) -> AsrStartResult:
-        _ = (route_key, resource_optimization_enabled, user_language)
+        _ = (
+            route_key,
+            resource_optimization_enabled,
+            user_language,
+            provider_preference,
+        )
         self.active_provider = (
             "provider-b" if self.start_status is AsrStartStatus.READY else None
         )

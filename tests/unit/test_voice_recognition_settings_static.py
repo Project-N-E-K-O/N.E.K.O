@@ -149,6 +149,9 @@ def test_voice_recognition_popover_keys_match_across_all_locales() -> None:
         "voiceResourceOptimization",
         "voiceResourceOptimizationHintOn",
         "voiceResourceOptimizationHintOff",
+        "localAsr",
+        "localAsrHint",
+        "localAsrDependencyMissing",
     }
 
     key_sets: list[set[str]] = []
@@ -198,3 +201,45 @@ def test_async_asr_status_copy_uses_the_caller_provider_key() -> None:
         ):
             assert "{{providerKey}}" in microphone[key], (locale_name, key)
             assert "{{provider}}" not in microphone[key], (locale_name, key)
+
+
+def test_local_asr_preference_is_a_shared_conversation_setting() -> None:
+    state = APP_STATE.read_text(encoding="utf-8")
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    runtime = ASR_RUNTIME.read_text(encoding="utf-8")
+    reset_defaults = settings.split(
+        "function _defaultConversationSettingsForReset()",
+        maxsplit=1,
+    )[1].split("function _serverSettingsForMerge", maxsplit=1)[0]
+
+    assert "independentAsrProviderPreference: 'auto'" in state
+    assert "independentAsrProviderPreference: 'auto'" in reset_defaults
+    assert "'independentAsrProviderPreference'" in settings
+    assert (
+        "independentAsrProviderPreference: currentIndependentAsrProviderPreference"
+    ) in settings
+    # Core forwards the persisted value; the provider literal itself must
+    # stay below the Core ASR bridge (scripts/check_core_contracts.py).
+    assert '"independentAsrProviderPreference"' in runtime
+    assert "faster_whisper" not in runtime
+
+
+def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+    voice_panel = source.split(
+        "function openVoiceRecognitionSubwindow()", maxsplit=1
+    )[1].split("async function openMicDeviceSubwindow()", maxsplit=1)[0]
+
+    assert "'microphone.localAsr'" in voice_panel
+    assert "'microphone.localAsrHint'" in voice_panel
+    assert "? 'faster_whisper'" in voice_panel
+    assert "localAsrToggle.setDisabled(!enabled);" in source
+    assert "faster_whisper: 'faster-whisper'" in source
+
+
+def test_dependency_missing_status_has_its_own_toast() -> None:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    )
+    assert "statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'" in websocket
+    assert "window.t('microphone.localAsrDependencyMissing')" in websocket

@@ -1044,7 +1044,10 @@
         "voiceRecognitionSettingsPending": "◐ As configurações terão efeito na próxima sessão de voz",
         "voiceResourceOptimization": "Otimização inteligente de recursos",
         "voiceResourceOptimizationHintOn": "Reduz conexões e envio de áudio durante a inatividade",
-        "voiceResourceOptimizationHintOff": "Mantém o reconhecimento de voz ativo e pode aumentar o uso de rede e recursos"
+        "voiceResourceOptimizationHintOff": "Mantém o reconhecimento de voz ativo e pode aumentar o uso de rede e recursos",
+        "localAsr": "Reconhecimento de voz local",
+        "localAsrHint": "Reconhece a voz neste computador com o faster-whisper. Requer instalar o faster-whisper separadamente; o modelo é baixado no primeiro uso",
+        "localAsrDependencyMissing": "O reconhecimento de voz local precisa do faster-whisper, que não está instalado. A entrada de voz desta sessão foi interrompida. Instale-o ou desative o reconhecimento de voz local e depois inicie uma nova sessão de voz."
     },
     "speaker": {
         "volumeLabel": "Volume do alto-falante",
@@ -1155,6 +1158,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper (local)",
             "free": "Versão gratuita",
             "dummy": "Provedor de teste",
             "unknown": "Provedor desconhecido"

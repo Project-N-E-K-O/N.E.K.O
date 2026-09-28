@@ -1044,7 +1044,10 @@
         "voiceRecognitionSettingsPending": "◐ 설정은 다음 음성 세션부터 적용됩니다",
         "voiceResourceOptimization": "스마트 리소스 최적화",
         "voiceResourceOptimizationHintOn": "유휴 상태에서 연결과 오디오 업로드를 줄입니다",
-        "voiceResourceOptimizationHintOff": "음성 인식을 계속 유지하므로 네트워크 및 리소스 사용량이 늘 수 있습니다"
+        "voiceResourceOptimizationHintOff": "음성 인식을 계속 유지하므로 네트워크 및 리소스 사용량이 늘 수 있습니다",
+        "localAsr": "로컬 음성 인식",
+        "localAsrHint": "faster-whisper로 이 컴퓨터에서 음성을 인식합니다. faster-whisper를 별도로 설치해야 하며, 처음 사용할 때 모델을 다운로드합니다",
+        "localAsrDependencyMissing": "로컬 음성 인식에는 faster-whisper가 필요하지만 설치되어 있지 않습니다. 이번 음성 입력이 중지되었습니다. 설치하거나 로컬 음성 인식을 끈 다음 새 음성 세션을 시작하세요."
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",
@@ -1155,6 +1158,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper (로컬)",
             "free": "무료 버전",
             "dummy": "테스트 서비스",
             "unknown": "알 수 없는 서비스"

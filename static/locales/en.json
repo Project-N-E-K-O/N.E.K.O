@@ -1044,7 +1044,10 @@
         "voiceRecognitionSettingsPending": "◐ Settings take effect in the next voice session",
         "voiceResourceOptimization": "Smart Resource Optimization",
         "voiceResourceOptimizationHintOn": "Reduces connections and audio uploads while idle",
-        "voiceResourceOptimizationHintOff": "Keeps speech recognition active and may use more network and system resources"
+        "voiceResourceOptimizationHintOff": "Keeps speech recognition active and may use more network and system resources",
+        "localAsr": "Local speech recognition",
+        "localAsrHint": "Recognizes speech on this computer with faster-whisper. Requires a separate faster-whisper install; the model downloads on first use",
+        "localAsrDependencyMissing": "Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session."
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -1155,6 +1158,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper (local)",
             "free": "Free Version",
             "dummy": "Test provider",
             "unknown": "Unknown provider"

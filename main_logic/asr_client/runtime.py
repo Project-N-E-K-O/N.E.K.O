@@ -1734,6 +1734,7 @@ class IndependentAsrRuntime:
         route_key: str,
         resource_optimization_enabled: bool,
         user_language: str | None = None,
+        provider_preference: str | None = None,
         speaker_shadow_factory: SpeakerShadowFactory | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route.
@@ -1741,6 +1742,9 @@ class IndependentAsrRuntime:
         ``user_language`` is the caller's normalized language preference; the
         session factory maps it onto each provider's accepted hints and falls
         back to automatic detection when it is unknown or unsupported.
+        ``provider_preference`` is the persisted independent-ASR provider
+        choice; the resolver honors it only for user-selectable providers on
+        Core routes that allow independent ASR.
         """
 
         self._ensure_asr_runtime_state()
@@ -1786,11 +1790,23 @@ class IndependentAsrRuntime:
             resource_optimization_enabled
         )
         core_type = str(route_key or "").strip().lower()
+        preference = str(provider_preference or "").strip().lower()
+        # "auto" (the default) means "follow the Core route": resolve exactly
+        # as if no preference had been persisted.
+        resolver_kwargs: dict[str, Any] = (
+            {"provider_preference": preference}
+            if preference and preference != "auto"
+            else {}
+        )
 
         try:
             # The resolver reads core config synchronously from disk; keep
             # that blocking read off the event loop.
-            selection = await asyncio.to_thread(_resolve_asr_selection, core_type)
+            selection = await asyncio.to_thread(
+                _resolve_asr_selection,
+                core_type,
+                **resolver_kwargs,
+            )
             selected_provider = getattr(selection, "provider_key", None)
             if not isinstance(selected_provider, str) or not selected_provider.strip():
                 raise ValueError("invalid ASR provider selection")
@@ -1806,7 +1822,11 @@ class IndependentAsrRuntime:
             if availability is not AsrProviderAvailability.IMPLEMENTED:
                 if not operation_is_current():
                     return stale_result(provider)
-                failure_code = "ASR_INDEPENDENT_UNAVAILABLE"
+                failure_code = (
+                    "ASR_INDEPENDENT_DEPENDENCY_MISSING"
+                    if availability is AsrProviderAvailability.MISSING_DEPENDENCY
+                    else "ASR_INDEPENDENT_UNAVAILABLE"
+                )
                 status_identity = self._capture_runtime_identity()
                 delivered = await self._send_asr_status(
                     failure_code,

@@ -552,6 +552,7 @@
         'focusCognitionEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
+        'independentAsrProviderPreference',
         'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
@@ -564,6 +565,15 @@
         'targetFrameRate',
         'forgeDropEffectsEnabled'
     ];
+
+    function _normalizeIndependentAsrProviderPreference(value) {
+        // Accepted values mirror INDEPENDENT_ASR_PROVIDER_PREFERENCES in
+        // utils/conversation_settings_constants.py; anything else follows the
+        // Core route.
+        return ['auto', 'faster_whisper'].indexOf(value) !== -1
+            ? value
+            : 'auto';
+    }
 
     function _defaultConversationSettingsForReset() {
         return {
@@ -582,6 +592,7 @@
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
             independentAsrEnabled: false,
+            independentAsrProviderPreference: 'auto',
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
@@ -642,6 +653,9 @@
             focusCognitionEnabled: S.focusCognitionEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            independentAsrProviderPreference: _normalizeIndependentAsrProviderPreference(
+                S.independentAsrProviderPreference
+            ),
             voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
@@ -1609,6 +1623,10 @@
         const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentVoiceResourceOptimization =
             S.voiceInputResourceOptimizationEnabled !== false;
+        const currentIndependentAsrProviderPreference =
+            _normalizeIndependentAsrProviderPreference(
+                S.independentAsrProviderPreference
+            );
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -1686,6 +1704,7 @@
             focusCognitionEnabled: currentFocusCognition,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
+            independentAsrProviderPreference: currentIndependentAsrProviderPreference,
             voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
@@ -1730,6 +1749,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.independentAsrProviderPreference = currentIndependentAsrProviderPreference;
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
@@ -1914,6 +1934,10 @@
                 S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.voiceInputResourceOptimizationEnabled =
                     settings.voiceInputResourceOptimizationEnabled ?? true;
+                S.independentAsrProviderPreference =
+                    _normalizeIndependentAsrProviderPreference(
+                        settings.independentAsrProviderPreference
+                    );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;

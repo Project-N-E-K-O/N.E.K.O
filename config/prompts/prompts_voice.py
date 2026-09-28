@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Localized text for voice preview."""
+"""Localized text for voice preview and local speech recognition."""
 
 VOICE_PREVIEW_TEXTS = {
     "zh-CN": "喵喵喵～这里是林悠怡～很高兴见到你～",
@@ -24,3 +24,43 @@ VOICE_PREVIEW_TEXTS = {
     "es": "Miau, miau, miau~ Soy Lin Youyi. Me alegra conocerte~",
     "pt": "Miau, miau, miau~ Eu sou Lin Youyi. Prazer em conhecer você~",
 }
+
+
+# 本地 Whisper 在静音/噪声片段上常见的固定幻觉句（来自字幕训练数据）。
+# 这里存的是归一化后的整句：小写、首尾标点与空白已去掉、内部空白压成单个空格。
+# 只有整句完全等于其中一项、且模型置信度同时偏低时才会被丢弃，
+# 用户真的说出这些话时不会被误杀。
+WHISPER_SILENCE_HALLUCINATIONS = frozenset({
+    # en
+    "thank you",
+    "thank you very much",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "you",
+    # zh-CN / zh-TW
+    "谢谢观看",
+    "謝謝觀看",
+    "谢谢大家",
+    "謝謝大家",
+    "字幕由amara.org社区提供",
+    "字幕由amara.org社群提供",
+    "請不吝點贊 訂閱 轉發 打賞支持明鏡與點點欄目",
+    "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+    # ja
+    "ご視聴ありがとうございました",
+    "ご清聴ありがとうございました",
+    # ko
+    "시청해주셔서 감사합니다",
+    "시청해 주셔서 감사합니다",
+    # ru
+    "продолжение следует",
+    "субтитры сделал dimatorzok",
+    "субтитры создавал dimatorzok",
+    # es
+    "gracias por ver el video",
+    "subtítulos realizados por la comunidad de amara.org",
+    # pt
+    "obrigado por assistir",
+    "legendas pela comunidade amara.org",
+})

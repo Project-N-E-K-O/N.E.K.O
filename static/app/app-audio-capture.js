@@ -3427,6 +3427,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var noiseToggle = null;
             var optimizationToggle = null;
             var optimizationHint = null;
+            var localAsrToggle = null;
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
@@ -3439,7 +3440,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     gemini: 'Gemini',
                     openai: 'OpenAI',
                     step: 'Step',
-                    grok: 'Grok'
+                    grok: 'Grok',
+                    faster_whisper: 'faster-whisper'
                 };
                 return known[value.toLowerCase()] || value;
             }
@@ -3540,12 +3542,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     || !noiseToggle
                     || !optimizationToggle
                     || !optimizationHint
+                    || !localAsrToggle
                     || !voiceStatus
                 ) return;
                 // RNNoise is local PCM preprocessing shared by both the
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
+                // Local recognition is an independent-ASR provider choice, so
+                // it follows the same Core capability gate and master switch.
+                localAsrToggle.setChecked(
+                    !capabilityUnavailable
+                    && S.independentAsrProviderPreference === 'faster_whisper'
+                );
+                localAsrToggle.setDisabled(!enabled);
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
@@ -3645,6 +3655,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 noiseToggle = null;
                 optimizationToggle = null;
                 optimizationHint = null;
+                localAsrToggle = null;
                 voiceStatus = null;
                 asrSummary = null;
                 if (
@@ -4271,6 +4282,30 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     'microphone.voiceResourceOptimizationHintOn',
                     '空闲时减少连接和音频上传',
                     optimizationToggle
+                );
+
+                localAsrToggle = createVoiceSettingToggle(
+                    S.independentAsrProviderPreference === 'faster_whisper',
+                    function (enabled) {
+                        if (coreApiDisablesIndependentAsr()) {
+                            updateVoiceRecognitionUi();
+                            return;
+                        }
+                        S.independentAsrProviderPreference = enabled
+                            ? 'faster_whisper'
+                            : 'auto';
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.localAsr',
+                    '本地语音识别',
+                    'microphone.localAsrHint',
+                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                    localAsrToggle
                 );
 
                 voiceStatus = document.createElement('div');

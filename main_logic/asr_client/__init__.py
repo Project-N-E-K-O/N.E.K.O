@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -34,12 +35,17 @@ from ._registry_meta import (
     ASR_PROVIDER_REGISTRY as _ASR_PROVIDER_REGISTRY,
     CORE_ASR_ROUTES as _CORE_ASR_ROUTES,
     AsrCoreCapabilities,
+    AsrCoreRoute as _AsrCoreRoute,
     AsrEndpointingMode as _AsrEndpointingMode,
     AsrProviderAvailability as _AsrProviderAvailability,
 )
 from .endpointing.detector_runtime import _create_voice_turn_adapter
 from .provider_policy import resolve_provider_policy
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
+from .workers.faster_whisper import (
+    _whisper_language_code,
+    faster_whisper_asr_worker as _faster_whisper_asr_worker,
+)
 from .workers.gemini import gemini_asr_worker as _gemini_asr_worker
 from .workers.glm import glm_asr_worker as _glm_asr_worker
 from .workers.grok import (
@@ -105,6 +111,7 @@ _PROVIDER_LANGUAGE_VALIDATORS: dict[str, Callable[[str], str | None]] = {
     "openai": _normalize_openai_language,
     "step": _step_language_code,
     "grok": _normalize_grok_language,
+    "faster_whisper": _whisper_language_code,
 }
 
 
@@ -146,6 +153,7 @@ _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
     "glm": _glm_asr_worker,
     "gemini": _gemini_asr_worker,
     "soniox": _soniox_asr_worker,
+    "faster_whisper": _faster_whisper_asr_worker,
 }
 
 
@@ -200,13 +208,76 @@ def _mapped_soniox_region(user_region: str) -> Literal["us", "eu", "jp"]:
     return "us"
 
 
+def _optional_dependency_available(module_name: str | None) -> bool:
+    """Probe an optional package without importing it."""
+
+    if not module_name:
+        return True
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _resolve_user_selected_provider(
+    route: _AsrCoreRoute,
+    provider_preference: str | None,
+) -> _AsrSelection | None:
+    """Honor an explicit user-selectable provider preference, if any.
+
+    Returns ``None`` for the default ``auto`` preference, unknown values, and
+    Core routes that do not support independent ASR at all (the Core route
+    capability always wins over the persisted preference).
+    """
+
+    preference = str(provider_preference or "").strip().lower()
+    if not preference or preference == "auto":
+        return None
+    if not route.capabilities.supports_independent_asr:
+        return None
+    meta = _ASR_PROVIDER_REGISTRY.get(preference)
+    if meta is None or not meta.user_selectable:
+        return None
+    endpointing_mode: _AsrEndpointingMode = (
+        "manual"
+        if "manual" in meta.supported_endpointing_modes
+        else "provider"
+    )
+    if meta.availability is not _AsrProviderAvailability.IMPLEMENTED:
+        return _AsrSelection(
+            provider_key=preference,
+            endpointing_mode=endpointing_mode,
+            availability=meta.availability,
+        )
+    if not _optional_dependency_available(meta.optional_dependency):
+        return _AsrSelection(
+            provider_key=preference,
+            endpointing_mode=endpointing_mode,
+            availability=_AsrProviderAvailability.MISSING_DEPENDENCY,
+        )
+    worker_fn = _IMPLEMENTED_WORKERS.get(preference)
+    if worker_fn is None:
+        raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {preference}")
+    return _AsrSelection(
+        provider_key=preference,
+        endpointing_mode=endpointing_mode,
+        _worker_fn=worker_fn,
+    )
+
+
 def _resolve_asr_selection(
     core_type: str,
     *,
     user_region: str | None = None,
     include_dev_override: bool = True,
+    provider_preference: str | None = None,
 ) -> _AsrSelection:
-    """Resolve one pre-audio provider choice without opening a session."""
+    """Resolve one pre-audio provider choice without opening a session.
+
+    ``provider_preference`` is the persisted independent-ASR provider choice.
+    Only providers marked ``user_selectable`` in the registry are honored, and
+    only on Core routes whose capabilities allow independent ASR.
+    """
 
     core_key = str(core_type or "").strip().lower()
     route = _CORE_ASR_ROUTES.get(core_key)
@@ -237,6 +308,10 @@ def _resolve_asr_selection(
             _worker_fn=worker_fn,
             _api_key=api_key or "",
         )
+
+    user_selection = _resolve_user_selected_provider(route, provider_preference)
+    if user_selection is not None:
+        return user_selection
 
     core_config = _load_core_config()
     resolved_region = str(
@@ -349,7 +424,7 @@ def _get_asr_worker(
     if worker_fn is None:
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {core_key}")
 
-    if provider_key == "dummy":
+    if provider_key == "dummy" or not meta.requires_credential:
         return worker_fn, "", provider_key
 
     # ConfigManager owns the only permitted provider-specific credential
@@ -444,6 +519,8 @@ def _create_asr_session_from_selection(
         raise RuntimeError(f"ASR_BACKEND_BLOCKED: {core_type}")
     if selection.availability is _AsrProviderAvailability.MISSING_CREDENTIALS:
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
+    if selection.availability is _AsrProviderAvailability.MISSING_DEPENDENCY:
+        raise RuntimeError(f"ASR_DEPENDENCY_MISSING: {provider_key}")
     if session_config.endpointing_mode not in provider_meta.supported_endpointing_modes:
         raise RuntimeError(
             "ASR_ENDPOINTING_NOT_SUPPORTED: "
@@ -452,7 +529,11 @@ def _create_asr_session_from_selection(
     worker_fn = selection._worker_fn
     if worker_fn is None:
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
-    if provider_key != "dummy" and not selection._api_key:
+    if (
+        provider_key != "dummy"
+        and provider_meta.requires_credential
+        and not selection._api_key
+    ):
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
     provider_policy = resolve_provider_policy(
         provider_key,

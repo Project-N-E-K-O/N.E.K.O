@@ -1044,7 +1044,10 @@
         "voiceRecognitionSettingsPending": "◐ 设置将在下次语音会话生效",
         "voiceResourceOptimization": "智能资源优化",
         "voiceResourceOptimizationHintOn": "空闲时减少连接和音频上传",
-        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用"
+        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用",
+        "localAsr": "本地语音识别",
+        "localAsrHint": "在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型",
+        "localAsrDependencyMissing": "本地语音识别需要 faster-whisper，但尚未安装，本次语音输入已停止。请先安装，或关闭本地语音识别，然后重新开始语音会话。"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -1155,6 +1158,7 @@
             "qwen": "通义千问",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper（本地）",
             "free": "免费版",
             "dummy": "测试服务",
             "unknown": "未知服务"
