@@ -201,6 +201,37 @@ describe('custom graph runtime', () => {
     }
   });
 
+  it('keeps the saved finishing order of sibling delays that the playback floor makes equal', () => {
+    const source = profile();
+    // The longer branch is linked first, so registration order alone would pick it.
+    source.initialInteractionIds = ['ix-slow', 'ix-fast'];
+    source.interactions = [
+      {
+        id: 'ix-slow',
+        trigger: { kind: 'after', delayMs: 30 },
+        actions: { complete: { kind: 'show', imageId: 'img-b' } },
+      },
+      {
+        id: 'ix-fast',
+        trigger: { kind: 'after', delayMs: 10 },
+        actions: { complete: { kind: 'show', imageId: 'img-c' } },
+      },
+    ];
+    source.links = [];
+
+    const clock = scheduler();
+    const runtime = createCustomGraphRuntime(source, {
+      scheduler: clock.api,
+      onImageChange: () => undefined,
+    });
+
+    clock.advance(CUSTOM_GRAPH_MIN_STEP_MS - 1);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-a');
+    clock.advance(1);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-c');
+    runtime.destroy();
+  });
+
   it('holds the clicked frame for one delay before the cycle-stop preset resumes', () => {
     const editorState = createAvatarToolInteractionPresetState({ kind: 'cycle-stop' });
     const delayItems = editorState.items.filter(item => item.kind === 'after');

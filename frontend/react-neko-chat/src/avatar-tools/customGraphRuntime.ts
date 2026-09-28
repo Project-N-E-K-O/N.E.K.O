@@ -39,6 +39,9 @@ export type CustomGraphRuntime = {
 type DelayTicket = {
   interactionId: AvatarToolInteractionId;
   dueAt: number;
+  // The saved delay before the playback floor: siblings floored to the same
+  // dueAt still finish in their saved order.
+  savedDelayMs: number;
   order: number;
   epoch: number;
   timeoutId: number;
@@ -134,6 +137,7 @@ export function createCustomGraphRuntime(
       pendingDelays.push({
         interactionId: ticket.interactionId,
         dueAt: ticket.dueAt,
+        savedDelayMs: ticket.savedDelayMs,
         order: ticket.order,
         epoch: ticket.epoch,
       });
@@ -142,11 +146,15 @@ export function createCustomGraphRuntime(
 
   const scheduleWaitingPosition = () => {
     const scheduleEpoch = epoch;
+    // One clock read per waiting position, so siblings floored to the same
+    // delay get exactly the same dueAt and fall through to savedDelayMs.
+    const scheduledAt = options.scheduler.now();
     waitingInteractionIds.forEach((interactionId) => {
       const interaction = interactionsById.get(interactionId);
       if (!interaction || interaction.trigger.kind !== 'after') return;
-      const delayMs = Math.max(CUSTOM_GRAPH_MIN_STEP_MS, interaction.trigger.delayMs);
-      const dueAt = options.scheduler.now() + delayMs;
+      const savedDelayMs = interaction.trigger.delayMs;
+      const delayMs = Math.max(CUSTOM_GRAPH_MIN_STEP_MS, savedDelayMs);
+      const dueAt = scheduledAt + delayMs;
       const order = nextDelayOrder++;
       const timeoutId = options.scheduler.setTimeout(() => {
         const ticket = delays.get(interactionId);
@@ -158,10 +166,19 @@ export function createCustomGraphRuntime(
           || !waitingInteractionIds.includes(interactionId)
         ) return;
         delays.delete(interactionId);
-        pendingDelays.push({ interactionId, dueAt: ticket.dueAt, order: ticket.order, epoch: ticket.epoch });
+        pendingDelays.push({
+          interactionId,
+          dueAt: ticket.dueAt,
+          savedDelayMs: ticket.savedDelayMs,
+          order: ticket.order,
+          epoch: ticket.epoch,
+        });
+        // Siblings due at the same instant have their own timers queued behind
+        // this one; gather them before picking a winner.
+        collectDueDelays();
         if (!activeClick) resolvePendingDelay();
       }, delayMs);
-      delays.set(interactionId, { interactionId, dueAt, order, epoch: scheduleEpoch, timeoutId });
+      delays.set(interactionId, { interactionId, dueAt, savedDelayMs, order, epoch: scheduleEpoch, timeoutId });
     });
   };
 
@@ -178,7 +195,11 @@ export function createCustomGraphRuntime(
 
   function resolvePendingDelay() {
     if (destroyed || activeClick || pendingDelays.length === 0) return;
-    pendingDelays.sort((left, right) => left.dueAt - right.dueAt || left.order - right.order);
+    pendingDelays.sort((left, right) => (
+      left.dueAt - right.dueAt
+      || left.savedDelayMs - right.savedDelayMs
+      || left.order - right.order
+    ));
     const winner = pendingDelays[0];
     if (winner.epoch !== epoch || !waitingInteractionIds.includes(winner.interactionId)) {
       pendingDelays.shift();

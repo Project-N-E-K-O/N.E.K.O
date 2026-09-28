@@ -151,6 +151,7 @@ declare global {
     ) => Window | null;
     buildCenteredPopupFeatures?: (windowWidth: number, windowHeight: number) => string;
     avatarToolEditorHasUnsavedChanges?: () => boolean;
+    avatarToolEditorDiscardUnsavedChanges?: () => void;
   }
 }
 
@@ -262,7 +263,11 @@ export function openAvatarToolEditorWindow(
           if (isSameAvatarToolEditorTarget(existingWindow.location.href, targetUrl)) return false;
           if (!existingWindow.avatarToolEditorHasUnsavedChanges) return false;
           if (!existingWindow.avatarToolEditorHasUnsavedChanges()) return true;
-          return confirmDiscardAvatarToolEditorChanges();
+          if (!confirmDiscardAvatarToolEditorChanges()) return false;
+          // The user already agreed to discard here; clear the editor's dirty
+          // flag so its beforeunload does not ask a second time.
+          existingWindow.avatarToolEditorDiscardUnsavedChanges?.();
+          return true;
         } catch {
           // An uninspectable window must not silently replace an unknown draft.
           return false;

@@ -70,8 +70,15 @@ describe('AvatarToolStandaloneEditor', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
     expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
+    // The opener calls this after the user confirmed discarding in its own prompt.
+    window.avatarToolEditorDiscardUnsavedChanges?.();
+    expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(false);
+    const beforeUnload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(false);
     unmount();
     expect(window.avatarToolEditorHasUnsavedChanges).toBeUndefined();
+    expect(window.avatarToolEditorDiscardUnsavedChanges).toBeUndefined();
   });
 
   it('tracks content edits as unsaved changes', () => {

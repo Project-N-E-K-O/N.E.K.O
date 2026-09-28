@@ -785,6 +785,7 @@ describe('AvatarToolItemManager local creation', () => {
     const existing = {
       location: { href: `${window.location.origin}/avatar_tool_editor?mode=create&ui_lang=ja` },
       avatarToolEditorHasUnsavedChanges: vi.fn().mockReturnValue(true),
+      avatarToolEditorDiscardUnsavedChanges: vi.fn(),
       focus: vi.fn(),
     } as unknown as Window;
     window.openOrFocusWindow = vi.fn((url, _name, _features, options) => {
@@ -794,8 +795,12 @@ describe('AvatarToolItemManager local creation', () => {
       expect(mayNavigate?.(existing, url)).toBe(false);
       expect(existing.avatarToolEditorHasUnsavedChanges).toHaveBeenCalledTimes(1);
       expect(confirm).toHaveBeenCalledTimes(1);
+      // A declined switch leaves the editor's draft marked as unsaved.
+      expect(existing.avatarToolEditorDiscardUnsavedChanges).not.toHaveBeenCalled();
       confirm.mockReturnValue(true);
       expect(mayNavigate?.(existing, url)).toBe(true);
+      // An accepted switch clears it, so the editor's beforeunload stays quiet.
+      expect(existing.avatarToolEditorDiscardUnsavedChanges).toHaveBeenCalledTimes(1);
       return existing;
     });
     expect(openAvatarToolEditorWindow('edit', LOCAL_ID)).toBe(existing);

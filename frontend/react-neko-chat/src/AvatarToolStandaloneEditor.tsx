@@ -86,10 +86,15 @@ export default function AvatarToolStandaloneEditor() {
 
   useEffect(() => {
     const hasUnsavedChanges = () => dirtyRef.current;
+    const discardUnsavedChanges = () => { dirtyRef.current = false; };
     window.avatarToolEditorHasUnsavedChanges = hasUnsavedChanges;
+    window.avatarToolEditorDiscardUnsavedChanges = discardUnsavedChanges;
     return () => {
       if (window.avatarToolEditorHasUnsavedChanges === hasUnsavedChanges) {
         delete window.avatarToolEditorHasUnsavedChanges;
+      }
+      if (window.avatarToolEditorDiscardUnsavedChanges === discardUnsavedChanges) {
+        delete window.avatarToolEditorDiscardUnsavedChanges;
       }
     };
   }, []);
