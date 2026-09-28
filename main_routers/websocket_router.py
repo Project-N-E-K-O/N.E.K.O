@@ -137,6 +137,10 @@ _ws_bg_tasks: set = set()
 # is reached.  The state machine only protects an in-progress delivery; by
 # then two tasks may already have independently completed their gap checks.
 _greeting_tasks: dict[str, asyncio.Task] = {}
+# Windows waiting on a greeting task for their ``greeting_check_done``: one
+# entry per socket (keyed by id(); starlette sockets are unhashable) holding
+# the latest check id it sent, so repeated checks cannot pile up callbacks.
+_greeting_done_waiters: dict[asyncio.Task, dict[int, tuple[WebSocket, str]]] = {}
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
@@ -350,15 +354,24 @@ def _send_greeting_check_done_when_settled(
 ) -> None:
     """Send ``greeting_check_done`` once the character's greeting task ends.
 
-    A coalesced request waits on the task already in flight.
+    A coalesced request waits on the task already in flight. Each window is
+    answered once per task, with the id of its latest check: the frontend
+    only honours the gate it armed last, so earlier ids need no reply.
     """
     task = _greeting_tasks.get(lanlan_name)
     if task is None or task.done():
         _fire_task(_send_greeting_check_done(websocket, check_id))
         return
-    task.add_done_callback(
-        lambda _task: _fire_task(_send_greeting_check_done(websocket, check_id))
-    )
+    waiters = _greeting_done_waiters.get(task)
+    if waiters is None:
+        waiters = _greeting_done_waiters[task] = {}
+        task.add_done_callback(_answer_greeting_done_waiters)
+    waiters[id(websocket)] = (websocket, check_id)
+
+
+def _answer_greeting_done_waiters(task: asyncio.Task) -> None:
+    for websocket, check_id in (_greeting_done_waiters.pop(task, None) or {}).values():
+        _fire_task(_send_greeting_check_done(websocket, check_id))
 
 
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:

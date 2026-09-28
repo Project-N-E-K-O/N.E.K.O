@@ -365,7 +365,14 @@ def test_greeting_check_done_waits_for_the_greeting_task():
             websocket_router._send_greeting_check_done_when_settled("Test", first, "a")
             # Another window's request coalesces onto the task in flight.
             assert not websocket_router._schedule_greeting_task("Test", "ordinary", greeting)
-            websocket_router._send_greeting_check_done_when_settled("Test", second, "b")
+            # Repeated checks from one window keep a single waiter (its
+            # latest id) and one callback on the task, however many arrive.
+            for check_id in ("b-old-1", "b-old-2", "b"):
+                websocket_router._send_greeting_check_done_when_settled(
+                    "Test", second, check_id
+                )
+            task = websocket_router._greeting_tasks["Test"]
+            assert len(websocket_router._greeting_done_waiters[task]) == 2
             await settle()
             assert first.sent == [] and second.sent == []
 
@@ -373,6 +380,7 @@ def test_greeting_check_done_waits_for_the_greeting_task():
             await settle()
             # Each window gets its own request's id back.
             assert first.sent == done("a") and second.sent == done("b")
+            assert task not in websocket_router._greeting_done_waiters
 
             # Nothing in flight any more: reported right away.
             websocket_router._send_greeting_check_done_when_settled("Test", late, "c")
@@ -385,5 +393,6 @@ def test_greeting_check_done_waits_for_the_greeting_task():
             for task in list(websocket_router._greeting_tasks.values()):
                 task.cancel()
             websocket_router._greeting_tasks.clear()
+            websocket_router._greeting_done_waiters.clear()
 
     asyncio.run(scenario())
