@@ -329,7 +329,7 @@ class LLMSessionManager(
         self._tts_rate_limit_backoff_level: int = 0  # API_RATE_LIMIT 定时 respawn 翻倍次数，就绪后清零
         self._tts_rate_limit_retry_at: float = 0.0  # 限流退避截止时刻(monotonic)，定时与隐式 respawn 共用
         self._tts_quota_blocked: bool = False  # 配额用完后停了定时重试；恢复就绪时丢弃旧轮缓存
-        self._tts_quota_stale_speech_ids: frozenset = frozenset()  # 隐式重试时判定为旧轮次的 speech_id
+        self._tts_quota_stale_speech_ids: Optional[frozenset] = None  # 配额拦截后首次隐式重试时判定的旧轮次 speech_id；None=尚未判定
         # User-facing TTS notices must survive handler replacement during a
         # worker respawn. Entries are released by audio_done or session reset.
         self._tts_notified_error_keys: set[tuple[str, str]] = set()

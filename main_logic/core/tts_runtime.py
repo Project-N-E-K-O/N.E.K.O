@@ -167,6 +167,16 @@ class TtsRuntimeMixin:
             return
         self._game_speech_delivery_state = None
 
+    def _fail_dropped_tts_speech(self, speech_ids) -> None:
+        """Settle rounds whose cached TTS text is discarded without synthesis.
+
+        A completion waiter for such a round would otherwise sit out its
+        timeout, because no audio_done will ever arrive for it.
+        """
+        for speech_id in speech_ids:
+            GAME_SPEECH_AUDIO_CACHE.fail_capture(self, speech_id)
+            self._resolve_game_speech_completion_wait(speech_id, False)
+
     def _resolve_game_speech_completion_wait(self, speech_id: object, completed: bool) -> None:
         slot = getattr(self, "_game_speech_completion_waiter", None)
         if not slot or slot[0] != str(speech_id or ""):
@@ -1368,7 +1378,7 @@ class TtsRuntimeMixin:
         self._tts_rate_limit_backoff_level = 0
         self._tts_rate_limit_retry_at = 0.0
         self._tts_quota_blocked = False
-        self._tts_quota_stale_speech_ids = frozenset()
+        self._tts_quota_stale_speech_ids = None
         notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
         if notified_error_keys is not None:
             notified_error_keys.clear()
@@ -1483,9 +1493,16 @@ class TtsRuntimeMixin:
         ):
             return  # 限流退避中：截止时刻从被拒那一刻算起，定时 respawn 会在截止时拉起
 
-        if getattr(self, '_tts_quota_blocked', False) and self.tts_pending_chunks:
+        if (
+            getattr(self, '_tts_quota_blocked', False)
+            and getattr(self, '_tts_quota_stale_speech_ids', None) is None
+            and self.tts_pending_chunks
+        ):
             # 调用方都是先缓存再拉起，此刻最后一条就是触发这次重试的回复；
-            # 缓存里其余 speech_id 都是配额期间被拒轮次的残尾。
+            # 缓存里其余 speech_id 都是配额期间被拒轮次的残尾。每次配额拦截
+            # 只在首次隐式重试时判定一次：这次重试的 worker 若因别的原因没起来，
+            # 之后的定时/隐式重试不能拿后来排队的语音当触发者重判，否则原本那轮
+            # 恢复回复会被误当旧轮次删掉。
             trigger_speech_id = self.tts_pending_chunks[-1][0]
             self._tts_quota_stale_speech_ids = frozenset(
                 speech_id for speech_id, _text in self.tts_pending_chunks
@@ -2048,16 +2065,21 @@ class TtsRuntimeMixin:
                                 # 这次重试那一刻已判为旧轮次的 speech_id，之后合法排队
                                 # 的语音（触发重试的那一轮、镜像播报等）照常播出。
                                 stale_speech_ids = getattr(
-                                    self, '_tts_quota_stale_speech_ids', frozenset()
-                                )
+                                    self, '_tts_quota_stale_speech_ids', None
+                                ) or frozenset()
                                 self._tts_quota_blocked = False
-                                self._tts_quota_stale_speech_ids = frozenset()
+                                self._tts_quota_stale_speech_ids = None
                                 if stale_speech_ids:
                                     async with self.tts_cache_lock:
+                                        dropped = {
+                                            chunk[0] for chunk in self.tts_pending_chunks
+                                            if chunk[0] in stale_speech_ids
+                                        }
                                         self.tts_pending_chunks[:] = [
                                             chunk for chunk in self.tts_pending_chunks
                                             if chunk[0] not in stale_speech_ids
                                         ]
+                                    self._fail_dropped_tts_speech(dropped)
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
@@ -2077,7 +2099,9 @@ class TtsRuntimeMixin:
                                     self._tts_respawn_task = None
                                 # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
                                 async with self.tts_cache_lock:
+                                    dropped = {chunk[0] for chunk in self.tts_pending_chunks}
                                     self.tts_pending_chunks.clear()
+                                self._fail_dropped_tts_speech(dropped)
                             elif _last_code == 'API_QUOTA_TIME':
                                 # 服务端不告知恢复时间（按 IP 滚动 24h 窗口），定时
                                 # 重拉只会一直被拒。不定时重试；每次回复首 chunk 的
@@ -2087,9 +2111,11 @@ class TtsRuntimeMixin:
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
                                 self._tts_quota_blocked = True
-                                self._tts_quota_stale_speech_ids = frozenset()
+                                self._tts_quota_stale_speech_ids = None
                                 async with self.tts_cache_lock:
+                                    dropped = {chunk[0] for chunk in self.tts_pending_chunks}
                                     self.tts_pending_chunks.clear()
+                                self._fail_dropped_tts_speech(dropped)
                             else:
                                 # 1013 限流 / 并发超限：逐次拉长间隔，其余照旧 13 秒。
                                 if _last_code == 'API_RATE_LIMIT':

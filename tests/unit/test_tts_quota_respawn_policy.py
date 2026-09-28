@@ -181,7 +181,63 @@ async def test_recovery_after_quota_drops_only_rounds_rejected_before_the_retry(
         ("sid-mirror", "mirrored speech"),
     ]]
     assert mgr._tts_quota_blocked is False
-    assert mgr._tts_quota_stale_speech_ids == frozenset()
+    assert mgr._tts_quota_stale_speech_ids is None
+
+
+@pytest.mark.asyncio
+async def test_retry_after_a_failed_recovery_keeps_the_original_stale_set():
+    mgr = _make_mgr()
+    mgr._tts_quota_blocked = True
+    _arm_implicit_respawn(mgr)
+    mgr.tts_pending_chunks = [
+        ("sid-stale", "tail of a rejected reply"),
+        ("sid-live", "reply that triggers recovery"),
+    ]
+    LLMSessionManager._respawn_tts_worker(mgr)
+    # That worker times out; a mirror speech queues meanwhile, then the
+    # timed retry runs.
+    mgr.tts_pending_chunks.append(("sid-mirror", "mirrored speech"))
+    mgr._last_tts_respawn_time = 0.0
+    LLMSessionManager._respawn_tts_worker(mgr, timed=True)
+    assert len(mgr.started) == 2
+    mgr.tts_response_queue.put(("__ready__", True))
+
+    await _drain(mgr)
+
+    assert mgr.flushed == [[
+        ("sid-live", "reply that triggers recovery"),
+        ("sid-mirror", "mirrored speech"),
+    ]]
+
+
+@pytest.mark.parametrize("code", ["API_QUOTA_TIME", "API_ACCESS_DENIED"])
+@pytest.mark.asyncio
+async def test_discarded_cached_speech_resolves_its_completion_waiter(code):
+    mgr = _make_mgr()
+    mgr._bg_tasks = set()
+    completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-game")
+    mgr.tts_pending_chunks = [("sid-game", "mirrored line")]
+    mgr.tts_response_queue.put(_error(code))
+    mgr.tts_response_queue.put(("__ready__", False))
+
+    await _drain(mgr)
+
+    assert await asyncio.wait_for(completion, timeout=1.0) is False
+
+
+@pytest.mark.asyncio
+async def test_stale_rounds_dropped_on_recovery_resolve_their_waiters():
+    mgr = _make_mgr()
+    mgr._tts_quota_blocked = True
+    mgr._tts_quota_stale_speech_ids = frozenset({"sid-stale"})
+    completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-stale")
+    mgr.tts_pending_chunks = [("sid-stale", "old line"), ("sid-live", "new line")]
+    mgr.tts_response_queue.put(("__ready__", True))
+
+    await _drain(mgr)
+
+    assert await asyncio.wait_for(completion, timeout=1.0) is False
+    assert mgr.flushed == [[("sid-live", "new line")]]
 
 
 def test_implicit_respawn_waits_out_the_rate_limit_deadline():
@@ -270,7 +326,7 @@ def test_session_retry_reset_clears_rate_limit_and_quota_state():
     assert mgr._tts_rate_limit_backoff_level == 0
     assert mgr._tts_rate_limit_retry_at == 0.0
     assert mgr._tts_quota_blocked is False
-    assert mgr._tts_quota_stale_speech_ids == frozenset()
+    assert mgr._tts_quota_stale_speech_ids is None
 
 
 @pytest.mark.asyncio
