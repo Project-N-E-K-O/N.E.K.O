@@ -493,6 +493,8 @@ class TtsMarkdownStripper:
 
     # flush 兜底：删掉残留的孤立 marker 字符
     _DANGLING_RE = re.compile(r"[*_~`\[\]()]+")
+    # 只删括号类：括号留下会被 TtsBracketStripper 当成开括号吞掉后文。
+    _DANGLING_BRACKET_RE = re.compile(r"[\[\]()]+")
 
     def __init__(self):
         self._pending = ""
@@ -521,12 +523,18 @@ class TtsMarkdownStripper:
             return ""
         return self._strip(emit)
 
-    def flush(self) -> str:
-        """轮次收尾：strip pending，再删掉残留的孤立 marker 字符后 emit。"""
+    def flush(self, *, keep_symbol_markers: bool = False) -> str:
+        """轮次收尾：strip pending，再删掉残留的孤立 marker 字符后 emit。
+
+        ``keep_symbol_markers=True`` 时只删括号类 marker，``* _ ~ \```
+        原样留给下游的 ``strip_tts_muted_symbols``：它知道上一块结尾是什么，
+        能在「3」「~5」之间补空格，这里直接删会把两边连成「35」。
+        """
         if not self._pending:
             return ""
         out = self._strip(self._pending)
-        out = self._DANGLING_RE.sub("", out)
+        dangling = self._DANGLING_BRACKET_RE if keep_symbol_markers else self._DANGLING_RE
+        out = dangling.sub("", out)
         self._pending = ""
         return out
 

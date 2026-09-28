@@ -463,3 +463,31 @@ def test_whitespace_only_chunk_is_passed_through():
     for chunk in ("9", " ", "28"):
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s1", " "), ("s1", "28")]
+
+
+def test_markdown_flush_can_leave_symbol_markers_for_the_symbol_filter():
+    md = TtsMarkdownStripper()
+    md.feed("x~y(z")
+    # 默认行为不变：所有悬挂 marker 都删。
+    assert md.flush() == "yz"
+    md.feed("x~y(z")
+    # TTS 入队路径：括号仍删（否则会被括号剥离器吞掉后文），* _ ~ ` 留给符号过滤。
+    assert md.flush(keep_symbol_markers=True) == "~yz"
+
+
+def test_tilde_held_by_markdown_still_keeps_the_gap_at_turn_end():
+    # "3" / "~" / "5天"：markdown 把「~5天」当删除线缓存到收尾才放出，
+    # 收尾时也不能让「3」「5」连成「35」。
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in ("3", "~", "5天"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    assert _drain(mgr.tts_request_queue) == [("s1", "3"), ("s1", " 5天"), (None, None)]

@@ -474,7 +474,8 @@ class TtsRuntimeMixin:
         # 的串接顺序一致。markdown.flush 把残留的孤立 marker 字符删掉再 emit；
         # bracket.feed 处理任何残留括号字符；bracket.flush 直接 reset 不读
         # 未闭合的括号内容。normalizer.flush 永远返回 ""，省略调用。
-        flushed = self._tts_markdown_stripper.flush()
+        # 悬挂的 * _ ~ ` 留给下面的符号过滤：它记得上一块结尾，能补分隔空格。
+        flushed = self._tts_markdown_stripper.flush(keep_symbol_markers=True)
         if flushed:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
@@ -676,7 +677,7 @@ class TtsRuntimeMixin:
         )
         markdown = TtsMarkdownStripper()
         bracket = TtsBracketStripper()
-        markdown_output = markdown.feed(text) + markdown.flush()
+        markdown_output = markdown.feed(text) + markdown.flush(keep_symbol_markers=True)
         spoken = bracket.feed(markdown_output)
         bracket.flush()
         # 与实际朗读路径 _enqueue_tts_text_chunk 同一道符号过滤，缓存音频才和
