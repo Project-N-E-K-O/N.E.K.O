@@ -52,7 +52,13 @@ from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_nat
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
 from queue import Queue
-from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
+from ._shared import (
+    logger,
+    NO_RETRY_TTS_CODES,
+    IMMEDIATE_REPORT_TTS_CODES,
+    TTS_RESPAWN_DELAY_SECONDS,
+    TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS,
+)
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
 
@@ -2008,6 +2014,18 @@ class TtsRuntimeMixin:
                         if ready_flag:
                             self._last_tts_error_code = ''
                             self._tts_retry_notify_count = 0
+                            self._tts_rate_limit_backoff_level = 0
+                            if getattr(self, '_tts_quota_blocked', False):
+                                # 配额期间缓存的是之前各轮被拒回复的残尾；恢复后只播
+                                # 触发这次重试的那一轮（缓存里最新的 speech_id）。
+                                self._tts_quota_blocked = False
+                                async with self.tts_cache_lock:
+                                    if self.tts_pending_chunks:
+                                        latest_speech_id = self.tts_pending_chunks[-1][0]
+                                        self.tts_pending_chunks[:] = [
+                                            chunk for chunk in self.tts_pending_chunks
+                                            if chunk[0] == latest_speech_id
+                                        ]
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
@@ -2028,8 +2046,29 @@ class TtsRuntimeMixin:
                                 # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
                                 async with self.tts_cache_lock:
                                     self.tts_pending_chunks.clear()
+                            elif _last_code == 'API_QUOTA_TIME':
+                                # 服务端不告知恢复时间（按 IP 滚动 24h 窗口），定时
+                                # 重拉只会一直被拒。不定时重试；每次回复首 chunk 的
+                                # 隐式 respawn 照常放行，窗口一到期下一句就恢复。
+                                logger.warning("⚠️ TTS 配额已用完，停止定时重试；下一次回复时再尝试")
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
+                                self._tts_quota_blocked = True
+                                async with self.tts_cache_lock:
+                                    self.tts_pending_chunks.clear()
                             else:
-                                logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
+                                # 1013 限流 / 并发超限：逐次拉长间隔，其余照旧 13 秒。
+                                if _last_code == 'API_RATE_LIMIT':
+                                    backoff_level = getattr(self, '_tts_rate_limit_backoff_level', 0)
+                                    respawn_delay = min(
+                                        TTS_RESPAWN_DELAY_SECONDS * (2 ** backoff_level),
+                                        TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS,
+                                    )
+                                    self._tts_rate_limit_backoff_level = backoff_level + 1
+                                else:
+                                    respawn_delay = TTS_RESPAWN_DELAY_SECONDS
+                                logger.warning(f"⚠️ 收到TTS未就绪信号，{respawn_delay}秒后尝试重新拉起Worker")
                                 # 取消之前的延迟重试任务（如有）
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
@@ -2038,8 +2077,9 @@ class TtsRuntimeMixin:
                                 _expected_session = self.session
                                 _expected_use_tts = self.use_tts
                                 async def _delayed_respawn(_expected_session=_expected_session,
-                                                           _expected_use_tts=_expected_use_tts):
-                                    await asyncio.sleep(13)
+                                                           _expected_use_tts=_expected_use_tts,
+                                                           _delay=respawn_delay):
+                                    await asyncio.sleep(_delay)
                                     if not self.is_active or self.tts_ready:
                                         return
                                     if self.session is not _expected_session or self.use_tts != _expected_use_tts:
@@ -2085,6 +2125,7 @@ class TtsRuntimeMixin:
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                             'UPSTREAM_SERVER_BUSY', 'TTS_CONFIG_INVALID',
+                            'API_ACCESS_DENIED',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用

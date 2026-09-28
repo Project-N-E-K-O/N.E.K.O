@@ -473,7 +473,8 @@ async def test_peer_disconnect_marker_is_not_shown_twice_before_recovery():
 
     manager.send_status.assert_not_awaited()
     manager.disconnected_by_server.assert_awaited_once_with(
-        expected_session=manager.session
+        expected_session=manager.session,
+        announce_disconnect=True,
     )
 
 
@@ -486,8 +487,64 @@ async def test_preclassified_timeout_is_forwarded_before_existing_recovery():
 
     manager.send_status.assert_awaited_once_with(status)
     manager.disconnected_by_server.assert_awaited_once_with(
-        expected_session=manager.session
+        expected_session=manager.session,
+        announce_disconnect=True,
     )
+
+
+# The Lanlan free servers' two daily-quota close reasons (connect-time and
+# mid-session). Both must reach the quota code, not a generic disconnect.
+_FREE_SERVER_QUOTA_REASONS = (
+    "Total daily connection time limit reached",
+    "Total connection time limit reached for today",
+)
+
+
+@pytest.mark.parametrize("reason", _FREE_SERVER_QUOTA_REASONS)
+def test_free_server_quota_close_is_classified_as_quota(reason):
+    assert _classify_peer_close(1008, reason) == ("API_QUOTA_TIME", None)
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        json.dumps({"code": "API_QUOTA_TIME", "details": {"connection_generation": 0}}),
+        _FREE_SERVER_QUOTA_REASONS[1],
+    ),
+)
+@pytest.mark.asyncio
+async def test_quota_disconnect_ends_session_without_the_auto_restart_marker(message):
+    # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
+    # session 7.5s later; after a spent quota every restart is rejected.
+    manager = _make_manager()
+
+    await manager.handle_connection_error(message, expected_session=manager.session)
+
+    assert json.loads(manager.send_status.await_args.args[0])["code"] == "API_QUOTA_TIME"
+    manager.disconnected_by_server.assert_awaited_once_with(
+        expected_session=manager.session,
+        announce_disconnect=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_unannounced_server_disconnect_still_ends_the_frontend_session():
+    manager = object.__new__(LLMSessionManager)
+    manager.session = object()
+    manager.lanlan_name = "Test"
+    manager.send_status = AsyncMock()
+    manager.send_session_ended_by_server = AsyncMock()
+    manager.sync_message_queue = SimpleNamespace(put=lambda _item: None)
+    manager.cleanup = AsyncMock()
+
+    await manager.disconnected_by_server(
+        expected_session=manager.session,
+        announce_disconnect=False,
+    )
+
+    manager.send_status.assert_not_awaited()
+    manager.send_session_ended_by_server.assert_awaited_once()
+    manager.cleanup.assert_awaited_once_with(expected_session=manager.session)
 
 
 @pytest.mark.parametrize(

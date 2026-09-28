@@ -340,14 +340,16 @@ class LifecycleMixin:
             )
             return
         
+        status_code = None
         if message:
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
+                status_code = _parsed.get('code')
                 # Peer disconnects use the existing recovery below, which
                 # supplies CHARACTER_DISCONNECTED with the configured name.
                 # Forwarding this marker here would show the same toast twice.
-                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                if status_code != 'CHARACTER_DISCONNECTED':
                     await self.send_status(message_text)
             else:
                 # Same criteria, and the same ordering, the realtime close
@@ -365,7 +367,14 @@ class LifecycleMixin:
                     status_payload["details"] = {"msg": message_text}
                 await self.send_status(json.dumps(status_payload))
         logger.info("💥 Realtime connection recovery requested.")
-        await self.disconnected_by_server(expected_session=expected_session)
+        # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
+        # session 7.5s later. After a spent quota that restart is rejected
+        # every time (the server does not say when the window reopens), so
+        # end the session without it; the user's next manual start retries.
+        await self.disconnected_by_server(
+            expected_session=expected_session,
+            announce_disconnect=status_code != 'API_QUOTA_TIME',
+        )
     
     async def handle_repetition_detected(self):
         """Handle the repetition-detection callback: reset Focus state, notify the frontend"""
@@ -727,6 +736,10 @@ class LifecycleMixin:
                     or 'invalid_api_key' in error_str.lower()
                     or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
+            elif classify_provider_failure_text(error_str) == 'API_QUOTA_TIME':
+                # Free servers reject a spent quota with a close frame right
+                # after the handshake, which can land inside start_session.
+                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif '429' in error_str:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
             elif 'HTTP 503' in error_str:
@@ -4200,11 +4213,12 @@ class LifecycleMixin:
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
 
-    async def disconnected_by_server(self, *, expected_session=None):
+    async def disconnected_by_server(self, *, expected_session=None, announce_disconnect=True):
         if expected_session is not None and expected_session is not self.session:
             logger.info("⏭️ disconnected_by_server: expected_session stale, skipping")
             return
-        await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
+        if announce_disconnect:
+            await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
         await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)

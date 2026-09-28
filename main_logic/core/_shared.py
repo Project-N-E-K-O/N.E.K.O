@@ -175,10 +175,13 @@ _proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
     contextvars.ContextVar('_proactive_published_text_chunks', default=None)
 )
 
-# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
-# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
+# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效 / 免费服务黑白名单拦截）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID', 'API_ACCESS_DENIED'}
+# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（配额不定时重试，但回复时的隐式重试照常）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
+# TTS worker 未就绪后的定时 respawn 间隔；API_RATE_LIMIT 按次翻倍，封顶到下一个常量
+TTS_RESPAWN_DELAY_SECONDS = 13
+TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS = 300
 
 
 _STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
