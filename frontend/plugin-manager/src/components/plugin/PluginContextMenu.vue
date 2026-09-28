@@ -506,7 +506,7 @@ onBeforeUnmount(() => {
 
 .context-menu-fade-enter-active,
 .context-menu-fade-leave-active {
-  transition: opacity 0.12s ease;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .context-menu-fade-enter-from,
@@ -517,16 +517,14 @@ onBeforeUnmount(() => {
 .context-menu-pop-enter-active,
 .context-menu-pop-leave-active {
   transition:
-    opacity 0.16s ease,
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-    filter 0.18s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .context-menu-pop-enter-from,
 .context-menu-pop-leave-to {
   opacity: 0;
   transform: translateY(4px) scale(0.96);
-  filter: blur(4px);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -541,7 +539,6 @@ onBeforeUnmount(() => {
   .context-menu-pop-enter-from,
   .context-menu-pop-leave-to {
     transform: none;
-    filter: none;
   }
 }
 </style>

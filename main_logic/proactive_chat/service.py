@@ -1578,6 +1578,7 @@ async def handle_proactive_chat(
                 vision_base_url=vision_config.get("base_url", ""),
                 vision_api_key=vision_config.get("api_key", ""),
                 vision_provider_type=vision_config.get("provider_type"),
+                vision_is_custom=bool(vision_config.get("is_custom")),
             )
             if not model_config.has_vision_model:
                 logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")

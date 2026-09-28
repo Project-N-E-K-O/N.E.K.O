@@ -320,10 +320,15 @@ class ProactiveModelConfig:
     vision_base_url: str | None = ""
     vision_api_key: str = ""
     vision_provider_type: str | None = None
+    vision_is_custom: bool = False
 
     @property
     def has_vision_model(self) -> bool:
-        return bool(self.vision_model and self.vision_api_key)
+        # 自定义视觉端点（本地 Ollama / 局域网 OpenAI 兼容服务）常常故意不填
+        # Key，和 screenshot_utils 的判据对齐：自定义配置下空 Key 也算已配置。
+        return bool(
+            self.vision_model and (self.vision_api_key or self.vision_is_custom)
+        )
 
 
 @dataclass(frozen=True, slots=True)

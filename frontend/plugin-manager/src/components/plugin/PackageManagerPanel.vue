@@ -463,19 +463,17 @@ const {
 }
 
 .pkg-tabs :deep(.el-tab-pane) {
-  animation: tab-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: tab-enter var(--motion-duration-emphasis) var(--motion-ease-standard) both;
 }
 
 @keyframes tab-enter {
   from {
     opacity: 0;
     transform: scale(0.97) translateY(8px);
-    filter: blur(4px);
   }
   to {
     opacity: 1;
     transform: scale(1) translateY(0);
-    filter: blur(0);
   }
 }
 
