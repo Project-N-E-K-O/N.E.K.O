@@ -2419,6 +2419,84 @@ def test_manual_share_discards_late_stream_after_source_change(
 
 
 @pytest.mark.frontend
+def test_portal_pick_with_reused_id_discards_pending_manual_capture(
+    page: Page,
+) -> None:
+    # "Remember window" is off (the default); the portal hands back a newly
+    # chosen window under the id of the capture that is still starting.
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"selectedScreenSourceId": "window:old"},
+    )
+    page.evaluate(
+        """() => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:old', name: 'Browser', display_id: '' },
+            ];
+            window.__manualGetUserMediaStarted = false;
+            window.__oldTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            window.__oldStream = {
+                active: true,
+                getVideoTracks() { return [window.__oldTrack]; },
+                getTracks() { return [window.__oldTrack]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia() {
+                        window.__manualGetUserMediaStarted = true;
+                        return new Promise((resolve) => {
+                            window.__resolveManualGetUserMedia = resolve;
+                        });
+                    },
+                },
+            });
+            window.__manualStartPromise = window.startScreenSharing();
+        }"""
+    )
+    page.wait_for_function("window.__manualGetUserMediaStarted === true")
+
+    result = page.evaluate(
+        """async () => {
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            window.__resolveManualGetUserMedia(window.__oldStream);
+            await window.__manualStartPromise;
+            const state = {
+                selectedId: window.appState.selectedScreenSourceId,
+                oldStreamInstalled:
+                    window.appState.screenCaptureStream === window.__oldStream,
+                oldTrackStopped: window.__oldTrack.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "selectedId": "window:old",
+        "oldStreamInstalled": False,
+        "oldTrackStopped": True,
+    }
+
+
+@pytest.mark.frontend
 def test_manual_share_rejected_stale_metadata_does_not_capture_old_selection(
     page: Page,
 ) -> None:

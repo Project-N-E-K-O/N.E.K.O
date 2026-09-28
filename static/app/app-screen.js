@@ -3274,6 +3274,11 @@
                 // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。等重建
                 // 完成再露出「重新选择」，否则用户马上再选时，还没结束的重启会
                 // 把上一次的来源重新分享出去。
+                // id 相同时 selectScreenSource 不推进选择代次；这里手动推进，让还在
+                // 等待的分享启动像换了 id 一样作废，不会把上一次选的窗口分享出去。
+                if (S.selectedScreenSourceId === portalSource.id) {
+                    markScreenSourceSelectionChanged();
+                }
                 try {
                     await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
                 } catch (error) {
