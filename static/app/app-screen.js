@@ -330,12 +330,12 @@
             );
             if (label) return label;
         }
-        // 窗口标题未知（未开启「记住窗口」的其他窗口/重启后）：只说是窗口，
-        // 不把某个具体名称安到可能已被复用的 id 上。
+        // 窗口标题 / 屏幕序号未知（其他窗口、重启后、系统对话框只返回一块屏幕）：
+        // 只说是窗口或屏幕，不把某个具体名称安到可能已被复用的 id 上。
         if (sourceId.startsWith('window:')) {
             return window.t ? window.t('app.screenSource.windows') : '窗口';
         }
-        return '';
+        return window.t ? window.t('app.screenSource.screens') : '屏幕';
     }
 
     function notifyScreenSourceChanged() {
@@ -349,17 +349,50 @@
         } catch (_) { }
     }
 
+    function normalizeScreenSourceMeta(source, screenIndex) {
+        if (!source || typeof source.id !== 'string' || !source.id) return null;
+        return {
+            id: source.id,
+            screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
+            name: String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)
+        };
+    }
+
+    // 同源的其他窗口（Pet / Chat）通过内存广播拿到本窗口选中的来源名称：
+    // 窗口标题在未开启「记住窗口」时不落盘，只能这样同步；每次选择都会发送，
+    // 不依赖内容变化才触发的 storage 事件。
+    var screenSourceLabelChannel = null;
+    try {
+        if (typeof BroadcastChannel === 'function') {
+            screenSourceLabelChannel = new BroadcastChannel('neko-screen-source-label');
+            screenSourceLabelChannel.onmessage = function (event) {
+                var data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                var meta = data.meta
+                    ? normalizeScreenSourceMeta(data.meta, data.meta.screenIndex)
+                    : null;
+                selectedScreenSourceMeta = meta;
+                notifyScreenSourceChanged();
+            };
+        }
+    } catch (_) {
+        screenSourceLabelChannel = null;
+    }
+
     /**
      * 记录当前选中源（枚举结果里的 { id, name }）并通知设置行刷新。调用方先更新
      * S.selectedScreenSourceId；清除选择时传 null。
      */
     function rememberScreenSourceLabel(source, screenIndex) {
-        selectedScreenSourceMeta = source && source.id ? {
-            id: String(source.id),
-            screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
-            name: String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)
-        } : null;
+        selectedScreenSourceMeta = source && source.id
+            ? normalizeScreenSourceMeta({ id: String(source.id), name: source.name }, screenIndex)
+            : null;
         persistSelectedScreenSourceMeta();
+        try {
+            if (screenSourceLabelChannel) {
+                screenSourceLabelChannel.postMessage({ meta: selectedScreenSourceMeta });
+            }
+        } catch (_) { }
         notifyScreenSourceChanged();
     }
 
@@ -612,8 +645,14 @@
             return;
         }
         if (e.key === SCREEN_SOURCE_LABEL_KEY) {
-            // 另一个窗口写了新记录：以落盘记录为准，丢掉本窗口缓存的名称。
-            selectedScreenSourceMeta = null;
+            // 另一个窗口写了新记录。标题未落盘时，内存里的名称由广播保持最新；
+            // 只有落盘记录换了来源或带着不同的标题时，才丢掉本窗口缓存的名称。
+            var record = readPersistedScreenSourceMeta();
+            if (selectedScreenSourceMeta && !(record
+                && record.id === selectedScreenSourceMeta.id
+                && (!record.name || record.name === selectedScreenSourceMeta.name))) {
+                selectedScreenSourceMeta = null;
+            }
             notifyScreenSourceChanged();
             return;
         }
@@ -622,7 +661,10 @@
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
-        selectedScreenSourceMeta = null;
+        // 广播可能先于 storage 事件到达，已是新来源的名称要保留。
+        if (selectedScreenSourceMeta && selectedScreenSourceMeta.id !== newId) {
+            selectedScreenSourceMeta = null;
+        }
         markScreenSourceSelectionChanged();
         notifyScreenSourceChanged();
         try {
