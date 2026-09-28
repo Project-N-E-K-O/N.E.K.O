@@ -143,7 +143,7 @@ def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
 
     ``before`` is the last character spoken before this chunk, for a chunk that
     is nothing but the sign. The caller re-attaches it when the next chunk
-    starts with a digit ("温度-" + "5℃"); the filter itself cannot see that far.
+    starts with a digit ("x = -" + "5"); the filter itself cannot see that far.
     """
     if not text or text[-1] not in _TTS_MINUS_SIGNS:
         return ""

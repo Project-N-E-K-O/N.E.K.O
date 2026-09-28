@@ -444,7 +444,7 @@ class TtsRuntimeMixin:
         chunk filters to nothing, and dropping it would glue the neighbours into
         ``35``. When that happens between an ASCII letter/digit and the next
         chunk's ASCII letter/digit, the next chunk gets a leading space instead.
-        A minus sign cut off at the end of a chunk ("温度-" + "5℃") is likewise
+        A minus sign cut off at the end of a chunk ("x = -" + "5") is likewise
         re-attached when the next chunk starts with a digit.
         Returns ``""`` when nothing is left to speak.
         """
