@@ -10,7 +10,6 @@
     /* Text on the --voice-blue-strong progress fill; not overridden in dark theme. */
     --voice-progress-current-text: #07354d;
     --voice-blue-dark: #245276;
-    /* --voice-blue-dark: #075b80 (legacy contrast reference) */
     --voice-ink: #17354a;
     --voice-muted: #536b7b;
     --voice-border: #b9dcf3;
@@ -19,8 +18,6 @@
     --voice-success: #198c6a;
     --voice-success-text: #166b52;
     --voice-focus: #145679;
-    /* linear-gradient(to right, #4bd4fd, #17a7ff) legacy action gradient */
-    /* --voice-focus: #082f45 (legacy contrast reference) */
     --button-text-stroke-color: #22b3ff;
     --title-text-stroke:
         2px 0 0 var(--button-text-stroke-color),

@@ -167,14 +167,30 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert "similarity" not in template.lower()
 
     assert ".switch input:focus-visible + .switch-track" in stylesheet
-    assert "--voice-blue-dark: #075b80" in stylesheet
     assert "--voice-danger: #b4233b" in stylesheet
     assert "--voice-success-text: #166b52" in stylesheet
     assert "--voice-muted: #536b7b" in stylesheet
-    assert "--voice-focus: #082f45" in stylesheet
     assert "--voice-focus: #8edcff" in stylesheet
     assert "outline: 3px solid var(--voice-focus)" in stylesheet
-    assert _contrast_ratio("#075b80", "#f8fcff") >= 4.5
+    for surface in ("voice-panel", "voice-panel-soft"):
+        assert _contrast_ratio(
+            css_color(light_theme, "voice-blue-dark"),
+            css_color(light_theme, surface),
+        ) >= 4.5
+    # Focus outlines are non-text UI and need 3:1 against the surfaces they ring.
+    for theme in (light_theme, dark_theme):
+        assert _contrast_ratio(
+            css_color(theme, "voice-focus"),
+            css_color(theme, "voice-panel-soft"),
+        ) >= 3
+    # Primary-button text sits on a gradient between these two stops.
+    for stop in ("#74d6fa", css_color(light_theme, "voice-blue-strong")):
+        assert _contrast_ratio("#07354d", stop) >= 4.5
+    assert re.search(
+        r"\.primary-button\s*\{[^}]*color:\s*#07354d[^}]*background:\s*linear-gradient\(100deg,\s*#74d6fa,\s*var\(--voice-blue-strong\)\)",
+        stylesheet,
+        re.DOTALL,
+    )
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
     assert _contrast_ratio(
         css_color(light_theme, "voice-muted"),
@@ -220,7 +236,6 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     assert "padding: 18px 24px" in stylesheet
-    assert "linear-gradient(to right, #4bd4fd, #17a7ff)" in stylesheet
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
 
