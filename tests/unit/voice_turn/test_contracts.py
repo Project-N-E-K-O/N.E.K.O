@@ -28,7 +28,7 @@ def _turn_token(*, session_epoch: int = 1, turn_id: int = 2) -> VoiceTurnToken:
     )
 
 
-def test_unavailable_is_not_an_incomplete_decision():
+def test_unavailable_carries_no_decision():
     evaluation = TurnEvaluation(
         status=EvaluationStatus.UNAVAILABLE,
         decision=None,
@@ -37,7 +37,7 @@ def test_unavailable_is_not_an_incomplete_decision():
         activity_seq=2,
         reason="model_missing",
     )
-    assert evaluation.decision is not TurnDecision.INCOMPLETE
+    assert evaluation.decision is None
 
 
 def test_ok_evaluation_requires_probability_and_decision():
