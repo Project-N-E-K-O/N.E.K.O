@@ -584,13 +584,18 @@
             elements.next.disabled = !nextVisible;
             elements.next.textContent = translate(state.segmentPhase === 'retry' ? 'voiceIdentity.retrySegment' : 'voiceIdentity.nextSegment', state.segmentPhase === 'retry' ? '重录本段' : '开始下一段');
         }
+        // While waiting for Next the prompt already shows the upcoming
+        // sentence, so the count and progress follow the upcoming segment too.
+        const displayedSegment = state.segmentPhase === 'ready'
+            ? Math.min(ENROLLMENT_SEGMENT_COUNT, state.segmentIndex + 1)
+            : state.segmentIndex;
         if (elements.stepCount) {
-            const fallback = '第 ' + state.segmentIndex + ' / ' + ENROLLMENT_SEGMENT_COUNT + ' 段';
-            elements.stepCount.textContent = active ? translate('voiceIdentity.stepCount', fallback, { current: state.segmentIndex, total: ENROLLMENT_SEGMENT_COUNT }) : '';
+            const fallback = '第 ' + displayedSegment + ' / ' + ENROLLMENT_SEGMENT_COUNT + ' 段';
+            elements.stepCount.textContent = active ? translate('voiceIdentity.stepCount', fallback, { current: displayedSegment, total: ENROLLMENT_SEGMENT_COUNT }) : '';
         }
         if (elements.progress) elements.progress.forEach((item, index) => {
-            const completed = active && index < state.segmentIndex - 1;
-            const current = active && index === state.segmentIndex - 1;
+            const completed = active && index < displayedSegment - 1;
+            const current = active && index === displayedSegment - 1;
             item.classList.toggle('active', completed || current);
             item.classList.toggle('completed', completed);
             item.classList.toggle('current', current);
@@ -1162,11 +1167,18 @@
                 ? state.closeCancellationEnrollmentId : null)
                 || state.unconfirmedCancelEnrollmentId;
             if (unsettledCloseEnrollmentId) {
-                await apiRequest('/enrollment/cancel', {
-                    method: 'POST',
-                    headers: { [SESSION_HEADER]: unsettledCloseEnrollmentId },
-                    signal: startController ? startController.signal : undefined
-                });
+                const preflightTimeoutId = startController
+                    ? window.setTimeout(function () { startController.abort(); }, CANCEL_REQUEST_TIMEOUT_MS)
+                    : null;
+                try {
+                    await apiRequest('/enrollment/cancel', {
+                        method: 'POST',
+                        headers: { [SESSION_HEADER]: unsettledCloseEnrollmentId },
+                        signal: startController ? startController.signal : undefined
+                    });
+                } finally {
+                    if (preflightTimeoutId !== null) window.clearTimeout(preflightTimeoutId);
+                }
                 if (state.unconfirmedCancelEnrollmentId === unsettledCloseEnrollmentId) {
                     state.unconfirmedCancelEnrollmentId = null;
                 }

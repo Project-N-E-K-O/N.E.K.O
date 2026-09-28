@@ -808,6 +808,7 @@ test('accepted segment waits for explicit next-segment action', async () => {
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
     assert.equal(harness.elements.get('voice-identity-prompt').textContent, '窗外的光线正在慢慢变化。');
+    assert.equal(harness.elements.get('voice-identity-step-count').textContent, '第 2 / 4 段');
     assert.equal(harness.elements.get('voice-identity-voice-state').textContent, 'Waiting for speech');
     assert.equal(harness.mediaRequests, 1);
     assert.equal(harness.mediaStreams[0].track.enabled, false);
@@ -1071,6 +1072,44 @@ test('a stale start response is cancelled within the cancellation timeout', asyn
 
     assert.equal(staleCancel.options.signal.aborted, true);
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
+test('a stalled preflight cancellation before restart is bounded and keeps the pending id', async () => {
+    const explicitCancelGate = deferred();
+    const harness = createHarness({ autoAdvance: false, explicitCancelGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emit('voice-identity-cancel');
+    await enrolling;
+    await flush(4);
+    harness.fireStatusTimeouts();
+    await flush(8);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+
+    const callsBeforeRestart = harness.fetchCalls.length;
+    const restarting = harness.emit('voice-identity-start');
+    await flush(8);
+    const preflight = harness.fetchCalls.slice(callsBeforeRestart)
+        .find(call => call.url === `${API_ROOT}/enrollment/cancel`);
+    assert.ok(preflight);
+    // The preflight times out; error cleanup then issues its own bounded
+    // cancellation for the still-active session, which also times out.
+    for (let round = 0; round < 3; round += 1) {
+        harness.fireStatusTimeouts();
+        await flush(6);
+    }
+    await restarting;
+    await flush(4);
+
+    assert.equal(preflight.options.signal.aborted, true);
+    assert.equal(
+        harness.fetchCalls.slice(callsBeforeRestart).some(call => call.url === `${API_ROOT}/enrollment/start`),
+        false,
+    );
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.mediaStreams.at(-1).track.stopped, true);
 });
 
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
