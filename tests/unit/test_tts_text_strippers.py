@@ -425,3 +425,27 @@ def test_enqueue_drops_spoken_symbols_and_symbol_only_chunks():
     mgr._enqueue_tts_text_chunk("s1", "#")
     mgr._enqueue_tts_text_chunk("s1", "温度25℃")
     assert _drain(mgr.tts_request_queue) == [("s1", "进度100，"), ("s1", "温度25℃")]
+
+
+def test_enqueue_keeps_the_gap_a_symbol_only_chunk_stood_for():
+    # 流式常把「9/28」切成 "9" / "/" / "28"：中间那块删空后不能让两边连成「928」。
+    # （「~」会先被 markdown 剥离器当删除线标记缓存，不走到这里。）
+    mgr = _bare_tts_runtime()
+    for chunk in ("9", "/", "28号"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s1", " 28号")]
+
+
+def test_symbol_only_chunk_between_cjk_adds_no_space():
+    mgr = _bare_tts_runtime()
+    for chunk in ("开心", "＝", "开心了"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "开心"), ("s1", "开心了")]
+
+
+def test_symbol_gap_does_not_leak_into_the_next_speech():
+    mgr = _bare_tts_runtime()
+    mgr._enqueue_tts_text_chunk("s1", "9")
+    mgr._enqueue_tts_text_chunk("s1", "/")
+    mgr._enqueue_tts_text_chunk("s2", "28")
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s2", "28")]

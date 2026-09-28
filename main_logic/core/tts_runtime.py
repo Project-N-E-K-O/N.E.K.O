@@ -306,6 +306,7 @@ class TtsRuntimeMixin:
             self._tts_stream_normalizer.reset()
             self._tts_markdown_stripper.reset()
             self._tts_bracket_stripper.reset()
+            self._reset_tts_symbol_gap()
             self._tts_norm_speech_id = speech_id
 
         if self._tts_normalize_enabled:
@@ -320,8 +321,8 @@ class TtsRuntimeMixin:
         if not text:
             return
         # 最后一道：删掉会被念出来的符号（%、#、= …），句读标点保留
-        text = strip_tts_muted_symbols(text)
-        if not text or not text.strip():
+        text = self._strip_tts_symbols_across_chunks(text)
+        if not text:
             return
         self.tts_request_queue.put((speech_id, text))
         self._remember_tts_sent_chunk(speech_id, text)
@@ -405,7 +406,39 @@ class TtsRuntimeMixin:
         self._tts_stream_normalizer.reset()
         self._tts_markdown_stripper.reset()
         self._tts_bracket_stripper.reset()
+        self._reset_tts_symbol_gap()
         self._tts_norm_speech_id = None
+
+    def _reset_tts_symbol_gap(self) -> None:
+        self._tts_last_spoken_char = ""
+        self._tts_symbol_gap_pending = False
+
+    def _strip_tts_symbols_across_chunks(self, text: str) -> str:
+        """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
+        separator a symbol-only chunk stood for.
+
+        Streaming often splits ``3~5`` into ``"3"``, ``"~"``, ``"5"``. The middle
+        chunk filters to nothing, and dropping it would glue the neighbours into
+        ``35``. When that happens between an ASCII letter/digit and the next
+        chunk's ASCII letter/digit, the next chunk gets a leading space instead.
+        Returns ``""`` when nothing is left to speak.
+        """
+        cleaned = strip_tts_muted_symbols(text)
+        last = getattr(self, "_tts_last_spoken_char", "")
+        if not cleaned or not cleaned.strip():
+            # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
+            if text and text.strip() and last.isascii() and last.isalnum():
+                self._tts_symbol_gap_pending = True
+            return ""
+        if (
+            getattr(self, "_tts_symbol_gap_pending", False)
+            and last.isascii() and last.isalnum()
+            and cleaned[0].isascii() and cleaned[0].isalnum()
+        ):
+            cleaned = " " + cleaned
+        self._tts_symbol_gap_pending = False
+        self._tts_last_spoken_char = cleaned[-1]
+        return cleaned
 
     def _request_tts_done_locked(self) -> str:
         """Request that a TTS end signal be enqueued for the current turn.
@@ -440,9 +473,7 @@ class TtsRuntimeMixin:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
         if flushed:
-            flushed = strip_tts_muted_symbols(flushed)
-            if not flushed.strip():
-                flushed = ""
+            flushed = self._strip_tts_symbols_across_chunks(flushed)
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
