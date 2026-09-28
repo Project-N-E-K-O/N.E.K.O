@@ -374,6 +374,16 @@ def _answer_greeting_done_waiters(task: asyncio.Task) -> None:
         _fire_task(_send_greeting_check_done(websocket, check_id))
 
 
+def _forget_greeting_done_waiter(websocket: WebSocket) -> None:
+    """Drop a disconnected window from every greeting task it waits on.
+
+    A greeting task has no deadline, so without this a closed socket would be
+    held (and later written to) until the task ends.
+    """
+    for waiters in _greeting_done_waiters.values():
+        waiters.pop(id(websocket), None)
+
+
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
     """Reduce one untrusted cat-greeting check to canonical inputs.
 
@@ -1468,6 +1478,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         _ws_disconnect_time[lanlan_name] = time.time()
         # 释放活跃连接计数（与 try 起始处的 +1 对偶）
         _ws_active_count[lanlan_name] = max(0, _ws_active_count.get(lanlan_name, 1) - 1)
+        # 这个窗口不再等问候结束的通知（与 greeting_check 处的登记对偶）
+        _forget_greeting_done_waiter(websocket)
         # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
         # 让 /api/capture/health 立即返回 503。
         try:

@@ -373,6 +373,12 @@ def test_greeting_check_done_waits_for_the_greeting_task():
                 )
             task = websocket_router._greeting_tasks["Test"]
             assert len(websocket_router._greeting_done_waiters[task]) == 2
+            # A window that disconnects stops waiting and is not written to.
+            gone = _Socket()
+            websocket_router._send_greeting_check_done_when_settled("Test", gone, "g")
+            assert len(websocket_router._greeting_done_waiters[task]) == 3
+            websocket_router._forget_greeting_done_waiter(gone)
+            assert len(websocket_router._greeting_done_waiters[task]) == 2
             await settle()
             assert first.sent == [] and second.sent == []
 
@@ -381,6 +387,7 @@ def test_greeting_check_done_waits_for_the_greeting_task():
             # Each window gets its own request's id back.
             assert first.sent == done("a") and second.sent == done("b")
             assert task not in websocket_router._greeting_done_waiters
+            assert gone.sent == []
 
             # Nothing in flight any more: reported right away.
             websocket_router._send_greeting_check_done_when_settled("Test", late, "c")
@@ -396,3 +403,10 @@ def test_greeting_check_done_waits_for_the_greeting_task():
             websocket_router._greeting_done_waiters.clear()
 
     asyncio.run(scenario())
+
+
+def test_disconnect_cleanup_forgets_the_greeting_done_waiter():
+    source = ROUTER_PY.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))
+    cleanup = source[source.index("_ws_active_count[lanlan_name] = max(0, "):]
+    cleanup = cleanup[: cleanup.index("async with _lock:")]
+    assert "_forget_greeting_done_waiter(websocket)" in cleanup
