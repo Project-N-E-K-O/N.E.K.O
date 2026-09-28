@@ -3028,16 +3028,24 @@
 
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源。用户已经选过一次，直接采用，不要求在列表里再点一次。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider) && sources.length === 1
-                && S.selectedScreenSourceId !== sources[0].id) {
+            if (desktopSourceEnumerationMayPrompt(desktopProvider) && sources.length === 1) {
                 var portalSource = sources[0];
-                selectScreenSource(
-                    portalSource.id,
-                    portalSource.name,
-                    getScreenSourceDisplayName(portalSource, 0)
-                ).catch(function (error) {
-                    console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
-                });
+                var portalLabel = getScreenSourceDisplayName(portalSource, 0);
+                if (S.selectedScreenSourceId !== portalSource.id) {
+                    selectScreenSource(portalSource.id, portalSource.name, portalLabel)
+                        .catch(function (error) {
+                            console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+                        });
+                } else {
+                    // 已由持久化 id 或「记住窗口」对账选中时不重启分享，但仍要记成
+                    // 本次显式选择：否则 prepareRememberedWindowCapture 会把它当成
+                    // 不可信的恢复 id 拒绝。
+                    markCurrentScreenSourceSelectionExplicit(portalSource.name || '');
+                    if (isScreenSourceTitleMatchEnabled() && portalSource.id.startsWith('window:')) {
+                        storeRememberedWindowTitle(portalSource.name || '');
+                    }
+                    rememberScreenSourceLabel(portalSource.id, portalLabel);
+                }
             }
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成

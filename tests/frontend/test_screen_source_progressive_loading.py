@@ -788,6 +788,49 @@ def test_prompting_single_source_is_adopted_without_second_click(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("stored_id", ["window:2", "window:7"])
+def test_portal_result_already_selected_is_trusted_for_capture(
+    page: Page, stored_id: str,
+) -> None:
+    # window:2 = persisted id already equals the portal result;
+    # window:7 = "remember window" reconciles the portal result by title.
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": stored_id,
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = window.__metadataSources.slice(1);
+            const before = await window.appScreen.prepareRememberedWindowCapture();
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                before: before.status,
+                after: { allowed: after.allowed, status: after.status },
+                selected: window.getSelectedScreenSourceId(),
+                label: window.getSelectedScreenSourceLabel(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "before": "untrusted-prompt-source",
+        "after": {"allowed": True, "status": "prompt-required"},
+        "selected": "window:2",
+        "label": "Editor",
+    }
+
+
+@pytest.mark.frontend
 def test_remembered_title_reconciles_reused_id_before_stream_capture(
     page: Page,
 ) -> None:
