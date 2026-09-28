@@ -72,8 +72,8 @@ _TTS_MUTED_SYMBOL_CLASS = (
 # 变体选择符和键帽组合符只影响显示（1️⃣ 的「1」后面就跟着它们），单独出现也删。
 _TTS_MUTED_SYMBOL_RE = regex.compile(
     r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r")"
-    r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r"|[‍︎️⃣])*"
-    r"|[︎️⃣]+"
+    r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r"|[\u200d\ufe0e\ufe0f\u20e3])*"
+    r"|[\ufe0e\ufe0f\u20e3]+"
 )
 
 
