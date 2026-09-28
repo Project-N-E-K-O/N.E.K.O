@@ -736,6 +736,40 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
 
 
 @pytest.mark.frontend
+def test_overlong_window_title_is_not_saved_as_a_truncated_label(page: Page) -> None:
+    _install_screen_source_harness(
+        page, initial_storage={"screenSourceTitleMatchEnabled": "true"}
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources[1].name = 'x'.repeat(600);
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                label: window.getSelectedScreenSourceLabel(),
+                record: JSON.parse(
+                    window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+                ),
+                rememberedTitle: window.__storedValues.get('selectedScreenWindowTitle') || null,
+            };
+        }"""
+    )
+
+    # Same rule as the remembered title: rejected outright, never truncated.
+    assert result == {
+        "label": "app.screenSource.windows",
+        "record": {"id": "window:2"},
+        "rememberedTitle": None,
+    }
+
+
+@pytest.mark.frontend
 def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
