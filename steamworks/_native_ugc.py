@@ -17,7 +17,7 @@ required here.
 import os
 import sys
 import logging
-from ctypes import CDLL, c_bool, c_uint64, c_void_p
+from ctypes import CDLL, c_bool, c_char_p, c_uint32, c_uint64, c_void_p, create_string_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -160,3 +160,33 @@ def download_item(published_file_id: int, high_priority: bool = False) -> bool:
             file_id, high_priority, exc,
         )
         return False
+
+
+def get_query_ugc_preview_url(query_handle: int, index: int) -> str:
+    """Read the preview-image URL for one UGC query result.
+
+    ``ISteamUGC::GetQueryUGCPreviewURL`` fills ``pchURL`` with an
+    ``https://`` preview URL that the browser can load directly; the
+    Steam client is not required to proxy it. Returns an empty string
+    when the query handle is invalid, the index is out of range, or the
+    underlying library/function is unavailable (each of which is normal
+    for items that have no preview image).
+    """
+    try:
+        lib = _load_library()
+        handle = _get_ugc_handle()
+        fn = lib.SteamAPI_ISteamUGC_GetQueryUGCPreviewURL
+        fn.restype = c_bool
+        fn.argtypes = [c_void_p, c_uint64, c_uint32, c_char_p, c_uint32]
+    except Exception as exc:
+        logger.debug("Native UGC bridge: GetQueryUGCPreviewURL unavailable: %s", exc)
+        return ""
+    buf = create_string_buffer(2048)
+    try:
+        ok = fn(handle, c_uint64(int(query_handle)), c_uint32(int(index)), buf, c_uint32(len(buf)))
+    except Exception as exc:
+        logger.debug("Native UGC bridge: GetQueryUGCPreviewURL(%s, %s) failed: %s", query_handle, index, exc)
+        return ""
+    if not ok:
+        return ""
+    return buf.value.decode("utf-8", errors="replace")
