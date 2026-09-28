@@ -90,6 +90,22 @@ def _digests(payload: bytes) -> dict[str, str]:
     }
 
 
+def _media_error(data: dict[str, Any]) -> str:
+    """The platform's error envelope, when the answer carries one.
+
+    Success answers either hold the field the caller wants (``file_info`` / ``id``) or
+    nothing at all, so only a **non-zero** ``code`` / ``err_code`` counts as an error:
+    a missing code is not one. Returns "" when the answer looks fine.
+    """
+    for key in ("code", "err_code"):
+        if key not in data:
+            continue
+        value = data.get(key)
+        if str(value).strip() not in ("", "0", "None"):
+            return str(data.get("message") or data.get("msg") or f"{key}={value}")
+    return ""
+
+
 class QQOpenPlatformMediaMixin:
     """Rich-media actions for ``QQOpenPlatformConnection``.
 
@@ -115,12 +131,17 @@ class QQOpenPlatformMediaMixin:
     async def _media_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """Authenticated POST returning parsed JSON; a non-dict answer is ``{}``.
 
-        Transport errors are left to the caller to catch -- the same contract the
-        connection's own send methods have.
+        A non-2xx answer **raises** (``httpx.HTTPStatusError``) rather than looking like an
+        empty result. For an upload step that difference is the whole ballgame: "the part
+        was accepted" and "the part was rejected" decide whether merging the chunks is
+        allowed to run, and a merge over a rejected part stores a truncated file while the
+        platform still answers with a normal-looking ``file_info``. Callers that only want
+        an optional field keep their own ``try`` around this (``upload_image`` does).
         """
         response = await self._http.post(
             f"{self._media_api_base()}{path}", json=body, headers=self._auth_headers(),
         )
+        response.raise_for_status()
         try:
             data = response.json()
         except Exception:
@@ -166,6 +187,10 @@ class QQOpenPlatformMediaMixin:
         offset = 0
         for part in ordered:
             try:
+                index = int(part.get("index") or 0)
+            except (TypeError, ValueError):
+                index = 0
+            try:
                 size = int(part.get("block_size") or 0)
             except (TypeError, ValueError):
                 size = 0
@@ -173,16 +198,38 @@ class QQOpenPlatformMediaMixin:
             presigned = str(part.get("presigned_url") or "")
             if not chunk or not presigned:
                 return ""
-            await self._http.put(presigned, content=chunk, headers={"Content-Type": mime_type})
-            await self._media_post(
-                f"/v2/{scope}/{owner_id}/upload_part_finish",
-                {
-                    "upload_id": upload_id,
-                    "part_index": int(part.get("index") or 0),
-                    "block_size": str(len(chunk)),
-                    "md5": hashlib.md5(chunk).hexdigest(),
-                },
-            )
+
+            # Every part has to be **confirmed** before the merge is allowed to run: a
+            # rejected PUT or a rejected finish would otherwise leave a hole in the file,
+            # and the merge below still answers with a normal-looking ``file_info``.
+            try:
+                response = await self._http.put(
+                    presigned, content=chunk, headers={"Content-Type": mime_type},
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                self._media_log(
+                    "warning", f"分片第 {index} 片上传失败（{len(chunk)} 字节），放弃合并: {exc}",
+                )
+                return ""
+            try:
+                finished = await self._media_post(
+                    f"/v2/{scope}/{owner_id}/upload_part_finish",
+                    {
+                        "upload_id": upload_id,
+                        "part_index": index,
+                        "block_size": str(len(chunk)),
+                        "md5": hashlib.md5(chunk).hexdigest(),
+                    },
+                )
+            except Exception as exc:
+                self._media_log("warning", f"分片第 {index} 片收尾失败，放弃合并: {exc}")
+                return ""
+            problem = _media_error(finished)
+            if problem:
+                self._media_log("warning", f"分片第 {index} 片被平台拒绝，放弃合并: {problem}")
+                return ""
+
             offset += len(chunk)
 
         if offset != len(payload):
@@ -196,6 +243,10 @@ class QQOpenPlatformMediaMixin:
             f"/v2/{scope}/{owner_id}/files",
             {"file_type": file_type, "upload_id": upload_id, "srv_send_msg": False, "file_name": file_name},
         )
+        problem = _media_error(merged)
+        if problem:
+            self._media_log("warning", f"合并分片失败: {problem}")
+            return ""
         return str(merged.get("file_info") or "")
 
     async def _media_upload_legacy(
@@ -218,6 +269,7 @@ class QQOpenPlatformMediaMixin:
         response = await self._http.put(
             upload_url, content=payload, headers={"Content-Type": mime_type},
         )
+        response.raise_for_status()
         try:
             file_info = str((response.json() or {}).get("file_info") or "")
         except Exception:

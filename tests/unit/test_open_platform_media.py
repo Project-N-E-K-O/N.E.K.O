@@ -28,6 +28,7 @@ import asyncio
 import inspect
 import json
 
+import httpx
 import pytest
 
 import utils.connection.onebot as onebot
@@ -42,8 +43,9 @@ API_BASE = "https://api.sgroup.qq.com"
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code: int = 200):
         self._payload = payload
+        self.status_code = status_code
         self.text = json.dumps(payload) if payload is not None else ""
 
     def json(self):
@@ -51,21 +53,38 @@ class _Response:
             raise ValueError("not json")
         return self._payload
 
+    def raise_for_status(self):
+        """Mimic httpx: 4xx/5xx raise instead of being silently usable."""
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "https://fake.invalid"),
+                response=self,
+            )
+
 
 class _FakeHTTP:
-    """Answers through ``responder(method, url, body)`` and records every call."""
+    """Answers through ``responder(method, url, body)`` and records every call.
+
+    The responder may return a payload dict, or a ``_Response`` when the test needs a
+    non-2xx status (a rejected part PUT, a failing ``upload_part_finish``).
+    """
 
     def __init__(self, responder):
         self._responder = responder
         self.calls: list[tuple[str, str, object]] = []
 
+    def _answer(self, method, url, body) -> _Response:
+        raw = self._responder(method, url, body)
+        return raw if isinstance(raw, _Response) else _Response(raw)
+
     async def post(self, url, json=None, headers=None):
         self.calls.append(("POST", url, json))
-        return _Response(self._responder("POST", url, json))
+        return self._answer("POST", url, json)
 
     async def put(self, url, content=None, headers=None):
         self.calls.append(("PUT", url, content))
-        return _Response(self._responder("PUT", url, content))
+        return self._answer("PUT", url, content)
 
     def posts(self):
         return [(url, body) for method, url, body in self.calls if method == "POST"]
@@ -230,6 +249,81 @@ def test_partial_part_list_is_refused_instead_of_merging_a_truncated_file(tmp_pa
         url.endswith("/files") and body.get("upload_id")
         for url, body in connection._http.posts()
     ), "a short part list must not reach the merge step"
+
+
+# ── a rejected part must stop the upload, not be merged anyway ────────────────
+#
+# httpx does not raise on 4xx/5xx by itself, so a rejected part PUT used to be
+# indistinguishable from an accepted one: the loop kept going, the coverage check
+# passed, and the merge answered with a normal-looking ``file_info`` -- a truncated
+# image reported as sent.
+
+def _no_merge(connection) -> bool:
+    return not any(
+        url.endswith("/files") and body.get("upload_id")
+        for url, body in connection._http.posts()
+    )
+
+
+def test_a_rejected_part_upload_is_refused_before_merging(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "PUT":
+            return _Response({}, status_code=403)      # presigned URL expired / rejected
+        return _legacy_then_nothing(method, url, body)
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(connection), "a rejected part PUT must not be merged"
+
+
+def test_a_failing_part_finish_is_refused_before_merging(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "POST" and url.endswith("/upload_part_finish"):
+            return _Response({}, status_code=500)
+        return _legacy_then_nothing(method, url, body)
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(connection), "a failing upload_part_finish must not be merged"
+
+
+def test_a_part_finish_error_envelope_is_refused_before_merging(tmp_path):
+    """A 200 answer carrying the platform's error envelope counts as a failure too."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "POST" and url.endswith("/upload_part_finish"):
+            return {"code": 500, "message": "part rejected"}
+        return _legacy_then_nothing(method, url, body)
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(connection), "an error envelope must not be merged"
+
+
+def test_a_rejected_legacy_put_is_not_reported_as_success(tmp_path):
+    """The legacy path must not fall back to the *apply* answer's ``file_info`` when the PUT failed."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"x" * 32)
+
+    def responder(method, url, body):
+        if method == "PUT":
+            return _Response({}, status_code=403)
+        return {"upload_url": "https://cos.example/put/1", "file_info": "FI-upfront"}
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == ""
 
 
 # ── failures degrade instead of raising ───────────────────────────────────────
