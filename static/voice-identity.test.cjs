@@ -911,6 +911,42 @@ test('a retry superseded while loading its token does not read status afterwards
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
+test('a stalled Cancel releases the page and the next start replaces the unconfirmed session', async () => {
+    const explicitCancelGate = deferred();
+    const harness = createHarness({ autoAdvance: false, explicitCancelGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    harness.emit('voice-identity-cancel');
+    await enrolling;
+    await flush(4);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+
+    harness.fireStatusTimeouts();
+    await flush(8);
+    const stalledCancel = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/cancel`);
+    assert.equal(stalledCancel.options.signal.aborted, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-cancel').disabled, false);
+    assert.equal(harness.serverEnrollmentId, 'enrollment-1');
+
+    explicitCancelGate.resolve();
+    const callsBeforeRestart = harness.fetchCalls.length;
+    const restarting = harness.emit('voice-identity-start');
+    await flush(8);
+    const restartCalls = harness.fetchCalls.slice(callsBeforeRestart);
+    const cancelIndex = restartCalls.findIndex(call => call.url === `${API_ROOT}/enrollment/cancel`);
+    const startIndex = restartCalls.findIndex(call => call.url === `${API_ROOT}/enrollment/start`);
+    assert.ok(cancelIndex >= 0);
+    assert.ok(startIndex > cancelIndex);
+    assert.equal(restartCalls[cancelIndex].options.headers.get('x-voice-identity-enrollment'), 'enrollment-1');
+    assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+    await harness.emit('voice-identity-cancel');
+    await restarting;
+});
+
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();

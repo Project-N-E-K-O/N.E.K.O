@@ -25,6 +25,7 @@
     const CANCEL_STATUS_TIMEOUT_MS = 1000;
     const FINAL_STATUS_TIMEOUT_MS = 1000;
     const RETRY_CONNECTION_TIMEOUT_MS = 5000;
+    const CANCEL_REQUEST_TIMEOUT_MS = 5000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -96,6 +97,7 @@
         closeStarted: false,
         closeCancellationPromise: null,
         closeCancellationEnrollmentId: null,
+        unconfirmedCancelEnrollmentId: null,
         startSettled: null,
         voiceStatus: 'waiting',
         lastVoiceAt: 0,
@@ -1015,8 +1017,18 @@
                 headers,
                 signal: cancelController ? cancelController.signal : undefined
             });
+        } catch (error) {
+            // Without a response the server may still apply this cancellation
+            // later; remember it so the next start cancels the session first.
+            if (!error || error.status === undefined) {
+                state.unconfirmedCancelEnrollmentId = enrollmentId;
+            }
+            throw error;
         } finally {
             if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
+        if (state.unconfirmedCancelEnrollmentId === enrollmentId) {
+            state.unconfirmedCancelEnrollmentId = null;
         }
         state.enrollmentId = null;
         state.profileId = null;
@@ -1138,18 +1150,23 @@
             const startController = typeof AbortController === 'function'
                 ? new AbortController() : null;
             state.startAbort = startController;
-            // A restore may release the page while the close-time keepalive
-            // cancellation is still in flight. Starting now would resume that
-            // session and let the late cancellation delete it, so cancel it
-            // explicitly first and let /enrollment/start create a new session.
-            const unsettledCloseEnrollmentId = state.closeCancellationPromise
-                ? state.closeCancellationEnrollmentId : null;
+            // A restore or a timed-out Cancel may release the page while a
+            // cancellation for the old session is still unresolved. Starting
+            // now would resume that session and let the late cancellation
+            // delete it, so cancel it explicitly first and let
+            // /enrollment/start create a new session.
+            const unsettledCloseEnrollmentId = (state.closeCancellationPromise
+                ? state.closeCancellationEnrollmentId : null)
+                || state.unconfirmedCancelEnrollmentId;
             if (unsettledCloseEnrollmentId) {
                 await apiRequest('/enrollment/cancel', {
                     method: 'POST',
                     headers: { [SESSION_HEADER]: unsettledCloseEnrollmentId },
                     signal: startController ? startController.signal : undefined
                 });
+                if (state.unconfirmedCancelEnrollmentId === unsettledCloseEnrollmentId) {
+                    state.unconfirmedCancelEnrollmentId = null;
+                }
                 if (isStale()) return;
             }
             let started;
@@ -1434,10 +1451,14 @@
                 await Promise.race([pendingStart, waitLimit]);
                 if (timeoutId !== null) window.clearTimeout(timeoutId);
             }
-            await cancelSession(config);
+            // A stalled explicit cancellation must not keep every control
+            // disabled; keepalive cancellation is fire-and-forget already.
+            const sessionConfig = config.keepalive
+                ? config : { ...config, timeoutMs: CANCEL_REQUEST_TIMEOUT_MS };
+            await cancelSession(sessionConfig);
             if (!config.keepalive && !state.enrollmentId && pendingStart) {
                 const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
-                if (reconciled && state.enrollmentId) await cancelSession(config);
+                if (reconciled && state.enrollmentId) await cancelSession(sessionConfig);
             }
             if (!config.silent) setMessage('');
         } catch (_) {
