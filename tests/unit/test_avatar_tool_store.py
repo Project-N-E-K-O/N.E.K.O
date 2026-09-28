@@ -1505,7 +1505,7 @@ def test_delete_keeps_an_unauthorized_move_for_recovery_when_it_cannot_be_restor
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
 
-@pytest.mark.parametrize("flavour", ("identity-mismatch", "corrupt-marker"))
+@pytest.mark.parametrize("flavour", ("identity-mismatch", "corrupt-marker", "deeply-nested-marker"))
 def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, monkeypatch, flavour):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -1536,8 +1536,12 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     if flavour == "identity-mismatch":
         record_path = deleting / "record.json"
         record_path.write_bytes(record_path.read_bytes())
-    else:
+    elif flavour == "corrupt-marker":
         marker.write_bytes(b"{")
+    else:
+        # 4 KiB 以内就能嵌套到让 json.loads 抛 RecursionError；它必须按
+        # 「授权不匹配」处理，而不是炸穿整轮恢复。
+        marker.write_bytes(b"[" * 3000)
     retained_record = (deleting / "record.json").read_bytes()
     # 同步客户端在正式路径上又发布了一份：恢复不能挪回覆盖它，只能保留副本。
     shutil.copytree(deleting, final)

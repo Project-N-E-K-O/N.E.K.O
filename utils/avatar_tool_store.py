@@ -656,7 +656,9 @@ class AvatarToolStore:
             if len(raw) > 4096:
                 return False
             authorization = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        # 4 KiB 的上限内也能嵌套到 RecursionError；和其它解析失败一样判为授权
+        # 不匹配，走挪回 / 按 ID 保留的路径，而不是让整轮恢复抛出。
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             return False
         directory_kind, _, directory_identity, probe_error = _probe_entry_state(directory)
         if probe_error is not None:
