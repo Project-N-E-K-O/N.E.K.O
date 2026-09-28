@@ -87,16 +87,24 @@ out.textOnlyAtGrace = P.isStartupGreetingGateHolding();
 
 // 5b. Audio for the greeting has arrived but its decode / queueing is slow:
 //     past the text-only grace the gate still holds until the speech ends.
-window.appState.currentPlayingSpeechId = 'older-speech';
 P.armStartupGreetingGate('ws-open');
-fire('neko-assistant-turn-start');
-fire('neko-assistant-turn-end');
-window.appState.currentPlayingSpeechId = 'greeting-speech';
+fire('neko-assistant-turn-start', 'greeting-turn');
+fire('neko-assistant-turn-end', 'greeting-turn');
+P.noteStartupGreetingAudio('greeting-turn');
 now += 20_000;
 out.audioArrivedSlowDecode = P.isStartupGreetingGateHolding();
-fire('neko-assistant-speech-start');
-fire('neko-assistant-speech-end');
+fire('neko-assistant-speech-start', 'greeting-turn');
+fire('neko-assistant-speech-end', 'greeting-turn');
 out.audioArrivedAfterSpeechEnd = P.isStartupGreetingGateHolding();
+
+// 5c. Late queued audio of an earlier turn arrives during a text-only
+//     greeting: it is not the greeting's audio, so the grace still opens it.
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start', 'greeting-turn');
+P.noteStartupGreetingAudio('previous-turn');
+fire('neko-assistant-turn-end', 'greeting-turn');
+now += 8_000;
+out.staleAudioTextOnlyAtGrace = P.isStartupGreetingGateHolding();
 
 // 6. TTS unavailable for the greeting turn: opens at once.
 P.armStartupGreetingGate('ws-open');
@@ -169,6 +177,7 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "textOnlyAtGrace": False,
         "audioArrivedSlowDecode": True,
         "audioArrivedAfterSpeechEnd": False,
+        "staleAudioTextOnlyAtGrace": False,
         "afterSpeechUnavailable": False,
         "previousTurnSpeechEnd": True,
         "greetingTurnSpeechEnd": False,
@@ -226,3 +235,16 @@ def test_greeting_check_send_arms_the_gate():
     arm_at = source.index("window.appProactive.armStartupGreetingGate(greetingReason)")
     # Armed right after the send, before any other statement of the send path.
     assert 0 < arm_at - send_at < 300
+
+
+def test_websocket_reports_each_played_audio_chunk_to_the_gate():
+    source = WEBSOCKET_JS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    start = source.index("response.type === 'audio_chunk'")
+    branch = source[start:start + 6000]
+    call = branch.index("window.appProactive.noteStartupGreetingAudio(")
+    # Only chunks that will play, with the chunk's own (resolved) turn id.
+    guard = branch.rindex("if (", 0, call)
+    assert "!shouldSkip" in branch[guard:call]
+    assert branch[call:call + 200].split("(", 1)[1].lstrip().startswith(
+        "resolveAssistantLifecycleTurnId(response.turn_id)"
+    )

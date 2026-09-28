@@ -608,7 +608,8 @@
     //      事件提前开阀）。它的语音播完（speech-end / cancel / unavailable）时开阀。
     //      文本 turn 结束时语音可能还没开始（首个音频块晚到），这段空窗里
     //      _isAssistantSpeaking() 为 false，所以 turn-end 本身不开阀。这一轮已经收到
-    //      音频（currentPlayingSpeechId 变了，解码 / 排队再慢也算）就等它播完；
+    //      音频（带这一轮 turnId 的音频块到了，解码 / 排队再慢也算）就等它播完；
+    //      上一轮排队晚到的音频块 turnId 对不上，不算。
     //      turn-end 之后 STARTUP_GREETING_TEXT_ONLY_GRACE_MS 内既没收到音频也没开始
     //      播放，才按纯文本问候开阀。
     //   2. 兜底：后端判定不问候（刷新重连 ≤15s 等）时不会有任何 turn，
@@ -629,7 +630,7 @@
             turnStartedAt: 0,
             turnEndedAt: 0,
             speechStarted: false,
-            speechIdAtTurnStart: null,
+            audioArrived: false,
             turnId: null
         };
     }
@@ -648,9 +649,7 @@
             _releaseStartupGreetingGate('问候超过' + (STARTUP_GREETING_TURN_MAX_MS / 1000) + '秒仍未结束，按事件丢失处理');
             return false;
         }
-        var audioArrived = !!S.currentPlayingSpeechId
-            && S.currentPlayingSpeechId !== gate.speechIdAtTurnStart;
-        if (gate.turnEndedAt && !gate.speechStarted && !audioArrived
+        if (gate.turnEndedAt && !gate.speechStarted && !gate.audioArrived
                 && now - gate.turnEndedAt >= STARTUP_GREETING_TEXT_ONLY_GRACE_MS) {
             _releaseStartupGreetingGate('问候没有语音，按纯文本结束');
             return false;
@@ -680,8 +679,18 @@
         gate.turnStarted = true;
         gate.turnStartedAt = Date.now();
         gate.turnId = event && event.detail && event.detail.turnId ? event.detail.turnId : null;
-        gate.speechIdAtTurnStart = S.currentPlayingSpeechId || null;
     });
+
+    // app-websocket 收到每个要播放的音频块头时调用。只认问候这一轮的：上一轮排队晚到
+    // 的音频块 turnId 不同，它的 speech-end 也会被丢掉，算进来的话纯文本问候就只能
+    // 等 STARTUP_GREETING_TURN_MAX_MS 才开阀。
+    function noteStartupGreetingAudio(turnId) {
+        var gate = S && S._startupGreetingGate;
+        if (!gate || !gate.turnStarted) return;
+        if (!_eventBelongsToGreetingTurn(gate, { detail: { turnId: turnId } })) return;
+        gate.audioArrived = true;
+    }
+    mod.noteStartupGreetingAudio = noteStartupGreetingAudio;
     window.addEventListener('neko-assistant-turn-end', function (event) {
         var gate = S && S._startupGreetingGate;
         if (!gate || !gate.turnStarted || gate.turnEndedAt) return;

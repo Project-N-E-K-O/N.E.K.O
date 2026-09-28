@@ -75,5 +75,7 @@ def complete_provider_warmup(queue: object, token: object) -> None:
     with state.lock:
         state.waiters.discard(token)
         if not state.waiters:
-            state.pending = False
+            # Stamp first: a reader seeing ``pending`` False must also see
+            # the new completion time, not a stale or missing one.
             state.completed_at = time.monotonic()
+            state.pending = False

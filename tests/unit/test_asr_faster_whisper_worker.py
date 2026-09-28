@@ -1204,6 +1204,41 @@ async def test_waiting_behind_another_sessions_decode_counts_as_warmup(pool) -> 
         await _shutdown(task, requests, responses)
 
 
+def test_session_reads_warmup_state_under_its_lock() -> None:
+    # A decode thread ends a wait by setting ``pending`` and ``completed_at``
+    # together under the state's lock. The watchdog's reads must take it too,
+    # or they can see the wait over with no (or a stale) completion time.
+    from main_logic.asr_client._infra import _RealtimeAsrSessionImpl
+    from main_logic.asr_client.warmup import (
+        begin_provider_warmup,
+        complete_provider_warmup,
+        provider_warmup_state,
+    )
+
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    token = begin_provider_warmup(queue)
+    state = provider_warmup_state(queue)
+    session_view = SimpleNamespace(_request_queue=queue)
+    for prop, expected in (
+        (_RealtimeAsrSessionImpl.provider_warmup_pending, False),
+        (_RealtimeAsrSessionImpl.provider_warmup_completed_at, None),
+    ):
+        results: list[Any] = []
+        with state.lock:
+            reader = threading.Thread(
+                target=lambda: results.append(prop.fget(session_view))
+            )
+            reader.start()
+            reader.join(0.1)
+            assert reader.is_alive()  # blocked while the writer holds the lock
+            state.pending = False
+        reader.join(2)
+        assert results == [expected]
+        state.pending = True
+    complete_provider_warmup(queue, token)
+    assert state.pending is False and state.completed_at is not None
+
+
 def test_warmup_ends_only_when_every_wait_has_ended() -> None:
     # A cancelled older job leaving the decode queue must not clear the pending
     # state of a newer job still waiting on the same session queue.

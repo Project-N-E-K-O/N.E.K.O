@@ -56,12 +56,14 @@ def replace_corner_mark(text):
 # 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
 # - ``\p{S}``：数学 / 货币 / 修饰 / 其它符号（含大部分 emoji 和装饰符）
 # - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号
-# ℃ / ℉ 例外：它们会被读成「摄氏度 / 华氏度」，是有意义的单位，保留。
+# ℃ / ℉ / ° 例外：它们会被读成「摄氏度 / 华氏度 / 度」，是有意义的单位，保留。
+# 「22°C」「72°F」里的度数符号也是 °，删掉会剩下被念成字母的「C」「F」。
 # 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
 # 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
 # 天城文等文字里正常使用的零宽连接符不受影响。
+_TTS_KEPT_UNIT_SYMBOLS = "℃℉°"
 _TTS_MUTED_SYMBOL_CLASS = (
-    r"(?![℃℉])["
+    r"(?![" + _TTS_KEPT_UNIT_SYMBOLS + r"])["
     r"\p{S}"
     r"#＃@＠&＆\*＊\+_＿\-－﹣~～`｀\|｜\\/／＼"
     r"\^＾%％\$＄"
@@ -79,9 +81,10 @@ _TTS_MUTED_SYMBOL_RE = regex.compile(
 # 复合 emoji 被流式切开（「👩」「‍💻」）时，后一块开头的零宽连接符 / 变体选择符
 # 前面已经没有符号，上面的正则不会删它。由调用方记住上一块是否以被删的符号结尾，
 # 再用下面两个函数处理。
-# 只认 emoji 类符号（\p{So}，温度单位除外）或连接符结尾：「%」「#」这类删掉的符号
+# 只认 emoji 类符号（\p{So}，温度 / 度数单位除外）或连接符结尾：「%」「#」这类删掉的符号
 # 后面紧跟的零宽连接符属于正常文字（如天城文 क्%ष 被切开），不能当 emoji 残余删掉。
-_TTS_TRAILING_EMOJI_RE = regex.compile(r"(?:(?![℃℉])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
+_TTS_TRAILING_EMOJI_RE = regex.compile(
+    r"(?:(?![" + _TTS_KEPT_UNIT_SYMBOLS + r"])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
 _TTS_LEADING_JOINERS_RE = regex.compile(r"\A[\u200d\ufe0e\ufe0f\u20e3]+")
 
 
@@ -137,10 +140,10 @@ def strip_tts_muted_symbols(text: str) -> str:
     """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
 
     Letters, digits, whitespace and sentence punctuation survive, as do the
-    temperature units. A symbol between two letters/digits of a space-delimited
-    script becomes a space so the neighbours are not read as one number or word.
-    Safe for streaming
-    chunks: the chunk's own leading/trailing whitespace is left alone.
+    temperature and degree units. A symbol between two letters/digits of a
+    space-delimited script becomes a space so the neighbours are not read as
+    one number or word. Safe for streaming chunks: the chunk's own
+    leading/trailing whitespace is left alone.
     """
     if not text:
         return text

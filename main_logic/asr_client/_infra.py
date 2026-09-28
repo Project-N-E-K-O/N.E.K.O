@@ -428,13 +428,22 @@ class _RealtimeAsrSessionImpl:
     def provider_warmup_pending(self) -> bool:
         """The worker is still preparing (e.g. loading a local model)."""
         state = provider_warmup_state(self._request_queue)
-        return bool(state is not None and state.pending)
+        if state is None:
+            return False
+        # A worker thread ends waits under this lock, setting ``pending`` and
+        # ``completed_at`` together; reading under it means a caller that
+        # sees the wait over also sees its completion time.
+        with state.lock:
+            return bool(state.pending)
 
     @property
     def provider_warmup_completed_at(self) -> float | None:
         """Monotonic time the worker finished preparing, if it ever started."""
         state = provider_warmup_state(self._request_queue)
-        return state.completed_at if state is not None else None
+        if state is None:
+            return None
+        with state.lock:
+            return state.completed_at
 
     @property
     def transport_delivery_trace_id(self) -> str | None:

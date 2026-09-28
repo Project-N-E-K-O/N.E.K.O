@@ -3559,6 +3559,12 @@
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
+                    if (!shouldSkip && window.appProactive &&
+                        typeof window.appProactive.noteStartupGreetingAudio === 'function') {
+                        window.appProactive.noteStartupGreetingAudio(
+                            resolveAssistantLifecycleTurnId(response.turn_id)
+                        );
+                    }
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(response.turn_id),
