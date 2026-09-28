@@ -29,9 +29,10 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入主分支的屏幕共享悬停提示、免费语音配额 / 拒绝访问提示、GLM 声音复刻，以及本地语音识别开关的
+    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示、
+    // 免费服务拒绝访问提示、屏幕共享悬停菜单提示、GLM 声音复刻、声纹四段录入文案，以及本地语音识别开关的
     // 语言包 key，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-28-local-asr-glm-voice-clone-merge';
+    const LOCALE_VERSION = '2026-09-28-local-asr-voiceprint-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

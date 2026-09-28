@@ -897,6 +897,9 @@ class PluginLifecycleService:
                 return {
                     "success": True,
                     "plugin_id": current_plugin_id,
+                    # Machine-readable so callers can tell this apart from a real start:
+                    # no process was (re)created and the saved config was not re-read.
+                    "already_running": True,
                     "message": "Plugin is already running",
                 }
             # Stale host (process dead) — remove so re-start can proceed

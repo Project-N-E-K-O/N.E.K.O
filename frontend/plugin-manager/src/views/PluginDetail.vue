@@ -1,7 +1,11 @@
 <template>
   <div
     class="plugin-detail"
-    :class="{ 'plugin-detail--fill': isFillTab }"
+    :class="{
+      'plugin-detail--fill': isFillTab,
+      'config-layout-active': activeTab === 'config',
+      'config-page-scroll': activeTab === 'config' && configPageScroll,
+    }"
     data-yui-guide-id="plugin-detail-page"
   >
     <!-- Loading 状态 -->
@@ -172,7 +176,7 @@
         <el-tab-pane :label="$t('plugins.config')" name="config">
           <div data-yui-guide-id="plugin-detail-config">
             <PluginModelBindings :plugin-id="pluginId" />
-            <PluginConfigEditor :plugin-id="pluginId" />
+            <PluginConfigEditor :plugin-id="pluginId" @layout-mode-change="configPageScroll = $event" />
           </div>
         </el-tab-pane>
 
@@ -225,6 +229,7 @@ const { locale } = useI18n()
 
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
+const configPageScroll = ref(false)
 const loading = ref(true)
 const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
@@ -620,6 +625,132 @@ watch(
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+/* Element Plus transitions every card property, including flex-grow. The
+   configuration tab changes the card's flex layout, so limit the transition to
+   visual properties and let its height settle in one frame. */
+.plugin-detail > :deep(.el-card) {
+  transition-property: box-shadow, border-color, background-color;
+}
+
+/* Constrain only the configuration tab. Other detail tabs retain page scrolling.
+   On very short windows the outer page can still scroll instead of clipping controls. */
+.config-layout-active {
+  height: 100%;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active > :deep(.el-card) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active > :deep(.el-card > .el-card__header) {
+  flex-shrink: 0;
+}
+.config-layout-active > :deep(.el-card > .el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-tabs"]) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active
+  :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__header) {
+  flex-shrink: 0;
+}
+.config-layout-active
+  :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.config-layout-active :deep(#pane-config),
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-config"]) {
+  height: 100%;
+  min-height: 0;
+}
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-config"]) {
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active :deep(.model-bindings) {
+  flex-shrink: 0;
+}
+/* Model bindings share this tab with the editor. Give the editor only the
+   remaining height so its footer stays inside the clipped tab viewport. */
+.config-layout-active :deep(.plugin-config-editor) {
+  flex: 1;
+  height: auto;
+}
+
+.config-page-scroll {
+  height: auto;
+  min-height: 0;
+}
+.config-page-scroll > :deep(.el-card),
+.config-page-scroll > :deep(.el-card > .el-card__body),
+.config-page-scroll :deep([data-yui-guide-id="plugin-detail-tabs"]),
+.config-page-scroll
+  :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__content) {
+  flex: none;
+}
+.config-page-scroll
+  :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__content) {
+  overflow: visible;
+}
+.config-page-scroll :deep(#pane-config),
+.config-page-scroll :deep([data-yui-guide-id="plugin-detail-config"]) {
+  height: auto;
+}
+.config-page-scroll :deep(.plugin-config-editor) {
+  flex: none;
+}
+
+/* The host sidebar must leave usable space at high zoom. Scope the compact
+   rail to this configuration view; keep its link labels accessible. */
+@media (max-width: 760px) {
+  :global(.app-shell:has(.config-layout-active) > .app-sidebar) {
+    width: 56px;
+  }
+  :global(.app-shell:has(.config-layout-active) .sidebar) {
+    padding: 10px 4px;
+  }
+  :global(.app-shell:has(.config-layout-active) .sidebar-brand) {
+    padding: 8px 10px 16px;
+  }
+  :global(.app-shell:has(.config-layout-active) .nav-item) {
+    padding: 10px 14px;
+    gap: 0;
+  }
+  :global(.app-shell:has(.config-layout-active) .nav-item__label),
+  :global(.app-shell:has(.config-layout-active) .sidebar-brand__text),
+  :global(.app-shell:has(.config-layout-active) .nav-group-label) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .config-layout-active .card-header {
+    flex-wrap: wrap;
+  }
+  .config-layout-active .header-left {
+    min-width: 0;
+  }
+  .config-layout-active .header-left h2 {
+    overflow-wrap: anywhere;
+  }
 }
 
 /* ── 撑满型 tab 的高度链 ─────────────────────────────────────────────
