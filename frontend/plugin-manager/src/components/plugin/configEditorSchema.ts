@@ -1,6 +1,5 @@
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { schemaField } from '@/utils/configEditor'
-export { schemaField as schemaForProperty } from '@/utils/configEditor'
 
 import type { ConfigEditorSchema } from '@/types/configSchema'
 export type { ConfigEditorSchema } from '@/types/configSchema'
@@ -43,7 +42,8 @@ export function newSchemaValue(schema?: ConfigEditorSchema): unknown {
 /** Redact display copies only; configuration values and save payloads stay intact. */
 export function redactConfigSecrets(value: unknown, schema?: ConfigEditorSchema): unknown {
   if (value === undefined) return undefined
-  if (schema?.writeOnly) return '********'
+  // An empty secret stays visible: unset and set must remain distinguishable.
+  if (schema?.writeOnly) return value === '' ? '' : '********'
   if (Array.isArray(value)) return value.map((item) => redactConfigSecrets(item, schema?.items))
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => {

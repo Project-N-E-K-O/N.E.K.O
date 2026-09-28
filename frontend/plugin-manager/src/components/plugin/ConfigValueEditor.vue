@@ -7,8 +7,9 @@
           :aria-label="path"
           v-model="strVal"
           type="password"
+          show-password
           autocomplete="new-password"
-          :disabled="isReadOnly || (schema?.type !== 'string' && kind !== 'string')"
+          :disabled="isReadOnly"
           :maxlength="schema?.maxLength"
           @input="emitUpdate"
         />
@@ -155,7 +156,7 @@
           <el-form-item :label="t('plugins.fieldName')">
             <el-input v-model="newKey" />
           </el-form-item>
-          <el-form-item :label="t('plugins.fieldType')">
+          <el-form-item v-if="!dynamicFieldSchema" :label="t('plugins.fieldType')">
             <el-select v-model="newType" style="width: 100%">
               <el-option label="string" value="string" />
               <el-option label="number" value="number" />
@@ -845,6 +846,11 @@ function addArrayItem() {
 const addKeyDialog = ref(false)
 const newKey = ref('')
 const newType = ref<'string' | 'number' | 'boolean' | 'object' | 'array'>('string')
+// A declared dynamic-key schema decides the initial value, so the type choice would be ignored.
+const dynamicFieldSchema = computed(() => {
+  const additional = props.schema?.additionalProperties
+  return !!additional && typeof additional === 'object' && !Array.isArray(additional)
+})
 
 function openAddKey() {
   addKeyDialog.value = true

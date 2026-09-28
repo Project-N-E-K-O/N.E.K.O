@@ -116,8 +116,11 @@ def test_schema_keeps_zero_sentinels_and_runtime_limits() -> None:
     assert search["retry_attempts"]["maximum"] == 3
     assert search["queue_wait_seconds"]["minimum"] == 0.1
     assert search["backend"]["enum"] == ["auto", "anysearch", "baidu", "duckduckgo"]
+    assert search["anysearch_api_key"]["writeOnly"] is True
     life = _schema("lifekit")["properties"]["lifekit"]["properties"]
     assert "" in life["locale"]["enum"]
+    for key in ("amap_key", "baidu_map_key"):
+        assert life[key]["writeOnly"] is True
     assert life["forecast_days"]["minimum"] == 1
     assert life["forecast_days"]["maximum"] == 7
 

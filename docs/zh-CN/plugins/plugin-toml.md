@@ -308,7 +308,7 @@ plugin/plugins/smart_notes/
 | 关键字 | 配置面板行为 |
 | --- | --- |
 | `properties` | 描述对象中的字段；结构与实际配置路径对应。未声明的已有字段仍可编辑。 |
-| additionalProperties | 对象形式的子 schema 用于 properties 未声明的动态键，包括密码控件和预览脱敏；具名属性优先。布尔值不提供字段注释，编辑器不据此限制键的增删。 |
+| `additionalProperties` | 对象形式的子 schema 用于 `properties` 未声明的动态键，包括密码控件和预览脱敏；具名属性优先。布尔值不提供字段注释，编辑器不据此限制键的增删。 |
 | `title` / `description` | 显示名称和说明，按纯文本渲染；内部 key 保留为辅助信息。缺少标题时显示 key。 |
 | `type` | 单一 `string`、`number`、`integer`、`boolean`、`object`、`array` 分别使用对应控件；缺失时根据当前值推断。 |
 | `items` | 用一个子 schema 描述数组元素，支持嵌套对象和数组。 |
@@ -316,7 +316,7 @@ plugin/plugins/smart_notes/
 | `minimum` / `maximum` | 数字控件的上下限；`integer` 控件只接受整数。 |
 | `maxLength` | 文本输入的最大长度。 |
 | `readOnly` | 禁用该字段及其子控件的编辑。 |
-| 字符串字段的 writeOnly: true | 使用密码输入框，并遮盖基础值提示、变更摘要和 JSON 数据视图中的值。保存时保留真实值；这仅用于界面遮盖，不提供加密或访问控制。 |
+| 字符串字段的 `writeOnly: true` | 使用密码输入框（可临时显示），并遮盖基础值提示、变更摘要和 JSON 数据视图中的非空值。保存时保留真实值；这仅用于界面遮盖，不提供加密或访问控制。 |
 | `default` | 显式添加字段或数组元素时的初始值；不是运行时默认配置。 |
 | `x-title-i18n` / `x-description-i18n` | 可选的 locale 到文本映射；标准 `title`、`description` 仍为字符串。 |
 

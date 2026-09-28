@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { redactConfigSecrets, schemaForProperty } from './configEditorSchema'
+import { schemaField } from '@/utils/configEditor'
+import { redactConfigSecrets } from './configEditorSchema'
 import type { ConfigEditorSchema } from './configEditorSchema'
 
 describe('dynamic property annotations', () => {
@@ -13,8 +14,8 @@ describe('dynamic property annotations', () => {
     expect(redactConfigSecrets(value, schema)).toEqual({
       public: 'visible', namedSecret: '********', dynamic: '********',
     })
-    expect(schemaForProperty(schema, 'public')).toEqual({})
-    expect(schemaForProperty(schema, 'dynamic')).toBe(secret)
+    expect(schemaField(schema, 'public')).toEqual({})
+    expect(schemaField(schema, 'dynamic')).toBe(secret)
     expect(value.dynamic).toBe('fixture-dynamic')
   })
 
@@ -23,7 +24,7 @@ describe('dynamic property annotations', () => {
       properties: { token: { type: 'string', writeOnly: true } },
       additionalProperties,
     }
-    expect(schemaForProperty(schema, 'custom')).toBeUndefined()
+    expect(schemaField(schema, 'custom')).toBeUndefined()
     expect(redactConfigSecrets({ token: 'fixture-token', custom: 'visible' }, schema))
       .toEqual({ token: '********', custom: 'visible' })
   })
@@ -41,5 +42,13 @@ describe('dynamic property annotations', () => {
     })
     expect(value.dynamic[0]!.token).toBe('fixture-token')
     expect(value.constructor[0]!.token).toBe('fixture-other')
+  })
+
+  it('leaves an empty secret visible so unset stays distinguishable from set', () => {
+    const schema: ConfigEditorSchema = {
+      properties: { unset: { type: 'string', writeOnly: true }, set: { type: 'string', writeOnly: true } },
+    }
+    expect(redactConfigSecrets({ unset: '', set: 'fixture-token' }, schema))
+      .toEqual({ unset: '', set: '********' })
   })
 })

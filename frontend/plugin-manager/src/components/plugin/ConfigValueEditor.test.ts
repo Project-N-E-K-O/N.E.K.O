@@ -1065,6 +1065,21 @@ describe('ConfigValueEditor confidential controls', () => {
     }
   )
 
+  it('offers a reveal toggle while keeping the secret masked by default', async () => {
+    const { host } = mountSchemaEditor(undefined, 'fixture-secret', {
+      type: 'string',
+      writeOnly: true,
+    })
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.type).toBe('password')
+    const toggle = host.querySelector<HTMLElement>('.el-input__password')
+    expect(toggle).not.toBeNull()
+    toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelector('input')!.type).toBe('text')
+  })
+
   it('keeps malformed read-only secrets disabled', async () => {
     const { host, emitted } = mountSchemaEditor(
       undefined,
@@ -1111,5 +1126,38 @@ describe('ConfigValueEditor confidential controls', () => {
     expect(host.querySelector('input')!.disabled).toBe(false)
     expect(host.textContent).not.toContain('fixture-')
     expect(emitted).toEqual([])
+  })
+})
+
+describe('ConfigValueEditor add field dialog', () => {
+  async function openDialog(schema?: ConfigEditorSchema) {
+    const { host, emitted } = mountSchemaEditor({}, {}, schema)
+    await nextTick()
+    ;(host.querySelector('.add button') as HTMLButtonElement).click()
+    await nextTick()
+    const dialog = [...document.querySelectorAll<HTMLElement>('.el-dialog')].at(-1)!
+    return { dialog, emitted }
+  }
+
+  it('offers a type choice for undeclared keys', async () => {
+    const { dialog } = await openDialog({ type: 'object', properties: {} })
+    expect(dialog.querySelector('.el-select')).not.toBeNull()
+  })
+
+  it('hides the type choice when a dynamic-key schema decides the value', async () => {
+    const { dialog, emitted } = await openDialog({
+      type: 'object',
+      properties: {},
+      additionalProperties: { type: 'string', writeOnly: true },
+    })
+    expect(dialog.querySelector('.el-select')).toBeNull()
+    typeInto(dialog.querySelector('input')!, 'token')
+    await nextTick()
+    const confirm = [...dialog.querySelectorAll('button')].find(
+      (b) => (b.textContent || '').trim() === 'common.confirm'
+    ) as HTMLButtonElement
+    confirm.click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ token: '' })
   })
 })
