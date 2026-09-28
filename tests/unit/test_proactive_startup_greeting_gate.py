@@ -80,10 +80,23 @@ out.afterSpeechEnd = P.isStartupGreetingGateHolding();
 P.armStartupGreetingGate('ws-open');
 fire('neko-assistant-turn-start');
 fire('neko-assistant-turn-end');
-now += 4_999;
+now += 7_999;
 out.textOnlyBeforeGrace = P.isStartupGreetingGateHolding();
 now += 1;
 out.textOnlyAtGrace = P.isStartupGreetingGateHolding();
+
+// 5b. Audio for the greeting has arrived but its decode / queueing is slow:
+//     past the text-only grace the gate still holds until the speech ends.
+window.appState.currentPlayingSpeechId = 'older-speech';
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start');
+fire('neko-assistant-turn-end');
+window.appState.currentPlayingSpeechId = 'greeting-speech';
+now += 20_000;
+out.audioArrivedSlowDecode = P.isStartupGreetingGateHolding();
+fire('neko-assistant-speech-start');
+fire('neko-assistant-speech-end');
+out.audioArrivedAfterSpeechEnd = P.isStartupGreetingGateHolding();
 
 // 6. TTS unavailable for the greeting turn: opens at once.
 P.armStartupGreetingGate('ws-open');
@@ -133,6 +146,8 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "afterSpeechEnd": False,
         "textOnlyBeforeGrace": True,
         "textOnlyAtGrace": False,
+        "audioArrivedSlowDecode": True,
+        "audioArrivedAfterSpeechEnd": False,
         "afterSpeechUnavailable": False,
         "justBeforeCap": True,
         "atCap": False,
