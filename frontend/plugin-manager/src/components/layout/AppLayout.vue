@@ -72,9 +72,9 @@
 
         <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
-            <Transition name="page" mode="out-in">
+            <MotionTransition preset="page">
               <component :is="Component" :key="currentRoute.path" />
-            </Transition>
+            </MotionTransition>
           </router-view>
         </main>
       </div>
@@ -84,6 +84,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, type WatchStopHandle } from 'vue'
+import MotionTransition from '@/motion/MotionTransition.vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
 import { useI18n } from 'vue-i18n'
@@ -418,7 +419,6 @@ onBeforeUnmount(() => {
   transition:
     transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
     filter 0.2s ease;
-  will-change: transform;
 }
 
 @keyframes neko-plugin-pin-lock {
@@ -532,6 +532,7 @@ onBeforeUnmount(() => {
 }
 
 .app-main {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 20px;
@@ -551,33 +552,6 @@ onBeforeUnmount(() => {
   color: var(--el-color-danger);
   font-size: 13px;
   font-weight: 500;
-}
-
-/* 页面切换动画 */
-.page-enter-active {
-  transition:
-    opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    filter 0.3s ease;
-}
-
-.page-leave-active {
-  transition:
-    opacity 0.18s ease,
-    transform 0.18s ease,
-    filter 0.18s ease;
-}
-
-.page-enter-from {
-  opacity: 0;
-  transform: scale(0.98) translateY(8px);
-  filter: blur(4px);
-}
-
-.page-leave-to {
-  opacity: 0;
-  transform: scale(0.99) translateY(-4px);
-  filter: blur(2px);
 }
 
 /* 深色模式覆盖 */
@@ -608,16 +582,4 @@ html.dark .app-header {
     0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .page-enter-active,
-  .page-leave-active {
-    transition: opacity 0.15s ease;
-  }
-
-  .page-enter-from,
-  .page-leave-to {
-    transform: none;
-    filter: none;
-  }
-}
 </style>

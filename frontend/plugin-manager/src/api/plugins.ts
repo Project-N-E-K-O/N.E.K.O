@@ -3,6 +3,7 @@
  */
 import { del, get, post } from './index'
 import type { AxiosRequestConfig } from 'axios'
+import type { ErrorDisplayRequestConfig } from '@/utils/request'
 import { PLUGIN_LIFECYCLE_TIMEOUT, PLUGIN_RELOAD_ALL_TIMEOUT } from '@/utils/constants'
 import { setPendingReload } from '@/utils/pendingReload'
 import type {
@@ -16,13 +17,24 @@ import type {
   PluginUiWarning,
 } from '@/types/api'
 
+/** The bounded projection used by the plugin list. The API deliberately keeps
+ * the small entry/dependency records needed by qualifiers and cards while
+ * omitting the full input schemas and other detail-only metadata. */
+export type PluginListSummary = Omit<PluginMeta, 'input_schema'> & {
+  entry_count?: number
+  dependency_count?: number
+  has_input_schema?: boolean
+}
+
+export type PluginListResponse<T = PluginMeta> = { plugins: T[]; message: string }
+
 /**
  * 获取插件列表
  */
 export function getPlugins(
   locale?: string,
-  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean }
-): Promise<{ plugins: PluginMeta[]; message: string }> {
+  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
+): Promise<PluginListResponse<PluginMeta>> {
   if (typeof URLSearchParams !== 'undefined' && config?.params instanceof URLSearchParams) {
     const params = new URLSearchParams(config.params)
     if (locale) params.set('locale', locale)
@@ -42,12 +54,41 @@ export function getPlugins(
   })
 }
 
+export function getPluginSummaries(
+  locale?: string,
+  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
+): Promise<PluginListResponse<PluginListSummary>> {
+  const params = config?.params instanceof URLSearchParams
+    ? new URLSearchParams(config.params)
+    : { ...(config?.params || {}) }
+  if (locale) {
+    if (params instanceof URLSearchParams) params.set('locale', locale)
+    else (params as Record<string, unknown>).locale = locale
+  }
+  if (params instanceof URLSearchParams) params.set('summary', 'true')
+  else (params as Record<string, unknown>).summary = true
+  return get('/plugins', { ...(config || {}), params })
+}
+
+export async function getPlugin(
+  pluginId: string,
+  locale?: string,
+  config?: ErrorDisplayRequestConfig,
+): Promise<PluginMeta> {
+  const safeId = encodeURIComponent(pluginId)
+  const response = await get<{ plugin?: PluginMeta } | PluginMeta>(
+    `/plugins/${safeId}`,
+    locale ? { ...config, params: { ...config?.params, locale } } : config,
+  )
+  return (response && typeof response === 'object' && 'plugin' in response
+    ? response.plugin
+    : response) as PluginMeta
+}
+
 /**
  * 刷新插件注册表
  */
-export function refreshPluginsRegistry(
-  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean }
-): Promise<{
+export function refreshPluginsRegistry(config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean }): Promise<{
   success: boolean
   added: string[]
   updated: string[]
@@ -66,12 +107,8 @@ export function refreshPluginsRegistry(
 /**
  * 获取插件状态
  */
-export function getPluginStatus(
-  pluginId?: string
-): Promise<PluginStatusData | { plugins: Record<string, PluginStatusData> }> {
-  const url = pluginId
-    ? `/plugin/status?plugin_id=${encodeURIComponent(pluginId)}`
-    : '/plugin/status'
+export function getPluginStatus(pluginId?: string): Promise<PluginStatusData | { plugins: Record<string, PluginStatusData> }> {
+  const url = pluginId ? `/plugin/status?plugin_id=${encodeURIComponent(pluginId)}` : '/plugin/status'
   return get(url)
 }
 
@@ -99,9 +136,7 @@ export function startPlugin(
 /**
  * 停止插件
  */
-export function stopPlugin(
-  pluginId: string
-): Promise<{ success: boolean; plugin_id: string; message: string }> {
+export function stopPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
   const safeId = encodeURIComponent(pluginId)
   return post(`/plugin/${safeId}/stop`)
 }
@@ -109,9 +144,7 @@ export function stopPlugin(
 /**
  * 重载插件
  */
-export function reloadPlugin(
-  pluginId: string
-): Promise<{ success: boolean; plugin_id: string; message: string }> {
+export function reloadPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
   const safeId = encodeURIComponent(pluginId)
   return post(`/plugin/${safeId}/reload`, undefined, {
     timeout: PLUGIN_LIFECYCLE_TIMEOUT,
@@ -173,21 +206,13 @@ export function getPluginMessages(params?: {
   return get('/plugin/messages', { params })
 }
 
-function normalizeSurface(
-  raw: any,
-  fallbackKind: PluginUiSurface['kind'] = 'panel'
-): PluginUiSurface | null {
+function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'panel'): PluginUiSurface | null {
   if (!raw || typeof raw !== 'object') return null
   const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : 'main'
-  const kind =
-    raw.kind === 'guide' || raw.kind === 'docs' || raw.kind === 'panel' ? raw.kind : fallbackKind
-  const mode =
-    raw.mode === 'hosted-tsx' ||
-    raw.mode === 'markdown' ||
-    raw.mode === 'auto' ||
-    raw.mode === 'static'
-      ? raw.mode
-      : 'static'
+  const kind = raw.kind === 'guide' || raw.kind === 'docs' || raw.kind === 'panel' ? raw.kind : fallbackKind
+  const mode = raw.mode === 'hosted-tsx' || raw.mode === 'markdown' || raw.mode === 'auto' || raw.mode === 'static'
+    ? raw.mode
+    : 'static'
   return {
     id,
     kind,
@@ -196,14 +221,9 @@ function normalizeSurface(
     entry: typeof raw.entry === 'string' ? raw.entry : undefined,
     url: typeof raw.url === 'string' ? raw.url : undefined,
     ui_path: typeof raw.ui_path === 'string' ? raw.ui_path : undefined,
-    open_in:
-      raw.open_in === 'new_tab' || raw.open_in === 'same_tab' || raw.open_in === 'iframe'
-        ? raw.open_in
-        : undefined,
+    open_in: raw.open_in === 'new_tab' || raw.open_in === 'same_tab' || raw.open_in === 'iframe' ? raw.open_in : undefined,
     context: typeof raw.context === 'string' ? raw.context : undefined,
-    permissions: Array.isArray(raw.permissions)
-      ? raw.permissions.filter((item: unknown) => typeof item === 'string')
-      : undefined,
+    permissions: Array.isArray(raw.permissions) ? raw.permissions.filter((item: unknown) => typeof item === 'string') : undefined,
     available: typeof raw.available === 'boolean' ? raw.available : undefined,
     legacy_static_compat: raw.legacy_static_compat === true,
   }
@@ -213,18 +233,12 @@ function normalizeSurface(
  * 获取插件 UI surface 列表。优先使用未来统一 /surfaces 接口，
  * 当前后端未实现时回退到现有 /ui-info，把 static UI 归一化为 panel surface。
  */
-export async function getPluginUiSurfaces(
-  pluginId: string,
-  locale?: string
-): Promise<PluginUiSurface[]> {
+export async function getPluginUiSurfaces(pluginId: string, locale?: string): Promise<PluginUiSurface[]> {
   const result = await getPluginUiSurfaceInfo(pluginId, locale)
   return result.surfaces
 }
 
-export async function getPluginUiSurfaceInfo(
-  pluginId: string,
-  locale?: string
-): Promise<{
+export async function getPluginUiSurfaceInfo(pluginId: string, locale?: string, config?: ErrorDisplayRequestConfig): Promise<{
   surfaces: PluginUiSurface[]
   warnings: PluginUiWarning[]
 }> {
@@ -232,24 +246,23 @@ export async function getPluginUiSurfaceInfo(
   try {
     const response = await get<{ surfaces?: any[]; warnings?: any[] } | any[]>(
       `/plugin/${safeId}/surfaces`,
-      locale ? { params: { locale } } : undefined
+      locale ? { ...config, params: { ...config?.params, locale } } : config,
     )
     const rawSurfaces = Array.isArray(response) ? response : response?.surfaces
     const rawWarnings = Array.isArray(response) ? [] : response?.warnings
     if (Array.isArray(rawSurfaces)) {
       return {
         surfaces: rawSurfaces
-          .map((surface) => normalizeSurface(surface))
+        .map((surface) => normalizeSurface(surface))
           .filter((surface): surface is PluginUiSurface => !!surface),
         warnings: Array.isArray(rawWarnings)
           ? rawWarnings
-              .filter((warning) => warning && typeof warning === 'object')
-              .map((warning) => ({
-                path: typeof warning.path === 'string' ? warning.path : 'plugin.ui',
-                code: typeof warning.code === 'string' ? warning.code : 'ui_manifest_warning',
-                message:
-                  typeof warning.message === 'string' ? warning.message : 'UI manifest warning',
-              }))
+            .filter((warning) => warning && typeof warning === 'object')
+            .map((warning) => ({
+              path: typeof warning.path === 'string' ? warning.path : 'plugin.ui',
+              code: typeof warning.code === 'string' ? warning.code : 'ui_manifest_warning',
+              message: typeof warning.message === 'string' ? warning.message : 'UI manifest warning',
+            }))
           : [],
       }
     }
@@ -266,25 +279,23 @@ export async function getPluginUiSurfaceInfo(
   // Keep this fallback until backend surfaces normalize it as:
   // [[plugin.ui.panel]] mode = "static", entry = "static/index.html".
   try {
-    const info = await get<PluginUiInfo>(`/plugin/${safeId}/ui-info`)
+    const info = await get<PluginUiInfo>(`/plugin/${safeId}/ui-info`, config)
     if (!info?.has_ui) {
       return { surfaces: [], warnings: [] }
     }
     return {
-      surfaces: [
-        {
-          id: 'main',
-          kind: 'panel',
-          mode: 'static',
-          title: undefined,
-          entry: 'static/index.html',
-          url: info.ui_path || `/plugin/${safeId}/ui/`,
-          ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
-          open_in: 'iframe',
-          available: true,
-          legacy_static_compat: true,
-        },
-      ],
+      surfaces: [{
+        id: 'main',
+        kind: 'panel',
+        mode: 'static',
+        title: undefined,
+        entry: 'static/index.html',
+        url: info.ui_path || `/plugin/${safeId}/ui/`,
+        ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
+        open_in: 'iframe',
+        available: true,
+        legacy_static_compat: true,
+      }],
       warnings: [],
     }
   } catch (caught: any) {
@@ -296,14 +307,11 @@ export async function getPluginUiSurfaceInfo(
   }
 }
 
-export function getPluginHostedSurfaceSource(
-  pluginId: string,
-  params: {
-    kind: PluginUiSurface['kind']
-    id: string
-    locale?: string
-  }
-): Promise<{
+export function getPluginHostedSurfaceSource(pluginId: string, params: {
+  kind: PluginUiSurface['kind']
+  id: string
+  locale?: string
+}, config?: ErrorDisplayRequestConfig): Promise<{
   plugin_id: string
   kind: string
   surface_id: string
@@ -317,6 +325,7 @@ export function getPluginHostedSurfaceSource(
 }> {
   const safeId = encodeURIComponent(pluginId)
   return get(`/plugin/${safeId}/hosted-ui/source`, {
+    ...config,
     params: {
       kind: params.kind,
       id: params.id,
@@ -325,16 +334,14 @@ export function getPluginHostedSurfaceSource(
   })
 }
 
-export function getPluginHostedSurfaceContext(
-  pluginId: string,
-  params: {
-    kind: PluginUiSurface['kind']
-    id: string
-    locale?: string
-  }
-): Promise<PluginUiContext> {
+export function getPluginHostedSurfaceContext(pluginId: string, params: {
+  kind: PluginUiSurface['kind']
+  id: string
+  locale?: string
+}, config?: ErrorDisplayRequestConfig): Promise<PluginUiContext> {
   const safeId = encodeURIComponent(pluginId)
   return get(`/plugin/${safeId}/hosted-ui/context`, {
+    ...config,
     params: {
       kind: params.kind,
       id: params.id,
@@ -343,20 +350,15 @@ export function getPluginHostedSurfaceContext(
   })
 }
 
-export function callPluginHostedSurfaceAction(
-  pluginId: string,
-  actionId: string,
-  args?: Record<string, any>,
-  surface?: {
-    kind: PluginUiSurface['kind']
-    id: string
-    locale?: string
-    timeoutMs?: number
-    signal?: AbortSignal
-    /** True only when the request originates from a user action in the hosted iframe. */
-    userInitiated?: boolean
-  }
-): Promise<{
+export function callPluginHostedSurfaceAction(pluginId: string, actionId: string, args?: Record<string, any>, surface?: {
+  kind: PluginUiSurface['kind']
+  id: string
+  locale?: string
+  timeoutMs?: number
+  signal?: AbortSignal
+  /** True only when the request originates from a user action in the hosted iframe. */
+  userInitiated?: boolean
+}): Promise<{
   plugin_id: string
   action_id: string
   result: any
@@ -364,8 +366,7 @@ export function callPluginHostedSurfaceAction(
   const safeId = encodeURIComponent(pluginId)
   const safeActionId = encodeURIComponent(actionId)
   const requestedTimeoutMs = Number(surface?.timeoutMs)
-  const timeoutMs =
-    Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
   // Initial hosted-panel calls may probe actions while a manual-start plugin
   // is stopped. Suppress only that expected response; all other failures keep
   // the standard global error handling.
@@ -374,17 +375,13 @@ export function callPluginHostedSurfaceAction(
     ...(timeoutMs ? { timeout: timeoutMs } : {}),
     ...(surface?.signal ? { signal: surface.signal } : {}),
   }
-  return post(
-    `/plugin/${safeId}/hosted-ui/action/${safeActionId}`,
-    {
-      args: args || {},
-      kind: surface?.kind,
-      surface_id: surface?.id,
-      locale: surface?.locale,
-      timeout_ms: timeoutMs,
-    },
-    requestConfig
-  )
+  return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
+    args: args || {},
+    kind: surface?.kind,
+    surface_id: surface?.id,
+    locale: surface?.locale,
+    timeout_ms: timeoutMs,
+  }, requestConfig)
 }
 
 export type ParsedHostedDocument = {
@@ -400,18 +397,14 @@ export type ParsedHostedDocument = {
 }
 
 /** Upload one document for transient text extraction. The original file is not persisted. */
-export function parseHostedDocument(
-  file: File,
-  options?: {
-    timeoutMs?: number
-    signal?: AbortSignal
-  }
-): Promise<{ ok: boolean; document: ParsedHostedDocument }> {
+export function parseHostedDocument(file: File, options?: {
+  timeoutMs?: number
+  signal?: AbortSignal
+}): Promise<{ ok: boolean; document: ParsedHostedDocument }> {
   const form = new FormData()
   form.append('file', file, file.name)
   const requestedTimeoutMs = Number(options?.timeoutMs)
-  const timeoutMs =
-    Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
   return post('/api/documents/parse', form, {
     ...(timeoutMs ? { timeout: timeoutMs } : {}),
     ...(options?.signal ? { signal: options.signal } : {}),

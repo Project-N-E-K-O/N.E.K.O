@@ -42,9 +42,20 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[
         raise_http_from_domain(error, logger=logger)
 
 @router.get("/plugins")
-async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str, object]:
+async def list_plugins(
+    locale: Optional[str] = Query(default=None),
+    summary: bool = Query(default=False),
+) -> dict[str, object]:
     try:
-        return await query_service.list_plugins(locale=locale)
+        return await query_service.list_plugins(locale=locale, summary=summary)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.get("/plugins/{plugin_id}")
+async def get_plugin(plugin_id: str, locale: Optional[str] = Query(default=None)) -> dict[str, object]:
+    try:
+        return await query_service.get_plugin(plugin_id, locale=locale)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

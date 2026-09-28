@@ -193,9 +193,8 @@ function formatTime(raw: string): string {
 .pkg-item-enter-active,
 .pkg-item-leave-active {
   transition:
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    filter 0.24s ease;
+    transform var(--motion-duration-emphasis) var(--motion-ease-standard),
+    opacity var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .pkg-item-enter-active {
@@ -205,20 +204,17 @@ function formatTime(raw: string): string {
 .pkg-item-enter-from {
   opacity: 0;
   transform: scale(0.95) translateY(12px);
-  filter: blur(6px);
 }
 
 .pkg-item-leave-to {
   opacity: 0;
   transform: scale(0.94) translateY(-12px);
-  filter: blur(6px);
 }
 
 .pkg-item-enter-to,
 .pkg-item-leave-from {
   opacity: 1;
   transform: scale(1) translateY(0);
-  filter: blur(0);
 }
 
 .pkg-item-leave-active {
@@ -228,7 +224,7 @@ function formatTime(raw: string): string {
 }
 
 .pkg-item-move {
-  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--motion-duration-emphasis) var(--motion-ease-standard);
 }
 
 .package-list-item__main {

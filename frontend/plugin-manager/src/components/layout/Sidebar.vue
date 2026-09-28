@@ -62,7 +62,7 @@ const route = useRoute()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
 
-const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
+const adapters = computed(() => pluginStore.pluginSummariesWithStatus.filter((p) => p.type === 'adapter'))
 
 const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
@@ -79,8 +79,10 @@ function isRouteActive(path: string): boolean {
 }
 
 onMounted(() => {
-  if (pluginStore.pluginsWithStatus.length === 0) {
-    pluginStore.fetchPlugins()
+  if (pluginStore.pluginSummariesWithStatus.length === 0) {
+    void pluginStore.fetchPluginSummaries().catch(error => {
+      console.warn('Sidebar plugin refresh failed:', error)
+    })
   }
 })
 </script>

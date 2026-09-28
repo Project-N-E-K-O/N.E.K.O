@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { usePluginStore } from './plugin'
 import {
-  getPlugins,
+  getPluginSummaries,
   getPluginStatus,
   reloadAllPlugins,
   reloadPlugin,
@@ -20,6 +20,8 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/api/plugins', () => ({
   getPlugins: vi.fn(),
+  getPlugin: vi.fn(),
+  getPluginSummaries: vi.fn(),
   getPluginStatus: vi.fn(),
   startPlugin: vi.fn(),
   stopPlugin: vi.fn(),
@@ -33,7 +35,7 @@ describe('plugin store reload bookkeeping', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
-    vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
+    vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(getPluginStatus).mockResolvedValue({} as never)
     vi.mocked(reloadPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
   })
@@ -119,7 +121,7 @@ describe('plugin store reload bookkeeping', () => {
   it('clears the flag of every plugin a bulk reload restarted', async () => {
     setPendingReload('demo', true)
     setPendingReload('other', true)
-    vi.mocked(getPlugins).mockResolvedValue({
+    vi.mocked(getPluginSummaries).mockResolvedValue({
       plugins: [{ id: 'demo' }, { id: 'other' }] as never,
       message: '',
     })
@@ -131,7 +133,7 @@ describe('plugin store reload bookkeeping', () => {
       message: '',
     })
     const store = usePluginStore()
-    await store.fetchPlugins()
+    await store.fetchPluginSummaries()
 
     await store.reloadAll({ refresh: false })
 
@@ -144,7 +146,7 @@ describe('plugin store reload bookkeeping', () => {
     setPendingReload('demo', true)
     // The server restarts hosts from its own running set, so its answer can name a plugin
     // this window's list has not loaded (or has fallen behind on).
-    vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
+    vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(reloadAllPlugins).mockResolvedValue({
       success: true,
       reloaded: ['demo'],
@@ -153,7 +155,7 @@ describe('plugin store reload bookkeeping', () => {
       message: '',
     })
     const store = usePluginStore()
-    await store.fetchPlugins()
+    await store.fetchPluginSummaries()
 
     await store.reloadAll({ refresh: false })
 
@@ -162,7 +164,10 @@ describe('plugin store reload bookkeeping', () => {
 
   it('keeps a flag that a profile write claimed during a bulk reload', async () => {
     setPendingReload('demo', true)
-    vi.mocked(getPlugins).mockResolvedValue({ plugins: [{ id: 'demo' }] as never, message: '' })
+    vi.mocked(getPluginSummaries).mockResolvedValue({
+      plugins: [{ id: 'demo' }] as never,
+      message: '',
+    })
     let releaseReload!: () => void
     vi.mocked(reloadAllPlugins).mockImplementation(
       () =>
@@ -172,7 +177,7 @@ describe('plugin store reload bookkeeping', () => {
         })
     )
     const store = usePluginStore()
-    await store.fetchPlugins()
+    await store.fetchPluginSummaries()
 
     const reloading = store.reloadAll({ refresh: false })
     // A save lands while the bulk reload is in flight, so the restarted host may have read

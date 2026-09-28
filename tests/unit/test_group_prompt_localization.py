@@ -13,18 +13,20 @@
   non-Chinese user's section back to the Chinese constant.
 - The group_collective branch of ``_build_group_turn_message`` is
   unreachable; dropping it leaves the collective prompt_message identical.
+
+The cases that drive the qq_auto_reply plugin (its instruction service,
+recall renderer, i18n bundles and prompt builder) left this repository with
+the plugin; what remains covers the main program's side of these defects.
 """
 
 from __future__ import annotations
 
 import ast
-import json
 import os
-import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -310,44 +312,6 @@ def test_no_module_picks_the_voice_template_directly():
 
 
 @pytest.mark.asyncio
-async def test_qq_group_core_memory_closing_line_is_group_shaped():
-    """The QQ group core-memory section must not end by announcing a
-    voice conversation with the private-chat counterpart."""
-    from plugin.plugins.qq_auto_reply.session_instruction_service import (
-        QQSessionInstructionService,
-    )
-
-    bridge = MagicMock()
-    bridge.group_subject.return_value = {
-        "subject_kind": "group_chat", "subject_id": "qq:7788",
-    }
-    bridge.fetch_scoped_bootstrap_memory = AsyncMock(return_value="群聊长期记忆")
-    bridge.fetch_bootstrap_memory = AsyncMock(return_value="私人长期记忆")
-    plugin = SimpleNamespace(
-        memory_bridge=bridge,
-        logger=MagicMock(),
-        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
-        _qq_settings={"group_memory_enabled": True},
-    )
-    service = QQSessionInstructionService(plugin)
-
-    group_line = get_context_summary_ready("zh", input_mode="text", is_group=True)
-    rendered = await service._build_core_memory_section(
-        should_use_memory_context=True,
-        her_name="小天",
-        master_name="老张",
-        context_ready_template=group_line,
-        is_group=True,
-        group_id="7788",
-        sender_id="2046",
-    )
-    assert "群聊长期记忆" in rendered
-    assert "老张" not in rendered
-    assert "语音" not in rendered
-    assert "群聊里用文字继续对话" in rendered
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "input_mode, banned, expected",
     [("text", "语音", "用文字"), ("audio", "用文字", "语音")],
@@ -388,32 +352,6 @@ async def test_hot_swap_prime_closing_line_follows_the_session_mode(
         await _drain_task(manager.message_handler_task)
 
 
-def test_qq_instruction_service_asks_for_the_group_shaped_closing_line():
-    """The call site itself: QQ always passes input_mode='text' and
-    forwards is_group.
-
-    Testing only the selection logic of get_context_summary_ready cannot
-    catch a call site that forgets to state the shape — which is precisely
-    what this bug was.
-    """
-    source = (
-        _REPO_ROOT / "plugin" / "plugins" / "qq_auto_reply"
-        / "session_instruction_service.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and (getattr(node.func, "id", None) == "get_context_summary_ready")
-    ]
-    assert len(calls) == 1
-    keywords = {kw.arg: kw.value for kw in calls[0].keywords}
-    assert isinstance(keywords["input_mode"], ast.Constant)
-    assert keywords["input_mode"].value == "text"
-    assert isinstance(keywords["is_group"], ast.Name)
-    assert keywords["is_group"].id == "is_group"
-
-
 # ── 召回条目的 [层级/归属] 标签 ────────────────────────────────────
 
 
@@ -439,35 +377,6 @@ def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
     assert render_recall_entry_tag("reflection", "master", "zh") == "[印象/关于用户]"
     # 未知枚举原样透出，别静默变成空串。
     assert render_recall_entry_tag("brand_new_tier", "", "zh") == "[brand_new_tier/-]"
-
-
-def test_qq_recall_render_has_no_internal_enum_left():
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-
-    bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-    with patch("utils.language_utils.get_global_language_full", return_value="zh"):
-        rendered = bridge.render_relevant_memory([
-            {
-                "text": "群里在聊露营",
-                "tier": "fact",
-                "entity": "group_chat",
-                "created_at": "2026-05-01T10:00:00",
-            },
-            {
-                "text": "阿离喜欢辣条",
-                "tier": "reflection",
-                "entity": "group_participant",
-            },
-        ])
-
-    assert "[事实/群聊]" in rendered
-    assert "[印象/群成员]" in rendered
-    assert "fact" not in rendered and "group_chat" not in rendered
-    assert "reflection" not in rendered and "group_participant" not in rendered
-    # 日期后面还跟一个本地化的相对时间标签（"3 月前"）：QQ 侧此前自己用
-    # anchor[:10] 裁日期、没有这个标签，#2588 收口到 memory.recall_render
-    # 之后与本体侧同格式。断言写成前缀，免得跟"今天/几月前"的措辞绑死。
-    assert "(2026-05-01, " in rendered
 
 
 @pytest.mark.asyncio
@@ -509,224 +418,3 @@ async def test_recall_memory_tool_render_matches_the_plugin_twin():
     assert "[事实/群聊]" in rendered
     assert "[fact/group_chat]" not in rendered
     assert "群里在聊露营" in rendered
-
-
-# ── kira_unified 的必需占位符 ──────────────────────────────────────
-
-
-def _bundle_text(locale: str, key: str) -> str:
-    bundle = json.loads(
-        (
-            _REPO_ROOT / "plugin" / "plugins" / "qq_auto_reply" / "i18n"
-            / f"{locale}.json"
-        ).read_text(encoding="utf-8")
-    )
-    return bundle[key]
-
-
-def test_english_user_actually_gets_the_english_group_reply_guidelines():
-    """The required-placeholder list has to match the template.
-
-    kira_unified carries no placeholder at all yet declared three, so the
-    guard ruled "override is missing required placeholders" on every turn
-    and swapped each non-Chinese user's section back to the Chinese
-    default.
-    """
-    from plugin.plugins.qq_auto_reply.scene_prompt_templates import (
-        SCENE_KIRA_UNIFIED_GROUP,
-    )
-    from plugin.plugins.qq_auto_reply.session_instruction_service import (
-        QQSessionInstructionService,
-    )
-
-    english = _bundle_text("en", "prompts.group.kira_unified")
-    plugin = SimpleNamespace(
-        i18n=SimpleNamespace(t=lambda key, default="", **kw: english),
-        _qq_settings={},
-        _strategy_mode="neko_dynamic",
-        qq_client=None,
-        logger=MagicMock(),
-    )
-    service = QQSessionInstructionService(plugin)
-
-    rendered = service._build_group_scene_section(
-        her_name="Neko", master_title="Master", permission_level="normal",
-        sender_id="2046", user_title="Ali", group_id="7788",
-        address_user_by_name=False, group_facing=False,
-        shared_group_session=True, group_scene_mode="shared_context",
-    )
-
-    assert "Group Chat Reply Guidelines" in rendered
-    assert "This is a multi-person QQ group" in rendered
-    assert "群聊回复意愿" not in rendered
-    assert SCENE_KIRA_UNIFIED_GROUP not in rendered
-    # 而且不再每轮打一条"缺必需占位符"的 warning。
-    assert not [
-        call for call in plugin.logger.warning.call_args_list
-        if "必需占位符" in str(call)
-    ]
-
-
-def _discovered_layer_templates() -> dict[str, str]:
-    """Pair every ``i18n_key`` with the default template its call site
-    actually hands to ``_resolve_static_layer``.
-
-    Read off the AST instead of copied into a table here. The previous
-    hand-kept dict silently skipped any key it did not list, and it was
-    already two keys short of ``_PROMPT_LAYERS`` — so the guard was
-    passing on layers it had never looked at. Defaults arrive both as
-    module constants (``SCENE_DIRECTED_GROUP``) and as inline literals
-    (the two naming layers), so both forms are resolved.
-    """
-    import importlib
-
-    module = importlib.import_module(
-        "plugin.plugins.qq_auto_reply.session_instruction_service"
-    )
-    source = Path(module.__file__).read_text(encoding="utf-8")
-    found: dict[str, str] = {}
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute)
-                and func.attr == "_resolve_static_layer"):
-            continue
-        if len(node.args) < 2:
-            continue
-        key_node, default_node = node.args[0], node.args[1]
-        if not (isinstance(key_node, ast.Constant)
-                and isinstance(key_node.value, str)):
-            continue
-        if isinstance(default_node, ast.Constant) and isinstance(
-            default_node.value, str
-        ):
-            found[key_node.value] = default_node.value
-        elif isinstance(default_node, ast.Name):
-            resolved = getattr(module, default_node.id, None)
-            if isinstance(resolved, str):
-                found[key_node.value] = resolved
-    return found
-
-
-def test_every_guarded_layer_has_a_discoverable_default_template():
-    """Every keyed layer must be reachable by the discovery above.
-
-    This is what the old hand-kept table got wrong: an unlisted key fell
-    through a bare ``continue``, so its declared placeholders were never
-    compared with anything. Failing here — instead of skipping — is what
-    makes the next test's coverage real.
-    """
-    from plugin.plugins.qq_auto_reply.session_instruction_service import (
-        QQSessionInstructionService,
-    )
-
-    discovered = _discovered_layer_templates()
-    guarded = [
-        layer["i18n_key"]
-        for layer in QQSessionInstructionService._PROMPT_LAYERS
-        if layer.get("i18n_key") and layer["i18n_key"] != "__runtime__"
-    ]
-    assert guarded, "夹具失效：一个受护栏管辖的层都没找到"
-    missing = [key for key in guarded if key not in discovered]
-    assert missing == [], (
-        f"这些层受必需占位符护栏管辖，却找不到对应的默认模板，"
-        f"它们声明的占位符等于没人校验：{missing}"
-    )
-
-
-def test_declared_required_placeholders_exist_in_their_own_templates():
-    """Every declared placeholder must exist in its own default template.
-
-    A declaration the template cannot satisfy is an always-failing
-    condition: the guard judges every i18n bundle "missing placeholders"
-    and swaps the whole layer back to the Chinese constant for every
-    non-Chinese user, once per turn, with a warning each time.
-    """
-    from plugin.plugins.qq_auto_reply.session_instruction_service import (
-        QQSessionInstructionService,
-    )
-
-    discovered = _discovered_layer_templates()
-    mismatched = []
-    for layer in QQSessionInstructionService._PROMPT_LAYERS:
-        key = layer.get("i18n_key")
-        if not key or key == "__runtime__":
-            continue
-        template = discovered.get(key)
-        if template is None:
-            # Reported by the test above; skipping here keeps one failure
-            # per defect instead of two.
-            continue
-        for placeholder in layer.get("required_placeholders") or ():
-            if placeholder not in template:
-                mismatched.append((key, placeholder))
-    assert mismatched == [], (
-        f"这些层声明了默认模板里根本没有的必需占位符，护栏会把每份 i18n "
-        f"bundle 都判成缺占位符并回退中文：{mismatched}"
-    )
-
-
-# ── group_collective 死分支 ────────────────────────────────────────
-
-
-def test_collective_prompt_message_is_unchanged_after_dropping_dead_branch():
-    """In the collective scene group_facing is always true, so
-    build_prompt_message returns the message verbatim and never reaches
-    _build_group_turn_message. Dropping that branch changes nothing."""
-    from plugin.plugins.qq_auto_reply.prompt_builder import QQPromptBuilder
-
-    builder = QQPromptBuilder(SimpleNamespace())
-    message = "群里在聊露营，你怎么看"
-    assert builder.build_prompt_message(
-        is_group=True,
-        group_facing=True,
-        group_scene_mode="group_collective",
-        user_title="阿离",
-        sender_id="2046",
-        group_id="7788",
-        message=message,
-        current_message_id="m-1",
-    ) == message
-
-
-def test_pipeline_still_forces_group_facing_for_collective_scene():
-    """Dropping the branch rests on the pipeline forcing group_facing
-    for a collective scene.
-
-    Change that derivation and the dead branch comes back to life — as a
-    turn message missing its group-facing instruction — so pin it here.
-    """
-    source = (
-        _REPO_ROOT / "plugin" / "plugins" / "qq_auto_reply"
-        / "reply_context_node.py"
-    ).read_text(encoding="utf-8")
-    assert re.search(
-        r"effective_group_facing\s*=\s*group_facing\s+or\s+"
-        r"effective_group_scene_mode\s*==\s*[\"']group_collective[\"']",
-        source,
-    ), (
-        "reply_context_node 不再保证 group_collective ⇒ group_facing："
-        "prompting._build_group_turn_message 的 collective 分支被删掉了，"
-        "这条推导是它可以被删的唯一理由"
-    )
-    # 这一条走 AST 而不是正则：上一版把参数顺序和"每个参数各占一行"一起
-    # 钉死了，压成一行、换顺序、中间插一个参数都会误红，而行为零变化。
-    calls = [
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_build_prompt_message"
-    ]
-    assert len(calls) == 1, (
-        f"reply_context_node 里 _build_prompt_message 的调用点数量变了"
-        f"（{len(calls)} 处），这条护栏只覆盖单一调用点"
-    )
-    passed = {
-        kw.arg: kw.value for kw in calls[0].keywords if kw.arg is not None
-    }
-    group_facing_arg = passed.get("group_facing")
-    assert (
-        isinstance(group_facing_arg, ast.Name)
-        and group_facing_arg.id == "effective_group_facing"
-    ), "prompt_message 不再用 effective_group_facing 构建"

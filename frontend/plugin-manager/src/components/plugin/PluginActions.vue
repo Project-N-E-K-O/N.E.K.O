@@ -70,7 +70,7 @@ const refreshHostedPanelsAfterRuntimeChange = inject<(() => Promise<void>) | nul
 )
 
 const currentPlugin = computed(() => {
-  return pluginStore.pluginsWithStatus.find(p => p.id === props.pluginId)
+  return pluginStore.getPluginById(props.pluginId)
 })
 
 const status = computed(() => currentPlugin.value?.status || 'stopped')
