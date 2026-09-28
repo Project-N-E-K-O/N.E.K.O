@@ -843,6 +843,7 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "xdg-desktop-portal" in screen_subwindow
     assert "provider.sourceEnumerationMayPrompt !== false" in screen_subwindow
     assert "deferEnumeration: deferEnumeration" in screen_subwindow
+    assert "retryOnFailure: true" in screen_subwindow
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

@@ -4547,6 +4547,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     await window.renderFloatingScreenSourceList(screenSourceList, {
                         requireVisible: false,
                         deferEnumeration: deferEnumeration,
+                        retryOnFailure: true,
                         onDeferredRender: function () { positionMicSubwindow(panel); }
                     });
                     positionMicSubwindow(panel);

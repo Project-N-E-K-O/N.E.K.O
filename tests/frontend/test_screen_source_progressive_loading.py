@@ -1427,6 +1427,52 @@ def test_portal_result_with_reused_id_releases_cached_stream(page: Page) -> None
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("retry_on_failure", [True, False])
+def test_direct_enumeration_failure_offers_retry_when_requested(
+    page: Page, retry_on_failure: bool,
+) -> None:
+    # Keyboard activation opens the panel without a preceding hover, so the
+    # first enumeration is not deferred.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async (retryOnFailure) => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const provider = window.__desktopProvider;
+            const originalGetSources = provider.getSources.bind(provider);
+            let failNext = true;
+            provider.getSources = (options) => {
+                if (failNext) {
+                    failNext = false;
+                    return Promise.reject(new Error('portal cancelled'));
+                }
+                return originalGetSources(options);
+            };
+            const rendered = await window.renderFloatingScreenSourceList(popup, {
+                retryOnFailure,
+            });
+            const load = popup.querySelector('[data-neko-screen-source-deferred-load]');
+            if (!load) return { rendered, retryButton: false };
+            load.click();
+            for (let i = 0; i < 20 && !popup.querySelector('.screen-source-option'); i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            return {
+                rendered,
+                retryButton: true,
+                options: popup.querySelectorAll('.screen-source-option').length,
+            };
+        }""",
+        retry_on_failure,
+    )
+
+    if retry_on_failure:
+        assert result == {"rendered": False, "retryButton": True, "options": 2}
+    else:
+        assert result == {"rendered": False, "retryButton": False}
+
+
+@pytest.mark.frontend
 def test_deferred_load_button_returns_after_failed_enumeration(page: Page) -> None:
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 

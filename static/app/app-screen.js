@@ -2856,6 +2856,14 @@
             targetPopup.appendChild(summary);
         }
 
+        // 用户取消系统对话框或列来源失败：保留提示，放回按钮以便重试。
+        // 无论这次是从延迟按钮还是直接点击（含键盘）触发的都适用。
+        function appendRetryButtonIfRequested() {
+            if (renderOptions.retryOnFailure === true) {
+                appendDeferredLoadButton(screenPopup, renderOptions);
+            }
+        }
+
         function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
             var deferredLoadButton = document.createElement('button');
             deferredLoadButton.type = 'button';
@@ -2878,16 +2886,12 @@
             deferredLoadButton.addEventListener('click', function (event) {
                 event.stopPropagation();
                 if (!targetPopup.isConnected || !deferredLoadButton.isConnected) return;
-                var loadOptions = Object.assign({}, deferredOptions, { deferEnumeration: false });
-                var loadPromise = window.renderFloatingScreenSourceList(targetPopup, loadOptions);
-                var loadToken = targetPopup._screenSourceRenderToken;
-                Promise.resolve(loadPromise)
+                var loadOptions = Object.assign({}, deferredOptions, {
+                    deferEnumeration: false,
+                    retryOnFailure: true
+                });
+                Promise.resolve(window.renderFloatingScreenSourceList(targetPopup, loadOptions))
                     .then(function (rendered) {
-                        // 用户取消系统对话框或列来源失败：保留提示，放回按钮以便重试。
-                        if (!rendered && targetPopup.isConnected
-                            && targetPopup._screenSourceRenderToken === loadToken) {
-                            appendDeferredLoadButton(targetPopup, deferredOptions);
-                        }
                         if (typeof deferredOptions.onDeferredRender === 'function') {
                             deferredOptions.onDeferredRender(rendered);
                         }
@@ -2930,6 +2934,7 @@
                 noSourcesItem.style.fontSize = '13px';
                 noSourcesItem.style.textAlign = 'center';
                 screenPopup.appendChild(noSourcesItem);
+                appendRetryButtonIfRequested();
                 return false;
             }
 
@@ -3332,6 +3337,7 @@
             errorItem.style.fontSize = '13px';
             errorItem.style.textAlign = 'center';
             screenPopup.appendChild(errorItem);
+            appendRetryButtonIfRequested();
             return false;
         }
     };
