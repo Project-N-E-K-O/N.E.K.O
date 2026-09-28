@@ -55,6 +55,7 @@ from utils.doubao_tts import (
 )
 from utils.glm_tts import (
     GLM_TTS_DEFAULT_BASE_URL,
+    GLM_VOICE_CLONE_MAX_AUDIO_BYTES,
     GLM_VOICE_STORAGE_KEY,
     GlmTtsError,
     GlmVoiceCloneClient,
@@ -785,6 +786,14 @@ async def voice_clone(
             # 账号内唯一，由 build_glm_voice_name 用「neko_前缀_音频MD5片段」构造，
             # 维度与 MD5 去重键对齐；返回的 voice 即合成时的音色 ID（/audio/speech 的
             # voice 参数官方明确支持复刻音色，dispatch 复用 cogtts worker）。
+            # 上传接口限制示例音频 ≤10MB：规范化后的 WAV 可能比原文件大（重采样/转
+            # PCM/单声道展开），提前预检，超限直接 413，不打远端 API、不消耗配额。
+            if normalized_buffer.getvalue() > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
+                return JSONResponse({
+                    'error': f'GLM 示例音频超过 10MB 上限（规范化后 {normalized_buffer.getvalue() // (1024 * 1024)}MB），请裁剪后重试',
+                    'code': 'GLM_TTS_AUDIO_TOO_LARGE',
+                    'provider': provider,
+                }, status_code=413)
             client = GlmVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_name = build_glm_voice_name(prefix, audio_md5, ref_language)
             voice_id = await client.clone_voice(
@@ -858,6 +867,13 @@ async def voice_clone(
             return JSONResponse({'error': error_detail, 'provider': provider}, status_code=408)
         elif '下载' in error_detail:
             return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
+        elif provider == 'glm_tts' and '10MB' in error_detail:
+            # 预检之外的兜底：client 内部同阈值抛错时也按 413 语义返回（CodeRabbit）。
+            return JSONResponse({
+                'error': error_detail,
+                'code': 'GLM_TTS_AUDIO_TOO_LARGE',
+                'provider': provider,
+            }, status_code=413)
         return JSONResponse({'error': f'{provider_label}音色注册失败: {error_detail}', 'provider': provider}, status_code=500)
     except ValueError as e:
         return JSONResponse({'error': str(e)}, status_code=400)

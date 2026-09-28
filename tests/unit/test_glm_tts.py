@@ -295,10 +295,30 @@ async def test_glm_voice_clone_client_surfaces_upstream_error_body(monkeypatch):
 
 
 @pytest.mark.unit
+def test_glm_tts_registry_meta_matches_cogtts_runtime_behavior():
+    """glm_tts must have a TTSProviderMeta entry (wehos review): the resolver
+    returns provider_key='glm_tts', and tts_runtime derives replay-progress /
+    normalize behavior from the meta table. Without the entry a GLM cloned voice
+    loses per-sentence replay on worker failover, diverging from native cogtts."""
+    from main_logic.tts_client import TTS_PROVIDER_REGISTRY
+
+    meta = TTS_PROVIDER_REGISTRY.get("glm_tts")
+    cogtts_meta = TTS_PROVIDER_REGISTRY.get("cogtts")
+    assert meta is not None, "glm_tts must be present in TTS_PROVIDER_REGISTRY"
+    assert meta.category == "http_sentence"
+    # 与 cogtts 同 worker：运行时行为位必须一致（replay progress / normalizer）。
+    assert meta.category == cogtts_meta.category
+    assert meta.input_streaming == cogtts_meta.input_streaming
+    assert meta.output_streaming == cogtts_meta.output_streaming
+    assert meta.client_sentence_split == cogtts_meta.client_sentence_split
+
+
+@pytest.mark.unit
 def test_glm_tts_frontend_and_backend_are_wired():
     voice_clone_html = Path("templates/voice_clone.html").read_text(encoding="utf-8")
     voice_clone_js = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
     registry_py = Path("main_logic/tts_client/__init__.py").read_text(encoding="utf-8")
+    registry_meta_py = Path("main_logic/tts_client/_registry_meta.py").read_text(encoding="utf-8")
     router_py = Path(
         "main_routers/characters_router/voice_cloning.py"
     ).read_text(encoding="utf-8")
@@ -320,8 +340,15 @@ def test_glm_tts_frontend_and_backend_are_wired():
     assert "'glm_tts'" in direct_link_fn
     assert "key='glm_tts'" in registry_py
     assert "_glm_clone_is_selected" in registry_py
+    # TTS_PROVIDER_REGISTRY 元数据（wehos review）：resolver 返回 provider_key='glm_tts'，
+    # tts_runtime 按 meta 决定逐句重放进度等运行时行为；缺失会让克隆音色在 worker
+    # 故障切换时拿不到逐句确认（原生 cogtts 有）。
+    assert '"glm_tts": TTSProviderMeta(' in registry_meta_py
     assert "GLM_TTS_API_KEY_MISSING" in router_py
     assert "GlmVoiceCloneClient(api_key=api_key, base_url=base_url)" in router_py
+    # 10MB 超限预检（CodeRabbit review）：超限走 413 而不是 500，且不打远端 API。
+    assert "GLM_VOICE_CLONE_MAX_AUDIO_BYTES" in router_py
+    assert "GLM_TTS_AUDIO_TOO_LARGE" in router_py
     # 本地 WS TTS 激活时不得把 glm_tts 克隆误送进 /v1/speakers/register 本地注册流。
     assert "provider not in ('vllm_omni', 'glm_tts')" in router_py
     assert "GLM_TTS_PREVIEW_FAILED" in preview_py
