@@ -198,8 +198,9 @@ def _muted_symbol_replacement(match, before: str = "") -> str:
     next_char = text[end] if end < len(text) else ""
     if _is_minus_sign(symbol, prev_char, next_char):
         return symbol
-    if len(symbol) > 1 and _is_minus_sign(symbol[-1], prev_char, next_char):
-        # 「🌡️-5°C」：负号和前面的 emoji 连成了一段，emoji 删掉，负号留下。
+    if len(symbol) > 1 and symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
+        # 「🌡️-5°C」「temp🌡️-5°C」：负号和前面的 emoji 连成了一段。紧挨着负号的是
+        # 被删的符号而不是字母数字，所以它是负号：emoji 删掉，负号留下。
         return symbol[-1]
     if symbol[0] in _TTS_HASH_SIGNS and _is_name_hash(symbol[0], prev_char, next_char):
         # C#、F# 这类名字：删掉「#」名字就变了（后面紧跟的 emoji 等照删）。

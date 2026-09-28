@@ -438,13 +438,19 @@ class _WhisperModelPool:
                 return future
             future = concurrent.futures.Future()
             self._inflight[spec] = future
-        threading.Thread(
-            target=self._run_load,
-            args=(future, spec, loader),
-            name="faster-whisper-load",
-            daemon=True,
-        ).start()
+        # Registered before the thread starts, so a failed start still clears
+        # the in-flight entry instead of leaving later sessions waiting on it.
         future.add_done_callback(functools.partial(self._forget_inflight, spec))
+        try:
+            threading.Thread(
+                target=self._run_load,
+                args=(future, spec, loader),
+                name="faster-whisper-load",
+                daemon=True,
+            ).start()
+        except RuntimeError as exc:
+            future.set_exception(exc)
+            raise
         return future
 
     def _forget_inflight(
@@ -462,12 +468,21 @@ class _WhisperModelPool:
     ) -> None:
         if not future.set_running_or_notify_cancel():
             return
+        loaded = False
         try:
             self._load_unleased(spec, loader)
-        except BaseException as exc:
+            loaded = True
+        except Exception as exc:
             future.set_exception(exc)
-        else:
-            future.set_result(None)
+        finally:
+            # Settle the future on every path, or sessions waiting on this load
+            # would wait forever.
+            if loaded:
+                future.set_result(None)
+            elif not future.done():
+                future.set_exception(
+                    RuntimeError("faster-whisper model load was interrupted")
+                )
 
     def _load_unleased(self, spec: _ModelSpec, loader: ModelLoader) -> None:
         # Loaded with no lease and an idle timer running: if every session

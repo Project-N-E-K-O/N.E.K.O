@@ -424,6 +424,7 @@ def test_strip_tts_muted_symbols(text, expected):
         # emoji 紧贴负号时：emoji 删掉，负号留下
         ("\U0001f321\ufe0f-5°C", "-5°C"),
         ("温度\U0001f321\ufe0f-5℃", "温度-5℃"),
+        ("temp\U0001f321\ufe0f-5°C", "temp-5°C"),
         # 〜（U+301C）和 ~ / ～ 一样处理
         ("好的〜", "好的"),
         ("好的～", "好的"),
@@ -594,6 +595,27 @@ def test_held_name_hash_is_released_at_turn_end():
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert mgr._request_tts_done_locked() == "queued"
     assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "#"), (None, None)]
+
+
+def test_name_hash_held_by_the_turn_end_markdown_flush_is_released():
+    # The markdown stripper holds "*C#" (unmatched emphasis) until the turn
+    # ends; filtering that tail holds its trailing "#" again, and the done
+    # path must still send it before the end signal.
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    mgr._enqueue_tts_text_chunk("s1", "This uses *C#")
+    assert mgr._request_tts_done_locked() == "queued"
+    items = _drain(mgr.tts_request_queue)
+    assert items[-1] == (None, None)
+    spoken = "".join(text for _sid, text in items[:-1])
+    assert spoken.endswith("C#")
 
 
 def test_split_compound_emoji_leaves_no_joiner_in_the_next_chunk():

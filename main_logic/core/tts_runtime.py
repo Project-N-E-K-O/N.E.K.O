@@ -542,10 +542,12 @@ class TtsRuntimeMixin:
         self._tts_bracket_stripper.flush()
         if flushed:
             flushed = self._strip_tts_symbols_across_chunks(flushed)
-        if not flushed:
-            # 以「C」「#」结束的一轮：暂存的 # 没有下一块来补了，收尾时放出。
-            flushed = getattr(self, "_tts_pending_name_hash", "")
-            self._tts_pending_name_hash = ""
+        # 以「C」「#」结束的一轮，或收尾缓冲本身以「C#」结尾：暂存的 # 没有
+        # 下一块来补了，收尾时一并放出。
+        pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
+        self._tts_pending_name_hash = ""
+        if pending_name_hash:
+            flushed = (flushed or "") + pending_name_hash
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)

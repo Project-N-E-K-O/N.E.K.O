@@ -936,6 +936,27 @@ async def test_model_is_shared_across_workers_and_leases_are_returned(pool) -> N
     assert pool.loaded_count() == 1
 
 
+def test_failed_load_thread_start_does_not_leave_a_stuck_load(monkeypatch) -> None:
+    pool = faster_whisper._WhisperModelPool(idle_release_seconds=60.0)
+    spec = faster_whisper._ModelSpec(model=None, device="cpu", compute_type=None)
+    original_start = threading.Thread.start
+    calls = {"n": 0}
+
+    def flaky_start(self) -> None:
+        if self.name == "faster-whisper-load" and calls["n"] == 0:
+            calls["n"] += 1
+            raise RuntimeError("can't start new thread")
+        original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", flaky_start)
+    with pytest.raises(RuntimeError):
+        pool.ensure_loading(spec, _RecordingLoader(object()))
+    assert spec not in pool._inflight
+    # Once threads are available again, the same spec loads normally.
+    pool.ensure_loading(spec, _RecordingLoader(object())).result(timeout=5)
+    assert pool.loaded_count() == 1
+
+
 def test_idle_model_is_released_after_timeout() -> None:
     pool = faster_whisper._WhisperModelPool(idle_release_seconds=0.05)
     spec = faster_whisper._ModelSpec(model=None, device="cpu", compute_type=None)
