@@ -353,7 +353,7 @@ onBeforeUnmount(stopListeners)
 
 .wb-filter-error-fade-enter-active,
 .wb-filter-error-fade-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .wb-filter-error-fade-enter-from,
@@ -396,7 +396,7 @@ onBeforeUnmount(stopListeners)
   width: 12px;
   height: 12px;
   margin-left: 2px;
-  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform var(--motion-duration-normal) var(--motion-ease-spring);
 }
 
 .wb-filter-bar__rules-trigger--active .wb-filter-bar__rules-arrow {
@@ -438,35 +438,30 @@ onBeforeUnmount(stopListeners)
 
 :global(.wb-rules-panel-enter-active) {
   transition:
-    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
-    filter 0.28s ease;
+    opacity var(--motion-duration-emphasis) var(--motion-ease-standard),
+    transform var(--motion-duration-emphasis) var(--motion-ease-spring);
 }
 
 :global(.wb-rules-panel-leave-active) {
   transition:
-    opacity 0.2s ease,
-    transform 0.2s cubic-bezier(0.55, 0, 1, 0.45),
-    filter 0.2s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-fast) var(--motion-ease-exit);
 }
 
 :global(.wb-rules-panel-enter-from) {
   opacity: 0;
   transform: scale(0.92) translateY(-6px);
-  filter: blur(8px);
 }
 
 :global(.wb-rules-panel-leave-to) {
   opacity: 0;
   transform: scale(0.95) translateY(-4px);
-  filter: blur(4px);
 }
 
 :global(.wb-rules-panel-enter-to),
 :global(.wb-rules-panel-leave-from) {
   opacity: 1;
   transform: scale(1) translateY(0);
-  filter: blur(0);
 }
 
 :global(.wb-filter-rules-panel) {
@@ -497,8 +492,8 @@ onBeforeUnmount(stopListeners)
   display: flex;
   flex-direction: column;
   gap: 8px;
-  animation: wb-group-slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--group-index, 0) * 60ms + 80ms);
+  animation: wb-group-slide-in var(--motion-duration-emphasis) var(--motion-ease-standard) backwards;
+  animation-delay: min(calc(var(--group-index, 0) * 60ms + 80ms), var(--motion-stagger-max));
 }
 
 @keyframes wb-group-slide-in {
@@ -537,8 +532,8 @@ onBeforeUnmount(stopListeners)
   color: var(--el-text-color-primary);
   font-size: 12px;
   cursor: pointer;
-  animation: wb-chip-pop-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
-  animation-delay: calc(var(--chip-index, 0) * 25ms + 120ms);
+  animation: wb-chip-pop-in var(--motion-duration-emphasis) var(--motion-ease-spring) backwards;
+  animation-delay: min(calc(var(--chip-index, 0) * 25ms + 120ms), var(--motion-stagger-max));
   transition:
     transform 0.18s ease,
     border-color 0.18s ease,

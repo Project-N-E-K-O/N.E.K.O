@@ -415,6 +415,9 @@ async def test_offline_session_switches_to_the_vision_model_and_keeps_the_pixels
 @pytest.mark.asyncio
 async def test_offline_session_already_on_the_vision_model_does_not_switch():
     session = _offline_session(model="vision-1", vision_model="vision-1")
+    # "Already on the vision model" means the id AND the endpoint: this is the
+    # state switch_model(vision_model, use_vision_config=True) leaves behind.
+    session.base_url = session.vision_base_url
 
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
@@ -422,6 +425,22 @@ async def test_offline_session_already_on_the_vision_model_does_not_switch():
     )
 
     assert session.switched == []
+    assert [image.data_b64 for image in out.images] == ["IMG"]
+
+
+@pytest.mark.asyncio
+async def test_offline_session_same_id_on_the_conversation_endpoint_still_switches():
+    # The vision slot may reuse the conversation model id on another endpoint
+    # (e.g. a local multimodal box); matching ids alone must not skip the move.
+    session = _offline_session(model="shared-1", vision_model="shared-1")
+    session.base_url = "https://chat.test/v1"
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert session.switched == [("shared-1", True)]
     assert [image.data_b64 for image in out.images] == ["IMG"]
 
 

@@ -47,6 +47,15 @@ export default {
     removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
   },
   common: {
+    surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
+    surfaceApplyLanguage: "Apply language and reload panel",
+    surfaceApplyLanguageConfirm: "Reloading the panel discards its unsaved work. Continue?",
+
+    languageLoading: "Loading language; the interface remains available",
+    languageLoadFailed: "Language could not load. The current language was kept.",
+    languageRetry: "Retry language",
+    languageReload: "Reload page",
+
     loading: 'Loading...',
     refresh: 'Refresh',
     search: 'Search',
@@ -336,6 +345,7 @@ export default {
     installFallback: 'Could not select a mirror source; using GitHub Direct.'
   },
   plugins: {
+    configSchemaInvalid: 'The plugin configuration schema is invalid. Showing the generic configuration editor.',
     title: 'Plugins',
     name: 'Plugin Name',
     id: 'Plugin ID',
@@ -429,6 +439,7 @@ export default {
     addItem: 'Add Item',
     fieldName: 'Field Name',
     fieldNameRequired: 'Field name is required',
+    readOnlyField: 'This field is read-only and cannot be added.',
     invalidFieldKey: 'Invalid field name',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',

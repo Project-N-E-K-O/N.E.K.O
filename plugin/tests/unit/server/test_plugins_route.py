@@ -56,6 +56,45 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
 
 
 @pytest.mark.asyncio
+async def test_plugins_list_route_forwards_summary_query(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str | None, bool]] = []
+
+    async def _list_plugins(*, locale: str | None = None, summary: bool = False) -> dict[str, object]:
+        calls.append((locale, summary))
+        return {"plugins": [], "message": ""}
+
+    monkeypatch.setattr(route_module.query_service, "list_plugins", _list_plugins)
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/plugins?locale=ja&summary=true")
+    assert response.status_code == 200
+    assert calls == [("ja", True)]
+
+
+@pytest.mark.asyncio
+async def test_single_plugin_route_delegates_to_detail_query(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    async def _get_plugin(plugin_id: str, *, locale: str | None = None) -> dict[str, object]:
+        calls.append((plugin_id, locale))
+        return {"plugin": {"id": plugin_id}}
+
+    monkeypatch.setattr(route_module.query_service, "get_plugin", _get_plugin)
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/plugins/demo?locale=zh-CN")
+    assert response.status_code == 200
+    assert response.json() == {"plugin": {"id": "demo"}}
+    assert calls == [("demo", "zh-CN")]
+
+
+@pytest.mark.asyncio
 async def test_delete_plugin_route_delegates_to_lifecycle_service(
     plugin_route_test_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,

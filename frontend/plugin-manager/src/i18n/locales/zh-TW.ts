@@ -47,6 +47,15 @@ export default {
     removeHint: "停止外掛並移除關聯？原始碼和執行資料會保留。",
   },
   common: {
+    surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
+    surfaceApplyLanguage: "套用新語言並重新載入面板",
+    surfaceApplyLanguageConfirm: "重新載入面板會遺失其中未儲存的內容。是否繼續？",
+
+    languageLoading: "正在載入語言，目前介面仍可使用",
+    languageLoadFailed: "語言載入失敗，已保留目前語言。",
+    languageRetry: "重試語言載入",
+    languageReload: "重新載入頁面",
+
     loading: '載入中...',
     refresh: '重新整理',
     search: '搜尋',
@@ -336,6 +345,7 @@ export default {
     installFallback: '無法選擇鏡像來源，已使用 GitHub 直連。'
   },
   plugins: {
+    configSchemaInvalid: '外掛程式設定 Schema 無效，已使用通用設定編輯器。',
     title: '外掛列表',
     name: '外掛名稱',
     id: '外掛ID',
@@ -429,6 +439,7 @@ export default {
     addItem: '新增項目',
     fieldName: '欄位名稱',
     fieldNameRequired: '欄位名稱不能為空',
+    readOnlyField: '此欄位為唯讀，無法新增。',
     invalidFieldKey: '欄位名稱不合法',
     fieldType: '欄位類型',
     duplicateFieldKey: '欄位名稱已存在，請換一個',

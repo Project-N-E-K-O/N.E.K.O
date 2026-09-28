@@ -1,0 +1,23 @@
+/* Shared motion contract, mirrored by src/motion/policy.ts for WAAPI motion.
+   Components may tune choreography, but timing and easing always come from
+   these semantic tokens. Only opacity and transform are approved for
+   high-frequency motion. The spring curve overshoots, so reserve it for
+   small transform-only feedback (chips, checks, arrows, popovers). */
+:root {
+  --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-duration-fast: 140ms;
+  --motion-duration-normal: 220ms;
+  --motion-duration-emphasis: 300ms;
+  --motion-stagger-max: 240ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 1ms;
+    --motion-duration-normal: 1ms;
+    --motion-duration-emphasis: 1ms;
+    --motion-stagger-max: 0ms;
+  }
+}
