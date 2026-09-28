@@ -318,7 +318,10 @@
             }
             var record = { id: meta.id };
             if (typeof meta.screenIndex === 'number') record.screenIndex = meta.screenIndex;
-            if (meta.name && meta.id.startsWith('window:') && isScreenSourceTitleMatchEnabled()) {
+            // 与 storeRememberedWindowTitle 同一规则：超长标题不落盘（也不截断），
+            // 本次会话仍用内存里的完整标题显示。
+            if (meta.name && meta.name.length <= MAX_REMEMBERED_WINDOW_TITLE_LENGTH
+                && meta.id.startsWith('window:') && isScreenSourceTitleMatchEnabled()) {
                 record.name = meta.name;
             }
             localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify(record));
@@ -371,19 +374,12 @@
         } catch (_) { }
     }
 
-    // 与 storeRememberedWindowTitle 同一规则：超长标题整条不记，不截断保存，
-    // 否则落盘的是一个「记住窗口」本身都不认的标题。
-    function normalizeScreenSourceName(name) {
-        var value = String(name || '');
-        return value.length > MAX_REMEMBERED_WINDOW_TITLE_LENGTH ? '' : value;
-    }
-
     function normalizeScreenSourceMeta(source, screenIndex) {
         if (!source || typeof source.id !== 'string' || !source.id) return null;
         return {
             id: source.id,
             screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
-            name: normalizeScreenSourceName(source.name)
+            name: String(source.name || '')
         };
     }
 
@@ -459,7 +455,7 @@
         var nextIndex = screenIndex >= 0 && !partial ? screenIndex : null;
         var current = getKnownScreenSourceMeta(sourceId);
         if (current && current.screenIndex === nextIndex
-            && current.name === normalizeScreenSourceName(source.name)) {
+            && current.name === String(source.name || '')) {
             return;
         }
         rememberScreenSourceLabel(source, nextIndex);
