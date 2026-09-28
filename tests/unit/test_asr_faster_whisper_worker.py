@@ -1126,3 +1126,45 @@ async def test_cancelled_queued_decode_keeps_its_slot_until_dequeued(pool) -> No
         await asyncio.sleep(0.01)
     assert pool._decode_slots_used == 0
     assert len(model.calls) == 1  # the cancelled job was skipped, not decoded
+
+
+async def test_slot_is_returned_when_the_task_is_cancelled_before_it_runs(pool) -> None:
+    # A task cancelled before its first step never enters its body, so its own
+    # finally cannot give the slot back; the done callback must.
+    import functools
+
+    assert pool.try_reserve_decode() is True
+    handoff = faster_whisper._DecodeHandoff()
+
+    async def never_runs() -> None:
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(never_runs())
+    task.add_done_callback(
+        functools.partial(faster_whisper._return_slot_unless_handed_off, pool, handoff)
+    )
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert pool._decode_slots_used == 0
+
+
+async def test_handed_off_slot_is_not_returned_twice(pool) -> None:
+    import functools
+
+    assert pool.try_reserve_decode() is True
+    handoff = faster_whisper._DecodeHandoff(submitted=True)
+
+    async def done() -> None:
+        return None
+
+    task = asyncio.create_task(done())
+    task.add_done_callback(
+        functools.partial(faster_whisper._return_slot_unless_handed_off, pool, handoff)
+    )
+    await task
+    await asyncio.sleep(0)
+    # The executor owns this slot now; only the decode thread gives it back.
+    assert pool._decode_slots_used == 1
+    pool.release_decode()
