@@ -735,6 +735,62 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
 
 
 @pytest.mark.frontend
+def test_window_title_reaches_other_windows_by_broadcast_not_storage(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            // Stands in for the Pet / Chat window on the same origin.
+            const other = new BroadcastChannel('neko-screen-source-label');
+            const received = [];
+            other.onmessage = (event) => received.push(event.data);
+            const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+            function storageFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+            }
+
+            document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await settle();
+            const sent = received.slice();
+            const stored = window.__storedValues.get('selectedScreenSourceLabel');
+
+            // The other window re-picks the same id, now titled differently. Its
+            // storage writes are identical, so only the broadcast carries this.
+            other.postMessage({ meta: { id: 'window:2', name: 'Browser', screenIndex: null } });
+            await settle();
+            const renamed = window.getSelectedScreenSourceLabel();
+            // Its title-less record for the same id must not wipe the title.
+            storageFromOtherWindow('selectedScreenSourceLabel', JSON.stringify({ id: 'window:2' }));
+            const afterTitleLessRecord = window.getSelectedScreenSourceLabel();
+
+            // A new pick whose broadcast arrives before the storage events.
+            other.postMessage({ meta: { id: 'window:7', name: 'Terminal', screenIndex: null } });
+            await settle();
+            storageFromOtherWindow('selectedScreenSourceId', 'window:7');
+            storageFromOtherWindow('selectedScreenSourceLabel', JSON.stringify({ id: 'window:7' }));
+            const broadcastFirst = window.getSelectedScreenSourceLabel();
+            other.close();
+            return { sent, stored, renamed, afterTitleLessRecord, broadcastFirst };
+        }"""
+    )
+
+    assert result == {
+        "sent": [{"meta": {"id": "window:2", "screenIndex": None, "name": "Editor"}}],
+        # "Remember window" is off: nothing with the title is written to disk.
+        "stored": '{"id":"window:2"}',
+        "renamed": "Browser",
+        "afterTitleLessRecord": "Browser",
+        "broadcastFirst": "Terminal",
+    }
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize(
     ("source_id", "expected_label"),
     [("window:2", "Editor"), ("screen:1", "Screen 1")],
@@ -769,7 +825,11 @@ def test_enumeration_fills_label_for_selection_saved_before_labels(
     )
 
     assert result == {
-        "before": "app.screenSource.windows" if source_id.startswith("window:") else "",
+        "before": (
+            "app.screenSource.windows"
+            if source_id.startswith("window:")
+            else "app.screenSource.screens"
+        ),
         "after": expected_label,
         "events": [expected_label],
     }
