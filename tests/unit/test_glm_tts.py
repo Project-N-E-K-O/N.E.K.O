@@ -593,6 +593,160 @@ async def test_glm_direct_link_clone_registers_via_two_step_flow(monkeypatch):
     assert saved["voice_name"].startswith("neko_miko_")
 
 
+async def _call_glm_direct_link_clone(monkeypatch, *, download, normalize):
+    """Drive /voice_clone_direct for glm_tts with stubbed download/normalize; return (status, body, client_calls)."""
+    from main_routers.characters_router import voice_cloning as vc
+
+    client_calls: list = []
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            return "glm-key-1234"
+
+        def find_voice_by_audio_md5(self, storage_key, audio_md5, ref_language):
+            return None
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            raise AssertionError("must not persist on a rejected clone")
+
+    class _FakeClient:
+        def __init__(self, api_key, base_url=None):
+            pass
+
+        async def clone_voice(self, *args, **kwargs):
+            client_calls.append(kwargs)
+            return "should-not-happen"
+
+    class _FakeHeadResp:
+        status_code = 200
+
+        async def aclose(self):
+            pass
+
+    async def _noop_validate(url):
+        return None
+
+    async def _fake_head(method, url, **kwargs):
+        return _FakeHeadResp()
+
+    monkeypatch.setattr(vc, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(vc, "GlmVoiceCloneClient", _FakeClient)
+    monkeypatch.setattr(vc, "_validate_direct_link_target", _noop_validate)
+    monkeypatch.setattr(vc, "_request_direct_link_follow_redirects", _fake_head)
+    monkeypatch.setattr(vc, "_download_direct_link_audio", download)
+    monkeypatch.setattr("utils.audio.normalize_voice_clone_api_audio", normalize)
+
+    payload = {
+        "direct_link": "https://example.com/sample.wav",
+        "prefix": "Miko",
+        "ref_language": "ch",
+        "provider": "glm_tts",
+    }
+
+    class _FakeRequest:
+        async def json(self):
+            return payload
+
+    resp = await vc.voice_clone_direct(_FakeRequest())
+    return resp.status_code, json.loads(resp.body), client_calls
+
+
+@pytest.mark.unit
+async def test_glm_direct_link_download_over_limit_returns_413(monkeypatch):
+    """A direct link that exceeds the GLM 10MB cap while downloading must get the
+    same 413 + GLM_TTS_AUDIO_TOO_LARGE as the post-normalize check, not a 400."""
+    from main_routers.characters_router.direct_link import DirectLinkSecurityError
+
+    seen: dict = {}
+
+    async def _too_large(url, max_file_size=None):
+        seen["max_file_size"] = max_file_size
+        raise DirectLinkSecurityError("音频文件超过10MB限制", "FILE_TOO_LARGE")
+
+    def _never_normalize(buffer, filename):
+        raise AssertionError("normalize must not run after a failed download")
+
+    status, body, client_calls = await _call_glm_direct_link_clone(
+        monkeypatch, download=_too_large, normalize=_never_normalize,
+    )
+    assert status == 413
+    assert body["code"] == "GLM_TTS_AUDIO_TOO_LARGE"
+    assert body["provider"] == "glm_tts"
+    assert "10MB" in body["error"]
+    assert seen["max_file_size"] == 10 * 1024 * 1024
+    assert client_calls == []
+
+
+@pytest.mark.unit
+async def test_glm_direct_link_undecodable_audio_returns_400(monkeypatch):
+    """Downloadable but undecodable audio is a client input error (400), matching
+    the file-upload route, not a 500 server error."""
+
+    async def _download(url, max_file_size=None):
+        return "sample.wav", b"not-audio"
+
+    def _bad_normalize(buffer, filename):
+        raise ValueError("无法解析或处理上传音频文件: bad data")
+
+    status, body, client_calls = await _call_glm_direct_link_clone(
+        monkeypatch, download=_download, normalize=_bad_normalize,
+    )
+    assert status == 400
+    assert "无法解析" in body["error"]
+    assert body["provider"] == "glm_tts"
+    assert client_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("max_file_size", "expected"),
+    [(10 * 1024 * 1024, "超过10MB限制"), (100 * 1024 * 1024, "超过100MB限制")],
+)
+async def test_direct_link_download_too_large_message_uses_actual_limit(
+    monkeypatch, max_file_size, expected,
+):
+    """FILE_TOO_LARGE must name the caller's max_file_size, not a hardcoded 100MB."""
+    from main_routers.characters_router import direct_link as dl
+
+    class _Content:
+        async def iter_chunked(self, size):
+            for _ in range(max_file_size // size + 2):
+                yield b"x" * size
+
+    class _Resp:
+        status = 200
+        headers: dict = {}
+        url = "https://example.com/a.wav"
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def get(self, url, allow_redirects=False):
+            return _Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _validate(url):
+        return dl.DirectLinkValidatedTarget(url=url, hostname="example.com", port=443, addr_info=[])
+
+    monkeypatch.setattr(dl, "_validate_direct_link_target", _validate)
+    monkeypatch.setattr(dl, "_open_pinned_direct_link_session", lambda target, timeout: _Session())
+
+    with pytest.raises(dl.DirectLinkSecurityError) as excinfo:
+        await dl._download_direct_link_audio("https://example.com/a.wav", max_file_size=max_file_size)
+    assert excinfo.value.code == "FILE_TOO_LARGE"
+    assert expected in str(excinfo.value)
+
+
 @pytest.mark.unit
 def test_glm_tts_frontend_and_backend_are_wired():
     voice_clone_html = Path("templates/voice_clone.html").read_text(encoding="utf-8")

@@ -1318,6 +1318,13 @@ async def voice_clone_direct(request: Request):
 
     except DirectLinkSecurityError as e:
         logger.warning(f"{provider_label} 直链安全校验失败: {e}")
+        if provider == 'glm_tts' and e.code == 'FILE_TOO_LARGE':
+            # 下载阶段就超出 GLM 10MB 上限：与规范化后超限同一响应（413 + 专用错误码）。
+            return JSONResponse({
+                'error': str(e),
+                'code': 'GLM_TTS_AUDIO_TOO_LARGE',
+                'provider': provider,
+            }, status_code=413)
         return JSONResponse({
             'error': str(e),
             'code': e.code,
@@ -1347,6 +1354,10 @@ async def voice_clone_direct(request: Request):
             'error': f'{provider_label}音色注册失败: {error_detail}',
             'provider': provider
         }, status_code=500)
+    except ValueError as e:
+        # 与文件上传路径一致：音频无法解析/规范化等输入问题返回 400，而非服务器错误。
+        logger.warning(f"{provider_label} 直链音频无效: {e}")
+        return JSONResponse({'error': str(e), 'provider': provider}, status_code=400)
     except Exception as e:
         logger.error(f"{provider_label} 直链音色注册时发生错误: {e}")
         return JSONResponse({

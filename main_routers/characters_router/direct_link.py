@@ -242,7 +242,10 @@ async def _download_direct_link_audio(
                 async for chunk in download_resp.content.iter_chunked(8192):
                     total_size += len(chunk)
                     if total_size > max_file_size:
-                        raise DirectLinkSecurityError("音频文件超过100MB限制", "FILE_TOO_LARGE")
+                        limit_mb = max_file_size / (1024 * 1024)
+                        raise DirectLinkSecurityError(
+                            f"音频文件超过{limit_mb:g}MB限制", "FILE_TOO_LARGE"
+                        )
                     audio_buffer.write(chunk)
 
                 return filename, audio_buffer.getvalue()
