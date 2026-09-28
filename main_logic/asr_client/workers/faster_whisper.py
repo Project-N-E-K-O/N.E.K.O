@@ -86,6 +86,10 @@ _MODEL_IDLE_RELEASE_SECONDS = 300.0
 # would otherwise pile up tasks and PCM without bound; past this the session
 # fails with ASR_LOCAL_DECODE_BACKLOG instead of lagging further behind.
 _MAX_PENDING_DECODES = 3
+# Decodes queued or running across ALL sessions. The single decode thread
+# drains one at a time, and its executor queue itself is unbounded, so many
+# open sessions could otherwise keep PCM queued without limit.
+_MAX_PROCESS_DECODES = 4
 
 # Whisper's own silence heuristics already drop the obvious cases; these gates
 # only decide whether an exact known hallucination phrase is trusted.
@@ -300,6 +304,21 @@ class _WhisperModelPool:
         self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
         self._loader_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._decoder_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._decode_slots_used = 0
+
+    def try_reserve_decode(self) -> bool:
+        """Take one process-wide decode slot, or return False when all are used."""
+        with self._state_lock:
+            if self._decode_slots_used >= _MAX_PROCESS_DECODES:
+                return False
+            self._decode_slots_used += 1
+            return True
+
+    def release_decode(self, _task: object = None) -> None:
+        """Give back a slot taken by ``try_reserve_decode`` (usable as a callback)."""
+        with self._state_lock:
+            if self._decode_slots_used > 0:
+                self._decode_slots_used -= 1
 
     def decoder_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """The single thread every local decode runs on, process-wide.
@@ -773,7 +792,12 @@ async def faster_whisper_asr_worker(
                             else:
                                 pcm16 = buffers.pop(key, None)
                                 # 只数还没完成的：本轮刚解完、下面才出队的不占积压名额。
-                                if pcm16 and _decodes_in_flight(pending) >= _MAX_PENDING_DECODES:
+                                # 名额在拷贝 PCM、建任务之前占：本会话积压上限之外，
+                                # 还有一个跨所有会话的进程级上限。
+                                if pcm16 and (
+                                    _decodes_in_flight(pending) >= _MAX_PENDING_DECODES
+                                    or not pool.try_reserve_decode()
+                                ):
                                     await emit_error(
                                         "ASR_LOCAL_DECODE_BACKLOG",
                                         "faster-whisper cannot decode as fast as audio is committed",
@@ -786,6 +810,8 @@ async def faster_whisper_asr_worker(
                                         transcribe(key, bytes(pcm16)),
                                         name="faster-whisper-asr-transcribe",
                                     )
+                                    # 任务结束（完成、失败、被取消）即归还名额。
+                                    task.add_done_callback(pool.release_decode)
                                     pending[task] = key
                         else:
                             await emit_error(

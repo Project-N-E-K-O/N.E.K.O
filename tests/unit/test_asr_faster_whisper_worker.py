@@ -1018,3 +1018,39 @@ async def test_running_decode_is_already_reported_as_attempted(pool) -> None:
         model.release.set()
     await _next_event(responses, "final")
     await _shutdown(task, requests, responses)
+
+
+async def test_process_wide_decode_slots_bound_all_sessions(pool) -> None:
+    # Other sessions already hold every process-wide slot: a new commit is
+    # refused before its PCM is copied or queued.
+    for _ in range(faster_whisper._MAX_PROCESS_DECODES):
+        assert pool.try_reserve_decode() is True
+    assert pool.try_reserve_decode() is False
+
+    model = _FakeModel(_segment("x"))
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    await _send_utterance(requests)
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_LOCAL_DECODE_BACKLOG"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 3)
+    assert model.calls == []
+
+    for _ in range(faster_whisper._MAX_PROCESS_DECODES):
+        pool.release_decode()
+
+
+async def test_decode_slot_is_returned_when_the_decode_finishes(pool) -> None:
+    model = _FakeModel(_segment("x"))
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    for utterance_id in range(1, faster_whisper._MAX_PROCESS_DECODES + 3):
+        await _send_utterance(requests, utterance_id=utterance_id)
+        await _next_event(responses, "final")
+    assert pool._decode_slots_used == 0
+    await _shutdown(task, requests, responses)
