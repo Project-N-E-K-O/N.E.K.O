@@ -45,7 +45,6 @@ try:
     from brain.openclaw_adapter import OpenClawAdapter
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
-    from brain.agent_session import get_session_manager  # noqa: F401  (re-exported via the package facade)
     from utils.result_parser import (  # noqa: F401  (re-exported via the package facade)
         parse_computer_use_result,
         parse_browser_use_result,

@@ -130,7 +130,6 @@ from .api_shared import (  # noqa: F401
     channels,
     datetime,
     get_config_manager,
-    get_session_manager,
     httpx,
     json,
     log_config,
@@ -1324,14 +1323,13 @@ async def admin_control(payload: Dict[str, Any]):
             if Modules.browser_use:
                 Modules.browser_use.cancel_running()
                 Modules.browser_use._stop_overlay()
-                Modules.browser_use._agents.clear()
                 try:
                     if Modules.browser_use._browser_session is not None:
                         await Modules.browser_use._remove_overlay(Modules.browser_use._browser_session)
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+            logger.warning(f"[Agent] Error cleaning browser-use adapter during end_all: {e}")
         # A disable-triggered close is itself tracked above and may have been
         # cancelled by this drain. Retry teardown after dispatches quiesce so
         # keep-alive Chromium cannot survive end_all.

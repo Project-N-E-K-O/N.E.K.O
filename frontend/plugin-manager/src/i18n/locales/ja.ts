@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
       blockedOwnershipUnknown: '既存のプラグインディレクトリの所有元を確認できません。インストール元の記録を復元してから再試行してください。',
       blockedInstallSourceReadOnly: 'インストール元の記録を利用できないか、読み取り専用です。記録を復元してから再試行してください。',
+      installSucceeded: 'インストールが完了しました。{count} 個のプラグインを処理しました。',
+      completedWithWarnings: '{plugin} はインストールされましたが、警告があります：{reasons}',
       rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
       rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: 'プラグインの plugin.toml が不正です。作者に修正と再ビルドを依頼してください。',
         identityMismatch: 'プラグインのフォルダー名と plugin.toml の ID が一致しません。作者に修正を依頼してください。',
         hashMismatch: 'パッケージ内容が検証情報と一致しません。インストールは行われませんでした。',
+        profileOwnershipConflict: 'このパッケージのプロファイルフォルダーが既に存在しますが、このパッケージのものではありません（以前のインストールの残りの可能性があります）。インストールは行われませんでした。',
         inspectFailed: 'このプラグインパッケージを検査できませんでした。ファイルが存在し、有効な N.E.K.O パッケージであることを確認してから再試行してください。',
         verifyFailed: 'このプラグインパッケージを検証できませんでした。再ダウンロードするか、作者に再ビルドを依頼してから再試行してください。',
         installFailed: 'このプラグインパッケージをインストールできませんでした。未確認の変更は保存されていません。'

@@ -11,6 +11,7 @@ import {
   startPlugin,
   stopPlugin,
   reloadPlugin,
+  reloadAllPlugins,
   refreshPluginsRegistry,
 } from '@/api/plugins'
 import type { PluginListSummary } from '@/api/plugins'
@@ -18,6 +19,11 @@ import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
 import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
+import {
+  pendingReloadPlugins,
+  pendingReloadRevision,
+  setPendingReload,
+} from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -332,7 +338,15 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    await startPlugin(pluginId)
+    // Captured before the request: the process reads the saved configuration while it
+    // starts, so a profile write that lands in the meantime is newer than what that
+    // process can have read and has to keep its reload warning.
+    const pendingRevision = pendingReloadRevision(pluginId)
+    const result = await startPlugin(pluginId)
+    // Starting an already running plugin returns success without restarting the
+    // process or re-reading the saved profile overlay, so the server reports that
+    // case explicitly; the pending flag may only be cleared for a real start.
+    if (result?.already_running !== true) setPendingReload(pluginId, false, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
@@ -342,8 +356,44 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
+    const pendingRevision = pendingReloadRevision(pluginId)
     await reloadPlugin(pluginId)
+    // The running host now matches the persisted configuration, whichever entry
+    // point triggered the reload — unless a profile write claimed the flag while
+    // this reload was in flight, which this host may have missed.
+    setPendingReload(pluginId, false, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
+  }
+
+  async function reloadAll(options: PluginMutationOptions = {}) {
+    // The bulk endpoint restarts every plugin it reports back, so those hosts match their
+    // saved configuration again and the flags have to go with it. Capture the revisions
+    // first for the same reason as the single-plugin path: a profile write that lands during
+    // the request describes a configuration the restarted host cannot have read. The flagged
+    // plugins are included because the server restarts hosts from its own running set, which
+    // can be ahead of (or behind) the list this window last loaded.
+    const baseline = [
+      ...new Set([...pluginSummaries.value.map((p) => p.id), ...pendingReloadPlugins()]),
+    ]
+    const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
+    const result = await reloadAllPlugins()
+    for (const pluginId of result.reloaded) {
+      const revision = revisions.get(pluginId)
+      // Only ids that were neither listed nor flagged are skipped, and for those there is no
+      // flag to clear anyway.
+      if (revision !== undefined) setPendingReload(pluginId, false, revision)
+    }
+    // The reload already happened; a follow-up refresh that fails or times out must not
+    // turn its result into a failure for the caller.
+    if (options.refresh !== false) {
+      try {
+        await fetchPluginStatus()
+        await refreshLoadedPluginData()
+      } catch (err) {
+        console.warn('Failed to refresh plugin data after reloading all plugins:', err)
+      }
+    }
+    return result
   }
 
   // The mutation already succeeded; a failed follow-up refresh must not be
@@ -379,5 +429,6 @@ export const usePluginStore = defineStore('plugin', () => {
     start,
     stop,
     reload,
+    reloadAll,
   }
 })

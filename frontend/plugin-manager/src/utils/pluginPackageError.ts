@@ -11,6 +11,7 @@ const ERROR_KEYS = {
   PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID: 'package.install.error.pluginManifestInvalid',
   PLUGIN_PACKAGE_IDENTITY_MISMATCH: 'package.install.error.identityMismatch',
   PLUGIN_PACKAGE_HASH_MISMATCH: 'package.install.error.hashMismatch',
+  PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT: 'package.install.error.profileOwnershipConflict',
 } as const
 
 function asRecord(value: unknown): Record<string, unknown> | null {

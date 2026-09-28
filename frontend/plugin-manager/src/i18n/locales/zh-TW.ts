@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: '仍安裝著此前版本的外掛。請先解除安裝 {plugin} 再繼續。',
       blockedOwnershipUnknown: '無法確認現有外掛目錄的所有權。請先還原對應的安裝來源記錄，再重試。',
       blockedInstallSourceReadOnly: '安裝來源記錄無法使用或處於唯讀狀態。請先還原安裝來源記錄，再重試。',
+      installSucceeded: '安裝完成，處理了 {count} 個外掛。',
+      completedWithWarnings: '{plugin} 已安裝，但有警告：{reasons}',
       rollbackCompleted: '升級失敗，已回復先前的版本。',
       rollbackIncomplete: '升級失敗且回復未完整完成，請先檢查外掛狀態再繼續。',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: '外掛的 plugin.toml 格式錯誤，請聯絡外掛作者修正後重新打包。',
         identityMismatch: '外掛資料夾名稱與 plugin.toml 內的 ID 不一致，請聯絡作者修正套件。',
         hashMismatch: '套件內容與驗證資訊不一致，已拒絕安裝，未保留任何安裝變更。',
+        profileOwnershipConflict: '此外掛套件的設定檔目錄已存在，但不屬於該套件（可能是先前安裝留下的殘留），已拒絕安裝，未做任何變更。',
         inspectFailed: '無法檢查此外掛套件。請確認檔案存在且為有效的 N.E.K.O 外掛套件，然後重試。',
         verifyFailed: '無法驗證此外掛套件。請重新下載，或請外掛作者重新打包後再試。',
         installFailed: '無法安裝此外掛套件，未保留未確認的安裝變更。'

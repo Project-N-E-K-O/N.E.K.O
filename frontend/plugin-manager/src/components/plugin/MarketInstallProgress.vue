@@ -104,6 +104,13 @@
       show-icon
       :title="t('market.rollbackIncomplete')"
     />
+    <el-alert
+      v-if="store.warnings.length > 0"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="t('package.install.completedWithWarnings', { plugin: store.context?.name || store.context?.pluginId || '', reasons: store.warnings.join('; ') })"
+    />
   </div>
 </template>
 
