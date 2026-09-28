@@ -564,7 +564,9 @@ function fitNumberToSchema(value: number) {
     next = Math.max(next, integer ? Math.ceil(s.minimum) : s.minimum)
   if (typeof s?.maximum === 'number')
     next = Math.min(next, integer ? Math.floor(s.maximum) : s.maximum)
-  return next
+  // Rounding can yield `-0` (Math.round(-0.4)), which cannot be persisted: it serializes as
+  // 0 and would keep the draft dirty forever.
+  return next === 0 ? 0 : next
 }
 
 function updateNumberText(value: string) {

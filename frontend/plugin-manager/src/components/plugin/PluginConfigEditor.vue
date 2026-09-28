@@ -183,10 +183,11 @@
           class="config-error"
         />
         <!-- A refresh that keeps drafts (after a save) leaves the form in place to avoid a
-             flicker. A discarding refresh (`ready` is false) hides it: the records it shows
-             are about to be cleared, so edits typed meanwhile would be silently lost. -->
+             flicker. A discarding refresh (`ready` is false) and a profile creation or
+             deletion hide it: the record it shows may be dropped when they finish, so edits
+             typed meanwhile would be silently lost. -->
         <el-skeleton
-          v-if="(loading && (!ready || !current?.loaded)) || current?.loading"
+          v-if="(loading && (!ready || !current?.loaded)) || replacing || current?.loading"
           :rows="6"
           animated
         />
@@ -254,7 +255,9 @@
               t(
                 change.afterPresent
                   ? 'plugins.configUi.explicitValue'
-                  : 'plugins.configUi.restoreInheritance'
+                  : configValueAt(preview, change.path) === undefined
+                    ? 'plugins.configUi.removeValue'
+                    : 'plugins.configUi.restoreInheritance'
               )
             }}</span>
           </div>
@@ -404,6 +407,7 @@ const {
   names,
   loading,
   ready,
+  replacing,
   saving,
   error,
   configPath,

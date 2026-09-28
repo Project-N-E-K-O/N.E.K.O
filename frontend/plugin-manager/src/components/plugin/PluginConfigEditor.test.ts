@@ -429,10 +429,47 @@ describe('change review', () => {
 
     button(host, 'plugins.configUi.reviewChanges').click()
     await vi.waitFor(() => expect(document.querySelector('.change-path button')).not.toBeNull())
+    // Nothing is inherited in its place, so the review must not call it a default value.
+    expect(document.querySelector('.change-intent')!.textContent).toBe(
+      'plugins.configUi.removeValue'
+    )
     document.querySelector<HTMLButtonElement>('.change-path button')!.click()
     await vi.waitFor(() => expect(row()).not.toBeNull())
     expect(host.querySelector<HTMLInputElement>('input[aria-label="search.extra"]')!.value).toBe(
       'x'
+    )
+    unmount()
+  })
+
+  it('calls a removed override that falls back to the base value a default', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    const { host, unmount } = await mountEditor()
+    const row = () => host.querySelector<HTMLElement>('[data-config-path="search.max_results"]')
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    const button = (root: ParentNode, label: string) =>
+      [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === label
+      )!
+
+    button(row()!, 'plugins.configUi.restoreInheritance').click()
+    await nextTick()
+    button(host, 'plugins.configUi.reviewChanges').click()
+    await vi.waitFor(() => expect(document.querySelector('.change-intent')).not.toBeNull())
+    expect(document.querySelector('.change-intent')!.textContent).toBe(
+      'plugins.configUi.restoreInheritance'
     )
     unmount()
   })
@@ -472,6 +509,19 @@ describe('virtual default materialization', () => {
     // The draft must be persisted, not replaced by an empty profile object.
     expect(upsert).toHaveBeenCalledWith('test', 'default', { search: { max_results: 9 } }, true)
     unmount()
+  })
+})
+
+describe('profile replacement', () => {
+  it('hides the form while a profile deletion is in flight', async () => {
+    const { host, deletion } = await startProfileDeletion()
+    // A successful deletion drops the record, so edits typed meanwhile would be lost.
+    await vi.waitFor(() => expect(host.querySelector('.el-skeleton')).not.toBeNull())
+    expect(host.querySelector('input[aria-label="search.max_results"]')).toBeNull()
+    deletion.resolve({} as never)
+    await vi.waitFor(() =>
+      expect(host.querySelector('input[aria-label="search.max_results"]')).not.toBeNull()
+    )
   })
 })
 

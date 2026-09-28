@@ -970,6 +970,22 @@ describe('ConfigValueEditor — schema bounds in the compact field', () => {
     expect(lastEmit(emitted)).toEqual({ count: 4 })
   })
 
+  it('rounds a small negative integer to a positive zero in the model', async () => {
+    // Math.round(-0.4) is -0, which serializes as 0 and would keep the draft dirty forever.
+    const { host, emitted } = mountEditor({ count: 3 }, {}, true, {
+      type: 'object',
+      properties: { count: { type: 'integer' } },
+    })
+    await nextTick()
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="count"]')!
+    input.value = '-0.4'
+    input.dispatchEvent(new Event('input'))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+    expect(input.value).toBe('0')
+    expect(Object.is(lastEmit(emitted).count, 0)).toBe(true)
+  })
+
   it('leaves a declared but absent number empty when blurred unchanged', async () => {
     // Nothing to fall back to: the field must not show the text "undefined".
     const { host, emitted } = mountEditor({}, {}, true, {

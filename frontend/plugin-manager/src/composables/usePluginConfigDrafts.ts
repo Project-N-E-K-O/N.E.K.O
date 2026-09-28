@@ -35,6 +35,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const records = reactive(new Map<string, ProfileDraft>())
   const loading = ref(false)
   const saving = ref(false)
+  // True while a profile creation or deletion may drop the record being edited; unlike a
+  // save, it cannot keep edits typed in the meantime.
+  const replacing = ref(false)
   const error = ref<string | null>(null)
   const ready = ref(false)
   // True while the running host may not match the persisted configuration.
@@ -268,6 +271,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     const id = pluginId.value,
       epoch = generation
     saving.value = true
+    replacing.value = true
     try {
       // Keep the existing first-profile auto-activation behavior on the server.
       await api.upsertPluginProfileConfig(id, name, {}, false)
@@ -280,7 +284,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       if (valid(id, epoch) && selected.value && !records.has(selected.value))
         await loadProfile(selected.value)
     } finally {
-      if (valid(id, epoch)) saving.value = false
+      if (valid(id, epoch)) saving.value = replacing.value = false
     }
   }
   async function deleteProfile(name: string) {
@@ -288,6 +292,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       epoch = generation
     const wasActive = name === active.value
     saving.value = true
+    replacing.value = true
     try {
       await api.deletePluginProfileConfig(id, name)
       // Deleting the active profile leaves the host running its configuration,
@@ -320,7 +325,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       if (valid(id, epoch) && selected.value && !records.has(selected.value))
         await loadProfile(selected.value)
     } finally {
-      if (valid(id, epoch)) saving.value = false
+      if (valid(id, epoch)) saving.value = replacing.value = false
     }
   }
   async function activateProfile(name: string) {
@@ -357,6 +362,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       configPath.value = undefined
       lastModified.value = undefined
       saving.value = false
+      replacing.value = false
       void loadAll()
     },
     { immediate: true }
@@ -390,6 +396,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     active,
     loading,
     ready,
+    replacing,
     saving,
     error,
     changes,
