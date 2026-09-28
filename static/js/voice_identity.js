@@ -699,7 +699,7 @@
     }
 
     function updateVoiceActivity(chunk) {
-        if (!chunk || !chunk.length) return;
+        if (!chunk || !chunk.length) return false;
         const previousStatus = state.voiceStatus;
         let sumSquares = 0;
         for (let index = 0; index < chunk.length; index += 1) {
@@ -707,14 +707,16 @@
             sumSquares += sample * sample;
         }
         const rms = Math.sqrt(sumSquares / chunk.length);
+        const active = rms >= ACTIVE_FRAME_RMS;
         const now = performance.now();
-        if (rms >= ACTIVE_FRAME_RMS) {
+        if (active) {
             state.voiceStatus = 'detected';
             state.lastVoiceAt = now;
         } else if (rms > ACTIVE_FRAME_RMS * 0.25) {
             state.voiceStatus = 'quiet';
         }
         if (state.voiceStatus !== previousStatus) renderEnrollment();
+        return active;
     }
 
     function waitForPromptPaint() {
@@ -762,6 +764,7 @@
         const mute = context.createGain();
         const chunks = [];
         let capturedSamples = 0;
+        let activeSpeechSamples = 0;
         state.captureReady = false;
         let startedAt = null;
         let finishCapture = null;
@@ -856,8 +859,8 @@
                         if (tail.length) {
                             chunks.push(tail);
                             capturedSamples += tail.length;
-                            state.captureReady = capturedSamples >= minimumSamples;
-                            updateVoiceActivity(tail);
+                            if (updateVoiceActivity(tail)) activeSpeechSamples += tail.length;
+                            state.captureReady = activeSpeechSamples >= minimumSamples;
                         }
                         settle();
                         return;
@@ -866,12 +869,13 @@
                     if (chunk.length === 0) return;
                     chunks.push(chunk);
                     capturedSamples += chunk.length;
-                    state.captureReady = capturedSamples >= minimumSamples;
-                    updateVoiceActivity(chunk);
+                    if (updateVoiceActivity(chunk)) activeSpeechSamples += chunk.length;
+                    state.captureReady = activeSpeechSamples >= minimumSamples;
                     if (state.captureReady && finishCapture) finishCapture();
                 };
             });
             if (capturedSamples <= 0) throw new Error('incomplete_capture');
+            if (activeSpeechSamples < minimumSamples) throw new Error('speech_too_short');
             const alignedSamples = Math.floor(
                 Math.min(capturedSamples, requiredSamples) / RUNTIME_CHUNK_SAMPLES
             ) * RUNTIME_CHUNK_SAMPLES;

@@ -802,6 +802,25 @@ test('sample count finishes a capture without waiting for the duration timer', a
     await enrolling;
 });
 
+test('initial silence does not satisfy the minimum speech duration', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES));
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
+
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(1024));
+    await flush(4);
+    const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.ok(upload);
+    assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
 test('the upcoming prompt is visible while the first microphone is preparing', async () => {
     const mediaGate = deferred();
     const harness = createHarness({ mediaGate });
