@@ -698,6 +698,96 @@ def test_screen_source_prompt_provider_skips_thumbnail_reenumeration(
 
 
 @pytest.mark.frontend
+def test_deferred_enumeration_waits_for_the_load_button(page: Page) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            let deferredRenders = [];
+            const rendered = await window.renderFloatingScreenSourceList(popup, {
+                deferEnumeration: true,
+                onDeferredRender: (value) => deferredRenders.push(value),
+            });
+            const callsBeforeClick = window.__captureCalls.length;
+            const load = popup.querySelector('[data-neko-screen-source-deferred-load]');
+            const loadText = load.textContent;
+            load.click();
+            for (let i = 0; i < 20 && !deferredRenders.length; i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            return {
+                rendered,
+                callsBeforeClick,
+                loadText,
+                callsAfterClick: window.__captureCalls.length,
+                deferredRenders,
+                options: popup.querySelectorAll('.screen-source-option').length,
+                loadButtons: popup.querySelectorAll(
+                    '[data-neko-screen-source-deferred-load]'
+                ).length,
+            };
+        }"""
+    )
+
+    assert result == {
+        "rendered": True,
+        "callsBeforeClick": 0,
+        "loadText": "app.screenSource.clickToChoose",
+        "callsAfterClick": 1,
+        "deferredRenders": [True],
+        "options": 2,
+        "loadButtons": 0,
+    }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("prompting", "source_count", "adopted"),
+    [(True, 1, True), (True, 2, False), (False, 1, False)],
+)
+def test_prompting_single_source_is_adopted_without_second_click(
+    page: Page, prompting: bool, source_count: int, adopted: bool,
+) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=prompting)
+
+    result = page.evaluate(
+        """async (sourceCount) => {
+            window.__metadataSources = window.__metadataSources.slice(1, 1 + sourceCount)
+                .concat(window.__metadataSources.slice(0, Math.max(0, sourceCount - 1)));
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: window.getSelectedScreenSourceId(),
+                label: window.getSelectedScreenSourceLabel(),
+                pushed: window.__selectedSourceCalls.filter(Boolean),
+                highlighted: Array.from(
+                    document.querySelectorAll('.screen-source-option.selected')
+                ).map((option) => option.dataset.sourceId),
+            };
+        }""",
+        source_count,
+    )
+
+    if adopted:
+        assert result == {
+            "selected": "window:2",
+            "label": "Editor",
+            "pushed": ["window:2"],
+            "highlighted": ["window:2"],
+        }
+    else:
+        assert result == {
+            "selected": None,
+            "label": "",
+            "pushed": [],
+            "highlighted": [],
+        }
+
+
+@pytest.mark.frontend
 def test_remembered_title_reconciles_reused_id_before_stream_capture(
     page: Page,
 ) -> None:

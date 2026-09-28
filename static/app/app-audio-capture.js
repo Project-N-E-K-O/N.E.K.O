@@ -3870,16 +3870,22 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
             }
 
-            function openMicActionPanel(actionKey, openFn) {
+            function openMicActionPanel(actionKey, openFn, triggerEvent) {
                 clearMicActionHoverCollapseTimer();
                 var existing = getOwnedMicSubwindow();
                 if (activeMicActionKey === actionKey && existing && existing.isConnected) {
                     wireMicSubwindowHoverBridge(existing);
+                    // A click on a row whose panel was opened by hover finishes
+                    // any work that hover deferred (screen-source enumeration).
+                    if (triggerEvent && triggerEvent.type === 'click'
+                        && typeof existing._nekoOnExplicitOpen === 'function') {
+                        existing._nekoOnExplicitOpen();
+                    }
                     return Promise.resolve(existing);
                 }
                 activeMicActionKey = actionKey;
                 var generation = ++micActionHoverOpenGeneration;
-                return Promise.resolve(openFn()).then(function () {
+                return Promise.resolve(openFn(triggerEvent)).then(function () {
                     if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
                     var panel = getOwnedMicSubwindow();
                     if (panel) {
@@ -4120,13 +4126,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 function openActionPanel(event) {
                     actionSurface().style.background = 'var(--neko-popup-hover)';
-                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                    return openMicActionPanel(actionKey, onClick, event).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
                 }
 
                 // Resolve hover permission at event time: desktop bridges may
-                // arrive after rendering, and xdg-desktop-portal enumeration needs a click.
+                // arrive after rendering.
                 button.addEventListener('mouseenter', function (event) {
                     var openOnHover = typeof interactionOptions.openOnHover === 'function'
                         ? interactionOptions.openOnHover()
@@ -4426,7 +4432,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
             }
 
-            async function openScreenSourceSubwindow() {
+            async function openScreenSourceSubwindow(triggerEvent) {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
                     null,
@@ -4526,7 +4532,23 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
-                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    // Linux source enumeration can show an OS sharing dialog
+                    // (xdg-desktop-portal). Hover only opens the panel; the
+                    // user clicks the row or the panel's button to enumerate.
+                    // Providers that predate the flag are treated as prompting.
+                    var deferEnumeration = !!(triggerEvent && triggerEvent.type === 'mouseenter'
+                        && provider && provider.sourceEnumerationMayPrompt !== false);
+                    panel._nekoOnExplicitOpen = function () {
+                        var loadButton = screenSourceList.querySelector(
+                            '[data-neko-screen-source-deferred-load]'
+                        );
+                        if (loadButton) loadButton.click();
+                    };
+                    await window.renderFloatingScreenSourceList(screenSourceList, {
+                        requireVisible: false,
+                        deferEnumeration: deferEnumeration,
+                        onDeferredRender: function () { positionMicSubwindow(panel); }
+                    });
                     positionMicSubwindow(panel);
                 }
             }
@@ -4580,8 +4602,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 { openOnHover: function () {
                     var provider = typeof window.getDesktopCaptureProvider === 'function'
                         ? window.getDesktopCaptureProvider() : null;
-                    return !provider || (typeof provider.getSources === 'function'
-                        && provider.sourceEnumerationMayPrompt === false);
+                    return !provider || typeof provider.getSources === 'function';
                 } }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });

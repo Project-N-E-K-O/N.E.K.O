@@ -189,6 +189,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-locale-key-sync",
         "2026-09-28-screen-share-hover-hints-free-tts-merge",
+        "2026-09-28-glm-voice-clone-free-tts-merge",
     }
 )
 
@@ -201,7 +202,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "a494d897cbc726386a346247bbccf0306475c323493c0fd5f9ba5bf7c364f3ed"
+LOCALE_KEY_SIGNATURE = "513021a989224e07d1a204880d00ee2d795e1926572936cd4d19c36440966396"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

@@ -2657,6 +2657,46 @@
             return false;
         }
 
+        // 悬停打开时调用方传 deferEnumeration：Linux 上枚举来源可能弹出系统
+        // 分享对话框，先只放一个按钮，用户点击后再枚举。
+        if (renderOptions.deferEnumeration === true) {
+            screenPopup.innerHTML = '';
+            var deferredLoadButton = document.createElement('button');
+            deferredLoadButton.type = 'button';
+            deferredLoadButton.className = 'screen-source-deferred-load';
+            deferredLoadButton.dataset.nekoScreenSourceDeferredLoad = '';
+            deferredLoadButton.textContent = window.t
+                ? window.t('app.screenSource.clickToChoose')
+                : '点击选择屏幕来源';
+            Object.assign(deferredLoadButton.style, {
+                width: '100%',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-hover)',
+                color: 'var(--neko-popup-text)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                textAlign: 'center'
+            });
+            deferredLoadButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                if (!isPopupAvailable()) return;
+                var loadOptions = Object.assign({}, renderOptions, { deferEnumeration: false });
+                Promise.resolve(window.renderFloatingScreenSourceList(screenPopup, loadOptions))
+                    .then(function (rendered) {
+                        if (typeof renderOptions.onDeferredRender === 'function') {
+                            renderOptions.onDeferredRender(rendered);
+                        }
+                    })
+                    .catch(function (error) {
+                        console.warn('[屏幕源] 加载屏幕来源失败:', error);
+                    });
+            });
+            screenPopup.appendChild(deferredLoadButton);
+            return true;
+        }
+
         try {
             // 显示加载中
             screenPopup.innerHTML = '';
@@ -2984,6 +3024,20 @@
                     textAlign: 'center'
                 });
                 screenPopup.appendChild(noWindowMatchesItem);
+            }
+
+            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
+            // 来源。用户已经选过一次，直接采用，不要求在列表里再点一次。
+            if (desktopSourceEnumerationMayPrompt(desktopProvider) && sources.length === 1
+                && S.selectedScreenSourceId !== sources[0].id) {
+                var portalSource = sources[0];
+                selectScreenSource(
+                    portalSource.id,
+                    portalSource.name,
+                    getScreenSourceDisplayName(portalSource, 0)
+                ).catch(function (error) {
+                    console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+                });
             }
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
