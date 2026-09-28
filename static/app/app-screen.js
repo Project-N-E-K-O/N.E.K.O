@@ -421,6 +421,21 @@
     // 语言切换后屏幕名称要按新语言重算。
     window.addEventListener('localechange', notifyScreenSourceChanged);
 
+    // 延迟枚举面板里的「已选择 <来源>」。面板开着时来源可能在别处（其他窗口、
+    // 自动回退）变化；这里只注册一个模块级监听，刷新页面上现存的摘要，
+    // 面板反复开关不会累积监听器。
+    function renderScreenSourceSummary(summary) {
+        var currentLabel = getSelectedScreenSourceLabel();
+        summary.hidden = !currentLabel;
+        summary.textContent = !currentLabel ? '' : (window.t
+            ? window.t('app.screenSource.selected', { source: currentLabel })
+            : '已选择 ' + currentLabel);
+        summary.title = currentLabel;
+    }
+    window.addEventListener('neko:screen-source-changed', function () {
+        document.querySelectorAll('.screen-source-current').forEach(renderScreenSourceSummary);
+    });
+
     // ======================== clearSelectedScreenSource ========================
     /**
      * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
@@ -2784,24 +2799,7 @@
         function appendCurrentSourceSummary(targetPopup) {
             var summary = document.createElement('div');
             summary.className = 'screen-source-current';
-            function renderSummary() {
-                var currentLabel = getSelectedScreenSourceLabel();
-                summary.hidden = !currentLabel;
-                summary.textContent = !currentLabel ? '' : (window.t
-                    ? window.t('app.screenSource.selected', { source: currentLabel })
-                    : '已选择 ' + currentLabel);
-                summary.title = currentLabel;
-            }
-            // 面板开着时来源可能在别处（其他窗口、自动回退）变化，跟着设置行一起刷新。
-            function onSourceChanged() {
-                if (!summary.isConnected) {
-                    window.removeEventListener('neko:screen-source-changed', onSourceChanged);
-                    return;
-                }
-                renderSummary();
-            }
-            renderSummary();
-            window.addEventListener('neko:screen-source-changed', onSourceChanged);
+            renderScreenSourceSummary(summary);
             Object.assign(summary.style, {
                 padding: '4px 12px 8px',
                 color: 'var(--neko-popup-text-sub)',

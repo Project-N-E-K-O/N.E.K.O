@@ -1437,6 +1437,35 @@ def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) ->
 
 
 @pytest.mark.frontend
+def test_reopening_deferred_panel_adds_no_window_listeners(page: Page) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const added = [];
+            const originalAdd = window.addEventListener;
+            window.addEventListener = function (type, ...rest) {
+                added.push(type);
+                return originalAdd.call(this, type, ...rest);
+            };
+            try {
+                // Hover in and out of the row repeatedly without changing the source.
+                for (let i = 0; i < 5; i += 1) {
+                    await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
+                    popup.innerHTML = '';
+                }
+            } finally {
+                window.addEventListener = originalAdd;
+            }
+            return added;
+        }"""
+    )
+
+    assert result == []
+
+
+@pytest.mark.frontend
 def test_remembered_title_reconciles_reused_id_before_stream_capture(
     page: Page,
 ) -> None:
