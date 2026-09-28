@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-short-capture-v1" defer></script>
 </head>
 <body class="voice-identity-page">
     <main class="voice-identity-shell container">
@@ -122,7 +122,7 @@
                             <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
                     </div>
                     <p class="enrollment-rule-note" data-i18n="voiceIdentity.recordingRule">
-                        前 3 段参考录音需要录满 3 秒，第 4 段验证录音需要录满 5 秒；自然说话，达到时长后会自动结束录音。
+                        每段自然说满约 1.5 秒即可保存；系统会自动补齐分析所需时长（前 3 段补齐到 3 秒，第 4 段补齐到 5 秒）。
                     </p>
                     <div class="enrollment-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"

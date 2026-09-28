@@ -21,11 +21,13 @@ const PROFILE_HEADER = 'X-Voice-Identity-Profile';
 const TARGET_SAMPLE_RATE = 48000;
 const REFERENCE_RECORDING_MS = 3000;
 const VERIFICATION_RECORDING_MS = 5000;
+const MINIMUM_RECORDING_MS = 1500;
 const REFERENCE_TIMEOUT_MS = REFERENCE_RECORDING_MS + 1000;
 const VERIFICATION_TIMEOUT_MS = VERIFICATION_RECORDING_MS + 1000;
 const WINDOW_CLOSE_START_WAIT_MS = 500;
 const REFERENCE_SAMPLES = TARGET_SAMPLE_RATE * REFERENCE_RECORDING_MS / 1000;
 const VERIFICATION_SAMPLES = TARGET_SAMPLE_RATE * VERIFICATION_RECORDING_MS / 1000;
+const MINIMUM_SAMPLES = TARGET_SAMPLE_RATE * MINIMUM_RECORDING_MS / 1000;
 const CAPTURE_CHUNK_MS = 10;
 const CHUNK_SAMPLES = TARGET_SAMPLE_RATE * CAPTURE_CHUNK_MS / 1000;
 const FULL_AUDIO_CHUNKS = Math.ceil(VERIFICATION_RECORDING_MS / CAPTURE_CHUNK_MS);
@@ -418,6 +420,7 @@ function createHarness({
                 'voiceIdentity.errorSevereClipping': 'Recording is distorted.',
                 'voiceIdentity.errorIncompleteCapture': 'Recording did not finish.',
                 'voiceIdentity.errorInsufficientTime': 'Not enough time remains for the next recording.',
+                'voiceIdentity.finishTooSoon': 'Keep speaking for about 1.5 seconds before saving.',
                 'voiceIdentity.errorModelUnavailable': 'Voice model unavailable.',
                 'voiceIdentity.errorAudioProcessingUnavailable': 'Audio processing unavailable.',
                 'voiceIdentity.errorSecureStorageUnavailable': 'Secure storage unavailable.',
@@ -683,6 +686,14 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
 });
 
+test('the first prompt is visible before recording starts', async () => {
+    const harness = createHarness();
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-prompt').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, '今天我想和你分享一件趣事。');
+});
+
 test('a browser 44.1 kHz context is resampled to the enrollment contract', async () => {
     const harness = createHarness({ audioContextSampleRate: 44100 });
     await harness.initialize();
@@ -726,6 +737,7 @@ test('accepted segment waits for explicit next-segment action', async () => {
     await flush(4);
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, '窗外的光线正在慢慢变化。');
     assert.equal(harness.elements.get('voice-identity-voice-state').textContent, 'Waiting for speech');
     assert.equal(harness.mediaRequests, 1);
     assert.equal(harness.mediaStreams[0].track.enabled, false);
@@ -1396,11 +1408,28 @@ test('manual finish rejects a capture shorter than the backend contract', async 
         call.url === `${API_ROOT}/enrollment/segment`
     ));
     assert.equal(upload, undefined);
-    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough speech detected.');
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Keep speaking for about 1.5 seconds before saving.');
     assert.equal(
         harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length,
         0,
     );
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('a short natural utterance is padded to the fixed upload shape', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(1024));
+    await flush(4);
+
+    const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.ok(upload);
+    assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
     await harness.emit('voice-identity-cancel');
     await enrolling;
 });

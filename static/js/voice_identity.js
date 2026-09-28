@@ -6,6 +6,9 @@
     const RUNTIME_CHUNK_SAMPLES = 480;
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
+    // The service validates at least 1.5 s of real speech. Keep the fixed
+    // 3 s / 5 s upload shape and zero-fill only the remaining tail.
+    const MINIMUM_RECORDING_MS = 1500;
     const MAX_RECORDING_MS = VERIFICATION_RECORDING_MS;
     // Keep a bounded handoff window for worklet flush, upload, and the
     // server response instead of starting a segment at lease expiry.
@@ -563,7 +566,9 @@
         }
         if (elements.finish) {
             elements.finish.hidden = !state.recording;
-            elements.finish.disabled = !state.recording || !state.captureReady;
+            // Keep the action clickable during capture so an early click can
+            // explain the minimum speech requirement instead of looking inert.
+            elements.finish.disabled = !state.recording;
             elements.finish.textContent = translate('voiceIdentity.finish', '说完了，保存');
         }
         if (elements.next) {
@@ -596,9 +601,18 @@
             else item.textContent = String(index + 1);
         });
         if (elements.stepTitle) elements.stepTitle.textContent = active ? translate('voiceIdentity.readingPromptLabel', '朗读提示语') : translate('voiceIdentity.privacyTitle', '录入 3 段声纹和 1 段验证语音');
-        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请使用平时聊天的自然音量和语速朗读下面这句话，达到所需时长后会自动结束录音。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音，第 1 至 3 段需录满 3 秒，第 4 段需录满 5 秒，达到时长后会自动结束录音。');
+        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请使用平时聊天的自然音量和语速朗读下面这句话，说满约 1.5 秒即可保存；系统会补齐分析所需时长。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音。每段自然说满约 1.5 秒即可保存，系统会补齐分析所需时长。');
         if (elements.prompt) {
-            const prompt = active ? fixedPrompts()[state.segmentIndex - 1] : '';
+            let promptIndex = 0;
+            if (active) {
+                promptIndex = state.segmentPhase === 'ready'
+                    ? Math.min(ENROLLMENT_SEGMENT_COUNT, state.segmentIndex + 1)
+                    : state.segmentIndex;
+            } else if (!state.profileAvailable) {
+                // Let the user read the first line before starting capture.
+                promptIndex = 1;
+            }
+            const prompt = promptIndex > 0 ? fixedPrompts()[promptIndex - 1] : '';
             elements.prompt.textContent = prompt || '';
             elements.prompt.hidden = !prompt;
         }
@@ -753,6 +767,10 @@
         let finishCapture = null;
         let flushTimeoutId = null;
         const requiredSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
+        const minimumSamples = TARGET_SAMPLE_RATE * Math.min(
+            maxRecordingMs,
+            MINIMUM_RECORDING_MS,
+        ) / 1000;
         inputGain = context.createGain();
         let gainDb = 0;
         try {
@@ -838,7 +856,7 @@
                         if (tail.length) {
                             chunks.push(tail);
                             capturedSamples += tail.length;
-                            state.captureReady = capturedSamples >= requiredSamples;
+                            state.captureReady = capturedSamples >= minimumSamples;
                             updateVoiceActivity(tail);
                         }
                         settle();
@@ -848,7 +866,7 @@
                     if (chunk.length === 0) return;
                     chunks.push(chunk);
                     capturedSamples += chunk.length;
-                    state.captureReady = capturedSamples >= requiredSamples;
+                    state.captureReady = capturedSamples >= minimumSamples;
                     updateVoiceActivity(chunk);
                     if (state.captureReady && finishCapture) finishCapture();
                 };
@@ -857,8 +875,10 @@
             const alignedSamples = Math.floor(
                 Math.min(capturedSamples, requiredSamples) / RUNTIME_CHUNK_SAMPLES
             ) * RUNTIME_CHUNK_SAMPLES;
-            if (alignedSamples < requiredSamples) throw new Error('speech_too_short');
-            const pcm = new Int16Array(alignedSamples);
+            if (alignedSamples < minimumSamples) throw new Error('speech_too_short');
+            // Keep the fixed model input shape while allowing a short natural
+            // utterance. The backend validates the real speech portion.
+            const pcm = new Int16Array(requiredSamples);
             let offset = 0;
             for (const chunk of chunks) {
                 const count = Math.min(chunk.length, pcm.length - offset);
@@ -1436,7 +1456,16 @@
             if ((state.segmentPhase === 'ready' || state.segmentPhase === 'retry') && state.segmentAdvance) state.segmentAdvance(true);
         });
         elements.finish.addEventListener('click', function () {
-            if (state.recording && state.captureFinish) state.captureFinish();
+            if (!state.recording || !state.captureFinish) return;
+            if (!state.captureReady) {
+                setMessage(translate(
+                    'voiceIdentity.finishTooSoon',
+                    '请继续说话约 1.5 秒后再保存。',
+                ), false);
+                renderEnrollment();
+                return;
+            }
+            state.captureFinish();
         });
         elements.cancel.addEventListener('click', function () {
             cancelEnrollment().catch(function () {});
