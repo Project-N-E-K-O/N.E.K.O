@@ -725,6 +725,9 @@
             state.lastVoiceAt = now;
         } else if (rms > ACTIVE_FRAME_RMS * 0.25) {
             state.voiceStatus = 'quiet';
+            // Quiet speech is still audio; only genuine silence may fall back
+            // to "waiting", or the live region flickers between the two.
+            state.lastVoiceAt = now;
         }
         if (state.voiceStatus !== previousStatus) renderEnrollment();
         return active;
@@ -1193,7 +1196,14 @@
             state.enrollmentId = firstString([started, started.enrollment], ['enrollment_id', 'id', 'session_id'], state.enrollmentId);
             state.profileId = firstString([started, started.enrollment], ['profile_id'], state.profileId || createProfileId());
             if (!state.enrollmentId) throw new Error('enrollment_id_missing');
-            if (isStale()) { await cancelSession({ keepalive: state.closeStarted, silent: true }); return; }
+            if (isStale()) {
+                try {
+                    await cancelSession(state.closeStarted
+                        ? { keepalive: true, silent: true }
+                        : { silent: true, timeoutMs: CANCEL_REQUEST_TIMEOUT_MS });
+                } catch (_) {}
+                return;
+            }
             const serverNextSegment = Number(firstScalar(
                 [started, started.enrollment], ['next_segment_index'], 1
             ));

@@ -644,6 +644,12 @@ function createHarness({
             enrollmentId = null;
             enrollmentLeaseTimeoutCallback?.();
         },
+        advanceTime(ms) {
+            fakeNow += ms;
+        },
+        tickCaptureClock() {
+            intervalCallback?.();
+        },
         advanceServerSegment() {
             serverNextSegment += 1;
         },
@@ -1012,6 +1018,58 @@ test('a late cancellation recovery after a restore timeout clears the timeout al
     await closing;
     await flush(6);
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
+test('continuous quiet speech does not flicker back to waiting', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    const quietChunk = () => harness.emitAudio(new Int16Array(CHUNK_SAMPLES).fill(164));
+    quietChunk();
+    await flush(2);
+    const voiceState = harness.elements.get('voice-identity-voice-state');
+    assert.equal(voiceState.textContent, 'Voice is quiet');
+    for (let step = 0; step < 10; step += 1) {
+        harness.advanceTime(100);
+        quietChunk();
+        harness.tickCaptureClock();
+        await flush(1);
+        assert.equal(voiceState.textContent, 'Voice is quiet');
+    }
+
+    harness.advanceTime(900);
+    harness.tickCaptureClock();
+    await flush(1);
+    assert.equal(voiceState.textContent, 'Waiting for speech');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('a stale start response is cancelled within the cancellation timeout', async () => {
+    const startGate = deferred();
+    const explicitCancelGate = deferred();
+    const harness = createHarness({ startGate, explicitCancelGate, manualAudio: true });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emit('voice-identity-cancel');
+    await flush(8);
+    startGate.resolve();
+    await flush(8);
+    const staleCancel = harness.fetchCalls.find(call => (
+        call.url === `${API_ROOT}/enrollment/cancel`
+        && call.options.headers.get('x-voice-identity-enrollment') === 'enrollment-1'
+    ));
+    assert.ok(staleCancel);
+    harness.fireStatusTimeouts();
+    await enrolling;
+    await flush(4);
+
+    assert.equal(staleCancel.options.signal.aborted, true);
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
