@@ -455,3 +455,11 @@ def test_symbol_gap_does_not_leak_into_the_next_speech():
     mgr._enqueue_tts_text_chunk("s1", "/")
     mgr._enqueue_tts_text_chunk("s2", "28")
     assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s2", "28")]
+
+
+def test_whitespace_only_chunk_is_passed_through():
+    # 不经 normalizer 的流式 provider 靠独立的空格块分隔「9」「28」，不能丢。
+    mgr = _bare_tts_runtime()
+    for chunk in ("9", " ", "28"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s1", " "), ("s1", "28")]

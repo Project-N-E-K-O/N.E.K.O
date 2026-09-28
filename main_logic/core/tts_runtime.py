@@ -423,6 +423,12 @@ class TtsRuntimeMixin:
         chunk's ASCII letter/digit, the next chunk gets a leading space instead.
         Returns ``""`` when nothing is left to speak.
         """
+        if text and not text.strip():
+            # 纯空白分块原样放行（不经 normalizer 的流式 provider 靠它分隔
+            # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
+            self._tts_symbol_gap_pending = False
+            self._tts_last_spoken_char = text[-1]
+            return text
         cleaned = strip_tts_muted_symbols(text)
         last = getattr(self, "_tts_last_spoken_char", "")
         if not cleaned or not cleaned.strip():
