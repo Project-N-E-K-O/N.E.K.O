@@ -305,11 +305,11 @@
             '.neko-share-toggle-btn .neko-share-toggle-spark svg{display:block;width:100%;height:100%;overflow:visible;}',
             '@keyframes nekoShareSparkRise{0%{opacity:0;transform:translate3d(0,4px,0) scale(.2) rotate(0deg);}18%{opacity:1;}68%{opacity:.92;}100%{opacity:0;transform:translate3d(var(--neko-spark-drift),var(--neko-spark-rise),0) scale(.92) rotate(18deg);}}',
             '.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:nekoShareSparkRise var(--neko-spark-duration) cubic-bezier(.16,.8,.25,1) var(--neko-spark-delay) both;}',
-            // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
-            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);--neko-share-wave-x:12px;--neko-share-wave-radius:116%;}',
-            '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
-            '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
-            '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
+            // 迷你版：嵌在「屏幕共享」设置行右侧，外观与其他设置行的 › 箭头一致；
+            // 仍是开始/停止分享按钮，分享中箭头变为强调色。
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-flex;width:24px;min-height:28px;height:28px;padding:0;margin:0;flex-shrink:0;align-self:center;align-items:center;justify-content:flex-end;cursor:pointer;background:transparent;border:0;color:var(--neko-popup-text-sub,#999);font-size:16px;font-weight:400;line-height:1;}',
+            '.neko-share-toggle-mini .neko-share-toggle-wave,.neko-share-toggle-mini .neko-share-toggle-knob,.neko-share-toggle-mini .neko-share-toggle-sparkles{display:none;}',
+            '.neko-share-toggle-mini.is-active{color:var(--neko-popup-accent,#4f8cff);}',
             '.neko-share-toggle-btn.is-instant .neko-share-toggle-wave,.neko-share-toggle-btn.is-instant .neko-share-toggle-label,.neko-share-toggle-btn.is-instant .neko-share-toggle-knob{transition:none!important;}',
             '@media (prefers-reduced-motion:reduce){.neko-share-toggle-btn .neko-share-toggle-wave,.neko-share-toggle-btn .neko-share-toggle-label,.neko-share-toggle-btn .neko-share-toggle-knob{transition:none!important;}.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:none!important;}}',
             '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
@@ -486,7 +486,7 @@
         button._nekoShareFxCleanup = waveFx.cleanup;
         button._nekoSetShareActive = function (active, instant) {
             var accessibleLabel = active ? stopLabel() : shareLabel();
-            label.textContent = accessibleLabel;
+            label.textContent = mini ? '\u203A' : accessibleLabel;
             button.title = accessibleLabel;
             button.setAttribute('aria-label', accessibleLabel);
             button.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -4563,11 +4563,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 
+            function getCurrentScreenSourceLabel() {
+                var sourceLabel = typeof window.getSelectedScreenSourceLabel === 'function'
+                    ? window.getSelectedScreenSourceLabel() : '';
+                return sourceLabel || (window.t ? window.t('app.screenSource.screens') : 'Screens');
+            }
+            var currentScreenSourceLabel = getCurrentScreenSourceLabel();
+
             var firstContent = leftColumn.firstChild;
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
-                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                currentScreenSourceLabel,
                 'screen',
                 openScreenSourceSubwindow,
                 { openOnHover: function () {
@@ -4583,6 +4590,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 shareToggleButton
             );
             leftColumn.insertBefore(screenActionRow, firstContent);
+            var screenSummary = screenActionButton.querySelector('.neko-mic-action-sub-label');
+            if (screenSummary) {
+                screenSummary.setAttribute('aria-live', 'polite');
+                screenSummary.title = currentScreenSourceLabel;
+                // 选择、自动回退和其他窗口的选择都会派发该事件。
+                addVoiceWindowListener('neko:screen-source-changed', function () {
+                    var nextLabel = getCurrentScreenSourceLabel();
+                    screenSummary.textContent = nextLabel;
+                    screenSummary.title = nextLabel;
+                });
+            }
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示

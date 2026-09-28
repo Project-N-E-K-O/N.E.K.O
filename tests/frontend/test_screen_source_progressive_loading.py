@@ -547,6 +547,68 @@ def test_window_selection_and_toggle_bound_the_remembered_title(page: Page) -> N
 
 
 @pytest.mark.frontend
+def test_selected_source_label_is_bound_to_the_selected_id(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail);
+            });
+            async function pick(sourceId) {
+                document.querySelector(
+                    '.screen-source-option[data-source-id="' + sourceId + '"]'
+                ).click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return window.getSelectedScreenSourceLabel();
+            }
+            function syncFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key,
+                    newValue: value,
+                }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const windowLabel = await pick('window:2');
+            const screenLabel = await pick('screen:1');
+            // Another window writes the id first, then its label record.
+            const idBeforeLabel = syncFromOtherWindow('selectedScreenSourceId', 'window:9');
+            const idWithLabel = syncFromOtherWindow(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:9', label: 'Browser' })
+            );
+            return {
+                windowLabel,
+                screenLabel,
+                idBeforeLabel,
+                idWithLabel,
+                events,
+            };
+        }"""
+    )
+
+    assert result == {
+        "windowLabel": "Editor",
+        "screenLabel": "Screen 1",
+        "idBeforeLabel": "",
+        "idWithLabel": "Browser",
+        "events": [
+            {"sourceId": "window:2", "sourceLabel": "Editor"},
+            {"sourceId": "screen:1", "sourceLabel": "Screen 1"},
+            {"sourceId": "window:9", "sourceLabel": ""},
+            {"sourceId": "window:9", "sourceLabel": "Browser"},
+        ],
+    }
+
+
+@pytest.mark.frontend
 def test_remember_toggle_uses_current_explicit_title_not_hidden_picker(
     page: Page,
 ) -> None:
