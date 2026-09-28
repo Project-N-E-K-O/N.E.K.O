@@ -195,7 +195,7 @@
             && result.response.status === 403
             && result.payload.error_code === 'csrf_validation_failed'
         ) {
-            await loadCsrfToken();
+            await loadCsrfToken(config.signal);
             result = await sendOnce();
         }
         if (!result.response.ok) {
@@ -1622,7 +1622,13 @@
                 state.cancelPending = false;
                 const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
                 if (restoreEpoch !== state.statusEpoch) return;
-                if (!reconciled) {
+                if (reconciled) {
+                    // The restore may have superseded an initialization retry;
+                    // a canonical status is enough to leave the retry state.
+                    state.initialized = true;
+                    state.initializationError = false;
+                } else {
+                    if (!state.initialized) state.initializationError = true;
                     setMessage(
                         translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                         true
@@ -1640,6 +1646,7 @@
     async function retryConnection() {
         if (state.busy) return;
         state.statusEpoch += 1;
+        const retryEpoch = state.statusEpoch;
         state.busy = true;
         state.initializationError = false;
         setMessage('');
@@ -1665,15 +1672,19 @@
                 window.clearTimeout(pageConfigTimeoutId);
             }
             const status = await reconcileStatus({ timeoutMs: RETRY_CONNECTION_TIMEOUT_MS });
+            if (retryEpoch !== state.statusEpoch) return;
             if (!status) throw new Error('status_unavailable');
             state.initialized = true;
             applyStatus(status);
         } catch (error) {
+            if (retryEpoch !== state.statusEpoch) return;
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);
         } finally {
-            state.busy = false;
-            render();
+            if (retryEpoch === state.statusEpoch) {
+                state.busy = false;
+                render();
+            }
         }
     }
 

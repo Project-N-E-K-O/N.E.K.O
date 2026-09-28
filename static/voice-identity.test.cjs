@@ -153,6 +153,7 @@ function createHarness({
     initialStatusError = false,
     pageConfigGates = {},
     segmentInProgressOnce = null,
+    cancelCsrfFailureOnce = false,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -306,6 +307,10 @@ function createHarness({
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/cancel`) {
+            if (cancelCsrfFailureOnce && !call.options.keepalive) {
+                cancelCsrfFailureOnce = false;
+                return jsonResponse({ error_code: 'csrf_validation_failed' }, { ok: false, status: 403 });
+            }
             if (cancelGate && call.options.keepalive) await cancelGate.promise;
             if (explicitCancelGate && !call.options.keepalive) {
                 await new Promise((resolve, reject) => {
@@ -837,6 +842,50 @@ test('a stalled cancellation after the local lease timer cannot keep the workflo
     assert.equal(harness.elements.get('voice-identity-message').textContent, '本次录入已过期，请重新开始。');
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.elements.get('voice-identity-next').hidden, true);
+});
+
+test('the bounded expiry cancellation also bounds its CSRF token refresh', async () => {
+    const stalledPageConfig = deferred();
+    const harness = createHarness({
+        autoAdvance: false,
+        cancelCsrfFailureOnce: true,
+        pageConfigGates: { 2: stalledPageConfig },
+    });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.fireEnrollmentLeaseTimer();
+    await flush(8);
+    const pageConfig = harness.fetchCalls.filter(call => call.url === '/api/config/page_config').at(-1);
+    assert.equal(harness.fetchCalls.filter(call => call.url === '/api/config/page_config').length, 2);
+    harness.fireStatusTimeouts();
+    await enrolling;
+    await flush(2);
+
+    assert.equal(pageConfig.options.signal.aborted, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '本次录入已过期，请重新开始。');
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+});
+
+test('a BFCache restore supersedes an in-flight connection retry', async () => {
+    const stalledRetryStatus = deferred();
+    const harness = createHarness({ initialStatusError: true, statusGates: { 2: stalledRetryStatus } });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, false);
+
+    const retrying = harness.emit('voice-identity-retry');
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length, 2);
+    await harness.dispatch('pageshow', { persisted: true });
+    // The superseded retry's status read then times out (or aborts) late.
+    harness.fireStatusTimeouts();
+    await retrying;
+    await flush(2);
+
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
