@@ -25,14 +25,24 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output."""
+def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None, model="cogtts"):
+    """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output.
+
+    base_url is optional (defaults to the official open.bigmodel.cn endpoint); the
+    GLM clone resolver passes the glm_base_url persisted at registration time so
+    historical clone entries keep synthesizing against their registration endpoint.
+    model defaults to the native "cogtts"; the GLM clone resolver passes "glm-tts",
+    the only model the official /audio/speech docs list for cloned voices."""
     import httpx
 
     if not voice_id:
         voice_id = "tongtong"
 
-    tts_url = "https://open.bigmodel.cn/api/paas/v4/audio/speech"
+    from utils.glm_tts import GLM_TTS_SPEECH_MODEL, glm_speech_url
+
+    tts_url = glm_speech_url(base_url)
+    # telemetry 按 provider 归类：GLM 克隆音色记 glm_tts，原生 CogTTS 记 cogtts。
+    telemetry_provider = "glm_tts" if model == GLM_TTS_SPEECH_MODEL else "cogtts"
 
     async def setup(response_queue):
         headers = {
@@ -47,7 +57,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
         async def synthesize(text: str, speech_id: str) -> None:
             payload = {
-                "model": "cogtts",
+                "model": model,
                 "input": text[:1024],  # CogTTS最大支持1024字符
                 "voice": voice_id,
                 "response_format": "pcm",
@@ -55,6 +65,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 "speed": 1.0,
                 "volume": 1.0,
                 "stream": True,
+                # 官方 watermark_enabled=false 仅对已在智谱控制台完成「去水印管理」
+                # 的账号生效；未完成的账号服务端忽略该参数照常加水印，本地首包
+                # beep 检测裁剪仍是兜底，两侧叠加不影响普通用户。
+                "watermark_enabled": False,
             }
             async with client.stream(
                 "POST", tts_url, headers=headers, json=payload,
@@ -73,7 +87,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
                 # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
                 # 长输入会高估实际计费/上行的字符数。
-                _record_tts_telemetry("cogtts", min(len(text), 1024))
+                _record_tts_telemetry(telemetry_provider, min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
 
@@ -201,3 +215,41 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         return synthesize, client.aclose
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="CogTTS")
+
+
+def _glm_voice_meta_is_clone(vm) -> bool:
+    return bool(vm and vm.get("provider") == "glm_tts")
+
+
+def _glm_clone_is_selected(ctx) -> bool:
+    """GLM cloned voices are selected via voice_meta.provider (dual to doubao).
+
+    Deliberately does NOT consider config selection (ttsModelProvider=='glm_tts'):
+    the native core_api_type=='glm' CogTTS path is still handled by
+    get_tts_worker's core branch (its key comes from the tts_custom slot). If
+    this entry also claimed config selection, the registry priority would
+    intercept un-cloned native users too and re-authenticate them with
+    assistApiKeyGlm, breaking the existing GLM TTS behavior."""
+    return _glm_voice_meta_is_clone(ctx.voice_meta)
+
+
+def _glm_clone_resolve(ctx):
+    from functools import partial
+
+    from utils.glm_tts import GLM_TTS_DEFAULT_BASE_URL, GLM_TTS_SPEECH_MODEL
+
+    from .dummy import dummy_tts_worker
+
+    vm = ctx.voice_meta or {}
+    api_key = (ctx.cm.get_tts_api_key("glm_tts") or "").strip()
+    if "***" in api_key:
+        api_key = ""
+    if not api_key:
+        logger.warning("GLM 克隆音色已选中但 API Key 缺失，改用 dummy TTS worker")
+        return dummy_tts_worker, None, None
+    # cogtts worker 的 voice 参数官方明确支持复刻音色：直接以克隆音色 ID 合成，
+    # 走同一条 SSE 流式 + 水印检测路径。voice_meta 里存了注册时的 glm_base_url，
+    # 传给 worker 让历史条目继续用注册端点合成（缺失时回退官方默认地址）。
+    base_url = str(vm.get("glm_base_url") or "").strip() or GLM_TTS_DEFAULT_BASE_URL
+    worker = partial(cogtts_tts_worker, base_url=base_url, model=GLM_TTS_SPEECH_MODEL)
+    return worker, api_key, "glm_tts"
