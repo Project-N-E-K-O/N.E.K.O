@@ -1,5 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 import pytest
+from main_logic.asr_client import _AsrSelection
+from main_logic.asr_client import runtime as runtime_module
+from main_logic.asr_client._registry_meta import AsrProviderAvailability
 from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
 import main_logic.core as core_module
 from utils import preferences
@@ -225,8 +228,6 @@ async def test_start_session_handshake_malformed_value_is_ignored(
 
 
 async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> None:
-    import main_logic.asr_client.runtime as runtime_module
-
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     factory = MagicMock()
@@ -338,10 +339,6 @@ async def test_free_core_ignores_persisted_local_asr_preference(monkeypatch) -> 
 async def test_local_asr_preference_reaches_resolver_and_reports_missing_dependency(
     monkeypatch,
 ) -> None:
-    import main_logic.asr_client as asr_client
-    import main_logic.asr_client.runtime as runtime_module
-    from main_logic.asr_client._registry_meta import AsrProviderAvailability
-
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
@@ -355,7 +352,7 @@ async def test_local_asr_preference_reaches_resolver_and_reports_missing_depende
         ),
     )
     resolver = MagicMock(
-        return_value=asr_client._AsrSelection(
+        return_value=_AsrSelection(
             provider_key="faster_whisper",
             endpointing_mode="manual",
             availability=AsrProviderAvailability.MISSING_DEPENDENCY,
@@ -376,8 +373,6 @@ async def test_local_asr_preference_reaches_resolver_and_reports_missing_depende
 
 
 async def test_auto_preference_resolves_exactly_like_no_preference(monkeypatch) -> None:
-    import main_logic.asr_client.runtime as runtime_module
-
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
