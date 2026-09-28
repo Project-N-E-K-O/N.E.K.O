@@ -106,6 +106,36 @@ async def test_cancelling_end_caller_does_not_abandon_owned_connection_close():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_close_error_finishes_retirement_bookkeeping():
+    manager = make_manager()
+    old = manager.session
+
+    async def failing_close():
+        old.close_count += 1
+        raise RuntimeError("provider close failed")
+
+    old.close = failing_close
+
+    with pytest.raises(RuntimeError, match="provider close failed"):
+        await manager.end_session(by_server=True)
+
+    retirement = manager._session_retirements[-1]
+    assert retirement.handoff_safe.is_set()
+    assert retirement.cleanup_complete.is_set()
+    assert manager._connection_records == []
+
+    # A later successful retirement must be able to prune the completed failed
+    # retirement instead of retaining every historical failure forever.
+    successor = ControlledClient()
+    successor.allow_close.set()
+    manager.session = successor
+    manager.is_active = True
+    await manager.end_session(by_server=True)
+    assert retirement not in manager._session_retirements
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_repeated_end_reuses_retirement_and_preserves_single_memory_boundary():
     manager = make_manager()
     old = manager.session

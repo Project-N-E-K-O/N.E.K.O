@@ -442,8 +442,12 @@ class SessionOwnershipMixin:
         record.handoff_safe.set()
         if record.tts is not None and record.tts.cleanup_task is not None:
             close_tasks.append(record.tts.cleanup_task)
+        cleanup_errors = []
         if close_tasks:
-            await asyncio.gather(*close_tasks)
+            results = await asyncio.gather(*close_tasks, return_exceptions=True)
+            cleanup_errors = [
+                result for result in results if isinstance(result, BaseException)
+            ]
         record.cleanup_complete.set()
         # Retain unresolved isolation and live resources, not a lifetime-long
         # history of closed sockets and completed operations.
@@ -453,3 +457,5 @@ class SessionOwnershipMixin:
             if item is record or not item.cleanup_complete.is_set()
             or (item.memory_completion is not None and not item.memory_completion.done())
         ]
+        if cleanup_errors:
+            raise cleanup_errors[0]

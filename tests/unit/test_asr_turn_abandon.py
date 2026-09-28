@@ -117,6 +117,35 @@ async def test_unclaimed_dispatch_pause_expires_and_releases_the_lane(caplog):
     await arbiter.shutdown()
 
 
+async def test_stuck_preparation_timeout_fails_closed_instead_of_wedging_lane():
+    sent_events: list[dict] = []
+    arbiter: RealtimeResponseArbiter | None = None
+
+    async def send(event):
+        sent_events.append(dict(event))
+
+    _client, arbiter = _make_client(send)
+    arbiter._dispatch_pause_timeout = 0.05
+    abort_transport = AsyncMock()
+    arbiter._abort_transport = abort_transport
+    arbiter.begin_turn_preparation("turn-stuck")
+    ticket = await arbiter.enqueue(source="proactive")
+
+    with pytest.raises(ConnectionError, match="turn preparation"):
+        await asyncio.wait_for(ticket.sent, 2)
+
+    assert arbiter._connection_available is False
+    assert arbiter._turn_preparations == 1
+    assert sent_events == []
+    abort_transport.assert_awaited_once()
+
+    # The owner task would normally execute this in its finally block. The
+    # test releases the local token before shutdown so the counter itself never
+    # becomes negative while the connection is being retired.
+    arbiter.end_turn_preparation()
+    await arbiter.shutdown()
+
+
 async def test_claimed_dispatch_pause_is_not_expired():
     """Counter-test: expiry must not fire while the pause is still owned.
 

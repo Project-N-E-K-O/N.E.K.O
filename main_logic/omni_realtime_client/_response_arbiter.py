@@ -809,14 +809,24 @@ class RealtimeResponseArbiter:
                 return
             logger.warning(
                 "realtime dispatch held paused for its full %.1fs bound "
-                "(owner=%s preparations=%d current=%s queued=%d); releasing "
-                "the lane because nothing claimed the pause",
+                "(owner=%s preparations=%d current=%s queued=%d)",
                 timeout,
                 self._pause_owner,
                 self._turn_preparations,
                 self.current_source,
                 self._queue.qsize(),
             )
+            if self._turn_preparations:
+                # A preparation owns the barrier until its caller reaches the
+                # matching end_turn_preparation() in its finally block.
+                # Opening dispatch while that owner is still alive would let a
+                # successor response cross an unfinished interruption. The
+                # pause timeout therefore fails closed for a stuck preparation
+                # instead of pretending resume_dispatch() released the lane.
+                await self._tear_down_transport(
+                    "realtime turn preparation exceeded dispatch pause timeout"
+                )
+                return
             self.resume_dispatch()
 
         self._pause_expiry = loop.create_task(
