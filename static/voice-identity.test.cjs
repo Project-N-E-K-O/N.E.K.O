@@ -187,6 +187,7 @@ function createHarness({
     let statusRequestCount = 0;
     const mediaConstraintCalls = [];
     let timerId = 0;
+    const statusTimeouts = new Map();
     let intervalCallback = null;
     let enrollmentLeaseTimeoutCallback = null;
     let promptPaintFrames = 0;
@@ -458,7 +459,8 @@ function createHarness({
             } else if (delay === 400) {
                 // Successful flush acknowledgement clears this watchdog.
             } else if (delay === 1000) {
-                // Prompt-paint watchdog; the animation-frame callback normally settles it first.
+                // Both status and prompt-paint watchdogs are driven explicitly.
+                statusTimeouts.set(timerId, callback);
             } else if (delay === 0) {
                 Promise.resolve().then(callback);
             } else if (delay === WINDOW_CLOSE_START_WAIT_MS) {
@@ -470,7 +472,7 @@ function createHarness({
             }
             return timerId;
         },
-        clearTimeout() {},
+        clearTimeout(id) { statusTimeouts.delete(id); },
         requestAnimationFrame(callback) {
             promptPaintFrames += 1;
             if (promptPaintGate && promptPaintFrames === 2) {
@@ -500,7 +502,8 @@ function createHarness({
                 async getUserMedia(constraints) {
                     mediaRequests += 1;
                     mediaConstraintCalls.push(constraints);
-                    if (mediaGate) await mediaGate.promise;
+                    const gate = typeof mediaGate === 'function' ? mediaGate(mediaRequests) : mediaGate;
+                    if (gate) await gate.promise;
                     const requestError = Array.isArray(mediaError)
                         ? mediaError[mediaRequests - 1] : mediaError;
                     if (requestError) throw requestError;
@@ -553,6 +556,11 @@ function createHarness({
         },
         get mediaRequests() {
             return mediaRequests;
+        },
+        fireStatusTimeouts() {
+            const callbacks = [...statusTimeouts.values()];
+            statusTimeouts.clear();
+            callbacks.forEach(callback => callback());
         },
         mediaConstraintCalls,
         emitAudio(samples) {
@@ -833,6 +841,64 @@ test('cancelling while microphone permission is pending releases the controls im
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
     mediaGate.resolve();
     await enrolling;
+});
+
+test('a cancelled permission response cannot stop a successor capture', async () => {
+    const oldPermission = deferred();
+    const harness = createHarness({
+        mediaGate: request => request === 1 ? oldPermission : null,
+        manualAudio: true,
+    });
+    await harness.initialize();
+    const oldStart = harness.emit('voice-identity-start');
+    await flush(2);
+    await harness.emit('voice-identity-cancel');
+    const successor = harness.emit('voice-identity-start');
+    await flush(8);
+    const stream = harness.mediaStreams[0];
+    const context = harness.getAudioContext();
+    assert.ok(stream);
+    oldPermission.resolve();
+    await oldStart;
+    assert.equal(harness.mediaStreams[1].track.stopped, true);
+    assert.equal(stream.track.stopped, false);
+    assert.equal(context.state, 'running');
+    assert.equal(harness.elements.get('voice-identity-start').hidden, true);
+    await harness.emit('voice-identity-cancel');
+    await successor;
+});
+
+test('BFCache status timeout unlocks controls and ignores its late response', async () => {
+    const pending = deferred();
+    const harness = createHarness({ statusGates: { 2: pending } });
+    await harness.initialize();
+    const restoring = harness.dispatch('pageshow', { persisted: true });
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    harness.fireStatusTimeouts();
+    await restoring;
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
+    const statusRequest = harness.fetchCalls.filter(call => call.url.endsWith('/status')).at(-1);
+    assert.equal(statusRequest.options.signal.aborted, true);
+    pending.resolve(jsonResponse({ has_profile: true, requested_enabled: true }));
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-start').hidden, false);
+});
+
+test('an older BFCache restore cannot unlock the newer restore', async () => {
+    const first = deferred();
+    const second = deferred();
+    const harness = createHarness({ statusGates: { 2: first, 3: second } });
+    await harness.initialize();
+    const oldRestore = harness.dispatch('pageshow', { persisted: true });
+    const newRestore = harness.dispatch('pageshow', { persisted: true });
+    first.resolve(jsonResponse({ has_profile: false }));
+    await oldRestore;
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    second.resolve(jsonResponse({ has_profile: false }));
+    await newRestore;
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
 test('resumed enrollment shows the canonical segment prompt before microphone setup', async () => {

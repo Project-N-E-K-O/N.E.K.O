@@ -1039,6 +1039,16 @@
         let segmentRequestPending = false;
         let finalSegmentCommitted = false;
         let preserveActiveSession = false;
+        let ownedMediaStream = null;
+        let ownedAudioContext = null;
+        const stopOwnedMicrophone = function () {
+            if (!ownedMediaStream && !ownedAudioContext) {
+                if (!isStale()) stopMicrophone();
+                return;
+            }
+            if (state.mediaStream !== ownedMediaStream || state.audioContext !== ownedAudioContext) return;
+            stopMicrophone();
+        };
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
         state.busy = true;
@@ -1049,6 +1059,8 @@
         render();
         try {
             await ensureMicrophone();
+            ownedMediaStream = state.mediaStream;
+            ownedAudioContext = state.audioContext;
             if (isStale()) return;
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
@@ -1109,6 +1121,8 @@
                     state.saving = false;
                     render();
                     await ensureMicrophone();
+                    ownedMediaStream = state.mediaStream;
+                    ownedAudioContext = state.audioContext;
                     if (isStale()) return;
                     await waitForPromptPaint();
                     if (isStale()) return;
@@ -1264,7 +1278,7 @@
             state.uiPhase = 'success';
             setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
-            stopMicrophone();
+            stopOwnedMicrophone();
             if (isStale()) return;
             const reconciled = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
             const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
@@ -1282,7 +1296,7 @@
                 if (!isStale()) setMessage(microphoneError ? translate('voiceIdentity.microphoneDenied', '无法使用麦克风，请检查权限和设备。') : enrollmentErrorMessage(error), true);
             }
         } finally {
-            stopMicrophone();
+            stopOwnedMicrophone();
             if (settleStart && state.startSettled === startSettled) { state.startSettled = null; settleStart(); }
             if (operationEpoch !== state.statusEpoch && !state.cancelPending && !state.closeStarted) return;
             if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
@@ -1449,7 +1463,8 @@
         });
         window.addEventListener('pageshow', async function (event) {
             if (!event.persisted) return;
-            state.statusEpoch += 1;
+            const restoreEpoch = state.statusEpoch + 1;
+            state.statusEpoch = restoreEpoch;
             if (state.startAbort) state.startAbort.abort();
             if (state.uploadAbort) state.uploadAbort.abort();
             if (state.statusAbort) state.statusAbort.abort();
@@ -1459,6 +1474,7 @@
             render();
             try {
                 const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+                if (restoreEpoch !== state.statusEpoch) return;
                 if (!reconciled) {
                     setMessage(
                         translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
@@ -1466,8 +1482,10 @@
                     );
                 }
             } finally {
-                state.busy = false;
-                render();
+                if (restoreEpoch === state.statusEpoch) {
+                    state.busy = false;
+                    render();
+                }
             }
         });
     }
