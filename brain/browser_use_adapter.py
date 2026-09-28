@@ -789,7 +789,8 @@ class BrowserUseAdapter:
                 for mode in mode_order:
                     try:
                         print(f"[BrowserUse] trying mode={mode}", flush=True)
-                        llm = self._build_llm(mode=mode)                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
+                        llm = self._build_llm(mode=mode)
+                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
                         if ip_info_future is not None:
                             try:
                                 ip_addr, country = await asyncio.wait_for(
@@ -979,7 +980,8 @@ class BrowserUseAdapter:
                         logger.debug(
                             "[BrowserUse] overlay removal during cancel failed: %s",
                             overlay_err,
-                        )                # Re-raise so the dispatch wrapper hits its CancelledError branch
+                        )
+                # Re-raise so the dispatch wrapper hits its CancelledError branch
                 # and marks the task as "cancelled" (not "failed"). Swallowing
                 # cancels here caused the HUD to show a cancel as a failure.
                 raise

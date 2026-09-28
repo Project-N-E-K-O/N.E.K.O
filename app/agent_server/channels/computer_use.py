@@ -81,8 +81,7 @@ async def _run_computer_use_task(
             info["error"] = cu_detail
             logger.error("[ComputerUse] Task %s aborted: %s", task_id, cu_detail)
         else:
-            session_id = info.get("session_id")
-            future = loop.run_in_executor(None, _shared.Modules.computer_use.run_instruction, instruction, session_id)
+            future = loop.run_in_executor(None, _shared.Modules.computer_use.run_instruction, instruction)
             res = await future
             if res is None:
                 logger.debug("[ComputerUse] run_instruction returned None, treating as success")

@@ -767,7 +767,6 @@ class ComputerUseAdapter:
         )
 
         # Kimi-style agent state
-        self._current_session_id: Optional[str] = None
         self.actions: List[str] = []
         self.observations: List[bytes] = []
         self.cots: List[Dict[str, str]] = []
@@ -1187,9 +1186,7 @@ class ComputerUseAdapter:
         fake.sleep = _cancellable_sleep
         return fake
 
-    def run_instruction(
-        self, instruction: str, session_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def run_instruction(self, instruction: str) -> Dict[str, Any]:
         """Execute a natural-language instruction via GUI automation.
 
         Main loop: screenshot → predict → execute → repeat.
@@ -1205,9 +1202,7 @@ class ComputerUseAdapter:
         self._cancel_event.clear()
         self._done_event.clear()
 
-        if session_id is None or session_id != self._current_session_id:
-            self.reset()
-            self._current_session_id = session_id
+        self.reset()
 
         last_action = ""
         success = False

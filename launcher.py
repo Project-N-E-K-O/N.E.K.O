@@ -21,7 +21,6 @@ import os
 import sys
 
 from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding
-from launcher_core.runtime import start_launcher
 
 
 if __name__ == "__main__":
@@ -48,4 +47,9 @@ if __name__ == "__main__":
         )
 
         sys.exit(_run_voice_identity_release_smoke())
+    # Deferred so aux subprocesses (media smoke / metadata worker /
+    # voice-identity smoke) re-entering this file never pay the full
+    # runtime import chain (per PR #3182 review).
+    from launcher_core.runtime import start_launcher
+
     sys.exit(start_launcher())

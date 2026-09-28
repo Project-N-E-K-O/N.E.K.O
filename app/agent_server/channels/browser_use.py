@@ -136,7 +136,8 @@ async def dispatch(
                     except Exception as e:
                         logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
                     bres = await adapter.run_instruction(
-                        result.task_description,                    )
+                        result.task_description,
+                    )
                 if bu_info.get("status") == "cancelled":
                     # cancel_task set the terminal state before run_instruction
                     # returned (e.g. via fire-and-forget CDP teardown winning

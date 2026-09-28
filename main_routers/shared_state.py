@@ -61,14 +61,10 @@ _UNSET = object()
 _state = {
     'role_state': _UNSET,            # NEW canonical store (dict[str, RoleState])
     'sync_message_queue': _UNSET,    # _RoleStateFieldView adapter (legacy API)
-    'sync_shutdown_event': _UNSET,   # _RoleStateFieldView adapter (legacy API)
     'session_manager': _UNSET,       # _RoleStateFieldView adapter (legacy API)
     'session_id': _UNSET,            # _RoleStateFieldView adapter (legacy API)
-    'sync_process': _UNSET,          # _RoleStateFieldView adapter (legacy API)
-    'websocket_locks': _UNSET,       # _RoleStateFieldView adapter (legacy API)
     'templates': _UNSET,
     'config_manager': _UNSET,
-    'logger': _UNSET,
     'initialize_character_data': _UNSET,  # Function reference
     'switch_current_catgirl_fast': _UNSET,  # Fast path for current-catgirl switch
     'init_one_catgirl': _UNSET,             # Fast path for add/update single catgirl
@@ -232,12 +228,6 @@ def get_sync_message_queue() -> Dict:
     """
     _check_initialized('sync_message_queue')
     return _state['sync_message_queue']
-
-
-def get_sync_shutdown_event() -> Dict:
-    """Get a dict-like view of per-role sync_shutdown_event."""
-    _check_initialized('sync_shutdown_event')
-    return _state['sync_shutdown_event']
 
 
 def get_session_manager() -> Dict:
