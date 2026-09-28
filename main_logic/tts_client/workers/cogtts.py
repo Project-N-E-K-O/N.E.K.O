@@ -65,6 +65,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                 "speed": 1.0,
                 "volume": 1.0,
                 "stream": True,
+                # 官方 watermark_enabled=false 仅对已在智谱控制台完成「去水印管理」
+                # 的账号生效；未完成的账号服务端忽略该参数照常加水印，本地首包
+                # beep 检测裁剪仍是兑底，两侧叠加不影响普通用户。
+                "watermark_enabled": False,
             }
             async with client.stream(
                 "POST", tts_url, headers=headers, json=payload,

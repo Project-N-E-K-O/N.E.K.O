@@ -240,6 +240,10 @@ class GlmVoiceCloneClient:
             "voice": voice_id,
             "response_format": "wav",
             "stream": False,
+            # Same policy as the cogtts worker: takes effect only for accounts
+            # that completed the de-watermark setup in the Zhipu console; the
+            # server ignores it for everyone else.
+            "watermark_enabled": False,
         }
         url = glm_speech_url(self.base_url)
         try:

@@ -1566,7 +1566,8 @@ function updateVoiceDesignHint(provider) {
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
 function isDirectLinkUnsupportedProvider(provider) {
-    return provider === 'mimo' || provider === 'vllm_omni' || provider === 'doubao_tts' || provider === 'glm_tts';
+    // glm_tts 已支持直链（后端 /voice_clone_direct 下载音频后走两步注册），不再禁用。
+    return provider === 'mimo' || provider === 'vllm_omni' || provider === 'doubao_tts';
 }
 
 function updateCloneMethodForProvider(provider) {

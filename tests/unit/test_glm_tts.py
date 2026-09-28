@@ -506,6 +506,94 @@ async def test_glm_voice_clone_route_rejects_oversized_audio_with_413(monkeypatc
 
 
 @pytest.mark.unit
+async def test_glm_direct_link_clone_registers_via_two_step_flow(monkeypatch):
+    """/voice_clone_direct must accept glm_tts: download → normalize → MD5 dedup
+    → GlmVoiceCloneClient.clone_voice → persist into the __GLM_TTS__ bucket."""
+    from main_routers.characters_router import voice_cloning as vc
+
+    saved: dict = {}
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "glm_tts"
+            return "glm-key-1234"
+
+        def find_voice_by_audio_md5(self, storage_key, audio_md5, ref_language):
+            assert storage_key == f"{GLM_VOICE_STORAGE_KEY}key-1234"
+            return None
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved["storage_key"] = storage_key
+            saved["voice_id"] = voice_id
+            saved["voice_data"] = voice_data
+
+    class _FakeClient:
+        def __init__(self, api_key, base_url=None):
+            saved["client_args"] = (api_key, base_url)
+
+        async def clone_voice(self, audio_buffer, *, voice_name, filename, **kwargs):
+            saved["voice_name"] = voice_name
+            saved["audio"] = audio_buffer.getvalue()
+            return "voice_clone_direct_001"
+
+    class _FakeHeadResp:
+        status_code = 200
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(vc, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(vc, "GlmVoiceCloneClient", _FakeClient)
+
+    async def _noop_validate(url):
+        return None
+
+    async def _fake_head(method, url, **kwargs):
+        return _FakeHeadResp()
+
+    async def _fake_download(url, max_file_size=None):
+        return "sample.wav", b"wav-bytes"
+
+    def _fake_normalize(buffer, filename):
+        return io.BytesIO(b"normalized-wav"), "sample_norm.wav", {
+            "original": {"sample_rate": 24000, "channels": 1},
+            "normalized": {"sample_rate": 24000},
+        }
+
+    monkeypatch.setattr(vc, "_validate_direct_link_target", _noop_validate)
+    monkeypatch.setattr(vc, "_request_direct_link_follow_redirects", _fake_head)
+    monkeypatch.setattr(vc, "_download_direct_link_audio", _fake_download)
+    # glm_tts 直链分支在函数内局部导入 normalize_voice_clone_api_audio（与 minimax
+    # 分支同构），monkeypatch 必须打到 utils.audio 源头才能被运行时局部导入看到。
+    monkeypatch.setattr("utils.audio.normalize_voice_clone_api_audio", _fake_normalize)
+
+    payload = {
+        "direct_link": "https://example.com/sample.wav",
+        "prefix": "Miko",
+        "ref_language": "ch",
+        "provider": "glm_tts",
+    }
+
+    class _FakeRequest:
+        async def json(self):
+            return payload
+
+    resp = await vc.voice_clone_direct(_FakeRequest())
+    body = json.loads(resp.body)
+    assert "voice_id" in body, f"unexpected response: {body} (status={getattr(resp, 'status_code', '?')})"
+
+    assert body["voice_id"] == "voice_clone_direct_001"
+    assert body["provider"] == "glm_tts"
+    assert body["is_direct_link"] is True
+    assert saved["storage_key"] == f"{GLM_VOICE_STORAGE_KEY}key-1234"
+    assert saved["voice_data"]["provider"] == "glm_tts"
+    assert saved["voice_data"]["is_direct_link"] is True
+    assert saved["client_args"] == ("glm-key-1234", GLM_TTS_DEFAULT_BASE_URL)
+    assert saved["audio"] == b"normalized-wav"
+    assert saved["voice_name"].startswith("neko_miko_")
+
+
+@pytest.mark.unit
 def test_glm_tts_frontend_and_backend_are_wired():
     voice_clone_html = Path("templates/voice_clone.html").read_text(encoding="utf-8")
     voice_clone_js = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
@@ -526,10 +614,12 @@ def test_glm_tts_frontend_and_backend_are_wired():
     assert "glm_tts: 'glm'" in voice_clone_js
     assert "['glm_tts', 'assistApiKeyGlm']" in voice_clone_js
     assert "voice.glmTtsApiRequired" in voice_clone_js
-    # 直链克隆禁用：/voice_clone_direct 的 valid_providers 不含 glm_tts，前端必须
-    # 像 mimo/doubao_tts 一样禁用直链方式，否则提交会吃到 TTS_PROVIDER_INVALID。
+    # 直链克隆已支持：/voice_clone_direct 的 valid_providers 含 glm_tts（下载音频后
+    # 走两步注册），前端不得把 glm_tts 列入直链禁用名单。
     direct_link_fn = voice_clone_js.split("function isDirectLinkUnsupportedProvider")[1].split("}")[0]
-    assert "'glm_tts'" in direct_link_fn
+    assert "'glm_tts'" not in direct_link_fn
+    assert "'elevenlabs', 'glm_tts']" in router_py  # valid_providers 直达白名单
+    assert "GlmTtsError" in router_py
     assert "key='glm_tts'" in registry_py
     assert "_glm_clone_is_selected" in registry_py
     # TTS_PROVIDER_REGISTRY 元数据（wehos review）：resolver 返回 provider_key='glm_tts'，

@@ -965,7 +965,7 @@ async def voice_clone_direct(request: Request):
         ref_language = 'ch'
 
     # 验证服务商参数
-    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'cosyvoice_intl', 'elevenlabs']
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'cosyvoice_intl', 'elevenlabs', 'glm_tts']
     if provider not in valid_providers:
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
@@ -995,6 +995,12 @@ async def voice_clone_direct(request: Request):
                 'code': 'ELEVENLABS_API_KEY_MISSING',
                 'message': '未配置 ElevenLabs API Key，请先在设置中填写'
             }, status_code=400)
+        if provider == 'glm_tts':
+            return JSONResponse({
+                'error': 'GLM_TTS_API_KEY_MISSING',
+                'code': 'GLM_TTS_API_KEY_MISSING',
+                'message': '未配置智谱 GLM API Key，请先在设置中填写'
+            }, status_code=400)
         else:
             return JSONResponse({
                 'error': 'TTS_AUDIO_API_KEY_MISSING',
@@ -1017,6 +1023,10 @@ async def voice_clone_direct(request: Request):
         base_url = await _get_elevenlabs_base_url(_config_manager)
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
+    elif provider == 'glm_tts':
+        base_url = GLM_TTS_DEFAULT_BASE_URL
+        storage_key = f'{GLM_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = '智谱GLM'
     else:  # cosyvoice / cosyvoice_intl
         from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
         base_url = (cosyvoice_runtime or {}).get('base_url', '')
@@ -1173,6 +1183,70 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
+        elif provider == 'glm_tts':
+            # ========== GLM 直链克隆流程（照 MiniMax 模式：下载 → 上传 → 注册） ==========
+            # 与 minimax 分支同构：函数内局部导入（其余分支也这么写），避免与本函数
+            # 其它分支的局部导入绑定冲突（UnboundLocalError）。
+            import hashlib
+
+            from utils.audio import normalize_voice_clone_api_audio
+
+            logger.info(f"开始下载直链音频用于GLM声音复刻: {direct_link}")
+            filename, audio_bytes = await _download_direct_link_audio(
+                direct_link,
+                max_file_size=GLM_VOICE_CLONE_MAX_AUDIO_BYTES,
+            )
+
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+
+            normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
+                io.BytesIO(audio_bytes),
+                filename,
+            )
+            # 与文件上传路径同源：规范化后超 10MB 直接 413，不打远端 API。
+            normalized_size = len(normalized_buffer.getvalue())
+            if normalized_size > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
+                return JSONResponse({
+                    'error': f'GLM 示例音频超过 10MB 上限（规范化后 {normalized_size / (1024 * 1024):.1f}MB），请裁剪后重试',
+                    'code': 'GLM_TTS_AUDIO_TOO_LARGE',
+                    'provider': provider,
+                }, status_code=413)
+
+            voice_name = build_glm_voice_name(prefix, audio_md5, ref_language)
+            glm_client = GlmVoiceCloneClient(api_key=api_key, base_url=base_url)
+            voice_id = await glm_client.clone_voice(
+                normalized_buffer,
+                voice_name=voice_name,
+                filename=normalized_filename,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'direct_link': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'glm_tts',
+                'glm_base_url': base_url,
+                'glm_voice_name': voice_name,
+                'clone_model': 'glm-tts-clone',
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+
         else:  # cosyvoice / cosyvoice_intl
             # ========== CosyVoice 直链克隆流程 ==========
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
@@ -1256,13 +1330,19 @@ async def voice_clone_direct(request: Request):
             'code': 'ELEVENLABS_UPSTREAM_ERROR',
             'provider': provider,
         }, status_code=502)
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, GlmTtsError) as e:
         logger.error(f"{provider_label} 直链音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:
             return JSONResponse({'error': error_detail, 'provider': provider}, status_code=408)
         elif '下载' in error_detail:
             return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
+        elif provider == 'glm_tts' and '10MB' in error_detail:
+            return JSONResponse({
+                'error': error_detail,
+                'code': 'GLM_TTS_AUDIO_TOO_LARGE',
+                'provider': provider,
+            }, status_code=413)
         return JSONResponse({
             'error': f'{provider_label}音色注册失败: {error_detail}',
             'provider': provider
