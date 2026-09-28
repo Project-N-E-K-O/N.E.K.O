@@ -2118,6 +2118,11 @@
                 S.independentAsrAuthoritative = true;
                 S.voiceInputResourceOptimizationAuthoritative = true;
                 S.independentAsrProviderPreferenceAuthoritative = true;
+                // An open voice panel decided its local-ASR switch from the boot
+                // default; let it re-decide now that the persisted preference is in.
+                try {
+                    window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
+                } catch (_) {}
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values

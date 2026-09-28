@@ -3522,6 +3522,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         S.independentAsrProviderPreference = enabled
                             ? 'faster_whisper'
                             : 'auto';
+                        // 依赖不可用时关掉就收起开关，免得它又被打开、下一次会话再选中缺失的 provider。
+                        reconcileLocalAsrSetting();
                         markVoiceSettingsPending();
                         updateVoiceRecognitionUi();
                         persistVoiceSettingChange();
@@ -3694,9 +3696,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function onVoiceSettingsPendingChanged() {
+                // 其它窗口改了偏好也会走到这里：开关的有无跟着偏好走。
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
+            // 可用性（能力刷新）和偏好（设置 GET 合并）都可能在面板打开后才到，
+            // 两者任一变化都要重新决定本地语音识别开关的有无。
             function onCoreApiCapabilityChanged() {
                 reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
@@ -3752,6 +3758,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             addVoiceWindowListener(
                 'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:conversation-settings-hydrated',
                 onCoreApiCapabilityChanged
             );
             addVoiceWindowListener(

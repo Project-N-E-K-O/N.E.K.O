@@ -18,6 +18,7 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
     "window:neko:core-api-capability-changed",
+    "window:neko:conversation-settings-hydrated",
     "window:neko:speaker-device-changed",
 )
 
@@ -771,6 +772,52 @@ def test_late_local_asr_toggle_is_disabled_while_the_master_switch_is_off(
     )
 
     assert result["disabled"] is True
+    assert result["preference"] == "auto"
+
+
+@pytest.mark.frontend
+def test_local_asr_toggle_follows_the_preference_hydrated_while_open(
+    page: Page,
+) -> None:
+    # Local ASR is known to be unavailable, the panel opens before the settings
+    # GET lands, then the persisted preference turns out to be faster_whisper:
+    # the switch must appear so the user can turn it off.
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = false;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const count = () => panel.querySelectorAll('input[type="checkbox"]').length;
+            const before = count();
+
+            state.independentAsrProviderPreference = 'faster_whisper';
+            window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
+            const afterHydration = count();
+
+            // Turning it off while unavailable folds the switch away at once.
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const localInput = inputs[inputs.length - 1];
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return {
+                before,
+                afterHydration,
+                afterTurnOff: count(),
+                preference: state.independentAsrProviderPreference,
+            };
+        }"""
+    )
+
+    assert result["before"] == 2
+    assert result["afterHydration"] == 3
+    assert result["afterTurnOff"] == 2
     assert result["preference"] == "auto"
 
 
