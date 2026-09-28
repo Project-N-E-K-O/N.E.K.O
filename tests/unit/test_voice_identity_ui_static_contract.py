@@ -122,6 +122,20 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     template = (ROOT / "templates/voice_identity.html").read_text(encoding="utf-8")
     stylesheet = (ROOT / "static/css/voice_identity.css").read_text(encoding="utf-8")
 
+    light_theme = re.search(r":root\s*\{(?P<body>.*?)\}", stylesheet, re.DOTALL)
+    dark_theme = re.search(
+        r'\[data-theme="dark"\]\s*\{(?P<body>.*?)\}', stylesheet, re.DOTALL
+    )
+    assert light_theme is not None
+    assert dark_theme is not None
+
+    def css_color(theme: re.Match[str], name: str) -> str:
+        match = re.search(
+            rf"--{name}:\s*(#[0-9a-fA-F]{{6}})", theme.group("body")
+        )
+        assert match is not None
+        return match.group(1)
+
     assert '<title data-i18n="voiceIdentity.pageTitle">Owner 声纹</title>' in template
     assert 'class="voice-identity-shell container"' in template
     assert 'class="voice-identity-header container-header page-title-bar"' in template
@@ -161,7 +175,24 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert "outline: 3px solid var(--voice-focus)" in stylesheet
     assert _contrast_ratio("#075b80", "#f8fcff") >= 4.5
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
-    assert _contrast_ratio("#536b7b", "#e9f5ff") >= 4.5
+    assert _contrast_ratio(
+        css_color(light_theme, "voice-muted"),
+        css_color(light_theme, "voice-panel-soft"),
+    ) >= 4.5
+    assert _contrast_ratio(
+        css_color(dark_theme, "voice-muted"),
+        css_color(dark_theme, "voice-panel-soft"),
+    ) >= 4.5
+    assert re.search(
+        r"\.voice-activity-state\s*\{[^}]*color:\s*var\(--voice-muted\)",
+        stylesheet,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"\.capture-status\s*\{[^}]*background:\s*var\(--voice-panel-soft\)",
+        stylesheet,
+        re.DOTALL,
+    )
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     assert "padding: 18px 24px" in stylesheet
