@@ -13,7 +13,6 @@ import type { PluginMeta } from '@/types/api'
 import {
   useGridWorkbench,
   normalizeSearchPart,
-  safePinyin,
   type FilterMode,
   type LayoutMode,
   type QualifierMatcher,
@@ -32,6 +31,9 @@ export type PluginWorkbenchItem = PluginMeta & {
   displayName?: string
   displayDescription?: string
   displayShortDescription?: string
+  entry_count?: number
+  dependency_count?: number
+  has_input_schema?: boolean
 }
 
 const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter']
@@ -46,29 +48,24 @@ function hasUi(plugin: PluginWorkbenchItem): boolean {
 }
 
 function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
-  const name = plugin.displayName || plugin.name
-  const description = plugin.displayDescription || plugin.description
-  const shortDescription = plugin.displayShortDescription || plugin.short_description
-  const textParts = [
+  return [
     plugin.id,
-    name,
-    description,
-    shortDescription,
+    plugin.displayName || plugin.name,
+    plugin.displayDescription || plugin.description,
+    plugin.displayShortDescription || plugin.short_description,
     plugin.type,
     plugin.version,
-  ]
+  ].map(normalizeSearchPart).filter(Boolean).join('\n')
+}
 
-  const pinyinParts = [name, description, shortDescription].flatMap((value) => {
+function buildPluginPinyinIndex(plugin: PluginWorkbenchItem, search: (value: string, pattern: 'pinyin' | 'first') => string): string {
+  const textParts = [plugin.displayName || plugin.name, plugin.displayDescription || plugin.description, plugin.displayShortDescription || plugin.short_description]
+  return textParts.flatMap((value) => {
     const source = value || ''
-    const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
-    const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
+    const full = search(source, 'pinyin').replace(/\s+/g, ' ').trim()
+    const initials = search(source, 'first').replace(/\s+/g, '').trim()
     return [full, full.replace(/\s+/g, ''), initials]
-  })
-
-  return [...textParts, ...pinyinParts]
-    .map(normalizeSearchPart)
-    .filter(Boolean)
-    .join('\n')
+  }).map(normalizeSearchPart).filter(Boolean).join('\n')
 }
 
 // ─── qualifier matchers ─────────────────────────────────────────────
@@ -159,12 +156,12 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
         return !!(plugin.displayDescription || plugin.description)?.trim()
       case 'entries':
       case 'entry':
-        return (plugin.entries?.length || 0) > 0
+        return (plugin.entry_count ?? plugin.entries?.length ?? 0) > 0
       case 'dependencies':
       case 'dependency':
         return (plugin.dependencies?.length || 0) > 0
       case 'schema':
-        return !!plugin.input_schema
+        return plugin.has_input_schema === true || !!plugin.input_schema
       case 'actions':
         return (plugin.list_actions?.length || 0) > 0
       case 'ui':
@@ -221,6 +218,7 @@ export function usePluginWorkbench<
       predicate: (item) => item.type === groupId,
     })),
     buildSearchIndex: buildPluginSearchIndex,
+    buildPinyinSearchIndex: buildPluginPinyinIndex,
     qualifierMatchers: pluginQualifiers,
   })
 

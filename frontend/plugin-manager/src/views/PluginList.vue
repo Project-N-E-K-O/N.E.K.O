@@ -28,9 +28,6 @@
     <section
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
-      v-motion
-      :initial="{ opacity: 0, y: 16, filter: 'blur(4px)' }"
-      :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 360, type: 'spring', stiffness: 240, damping: 24 } }"
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
@@ -264,16 +261,14 @@
 
         <template v-else>
           <div
-            v-for="(section, si) in pluginSections"
+            v-for="section in pluginSections"
             :key="section.key"
-            v-motion
-            :initial="{ opacity: 0, y: 20 }"
-            :enter="{ opacity: 1, y: 0, transition: { delay: 120 + si * 80, duration: 420, type: 'spring', stiffness: 220, damping: 22 } }"
           >
             <PluginGridSection
               :title="section.title"
               :icon="section.icon"
               :items="section.items"
+              :motion-phase="filterText.trim() ? 'filter' : 'initial'"
               :layout-mode="layoutMode"
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
@@ -321,90 +316,93 @@
       </div>
     </aside>
 
-    <!-- Floating multi-select action bar -->
-    <Transition name="float-bar">
-      <div v-if="multiSelectEnabled" class="floating-select-bar" data-yui-guide-id="plugin-list-float-bar">
-        <!-- Batch operations row (visible when plugins are selected) -->
-        <Transition name="batch-row">
-          <div v-if="selectedCount > 0" class="floating-select-bar__batch">
-            <button
-              class="fab-action fab-action--batch fab-action--success"
-              :disabled="batchBusy"
-              @click="handleBatchStart"
-            >
-              <el-icon><VideoPlay /></el-icon>
-              <span>{{ $t('plugins.start') }}</span>
-            </button>
-            <button
-              class="fab-action fab-action--batch fab-action--warn"
-              :disabled="batchBusy"
-              @click="handleBatchStop"
-            >
-              <el-icon><VideoPause /></el-icon>
-              <span>{{ $t('plugins.stop') }}</span>
-            </button>
-            <button
-              class="fab-action fab-action--batch"
-              :disabled="batchBusy"
-              @click="handleBatchReload"
-            >
-              <el-icon><RefreshRight /></el-icon>
-              <span>{{ $t('plugins.reload') }}</span>
-            </button>
-            <div class="floating-select-bar__batch-divider" />
-            <button
-              class="fab-action fab-action--batch fab-action--danger"
-              :disabled="batchBusy"
-              @click="handleBatchDelete"
-            >
-              <el-icon><Delete /></el-icon>
-              <span>{{ $t('plugins.delete') }}</span>
-            </button>
-            <div class="floating-select-bar__batch-divider" />
-            <button
-              class="fab-action fab-action--batch fab-action--export"
-              :disabled="batchBusy"
-              @click="handleBatchExport"
-            >
-              <el-icon><Download /></el-icon>
-              <span>{{ $t('plugins.export') }}</span>
+    <!-- Floating multi-select action bar; teleported so the route transition's
+         transform never becomes its containing block. -->
+    <Teleport to="body">
+      <Transition name="float-bar">
+        <div v-if="multiSelectEnabled" class="floating-select-bar" data-yui-guide-id="plugin-list-float-bar">
+          <!-- Batch operations row (visible when plugins are selected) -->
+          <Transition name="batch-row">
+            <div v-if="selectedCount > 0" class="floating-select-bar__batch">
+              <button
+                class="fab-action fab-action--batch fab-action--success"
+                :disabled="batchBusy"
+                @click="handleBatchStart"
+              >
+                <el-icon><VideoPlay /></el-icon>
+                <span>{{ $t('plugins.start') }}</span>
+              </button>
+              <button
+                class="fab-action fab-action--batch fab-action--warn"
+                :disabled="batchBusy"
+                @click="handleBatchStop"
+              >
+                <el-icon><VideoPause /></el-icon>
+                <span>{{ $t('plugins.stop') }}</span>
+              </button>
+              <button
+                class="fab-action fab-action--batch"
+                :disabled="batchBusy"
+                @click="handleBatchReload"
+              >
+                <el-icon><RefreshRight /></el-icon>
+                <span>{{ $t('plugins.reload') }}</span>
+              </button>
+              <div class="floating-select-bar__batch-divider" />
+              <button
+                class="fab-action fab-action--batch fab-action--danger"
+                :disabled="batchBusy"
+                @click="handleBatchDelete"
+              >
+                <el-icon><Delete /></el-icon>
+                <span>{{ $t('plugins.delete') }}</span>
+              </button>
+              <div class="floating-select-bar__batch-divider" />
+              <button
+                class="fab-action fab-action--batch fab-action--export"
+                :disabled="batchBusy"
+                @click="handleBatchExport"
+              >
+                <el-icon><Download /></el-icon>
+                <span>{{ $t('plugins.export') }}</span>
+              </button>
+            </div>
+          </Transition>
+
+          <!-- Selection controls row -->
+          <div class="floating-select-bar__inner">
+            <div class="floating-select-bar__count">
+              <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
+              <span class="floating-select-bar__count-label">{{ $t('plugins.selectedCount', { count: selectedCount }) }}</span>
+            </div>
+
+            <div class="floating-select-bar__divider" />
+
+            <div class="floating-select-bar__actions">
+              <button class="fab-action" @click="selectAllVisible">
+                <el-icon><Finished /></el-icon>
+                <span>{{ $t('plugins.selectAllVisible') }}</span>
+              </button>
+              <button class="fab-action" @click="invertVisibleSelection">
+                <el-icon><Sort /></el-icon>
+                <span>{{ $t('plugins.invertVisibleSelection') }}</span>
+              </button>
+              <button class="fab-action fab-action--danger" @click="clearSelection">
+                <el-icon><CircleClose /></el-icon>
+                <span>{{ $t('plugins.clearSelection') }}</span>
+              </button>
+            </div>
+
+            <div class="floating-select-bar__divider" />
+
+            <button class="fab-action fab-action--exit" @click="toggleMultiSelectMode">
+              <el-icon><Close /></el-icon>
+              <span>{{ $t('plugins.exitMultiSelect') }}</span>
             </button>
           </div>
-        </Transition>
-
-        <!-- Selection controls row -->
-        <div class="floating-select-bar__inner">
-          <div class="floating-select-bar__count">
-            <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
-            <span class="floating-select-bar__count-label">{{ $t('plugins.selectedCount', { count: selectedCount }) }}</span>
-          </div>
-
-          <div class="floating-select-bar__divider" />
-
-          <div class="floating-select-bar__actions">
-            <button class="fab-action" @click="selectAllVisible">
-              <el-icon><Finished /></el-icon>
-              <span>{{ $t('plugins.selectAllVisible') }}</span>
-            </button>
-            <button class="fab-action" @click="invertVisibleSelection">
-              <el-icon><Sort /></el-icon>
-              <span>{{ $t('plugins.invertVisibleSelection') }}</span>
-            </button>
-            <button class="fab-action fab-action--danger" @click="clearSelection">
-              <el-icon><CircleClose /></el-icon>
-              <span>{{ $t('plugins.clearSelection') }}</span>
-            </button>
-          </div>
-
-          <div class="floating-select-bar__divider" />
-
-          <button class="fab-action fab-action--exit" @click="toggleMultiSelectMode">
-            <el-icon><Close /></el-icon>
-            <span>{{ $t('plugins.exitMultiSelect') }}</span>
-          </button>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
 
     <PluginContextMenu
       :visible="contextMenuVisible"
@@ -502,9 +500,10 @@ import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
-import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
-import GithubMirrorSourcePanel from '@/components/plugin/GithubMirrorSourcePanel.vue'
-import MarketPanel from '@/components/plugin/MarketPanel.vue'
+import { deferredPanel } from '@/components/common/deferredPanel'
+const PackageManagerPanel = deferredPanel(() => import('@/components/plugin/PackageManagerPanel.vue'))
+const GithubMirrorSourcePanel = deferredPanel(() => import('@/components/plugin/GithubMirrorSourcePanel.vue'))
+const MarketPanel = deferredPanel(() => import('@/components/plugin/MarketPanel.vue'))
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
@@ -620,8 +619,7 @@ const dangerDialogMessage = computed(() => {
   )
 })
 
-const rawPlugins = computed(() => pluginStore.pluginsWithStatus.filter(isOrdinaryPlugin))
-const rawNormalPlugins = computed(() => pluginStore.normalPlugins.filter(isOrdinaryPlugin))
+const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -646,7 +644,10 @@ const {
   toggleMultiSelect,
 } = usePluginWorkbench(rawPlugins)
 
-const loading = computed(() => pluginStore.loading)
+// Covers the registry sync that precedes the summary fetch, so a first open
+// shows the skeleton instead of flashing the empty state.
+const pendingListRefreshes = ref(0)
+const loading = computed(() => pendingListRefreshes.value > 0)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
 
@@ -665,7 +666,7 @@ function handleCheckUpdates(): void {
 
 function installedMarketVersionTargets(): MarketVersionTarget[] {
   const targets: MarketVersionTarget[] = []
-  for (const plugin of pluginStore.pluginsWithStatus) {
+  for (const plugin of pluginStore.pluginSummariesWithStatus) {
     const installSource = plugin.install_source
     if (installSource?.source !== 'market') continue
     const detail = installSource.source_detail as PluginInstallSourceDetailMarket | null
@@ -698,12 +699,18 @@ async function toggleSourceDetail() {
 // The initial plugin fetch and a Market install can both finish after source
 // details become visible. Recompute the target set on either change so update
 // badges are not held to the empty/stale snapshot from the original toggle.
+function marketVersionTargetSignature() {
+  return installedMarketVersionTargets()
+    .map((target) => `${target.pluginId}:${target.channel}`)
+    .sort()
+    .join('|')
+}
+
 watch(
-  () => pluginStore.plugins,
+  marketVersionTargetSignature,
   () => {
     if (showSourceDetail.value) refreshInstalledMarketVersions()
   },
-  { deep: true },
 )
 
 const pluginSections = computed(() => [
@@ -775,27 +782,31 @@ type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
 
 async function refreshPluginListData(mode: PluginListRefreshMode) {
   let warningMessage = ''
+  pendingListRefreshes.value += 1
   try {
     if (mode === 'full') {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
+      const syncResult = await pluginStore.syncRegistryAndFetchSummaries()
       warningMessage = syncResult.warningMessage || ''
     } else if (mode === 'initial-open') {
       try {
         const syncResult = await pluginStore.ensurePluginListRegistrySynced()
         warningMessage = syncResult?.warningMessage || ''
         if (!syncResult) {
-          await pluginStore.fetchPlugins()
+          await pluginStore.fetchPluginSummaries()
         }
       } catch (syncError) {
         console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
-        await pluginStore.fetchPlugins()
+        await pluginStore.fetchPluginSummaries()
       }
     } else {
-      await pluginStore.fetchPlugins()
+      await pluginStore.fetchPluginSummaries()
     }
-    await pluginStore.fetchPluginStatus()
+    if (mode === 'full') await pluginStore.fetchPluginStatus(undefined, true)
+    else await pluginStore.ensurePluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
+  } finally {
+    pendingListRefreshes.value -= 1
   }
   if (showMetrics.value) {
     try {
@@ -840,6 +851,7 @@ async function toggleMetrics() {
 }
 
 function startMetricsAutoRefresh() {
+  if (document.hidden) return
   stopMetricsAutoRefresh()
   metricsRefreshTimer = window.setInterval(() => {
     // Skip refresh if no running plugins
@@ -848,6 +860,11 @@ function startMetricsAutoRefresh() {
       console.warn('Auto-refresh metrics failed:', error)
     })
   }, METRICS_REFRESH_INTERVAL)
+}
+
+function handleMetricsVisibilityChange() {
+  if (document.hidden) stopMetricsAutoRefresh()
+  else if (showMetrics.value) startMetricsAutoRefresh()
 }
 
 function stopMetricsAutoRefresh() {
@@ -1115,7 +1132,7 @@ async function handleDangerActionConfirm() {
 }
 
 const runningPlugins = computed(() => {
-  return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running')
+  return rawPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
 // ── Import (upload + install) ─────────────────────────────────────────
@@ -1452,11 +1469,13 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  document.addEventListener('visibilitychange', handleMetricsVisibilityChange)
   await Promise.all([loadMarketEntry(), refreshForInitialOpen()])
 })
 
 onUnmounted(() => {
   window.removeEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  document.removeEventListener('visibilitychange', handleMetricsVisibilityChange)
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()
@@ -1464,16 +1483,20 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.plugin-workbench,
+.floating-select-bar {
+  /* ── Unified radius system (the floating bar is teleported out of the workbench) ── */
+  --radius-card: 16px;       /* large containers: card, dropdown */
+  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
+  --radius-control: 10px;    /* buttons, inputs, interactive controls */
+  --radius-chip: 8px;
+}
+
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
   --drawer-duration: 320ms;
   --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* ── Unified radius system ── */
-  --radius-card: 16px;       /* large containers: card, dropdown */
-  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
-  --radius-control: 10px;    /* buttons, inputs, interactive controls */
-  --radius-chip: 8px;
   display: flex;
   align-items: stretch;
   /*
@@ -1557,7 +1580,6 @@ onUnmounted(() => {
   width: var(--drawer-width);
   max-width: 100%;
   transition: transform var(--drawer-duration) var(--drawer-ease);
-  will-change: transform;
 }
 
 .plugin-workbench__rail--market .plugin-workbench__rail-inner {

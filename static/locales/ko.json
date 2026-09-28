@@ -565,7 +565,8 @@
         "cameraStreamFailed": "카메라 스트림을 가져오지 못했습니다",
         "characterConfigFailed": "캐릭터 설정을 가져오지 못했습니다",
         "API_ARREARS": "💥 API 잔액이 부족합니다. 충전해 주세요.",
-        "API_QUOTA_TIME": "💥 무료 API 한도가 소진되었습니다. 내일 다시 시도하거나 다른 API로 전환하세요.",
+        "API_QUOTA_TIME": "💥 무료 API 한도가 소진되었습니다. 잠시 후 다시 시도하거나 다른 API로 전환하세요.",
+        "API_ACCESS_DENIED": "💥 무료 서비스가 현재 네트워크의 접근을 거부했습니다. 자동 재연결을 중단했습니다.",
         "API_RATE_LIMIT": "💥 요청이 너무 많습니다 (429). 잠시 후 다시 시도해 주세요.",
         "API_POLICY_VIOLATION": "💥 정책 위반 또는 보안 차단: {{msg}}",
         "API_1008_FALLBACK": "💥 연결이 끊어졌습니다 (1008): {{msg}}",
@@ -1719,6 +1720,7 @@
         "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
         "directLinkUnsupported": "선택한 제공자는 직접 링크 클론을 지원하지 않습니다. 로컬 파일을 업로드하세요.",
         "doubaoTtsApiRequired": "이 기능에는 Doubao Speech API Key가 필요합니다. API 관리부에 Doubao Speech(Volcengine) Key를 저장하세요.",
+        "glmTtsApiRequired": "이 기능에는 Zhipu GLM API Key가 필요합니다. API 설정에 GLM 키를 저장하세요.",
         "vllmOmniNotice": "로컬 vLLM-Omni 서비스 — API 키 불필요; 로컬 서비스 URL이 설정되어 있는지 확인하세요",
         "vllmRefTextLabel": "참조 오디오 전사(vLLM-Omni 클론 필수, 오디오 내용과 정확히 일치해야 함)",
         "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
@@ -1738,6 +1740,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (샤오미)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Zhipu GLM 음성 복제",
             "vllm_omni": "vLLM-Omni(로컬 클론)"
         },
         "sourcePreset": "프리셋",
@@ -2651,6 +2654,8 @@
             "never": "다시 알리지 않기"
         },
         "screenSource": {
+            "browserPickerHint": "공유를 시작하면 브라우저에서 탭, 창 또는 화면을 선택할 수 있습니다.",
+            "mobileCameraHint": "공유를 시작하면 카메라가 사용됩니다.",
             "notAvailable": "현재 환경에서는 화면 소스를 선택할 수 없습니다",
             "loading": "로드 중...",
             "noSources": "사용 가능한 화면 소스가 없습니다.",

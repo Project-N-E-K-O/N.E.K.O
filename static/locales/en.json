@@ -565,7 +565,8 @@
         "cameraStreamFailed": "Failed to get camera stream",
         "characterConfigFailed": "Failed to get character configuration",
         "API_ARREARS": "💥 API account in arrears. Please top up your balance.",
-        "API_QUOTA_TIME": "💥 Free API quota exhausted. Please try again tomorrow or switch to another API.",
+        "API_QUOTA_TIME": "💥 Free API quota exhausted. Please try again later or switch to another API.",
+        "API_ACCESS_DENIED": "💥 The free service denied access from your current network. Automatic reconnection has stopped.",
         "API_RATE_LIMIT": "💥 Too many requests (429) or quota limit reached. Please try again later.",
         "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
         "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}",
@@ -1719,6 +1720,7 @@
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
         "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
         "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Save the Doubao Speech (Volcengine) key in the API Key Book.",
+        "glmTtsApiRequired": "This feature requires a Zhipu GLM API Key. Save the GLM key in API Key settings.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
@@ -1738,6 +1740,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Zhipu GLM Voice Clone",
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",
@@ -2651,6 +2654,8 @@
             "never": "Do not remind me"
         },
         "screenSource": {
+            "browserPickerHint": "When sharing starts, your browser will ask you to choose a tab, window, or screen.",
+            "mobileCameraHint": "When sharing starts, your camera will be used.",
             "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",

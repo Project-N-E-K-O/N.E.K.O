@@ -875,6 +875,22 @@ _LEASE_RELEASE_MESSAGE = {
 _PAUSE_SESSION_MESSAGE = {"action": "pause_session"}
 
 
+_SWITCHING_TERMINAL_STATUS = {
+    "code": "CHARACTER_SWITCHING_TERMINAL",
+    "details": {"name": "Lan"},
+}
+
+
+def _statuses_sent_to(socket) -> list:
+    """Decode the status payloads a fake socket received directly."""
+    statuses = []
+    for payload in socket.sent_text:
+        frame = json.loads(payload)
+        if frame.get("type") == "status":
+            statuses.append(json.loads(frame["message"]))
+    return statuses
+
+
 class _TwoPhaseWebSocket(_EventWebSocket):
     """Socket that delivers a first burst, then holds until released.
 
@@ -1189,10 +1205,11 @@ async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
     call_names = [name for name, _payload in manager.calls]
     assert call_names.count("begin") == 2
     assert call_names.count("stream_data") == 1
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(stale_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
 
 @pytest.mark.asyncio
@@ -1301,10 +1318,9 @@ async def test_recording_survives_second_text_socket_and_its_text_message(
     assert superseded_pcm in stream_payloads
     assert [name for name, _payload in manager.calls].count("control") == 2
     assert manager._avatar_position is sentinel
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     # The chat window's text takeover worked unchanged: text session started
     # and its text message dispatched, without ever claiming voice.
@@ -1557,10 +1573,11 @@ async def test_superseded_voice_socket_non_voice_message_is_still_closed(
     assert recording_socket.closed is True
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     chat_socket.release.set()
     await chat_task
@@ -1614,10 +1631,9 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
     # lost a character switch it was not part of.
     assert manager.active_session_is_idle is True
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     call_names = [name for name, _payload in manager.calls]
     # The lease release still applies -- that is how the backend learns the
@@ -1679,10 +1695,9 @@ async def test_superseded_recorder_pause_does_not_end_a_newer_text_session(
     assert "end_session" not in call_names
     # Still not a character switch -- the recorder keeps its socket either way.
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     chat_socket.release.set()
     await chat_task
@@ -1729,10 +1744,11 @@ async def test_pause_from_a_socket_that_lost_voice_is_still_a_character_switch(
 
     assert recording_socket.closed is True
     assert "end_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     takeover_socket.release.set()
     await takeover_task

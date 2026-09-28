@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    _same_route,
     LLMStreamChunk,
     List,
     OnToolCallCallback,
@@ -47,6 +48,18 @@ from config.prompts.prompts_tool import (
     TOOL_IMAGE_RECALL_HANDLE,
     TOOL_IMAGE_RECALL_HINT,
     normalize_tool_image_locale,
+)
+
+
+# 出现在「拒收 tools」报错里、说明只是这一次请求的组合不被支持的措辞。
+_TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
+    "with image",
+    "with vision",
+    "with audio",
+    "in combination with",
+    "together with",
+    "when using",
+    "for this request",
 )
 
 
@@ -102,7 +115,90 @@ class _ToolingMixin:
         tools, so ``_params`` skips both ``tools`` and ``tool_choice``."""
         if not self.has_tools():
             return None
+        if getattr(self, "_openai_tools_unsupported", False):
+            return None
         return [t.to_openai_chat() for t in self._tool_definitions]
+
+    @staticmethod
+    def _messages_carry_images(messages) -> bool:
+        """Whether any message in ``messages`` has an image content part."""
+        for msg in messages or []:
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                    return True
+        return False
+
+    @staticmethod
+    def _classify_openai_tools_refusal(exc: BaseException) -> Optional[str]:
+        """How an endpoint refused the ``tools`` parameter, if it did.
+
+        ``"model"``: the model has no tool support at all (Ollama vision models:
+        400 "... does not support tools"), so every later request would fail
+        the same way. ``"request"``: tools were refused for something specific
+        to this request (e.g. "tool use is not supported with images"); plain
+        text turns may still use them. ``None``: not a tools refusal.
+        """
+        msg = str(exc or "").lower()
+        model_wide = "does not support tools" in msg or "does not support function" in msg
+        loose = ("tools" in msg and "not support" in msg) or (
+            "tool use" in msg and ("unsupported" in msg or "not supported" in msg)
+        )
+        if not (model_wide or loose):
+            return None
+        # 先看请求条件：带「with images / in combination with …」的拒收只针对这一种
+        # 组合，哪怕措辞是 "does not support tools" 或提到 this model，纯文本轮次
+        # 仍可用工具，不能记成会话级。
+        if any(qualifier in msg for qualifier in _TOOLS_REFUSAL_REQUEST_QUALIFIERS):
+            return "request"
+        # 措辞明确指向模型本身（"... not supported by / for this model"）也是
+        # 模型级：否则之后每轮都要先被拒一次再重发。
+        if model_wide or "this model" in msg:
+            return "model"
+        return "request"
+
+    async def _astream_declining_tools(self, messages, overrides: dict):
+        """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
+
+        If the request fails before the first chunk because the endpoint
+        refused ``tools``, strip ``tools`` / ``tool_choice`` from ``overrides``
+        in place (so later rounds of the caller's loop and its forced-finalize
+        call go without them too) and re-issue the same request once. Only a
+        model-wide refusal also marks the session, so later turns stop sending
+        tools; a refusal tied to this request leaves later turns alone. Any
+        other failure, or one after a chunk was already received, propagates
+        unchanged.
+        """
+        received_any = False
+        try:
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                received_any = True
+                yield chunk
+            return
+        except Exception as exc:
+            refusal = None
+            if not received_any and "tools" in overrides:
+                refusal = self._classify_openai_tools_refusal(exc)
+            if refusal is None:
+                raise
+            logger.warning(
+                "OpenAI-compat model %s declined tools (%s); retrying this "
+                "request without tools%s",
+                getattr(self, "model", None), exc,
+                " and disabling them for the session" if refusal == "model" else "",
+            )
+        if refusal == "model":
+            self._openai_tools_unsupported = True
+        elif self._messages_carry_images(messages):
+            # 带图时被拒：图片会留在会话历史里，之后只要历史还带图，每轮都会先被拒
+            # 一次再重发。记下来，带图的请求直接不带工具；纯文本历史不受影响。
+            self._openai_tools_unsupported_with_images = True
+        overrides.pop("tools", None)
+        overrides.pop("tool_choice", None)
+        async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            yield chunk
 
     async def _execute_and_append_openai_tool_calls(
         self,
@@ -272,7 +368,16 @@ class _ToolingMixin:
         vision_model = getattr(self, "vision_model", "") or ""
         if not vision_model:
             return False
-        if vision_model == self.model:
+        # 同一个模型 id 只有在路由（URL / Key / 协议）也相同时才算「已经在视觉
+        # 槽上」；视觉槽配了另一条路由时照样要走下面的切换。
+        if vision_model == self.model and _same_route(
+            getattr(self, "vision_base_url", None),
+            getattr(self, "vision_api_key", None),
+            getattr(self, "vision_provider_type", None),
+            getattr(self, "base_url", None),
+            getattr(self, "api_key", None),
+            getattr(self, "provider_type", None),
+        ):
             return True
         on_genai = bool(
             getattr(self, "_use_genai_sdk", False)
@@ -727,6 +832,12 @@ class _ToolingMixin:
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tools_payload = self._openai_tools_payload()
+        if (
+            tools_payload
+            and getattr(self, "_openai_tools_unsupported_with_images", False)
+            and self._messages_carry_images(messages)
+        ):
+            tools_payload = None
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
         else:
@@ -754,7 +865,7 @@ class _ToolingMixin:
             streamed_reasoning_buffer = ""
             # 上一轮注入的工具图，本轮才谈得上"送到了"。
             tool_frames_published = False
-            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            async for chunk in self._astream_declining_tools(messages, overrides):
                 if not tool_frames_published:
                     # 任何一个 chunk 都算数，不必等有内容的那个：astream 是惰性
                     # 的，请求要到第一次 __anext__ 才真正发出，能拿到 chunk 就
@@ -812,6 +923,9 @@ class _ToolingMixin:
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
             # empty 的关键线索）。
             self._last_finish_reason = finish_reason
+            if "tools" not in overrides:
+                # 端点在本轮拒收了 tools、已去掉工具重发：之后不再进工具分支。
+                tools_payload = None
             if (
                 not streamed_text_buffer
                 and not deltas_per_chunk

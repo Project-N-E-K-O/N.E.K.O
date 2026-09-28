@@ -87,7 +87,7 @@ async function mountDetail(surfaces: PluginUiSurface[]) {
   document.body.appendChild(container)
   const pinia = createPinia()
   setActivePinia(pinia)
-  usePluginStore().plugins = [plugin]
+  usePluginStore().pluginDetails = { [plugin.id]: plugin }
   const app = createApp(PluginDetail)
   app.use(pinia)
   app.config.globalProperties.$t = (key: string) => key

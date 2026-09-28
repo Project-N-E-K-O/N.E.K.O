@@ -36,7 +36,7 @@ import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -138,61 +138,6 @@ def test_entry_cap_cannot_exceed_the_block_cap():
     from blowing the block budget. Raise it above the total and the first
     entry alone can overshoot."""
     assert RECALL_RENDER_ENTRY_MAX_TOKENS <= RECALL_RENDER_TOTAL_MAX_TOKENS
-
-
-def test_block_cap_funds_a_full_page_of_max_length_entries():
-    """The block cap has to cover ``limit`` entries at the per-entry cap
-    PLUS the line decoration, or the last relevance hit is dropped for a
-    reason nobody chose.
-
-    Asserted against the BUDGET HELPER, not against arithmetic between the
-    constants. ``RECALL_RENDER_TOTAL_MAX_TOKENS >= limit * (ENTRY +
-    OVERHEAD)`` is the derivation written in the constant's comment, and
-    the derivation was wrong: ``take_lines_within_token_budget`` charges
-    the separator it joins with, which the comment's model of the cost did
-    not include. ``limit`` lines have ``limit - 1`` gaps, so the real
-    requirement is 4 tokens higher than the arithmetic — and 2200 passed
-    the arithmetic while the helper dropped the fifth line. Ask the thing
-    that actually collects the fee.
-
-    ``limit`` is read off the signature rather than typed in, so raising it
-    in a later PR fails here instead of silently shrinking the block.
-    """
-    import inspect
-
-    from config import (
-        RECALL_RENDER_LINE_OVERHEAD_TOKENS,
-        RECALL_RENDER_LINE_SEPARATOR_TOKENS,
-    )
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-    from utils.tokenize import take_lines_within_token_budget
-
-    limit = inspect.signature(
-        QQMemoryBridge.query_relevant_memory
-    ).parameters["limit"].default
-    assert isinstance(limit, int) and limit > 0
-
-    # The renderer caps each rendered line at ENTRY + OVERHEAD, so a line
-    # of exactly that size is the worst case the block has to fund.
-    per_line = RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS
-    unit = "群里聊过的一件事情，"
-    line = unit * (per_line // count_tokens(unit))
-    line += "阿" * (per_line - count_tokens(line))
-    assert count_tokens(line) == per_line, "夹具失效：没造出恰好满额的一行"
-
-    kept, dropped = take_lines_within_token_budget(
-        [line] * limit, RECALL_RENDER_TOTAL_MAX_TOKENS,
-    )
-    assert dropped == 0 and len(kept) == limit, (
-        f"整段预算 {RECALL_RENDER_TOTAL_MAX_TOKENS} 只装下了 {len(kept)}/{limit} 条"
-        f"满额条目（每条 {RECALL_RENDER_ENTRY_MAX_TOKENS} tok 正文 + "
-        f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok 行装饰，另加 {limit - 1} 个"
-        f"拼接缝隙）——常量算术没把 separator 计费算进去"
-    )
-    assert RECALL_RENDER_LINE_SEPARATOR_TOKENS == count_tokens("\n"), (
-        f"缝隙计费常量 {RECALL_RENDER_LINE_SEPARATOR_TOKENS} 与实测换行 "
-        f"{count_tokens(chr(10))} tok 对不上，后续按 limit 重新推导会推错"
-    )
 
 
 def test_line_overhead_allowance_covers_what_the_renderer_actually_adds():
@@ -513,63 +458,6 @@ def test_a_full_page_of_max_length_entries_all_survive():
 # ── the two shells that call it ──────────────────────────────────────
 
 
-def _bridge():
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-
-    return QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-
-
-def test_plugin_shell_renders_the_budgeted_block():
-    """The QQ side is a shell: same input, same string as the entry point.
-
-    Compared against the entry point's own output rather than re-asserting
-    the budget, so this stays true if the format changes — what it pins is
-    that the shell adds no line building of its own. (It has: this side
-    used to cut its own date suffix with ``anchor[:10]``, losing the
-    relative-time label the main app showed.)
-    """
-    results = [
-        _result("群里在聊露营"),
-        {
-            "text": "阿离喜欢辣条",
-            "tier": "reflection",
-            "entity": "group_participant",
-            "created_at": "2026-05-01T10:00:00",
-        },
-    ]
-    kept_out: list[int] = []
-
-    with patch(
-        "utils.language_utils.get_global_language_full", return_value="zh",
-    ):
-        rendered = _bridge().render_relevant_memory(results, kept_count_out=kept_out)
-
-    assert rendered == render_recall_block(results, "zh").text
-    assert kept_out == [2]
-
-
-def test_plugin_shell_reports_the_drop_without_needing_a_logger():
-    """A missing logger must never cost the user their memory block.
-
-    ``render_relevant_memory`` had no plugin dependency at all until a
-    diagnostic line was added; an AttributeError there is swallowed by the
-    caller's ``except`` and the whole recall block silently disappears.
-    """
-    chunk = "群里聊过的一件事情" * 200
-    bridge = _bridge()
-    bridge.plugin = SimpleNamespace()  # no .logger at all
-
-    with patch(
-        "utils.language_utils.get_global_language_full", return_value="zh",
-    ):
-        rendered = bridge.render_relevant_memory(
-            [_result(f"{i}{chunk}") for i in range(10)],
-        )
-
-    assert rendered.startswith("1. ")
-    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS
-
-
 class _ToolHarness:
     def __init__(self):
         from main_logic.core.tool_calling import ToolCallingMixin
@@ -677,33 +565,6 @@ def _thread_recording_truncate():
 
 
 @pytest.mark.asyncio
-async def test_plugin_recall_render_runs_off_the_event_loop():
-    """``truncate_to_tokens`` encodes the text BEFORE truncation, and the
-    whole reason this budget exists is that upstream can return an
-    enormous merged reflection. tiktoken degrades quadratically on a chunk
-    the pretokenizer cannot split, so running it inline would stall every
-    other session in the process."""
-    recording, threads = _thread_recording_truncate()
-    payload = {"results": [_result("露营的细节" * 200)], "elapsed_ms": 1.0}
-    response = SimpleNamespace(
-        status_code=200, text="", json=lambda: payload,
-        raise_for_status=lambda: None,
-    )
-    client = SimpleNamespace(post=AsyncMock(return_value=response))
-    bridge = _bridge()
-
-    with patch.object(bridge, "_client", return_value=client), \
-            patch("utils.tokenize.truncate_to_tokens", recording), \
-            patch("utils.language_utils.get_global_language_full", return_value="zh"):
-        await bridge.query_relevant_memory("Neko", "露营")
-
-    assert threads, "夹具失效：渲染根本没调用 truncate_to_tokens"
-    assert all(t != threading.get_ident() for t in threads), (
-        "召回渲染在事件循环线程上跑 tiktoken，超长条目会卡住整个进程"
-    )
-
-
-@pytest.mark.asyncio
 async def test_tool_recall_render_runs_off_the_event_loop():
     """Main-app twin — this one is on the voice path, where a stall is
     immediately audible."""
@@ -714,31 +575,6 @@ async def test_tool_recall_render_runs_off_the_event_loop():
     assert threads, "夹具失效：渲染根本没调用 truncate_to_tokens"
     assert all(t != threading.get_ident() for t in threads), (
         "recall_memory 工具在事件循环线程上跑 tiktoken"
-    )
-
-
-def test_qq_section_wrapper_stays_fixed_size():
-    """The wrapper around the QQ recall block is prompt boilerplate, not
-    recalled content, so it is NOT charged to
-    ``RECALL_RENDER_TOTAL_MAX_TOKENS`` — that budget bounds the memories.
-    Charging fixed template text to it would shrink the memory allowance
-    to pay for a heading that is present regardless.
-
-    That reasoning only holds while the wrapper is genuinely fixed. Pin
-    it: the day someone interpolates variable content into it, it stops
-    being boilerplate and the budget question has to be reopened.
-    """
-    from plugin.plugins.qq_auto_reply.prompt_fragment_templates import (
-        LONG_TERM_MEMORY_SECTION,
-    )
-
-    empty = LONG_TERM_MEMORY_SECTION.format(memory_context="")
-    assert "{" not in empty and "}" not in empty, (
-        "包裹模板里出现了 memory_context 之外的占位符——它不再是定长样板，"
-        "得重新考虑要不要计进召回预算"
-    )
-    assert count_tokens(empty) <= 120, (
-        f"包裹模板涨到 {count_tokens(empty)} tok；不计进召回预算的前提是它小且定长"
     )
 
 
@@ -863,8 +699,7 @@ def test_repo_scan_reaches_the_files_it_claims_to_cover():
     sources = _repo_python_sources()
 
     assert len(sources) > 200, f"仓库扫描只找到 {len(sources)} 个 .py，路径过滤把仓库滤没了"
-    for rel in (_ENTRY_POINT, "main_logic/core/tool_calling.py",
-                "plugin/plugins/qq_auto_reply/memory_bridge.py"):
+    for rel in (_ENTRY_POINT, "main_logic/core/tool_calling.py"):
         assert rel in sources, f"扫描没覆盖到 {rel}，下面的护栏是空转的"
 
 
@@ -926,7 +761,6 @@ def test_the_entry_point_has_no_runtime_switch():
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
     "main_logic/core/tool_calling.py",
-    "plugin/plugins/qq_auto_reply/memory_bridge.py",
 }
 
 

@@ -565,7 +565,8 @@
         "cameraStreamFailed": "Falha ao obter stream da câmera",
         "characterConfigFailed": "Falha ao obter a configuração do personagem",
         "API_ARREARS": "💥 Conta API em atraso. Por favor, recarregue seu saldo.",
-        "API_QUOTA_TIME": "💥 Cota de API gratuita esgotada. Tente novamente amanhã ou mude para outra API.",
+        "API_QUOTA_TIME": "💥 Cota de API gratuita esgotada. Tente novamente mais tarde ou mude para outra API.",
+        "API_ACCESS_DENIED": "💥 O serviço gratuito negou o acesso da sua rede atual. A reconexão automática foi interrompida.",
         "API_RATE_LIMIT": "💥 Muitas solicitações (429) ou limite de cota atingido. Por favor, tente novamente mais tarde.",
         "API_POLICY_VIOLATION": "💥 Violação de política ou bloqueio de segurança: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexão desconectada (1008): {{msg}}",
@@ -1719,6 +1720,7 @@
         "mimoDirectLinkUnsupported": "O MiMo não oferece suporte à clonagem por link direto; envie um arquivo local.",
         "directLinkUnsupported": "O provedor selecionado não suporta clonagem por link direto; envie um arquivo local.",
         "doubaoTtsApiRequired": "Este recurso requer uma chave de API do Doubao Speech. Salve a chave do Doubao Speech (Volcengine) no livro de chaves de API.",
+        "glmTtsApiRequired": "Este recurso requer uma chave de API do Zhipu GLM. Salve a chave GLM nas configurações de API Key.",
         "vllmOmniNotice": "Serviço local vLLM-Omni — não é necessário API Key; certifique-se de configurar a URL do serviço local",
         "vllmRefTextLabel": "Transcrição do áudio de referência (obrigatório para clone vLLM-Omni; deve corresponder exatamente ao áudio)",
         "vllmRefTextHint": "Digite exatamente o que é falado no áudio de referência; texto incompatível degrada a qualidade do clone",
@@ -1738,6 +1740,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Clonagem de voz Zhipu GLM",
             "vllm_omni": "vLLM-Omni (Clone Local)"
         },
         "sourcePreset": "Predefinido",
@@ -2651,6 +2654,8 @@
             "never": "Não me lembre novamente"
         },
         "screenSource": {
+            "browserPickerHint": "Ao iniciar o compartilhamento, o navegador pedirá que você escolha uma aba, janela ou tela.",
+            "mobileCameraHint": "Ao iniciar o compartilhamento, sua câmera será usada.",
             "notAvailable": "A seleção de fonte de tela não está disponível no ambiente atual",
             "loading": "Carregando...",
             "noSources": "Nenhuma fonte de tela disponível",

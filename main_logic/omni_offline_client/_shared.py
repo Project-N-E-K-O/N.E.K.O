@@ -215,3 +215,25 @@ def _strip_nonverbal_directives(text: str) -> str:
     if not text:
         return ""
     return _NONVERBAL_DIRECTIVE_PATTERN.sub("", text)
+
+
+def _same_route(
+    base_url_a, api_key_a, provider_type_a,
+    base_url_b, api_key_b, provider_type_b,
+) -> bool:
+    """Whether two (URL, key, wire protocol) triples address one route.
+
+    URLs compare by ``same_endpoint`` so a trailing slash, host case or an
+    explicit default port does not count as another endpoint; blank means
+    "unset" on every field. The protocol is part of the identity because one
+    gateway may serve both OpenAI- and Anthropic-style APIs under one URL.
+    """
+    from utils.http.url import same_endpoint
+
+    url_a, url_b = (base_url_a or None), (base_url_b or None)
+    if url_a != url_b and not same_endpoint(url_a, url_b):
+        return False
+    return (
+        (api_key_a or None) == (api_key_b or None)
+        and (provider_type_a or None) == (provider_type_b or None)
+    )
