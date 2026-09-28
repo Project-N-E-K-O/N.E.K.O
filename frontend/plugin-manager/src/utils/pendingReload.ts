@@ -4,70 +4,31 @@
 // the live config so it cannot delete keys. A per-plugin flag therefore records that the
 // running plugin may not match the persisted configuration yet.
 //
-// The flag belongs to this window. Two windows are not expected to edit one plugin's
-// configuration at the same time, and no attempt is made to detect or merge that: the later
-// write simply wins. Keeping the flag local is what keeps the rest of this module small —
-// there is no cross-window event to handle and no remote writer to reconcile with.
+// The flag lives in this window's memory only. It survives navigating away from the
+// configuration page and back, but not a page reload. Persisting it (as an earlier revision
+// did with localStorage) kept it past the events that make it wrong: a backend restart
+// relaunches auto-start plugins with the saved configuration, and plugins missing from the
+// list snapshot could not be cleared by a bulk reload. Only the server knows which
+// configuration a host is running; see #3192.
+//
+// Two windows are not expected to edit one plugin's configuration at the same time, and no
+// attempt is made to detect or merge that: the later write simply wins.
 //
 // Writes are applied in arrival order: the last operation to report wins. A reload that
 // finishes before an in-flight save may have read the pre-save configuration, so the later
 // save still records the flag — a spurious hint costs one redundant reload, while a missing
 // hint silently leaves the host on a stale configuration.
 
-const KEY_PREFIX = 'neko-plugin-config-pending-reload:'
-const FLAG_VALUE = '1'
-
 type PendingListener = (pluginId: string, pending: boolean) => void
 
 const listeners = new Set<PendingListener>()
-// The flags this window set, and the plugins it has an opinion about. Once a plugin is
-// known here this module answers from memory, so a removal that storage refused cannot
-// resurrect the flag.
 const flags = new Set<string>()
-const known = new Set<string>()
 // Bumped on every write, so a start or reload can refuse to clear a flag that a save
 // claimed while it was in flight.
 const revisions = new Map<string, number>()
 
-const keyFor = (pluginId: string) => KEY_PREFIX + pluginId
-
-function storage(): Storage | undefined {
-  try {
-    return globalThis.localStorage ?? undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** Reads the flag an earlier session left in storage, or null when it cannot be read. */
-function readStored(pluginId: string): boolean | null {
-  const store = storage()
-  if (!store) return null
-  try {
-    return store.getItem(keyFor(pluginId)) !== null
-  } catch {
-    return null
-  }
-}
-
-// Mirrored so the hint survives a page reload. This window is the only writer, so the
-// stored value can never disagree with `flags` in a way that matters.
-function persist(pluginId: string, pending: boolean): void {
-  const store = storage()
-  if (!store) return
-  try {
-    if (pending) store.setItem(keyFor(pluginId), FLAG_VALUE)
-    else store.removeItem(keyFor(pluginId))
-  } catch {
-    // A rejected write is not fatal: this window answers from `flags`, and the only thing
-    // lost is the hint surviving a page reload.
-  }
-}
-
 export function hasPendingReload(pluginId: string): boolean {
-  if (!pluginId) return false
-  if (known.has(pluginId)) return flags.has(pluginId)
-  return readStored(pluginId) ?? false
+  return !!pluginId && flags.has(pluginId)
 }
 
 /** Identifies the flag as it stands now, for a later conditional clear. */
@@ -94,10 +55,8 @@ export function setPendingReload(
   if (expectedRevision !== undefined && pendingReloadRevision(pluginId) !== expectedRevision)
     return false
   revisions.set(pluginId, pendingReloadRevision(pluginId) + 1)
-  known.add(pluginId)
   if (pending) flags.add(pluginId)
   else flags.delete(pluginId)
-  persist(pluginId, pending)
   for (const listener of listeners) listener(pluginId, pending)
   return true
 }

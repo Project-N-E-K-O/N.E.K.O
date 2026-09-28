@@ -48,48 +48,19 @@ describe('pending reload bookkeeping', () => {
     expect(hasPendingReload('beta')).toBe(false)
   })
 
-  it('reads the flag an earlier session left in storage', () => {
-    // Mirrored so the hint survives a page reload: a fresh document has no memory of it.
+  it('keeps the flag in memory only', () => {
+    // A persisted flag outlived the events that make it wrong (a backend restart relaunches
+    // auto-start plugins with the saved configuration), so storage is neither read nor
+    // written. A key an older build left behind must not resurrect a hint either.
     localStorage.setItem(keyFor('restored'), '1')
-    expect(hasPendingReload('restored')).toBe(true)
-    expect(hasPendingReload('untouched')).toBe(false)
-  })
-
-  it('ignores unrelated storage content', () => {
-    // An earlier revision of this feature kept every plugin in one JSON record under the
-    // prefix without a trailing colon. That format only ever existed on an unmerged branch,
-    // so it is deliberately not migrated: migrating it could revive a cleared flag.
-    localStorage.setItem('neko-plugin-config-pending-reload', '{"alpha":true,"__proto__":true}')
-    localStorage.setItem('neko-dark-mode', 'true')
-    expect(hasPendingReload('untouched')).toBe(false)
-  })
-
-  it('answers from memory when storage is unavailable', () => {
-    vi.stubGlobal('localStorage', undefined)
-    expect(hasPendingReload('alpha')).toBe(false)
-    expect(() => setPendingReload('alpha', true)).not.toThrow()
-    expect(hasPendingReload('alpha')).toBe(true)
-    setPendingReload('alpha', false)
-    expect(hasPendingReload('alpha')).toBe(false)
-  })
-
-  it('answers from memory when storage refuses the write', () => {
-    vi.stubGlobal('localStorage', {
-      getItem: () => {
-        throw new Error('quota exceeded')
-      },
-      setItem: () => {
-        throw new Error('quota exceeded')
-      },
-      removeItem: () => {
-        throw new Error('quota exceeded')
-      },
-    })
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    expect(hasPendingReload('restored')).toBe(false)
     setPendingReload('alpha', true)
     expect(hasPendingReload('alpha')).toBe(true)
-    // The removal it refused cannot bring the flag back either.
     setPendingReload('alpha', false)
-    expect(hasPendingReload('alpha')).toBe(false)
+    expect(setItem).not.toHaveBeenCalled()
+    expect(getItem).not.toHaveBeenCalled()
   })
 
   it('applies writes in arrival order', () => {
