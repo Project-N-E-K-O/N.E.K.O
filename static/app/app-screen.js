@@ -166,6 +166,19 @@
         return !!(provider && provider.sourceEnumerationMayPrompt === true);
     }
 
+    // 列来源面板专用：旧版桌面端没有声明 sourceEnumerationMayPrompt 时，按它
+    // 现在的取值规则（process.platform === 'linux'）推断，只把 Linux 当作可能弹窗。
+    // 不能一律当作可能弹窗：旧版 macOS 在单显示器、无屏幕录制权限时也只返回
+    // 一项，会被误当成系统对话框的结果，每次打开列表都重启分享。
+    function sourceListEnumerationMayPrompt(provider) {
+        if (!provider) return false;
+        if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
+            return provider.sourceEnumerationMayPrompt;
+        }
+        var userAgent = String((navigator && navigator.userAgent) || '');
+        return /Linux/.test(userAgent) && !/Android/.test(userAgent);
+    }
+
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
         if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
             return null;
@@ -2958,7 +2971,7 @@
 
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源，它在结果里的位置不是物理屏幕序号。
-            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
+            var isPortalPick = sourceListEnumerationMayPrompt(desktopProvider)
                 && !!sources && sources.length === 1;
 
             if (!isPopupAvailable()) {
@@ -3309,7 +3322,7 @@
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+            if (sourceListEnumerationMayPrompt(desktopProvider)) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });

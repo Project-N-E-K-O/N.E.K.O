@@ -1249,19 +1249,31 @@ def test_deferred_enumeration_waits_for_the_load_button(page: Page) -> None:
 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
-    ("prompting", "source_count", "adopted"),
-    # None: a legacy desktop bridge that never declared the capability. Only
-    # an explicit true adopts, so an older macOS build with one screen and no
-    # window list does not restart sharing every time the list opens.
-    [(True, 1, True), (True, 2, False), (False, 1, False), (None, 1, False)],
+    ("prompting", "platform", "source_count", "adopted"),
+    # None: a legacy desktop bridge that never declared the capability; the
+    # list infers it from the platform like the bridge does today. An older
+    # macOS/Windows build with one screen and no window list must not restart
+    # sharing every time the list opens; an older Linux build is a portal.
+    [
+        (True, "Windows NT 10.0; Win64; x64", 1, True),
+        (True, "Windows NT 10.0; Win64; x64", 2, False),
+        (False, "X11; Linux x86_64", 1, False),
+        (None, "Windows NT 10.0; Win64; x64", 1, False),
+        (None, "Macintosh; Intel Mac OS X 14_0", 1, False),
+        (None, "X11; Linux x86_64", 1, True),
+    ],
 )
 def test_prompting_single_source_is_adopted_without_second_click(
-    page: Page, prompting: bool | None, source_count: int, adopted: bool,
+    page: Page, prompting: bool | None, platform: str, source_count: int, adopted: bool,
 ) -> None:
     _install_screen_source_harness(page, source_enumeration_may_prompt=prompting)
 
     result = page.evaluate(
-        """async (sourceCount) => {
+        """async ([sourceCount, platform]) => {
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
+            });
             window.__metadataSources = window.__metadataSources.slice(1, 1 + sourceCount)
                 .concat(window.__metadataSources.slice(0, Math.max(0, sourceCount - 1)));
             await window.renderFloatingScreenSourceList(
@@ -1280,7 +1292,7 @@ def test_prompting_single_source_is_adopted_without_second_click(
                 enumerations: window.__captureCalls.length,
             };
         }""",
-        source_count,
+        [source_count, platform],
     )
 
     if adopted:
@@ -1297,8 +1309,8 @@ def test_prompting_single_source_is_adopted_without_second_click(
             "label": "",
             "pushed": [],
             "highlighted": [],
-            # Non-prompting providers still fetch thumbnails in a second pass.
-            "enumerations": 1 if prompting else 2,
+            # Providers that do not prompt still fetch thumbnails in a second pass.
+            "enumerations": 1 if prompting is True else 2,
         }
 
 
