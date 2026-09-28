@@ -21,6 +21,15 @@ export function schemaEnum(schema?: ConfigEditorSchema): Array<string | number |
   return values as Array<string | number | boolean>
 }
 
+/** Whether the schema alone fixes a new field's initial value (see newSchemaValue). */
+export function schemaDecidesValue(schema?: ConfigEditorSchema): boolean {
+  return (
+    (schema?.default !== undefined && schema.default !== null) ||
+    schemaEnum(schema).length > 0 ||
+    schema?.type !== undefined
+  )
+}
+
 /** Used only for explicit additions, never to materialize defaults on page load. */
 export function newSchemaValue(schema?: ConfigEditorSchema): unknown {
   if (schema?.default !== undefined && schema.default !== null) {

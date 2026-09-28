@@ -1160,4 +1160,31 @@ describe('ConfigValueEditor add field dialog', () => {
     await nextTick()
     expect(lastEmit(emitted)).toEqual({ token: '' })
   })
+
+  it.each([{}, { title: 'Entry' }])(
+    'keeps the type choice when the dynamic-key schema %j leaves the value open',
+    async (additionalProperties) => {
+      const { dialog, emitted } = await openDialog({
+        type: 'object',
+        properties: {},
+        additionalProperties,
+      })
+      const select = dialog.querySelector<HTMLElement>('.el-select__wrapper')
+      expect(select).not.toBeNull()
+      typeInto(dialog.querySelector('input')!, 'entry')
+      select!.click()
+      await nextTick()
+      const option = [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')].find(
+        (item) => item.textContent?.trim() === 'array'
+      )!
+      option.click()
+      await nextTick()
+      const confirm = [...dialog.querySelectorAll('button')].find(
+        (b) => (b.textContent || '').trim() === 'common.confirm'
+      ) as HTMLButtonElement
+      confirm.click()
+      await nextTick()
+      expect(lastEmit(emitted)).toEqual({ entry: [] })
+    }
+  )
 })

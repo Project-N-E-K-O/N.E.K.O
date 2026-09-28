@@ -322,6 +322,7 @@ import { parseNumberText, settleNumberText as settleNumberReading } from '@/util
 import {
   newSchemaValue,
   redactConfigSecrets,
+  schemaDecidesValue,
   schemaEnum,
   schemaText,
   type ConfigEditorSchema,
@@ -846,10 +847,15 @@ function addArrayItem() {
 const addKeyDialog = ref(false)
 const newKey = ref('')
 const newType = ref<'string' | 'number' | 'boolean' | 'object' | 'array'>('string')
-// A declared dynamic-key schema decides the initial value, so the type choice would be ignored.
+// A dynamic-key schema that fixes the initial value makes the type choice meaningless.
 const dynamicFieldSchema = computed(() => {
   const additional = props.schema?.additionalProperties
-  return !!additional && typeof additional === 'object' && !Array.isArray(additional)
+  return (
+    !!additional &&
+    typeof additional === 'object' &&
+    !Array.isArray(additional) &&
+    schemaDecidesValue(additional)
+  )
 })
 
 function openAddKey() {
@@ -890,7 +896,9 @@ function confirmAddKey() {
   }
 
   const declared = fieldSchema(key)
-  next[key] = declared ? newSchemaValue(declared) : initialValueByType(newType.value)
+  next[key] = schemaDecidesValue(declared)
+    ? newSchemaValue(declared)
+    : initialValueByType(newType.value)
   // An explicitly empty nested table replaces its base table. Its first field would
   // turn it back into a merge and bring every base field back, so keep the replacement
   // explicit.
