@@ -145,7 +145,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { schemaText, schemaEnum, newSchemaValue, type ConfigEditorSchema } from './configEditorSchema'
+import { schemaText, schemaEnum, newSchemaValue, schemaForProperty, type ConfigEditorSchema } from './configEditorSchema'
 
 interface Props {
   schema?: ConfigEditorSchema
@@ -164,8 +164,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: any): void }>()
 const { t, locale } = useI18n()
 const enumValues = computed(() => schemaEnum(props.schema))
 function fieldSchema(key: string) {
-  const properties = props.schema?.properties
-  return properties && Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : undefined
+  return schemaForProperty(props.schema, key)
 }
 function fieldTitle(key: string) {
   return schemaText(fieldSchema(key), 'title', locale.value, key)

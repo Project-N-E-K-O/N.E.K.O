@@ -48,6 +48,10 @@ def _check_node(node: object, depth: int = 0) -> None:
             raise ValueError("Invalid schema properties")
         for child in properties.values():
             _check_node(child, depth + 1)
+    if "additionalProperties" in node:
+        additional = node["additionalProperties"]
+        if not isinstance(additional, bool):
+            _check_node(additional, depth + 1)
     if "items" in node:
         _check_node(node["items"], depth + 1)
     if "enum" in node:

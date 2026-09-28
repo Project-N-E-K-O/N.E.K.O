@@ -74,18 +74,25 @@ describe('PluginConfigEditor schema integration', () => {
 })
 
 describe('PluginConfigEditor confidential values', () => {
-  it.each([false, true])('masks baseline and draft secrets but saves real edits (override=%s)', async (overridden) => {
+  it.each([
+    { overridden: false, dynamic: false }, { overridden: true, dynamic: false },
+    { overridden: false, dynamic: true }, { overridden: true, dynamic: true },
+  ])('masks secrets and saves real edits (override=$overridden, dynamic=$dynamic)', async ({ overridden, dynamic }) => {
     const baseline = { auth: { token: 'fixture-baseline-token' }, servers: [{ token: 'fixture-array-token' }] }
     api.getPluginConfig.mockResolvedValue({ config: baseline })
     api.getPluginEffectiveBaseConfig.mockResolvedValue({
       config: baseline,
       config_schema: { type: 'object', properties: {
-        auth: { type: 'object', properties: {
+        auth: { type: 'object', ...(dynamic ? {
+          additionalProperties: { type: 'string', title: 'Access token', writeOnly: true },
+        } : { properties: {
           token: { type: 'string', title: 'Access token', writeOnly: true },
-        } },
-        servers: { type: 'array', items: { type: 'object', properties: {
+        } }) },
+        servers: { type: 'array', items: { type: 'object', ...(dynamic ? {
+          additionalProperties: { type: 'string', writeOnly: true },
+        } : { properties: {
           token: { type: 'string', writeOnly: true },
-        } } },
+        } }) } },
       } },
     })
     api.getPluginProfileConfig.mockResolvedValue({

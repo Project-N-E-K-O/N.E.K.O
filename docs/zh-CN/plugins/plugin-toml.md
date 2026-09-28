@@ -308,6 +308,7 @@ plugin/plugins/smart_notes/
 | 关键字 | 配置面板行为 |
 | --- | --- |
 | `properties` | 描述对象中的字段；结构与实际配置路径对应。未声明的已有字段仍可编辑。 |
+| additionalProperties | 对象形式的子 schema 用于 properties 未声明的动态键，包括密码控件和预览脱敏；具名属性优先。布尔值不提供字段注释，编辑器不据此限制键的增删。 |
 | `title` / `description` | 显示名称和说明，按纯文本渲染；内部 key 保留为辅助信息。缺少标题时显示 key。 |
 | `type` | 单一 `string`、`number`、`integer`、`boolean`、`object`、`array` 分别使用对应控件；缺失时根据当前值推断。 |
 | `items` | 用一个子 schema 描述数组元素，支持嵌套对象和数组。 |
@@ -325,4 +326,4 @@ Schema 只提供表单展示和控件设置，**不是完整的 JSON Schema 校�
 
 打开页面不会根据 `default` 填充配置或写入 profile。仅在 schema 中声明、但配置中尚不存在的字段也会显示，编辑后才写入；对象继续按原有规则合并，数组仍整体替换。顶层 `plugin` 段仍受保护，不参与 profile 编辑。
 
-文件必须是 UTF-8 JSON、根节点为 `type: "object"`，大小不超过 256 KiB，`properties` / `items` 嵌套深度不超过 32 层。无文件时使用旧表单；文件损坏或所支持关键字的结构无效时，接口返回警告，页面提示并回退到通用编辑器。配置查询接口的 `config_schema` 字段单独返回该元数据，不会混入 `config` 或 profile。
+文件必须是 UTF-8 JSON、根节点为 `type: "object"`，大小不超过 256 KiB，`properties` / `items` / `additionalProperties` 嵌套深度不超过 32 层。无文件时使用旧表单；文件损坏或所支持关键字的结构无效时，接口返回警告，页面提示并回退到通用编辑器。配置查询接口的 `config_schema` 字段单独返回该元数据，不会混入 `config` 或 profile。

@@ -4,6 +4,7 @@ export interface ConfigEditorSchema {
   title?: string
   description?: string
   properties?: Record<string, ConfigEditorSchema>
+  additionalProperties?: ConfigEditorSchema | boolean
   items?: ConfigEditorSchema
   enum?: unknown[]
   default?: unknown
