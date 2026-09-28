@@ -2661,6 +2661,11 @@
         // 分享对话框，先只放一个按钮，用户点击后再枚举。
         if (renderOptions.deferEnumeration === true) {
             screenPopup.innerHTML = '';
+            appendDeferredLoadButton(screenPopup, renderOptions);
+            return true;
+        }
+
+        function appendDeferredLoadButton(targetPopup, deferredOptions) {
             var deferredLoadButton = document.createElement('button');
             deferredLoadButton.type = 'button';
             deferredLoadButton.className = 'screen-source-deferred-load';
@@ -2681,20 +2686,26 @@
             });
             deferredLoadButton.addEventListener('click', function (event) {
                 event.stopPropagation();
-                if (!isPopupAvailable()) return;
-                var loadOptions = Object.assign({}, renderOptions, { deferEnumeration: false });
-                Promise.resolve(window.renderFloatingScreenSourceList(screenPopup, loadOptions))
+                if (!targetPopup.isConnected || !deferredLoadButton.isConnected) return;
+                var loadOptions = Object.assign({}, deferredOptions, { deferEnumeration: false });
+                var loadPromise = window.renderFloatingScreenSourceList(targetPopup, loadOptions);
+                var loadToken = targetPopup._screenSourceRenderToken;
+                Promise.resolve(loadPromise)
                     .then(function (rendered) {
-                        if (typeof renderOptions.onDeferredRender === 'function') {
-                            renderOptions.onDeferredRender(rendered);
+                        // 用户取消系统对话框或列来源失败：保留提示，放回按钮以便重试。
+                        if (!rendered && targetPopup.isConnected
+                            && targetPopup._screenSourceRenderToken === loadToken) {
+                            appendDeferredLoadButton(targetPopup, deferredOptions);
+                        }
+                        if (typeof deferredOptions.onDeferredRender === 'function') {
+                            deferredOptions.onDeferredRender(rendered);
                         }
                     })
                     .catch(function (error) {
                         console.warn('[屏幕源] 加载屏幕来源失败:', error);
                     });
             });
-            screenPopup.appendChild(deferredLoadButton);
-            return true;
+            targetPopup.appendChild(deferredLoadButton);
         }
 
         try {
@@ -2737,6 +2748,7 @@
 
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
+            var selectedBeforeReconcile = S.selectedScreenSourceId;
             reconcileRememberedWindowSource(sources);
 
             function previewFrameStyles() {
@@ -3031,14 +3043,18 @@
             if (desktopSourceEnumerationMayPrompt(desktopProvider) && sources.length === 1) {
                 var portalSource = sources[0];
                 var portalLabel = getScreenSourceDisplayName(portalSource, 0);
-                if (S.selectedScreenSourceId !== portalSource.id) {
+                var reconciledToPortalSource = S.selectedScreenSourceId === portalSource.id
+                    && selectedBeforeReconcile !== portalSource.id;
+                if (!reconciledToPortalSource) {
+                    // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
+                    // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
                     selectScreenSource(portalSource.id, portalSource.name, portalLabel)
                         .catch(function (error) {
                             console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
                         });
                 } else {
-                    // 已由持久化 id 或「记住窗口」对账选中时不重启分享，但仍要记成
-                    // 本次显式选择：否则 prepareRememberedWindowCapture 会把它当成
+                    // 「记住窗口」对账刚切到这个 id，已经重启过捕获；这里只需记成
+                    // 本次显式选择，否则 prepareRememberedWindowCapture 会把它当成
                     // 不可信的恢复 id 拒绝。
                     markCurrentScreenSourceSelectionExplicit(portalSource.name || '');
                     if (isScreenSourceTitleMatchEnabled() && portalSource.id.startsWith('window:')) {

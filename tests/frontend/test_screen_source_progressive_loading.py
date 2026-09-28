@@ -831,6 +831,104 @@ def test_portal_result_already_selected_is_trusted_for_capture(
 
 
 @pytest.mark.frontend
+def test_portal_result_with_reused_id_releases_cached_stream(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"selectedScreenSourceId": "window:2"},
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = window.__metadataSources.slice(1);
+            window.__stoppedTracks = 0;
+            window.appState.screenCaptureStream = {
+                getTracks: () => [{ stop() { window.__stoppedTracks += 1; } }],
+            };
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                stoppedTracks: window.__stoppedTracks,
+                cachedStream: window.appState.screenCaptureStream,
+                selected: window.getSelectedScreenSourceId(),
+            };
+        }"""
+    )
+
+    # The same snapshot id may now name another window, so the stream that was
+    # captured for the previous choice must not be reused.
+    assert result == {
+        "stoppedTracks": 1,
+        "cachedStream": None,
+        "selected": "window:2",
+    }
+
+
+@pytest.mark.frontend
+def test_deferred_load_button_returns_after_failed_enumeration(page: Page) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const provider = window.__desktopProvider;
+            const originalGetSources = provider.getSources.bind(provider);
+            let failNext = true;
+            provider.getSources = (options) => {
+                if (failNext) {
+                    failNext = false;
+                    window.__captureCalls.push(options);
+                    return Promise.reject(new Error('portal cancelled'));
+                }
+                return originalGetSources(options);
+            };
+            const renders = [];
+            await window.renderFloatingScreenSourceList(popup, {
+                deferEnumeration: true,
+                onDeferredRender: (value) => renders.push(value),
+            });
+            async function clickLoad() {
+                const before = renders.length;
+                popup.querySelector('[data-neko-screen-source-deferred-load]').click();
+                for (let i = 0; i < 20 && renders.length === before; i += 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+            }
+            await clickLoad();
+            const afterFailure = {
+                text: popup.textContent,
+                loadButtons: popup.querySelectorAll(
+                    '[data-neko-screen-source-deferred-load]'
+                ).length,
+            };
+            await clickLoad();
+            return {
+                afterFailure,
+                renders,
+                calls: window.__captureCalls.length,
+                options: popup.querySelectorAll('.screen-source-option').length,
+                loadButtons: popup.querySelectorAll(
+                    '[data-neko-screen-source-deferred-load]'
+                ).length,
+            };
+        }"""
+    )
+
+    assert result == {
+        "afterFailure": {
+            "text": "app.screenSource.loadFailedapp.screenSource.clickToChoose",
+            "loadButtons": 1,
+        },
+        "renders": [False, True],
+        "calls": 2,
+        "options": 2,
+        "loadButtons": 0,
+    }
+
+
+@pytest.mark.frontend
 def test_remembered_title_reconciles_reused_id_before_stream_capture(
     page: Page,
 ) -> None:
