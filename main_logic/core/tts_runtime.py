@@ -72,7 +72,8 @@ from ._shared import (
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
 from .tts_records import (
-    TTS_FRAME_WRITE_TIMEOUT_SECONDS, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime,
+    TTS_FRAME_WRITE_TIMEOUT_SECONDS, TTS_HANDLER_CANCEL_GRACE_SECONDS,
+    TTS_SOCKET_CLOSE_TIMEOUT_SECONDS, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime,
 )
 
 # Late-binding read point for symbols that tests rebind on the facade via
@@ -1291,7 +1292,11 @@ class TtsRuntimeMixin:
             try:
                 await asyncio.wait_for(
                     asyncio.shield(handler_task),
-                    timeout=TTS_FRAME_WRITE_TIMEOUT_SECONDS + 1.0,
+                    timeout=(
+                        TTS_FRAME_WRITE_TIMEOUT_SECONDS
+                        + TTS_SOCKET_CLOSE_TIMEOUT_SECONDS
+                        + TTS_HANDLER_CANCEL_GRACE_SECONDS
+                    ),
                 )
             except asyncio.CancelledError:
                 if not handler_task.done() or asyncio.current_task().cancelling():
@@ -2140,7 +2145,7 @@ class TtsRuntimeMixin:
                 # A partial frame must never be followed by another frame on
                 # this socket. Close the captured transport, not a successor.
                 try:
-                    async with asyncio.timeout(1.0):
+                    async with asyncio.timeout(TTS_SOCKET_CLOSE_TIMEOUT_SECONDS):
                         await websocket.close(code=1011)
                 except Exception:
                     logger.warning("Failed to close stalled TTS audio transport", exc_info=True)

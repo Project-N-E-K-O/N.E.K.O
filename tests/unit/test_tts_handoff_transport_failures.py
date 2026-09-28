@@ -154,6 +154,58 @@ async def test_stopping_handler_waits_for_the_frame_write_deadline(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stopping_handler_covers_frame_close_and_cancel_grace(monkeypatch):
+    entered = asyncio.Event()
+
+    class SlowCloseSocket(_RecordingWebsocket):
+        def __init__(self):
+            super().__init__()
+            self.closed_codes = []
+
+        async def send_bytes(self, data):
+            entered.set()
+            await asyncio.sleep(10)
+
+        async def close(self, *, code):
+            await asyncio.sleep(1.45)
+            self.closed_codes.append(code)
+
+    monkeypatch.setattr(runtime_module, "TTS_FRAME_WRITE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(runtime_module, "TTS_SOCKET_CLOSE_TIMEOUT_SECONDS", 1.5)
+    monkeypatch.setattr(runtime_module, "TTS_HANDLER_CANCEL_GRACE_SECONDS", 2.0)
+    manager = Manager()
+    socket = SlowCloseSocket()
+    manager.websocket = socket
+    manager.sync_message_queue = Queue()
+
+    async def handler_body():
+        try:
+            await manager._write_audio_frame(
+                socket, {"type": "audio_chunk", "speech_id": "old"}, b"pcm"
+            )
+        except Exception:
+            # The real response handler catches transport disconnects after the
+            # frame writer has closed the captured socket.
+            pass
+
+    handler = asyncio.create_task(handler_body())
+    manager.tts_handler_task = handler
+    manager._tts_handler_response_queue = manager.tts_response_queue
+    stopping = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        stopping = asyncio.create_task(manager._stop_tts_response_handler())
+        await asyncio.wait_for(stopping, 5)
+        assert handler.done()
+        assert socket.closed_codes == [1011]
+    finally:
+        for task in (stopping, handler):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(stopping, handler, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_clear_cannot_steal_stopping_handlers_wakeup():
     entered, release_consumer, exited = Event(), Event(), Event()
 
