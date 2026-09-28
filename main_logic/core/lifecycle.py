@@ -368,12 +368,18 @@ class LifecycleMixin:
                 await self.send_status(json.dumps(status_payload))
         logger.info("💥 Realtime connection recovery requested.")
         # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
-        # session 7.5s later. After a spent quota that restart is rejected
-        # every time (the server does not say when the window reopens), so
-        # end the session without it; the user's next manual start retries.
+        # session 7.5s later. After the free service's daily quota is spent
+        # that restart is rejected every time (the server does not say when
+        # the window reopens), so end the session without it; the user's next
+        # manual start retries. Paid providers keep the restart: their quota
+        # wording also covers recoverable per-minute 429s.
+        free_quota_spent = (
+            status_code == 'API_QUOTA_TIME'
+            and getattr(self, 'core_api_type', '') == 'free'
+        )
         await self.disconnected_by_server(
             expected_session=expected_session,
-            announce_disconnect=status_code != 'API_QUOTA_TIME',
+            announce_disconnect=not free_quota_spent,
         )
     
     async def handle_repetition_detected(self):

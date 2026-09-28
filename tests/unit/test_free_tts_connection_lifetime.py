@@ -59,7 +59,12 @@ class _Socket:
         event = json.loads(payload)
         if event["type"] in self._fail_on:
             failure = self._fail_on[event["type"]] if isinstance(self._fail_on, dict) else None
-            raise failure or RuntimeError("socket dropped during send")
+            successes_left = 0
+            if isinstance(failure, tuple):
+                successes_left, failure = failure
+            already_sent = sum(1 for sent in self.sent if sent["type"] == event["type"])
+            if already_sent >= successes_left:
+                raise failure or RuntimeError("socket dropped during send")
         self.sent.append(event)
         for injected in self._on_send.get(event["type"], ()):
             self._events.put(json.dumps(injected))
@@ -297,6 +302,9 @@ def test_quota_rejected_speech_is_reported_once_and_not_retried_per_chunk(monkey
     }]
     assert ("__reconnecting__", "TTS_RECONNECTING") not in list(responses.queue)
     assert next_speech.sent[0]["type"] == "tts.create"
+    # The dropped terminal still closes the stream, so completion waiters
+    # (already told the round failed) do not sit out their timeout.
+    assert ("__audio_done__", "speech-1") in list(responses.queue)
 
 
 def test_quota_rejection_at_startup_reports_quota_before_not_ready(monkeypatch):
@@ -401,7 +409,14 @@ def test_rejection_while_replaying_buffered_text_ends_that_speech(monkeypatch):
     assert next_speech.sent[0]["type"] == "tts.create"
 
 
-@pytest.mark.parametrize("failing_send", ["tts.create", "tts.text.delta"])
+@pytest.mark.parametrize(
+    "failing_send",
+    [
+        "tts.create",
+        "tts.text.delta",  # the buffered opening, sent with tts.create
+        ("tts.text.delta", 1),  # a later chunk on the live socket
+    ],
+)
 def test_send_that_hits_a_server_rejection_ends_that_speech(monkeypatch, failing_send):
     # The sender can see the close before the receive task, whose
     # cancellation then prevents it from reporting.
@@ -411,9 +426,12 @@ def test_send_that_hits_a_server_rejection_ends_that_speech(monkeypatch, failing
         Close(1008, "Total connection time limit reached for today"),
         None,
     )
+    send_type, successes = (
+        failing_send if isinstance(failing_send, tuple) else (failing_send, 0)
+    )
     speech = _Socket(
         [{"type": "tts.connection.done", "data": {"session_id": "speech"}}],
-        fail_on={failing_send: rejection},
+        fail_on={send_type: (successes, rejection)},
     )
     next_speech = _speech_socket("next", final_events=[])
     connects = _install_sockets(monkeypatch, _warmup_socket(), speech, next_speech)
@@ -432,6 +450,31 @@ def test_send_that_hits_a_server_rejection_ends_that_speech(monkeypatch, failing
     assert connects == [connects[0], speech, next_speech]
     assert {error["code"] for error in _errors(responses)} == {"API_QUOTA_TIME"}
     assert next_speech.sent[0]["type"] == "tts.create"
+    assert ("__audio_done__", "speech-1") in list(responses.queue)
+
+
+@pytest.mark.parametrize(
+    "close",
+    [Close(1008, "Access denied: IP is blacklisted"), Close(4004, "Not Found")],
+)
+def test_permanent_rejection_hands_retry_policy_to_the_core(monkeypatch, close):
+    _route_to_lanlan_app(monkeypatch)
+    _skip_backoff(monkeypatch)
+    connects = _install_sockets(monkeypatch, _warmup_socket(), _rejecting_socket(close.code, close.reason))
+    responses = queue.Queue()
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            ("speech-2", _OPENING),
+        ),
+        responses,
+    )
+
+    # No connect for speech-2: the worker reported not-ready and exited, so
+    # the core's NO_RETRY gate decides from here.
+    assert len(connects) == 2
+    assert list(responses.queue)[-1] == ("__ready__", False)
 
 
 @pytest.mark.parametrize(

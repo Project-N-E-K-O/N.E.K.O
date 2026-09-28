@@ -517,6 +517,7 @@ async def test_quota_disconnect_ends_session_without_the_auto_restart_marker(mes
     # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
     # session 7.5s later; after a spent quota every restart is rejected.
     manager = _make_manager()
+    manager.core_api_type = "free"
 
     await manager.handle_connection_error(message, expected_session=manager.session)
 
@@ -559,6 +560,24 @@ async def test_session_start_failure_distinguishes_quota_from_429(error_text, ex
 
     codes = [json.loads(call.args[0])["code"] for call in manager.send_status.await_args_list]
     assert codes == ["SESSION_START_FAILED", expected_code]
+
+
+@pytest.mark.asyncio
+async def test_paid_provider_quota_close_keeps_the_auto_restart():
+    # A paid provider's "HTTP 429 quota exceeded" also classifies as quota,
+    # but is often a recoverable per-minute limit.
+    manager = _make_manager()
+    manager.core_api_type = "qwen"
+
+    await manager.handle_connection_error(
+        json.dumps({"code": "API_QUOTA_TIME", "details": {"connection_generation": 0}}),
+        expected_session=manager.session,
+    )
+
+    manager.disconnected_by_server.assert_awaited_once_with(
+        expected_session=manager.session,
+        announce_disconnect=True,
+    )
 
 
 @pytest.mark.asyncio

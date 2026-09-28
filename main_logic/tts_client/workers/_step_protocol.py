@@ -54,6 +54,9 @@ _FINISH_RETRY_SENTINEL = "__step_finish_retry__"
 # "... limit reached for today" mid-session) share this substring.
 _LANLAN_QUOTA_CLOSE_REASON = "time limit reached"
 _LANLAN_ACCESS_DENIED_CLOSE_REASON = "access denied"
+# Rejections no later round can get past; the worker exits so the core's
+# no-retry gate takes over instead of every reply reconnecting.
+_PERMANENT_REJECTION_CODES = frozenset({"API_ACCESS_DENIED", "TTS_CONFIG_INVALID"})
 
 
 def _classify_lanlan_server_close(exc) -> dict | None:
@@ -206,6 +209,9 @@ def run_step_protocol_tts_worker(
         # 服务端明确拒绝建连（配额 / 限流 / 黑白名单）的那一轮：剩余 chunk 与
         # 收尾都丢弃，不再逐 chunk 重连或按 1s 重试收尾；下一轮回复照常再试。
         rejected_speech_id = None
+        # 黑白名单 / 路径错误这类永久拒绝：worker 报未就绪后退出，交给主进程的
+        # NO_RETRY 闸门，不再每轮回复都去撞一次。
+        permanent_rejection = False
         deferred_requests = deque()
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
@@ -227,12 +233,15 @@ def run_step_protocol_tts_worker(
 
         def _report_server_close(exc) -> bool:
             """Forward a free-server rejection close as a structured error."""
+            nonlocal permanent_rejection
             if not is_free:
                 return False
             classified = _classify_lanlan_server_close(exc)
             if classified is None:
                 return False
             _enqueue_error(response_queue, classified)
+            if classified["code"] in _PERMANENT_REJECTION_CODES:
+                permanent_rejection = True
             return True
 
         def _reject_on_server_close(exc) -> bool:
@@ -640,6 +649,10 @@ def run_step_protocol_tts_worker(
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
             while True:
+                if permanent_rejection:
+                    logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
+                    response_queue.put(("__ready__", False))
+                    break
                 if pending_finish_retry_speech_id is not None:
                     control_request = None
                     while True:
@@ -730,6 +743,10 @@ def run_step_protocol_tts_worker(
                 ):
                     # 这一轮已被服务端拒绝并上报过：剩余 chunk 与收尾都丢弃，
                     # 不再逐个重连，也不往已被关掉的 socket 上发。
+                    if sid is None:
+                        # 收尾照样发 audio_done：主进程已把这一轮记为投递失败，
+                        # 等音频完成的调用方据此立刻以失败收场，而不是干等超时。
+                        audio_done.emit(rejected_speech_id)
                     continue
 
                 if sid is None:
@@ -1027,11 +1044,13 @@ def run_step_protocol_tts_worker(
                     _record_tts_telemetry(provider_key, len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
-                    _reject_on_server_close(e)
+                    rejected_now = _reject_on_server_close(e)
                     # 连接已关闭，标记为无效以便下次重连
                     ws = None
                     session_id = None
-                    current_speech_id = None  # 清空ID以强制下次重连
+                    if not rejected_now:
+                        # 清空ID以强制下次重连；被拒的轮次保留 ID，让收尾能匹配上
+                        current_speech_id = None
                     session_created = False
                     pending_text_buffer = ""
                     if receive_task and not receive_task.done():
