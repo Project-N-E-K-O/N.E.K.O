@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入主分支 GLM 声音复刻、屏幕共享悬停提示与免费语音配额提示等 locale key，并新增 Electron 悬浮按钮「去设置页登录」提示，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-28-social-settings-login-prompt-glm-merge';
+    // 合入主分支的声纹四段录入、GLM 声音复刻、屏幕共享悬停提示与免费语音配额提示等 locale key，
+    // 并新增 Electron 悬浮按钮「去设置页登录」提示，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-social-settings-login-prompt-pr3172-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -516,7 +516,7 @@ import type {
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
-import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
+import { deletePlugin } from '@/api/plugins'
 import { uploadPluginPackage, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
@@ -525,6 +525,7 @@ import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
@@ -1206,7 +1207,10 @@ async function importSelectedPluginPackage() {
     })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
-    ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    notifyPluginInstallOutcome(result, t, ElMessage, {
+      plugin: file.name,
+      successMessage: t('plugins.importSuccess', { name: file.name, count }),
+    })
     importDialogVisible.value = false
     await refreshAfterPluginChange()
   } catch (error: any) {
@@ -1402,7 +1406,8 @@ async function handleReloadAll() {
   reloadingAll.value = true
 
   try {
-    const result = await reloadAllPlugins()
+    // 全部重载也要清掉被重启插件的待重载标记，否则列表重载后编辑器仍会显示提示。
+    const result = await pluginStore.reloadAll({ refresh: false })
     const successCount = result.reloaded.length
     const failCount = result.failed.length
 

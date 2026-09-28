@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
       blockedOwnershipUnknown: '无法确认现有插件目录的所有权。请先恢复对应的安装源记录，再重试。',
       blockedInstallSourceReadOnly: '安装源记录不可用或处于只读状态。请先恢复安装源记录，再重试。',
+      installSucceeded: '安装完成，处理了 {count} 个插件。',
+      completedWithWarnings: '{plugin} 已安装，但存在警告：{reasons}',
       rollbackCompleted: '升级失败，已恢复之前的版本。',
       rollbackIncomplete: '升级失败且回滚未完整完成，请检查插件状态后再继续。',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: '插件的 plugin.toml 格式有误，请让插件作者修复后重新打包。',
         identityMismatch: '插件文件夹名称与 plugin.toml 中的 ID 不一致，请让插件作者修复安装包。',
         hashMismatch: '安装包内容与校验信息不一致，已拒绝安装，未保留任何安装改动。',
+        profileOwnershipConflict: '这个插件包的配置档目录已存在，但不属于该安装包（可能是之前安装留下的残留），已拒绝安装，未做任何改动。',
         inspectFailed: '无法检查这个插件包。请确认文件存在且是有效的 N.E.K.O 插件包，然后重试。',
         verifyFailed: '无法校验这个插件包。请重新下载，或让插件作者重新打包后再试。',
         installFailed: '无法安装这个插件包，未保留未经确认的安装改动。'

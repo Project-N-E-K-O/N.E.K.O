@@ -65,14 +65,28 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-28-social-settings-login-prompt-glm-merge",
+        "2026-09-28-pr3172-glm-voice-clone-main-merge",
+        "2026-09-28-glm-voice-clone-free-tts-merge",
+        "2026-09-28-pr3172-screen-share-hover-main-merge",
         "2026-09-28-locale-key-sync",
         "2026-09-28-social-settings-login-prompt-main-merge",
-        "2026-09-28-glm-voice-clone-free-tts-merge",
         "2026-09-27-social-settings-login-prompt",
+        "2026-09-28-pr3172-free-tts-main-merge",
+        "2026-09-28-screen-share-hover-hints-free-tts-merge",
         "2026-09-28-screen-share-hover-hints-main-merge",
         "2026-09-28-free-tts-quota-codes",
         "2026-09-26-screen-share-hover-hints",
+        "2026-09-28-voice-identity-short-capture-v1",
+        "2026-09-28-pr3172-enrollment-copy",
         "2026-09-27-asr-recovery-main-merge",
+        "2026-09-27-pr3172-review-comments",
+        "2026-09-27-pr3172-review-comments-2",
+        "2026-09-27-pr3172-review-comments-3",
+        "2026-09-27-pr3172-review-comments-4",
+        "2026-09-27-pr3172-review-comments-5",
+        "2026-09-27-pr3172-review-comments-6",
+        "2026-09-26-pr3172-voice-enrollment",
         "2026-09-27-agent-screen-share-main-merge",
         "2026-09-25-asr-recovery",
         "2026-09-24-agent-screen-share-pending-reload",
@@ -170,7 +184,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-07-plugin-html-content",
         "2026-09-08-drawing-guess",
         "2026-09-09-pngtuber-import-status",
-        "2026-09-10-drawing-guess-pngtuber-import-status",
         "2026-09-11-watch-together-preparation-i18n",
         "2026-09-11-soccer-sdk-migration",
         "2026-09-11-watch-together-soccer-sdk",
@@ -179,19 +192,13 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-06-plugin-model-api",
         "2026-09-03-voice-identity-five-second-verification",
         "2026-09-08-voice-session-activation",
-        "2026-09-09-voice-session-activation-pngtuber",
         "2026-09-13-plugin-html-content-main-merge",
         "2026-09-13-plugin-html-content-proactive-community",
         "2026-09-14-plugin-html-content-main-merge",
-        "2026-09-14-plugin-model-api-proactive-community",
         "2026-09-22-plugin-html-content-main-merge",
-        "2026-09-22-voice-session-activation",
-        "2026-09-23-plugin-html-content-main-merge",
-        "2026-09-23-voice-wake-word-plugin-html-main",
         "2026-09-27-glm-voice-clone",
         "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-locale-key-sync",
-        "2026-09-28-screen-share-hover-hints-free-tts-merge",
     }
 )
 
@@ -204,7 +211,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "90a574120261780f51f66945f707ff57aa0416569120ca3d0d9a191533037b34"
+LOCALE_KEY_SIGNATURE = "0b4c402f2c818ca1f341dd7b595430365eb71b9bf8c0253181dad4bb4bb89bca"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

@@ -27,6 +27,7 @@ import {
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
@@ -763,22 +764,30 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       return
     }
     setResult('install', response)
+    const plan = installPlan.value
+    const pluginLabel = plan?.plugin_id || plan?.directory_name || ''
+    let successMessage: string
     if (
       response.operation === 'upgrade'
       || response.operation === 'reinstall'
       || response.operation === 'downgrade'
       || response.operation === 'override_builtin'
     ) {
-      const plan = installPlan.value
       const successOperation = plan?.reason === 'manual_takeover'
         ? 'manualTakeover'
         : response.operation
-      ElMessage.success(t(`package.install.${successOperation}Succeeded`, {
-        plugin: plan?.plugin_id || plan?.directory_name || '',
-      }))
+      successMessage = t(`package.install.${successOperation}Succeeded`, {
+        plugin: pluginLabel,
+      })
     } else {
-      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
+      successMessage = t('package.install.installSucceeded', {
+        count: response.installed_plugin_count,
+      })
     }
+    notifyPluginInstallOutcome(response, t, ElMessage, {
+      plugin: pluginLabel,
+      successMessage,
+    })
     await refreshPluginSources()
   }
 
