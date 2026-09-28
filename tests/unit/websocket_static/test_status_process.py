@@ -73,7 +73,9 @@ def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
 
 def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harness():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-    start = source.index("function publishCoreApiCapability(provider, capability)")
+    start = source.index(
+        "function publishCoreApiCapability(provider, capability, localAsrAvailable)"
+    )
     end = source.index("// Prime the capability once", start)
     refresh_source = source[start:end]
     harness = (
@@ -81,6 +83,7 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
         const S = {
           coreApiProvider: 'free',
           coreApiSupportsIndependentAsr: false,
+          localAsrAvailable: null,
         };
         let _coreApiCapabilityRefreshPromise = null;
         let _coreApiCapabilityRequestGeneration = 0;
@@ -115,6 +118,7 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           window.fetch = async () => response({ success: true, coreApi: 'qwen' });
           await refreshCoreApiCapability({ force: true });
           assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
+          assert(S.localAsrAvailable === null, 'legacy response leaves local ASR unknown');
           assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
 
           const validCapability = {
@@ -122,6 +126,7 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
             coreApi: 'free',
             effectiveCoreApi: 'qwen',
             supportsIndependentAsr: true,
+            localAsrAvailable: true,
           };
           let fetchCalls = 0;
           let resolveShared;
@@ -139,6 +144,7 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           await firstRequest;
           assert(S.coreApiSupportsIndependentAsr === true, 'shared success must publish capability');
           assert(S.coreApiProvider === 'qwen', 'effective provider must win');
+          assert(S.localAsrAvailable === true, 'local ASR availability must be published');
 
           let resolveNext;
           window.fetch = () => {

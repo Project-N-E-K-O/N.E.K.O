@@ -461,6 +461,20 @@ def test_selection_honors_preference_without_credentials(monkeypatch) -> None:
     assert session is not None
 
 
+@pytest.mark.parametrize("installed", [True, False])
+def test_local_asr_availability_uses_the_selection_probe(monkeypatch, installed) -> None:
+    probed: list[str] = []
+
+    def fake_find_spec(name: str):
+        probed.append(name)
+        return object() if installed else None
+
+    monkeypatch.setattr(asr_client.importlib.util, "find_spec", fake_find_spec)
+
+    assert asr_client.is_local_asr_available() is installed
+    assert probed == ["faster_whisper"]
+
+
 def test_free_core_ignores_local_preference(monkeypatch) -> None:
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.setattr(

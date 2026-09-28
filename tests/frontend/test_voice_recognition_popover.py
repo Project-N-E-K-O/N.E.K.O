@@ -133,6 +133,7 @@ def _install_voice_popover_harness(
         independentAsrActive: true,
         independentAsrProvider: 'qwen',
         voiceInputResourceOptimizationEnabled: true,
+        localAsrAvailable: true,
         voiceInputLifecycleState: 'active',
         voiceSessionStartEpoch: 10,
         voiceSettingsPendingUntilEpoch: null,
@@ -608,6 +609,60 @@ def test_voice_popover_toggles_have_accessible_names_and_hints(
     assert len(result) == 3
     assert all(item["labelId"] and item["labelText"] for item in result)
     assert all(item["hintId"] and item["hintText"] for item in result)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("available", "preference", "expected_inputs"),
+    [
+        # Packaged build without faster-whisper: the option is not offered.
+        (False, "auto", 2),
+        (None, "auto", 2),
+        # Installed earlier and since removed: stay visible so it can be undone.
+        (False, "faster_whisper", 3),
+        (True, "auto", 3),
+    ],
+)
+def test_local_asr_toggle_is_offered_only_when_available_or_already_on(
+    page: Page,
+    available,
+    preference: str,
+    expected_inputs: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async ([available, preference]) => {
+            const test = window.__voicePopoverTest;
+            test.state.localAsrAvailable = available;
+            test.state.independentAsrProviderPreference = preference;
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const labels = Array.from(
+                panel.querySelectorAll('[data-i18n]')
+            ).map((node) => node.getAttribute('data-i18n'));
+            const status = panel.querySelector(
+                '.neko-voice-recognition-status'
+            ).textContent;
+            return {
+                count: inputs.length,
+                hasLocal: labels.indexOf('microphone.localAsr') !== -1,
+                localChecked: inputs.length > 2 ? inputs[2].checked : null,
+                status,
+            };
+        }""",
+        [available, preference],
+    )
+
+    assert result["count"] == expected_inputs
+    assert result["hasLocal"] is (expected_inputs == 3)
+    if expected_inputs == 3:
+        assert result["localChecked"] is (preference == "faster_whisper")
+    # The rest of the panel still renders its status without the toggle.
+    assert result["status"]
 
 
 @pytest.mark.frontend

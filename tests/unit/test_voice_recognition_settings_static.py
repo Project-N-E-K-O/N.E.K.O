@@ -234,6 +234,14 @@ def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
     assert "'microphone.localAsrHint'" in voice_panel
     assert "? 'faster_whisper'" in voice_panel
     assert "localAsrToggle.setDisabled(!enabled);" in source
+    # Hidden unless the dependency is installed or the preference is already on.
+    assert "S.localAsrAvailable === true" in voice_panel
+    assert "|| S.independentAsrProviderPreference === 'faster_whisper'" in voice_panel
+    assert "localAsrAvailable: null" in APP_STATE.read_text(encoding="utf-8")
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    )
+    assert "data.localAsrAvailable" in websocket
     assert "faster_whisper: 'faster-whisper'" in source
 
 

@@ -105,6 +105,10 @@
         // independentAsrProvider below, which is the provider the backend
         // actually reported for the running session.
         independentAsrProviderPreference: 'auto',
+        // Whether the optional local ASR dependency is installed, from
+        // /api/config/core_api. Tri-state like coreApiSupportsIndependentAsr;
+        // only an explicit true offers the local-recognition option.
+        localAsrAvailable: null,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
         // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
         // independentAsrEnabled 尤其不能提前进入会话握手，

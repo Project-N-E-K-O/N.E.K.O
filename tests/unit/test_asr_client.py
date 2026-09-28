@@ -145,6 +145,7 @@ def test_public_exports_are_frozen():
         "VoiceIdentityActivationResult",
         "create_asr_session",
         "get_asr_core_capabilities",
+        "is_local_asr_available",
     ]
     assert not hasattr(asr_client, "get_asr_worker")
     assert not hasattr(asr_client, "AsrWorkerFn")

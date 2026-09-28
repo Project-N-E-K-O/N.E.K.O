@@ -2335,15 +2335,19 @@
      * only bypasses completed cache data; the generation fence remains a
      * defensive guard around request publication.
      */
-    function publishCoreApiCapability(provider, capability) {
+    function publishCoreApiCapability(provider, capability, localAsrAvailable) {
         var previousProvider = S.coreApiProvider || '';
         var previousCapability = S.coreApiSupportsIndependentAsr;
+        var previousLocalAsrAvailable = S.localAsrAvailable;
         S.coreApiProvider = typeof provider === 'string' ? provider : '';
         S.coreApiSupportsIndependentAsr =
             typeof capability === 'boolean' ? capability : null;
+        S.localAsrAvailable =
+            typeof localAsrAvailable === 'boolean' ? localAsrAvailable : null;
         if (
             previousProvider !== S.coreApiProvider
             || previousCapability !== S.coreApiSupportsIndependentAsr
+            || previousLocalAsrAvailable !== S.localAsrAvailable
         ) {
             try {
                 window.dispatchEvent(new CustomEvent(
@@ -2411,7 +2415,8 @@
                 typeof data.effectiveCoreApi === 'string'
                     ? data.effectiveCoreApi
                     : data.coreApi,
-                data.supportsIndependentAsr
+                data.supportsIndependentAsr,
+                data.localAsrAvailable
             );
         }).catch(function (error) {
             console.warn('[Core API] Failed to refresh ASR capability:', error);

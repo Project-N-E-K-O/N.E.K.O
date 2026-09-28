@@ -3542,7 +3542,6 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     || !noiseToggle
                     || !optimizationToggle
                     || !optimizationHint
-                    || !localAsrToggle
                     || !voiceStatus
                 ) return;
                 // RNNoise is local PCM preprocessing shared by both the
@@ -3551,11 +3550,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 optimizationToggle.setDisabled(!enabled);
                 // Local recognition is an independent-ASR provider choice, so
                 // it follows the same Core capability gate and master switch.
-                localAsrToggle.setChecked(
-                    !capabilityUnavailable
-                    && S.independentAsrProviderPreference === 'faster_whisper'
-                );
-                localAsrToggle.setDisabled(!enabled);
+                if (localAsrToggle) {
+                    localAsrToggle.setChecked(
+                        !capabilityUnavailable
+                        && S.independentAsrProviderPreference === 'faster_whisper'
+                    );
+                    localAsrToggle.setDisabled(!enabled);
+                }
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
@@ -4284,29 +4285,38 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     optimizationToggle
                 );
 
-                localAsrToggle = createVoiceSettingToggle(
-                    S.independentAsrProviderPreference === 'faster_whisper',
-                    function (enabled) {
-                        if (coreApiDisablesIndependentAsr()) {
+                // Packaged builds do not ship faster-whisper, so only offer the
+                // option where it can run. A preference persisted while it was
+                // installed stays visible so the user can still turn it off.
+                localAsrToggle = null;
+                if (
+                    S.localAsrAvailable === true
+                    || S.independentAsrProviderPreference === 'faster_whisper'
+                ) {
+                    localAsrToggle = createVoiceSettingToggle(
+                        S.independentAsrProviderPreference === 'faster_whisper',
+                        function (enabled) {
+                            if (coreApiDisablesIndependentAsr()) {
+                                updateVoiceRecognitionUi();
+                                return;
+                            }
+                            S.independentAsrProviderPreference = enabled
+                                ? 'faster_whisper'
+                                : 'auto';
+                            markVoiceSettingsPending();
                             updateVoiceRecognitionUi();
-                            return;
+                            persistVoiceSettingChange();
                         }
-                        S.independentAsrProviderPreference = enabled
-                            ? 'faster_whisper'
-                            : 'auto';
-                        markVoiceSettingsPending();
-                        updateVoiceRecognitionUi();
-                        persistVoiceSettingChange();
-                    }
-                );
-                appendVoicePanelSetting(
-                    panelBody,
-                    'microphone.localAsr',
-                    '本地语音识别',
-                    'microphone.localAsrHint',
-                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
-                    localAsrToggle
-                );
+                    );
+                    appendVoicePanelSetting(
+                        panelBody,
+                        'microphone.localAsr',
+                        '本地语音识别',
+                        'microphone.localAsrHint',
+                        '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                        localAsrToggle
+                    );
+                }
 
                 voiceStatus = document.createElement('div');
                 voiceStatus.className = 'neko-voice-recognition-status';

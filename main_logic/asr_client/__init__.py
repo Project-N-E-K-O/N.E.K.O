@@ -74,6 +74,7 @@ __all__ = [
     "VoiceIdentityActivationResult",
     "create_asr_session",
     "get_asr_core_capabilities",
+    "is_local_asr_available",
 ]
 
 
@@ -217,6 +218,22 @@ def _optional_dependency_available(module_name: str | None) -> bool:
         return importlib.util.find_spec(module_name) is not None
     except (ImportError, ValueError):
         return False
+
+
+def is_local_asr_available() -> bool:
+    """Return whether a user-selectable local ASR provider can start here.
+
+    Uses the same dependency probe as provider selection, so the UI and the
+    resolver cannot disagree. The probe consults the import system, which may
+    touch the filesystem: call it via ``asyncio.to_thread`` from async code.
+    """
+
+    return any(
+        meta.user_selectable
+        and meta.availability is _AsrProviderAvailability.IMPLEMENTED
+        and _optional_dependency_available(meta.optional_dependency)
+        for meta in _ASR_PROVIDER_REGISTRY.values()
+    )
 
 
 def _resolve_user_selected_provider(
