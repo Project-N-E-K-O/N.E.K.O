@@ -114,6 +114,36 @@ async def test_close_failure_is_propagated_for_capacity_accounting():
 
 
 @pytest.mark.asyncio
+async def test_failed_websocket_close_is_retried_by_the_same_client():
+    client = _make_client()
+
+    class _RetryableWs:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("close handshake failed")
+
+    ws = _RetryableWs()
+    client.ws = ws
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client.close()
+    assert ws.close_calls == 1
+    assert client.ws is None
+    assert client._retired_websockets == [ws]
+
+    ws.fail = False
+    await client.close()
+
+    assert ws.close_calls == 2
+    assert client._retired_websockets == []
+
+
+@pytest.mark.asyncio
 async def test_cancelled_failed_transport_close_still_closes_the_socket():
     client = _make_client()
     ws = _FakeWs()

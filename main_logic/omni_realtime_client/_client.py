@@ -209,12 +209,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Teardown owns the socket it detached, so a cancelled caller cannot
         # strand it. Both close paths run as one task per connection and every
         # caller awaits it through a shield: cancelling the caller stops the
-        # waiting, never the closing, and a retry re-awaits the same task
-        # instead of finding ``self.ws`` already None and returning happy.
+        # waiting, never the closing. An in-flight retry re-awaits the same
+        # task; a completed failure keeps its detached transport for a fresh
+        # close attempt instead of finding ``self.ws`` already None and
+        # returning happy.
         # Reset by connect(), because the client object outlives a connection.
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
+        # A provider close can fail after the socket has been detached from
+        # ``self.ws``. Keep that physical owner until a later close retry
+        # confirms release; connect() must not discard this uncertainty.
+        self._retired_websockets: list[Any] = []
         # A replacement can reset the connection-wide close latch while the
         # retired Gemini context is still exiting. Keep a separate latch per
         # context so every path joins the same one-shot ``__aexit__`` call.

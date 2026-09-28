@@ -4110,6 +4110,22 @@ class _TransportMixin:
         # retired session if the bridge recovers -- the offline client is
         # drained the same way, in ``_cancel_bus_copies``.
         await self._cancel_frame_copies()
+        close_task = self._close_task
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            # A failed task owns no retryable await by itself. Recreate the
+            # teardown when its detached transport (or a replacement socket)
+            # is still present; a successful close with no successor remains
+            # idempotent through the completed task.
+            if (
+                close_error is not None
+                or self.ws is not None
+                or self._retired_websockets
+            ):
+                self._close_task = None
         await self._own_teardown("_close_task", self._detach_for_close)
 
     def _detach_for_close(self):
@@ -4280,20 +4296,37 @@ class _TransportMixin:
             elif gemini_context is not None:
                 await self._close_gemini_context(gemini_context, ws)
             return
-        if ws:
+        if ws is not None:
+            transports = [ws]
+        else:
+            transports = []
+        pending = list(self._retired_websockets)
+        self._retired_websockets.clear()
+        for retired in pending:
+            if not any(existing is retired for existing in transports):
+                transports.append(retired)
+        if transports:
             try:
                 # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
                 # 在兼容慢代理的同时保持清理等待有界。
-                await ws.close()
-            except Exception as e:
-                logger.error(f"Error closing websocket: {e}")
-                # The retirement registry uses a successful close as the
-                # physical-release acknowledgement. A failed handshake may
-                # have left the provider transport live, so propagate the
-                # uncertainty and keep the capacity slot occupied.
+                for index, retired in enumerate(transports):
+                    try:
+                        await retired.close()
+                    except Exception as e:
+                        # The retirement registry uses a successful close as
+                        # the physical-release acknowledgement. A failed
+                        # handshake may have left the provider transport live;
+                        # retain this and every later transport for retry.
+                        unresolved = transports[index:]
+                        for item in unresolved:
+                            if not any(existing is item for existing in self._retired_websockets):
+                                self._retired_websockets.append(item)
+                        logger.error(f"Error closing websocket: {e}")
+                        raise
+                    finally:
+                        logger.info("WebSocket connection closed")
+            except Exception:
                 raise
-            finally:
-                logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")
