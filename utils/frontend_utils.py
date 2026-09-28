@@ -524,12 +524,13 @@ class TtsMarkdownStripper:
         return self._strip(emit)
 
     def flush(self, *, keep_symbol_markers: bool = False) -> str:
-        """轮次收尾：strip pending，再删掉残留的孤立 marker 字符后 emit。
+        """Turn end: strip the pending text, drop dangling markers, emit it.
 
-        ``keep_symbol_markers=True`` 时只删括号类 marker，``* _ ~ \```
-        原样留给下游的 ``strip_tts_muted_symbols``：它知道上一块结尾是什么，
-        能在「3」「~5」之间补空格，这里直接删会把两边连成「35」。
+        With ``keep_symbol_markers=True`` only bracket markers are dropped;
+        dangling ``*``, ``_``, ``~`` and backticks are left for the downstream
+        ``strip_tts_muted_symbols``, which knows how the previous chunk ended.
         """
+        # 「3」「~5」：这里直接删「~」会把两边连成「35」，交给符号过滤才能补空格。
         if not self._pending:
             return ""
         out = self._strip(self._pending)
