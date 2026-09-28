@@ -21,8 +21,9 @@
     const isMobile = window.appUtils.isMobile;
     const SCREEN_SOURCE_TITLE_MATCH_ENABLED_KEY = 'screenSourceTitleMatchEnabled';
     const SCREEN_SOURCE_WINDOW_TITLE_KEY = 'selectedScreenWindowTitle';
-    // { id, label }：label 只在 id 与当前选中源一致时有效，漏更新的写入点
-    // 最多让设置行退回通用文案，不会显示成别的来源名称。
+    // { id, screenIndex?, name? }：只在 id 与当前选中源一致时有效，漏更新的写入点
+    // 最多让设置行退回通用文案，不会显示成别的来源名称。窗口标题 name 只在开启
+    // 「记住窗口」时才写入，与 selectedScreenWindowTitle 受同一个开关约束。
     const SCREEN_SOURCE_LABEL_KEY = 'selectedScreenSourceLabel';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
@@ -141,6 +142,7 @@
         } else {
             clearRememberedWindowTitle();
         }
+        syncPersistedScreenSourceTitle();
         updateScreenSourceTitleMatchToggleState();
     }
 
@@ -269,15 +271,68 @@
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
     // ======================== selected source label ========================
-    function getSelectedScreenSourceLabel() {
-        if (!S.selectedScreenSourceId) return '';
+    // 本窗口最近一次选中或枚举到的来源 { id, screenIndex, name }。窗口标题
+    // 未开启「记住窗口」时只存在这里，不落盘。
+    var selectedScreenSourceMeta = null;
+
+    function readPersistedScreenSourceMeta() {
         try {
             var record = JSON.parse(localStorage.getItem(SCREEN_SOURCE_LABEL_KEY) || 'null');
-            if (record && record.id === S.selectedScreenSourceId
-                && typeof record.label === 'string') {
-                return record.label;
-            }
+            if (record && typeof record.id === 'string') return record;
         } catch (_) { }
+        return null;
+    }
+
+    function persistSelectedScreenSourceMeta() {
+        var meta = selectedScreenSourceMeta;
+        try {
+            if (!meta || meta.id !== S.selectedScreenSourceId) {
+                localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY);
+                return;
+            }
+            var record = { id: meta.id };
+            if (typeof meta.screenIndex === 'number') record.screenIndex = meta.screenIndex;
+            if (meta.name && meta.id.startsWith('window:') && isScreenSourceTitleMatchEnabled()) {
+                record.name = meta.name;
+            }
+            localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify(record));
+        } catch (_) { }
+    }
+
+    // 「记住窗口」开关变化后，按新设置重写落盘记录里的窗口标题。
+    function syncPersistedScreenSourceTitle() {
+        if (selectedScreenSourceMeta && selectedScreenSourceMeta.id === S.selectedScreenSourceId) {
+            persistSelectedScreenSourceMeta();
+            return;
+        }
+        if (isScreenSourceTitleMatchEnabled()) return;
+        var record = readPersistedScreenSourceMeta();
+        if (!record || !('name' in record)) return;
+        delete record.name;
+        try { localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify(record)); } catch (_) { }
+    }
+
+    function getSelectedScreenSourceLabel() {
+        var sourceId = S.selectedScreenSourceId;
+        if (!sourceId) return '';
+        var meta = selectedScreenSourceMeta && selectedScreenSourceMeta.id === sourceId
+            ? selectedScreenSourceMeta
+            : readPersistedScreenSourceMeta();
+        var isScreen = sourceId.startsWith('screen:');
+        if (meta && meta.id === sourceId
+            && (!isScreen || typeof meta.screenIndex === 'number')) {
+            // 屏幕名称按当前语言现算，切换语言后不会残留旧语言的文案。
+            var label = getScreenSourceDisplayName(
+                { id: sourceId, name: typeof meta.name === 'string' ? meta.name : '' },
+                typeof meta.screenIndex === 'number' ? meta.screenIndex : null
+            );
+            if (label) return label;
+        }
+        // 窗口标题未知（未开启「记住窗口」的其他窗口/重启后）：只说是窗口，
+        // 不把某个具体名称安到可能已被复用的 id 上。
+        if (sourceId.startsWith('window:')) {
+            return window.t ? window.t('app.screenSource.windows') : '窗口';
+        }
         return '';
     }
 
@@ -293,22 +348,42 @@
     }
 
     /**
-     * 记录当前选中源的显示名称并通知设置行刷新。调用方先更新
-     * S.selectedScreenSourceId；清除选择时只需 notifyScreenSourceChanged()。
+     * 记录当前选中源（枚举结果里的 { id, name }）并通知设置行刷新。调用方先更新
+     * S.selectedScreenSourceId；清除选择时传 null。
      */
-    function rememberScreenSourceLabel(sourceId, label) {
-        try {
-            if (sourceId && label) {
-                localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify({
-                    id: sourceId,
-                    label: String(label).slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)
-                }));
-            } else {
-                localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY);
-            }
-        } catch (_) { }
+    function rememberScreenSourceLabel(source, screenIndex) {
+        selectedScreenSourceMeta = source && source.id ? {
+            id: String(source.id),
+            screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
+            name: String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)
+        } : null;
+        persistSelectedScreenSourceMeta();
         notifyScreenSourceChanged();
     }
+
+    /**
+     * 用本次枚举结果刷新当前选中源的名称：升级前保存的选择没有名称记录，
+     * 窗口标题也可能已经变了，以当前枚举为准。
+     */
+    function refreshSelectedScreenSourceLabelFromSources(screens, windows) {
+        var sourceId = S.selectedScreenSourceId;
+        if (!sourceId) return;
+        var screenIndex = screens.findIndex(function (s) { return s.id === sourceId; });
+        var source = screenIndex >= 0
+            ? screens[screenIndex]
+            : windows.find(function (s) { return s.id === sourceId; });
+        if (!source) return;
+        var nextIndex = screenIndex >= 0 ? screenIndex : null;
+        var current = selectedScreenSourceMeta;
+        if (current && current.id === sourceId && current.screenIndex === nextIndex
+            && current.name === String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)) {
+            return;
+        }
+        rememberScreenSourceLabel(source, nextIndex);
+    }
+
+    // 语言切换后屏幕名称要按新语言重算。
+    window.addEventListener('localechange', notifyScreenSourceChanged);
 
     // ======================== clearSelectedScreenSource ========================
     /**
@@ -331,7 +406,7 @@
                 updateScreenSourceListSelection();
             }
         } catch (_) { }
-        notifyScreenSourceChanged();
+        rememberScreenSourceLabel(null);
     }
     mod.clearSelectedScreenSource = clearSelectedScreenSource;
 
@@ -369,7 +444,7 @@
                     S.selectedScreenSourceId = titleMatches[0].id;
                     markScreenSourceSelectionChanged();
                     try { localStorage.setItem('selectedScreenSourceId', titleMatches[0].id); } catch (_) { }
-                    rememberScreenSourceLabel(titleMatches[0].id, titleMatches[0].name);
+                    rememberScreenSourceLabel(titleMatches[0], null);
                     pushSelectedSourceToMain(titleMatches[0].id);
                     restartActiveCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
@@ -1909,10 +1984,7 @@
                                 selectedSourceId = initialScreens[0].id;
                                 S.selectedScreenSourceId = selectedSourceId;
                                 try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
-                                rememberScreenSourceLabel(
-                                    selectedSourceId,
-                                    getScreenSourceDisplayName(initialScreens[0], 0)
-                                );
+                                rememberScreenSourceLabel(initialScreens[0], 0);
                                 updateScreenSourceListSelection();
                             }
                         } catch (initialSourceError) {
@@ -2000,10 +2072,7 @@
                                     selectedSourceId = screenSources[0].id;
                                     S.selectedScreenSourceId = selectedSourceId;
                                     try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
-                                    rememberScreenSourceLabel(
-                                        selectedSourceId,
-                                        getScreenSourceDisplayName(screenSources[0], 0)
-                                    );
+                                    rememberScreenSourceLabel(screenSources[0], 0);
                                     pushSelectedSourceToMain(selectedSourceId);
                                     updateScreenSourceListSelection();
                                 } else {
@@ -2011,7 +2080,7 @@
                                     selectedSourceId = null;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
-                                    notifyScreenSourceChanged();
+                                    rememberScreenSourceLabel(null);
                                     pushSelectedSourceToMain(null);
                                 }
                             } else if (rememberedWindowNeedsPicker) {
@@ -2132,10 +2201,7 @@
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
                                         try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
-                                        rememberScreenSourceLabel(
-                                            fallbackSources[0].id,
-                                            getScreenSourceDisplayName(fallbackSources[0], 0)
-                                        );
+                                        rememberScreenSourceLabel(fallbackSources[0], 0);
                                         pushSelectedSourceToMain(fallbackSources[0].id);
                                         window.showStatusToast(
                                             safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
@@ -2163,7 +2229,7 @@
                                     if (discardSupersededManualCapture()) return;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
-                                    notifyScreenSourceChanged();
+                                    rememberScreenSourceLabel(null);
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
@@ -2507,7 +2573,7 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
-    async function selectScreenSource(sourceId, sourceName, displayName) {
+    async function selectScreenSource(sourceId, sourceName, displayName, screenIndex) {
         var previousSourceId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = sourceId;
         if (previousSourceId !== sourceId) {
@@ -2527,7 +2593,7 @@
         } catch (e) {
             console.warn('[屏幕源] 无法保存到 localStorage:', e);
         }
-        rememberScreenSourceLabel(sourceId, resolvedSourceName);
+        rememberScreenSourceLabel(sourceId ? { id: sourceId, name: sourceName } : null, screenIndex);
 
         if (isScreenSourceTitleMatchEnabled()) {
             if (sourceId && sourceId.startsWith('window:')) {
@@ -2750,6 +2816,7 @@
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
             var selectedBeforeReconcile = S.selectedScreenSourceId;
             reconcileRememberedWindowSource(sources);
+            refreshSelectedScreenSourceLabelFromSources(screens, windows);
 
             function previewFrameStyles() {
                 return {
@@ -2910,7 +2977,7 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name, displayName);
+                    await selectScreenSource(source.id, source.name, displayName, screenIndex);
                 });
 
                 option.addEventListener('mouseenter', function () {
