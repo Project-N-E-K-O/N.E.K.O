@@ -2515,6 +2515,40 @@ def test_classify_openai_tools_refusal(message, expected):
 
 
 @pytest.mark.asyncio
+async def test_tools_refused_with_images_are_skipped_while_history_carries_images():
+    """"tool use is not supported with images": the picture stays in history,
+    so later turns with it skip tools up front instead of being refused again;
+    a text-only history still gets its tools."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append("tools" in overrides)
+        if len(seen) == 1:
+            raise RuntimeError("Error code: 400 - tool use is not supported with images")
+        yield LLMStreamChunk(content="ok", finish_reason="stop")
+
+    client = _tools_declining_client(astream)
+    with_image = [{"role": "user", "content": [
+        {"type": "text", "text": "看"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+    ]}]
+    async for _ in client._astream_openai_with_tools(list(with_image)):
+        pass
+    assert seen == [True, False]
+    assert client._openai_tools_unsupported is False
+
+    async for _ in client._astream_openai_with_tools(with_image + [{"role": "user", "content": "再说说"}]):
+        pass
+    assert seen[2] is False  # still carries the image: no refused round-trip
+
+    async for _ in client._astream_openai_with_tools([{"role": "user", "content": "纯文本"}]):
+        pass
+    assert seen[3] is True
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_unrelated_error_is_not_treated_as_tools_unsupported():
     calls = []
 

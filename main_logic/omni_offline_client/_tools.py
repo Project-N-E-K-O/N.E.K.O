@@ -120,6 +120,18 @@ class _ToolingMixin:
         return [t.to_openai_chat() for t in self._tool_definitions]
 
     @staticmethod
+    def _messages_carry_images(messages) -> bool:
+        """Whether any message in ``messages`` has an image content part."""
+        for msg in messages or []:
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                    return True
+        return False
+
+    @staticmethod
     def _classify_openai_tools_refusal(exc: BaseException) -> Optional[str]:
         """How an endpoint refused the ``tools`` parameter, if it did.
 
@@ -179,6 +191,10 @@ class _ToolingMixin:
             )
         if refusal == "model":
             self._openai_tools_unsupported = True
+        elif self._messages_carry_images(messages):
+            # 带图时被拒：图片会留在会话历史里，之后只要历史还带图，每轮都会先被拒
+            # 一次再重发。记下来，带图的请求直接不带工具；纯文本历史不受影响。
+            self._openai_tools_unsupported_with_images = True
         overrides.pop("tools", None)
         overrides.pop("tool_choice", None)
         async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
@@ -816,6 +832,12 @@ class _ToolingMixin:
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tools_payload = self._openai_tools_payload()
+        if (
+            tools_payload
+            and getattr(self, "_openai_tools_unsupported_with_images", False)
+            and self._messages_carry_images(messages)
+        ):
+            tools_payload = None
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
         else:

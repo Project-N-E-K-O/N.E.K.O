@@ -245,6 +245,8 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # 400 "does not support tools"）后置 True，本会话后续轮次不再带工具，
         # 省掉每轮一次必然失败的请求。这是模型能力，只在换模型 / 关闭时清掉。
         self._openai_tools_unsupported = False
+        # 端点只在请求带图时拒收 tools（"tool use is not supported with images"）。
+        self._openai_tools_unsupported_with_images = False
 
         # State management
         self._is_responding = False

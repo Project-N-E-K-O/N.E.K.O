@@ -958,4 +958,5 @@ class _LifecycleMixin:
             self._genai_client = None
         self._genai_tools_unsupported = False
         self._openai_tools_unsupported = False
+        self._openai_tools_unsupported_with_images = False
         logger.info("OmniOfflineClient closed")

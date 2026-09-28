@@ -276,6 +276,7 @@ class _StreamingMixin:
             self._genai_tools_unsupported = False
             # 换了模型就重新给工具一次机会：拒收 tools 是上一个模型的能力限制。
             self._openai_tools_unsupported = False
+            self._openai_tools_unsupported_with_images = False
             if old_genai is not None and hasattr(old_genai, "close"):
                 try:
                     await asyncio.to_thread(old_genai.close)
