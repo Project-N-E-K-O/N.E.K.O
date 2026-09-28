@@ -3551,28 +3551,17 @@
                         );
                     }
 
-                    // 这一块归哪一轮只算一次：播放队列、speech_id→turn 登记和问候避让阀
-                    // 必须用同一个值。服务端音频头不带 turn_id 时会回退到当前这一轮，
-                    // 这样一段晚到的旧音频在各处都被算成当前这一轮：阀门等它播完，
-                    // 它的 speech-end 也同样属于这一轮，会把阀门打开，不会卡到兜底。
-                    var chunkTurnId = resolveAssistantLifecycleTurnId(response.turn_id);
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: chunkTurnId,
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
-                    if (!shouldSkip && window.appProactive &&
-                        typeof window.appProactive.noteStartupGreetingAudio === 'function') {
-                        window.appProactive.noteStartupGreetingAudio(
-                            chunkTurnId
-                        );
-                    }
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: chunkTurnId,
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch
@@ -3587,7 +3576,7 @@
                         typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
                         window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
                             speechId || S.currentPlayingSpeechId || null,
-                            chunkTurnId
+                            resolveAssistantLifecycleTurnId(response.turn_id)
                         );
                     }
                     S.skipNextAudioBlob = false;
@@ -3663,14 +3652,6 @@
                         var rs = resetSessionButton(); if (rs) rs.disabled = false;
                     } else if (S.isTextSessionActive) {
                         var ss = screenshotButton(); if (ss) ss.disabled = false;
-                    }
-
-                // -------- greeting_check_done --------
-                // 后端的问候任务结束了；没有问候时让主动搭话的避让阀立刻打开。
-                } else if (response.type === 'greeting_check_done') {
-                    if (window.appProactive &&
-                        typeof window.appProactive.noteStartupGreetingCheckDone === 'function') {
-                        window.appProactive.noteStartupGreetingCheckDone(response.check_id);
                     }
 
                 // -------- catgirl_switched --------
@@ -6202,21 +6183,14 @@
                     : '';
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                S._greetingCheckSeq = (S._greetingCheckSeq || 0) + 1;
-                var greetingCheckId = Date.now().toString(36) + '-' + S._greetingCheckSeq;
                 var greetingMessage = {
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
                     render_language: greetingLang,
-                    reason: greetingReason,
-                    check_id: greetingCheckId
+                    reason: greetingReason
                 };
                 if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
                 S.socket.send(JSON.stringify(greetingMessage));
-                // 问候生成期间主动搭话不插话：问候那一轮结束或 45 秒兜底后才放行。
-                if (window.appProactive && typeof window.appProactive.armStartupGreetingGate === 'function') {
-                    window.appProactive.armStartupGreetingGate(greetingReason, greetingCheckId);
-                }
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';

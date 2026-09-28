@@ -137,10 +137,6 @@ _ws_bg_tasks: set = set()
 # is reached.  The state machine only protects an in-progress delivery; by
 # then two tasks may already have independently completed their gap checks.
 _greeting_tasks: dict[str, asyncio.Task] = {}
-# Windows waiting on a greeting task for their ``greeting_check_done``: one
-# entry per socket (keyed by id(); starlette sockets are unhashable) holding
-# the latest check id it sent, so repeated checks cannot pile up callbacks.
-_greeting_done_waiters: dict[asyncio.Task, dict[int, tuple[WebSocket, str]]] = {}
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
@@ -326,62 +322,6 @@ def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
 
     task.add_done_callback(_clear_if_current)
     return True
-
-
-async def _send_greeting_check_done(websocket: WebSocket, check_id: str) -> None:
-    """Tell the window that sent ``greeting_check`` that it has settled.
-
-    ``check_id`` echoes the request's id, so a late reply to an earlier check
-    (a quick character switch, a resend) cannot release a newer gate.
-
-    The frontend holds proactive chat off until the greeting turn ends. When no
-    greeting turn comes (a refresh, a recent conversation, a voice session,
-    ...) this lets it resume at once instead of waiting out its fallback cap.
-    A window that already saw the greeting turn start ignores it.
-    """
-    try:
-        await websocket.send_text(
-            json.dumps({"type": "greeting_check_done", "check_id": check_id})
-        )
-    except Exception:
-        # Best-effort: a window that is already gone has no gate to release,
-        # and a live one still falls back to its own cap.
-        pass
-
-
-def _send_greeting_check_done_when_settled(
-    lanlan_name: str, websocket: WebSocket, check_id: str
-) -> None:
-    """Send ``greeting_check_done`` once the character's greeting task ends.
-
-    A coalesced request waits on the task already in flight. Each window is
-    answered once per task, with the id of its latest check: the frontend
-    only honours the gate it armed last, so earlier ids need no reply.
-    """
-    task = _greeting_tasks.get(lanlan_name)
-    if task is None or task.done():
-        _fire_task(_send_greeting_check_done(websocket, check_id))
-        return
-    waiters = _greeting_done_waiters.get(task)
-    if waiters is None:
-        waiters = _greeting_done_waiters[task] = {}
-        task.add_done_callback(_answer_greeting_done_waiters)
-    waiters[id(websocket)] = (websocket, check_id)
-
-
-def _answer_greeting_done_waiters(task: asyncio.Task) -> None:
-    for websocket, check_id in (_greeting_done_waiters.pop(task, None) or {}).values():
-        _fire_task(_send_greeting_check_done(websocket, check_id))
-
-
-def _forget_greeting_done_waiter(websocket: WebSocket) -> None:
-    """Drop a disconnected window from every greeting task it waits on.
-
-    A greeting task has no deadline, so without this a closed socket would be
-    held (and later written to) until the task ends.
-    """
-    for waiters in _greeting_done_waiters.values():
-        waiters.pop(id(websocket), None)
 
 
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
@@ -1294,7 +1234,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
-                greeting_check_id = str(message.get("check_id") or "")[:64]
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
                 since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
                 # 触发问候的判定（保持原行为）：切角色 或 距上次断开 >15s。
@@ -1339,9 +1278,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                 lanlan_name
                             ].trigger_new_character_greeting,
                         )
-                        _send_greeting_check_done_when_settled(
-                            lanlan_name, websocket, greeting_check_id
-                        )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
                         _schedule_greeting_task(
@@ -1355,12 +1291,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if render_language
                             else session_manager[lanlan_name].trigger_greeting,
                         )
-                        _send_greeting_check_done_when_settled(
-                            lanlan_name, websocket, greeting_check_id
-                        )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
-                    await _send_greeting_check_done(websocket, greeting_check_id)
 
             elif action == "cat_greeting_check":
                 # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
@@ -1478,8 +1410,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         _ws_disconnect_time[lanlan_name] = time.time()
         # 释放活跃连接计数（与 try 起始处的 +1 对偶）
         _ws_active_count[lanlan_name] = max(0, _ws_active_count.get(lanlan_name, 1) - 1)
-        # 这个窗口不再等问候结束的通知（与 greeting_check 处的登记对偶）
-        _forget_greeting_done_waiter(websocket)
         # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
         # 让 /api/capture/health 立即返回 503。
         try:

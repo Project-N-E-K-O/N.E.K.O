@@ -599,138 +599,6 @@
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
 
-    // 开屏 / 切角色问候的避让阀（双保险）。
-    //
-    // greeting_check 发出后，后端要先生成问候文本、再合成语音，这段时间里
-    // _isAssistantSpeaking() 还是 false —— 主动搭话的定时器恰好到点就会插进来，
-    // 和问候叠成两段语音。所以 greeting_check 一发出就关阀：
-    //   1. 事件：只认「关阀之后才开始」的那一轮 assistant turn（免得上一轮残留的
-    //      事件提前开阀）。它的语音播完（speech-end / cancel / unavailable）时开阀。
-    //      文本 turn 结束时语音可能还没开始（首个音频块晚到），这段空窗里
-    //      _isAssistantSpeaking() 为 false，所以 turn-end 本身不开阀。这一轮已经收到
-    //      音频（带这一轮 turnId 的音频块到了，解码 / 排队再慢也算）就等它播完；
-    //      上一轮排队晚到的音频块 turnId 对不上，不算。
-    //      turn-end 之后 STARTUP_GREETING_TEXT_ONLY_GRACE_MS 内既没收到音频也没开始
-    //      播放，才按纯文本问候开阀。
-    //   2. 后端判定不问候（刷新重连 ≤15s、距上次对话不到 15 分钟、语音会话中等）时
-    //      不会有任何 turn：问候任务结束后后端回 greeting_check_done，这时问候这一轮
-    //      还没开始就立刻开阀，不白等。
-    //   3. 兜底：旧后端 / 消息丢失时收不到 greeting_check_done，
-    //      STARTUP_GREETING_GATE_MAX_MS 内还没有 turn 开始就自动开阀。问候已经开始
-    //      的话等它的结束事件，不因文本 / 合成慢而提前开阀；只留一个更宽的
-    //      STARTUP_GREETING_TURN_MAX_MS 防止事件丢失时卡死主动搭话。
-    // 阀门关着时，定时器到点按「AI 正在说话」同样处理：跳过本次、不计数、排下一 tick。
-    var STARTUP_GREETING_GATE_MAX_MS = 45000;
-    var STARTUP_GREETING_TURN_MAX_MS = 120000;
-    var STARTUP_GREETING_TEXT_ONLY_GRACE_MS = 8000;
-
-    // checkId 是这次 greeting_check 的编号，后端在 greeting_check_done 里原样带回；
-    // 快速切角色 / 重发时，上一次请求迟到的 done 编号对不上，不会打开新阀门。
-    function armStartupGreetingGate(reason, checkId) {
-        if (!S) return;
-        S._startupGreetingGate = {
-            armedAt: Date.now(),
-            reason: reason || '',
-            checkId: checkId ? String(checkId) : '',
-            turnStarted: false,
-            turnStartedAt: 0,
-            turnEndedAt: 0,
-            speechStarted: false,
-            audioArrived: false,
-            turnId: null
-        };
-    }
-    mod.armStartupGreetingGate = armStartupGreetingGate;
-
-    function isStartupGreetingGateHolding() {
-        var gate = S && S._startupGreetingGate;
-        if (!gate) return false;
-        var now = Date.now();
-        if (!gate.turnStarted && now - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
-            _releaseStartupGreetingGate((STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候开始');
-            return false;
-        }
-        // 从问候这一轮开始时起算：前面等生成的时间不该占用这一轮的防卡死额度。
-        if (gate.turnStarted && now - gate.turnStartedAt >= STARTUP_GREETING_TURN_MAX_MS) {
-            _releaseStartupGreetingGate('问候超过' + (STARTUP_GREETING_TURN_MAX_MS / 1000) + '秒仍未结束，按事件丢失处理');
-            return false;
-        }
-        if (gate.turnEndedAt && !gate.speechStarted && !gate.audioArrived
-                && now - gate.turnEndedAt >= STARTUP_GREETING_TEXT_ONLY_GRACE_MS) {
-            _releaseStartupGreetingGate('问候没有语音，按纯文本结束');
-            return false;
-        }
-        return true;
-    }
-    mod.isStartupGreetingGateHolding = isStartupGreetingGateHolding;
-
-    function _releaseStartupGreetingGate(why) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate) return;
-        S._startupGreetingGate = null;
-        console.log('[ProactiveChat] 打开问候避让阀：' + why + '（' + (gate.reason || '-') + '）');
-    }
-
-    // 只认问候这一轮的事件：切角色时上一轮语音可能还在播，它的 speech-end 会落在
-    // 新问候文本已开始、语音还没到的空窗里。事件没带 turnId（全局取消）照样算。
-    function _eventBelongsToGreetingTurn(gate, event) {
-        var turnId = event && event.detail ? event.detail.turnId : null;
-        if (!gate.turnId || turnId === null || turnId === undefined || turnId === '') return true;
-        return String(turnId) === String(gate.turnId);
-    }
-
-    window.addEventListener('neko-assistant-turn-start', function (event) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate || gate.turnStarted) return;
-        gate.turnStarted = true;
-        gate.turnStartedAt = Date.now();
-        gate.turnId = event && event.detail && event.detail.turnId ? event.detail.turnId : null;
-    });
-
-    // app-websocket 收到每个要播放的音频块头时调用。只认问候这一轮的：上一轮排队晚到
-    // 的音频块 turnId 不同，它的 speech-end 也会被丢掉，算进来的话纯文本问候就只能
-    // 等 STARTUP_GREETING_TURN_MAX_MS 才开阀。
-    function noteStartupGreetingAudio(turnId) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate || !gate.turnStarted) return;
-        if (!_eventBelongsToGreetingTurn(gate, { detail: { turnId: turnId } })) return;
-        gate.audioArrived = true;
-    }
-    mod.noteStartupGreetingAudio = noteStartupGreetingAudio;
-
-    // 后端的问候任务结束了（问候说完，或者判定不问候）。这一轮已经开始的话继续
-    // 跟着它的语音事件走；还没开始就说明这次没有问候，立刻开阀。只认本次请求的
-    // 编号：没带编号或编号不同的是别的请求的 done，交给兜底。
-    function noteStartupGreetingCheckDone(checkId) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate || gate.turnStarted) return;
-        if (!gate.checkId || !checkId || String(checkId) !== gate.checkId) return;
-        _releaseStartupGreetingGate('后端这次没有问候');
-    }
-    mod.noteStartupGreetingCheckDone = noteStartupGreetingCheckDone;
-    window.addEventListener('neko-assistant-turn-end', function (event) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate || !gate.turnStarted || gate.turnEndedAt) return;
-        if (!_eventBelongsToGreetingTurn(gate, event)) return;
-        gate.turnEndedAt = Date.now();
-    });
-    window.addEventListener('neko-assistant-speech-start', function (event) {
-        var gate = S && S._startupGreetingGate;
-        if (!gate || !gate.turnStarted) return;
-        if (!_eventBelongsToGreetingTurn(gate, event)) return;
-        gate.speechStarted = true;
-    });
-    ['neko-assistant-speech-end', 'neko-assistant-speech-cancel', 'neko-assistant-speech-unavailable'].forEach(function (name) {
-        window.addEventListener(name, function (event) {
-            var gate = S && S._startupGreetingGate;
-            if (!gate || !gate.turnStarted) return;
-            if (!_eventBelongsToGreetingTurn(gate, event)) return;
-            // cancel / unavailable 可能在语音开始前就到（被打断、TTS 连不上），同样说明
-            // 这一轮不会再有问候语音了。
-            _releaseStartupGreetingGate('问候语音已结束');
-        });
-    });
-
     // 给 proactive skip 日志带上 _isAssistantSpeaking 用到的全部输入 + 音频队列长度。
     // gate 卡死时直接看 log 就能判断哪个 flag 粘住、队列是不是真的空，
     // 不用让用户手动到 DevTools 抓快照（手动解锁前一刷新就把证据擦了）。
@@ -903,11 +771,6 @@
                     scheduleProactiveChat();
                     return;
                 }
-                if (isStartupGreetingGateHolding()) {
-                    console.log('[ProactiveChat] 语音模式：问候还没说完，本次 nudge 跳过（不计数），继续下一 tick');
-                    scheduleProactiveChat();
-                    return;
-                }
                 // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
                 // 刚说完，不发主动文本触发。与后端 _user_recent_activity_time guard
                 // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
@@ -1070,11 +933,6 @@
                 scheduleProactiveChat();
                 return;
             }
-            if (isStartupGreetingGateHolding()) {
-                console.log('[ProactiveChat] 文本模式：问候还没说完，本次跳过（不累加退避），继续下一 tick');
-                scheduleProactiveChat();
-                return;
-            }
 
             console.log('触发主动搭话...');
             S.isProactiveChatRunning = true; // 加锁
@@ -1215,8 +1073,6 @@
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
-                    // 取请求头也会等待，期间可能刚发出 greeting_check 关了避让阀。
-                    if (isStartupGreetingGateHolding()) return null;
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1225,10 +1081,6 @@
                 }
 
                 var resp = await _sendVoiceProactive();
-                if (!resp) {
-                    console.log('[ProactiveChat] 语音模式：发送前发现问候还没说完，取消本次');
-                    return false;
-                }
 
                 // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
                 // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
@@ -1242,7 +1094,6 @@
                         await voiceProactiveSec.refreshToken();
                         resp = await _sendVoiceProactive();
                     } catch (_) { /* fall through to 403 handling below */ }
-                    if (!resp) return false;
                 }
 
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1497,11 +1348,6 @@
                 console.log('发送请求前检查失败，取消本次搭话');
                 return;
             }
-            // 截图 / 窗口标题等待期间可能刚发出 greeting_check 关了避让阀。
-            if (isStartupGreetingGateHolding()) {
-                console.log('发送请求前发现问候还没说完，取消本次搭话');
-                return;
-            }
 
             // 检测用户是否在20秒内有过输入，有过输入则作废本次主动搭话
             var timeSinceLastInput = Date.now() - (window.lastUserInputTime || 0);
@@ -1535,8 +1381,6 @@
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
-                // 与语音路径对偶：取请求头的等待期间也可能刚关了避让阀。
-                if (isStartupGreetingGateHolding()) return null;
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
                     headers: hdrs,
@@ -1545,10 +1389,6 @@
             }
 
             var response = await _sendProactive();
-            if (!response) {
-                console.log('发送前发现问候还没说完，取消本次搭话');
-                return;
-            }
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1562,7 +1402,6 @@
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
                 } catch (_) { /* fall through to 403 handling below */ }
-                if (!response) return;
             }
 
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
