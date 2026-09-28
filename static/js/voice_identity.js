@@ -92,6 +92,7 @@
         busy: false,
         initialized: false,
         closeStarted: false,
+        closeCancellationPromise: null,
         startSettled: null,
         voiceStatus: 'waiting',
         lastVoiceAt: 0,
@@ -813,7 +814,7 @@
                 state.voiceStatus = 'waiting';
                 renderEnrollment();
             }
-            if (elapsed >= maxRecordingMs && state.captureReady && finishCapture) finishCapture();
+            if (elapsed >= maxRecordingMs && capturedSamples >= requiredSamples && finishCapture) finishCapture();
         }, 100);
         try {
             await new Promise(function (resolve, reject) {
@@ -871,7 +872,7 @@
                     capturedSamples += chunk.length;
                     if (updateVoiceActivity(chunk)) activeSpeechSamples += chunk.length;
                     state.captureReady = activeSpeechSamples >= minimumSamples;
-                    if (state.captureReady && finishCapture) finishCapture();
+                    if (capturedSamples >= requiredSamples && finishCapture) finishCapture();
                 };
             });
             if (capturedSamples <= 0) throw new Error('incomplete_capture');
@@ -978,12 +979,18 @@
         if (config.keepalive) {
             state.enrollmentId = null;
             state.profileId = null;
-            void fetch(`${API_ROOT}/enrollment/cancel`, {
+            const cancellation = fetch(`${API_ROOT}/enrollment/cancel`, {
                 method: 'POST',
                 headers,
                 credentials: 'same-origin',
                 keepalive: true
             }).catch(function () {});
+            state.closeCancellationPromise = cancellation;
+            cancellation.then(function () {
+                if (state.closeCancellationPromise === cancellation) {
+                    state.closeCancellationPromise = null;
+                }
+            });
             return;
         }
         const payload = await apiRequest('/enrollment/cancel', {
@@ -994,6 +1001,23 @@
         state.profileId = null;
         state.nextSegmentIndex = 1;
         applyStatus(payload);
+    }
+
+    async function waitForCloseCancellation(promise) {
+        if (!promise) return true;
+        let timeoutId = null;
+        const timeout = new Promise(function (resolve) {
+            timeoutId = window.setTimeout(function () { resolve(false); }, CANCEL_STATUS_TIMEOUT_MS);
+        });
+        try {
+            const completed = await Promise.race([
+                promise.then(function () { return true; }, function () { return true; }),
+                timeout
+            ]);
+            return completed;
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
     }
 
     function requireCaptureTime(durationMs) {
@@ -1497,15 +1521,42 @@
         window.addEventListener('pageshow', async function (event) {
             if (!event.persisted) return;
             const restoreEpoch = state.statusEpoch + 1;
+            const closeCancellation = state.closeCancellationPromise;
             state.statusEpoch = restoreEpoch;
             if (state.startAbort) state.startAbort.abort();
             if (state.uploadAbort) state.uploadAbort.abort();
             if (state.statusAbort) state.statusAbort.abort();
             state.closeStarted = false;
-            state.cancelPending = false;
+            state.cancelPending = Boolean(closeCancellation);
             state.busy = true;
             render();
             try {
+                const cancellationSettled = await waitForCloseCancellation(closeCancellation);
+                if (restoreEpoch !== state.statusEpoch) return;
+                if (!cancellationSettled) {
+                    setMessage(
+                        translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
+                        true
+                    );
+                    state.busy = false;
+                    render();
+                    closeCancellation.then(async function () {
+                        if (restoreEpoch !== state.statusEpoch) return;
+                        state.cancelPending = false;
+                        state.busy = true;
+                        render();
+                        try {
+                            await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
+                        } finally {
+                            if (restoreEpoch === state.statusEpoch) {
+                                state.busy = false;
+                                render();
+                            }
+                        }
+                    });
+                    return;
+                }
+                state.cancelPending = false;
                 const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
                 if (restoreEpoch !== state.statusEpoch) return;
                 if (!reconciled) {

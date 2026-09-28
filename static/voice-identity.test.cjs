@@ -122,6 +122,7 @@ function createHarness({
     initialEnrollmentNextSegment = null,
     statusGate,
     startGate,
+    cancelGate,
     mediaGate,
     mediaError,
     selectedMicrophoneId,
@@ -277,6 +278,7 @@ function createHarness({
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/cancel`) {
+            if (cancelGate) await cancelGate.promise;
             enrollmentId = null;
             return jsonResponse(statusPayload());
         }
@@ -817,6 +819,23 @@ test('initial silence does not satisfy the minimum speech duration', async () =>
     const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.ok(upload);
     assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('automatic capture waits for the fixed segment duration after the minimum speech threshold', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(1024));
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
+
+    harness.emitAudio(new Int16Array(REFERENCE_SAMPLES - MINIMUM_SAMPLES).fill(1024));
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
     await harness.emit('voice-identity-cancel');
     await enrolling;
 });
@@ -1436,7 +1455,7 @@ test('manual finish rejects a capture shorter than the backend contract', async 
     await enrolling;
 });
 
-test('a short natural utterance is padded to the fixed upload shape', async () => {
+test('a short natural utterance can be manually saved into the fixed upload shape', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
@@ -1445,6 +1464,9 @@ test('a short natural utterance is padded to the fixed upload shape', async () =
     harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(1024));
     await flush(4);
 
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
+    await harness.emit('voice-identity-finish');
+    await flush(4);
     const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.ok(upload);
     assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
@@ -1470,6 +1492,38 @@ test('pagehide sends keepalive cancellation and stops microphone resources', asy
     assert.ok(cancel);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.getAudioContext().state, 'closed');
+});
+
+test('BFCache restore waits for keepalive cancellation before reconciling status', async () => {
+    const cancelGate = deferred();
+    const harness = createHarness({
+        initialEnrollmentNextSegment: 1,
+        cancelGate,
+        manualAudio: true,
+    });
+    await harness.initialize();
+
+    const closing = harness.beforeClose();
+    await flush(3);
+    const restoring = harness.dispatch('pageshow', { persisted: true });
+    await flush(4);
+
+    assert.equal(
+        harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length,
+        1,
+    );
+    assert.equal(harness.elements.get('voice-identity-cancel').disabled, true);
+
+    cancelGate.resolve();
+    await closing;
+    await restoring;
+    await flush(4);
+
+    assert.equal(
+        harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length,
+        2,
+    );
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
 });
 
 test('slow enrollment start uses keepalive cancellation after close wait expires', async () => {
