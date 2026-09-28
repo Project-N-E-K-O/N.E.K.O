@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import ElementPlus from 'element-plus'
 import ConfigValueEditor from './ConfigValueEditor.vue'
+import type { ConfigEditorSchema } from '@/types/configSchema'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }),
@@ -23,7 +24,7 @@ afterEach(() => {
  * 挂载编辑器根节点。`modelValue` 是 profile overlay，`baselineValue` 是
  * 「清单默认值 + 运行时配置」的合并基线。emitted 收集写回 overlay 的结果。
  */
-function mountEditor(modelValue: any, baselineValue: any) {
+function mountEditor(modelValue: any, baselineValue: any, schema?: ConfigEditorSchema) {
   const emitted: any[] = []
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -31,6 +32,7 @@ function mountEditor(modelValue: any, baselineValue: any) {
     h(ConfigValueEditor as any, {
       modelValue,
       baselineValue,
+      schema,
       path: '',
       'onUpdate:modelValue': (v: any) => emitted.push(v),
     })
@@ -55,7 +57,7 @@ function typeInto(input: HTMLInputElement, value: string) {
 
 function rowFor(host: HTMLElement, key: string): HTMLElement {
   const rows = Array.from(host.querySelectorAll('.row')) as HTMLElement[]
-  const row = rows.find((r) => r.querySelector('.k')?.textContent?.trim() === key)
+  const row = rows.find((r) => r.querySelector('.k .el-tag')?.textContent?.trim() === key)
   if (!row) throw new Error(`row for key "${key}" not found`)
   return row
 }
@@ -342,5 +344,166 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c2'] })
+  })
+})
+
+describe('ConfigValueEditor — JSON Schema', () => {
+  it('renders localized nested labels and descriptions while emitting only raw keys', async () => {
+    const schema: ConfigEditorSchema = { type: 'object', properties: {
+      search: { type: 'object', title: 'Search', properties: {
+        query: { type: 'string', title: '查询', description: '说明',
+          'x-title-i18n': { en: 'Search query', 'zh-CN': '查询' },
+          'x-description-i18n': { en: '<b>Plain text</b>', 'zh-CN': '说明' } },
+      } },
+    } }
+    const { host, emitted } = mountEditor({}, { search: { query: 'old', extra: 'keep' } }, schema)
+    await nextTick()
+    expect(rowFor(host, 'query').textContent).toContain('Search query')
+    expect(rowFor(host, 'query').textContent).toContain('<b>Plain text</b>')
+    expect(rowFor(host, 'query').querySelector('b')).toBeNull()
+    expect(emitted).toEqual([])
+    typeInto(rowFor(host, 'query').querySelector('input')!, 'new')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ search: { query: 'new' } })
+  })
+
+  it('uses declared types for absent fields without persisting schema defaults', async () => {
+    const schema: ConfigEditorSchema = { type: 'object', properties: {
+      retries: { type: 'integer', minimum: 1, maximum: 9, default: 4 },
+      enabled: { type: 'boolean', default: true },
+      name: { type: 'string', maxLength: 12, default: 'example' },
+      nested: { type: 'object', properties: { text: { type: 'string' } } },
+    } }
+    const { host, emitted } = mountEditor({}, {}, schema)
+    await nextTick()
+    expect(rowFor(host, 'retries').querySelector('.el-input-number')).not.toBeNull()
+    expect(rowFor(host, 'enabled').querySelector('.el-switch')).not.toBeNull()
+    expect(rowFor(host, 'name').querySelector('input')?.maxLength).toBe(12)
+    expect(rowFor(host, 'text')).toBeTruthy()
+    expect(emitted).toEqual([])
+    typeInto(rowFor(host, 'text').querySelector('input')!, 'new')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ nested: { text: 'new' } })
+  })
+
+  it('enforces integer bounds through the number control', async () => {
+    const { host, emitted } = mountEditor({}, { count: 3 }, { type: 'object', properties: {
+      count: { type: 'integer', minimum: 1, maximum: 5 },
+    } })
+    await nextTick()
+    typeInto(rowFor(host, 'count').querySelector('input')!, '9.5')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ count: 5 })
+  })
+
+  it('keeps numeric and boolean enum values typed', async () => {
+    for (const values of [[1, 2], [false, true]]) {
+      const { host, emitted } = mountEditor({}, { choice: values[0] }, { type: 'object', properties: {
+        choice: { enum: values },
+      } })
+      await nextTick()
+      ;(rowFor(host, 'choice').querySelector('.el-select__wrapper') as HTMLElement).click()
+      await nextTick()
+      const options = Array.from(document.querySelectorAll('.el-select-dropdown__item'))
+      const option = options.find((o) => o.textContent?.trim() === String(values[1])) as HTMLElement
+      option.click()
+      await nextTick()
+      expect(lastEmit(emitted)).toEqual({ choice: values[1] })
+    }
+  })
+
+  it('propagates readOnly to nested controls and structural buttons', async () => {
+    const { host, emitted } = mountEditor({ locked: { name: 'mine', list: ['a'] } },
+      { locked: { name: 'old', list: ['b'] } }, { type: 'object', properties: {
+        locked: { type: 'object', readOnly: true },
+      } })
+    await nextTick()
+    const row = rowFor(host, 'locked')
+    expect(Array.from(row.querySelectorAll('input')).every((input) => input.disabled)).toBe(true)
+    expect(Array.from(row.querySelectorAll('button')).every((button) => button.disabled)).toBe(true)
+    expect(emitted).toEqual([])
+  })
+
+  it('applies item schemas and preserves whole-array replacement when adding', async () => {
+    const { host, emitted } = mountEditor({}, { servers: [{ port: 80 }] }, { type: 'object', properties: {
+      servers: { type: 'array', items: { type: 'object', default: { port: 443 }, properties: {
+        port: { type: 'integer', title: 'Port', minimum: 1 },
+      } } },
+    } })
+    await nextTick()
+    expect(rowFor(host, 'port').textContent).toContain('Port')
+    const add = Array.from(rowFor(host, 'servers').querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'plugins.addItem',
+    )!
+    add.click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ servers: [{ port: 80 }, { port: 443 }] })
+  })
+
+  it('ignores protected schema keys and keeps undeclared existing fields', async () => {
+    const schema = JSON.parse('{"type":"object","properties":{"plugin":{"type":"object"},"__proto__":{"type":"object"},"constructor":{"type":"string"},"a.b":{"type":"string"}}}')
+    const { host } = mountEditor({}, { legacy: 'value' }, schema)
+    await nextTick()
+    const keys = Array.from(host.querySelectorAll('.k .el-tag')).map((tag) => tag.textContent?.trim())
+    expect(keys).toEqual(['legacy'])
+  })
+})
+
+describe('ConfigValueEditor — schema review regressions', () => {
+  it.each([false, true])('rejects adding a missing readOnly field (array item: %s)', async (inArray) => {
+    const locked: ConfigEditorSchema = { type: 'string', readOnly: true, default: 'locked default' }
+    const object: ConfigEditorSchema = { type: 'object', properties: { locked } }
+    const schema: ConfigEditorSchema = inArray
+      ? { type: 'object', properties: { rows: { type: 'array', items: object } } }
+      : object
+    const { host, emitted } = mountEditor(inArray ? { rows: [{}] } : {},
+      inArray ? { rows: [{ locked: 'baseline' }] } : {}, schema)
+    await nextTick()
+    ;(host.querySelector('.add button') as HTMLButtonElement).click()
+    await nextTick()
+    typeInto(document.querySelector('.el-dialog input')!, 'locked')
+    await nextTick()
+    const confirm = Array.from(document.querySelectorAll('.el-dialog button')).find(
+      (button) => button.textContent?.trim() === 'common.confirm',
+    ) as HTMLButtonElement
+    confirm.click()
+    await nextTick()
+    expect(emitted).toEqual([])
+    expect(document.body.textContent).toContain('plugins.readOnlyField')
+    // A rejected name must not prevent adding another writable field.
+    typeInto(document.querySelector('.el-dialog input')!, 'custom')
+    await nextTick()
+    confirm.click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual(inArray ? { rows: [{ custom: '' }] } : { custom: '' })
+  })
+
+  it.each([
+    { current: false, options: [true] },
+    { current: true, options: [false] },
+    { current: 0, options: [1, 2] },
+    { current: 'legacy', options: ['new'] },
+  ])('shows an out-of-enum value $current without changing its type or writing on load', async ({ current, options }) => {
+    for (const inherited of [true, false]) {
+      const { host, emitted } = mountEditor(inherited ? {} : { choice: current },
+        { choice: inherited ? current : options[0] }, { type: 'object', properties: {
+          choice: { enum: options },
+        } })
+      await nextTick()
+      const row = rowFor(host, 'choice')
+      expect(row.querySelector('.el-select__selected-item.el-select__placeholder')?.textContent).toBe(String(current))
+      expect(emitted).toEqual([])
+      ;(row.querySelector('.el-select__wrapper') as HTMLElement).click()
+      await nextTick()
+      const choices = Array.from(document.querySelectorAll('.el-select-dropdown__item'))
+      const valid = choices.find((item) => item.textContent?.trim() === String(options[0])) as HTMLElement
+      valid.click()
+      await nextTick()
+      expect(lastEmit(emitted)).toEqual({ choice: options[0] })
+      // Remove teleported options before testing the other value source.
+      const item = mounted.pop()!
+      item.unmount()
+      item.host.remove()
+    }
   })
 })

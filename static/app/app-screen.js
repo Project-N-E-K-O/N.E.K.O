@@ -751,16 +751,30 @@
         video.srcObject = stream;
         video.autoplay = true;
         video.muted = true;
-        try { await video.play(); } catch (e) { /* 某些情况下不需要 play() 成功也能读取帧 */ }
-        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-            await new Promise(function (resolve) {
-                video.addEventListener('loadeddata', resolve, { once: true });
-            });
+        try {
+            try {
+                var playRequest = video.play();
+                if (playRequest && typeof playRequest.catch === 'function') playRequest.catch(function () {});
+            } catch (e) { /* 某些情况下不需要 play() 成功也能读取帧 */ }
+            if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                var loaded = await new Promise(function (resolve) {
+                    var timer = setTimeout(function () {
+                        video.removeEventListener('loadeddata', onLoaded);
+                        resolve(false);
+                    }, 3000);
+                    function onLoaded() {
+                        clearTimeout(timer);
+                        resolve(true);
+                    }
+                    video.addEventListener('loadeddata', onLoaded, { once: true });
+                });
+                if (!loaded) return null;
+            }
+            return captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
+        } finally {
+            video.srcObject = null;
+            video.remove();
         }
-        var frame = captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
-        video.srcObject = null;
-        video.remove();
-        return frame; // {dataUrl, width, height} or null
     }
     mod.captureFrameFromStream = captureFrameFromStream;
 

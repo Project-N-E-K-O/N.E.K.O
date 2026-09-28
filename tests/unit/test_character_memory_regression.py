@@ -1365,6 +1365,173 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
     assert "你" not in context
 
 
+def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
+    """Character config with master rename events and a persisted prompt locale."""
+    from memory.persona import PersonaManager
+
+    cm = _make_config_manager(Path(td))
+    bootstrap_local_cloudsave_environment(cm)
+    characters = cm.load_characters()
+    characters["主人"]["_reserved"] = {
+        "ai_context": {
+            "rename_events": [
+                {"type": "profile_rename", "old_name": "博士", "new_name": "IKUN"},
+                {"type": "profile_rename", "old_name": "IKUN", "new_name": "哀坤"},
+                {"type": "profile_rename", "old_name": "哀坤", "new_name": "棍母"},
+            ]
+        }
+    }
+    her_name = characters.get("当前猫娘") or next(iter(characters["猫娘"]))
+    cm.save_characters(characters)
+    locale_dir = Path(cm.memory_dir) / her_name
+    locale_dir.mkdir(parents=True, exist_ok=True)
+    locale_path = locale_dir / "prompt_locale.json"
+    locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
+
+    pm = PersonaManager()
+    pm._config_manager = cm
+    persona = {"master": {"facts": []}, "neko": {"facts": []}}
+
+    def rename_text() -> str:
+        for fact in persona["master"]["facts"]:
+            text = str(fact.get("text") or "")
+            if text.startswith(("改名记录:", "Profile Rename Record:")):
+                return text
+        return ""
+
+    return SimpleNamespace(
+        cm=cm,
+        pm=pm,
+        persona=persona,
+        her_name=her_name,
+        locale_path=locale_path,
+        rename_text=rename_text,
+    )
+
+
+@pytest.mark.unit
+def test_persona_card_sync_pins_rename_fact_to_durable_locale():
+    """Neither the process language nor language_context may rewrite a saved rename fact.
+
+    Persona refine temporarily switches the global language to the session
+    locale, while the embedding sweep and other ensure paths see the process
+    language. Both persist the persona, so the same master rename fact used to
+    flip between languages on every 30-minute pass.
+    """
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        pm, persona, her_name = fx.pm, fx.persona, fx.her_name
+        locale_path, _rename_text = fx.locale_path, fx.rename_text
+
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is True
+            pinned = _rename_text()
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is False
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert pinned.startswith("改名记录:")
+        assert "博士、IKUN、哀坤" in pinned
+        assert "棍母" in pinned
+        assert "Profile Rename Record" not in pinned
+        assert _rename_text() == pinned
+
+        locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is True
+            switched = _rename_text()
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert switched.startswith("Profile Rename Record:")
+        assert "博士, IKUN, 哀坤" in switched
+        assert "棍母" in switched
+        assert _rename_text() == switched
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_persona_card_sync_pins_rename_fact_off_the_event_loop():
+    """The async ensure path writes the same pinned sentence, reading files off the loop."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        original_locale = fx.cm._read_durable_prompt_locale
+        original_load = fx.cm.load_characters
+
+        def _recording_locale(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_locale(*args, **kwargs)
+
+        def _recording_load(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_load(*args, **kwargs)
+
+        fx.cm._read_durable_prompt_locale = _recording_locale
+        fx.cm.load_characters = _recording_load
+
+        with language_context("en"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
+
+        assert fx.rename_text().startswith("改名记录:")
+        assert read_threads and all(t != loop_thread for t in read_threads)
+
+
+@pytest.mark.unit
+def test_persona_card_sync_reads_character_config_once():
+    """A second read could fall back to default characters and sync them over the card."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loads = 0
+        original_load = fx.cm.load_characters
+
+        def _counting_load(*args, **kwargs):
+            nonlocal loads
+            loads += 1
+            return original_load(*args, **kwargs)
+
+        fx.cm.load_characters = _counting_load
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        assert loads == 1
+        assert fx.rename_text().startswith("改名记录:")
+
+
+@pytest.mark.unit
+def test_persona_card_sync_skips_when_durable_locale_read_fails_transiently():
+    """A transient locale read error must skip the pass, not write the process language."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        pinned = fx.rename_text()
+        assert pinned.startswith("改名记录:")
+
+        real_open = open
+
+        def _flaky_open(path, *args, **kwargs):
+            if str(path).endswith("prompt_locale.json"):
+                raise PermissionError("sidecar locked by cloud sync")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", _flaky_open), language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == pinned
+
+
 @pytest.mark.unit
 def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
     monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")

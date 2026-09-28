@@ -47,6 +47,7 @@ from main_logic.proactive_delivery import (
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
+from utils.desktop_capture import capture_desktop_screenshot
 from uuid import uuid4
 from ._shared import (
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -233,11 +234,10 @@ class ProactiveMixin:
             pass
         if is_local:
             try:
-                import pyautogui
                 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
                 import base64 as b64mod
                 def _capture_and_compress() -> bytes:
-                    shot = pyautogui.screenshot()
+                    shot = capture_desktop_screenshot()
                     if shot.mode in ('RGBA', 'LA', 'P'):
                         shot = shot.convert('RGB')
                     return compress_screenshot(

@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 保留主分支插件 HTML 卡片、AgentHUD 与唤醒词提示，更新 GLM 声音复刻新增 key 的语言包缓存。
-    const LOCALE_VERSION = '2026-09-27-glm-voice-clone';
+    // 合入主分支屏幕授权等待提示、独立 ASR 恢复提示与 GLM 声音复刻新增 key，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-glm-voice-clone-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

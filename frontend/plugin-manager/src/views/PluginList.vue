@@ -54,6 +54,22 @@
                 </el-icon>
               </button>
               <el-button
+                v-if="marketUrl"
+                class="plugin-update-trigger"
+                :loading="pluginUpdatesStore.checking"
+                plain
+                data-yui-guide-id="plugin-list-update-check"
+                :title="$t('pluginUpdates.button')"
+                @click="handleCheckUpdates"
+              >
+                <el-icon><Top /></el-icon>
+                <span>{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
+                <span
+                  v-if="pluginUpdatesStore.candidates.length > 0"
+                  class="plugin-update-trigger__badge"
+                >{{ pluginUpdatesStore.candidates.length }}</span>
+              </el-button>
+              <el-button
                 v-if="marketUrl && marketAuth.auth_state === 'pending'"
                 class="market-auth-trigger"
                 :loading="marketLogoutBusy"
@@ -477,11 +493,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User, Top } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
+import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
@@ -638,6 +655,13 @@ let metricsRefreshTimer: number | null = null
 // the "update available" badge can light up on market-installed plugins.
 const showSourceDetail = ref(false)
 const marketVersionsStore = useMarketVersionsStore()
+const pluginUpdatesStore = usePluginUpdatesStore()
+
+/** Toolbar entry point for the update float window. The check itself is
+ *  best-effort — a failure only lands in the logs, never in the UI. */
+function handleCheckUpdates(): void {
+  void pluginUpdatesStore.openFromButton()
+}
 
 function installedMarketVersionTargets(): MarketVersionTarget[] {
   const targets: MarketVersionTarget[] = []
@@ -1646,6 +1670,29 @@ onUnmounted(() => {
 .market-trigger--active .market-trigger__arrow {
   opacity: 1;
   transform: translateX(0);
+}
+
+.plugin-update-trigger {
+  --el-button-border-radius: var(--radius-control);
+  font-weight: 600;
+}
+
+/* Count lives inside the button so the toolbar keeps a single row. */
+.plugin-update-trigger__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--el-color-danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .market-auth-trigger {

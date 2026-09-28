@@ -41,6 +41,25 @@ async def test_status_delivery_failure_never_breaks_audio_runtime() -> None:
     assert runtime._voice_input_pipeline_failed is False
 
 
+async def test_independent_failure_status_preserves_its_ingress_token() -> None:
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    on_status = AsyncMock()
+    component._callbacks = replace(component._callbacks, on_status=on_status)
+    token = runtime._capture_ingress_token()
+    identity = component._capture_runtime_identity()
+
+    assert await component._send_asr_status(
+        "ASR_INDEPENDENT_FAILED",
+        "qwen",
+        session_epoch=token.session_epoch,
+        expected_identity=identity,
+        ingress_token=token,
+    )
+    event = on_status.await_args.args[0]
+    assert event.ingress_token is token
+
+
 async def test_stale_core_prepare_restores_previous_preview_owner() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)
