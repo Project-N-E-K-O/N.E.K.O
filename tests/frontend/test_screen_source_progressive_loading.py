@@ -718,8 +718,9 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
                 JSON.stringify({ id: 'window:2', name: 'Browser' })
             );
             await pickEditorHere();
-            // Another window moves away and back to the id this page cached,
-            // without a label record this page can trust.
+            // Another window moves away and back without a broadcast. Within a
+            // session the same id is the same window; renames arrive by
+            // broadcast or a record with a different title.
             syncFromOtherWindow('selectedScreenSourceId', 'screen:1');
             window.__storedValues.delete('selectedScreenSourceLabel');
             const back = syncFromOtherWindow('selectedScreenSourceId', 'window:2');
@@ -729,7 +730,7 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
 
     assert result == {
         "cached": "Editor",
-        "back": "app.screenSource.windows",
+        "back": "Editor",
         "renamed": "Browser",
     }
 
@@ -788,6 +789,81 @@ def test_window_title_reaches_other_windows_by_broadcast_not_storage(page: Page)
         "afterTitleLessRecord": "Browser",
         "broadcastFirst": "Terminal",
     }
+
+
+@pytest.mark.frontend
+def test_late_broadcast_for_another_source_keeps_this_pages_pick(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const other = new BroadcastChannel('neko-screen-source-label');
+            const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+            document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await settle();
+            // Sent by another window before this pick, delivered after it.
+            other.postMessage({ meta: { id: 'window:9', name: 'Old pick', screenIndex: null } });
+            await settle();
+            const afterLateBroadcast = window.getSelectedScreenSourceLabel();
+            // If that window's selection then syncs here, its title is known.
+            window.__storedValues.set('selectedScreenSourceId', 'window:9');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'selectedScreenSourceId', newValue: 'window:9',
+            }));
+            const afterItsSelection = window.getSelectedScreenSourceLabel();
+            other.close();
+            return { afterLateBroadcast, afterItsSelection };
+        }"""
+    )
+
+    assert result == {"afterLateBroadcast": "Editor", "afterItsSelection": "Old pick"}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("source_id", "fallback"),
+    [("window:2", "app.screenSource.windows"), ("screen:1", "app.screenSource.screens")],
+)
+def test_source_missing_from_enumeration_drops_its_name(
+    page: Page, source_id: str, fallback: str,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async (sourceId) => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="' + sourceId + '"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const before = window.getSelectedScreenSourceLabel();
+            // The window closed / the monitor was unplugged.
+            window.__metadataSources = window.__metadataSources.filter(
+                (source) => source.id !== sourceId
+            );
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return {
+                before,
+                after: window.getSelectedScreenSourceLabel(),
+                record: window.__storedValues.get('selectedScreenSourceLabel') || null,
+            };
+        }""",
+        source_id,
+    )
+
+    assert result["before"] != fallback
+    assert result == {"before": result["before"], "after": fallback, "record": None}
 
 
 @pytest.mark.frontend
