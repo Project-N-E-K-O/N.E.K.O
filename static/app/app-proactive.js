@@ -1186,6 +1186,8 @@
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
+                    // 取请求头也会等待，期间可能刚发出 greeting_check 关了避让阀。
+                    if (isStartupGreetingGateHolding()) return null;
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1194,6 +1196,10 @@
                 }
 
                 var resp = await _sendVoiceProactive();
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：发送前发现问候还没说完，取消本次');
+                    return false;
+                }
 
                 // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
                 // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
@@ -1207,6 +1213,7 @@
                         await voiceProactiveSec.refreshToken();
                         resp = await _sendVoiceProactive();
                     } catch (_) { /* fall through to 403 handling below */ }
+                    if (!resp) return false;
                 }
 
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1499,6 +1506,8 @@
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
+                // 与语音路径对偶：取请求头的等待期间也可能刚关了避让阀。
+                if (isStartupGreetingGateHolding()) return null;
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
                     headers: hdrs,
@@ -1507,6 +1516,10 @@
             }
 
             var response = await _sendProactive();
+            if (!response) {
+                console.log('发送前发现问候还没说完，取消本次搭话');
+                return;
+            }
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1520,6 +1533,7 @@
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
                 } catch (_) { /* fall through to 403 handling below */ }
+                if (!response) return;
             }
 
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /

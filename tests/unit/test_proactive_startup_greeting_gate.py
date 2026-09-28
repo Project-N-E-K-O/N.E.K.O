@@ -195,6 +195,19 @@ def test_text_trigger_rechecks_the_gate_right_before_sending():
     assert "isStartupGreetingGateHolding()" in source[final_check:send]
 
 
+def test_both_send_helpers_recheck_the_gate_after_awaiting_headers():
+    # 取 CSRF 请求头也是一个等待点：两条发送路径都要在它之后、fetch 之前再查一次。
+    source = PROACTIVE_JS.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))
+    for helper, headers_call in (
+        ("async function _sendVoiceProactive()", "await voiceProactiveSec.getMutationHeaders()"),
+        ("async function _sendProactive()", "await proactiveSec.getMutationHeaders()"),
+    ):
+        start = source.index(helper)
+        headers_at = source.index(headers_call, start)
+        fetch_at = source.index("fetch('/api/proactive_chat'", headers_at)
+        assert "isStartupGreetingGateHolding()" in source[headers_at:fetch_at], helper
+
+
 def test_greeting_check_send_arms_the_gate():
     source = WEBSOCKET_JS.read_text(encoding="utf-8").replace("\r\n", "\n")
     send_at = source.index("S.socket.send(JSON.stringify(greetingMessage));")
