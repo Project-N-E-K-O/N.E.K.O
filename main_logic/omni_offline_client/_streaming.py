@@ -270,6 +270,8 @@ class _StreamingMixin:
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
+            # 换了模型就重新给工具一次机会：拒收 tools 是上一个模型的能力限制。
+            self._openai_tools_unsupported = False
             if old_genai is not None and hasattr(old_genai, "close"):
                 try:
                     await asyncio.to_thread(old_genai.close)

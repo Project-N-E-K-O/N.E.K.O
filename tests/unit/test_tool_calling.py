@@ -2372,6 +2372,148 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
             pass
 
 
+def _tools_declining_client(astream_impl, *, max_tool_iterations=1):
+    """Bare OpenAI-compat client whose llm.astream is ``astream_impl``."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition, ToolResult
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    tool_def = ToolDefinition(
+        name="noop",
+        description="noop",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+    class _Llm:
+        max_completion_tokens = 100
+
+        def astream(self, messages, **overrides):
+            return astream_impl(messages, **overrides)
+
+        async def aclose(self):
+            return None
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "llava"
+    client.base_url = "http://127.0.0.1:11434/v1"
+    client.llm = _Llm()
+    client._tool_definitions = [tool_def]
+    client.on_tool_call = handler
+    client.max_tool_iterations = max_tool_iterations
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._openai_tools_unsupported = False
+    return client
+
+
+_OLLAMA_NO_TOOLS_ERROR = (
+    "Error code: 400 - {'error': {'message': "
+    "'registry.ollama.ai/library/llava:latest does not support tools'}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_tools_unsupported_retries_same_request_without_tools():
+    """An endpoint that rejects ``tools`` itself (Ollama llava: 400 "does not
+    support tools") gets the same request re-issued once without tools, and
+    the retry does not consume a tool iteration."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append(set(overrides))
+        if len(seen) == 1:
+            raise RuntimeError(_OLLAMA_NO_TOOLS_ERROR)
+        yield LLMStreamChunk(content="看到了", finish_reason="stop")
+
+    client = _tools_declining_client(astream, max_tool_iterations=1)
+    texts = [
+        ch.content
+        async for ch in client._astream_openai_with_tools([{"role": "user", "content": "hi"}])
+        if getattr(ch, "content", None)
+    ]
+
+    assert "".join(texts) == "看到了"
+    assert len(seen) == 2
+    assert "tools" in seen[0]
+    assert "tools" not in seen[1] and "tool_choice" not in seen[1]
+    assert client._openai_tools_unsupported is True
+    # Later turns in the session no longer build a tools payload at all.
+    assert client._openai_tools_payload() is None
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_tools_unsupported_is_not_retried_after_first_chunk():
+    """Once the provider has streamed anything, a failure is not silently
+    re-generated: replaying would splice two different replies together."""
+    from utils.llm_client import LLMStreamChunk
+
+    calls = []
+
+    async def astream(_messages, **overrides):
+        calls.append(1)
+        yield LLMStreamChunk(content="半句", finish_reason=None)
+        raise RuntimeError(_OLLAMA_NO_TOOLS_ERROR)
+
+    client = _tools_declining_client(astream)
+    with pytest.raises(RuntimeError):
+        async for _ in client._astream_openai_with_tools([{"role": "user", "content": "hi"}]):
+            pass
+    assert len(calls) == 1
+    assert client._openai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_unrelated_error_is_not_treated_as_tools_unsupported():
+    calls = []
+
+    async def astream(_messages, **overrides):
+        calls.append(1)
+        raise RuntimeError("Error code: 500 - upstream overloaded")
+        yield  # pragma: no cover
+
+    client = _tools_declining_client(astream)
+    with pytest.raises(RuntimeError, match="overloaded"):
+        async for _ in client._astream_openai_with_tools([{"role": "user", "content": "hi"}]):
+            pass
+    assert len(calls) == 1
+    assert client._openai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_switch_model_gives_tools_another_chance(monkeypatch):
+    """Rejecting tools is a property of the old model; a new model starts
+    with tools enabled again."""
+    import main_logic.omni_offline_client._streaming as streaming_mod
+
+    async def astream(_messages, **overrides):  # pragma: no cover - not streamed
+        yield None
+
+    client = _tools_declining_client(astream)
+    client._openai_tools_unsupported = True
+    client._model_switch_lock = None
+    client.api_key = "k"
+    client.vision_base_url = client.base_url
+    client.vision_api_key = "k"
+    client.max_response_length = 300
+    client._genai_client = None
+    client.provider_type = None
+
+    async def fake_create(model, base_url, api_key, **kwargs):
+        return client.llm
+
+    monkeypatch.setattr(streaming_mod, "create_chat_llm_async", fake_create)
+    await client.switch_model("qwen2.5:7b")
+
+    assert client._openai_tools_unsupported is False
+    assert client._openai_tools_payload() is not None
+
+
 @pytest.mark.asyncio
 async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
     """OpenAI-compat 路径同 turn 先 yield text 再进 tool_calls 时，写历史的

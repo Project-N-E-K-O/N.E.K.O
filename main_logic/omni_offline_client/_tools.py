@@ -102,7 +102,56 @@ class _ToolingMixin:
         tools, so ``_params`` skips both ``tools`` and ``tool_choice``."""
         if not self.has_tools():
             return None
+        if getattr(self, "_openai_tools_unsupported", False):
+            return None
         return [t.to_openai_chat() for t in self._tool_definitions]
+
+    @staticmethod
+    def _is_openai_tools_unsupported_error(exc: BaseException) -> bool:
+        """Whether ``exc`` is an endpoint refusing the ``tools`` parameter
+        itself (e.g. Ollama vision models: 400 "... does not support tools")."""
+        msg = str(exc or "").lower()
+        if "does not support tools" in msg or "does not support function" in msg:
+            return True
+        if "tools" in msg and "not support" in msg:
+            return True
+        if "tool use" in msg and ("unsupported" in msg or "not supported" in msg):
+            return True
+        return False
+
+    async def _astream_declining_tools(self, messages, overrides: dict):
+        """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
+
+        If the request fails before the first chunk with a tools-unsupported
+        error, mark the session, strip ``tools`` / ``tool_choice`` from
+        ``overrides`` in place (so later rounds of the caller's loop and its
+        forced-finalize call go without them too) and re-issue the same
+        request once. Any other failure, or one after a chunk was already
+        received, propagates unchanged.
+        """
+        received_any = False
+        try:
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                received_any = True
+                yield chunk
+            return
+        except Exception as exc:
+            if (
+                received_any
+                or "tools" not in overrides
+                or not self._is_openai_tools_unsupported_error(exc)
+            ):
+                raise
+            logger.warning(
+                "OpenAI-compat model %s declined tools (%s); retrying this "
+                "request without tools and disabling them for the session",
+                getattr(self, "model", None), exc,
+            )
+        self._openai_tools_unsupported = True
+        overrides.pop("tools", None)
+        overrides.pop("tool_choice", None)
+        async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            yield chunk
 
     async def _execute_and_append_openai_tool_calls(
         self,
@@ -760,7 +809,7 @@ class _ToolingMixin:
             streamed_reasoning_buffer = ""
             # 上一轮注入的工具图，本轮才谈得上"送到了"。
             tool_frames_published = False
-            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            async for chunk in self._astream_declining_tools(messages, overrides):
                 if not tool_frames_published:
                     # 任何一个 chunk 都算数，不必等有内容的那个：astream 是惰性
                     # 的，请求要到第一次 __anext__ 才真正发出，能拿到 chunk 就
@@ -818,6 +867,9 @@ class _ToolingMixin:
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
             # empty 的关键线索）。
             self._last_finish_reason = finish_reason
+            if "tools" not in overrides:
+                # 端点在本轮拒收了 tools、已去掉工具重发：之后不再进工具分支。
+                tools_payload = None
             if (
                 not streamed_text_buffer
                 and not deltas_per_chunk

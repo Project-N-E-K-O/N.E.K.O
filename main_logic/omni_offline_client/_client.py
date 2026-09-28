@@ -241,6 +241,10 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
         self._genai_client = None  # initialized lazily inside _stream_text_genai
         self._genai_tools_unsupported = False  # set True if genai path falls back at runtime
+        # OpenAI-compat 端点明确拒收 ``tools``（例如 Ollama 上的 llava 返回
+        # 400 "does not support tools"）后置 True，本会话后续轮次不再带工具，
+        # 省掉每轮一次必然失败的请求。这是模型能力，只在换模型 / 关闭时清掉。
+        self._openai_tools_unsupported = False
 
         # State management
         self._is_responding = False
