@@ -91,6 +91,10 @@ AVATAR_TOOL_MAX_RECORD_BYTES = 64 * 1024
 
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MEANING_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+# JSON 的 \uXXXX 转义能解出孤立代理项。它们过得了上面的控制字符检查，却会让
+# atomic_write_json(ensure_ascii=False) 在编码时抛 UnicodeEncodeError —— 那是一次
+# 500，而不是字段级的 400。
+_SURROGATE_PATTERN = re.compile(r"[\ud800-\udfff]")
 _NAME_SPACES_PATTERN = re.compile(r" +")
 _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 _RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -280,6 +284,8 @@ def _validate_meaning(
         raise AvatarToolStoreError(f"{field}_too_long", f"{field} is too long", field=field, index=index)
     if _MEANING_CONTROL_CHARACTER_PATTERN.search(normalized):
         raise AvatarToolStoreError(f"{field}_invalid", f"{field} contains control characters", field=field, index=index)
+    if _SURROGATE_PATTERN.search(normalized):
+        raise AvatarToolStoreError(f"{field}_invalid", f"{field} contains unsupported characters", field=field, index=index)
     return normalized
 
 
@@ -353,6 +359,13 @@ def _validate_optional_meaning(
         raise AvatarToolStoreError(
             f"{field}_invalid",
             f"{field} contains control characters",
+            field=field,
+            index=index,
+        )
+    if _SURROGATE_PATTERN.search(normalized):
+        raise AvatarToolStoreError(
+            f"{field}_invalid",
+            f"{field} contains unsupported characters",
             field=field,
             index=index,
         )
@@ -542,6 +555,23 @@ class AvatarToolStore:
             return
         raise _storage_total_unavailable()
 
+    def _require_no_pending_delete(self, tool_id: str) -> None:
+        """Refuse to mutate an ID whose unconfirmed deletion is still retained.
+
+        Recovery keeps a ``.deleting`` directory whose identity does not match its
+        authorization, because it may hold a newer version published concurrently.
+        That copy concerns this ID only, so it blocks this ID rather than the store.
+        """
+        deleting_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.deleting")
+        if probe_error is not None:
+            raise _storage_total_unavailable() from probe_error
+        if deleting_kind != "absent":
+            raise AvatarToolStoreError(
+                "tool_delete_pending",
+                "An unconfirmed deletion of this avatar tool is still pending",
+                status_code=409,
+            )
+
     def initialize(self) -> None:
         """Prepare the store once and recover interrupted mutations."""
         with _STORE_LOCK:
@@ -568,6 +598,10 @@ class AvatarToolStore:
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
+            except Exception:
+                # 意外异常同样说明恢复没走完；留在待恢复状态，写入继续被拦住。
+                _RECOVERY_PENDING_ROOTS.add(root_key)
+                raise
             if recovered:
                 _RECOVERY_PENDING_ROOTS.discard(root_key)
             else:
@@ -839,8 +873,11 @@ class AvatarToolStore:
                 if marker_kind != "absent":
                     try:
                         if not self._delete_authorization_matches(candidate, marker):
+                            # 保留副本，但不判恢复未完成：它只关系到这一个 ID，由
+                            # _require_no_pending_delete 单独拦住同 ID 的写入。算成
+                            # 全局未完成的话，身份永远对不上的副本会让所有道具的
+                            # 创建、修改、删除一直 503。
                             logger.warning("Preserving unconfirmed avatar tool deletion %s", candidate)
-                            complete = False
                             continue
                         marker.unlink()
                     except OSError:
@@ -927,7 +964,7 @@ class AvatarToolStore:
                 status_code=404,
                 transient=True,
             ) from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
         try:
             return self._validate_record(
@@ -950,6 +987,15 @@ class AvatarToolStore:
                 "Avatar tool record is invalid",
                 status_code=404,
                 transient=exc.transient,
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            # 校验器漏掉的类型组合（比如未定型 JSON 值做了成员判断）同样说明这条
+            # 记录形状不对。不归一化的话，一条畸形 record 就能让列表、名额计数和
+            # 启动恢复整体抛出，而不是像其它被证伪的记录那样被跳过、隔离。
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool record is invalid",
+                status_code=404,
             ) from exc
 
     def _validate_record_resources(
@@ -979,6 +1025,7 @@ class AvatarToolStore:
             raise _record_temporarily_unreadable() from probe_error
         if directory_kind != "dir":
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+        resource_limits: dict[str, int] = {}
         for filename in resource_names:
             resource = directory / filename
             resource_kind, resource_size, probe_error = _probe_entry(resource)
@@ -998,25 +1045,7 @@ class AvatarToolStore:
                     status_code=404,
                     integrity_mismatch=True,
                 )
-            if verify_resources:
-                try:
-                    actual_digest = self._file_digest(resource, maximum)
-                except AvatarToolStoreError:
-                    raise
-                except OSError as exc:
-                    raise AvatarToolStoreError(
-                        "record_invalid",
-                        "Avatar tool resource integrity is invalid",
-                        status_code=404,
-                        transient=True,
-                    ) from exc
-                if actual_digest != resource_digests[filename]:
-                    raise AvatarToolStoreError(
-                        "record_invalid",
-                        "Avatar tool resource integrity is invalid",
-                        status_code=404,
-                        integrity_mismatch=True,
-                    )
+            resource_limits[filename] = maximum
         expected_entries = {"record.json", *resource_names}
         try:
             actual_entries = set()
@@ -1042,6 +1071,28 @@ class AvatarToolStore:
             ) from exc
         if actual_entries != expected_entries:
             raise AvatarToolStoreError("record_invalid", "Avatar tool resource closure is invalid", status_code=404)
+        # 逐字节 hash 放在所有元数据检查（含闭包）之后：闭包不符的道具（比如目录里
+        # 多了一个 .DS_Store）注定被拒，没必要每次详情请求都先持锁把它全部读一遍。
+        if verify_resources:
+            for filename, maximum in resource_limits.items():
+                try:
+                    actual_digest = self._file_digest(directory / filename, maximum)
+                except AvatarToolStoreError:
+                    raise
+                except OSError as exc:
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource integrity is invalid",
+                        status_code=404,
+                        transient=True,
+                    ) from exc
+                if actual_digest != resource_digests[filename]:
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource integrity is invalid",
+                        status_code=404,
+                        integrity_mismatch=True,
+                    )
         return {filename: resource_digests[filename] for filename in resource_names}
 
     def _validate_record(
@@ -1097,7 +1148,11 @@ class AvatarToolStore:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         mode = image_change.get("mode")
         items = image_change.get("items")
-        if mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES or not isinstance(items, list):
+        if (
+            not isinstance(mode, str)
+            or mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES
+            or not isinstance(items, list)
+        ):
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         if not 1 <= len(items) <= self.limits["maxChangeImages"]:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
@@ -1230,9 +1285,12 @@ class AvatarToolStore:
                 raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
             if set(value) == {"kind"} and value.get("kind") == "keep":
                 return {"kind": "keep"}
+            # JSON 值未定型：list/dict 做集合成员判断会抛 TypeError（不可哈希），
+            # 下面每处 `in` 之前都先确认是字符串。
             if (
                 set(value) == {"kind", "imageId"}
                 and value.get("kind") == "show"
+                and isinstance(value.get("imageId"), str)
                 and value.get("imageId") in image_ids
             ):
                 return {"kind": "show", "imageId": value["imageId"]}
@@ -1279,7 +1337,7 @@ class AvatarToolStore:
                 ),
             })
         initial_image_id = payload.get("initialImageId")
-        if initial_image_id not in image_ids:
+        if not isinstance(initial_image_id, str) or initial_image_id not in image_ids:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
 
         image_interactions = payload.get("imageInteractions")
@@ -1361,7 +1419,7 @@ class AvatarToolStore:
             }
             if not isinstance(value, dict) or set(value) != expected_keys:
                 raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
-            if (
+            if any(not isinstance(value.get(key), str) for key in expected_keys) or (
                 value.get("to") not in interactions_by_id
                 or (not initial and value.get("from") not in interactions_by_id)
                 or value.get("sourceSide") not in LOCAL_AVATAR_TOOL_CONNECTION_SIDES
@@ -1859,15 +1917,7 @@ class AvatarToolStore:
                     target=f"avatar_tools/{tool_id}",
                 )
             deleting = self.root / f".{tool_id}.deleting"
-            deleting_kind, _, probe_error = _probe_entry(deleting)
-            if probe_error is not None:
-                raise _storage_total_unavailable() from probe_error
-            if deleting_kind != "absent":
-                raise AvatarToolStoreError(
-                    "tool_delete_failed",
-                    "Avatar tool could not be deleted",
-                    status_code=500,
-                )
+            self._require_no_pending_delete(tool_id)
             backup = self.root / f".{tool_id}.backup"
             backup_kind, _, probe_error = _probe_entry(backup)
             if probe_error is not None:
@@ -1940,7 +1990,8 @@ class AvatarToolStore:
                 ) from exc
             try:
                 if not self._delete_authorization_matches(deleting, marker):
-                    _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                    if not self._restore_unauthorized_delete(deleting, directory, marker):
+                        _RECOVERY_PENDING_ROOTS.add(self._root_key())
                     raise AvatarToolStoreError(
                         "tool_delete_failed",
                         "Avatar tool could not be deleted",
@@ -1960,6 +2011,37 @@ class AvatarToolStore:
                 logger.warning("Could not clean deleted avatar tool %s", deleting)
             self._release_quarantine(tool_id)
             return tool_id
+
+    def _restore_unauthorized_delete(self, deleting: Path, final: Path, marker: Path) -> bool:
+        """Undo a delete move whose moved object is not the authorized one.
+
+        Returns False when the retained ``.deleting`` must be left for recovery.
+        """
+        # 移走的东西没被授权删除，挪回原位就等于这次删除从未发生。先确认正式
+        # 路径确实空着：POSIX rename 会静默顶掉一个空目录，同步客户端刚发布的
+        # 东西不能被这一步覆盖。
+        final_kind, _, probe_error = _probe_entry(final)
+        if probe_error is not None or final_kind != "absent":
+            logger.warning("Preserving unconfirmed avatar tool deletion %s", deleting)
+            return False
+        try:
+            os.replace(deleting, final)
+        except OSError:
+            logger.warning("Could not restore unconfirmed avatar tool deletion %s", deleting, exc_info=True)
+            return False
+        # 先让挪回持久化，再撤授权：顺序反过来的话，崩溃会留下一个没有授权文件
+        # 的 .deleting，恢复会把它当成已确认的删除清掉。
+        _fsync_directory(final.parent)
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # 孤立授权文件在 .deleting 不存在时由恢复回收。
+            logger.warning("Could not remove avatar tool delete authorization %s", marker)
+            return False
+        _fsync_directory(marker.parent)
+        return True
 
     def _prepare_tool_contents(
         self,
@@ -2243,6 +2325,12 @@ class AvatarToolStore:
                 "Avatar tool manifest is invalid",
                 field="manifest",
             ) from exc
+        except (TypeError, ValueError) as exc:
+            raise AvatarToolStoreError(
+                "manifest_invalid",
+                "Avatar tool manifest is invalid",
+                field="manifest",
+            ) from exc
         return clean_record, resources
 
     @staticmethod
@@ -2297,6 +2385,7 @@ class AvatarToolStore:
                 target="avatar_tools",
             )
             self._require_recovery_complete_for_mutation()
+            self._require_no_pending_delete(tool_id)
             final = self.root / tool_id
             final_kind, _, probe_error = _probe_entry(final)
             if probe_error is not None:
@@ -2597,6 +2686,7 @@ class AvatarToolStore:
                 target=f"avatar_tools/{tool_id}",
             )
             self._require_recovery_complete_for_mutation()
+            self._require_no_pending_delete(tool_id)
             current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
             current_revision = self.record_revision(current)
@@ -2756,6 +2846,7 @@ class AvatarToolStore:
                 target=f"avatar_tools/{tool_id}",
             )
             self._require_recovery_complete_for_mutation()
+            self._require_no_pending_delete(tool_id)
             current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
             current_revision = self.record_revision(current)

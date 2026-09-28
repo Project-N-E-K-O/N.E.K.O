@@ -235,6 +235,93 @@ def test_v3_transport_rejects_unrepresentable_editor_coordinates_without_500(tmp
     assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
 
 
+def _set_initial_image_id(manifest, value):
+    manifest["initialImageId"] = value
+
+
+def _set_release_image_id(manifest, value):
+    manifest["imageInteractions"]["items"][0]["actions"]["release"] = {"kind": "show", "imageId": value}
+
+
+def _set_source_side(manifest, value):
+    manifest["imageInteractions"]["initialLinks"][0]["sourceSide"] = value
+
+
+def _set_link_target(manifest, value):
+    manifest["imageInteractions"]["links"][0]["to"] = value
+
+
+@pytest.mark.parametrize(
+    ("mutate", "value"),
+    (
+        (_set_initial_image_id, ["img-1"]),
+        (_set_initial_image_id, {"id": "img-1"}),
+        (_set_release_image_id, ["img-1"]),
+        (_set_source_side, ["right"]),
+        (_set_link_target, {"id": "ix-click"}),
+    ),
+)
+def test_v3_transport_rejects_untyped_graph_references_without_500(tmp_path, monkeypatch, mutate, value):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    manifest = _v3_manifest("local-12345678-1234-4123-8123-123456789abc")
+    mutate(manifest, value)
+
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(manifest))),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "manifest_invalid"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
+def test_v3_transport_rejects_a_deeply_nested_manifest_without_500(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    manifest = json.dumps(_v3_manifest("local-12345678-1234-4123-8123-123456789abc"))
+    nested = manifest[:-1] + ', "extra": ' + "[" * 3000 + "]" * 3000 + "}"
+
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, nested)),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "manifest_invalid"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
+def test_v3_transport_reports_a_lone_surrogate_meaning_as_a_field_error(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    manifest = _v3_manifest("local-12345678-1234-4123-8123-123456789abc")
+    manifest["images"][0]["meaning"] = "changed \ud83d"
+    raw = json.dumps(manifest)
+    assert "\\ud83d" in raw
+
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, raw)),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "image_meaning_invalid"
+    assert response.json()["field"] == "image_meaning"
+    assert response.json()["index"] == 0
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
 def test_v3_transport_rejects_mixed_v2_fields_without_publishing(tmp_path, monkeypatch):
     client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
     tool_id = "local-12345678-1234-4123-8123-123456789abc"
