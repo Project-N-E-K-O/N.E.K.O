@@ -21,6 +21,7 @@ from main_logic.proactive_delivery import (
 )
 
 from ._shared import (
+    _same_route,
     AIMessage,
     Any,
     Awaitable,
@@ -171,10 +172,8 @@ class _StreamingMixin:
             self._model_switch_lock = lock
 
         async with lock:
-            if not new_model or new_model == self.model:
+            if not new_model:
                 return
-
-            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
             if use_vision_config:
@@ -185,6 +184,18 @@ class _StreamingMixin:
                 base_url = self.base_url
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
+
+            # 模型 id 相同也不能直接返回：视觉槽可以填和对话槽同一个模型 id、却指向
+            # 另一个 URL / Key / 协议（例如本地 Ollama 专门跑多模态的那一台，或同一
+            # 网关下的 Anthropic 风格接口）。只比 id 的话截图帧会一直打在纯文本端点
+            # 上。id 和路由都没变才是真正的 no-op。
+            if new_model == self.model and _same_route(
+                base_url, api_key, provider_type,
+                self.base_url, self.api_key, getattr(self, "provider_type", None),
+            ):
+                return
+
+            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -226,11 +237,11 @@ class _StreamingMixin:
             # 比较前把空串归一成 None：上面 vision 分支已经做过这一步而
             # conversation 分支没有，两边留着不同的"空"表示会让同一个端点被
             # 判成换了路由——误判方向是"多清"，正好打在本改动的目标场景上。
-            def _same(a, b) -> bool:
-                return (a or None) == (b or None)
-
-            route_changed = not (
-                _same(base_url, self.base_url) and _same(api_key, self.api_key)
+            # URL 同理按 same_endpoint 比：尾斜杠、主机大小写、显式默认端口
+            # 都不算换了一家。协议不参与：签名只跟铸造它的端点和账号绑定。
+            route_changed = not _same_route(
+                base_url, api_key, None,
+                self.base_url, self.api_key, None,
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -240,6 +251,9 @@ class _StreamingMixin:
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
             self.base_url = base_url
             self.api_key = api_key
+            # 协议也随路由同步：下一次 switch_model 的 no-op 判据和对话侧
+            # 分支读的都是它，停在旧值会把已经切过去的会话判成「还没切」。
+            self.provider_type = provider_type
             if route_changed:
                 # getattr 防御与本文件其余处一致：__new__ 绕过 __init__ 的测试桩
                 # 没有这个字段，helper 对 None 也是 no-op。
@@ -260,6 +274,9 @@ class _StreamingMixin:
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
+            # 换了模型就重新给工具一次机会：拒收 tools 是上一个模型的能力限制。
+            self._openai_tools_unsupported = False
+            self._openai_tools_unsupported_with_images = False
             if old_genai is not None and hasattr(old_genai, "close"):
                 try:
                     await asyncio.to_thread(old_genai.close)
@@ -693,8 +710,11 @@ class _StreamingMixin:
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
-            # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
+            # (cannot switch back because image data remains in conversation history).
+            # Do not require vision_model != model: the same id on a different
+            # vision URL/key must still switch; switch_model itself is a no-op
+            # when both the id and the endpoint already match.
+            if self.vision_model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)

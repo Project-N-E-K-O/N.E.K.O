@@ -47,6 +47,15 @@ export default {
     removeHint: "¿Detener el plugin y eliminar el vínculo? Se conservarán el código y los datos de ejecución.",
   },
   common: {
+    surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
+    surfaceApplyLanguage: "Aplicar idioma y recargar panel",
+    surfaceApplyLanguageConfirm: "Al recargar el panel se descartará el trabajo sin guardar. ¿Continuar?",
+
+    languageLoading: "Cargando idioma; la interfaz sigue disponible",
+    languageLoadFailed: "No se pudo cargar el idioma. Se mantiene el idioma actual.",
+    languageRetry: "Reintentar idioma",
+    languageReload: "Recargar página",
+
     loading: 'Cargando...',
     refresh: 'Actualizar',
     search: 'Buscar',
@@ -336,6 +345,7 @@ export default {
     installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
+    configSchemaInvalid: 'El esquema de configuración del complemento no es válido. Se muestra el editor de configuración genérico.',
     title: 'Plugins',
     name: 'Nombre del plugin',
     id: 'ID del plugin',
@@ -429,6 +439,7 @@ export default {
     addItem: 'Añadir elemento',
     fieldName: 'Nombre del campo',
     fieldNameRequired: 'El nombre del campo es obligatorio',
+    readOnlyField: 'Este campo es de solo lectura y no se puede añadir.',
     invalidFieldKey: 'Nombre de campo no válido',
     fieldType: 'Tipo de campo',
     duplicateFieldKey: 'El nombre del campo ya existe. Elige otro.',

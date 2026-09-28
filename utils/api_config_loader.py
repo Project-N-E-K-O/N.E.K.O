@@ -489,9 +489,9 @@ def get_cosyvoice_user_preferred_model(provider: str | None = None) -> str | Non
     synthesizing (and billing) as ``cosyvoice-v3.5-plus``.
 
     Rules:
-    - Only strings starting with ``cosyvoice-v`` are adopted, mirroring how the
-      Qwen worker validates its ``qwen3-tts`` prefix; anything else (other
-      vendors' IDs, blanks) falls back to ``None`` -> caller keeps the default.
+    - Only strings starting with ``cosyvoice-v`` are adopted; anything else
+      (other vendors' IDs, blanks) falls back to ``None`` -> caller keeps the
+      default.
     - International deployments are ignored: Singapore only supports
       ``cosyvoice-v3-plus`` for enrolled voices, which is already the intl
       default, so there is nothing for the user to override.

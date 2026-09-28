@@ -22,11 +22,40 @@
         const el = recoveryStatusElement();
         if (!el) return;
         const messages = { recovering: '正在恢复语音识别…', ready: '语音识别已恢复', failed: '语音识别恢复失败，请重试' };
+        const keys = { recovering: 'microphone.voiceInputRecoveryRecovering', ready: 'microphone.voiceInputRecoveryReady', failed: 'microphone.voiceInputRecoveryFailed' };
+        const localized = keys[state] && typeof window.t === 'function' ? window.t(keys[state]) : null;
         if (messages[state] && typeof window.showStatusToast === 'function') {
-            window.showStatusToast(messages[state], state === 'ready' ? 1600 : 4000);
+            window.showStatusToast(localized && localized !== keys[state] ? localized : messages[state], state === 'ready' ? 1600 : 4000);
         }
     }
     function clearVoiceInputRecoveryTimer() { if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer); S.voiceInputRecoveryTimer = null; }
+    function resetVoiceInputRecoveryState() {
+        clearVoiceInputRecoveryTimer();
+        // Retire callbacks already queued by the previous session as well as
+        // its transport identity. A hardware restart within a session must not
+        // call this: it still has to wait for the current recovery verdict.
+        S.voiceInputRecoveryGeneration += 1;
+        S.voiceInputRecoverySessionEpoch = null;
+        S.voiceInputRecoveryLeaseGeneration = null;
+        S.voiceInputRecoveryState = 'idle';
+    }
+    mod.resetVoiceInputRecoveryState = resetVoiceInputRecoveryState;
+    function isVoiceInputRecoveryPending() {
+        return S.voiceInputRecoveryState === 'recovering' || S.voiceInputRecoveryState === 'timed_out';
+    }
+    function matchesCurrentVoiceInputRecovery(detail) {
+        const payload = detail || {};
+        const generation = payload.generation;
+        if (generation != null && generation !== S.voiceInputRecoveryGeneration) return false;
+        if (payload.session_epoch != null && S.voiceInputRecoverySessionEpoch != null
+                && payload.session_epoch !== S.voiceInputRecoverySessionEpoch) return false;
+        // Bind happens on the actual lease_sync send. An unbound cycle or an
+        // unsigned event cannot prove it belongs to this recovery period.
+        if (S.voiceInputRecoveryLeaseGeneration == null
+                || payload.lease_generation == null
+                || payload.lease_generation !== S.voiceInputRecoveryLeaseGeneration) return false;
+        return true;
+    }
     function beginVoiceInputRecovery() {
         clearVoiceInputRecoveryTimer();
         const generation = ++S.voiceInputRecoveryGeneration;
@@ -39,39 +68,27 @@
         }
         S.voiceInputRecoveryState = 'recovering'; updateRecoveryStatus('recovering');
         S.voiceInputRecoverySessionEpoch = S.voiceSessionEpoch ?? S.sessionEpoch ?? null;
-        // setMicMuted/toggleMicMute sync the lease immediately after this
-        // transition, so the next outbound generation is the one to match.
-        S.voiceInputRecoveryLeaseGeneration = voiceLeaseGeneration + 1;
+        // Bind to the actual lease snapshot sent below, including reconnect
+        // replay, whose generation starts again at one.
+        S.voiceInputRecoveryLeaseGeneration = null;
         window.dispatchEvent(new CustomEvent('voice-input-recovery-changed', { detail: { state: 'recovering', generation } }));
         S.voiceInputRecoveryTimer = setTimeout(() => {
             if (generation !== S.voiceInputRecoveryGeneration || S.voiceInputRecoveryState !== 'recovering') return;
-            S.voiceInputRecoveryState = 'failed'; updateRecoveryStatus('failed');
-            window.dispatchEvent(new CustomEvent('voice-input-recovery-changed', { detail: { state: 'failed', generation } }));
-        // Soniox may make three 10 s connection attempts with retry backoff.
-        // Keep the client gate open for the complete backend recovery budget.
-        }, 32000);
+            S.voiceInputRecoveryTimer = null;
+            // This UI deadline does not cancel the backend transport attempt.
+            // Keep dropping PCM, but accept a current READY arriving later.
+            S.voiceInputRecoveryState = 'timed_out'; updateRecoveryStatus('failed');
+            window.dispatchEvent(new CustomEvent('voice-input-recovery-changed', { detail: { state: 'timed_out', generation } }));
+        }, 4000);
     }
     window.addEventListener('voice-input-recovery-ready', (event) => {
-        if (S.independentAsrActive !== true || S.isMicMuted || S.voiceInputRecoveryState !== 'recovering') return;
-        const detail = event?.detail || {};
-        const generation = detail.generation;
-        if (generation != null && generation !== S.voiceInputRecoveryGeneration) return;
-        if (detail.session_epoch != null && S.voiceInputRecoverySessionEpoch != null
-                && detail.session_epoch !== S.voiceInputRecoverySessionEpoch) return;
-        if (detail.lease_generation != null && S.voiceInputRecoveryLeaseGeneration != null
-                && detail.lease_generation !== S.voiceInputRecoveryLeaseGeneration) return;
+        if (S.independentAsrActive !== true || S.isMicMuted || !isVoiceInputRecoveryPending()) return;
+        if (!matchesCurrentVoiceInputRecovery(event?.detail)) return;
         clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'ready'; updateRecoveryStatus('ready');
     });
     window.addEventListener('voice-input-recovery-failed', (event) => {
-        if (S.independentAsrActive !== true || S.isMicMuted || S.voiceInputRecoveryState !== 'recovering') return;
-        const detail = event?.detail || {};
-        const generation = detail.generation;
-        if (generation != null && generation !== S.voiceInputRecoveryGeneration) return;
-        if (detail.session_epoch != null && S.voiceInputRecoverySessionEpoch != null
-                && detail.session_epoch !== S.voiceInputRecoverySessionEpoch) return;
-        if (detail.lease_generation == null
-                || S.voiceInputRecoveryLeaseGeneration == null
-                || detail.lease_generation !== S.voiceInputRecoveryLeaseGeneration) return;
+        if (S.independentAsrActive !== true || S.isMicMuted || !isVoiceInputRecoveryPending()) return;
+        if (!matchesCurrentVoiceInputRecovery(event?.detail)) return;
         clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'failed'; updateRecoveryStatus('failed');
     });
     const C = window.appConst;
@@ -146,19 +163,23 @@
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
         const state = currentVoiceInputControlState();
         const fingerprint = JSON.stringify(state);
-        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
-        voiceLeaseGeneration += 1;
+        if (force === true || fingerprint !== lastVoiceLeaseFingerprint) {
+            voiceLeaseGeneration += 1;
+            S.socket.send(JSON.stringify({
+                action: 'voice_input_control',
+                event: 'lease_sync',
+                owner: state.owner,
+                hard_muted: state.hard_muted,
+                focus_suppressed: state.focus_suppressed,
+                engaged: state.engaged,
+                lease_generation: voiceLeaseGeneration
+            }));
+            lastVoiceLeaseFingerprint = fingerprint;
+        }
         S.voiceInputCurrentLeaseGeneration = voiceLeaseGeneration;
-        S.socket.send(JSON.stringify({
-            action: 'voice_input_control',
-            event: 'lease_sync',
-            owner: state.owner,
-            hard_muted: state.hard_muted,
-            focus_suppressed: state.focus_suppressed,
-            engaged: state.engaged,
-            lease_generation: voiceLeaseGeneration
-        }));
-        lastVoiceLeaseFingerprint = fingerprint;
+        if (isVoiceInputRecoveryPending()) {
+            S.voiceInputRecoveryLeaseGeneration = voiceLeaseGeneration;
+        }
         return true;
     }
 
@@ -169,13 +190,7 @@
         // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
         voiceLeaseGeneration = 0;
         lastVoiceLeaseFingerprint = '';
-        const sent = sendVoiceInputControlState(true);
-        // 重连重置了 generation scope；进行中的恢复要改为等待本连接刚发出的那一代，
-        // 否则新连接上的 ready/failed 通知都会因 generation 不匹配被丢弃。
-        if (sent && S.voiceInputRecoveryState === 'recovering') {
-            S.voiceInputRecoveryLeaseGeneration = voiceLeaseGeneration;
-        }
-        return sent;
+        return sendVoiceInputControlState(true);
     }
 
     function setVoiceInputLifecycleState(state) {
@@ -234,7 +249,8 @@
     function canUploadOrdinaryMicFrame() {
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
-        return !state.hard_muted && !state.focus_suppressed && !['recovering', 'failed'].includes(S.voiceInputRecoveryState);
+        return !state.hard_muted && !state.focus_suppressed
+            && !isVoiceInputRecoveryPending() && S.voiceInputRecoveryState !== 'failed';
     }
 
     // ======================== DOM 辅助 ========================
@@ -2352,6 +2368,9 @@
     function stopRecording(options) {
         options = options || {};
         const notifyServer = options.notifyServer !== false;
+        // Also retire recovery when startup failed before isRecording became
+        // true. The owning session's failure path uses this same teardown.
+        resetVoiceInputRecoveryState();
         // 停止语音期间主动视觉定时
         if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
             window.stopProactiveVisionDuringSpeech();
@@ -2377,11 +2396,6 @@
         // re-runs the route on every start_session).
         S.independentAsrActive = false;
         S.independentAsrProvider = '';
-        ++S.voiceInputRecoveryGeneration;
-        clearVoiceInputRecoveryTimer();
-        S.voiceInputRecoveryState = 'idle';
-        S.voiceInputRecoverySessionEpoch = null;
-        S.voiceInputRecoveryLeaseGeneration = null;
         // Cancel a start still inside its getUserMedia()/addModule() window,
         // BEFORE the isRecording early-out below. S.isRecording only flips at
         // the very end of startAudioWorklet, so every "stop the mic" path --
@@ -2740,14 +2754,9 @@
     window.setMicMuted = function(muted, showToast = false) {
         const wasMuted = S.isMicMuted;
         S.isMicMuted = muted;
-        if (wasMuted && !muted) {
-            beginVoiceInputRecovery();
-        } else if (muted) {
-            ++S.voiceInputRecoveryGeneration;
-            clearVoiceInputRecoveryTimer();
-            S.voiceInputRecoveryState = 'idle';
-            updateRecoveryStatus('idle');
-        }
+        // An idempotent setter call must not restart a completed recovery, but
+        // a newly claimed session resets the state to idle while remaining unmuted.
+        if (!muted && (wasMuted || S.voiceInputRecoveryState === 'idle')) beginVoiceInputRecovery(); else if (muted) { ++S.voiceInputRecoveryGeneration; clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'idle'; updateRecoveryStatus('idle'); }
         refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
@@ -3882,21 +3891,55 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function positionMicSubwindow(panel) {
-                if (!panel || !micPopup || !micPopup.isConnected) return;
+                if (!panel || !panel.isConnected || !micPopup || !micPopup.isConnected) return;
+                var anchor = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]') || micPopup;
+                if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+                    panel._popupElement = micPopup;
+                    window.AvatarPopupUI.positionSidePanel(panel, anchor);
+                    // These panels appear immediately; keep the shared scale
+                    // without the entry-animation offset used by other menus.
+                    window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+                    return;
+                }
+                // Standalone pages without the shared helper still follow the
+                // owner's direction, shrinking instead of flipping by width.
                 var rect = micPopup.getBoundingClientRect();
+                var gap = 8;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                var availableWidth = opensLeft ? rect.left - gap * 2 : window.innerWidth - rect.right - gap * 2;
+                var viewportWidth = Math.max(1, window.innerWidth - gap * 2);
+                var stackPanel = availableWidth < Math.min(240, viewportWidth);
+                panel.style.maxWidth = (stackPanel ? viewportWidth : availableWidth) + 'px';
+                if (panel._originalMaxHeight === undefined) {
+                    panel._originalMaxHeight = panel.style.maxHeight;
+                    panel._originalOverflowY = panel.style.overflowY;
+                } else {
+                    panel.style.maxHeight = panel._originalMaxHeight;
+                    panel.style.overflowY = panel._originalOverflowY;
+                }
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
-                var gap = 8;
-                var left = rect.right + gap;
-                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
-                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
-                    left = rect.left - panelWidth - gap;
+                var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
+                var desiredTop = rect.top;
+                if (stackPanel) {
+                    left = Math.min(rect.left, window.innerWidth - panelWidth - gap);
+                    var above = Math.max(0, rect.top - gap * 2);
+                    var below = Math.max(0, window.innerHeight - rect.bottom - gap * 2);
+                    var placeBelow = below >= panelHeight || (above < panelHeight && below >= above);
+                    panel.style.maxHeight = Math.max(1, Math.min(panelHeight, placeBelow ? below : above)) + 'px';
+                    panel.style.overflowY = 'auto';
+                    panelHeight = panel.offsetHeight;
+                    desiredTop = placeBelow ? rect.bottom + gap : rect.top - panelHeight - gap;
                 }
-                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
-                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                left = Math.max(gap, left);
+                var top = Math.max(gap, Math.min(desiredTop, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
             }
+
+            addVoiceWindowListener('resize', function () {
+                positionMicSubwindow(getOwnedMicSubwindow());
+            });
 
             function createMicSubwindow(title, iconText, width) {
                 // Keep activeMicActionKey; only tear down the previous DOM panel.
@@ -4082,20 +4125,19 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 }
 
-                // Most settings side panels may expand on hover. Screen-source
-                // enumeration is different: on Linux it can invoke
-                // xdg-desktop-portal and show an OS sharing dialog, so that
-                // action must require an explicit click/user gesture.
-                if (interactionOptions.openOnHover !== false) {
-                    button.addEventListener('mouseenter', function (event) {
+                // Resolve hover permission at event time: desktop bridges may
+                // arrive after rendering, and xdg-desktop-portal enumeration needs a click.
+                button.addEventListener('mouseenter', function (event) {
+                    var openOnHover = typeof interactionOptions.openOnHover === 'function'
+                        ? interactionOptions.openOnHover()
+                        : interactionOptions.openOnHover !== false;
+                    if (openOnHover) {
                         openActionPanel(event);
-                    });
-                } else {
-                    button.addEventListener('mouseenter', function () {
+                    } else {
                         clearMicActionHoverCollapseTimer();
                         actionSurface().style.background = 'var(--neko-popup-hover)';
-                    });
-                }
+                    }
+                });
                 button.addEventListener('mouseleave', function () {
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
@@ -4390,6 +4432,53 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     null,
                     '360px'
                 );
+                var provider = typeof window.getDesktopCaptureProvider === 'function'
+                    ? window.getDesktopCaptureProvider() : null;
+                var mobileCamera = window.appUtils && typeof window.appUtils.isMobile === 'function'
+                    && window.appUtils.isMobile();
+                var browserCaptureAvailable = navigator.mediaDevices && (mobileCamera
+                    ? typeof navigator.mediaDevices.getUserMedia === 'function'
+                    : typeof navigator.mediaDevices.getDisplayMedia === 'function');
+                if ((mobileCamera || !provider) && browserCaptureAvailable) {
+                    var browserBody = panel._nekoMicSubwindowBody;
+                    var hint = document.createElement('div');
+                    var hintKey = mobileCamera ? 'app.screenSource.mobileCameraHint' : 'app.screenSource.browserPickerHint';
+                    hint.textContent = window.t ? window.t(hintKey)
+                        : (mobileCamera ? 'When sharing starts, your camera will be used.'
+                            : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.');
+                    Object.assign(hint.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub)' });
+                    var browserShareButton = document.createElement('button');
+                    browserShareButton.type = 'button';
+                    browserShareButton.dataset.nekoBrowserScreenShare = '';
+                    browserShareButton.textContent = shareToggleButton.getAttribute('aria-label')
+                        || (window.t ? window.t('buttons.screenShare') : 'Screen Share');
+                    Object.assign(browserShareButton.style, {
+                        padding: '10px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                        color: 'var(--neko-popup-text)', background: 'var(--neko-popup-selected-bg)'
+                    });
+                    browserShareButton.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        var currentProvider = typeof window.getDesktopCaptureProvider === 'function'
+                            ? window.getDesktopCaptureProvider() : null;
+                        var startPending = typeof window.isScreenSharingStartPending === 'function'
+                            && window.isScreenSharingStartPending();
+                        if (!mobileCamera && currentProvider && !isScreenShareActive() && !startPending) {
+                            // The bridge can arrive after this browser panel opens.
+                            // Show its sources before allowing a new capture start.
+                            closeMicSubwindow();
+                            openMicActionPanel('screen', openScreenSourceSubwindow);
+                            return;
+                        }
+                        closeMicSubwindow();
+                        // Preserve the click gesture and reuse voice gating,
+                        // cancellation and stream cleanup from the main switch.
+                        shareToggleButton.click();
+                    });
+                    browserBody.appendChild(hint);
+                    browserBody.appendChild(browserShareButton);
+                    positionMicSubwindow(panel);
+                    return;
+                }
                 var headerActions = panel._nekoMicSubwindowHeaderActions;
                 if (headerActions
                     && typeof window.isScreenSourceTitleMatchEnabled === 'function'
@@ -4481,7 +4570,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
                 openScreenSourceSubwindow,
-                { openOnHover: false }
+                { openOnHover: function () {
+                    var provider = typeof window.getDesktopCaptureProvider === 'function'
+                        ? window.getDesktopCaptureProvider() : null;
+                    return !provider || (typeof provider.getSources === 'function'
+                        && provider.sourceEnumerationMayPrompt === false);
+                } }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(

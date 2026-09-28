@@ -104,7 +104,7 @@ defineEmits<{
 const { t, locale } = useI18n()
 const marketVersions = useMarketVersionsStore()
 
-const entryCount = computed(() => props.plugin.entries?.length || 0)
+const entryCount = computed(() => props.plugin.entry_count ?? props.plugin.entries?.length ?? 0)
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 const availableUiAction = computed(() => {
   if (!props.enableUiAction) return null

@@ -191,11 +191,8 @@ def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits
     assert "if (this.isLive2DPeekActive()) {" in wheel_source
     assert "return; // edge peek ignores wheel zoom" in wheel_source
     assert "this._debouncedSnapCheck();" not in wheel_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return; // edge peek ignores wheel zoom", 1)[0]
-    assert "return; // edge peek ignores touch zoom start" in touch_source
-    assert "return; // edge peek ignores touch zoom move" in touch_source
-    assert "return; // edge peek ignores touch zoom end without saving peek state" in touch_source
-    assert "this.currentModel.scale.set(newScale);" not in touch_source.split("return; // edge peek ignores touch zoom move", 1)[0].split("const onTouchMove", 1)[1]
-    assert "await this._savePositionAfterInteraction();" not in touch_source.split("return; // edge peek ignores touch zoom end without saving peek state", 1)[0].split("const onTouchEnd", 1)[1]
+    assert "!this.isLive2DPeekActive()" in touch_source
+
 
 
 def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():

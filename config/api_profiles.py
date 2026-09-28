@@ -71,7 +71,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'glm': {
         'CORE_URL': "wss://open.bigmodel.cn/api/paas/v4/realtime",
-        'CORE_MODEL': "glm-realtime-air",
+        'CORE_MODEL': "glm-realtime-plus",
     },
     'openai': {
         'CORE_URL': "wss://api.openai.com/v1/realtime",
