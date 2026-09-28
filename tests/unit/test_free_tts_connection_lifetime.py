@@ -183,6 +183,57 @@ def test_warmup_socket_is_closed_once_readiness_is_reported(monkeypatch, provide
     assert warmup.close_attempts == 1
 
 
+class _SlowCloseSocket(_Socket):
+    """A peer that does not answer the close handshake until released."""
+
+    def __init__(self, events):
+        super().__init__(events)
+        self.release = threading.Event()
+
+    async def close(self):
+        self.close_attempts += 1
+        while not self.release.is_set():
+            await asyncio.sleep(0)
+        self.closed.set()
+
+
+def test_slow_warmup_close_does_not_delay_the_first_speech(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    warmup = _SlowCloseSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    speech = _speech_socket("speech", final_events=[])
+    _install_sockets(monkeypatch, warmup, speech)
+    observations = {}
+
+    def first_speech_went_out_while_warmup_closes():
+        _observe(
+            observations,
+            "speech_created",
+            lambda: any(event["type"] == "tts.create" for event in speech.sent),
+        )()
+        observations["warmup_still_closing"] = not warmup.closed.is_set()
+        warmup.release.set()
+
+    # Backstop so a worker that awaits the close still finishes (and fails).
+    backstop = threading.Timer(1.0, warmup.release.set)
+    backstop.start()
+    try:
+        _run(
+            _Requests(
+                ("speech-1", _OPENING),
+                first_speech_went_out_while_warmup_closes,
+            ),
+            queue.Queue(),
+        )
+    finally:
+        backstop.cancel()
+
+    assert observations == {"speech_created": True, "warmup_still_closing": True}
+    assert warmup.close_attempts == 1
+
+
 def _speech_socket(session_id, *, final_events):
     return _Socket(
         [{"type": "tts.connection.done", "data": {"session_id": session_id}}],

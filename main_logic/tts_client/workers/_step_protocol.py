@@ -212,6 +212,7 @@ def run_step_protocol_tts_worker(
         # 黑白名单 / 路径错误这类永久拒绝：worker 报未就绪后退出，交给主进程的
         # NO_RETRY 闸门，不再每轮回复都去撞一次。
         permanent_rejection = False
+        warmup_close_task = None
         deferred_requests = deque()
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
@@ -571,7 +572,12 @@ def run_step_protocol_tts_worker(
             # 连接WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
 
-            ws = await websockets.connect(tts_url, additional_headers=headers)
+            # close_timeout 限制预热连接关闭时最多残留多久（它在后台关，见下）。
+            ws = await websockets.connect(
+                tts_url,
+                additional_headers=headers,
+                close_timeout=2.0,
+            )
 
             # 等待连接成功事件
             async def wait_for_connection():
@@ -643,15 +649,14 @@ def run_step_protocol_tts_worker(
             # 预热连接只用来验证连通性：首个真实 speech_id 一定会重新建连，
             # 它从不被复用。免费服务按连接时长计配额，留着它会一直空挂到
             # 角色第一次开口（会话开着不说话时可达半小时）。
-            warmup_ws = ws
+            # 放到后台关：服务端迟迟不回关闭握手时不能挡住首轮语音。
+            warmup_close_task = asyncio.create_task(
+                _close_finished_round_socket(ws)
+            )
             ws = None
             session_id = None
             session_ready.clear()
             session_created = False
-            try:
-                await warmup_ws.close()
-            except Exception as e:
-                logger.debug("关闭预热 TTS WebSocket 失败: %s", e)
 
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
@@ -1076,6 +1081,12 @@ def run_step_protocol_tts_worker(
             response_queue.put(("__ready__", False))
         finally:
             # 清理资源
+            if warmup_close_task is not None and not warmup_close_task.done():
+                # close_timeout 兜底的后台关闭；worker 退出前给它一次收尾机会
+                try:
+                    await asyncio.wait_for(asyncio.shield(warmup_close_task), timeout=2.5)
+                except Exception as e:
+                    logger.debug("预热 TTS WebSocket 后台关闭未完成: %s", e)
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
