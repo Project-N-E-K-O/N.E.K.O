@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合入主分支屏幕授权等待提示、唤醒词/插件 HTML 卡片提示与独立 ASR 恢复提示，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-28-locale-key-sync';
+    const LOCALE_VERSION = '2026-09-28-free-tts-quota-codes';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -27,7 +27,8 @@ _OPENING = "This opening chunk is long enough for language detection."
 class _Socket:
     """Fake TTS socket; ``on_send`` may inject server events per sent type."""
 
-    def __init__(self, events=(), *, server_close=None, on_send=None):
+    def __init__(self, events=(), *, server_close=None, on_send=None, fail_on=()):
+        self._fail_on = set(fail_on)
         self._events = queue.SimpleQueue()
         for event in events:
             self._events.put(json.dumps(event))
@@ -56,6 +57,8 @@ class _Socket:
         if self.closed.is_set():
             raise RuntimeError("socket already closed")
         event = json.loads(payload)
+        if event["type"] in self._fail_on:
+            raise RuntimeError("socket dropped during send")
         self.sent.append(event)
         for injected in self._on_send.get(event["type"], ()):
             self._events.put(json.dumps(injected))
@@ -363,6 +366,38 @@ def test_mid_round_rejection_ends_the_rest_of_that_speech(monkeypatch):
     assert connects == [connects[0], speech, next_speech]
     assert [event["type"] for event in speech.sent] == ["tts.create", "tts.text.delta"]
     assert [error["code"] for error in _errors(responses)] == ["API_QUOTA_TIME"]
+
+
+def test_rejection_while_replaying_buffered_text_ends_that_speech(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    _skip_backoff(monkeypatch)
+    dropped = _Socket(
+        [{"type": "tts.connection.done", "data": {"session_id": "dropped"}}],
+        fail_on={"tts.text.delta"},
+    )
+    next_speech = _speech_socket("next", final_events=[])
+    connects = _install_sockets(
+        monkeypatch,
+        _warmup_socket(),
+        dropped,
+        _rejecting_socket(1008, "Total connection time limit reached for today"),
+        next_speech,
+    )
+    responses = queue.Queue()
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            ("speech-1", " More text of the rejected reply."),
+            (None, None),
+            ("speech-2", _OPENING),
+        ),
+        responses,
+    )
+
+    assert len(connects) == 4
+    assert [error["code"] for error in _errors(responses)] == ["API_QUOTA_TIME"]
+    assert next_speech.sent[0]["type"] == "tts.create"
 
 
 @pytest.mark.parametrize(

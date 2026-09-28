@@ -58,6 +58,7 @@ from ._shared import (
     IMMEDIATE_REPORT_TTS_CODES,
     TTS_RESPAWN_DELAY_SECONDS,
     TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS,
+    TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS,
 )
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
@@ -1365,7 +1366,7 @@ class TtsRuntimeMixin:
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
         self._tts_rate_limit_backoff_level = 0
-        self._tts_rate_limit_respawn_delay = 0.0
+        self._tts_rate_limit_retry_at = 0.0
         self._tts_quota_blocked = False
         self._tts_quota_stale_speech_ids = frozenset()
         notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
@@ -1458,8 +1459,8 @@ class TtsRuntimeMixin:
 
         Rate limit: at most one respawn per 12 seconds, avoiding a reconnect
         storm when the service is completely down. After a server rate-limit
-        rejection the cooldown stretches to the current backoff delay, so
-        per-reply respawns cannot outpace the timed backoff.
+        rejection no respawn starts before the backoff deadline recorded at
+        the rejection, so per-reply respawns cannot outpace the timed backoff.
         """
         if self.tts_thread and self.tts_thread.is_alive():
             return
@@ -1471,11 +1472,14 @@ class TtsRuntimeMixin:
 
         import time
         now = time.monotonic()
-        cooldown = 12.0
-        if self._last_tts_error_code == 'API_RATE_LIMIT':
-            cooldown = max(cooldown, getattr(self, '_tts_rate_limit_respawn_delay', 0.0))
-        if now - self._last_tts_respawn_time < cooldown:
+        if now - self._last_tts_respawn_time < 12.0:
             return  # 冷却中，保留待执行的延迟任务和错误码状态
+        if (
+            self._last_tts_error_code == 'API_RATE_LIMIT'
+            and now + TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS
+            < getattr(self, '_tts_rate_limit_retry_at', 0.0)
+        ):
+            return  # 限流退避中：截止时刻从被拒那一刻算起，定时 respawn 会在截止时拉起
 
         if getattr(self, '_tts_quota_blocked', False) and self.tts_pending_chunks:
             # 调用方都是先缓存再拉起，此刻最后一条就是触发这次重试的回复；
@@ -2036,7 +2040,7 @@ class TtsRuntimeMixin:
                             self._last_tts_error_code = ''
                             self._tts_retry_notify_count = 0
                             self._tts_rate_limit_backoff_level = 0
-                            self._tts_rate_limit_respawn_delay = 0.0
+                            self._tts_rate_limit_retry_at = 0.0
                             if getattr(self, '_tts_quota_blocked', False):
                                 # 配额期间缓存里有之前各轮被拒回复的残尾；只丢掉触发
                                 # 这次重试那一刻已判为旧轮次的 speech_id，之后合法排队
@@ -2093,7 +2097,7 @@ class TtsRuntimeMixin:
                                         TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS,
                                     )
                                     self._tts_rate_limit_backoff_level = backoff_level + 1
-                                    self._tts_rate_limit_respawn_delay = respawn_delay
+                                    self._tts_rate_limit_retry_at = time.monotonic() + respawn_delay
                                 else:
                                     respawn_delay = TTS_RESPAWN_DELAY_SECONDS
                                 logger.warning(f"⚠️ 收到TTS未就绪信号，{respawn_delay}秒后尝试重新拉起Worker")

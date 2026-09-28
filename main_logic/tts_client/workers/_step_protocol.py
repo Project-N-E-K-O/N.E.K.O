@@ -266,7 +266,8 @@ def run_step_protocol_tts_worker(
         async def _reconnect_after_buffered_delta_failure() -> bool:
             """Replace a dead socket while retaining the current text buffer."""
             nonlocal ws, session_id, receive_task, session_created
-            nonlocal _text_done_error_suppressed
+            nonlocal _text_done_error_suppressed, rejected_speech_id
+            nonlocal pending_text_buffer
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -369,6 +370,10 @@ def run_step_protocol_tts_worker(
                 return True
             except Exception as reconnect_exc:
                 logger.warning("缓冲文本发送失败后的 TTS 重连失败: %s", reconnect_exc)
+                if _report_server_close(reconnect_exc):
+                    # 与新语音建连被拒同一处理：本轮上报一次后整体放弃。
+                    rejected_speech_id = current_speech_id
+                    pending_text_buffer = ""
                 if ws:
                     try:
                         await ws.close()

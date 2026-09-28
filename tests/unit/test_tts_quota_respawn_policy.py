@@ -184,22 +184,40 @@ async def test_recovery_after_quota_drops_only_rounds_rejected_before_the_retry(
     assert mgr._tts_quota_stale_speech_ids == frozenset()
 
 
-def test_implicit_respawn_waits_out_the_rate_limit_backoff(monkeypatch):
+def test_implicit_respawn_waits_out_the_rate_limit_deadline():
     import time as time_module
 
     mgr = _make_mgr()
     _arm_implicit_respawn(mgr)
     mgr._last_tts_error_code = "API_RATE_LIMIT"
-    mgr._tts_rate_limit_respawn_delay = 52.0
-    now = time_module.monotonic()
-    mgr._last_tts_respawn_time = now - 20.0
+    # The session-start worker was rejected: nothing has respawned yet, so
+    # the plain 12s cooldown alone would let the next reply through at once.
+    mgr._last_tts_respawn_time = 0.0
+    mgr._tts_rate_limit_retry_at = time_module.monotonic() + 30.0
 
     LLMSessionManager._respawn_tts_worker(mgr)
     assert mgr.started == []
 
-    mgr._last_tts_respawn_time = now - 53.0
+    # The timed respawn may wake up to a clock tick early; it must still pass.
+    mgr._tts_rate_limit_retry_at = time_module.monotonic() + 0.5
     LLMSessionManager._respawn_tts_worker(mgr)
     assert len(mgr.started) == 1
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_deadline_is_measured_from_the_rejection(respawn_delays):
+    import time as time_module
+
+    mgr = _make_mgr()
+    mgr._tts_rate_limit_backoff_level = 2
+    before = time_module.monotonic()
+    mgr.tts_response_queue.put(_error("API_RATE_LIMIT"))
+    mgr.tts_response_queue.put(("__ready__", False))
+
+    await _drain(mgr)
+
+    expected = TTS_RESPAWN_DELAY_SECONDS * 4
+    assert before + expected <= mgr._tts_rate_limit_retry_at <= time_module.monotonic() + expected
 
 
 def test_implicit_respawn_keeps_the_plain_cooldown_for_quota():
@@ -208,7 +226,7 @@ def test_implicit_respawn_keeps_the_plain_cooldown_for_quota():
     mgr = _make_mgr()
     _arm_implicit_respawn(mgr)
     mgr._last_tts_error_code = "API_QUOTA_TIME"
-    mgr._tts_rate_limit_respawn_delay = 300.0  # stale value must not apply
+    mgr._tts_rate_limit_retry_at = time_module.monotonic() + 300.0  # must not apply
     mgr._last_tts_respawn_time = time_module.monotonic() - 13.0
 
     LLMSessionManager._respawn_tts_worker(mgr)
@@ -239,7 +257,7 @@ async def test_replacement_failure_without_error_does_not_inherit_quota_code(res
 def test_session_retry_reset_clears_rate_limit_and_quota_state():
     mgr = _make_mgr()
     mgr._tts_rate_limit_backoff_level = 5
-    mgr._tts_rate_limit_respawn_delay = 300.0
+    mgr._tts_rate_limit_retry_at = 12345.0
     mgr._tts_quota_blocked = True
     mgr._tts_quota_stale_speech_ids = frozenset({"sid-stale"})
     mgr._cancel_tts_soft_flush = lambda: None
@@ -247,7 +265,7 @@ def test_session_retry_reset_clears_rate_limit_and_quota_state():
     LLMSessionManager._reset_tts_retry_state(mgr)
 
     assert mgr._tts_rate_limit_backoff_level == 0
-    assert mgr._tts_rate_limit_respawn_delay == 0.0
+    assert mgr._tts_rate_limit_retry_at == 0.0
     assert mgr._tts_quota_blocked is False
     assert mgr._tts_quota_stale_speech_ids == frozenset()
 

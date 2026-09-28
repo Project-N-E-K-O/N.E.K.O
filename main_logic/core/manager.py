@@ -327,7 +327,7 @@ class LLMSessionManager(
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         self._tts_rate_limit_backoff_level: int = 0  # API_RATE_LIMIT 定时 respawn 翻倍次数，就绪后清零
-        self._tts_rate_limit_respawn_delay: float = 0.0  # 当前限流退避间隔，隐式 respawn 的冷却也服从它
+        self._tts_rate_limit_retry_at: float = 0.0  # 限流退避截止时刻(monotonic)，定时与隐式 respawn 共用
         self._tts_quota_blocked: bool = False  # 配额用完后停了定时重试；恢复就绪时丢弃旧轮缓存
         self._tts_quota_stale_speech_ids: frozenset = frozenset()  # 隐式重试时判定为旧轮次的 speech_id
         # User-facing TTS notices must survive handler replacement during a
