@@ -67,8 +67,7 @@ comment when a module-scope import is genuinely required (rare — e.g. a
 module that is itself only ever imported lazily AND needs the symbol at
 class-definition time). Prefer restructuring to the lazy pattern first.
 Directory-level: ``EXCLUDE_DIRS`` lists trees that are not on the
-startup import chain (plugins load on demand; brain/cua is only
-imported from on-demand agent paths).
+startup import chain (plugins load on demand).
 
 Output
 ------
@@ -113,11 +112,6 @@ EXCLUDE_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
     ".pytest_cache",
-    # Not on the startup import chain: cua is only imported from on-demand
-    # agent execution paths (no module-scope route from the three app
-    # modules reaches it). If that ever changes, lazify its openai/anthropic
-    # imports first, then remove this exclusion.
-    "brain/cua",
 }
 
 CODE = "STARTUP_LAZY_IMPORT"

@@ -656,17 +656,6 @@ class RoleState:
     loop (no separate thread anymore). Lifecycle is now managed by ``sync_task:
     asyncio.Task``, with shutdown via ``task.cancel()``.
 
-    However, ``main_routers/shared_state.py``'s ``_RoleStateFieldView`` still
-    exposes dict-like views for ``sync_shutdown_event`` / ``sync_process``
-    (the public router APIs ``get_sync_shutdown_event()`` /
-    ``get_sync_process()``). The view's ``__getitem__`` uses
-    ``getattr(rs, field)`` (no default) and would raise ``AttributeError`` if
-    the field didn't exist. Keeping these two ``Optional[Any] = None``
-    placeholder fields preserves the shim's "always-empty dict" semantics:
-    ``__contains__`` sees None and returns False, ``__getitem__`` goes to
-    ``raise KeyError``, and every caller gets a consistent empty state instead
-    of a crash. The two fields are never assigned anymore; remove them once
-    it's confirmed nothing external depends on them.
     """
 
     sync_message_queue: _SyncMessageQueue
