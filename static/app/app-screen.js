@@ -703,10 +703,19 @@
         if (e.key === SCREEN_SOURCE_LABEL_KEY) {
             // 另一个窗口写了新记录。标题未落盘时，内存里的名称由广播保持最新；
             // 落盘记录带着不同的标题时以它为准，丢掉本页知道的那条。
+            // 记录被删（另一个窗口确认来源已消失或清除了选择）时，同样丢掉本页
+            // 缓存的当前来源名称；屏幕序号变了也以落盘记录为准。
             var record = readPersistedScreenSourceMeta();
-            var known = record && record.name ? getKnownScreenSourceMeta(record.id) : null;
-            if (known && known.name !== record.name) {
-                forgetKnownScreenSourceMeta(record.id);
+            if (!record) {
+                forgetKnownScreenSourceMeta(S.selectedScreenSourceId);
+            } else {
+                var known = getKnownScreenSourceMeta(record.id);
+                var recordScreenIndex = typeof record.screenIndex === 'number'
+                    ? record.screenIndex : null;
+                if (known && ((record.name && known.name !== record.name)
+                    || known.screenIndex !== recordScreenIndex)) {
+                    forgetKnownScreenSourceMeta(record.id);
+                }
             }
             notifyScreenSourceChanged();
             return;
