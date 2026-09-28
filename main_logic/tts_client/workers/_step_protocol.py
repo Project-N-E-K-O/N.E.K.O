@@ -235,6 +235,20 @@ def run_step_protocol_tts_worker(
             _enqueue_error(response_queue, classified)
             return True
 
+        def _reject_on_server_close(exc) -> bool:
+            """End the current speech if a failed send hit a server rejection.
+
+            A send can observe the server's close before the receive task does,
+            and the socket invalidation that follows cancels that task, so the
+            sender has to report the rejection itself.
+            """
+            nonlocal rejected_speech_id, pending_text_buffer
+            if not _report_server_close(exc):
+                return False
+            rejected_speech_id = current_speech_id
+            pending_text_buffer = ""
+            return True
+
         def _round_finished(event_type) -> bool:
             """Whether this event is the last one the socket will carry.
 
@@ -478,6 +492,7 @@ def run_step_protocol_tts_worker(
                 await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
             except Exception as e:
                 logger.error(f"发送 tts.create 失败: {e}")
+                _reject_on_server_close(e)
                 await _invalidate_current_socket("发送 tts.create 失败后的")
                 return False
             session_created = True
@@ -494,6 +509,9 @@ def run_step_protocol_tts_worker(
                     # 重试完整的 create + 首段文本，而不是静默丢掉句首。
                     logger.error(f"刷出缓冲文本失败: {e}")
                     session_created = False
+                    if _reject_on_server_close(e):
+                        await _invalidate_current_socket("缓冲文本被服务端拒绝后的")
+                        return False
                     if (
                         retry_after_reconnect
                         and await _reconnect_after_buffered_delta_failure()
@@ -528,6 +546,7 @@ def run_step_protocol_tts_worker(
                 text_done_sent = True
             except Exception as e:
                 logger.warning(f"发送TTS完成信号失败: {e}")
+                _reject_on_server_close(e)
                 await _invalidate_current_socket("发送 tts.text.done 失败后的")
                 return False
             return True
@@ -1008,6 +1027,7 @@ def run_step_protocol_tts_worker(
                     _record_tts_telemetry(provider_key, len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
+                    _reject_on_server_close(e)
                     # 连接已关闭，标记为无效以便下次重连
                     ws = None
                     session_id = None

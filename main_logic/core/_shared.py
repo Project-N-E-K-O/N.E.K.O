@@ -182,7 +182,7 @@ IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 # TTS worker 未就绪后的定时 respawn 间隔；API_RATE_LIMIT 按次翻倍，封顶到下一个常量
 TTS_RESPAWN_DELAY_SECONDS = 13
 TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS = 300
-# 限流截止时刻的容差：asyncio 定时器可按时钟精度提前唤醒，不能让定时 respawn 被自己的截止时刻拦下
+# 限流截止时刻的容差，只给定时 respawn：asyncio 定时器可按时钟精度提前唤醒，不能被自己的截止时刻拦下
 TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS = 1.0
 
 

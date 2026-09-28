@@ -198,9 +198,12 @@ def test_implicit_respawn_waits_out_the_rate_limit_deadline():
     LLMSessionManager._respawn_tts_worker(mgr)
     assert mgr.started == []
 
-    # The timed respawn may wake up to a clock tick early; it must still pass.
+    # A reply arriving just before the deadline still waits: only the timed
+    # respawn gets tolerance for its timer waking a clock tick early.
     mgr._tts_rate_limit_retry_at = time_module.monotonic() + 0.5
     LLMSessionManager._respawn_tts_worker(mgr)
+    assert mgr.started == []
+    LLMSessionManager._respawn_tts_worker(mgr, timed=True)
     assert len(mgr.started) == 1
 
 
@@ -299,8 +302,10 @@ async def test_rate_limit_respawn_delay_is_capped(respawn_delays):
 
     await _drain(mgr)
     assert await _wait_for(lambda: len(respawn_delays) == 1)
+    assert await _wait_for(lambda: mgr._respawn_tts_worker.called)
 
     assert respawn_delays == [TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS]
+    mgr._respawn_tts_worker.assert_called_once_with(timed=True)
 
 
 @pytest.mark.asyncio

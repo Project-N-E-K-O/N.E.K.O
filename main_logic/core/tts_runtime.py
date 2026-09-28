@@ -1450,7 +1450,7 @@ class TtsRuntimeMixin:
                 self.tts_ready = False
                 self.tts_pending_chunks.clear()
 
-    def _respawn_tts_worker(self):
+    def _respawn_tts_worker(self, *, timed: bool = False):
         """Respawn the TTS worker when its thread is detected dead, without blocking for readiness.
 
         Once the new worker is ready it sends the __ready__ signal through
@@ -1461,6 +1461,8 @@ class TtsRuntimeMixin:
         storm when the service is completely down. After a server rate-limit
         rejection no respawn starts before the backoff deadline recorded at
         the rejection, so per-reply respawns cannot outpace the timed backoff.
+        ``timed`` marks the scheduled backoff respawn itself, which alone gets
+        a small tolerance for asyncio timers waking a clock tick early.
         """
         if self.tts_thread and self.tts_thread.is_alive():
             return
@@ -1474,10 +1476,10 @@ class TtsRuntimeMixin:
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
             return  # 冷却中，保留待执行的延迟任务和错误码状态
+        deadline_slack = TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS if timed else 0.0
         if (
             self._last_tts_error_code == 'API_RATE_LIMIT'
-            and now + TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS
-            < getattr(self, '_tts_rate_limit_retry_at', 0.0)
+            and now + deadline_slack < getattr(self, '_tts_rate_limit_retry_at', 0.0)
         ):
             return  # 限流退避中：截止时刻从被拒那一刻算起，定时 respawn 会在截止时拉起
 
@@ -2118,7 +2120,7 @@ class TtsRuntimeMixin:
                                         logger.info("🔄 TTS 延迟重试：会话已变更，跳过 respawn")
                                         return
                                     logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
-                                    self._respawn_tts_worker()
+                                    self._respawn_tts_worker(timed=True)
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__warning__":
