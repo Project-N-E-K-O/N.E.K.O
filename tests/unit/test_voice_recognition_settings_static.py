@@ -397,10 +397,17 @@ def test_adopted_server_provider_preference_reconciles_the_open_panel() -> None:
     # The adopted value gets no handshake authority, but the voice panel must
     # still hear about it through the pending-change event.
     source = APP_SETTINGS.read_text(encoding="utf-8")
+    candidate_start = source.index("const providerPreferenceServerCandidate =")
+    candidate = source[candidate_start:source.index(";", candidate_start)]
+    assert "providerPreferenceValueDiffers" in candidate
+    assert "providerPreferenceServerAuthoritative" in candidate
+    # Decided only after the stale / revision checks have run and the survivors
+    # were applied, so a dropped older snapshot reports nothing pending.
     start = source.index("const providerPreferenceAdoptedFromServer =")
     rule = source[start:source.index(";", start)]
-    assert "providerPreferenceValueDiffers" in rule
-    assert "providerPreferenceServerAuthoritative" in rule
+    assert "providerPreferenceServerCandidate" in rule
+    assert "Object.prototype.hasOwnProperty.call(incoming, providerPreferenceKey)" in rule
+    assert source.index("const changed = applySharedRuntimeSettings(incoming);") < start
     gate_start = source.index("|| providerPreferenceAdoptedFromServer")
     gate = source[gate_start:source.index("neko:voice-settings-pending-changed", gate_start)]
     assert "window.dispatchEvent(new CustomEvent(" in gate

@@ -2481,10 +2481,9 @@
                 && providerPreferenceValueDiffers
                 && !providerPreferenceChangedByOtherWindow
                 && !providerPreferenceServerAuthoritative;
-            // A newer server value adopted from a peer's merge is not this
-            // window's handshake authority, but an open voice panel must still
-            // reconcile the local-ASR toggle with it.
-            const providerPreferenceAdoptedFromServer =
+            // A peer's server-merge value may still be dropped by the revision
+            // checks below; whether it was adopted is decided after them.
+            const providerPreferenceServerCandidate =
                 providerPreferenceValueDiffers
                 && providerPreferenceServerAuthoritative
                 && !providerPreferenceChangedByOtherWindow;
@@ -2664,6 +2663,13 @@
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
+            // Adopted = survived every stale / revision check and was applied.
+            // Not this window's handshake authority, but an open voice panel
+            // must still reconcile the local-ASR toggle with it. An older
+            // snapshot that was dropped must not report a pending change.
+            const providerPreferenceAdoptedFromServer =
+                providerPreferenceServerCandidate
+                && Object.prototype.hasOwnProperty.call(incoming, providerPreferenceKey);
             if (meta) {
                 _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
                 _rememberServerKeyRevisions(
