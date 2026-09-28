@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -104,6 +105,105 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     assert elapsed < 1.5, (
         f"守护任务没有按 per-provider 的 500ms 超时开火，实际 {elapsed:.3f}s"
     )
+
+
+def _warming_runtime(monkeypatch, *, final_ms: int, warmup_ms: int):
+    import main_logic.asr_client.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_PROVIDER_WARMUP_POLL_SECONDS", 0.02)
+    runtime = _Runtime()
+    asr = SimpleNamespace(
+        is_ready=True,
+        close=AsyncMock(),
+        provider_warmup_pending=True,
+        provider_warmup_completed_at=None,
+    )
+    runtime._asr_session = asr
+    runtime._asr_provider = "faster_whisper"
+    runtime._asr_route_mode = "independent"
+    policy = replace(
+        resolve_provider_policy("faster_whisper", "manual"),
+        provider_final_timeout_ms=final_ms,
+        provider_warmup_timeout_ms=warmup_ms,
+    )
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+    return runtime, asr
+
+
+def _sent_status_codes(runtime) -> list[str]:
+    codes = []
+    for sent in runtime.send_status.await_args_list:
+        try:
+            codes.append(json.loads(sent.args[0]).get("code"))
+        except Exception:
+            codes.append(str(sent.args[0]))
+    return codes
+
+
+async def test_provider_final_watchdog_does_not_count_model_warmup(monkeypatch) -> None:
+    # First use of a local model: the turn is sealed while the model is still
+    # loading/downloading. That time must not trip the per-utterance deadline.
+    runtime, asr = _warming_runtime(monkeypatch, final_ms=100, warmup_ms=60_000)
+
+    await _start_and_seal_turn(runtime, "faster_whisper")
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
+    armed_at = time.monotonic()
+
+    # Five final timeouts elapse while the model is still warming up.
+    while time.monotonic() < armed_at + 0.5:
+        await asyncio.sleep(0.01)
+        assert runtime._asr_route_mode == "independent"
+    assert not watchdog.done()
+
+    # Model ready: from here on the ordinary final timeout applies.
+    asr.provider_warmup_pending = False
+    asr.provider_warmup_completed_at = time.monotonic()
+    ready_at = asr.provider_warmup_completed_at
+    await asyncio.wait_for(watchdog, 5)
+    elapsed = time.monotonic() - ready_at
+
+    assert runtime._asr_route_mode == "blocked"
+    assert "ASR_PROVIDER_FINAL_TIMEOUT" in _sent_status_codes(runtime)
+    assert 0.05 <= elapsed < 1.5
+
+
+async def test_provider_final_watchdog_bounds_warmup_with_its_own_budget(
+    monkeypatch,
+) -> None:
+    runtime, _asr = _warming_runtime(monkeypatch, final_ms=50, warmup_ms=300)
+
+    await _start_and_seal_turn(runtime, "faster_whisper")
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
+    armed_at = time.monotonic()
+    await asyncio.wait_for(watchdog, 5)
+    elapsed = time.monotonic() - armed_at
+
+    assert runtime._asr_route_mode == "blocked"
+    assert "ASR_PROVIDER_WARMUP_TIMEOUT" in _sent_status_codes(runtime)
+    assert 0.25 <= elapsed < 2.0
+
+
+async def test_warmup_finished_before_seal_keeps_the_plain_final_timeout(
+    monkeypatch,
+) -> None:
+    runtime, asr = _warming_runtime(monkeypatch, final_ms=100, warmup_ms=60_000)
+    asr.provider_warmup_pending = False
+    asr.provider_warmup_completed_at = time.monotonic() - 30
+
+    await _start_and_seal_turn(runtime, "faster_whisper")
+    armed_at = time.monotonic()
+    await asyncio.wait_for(runtime._asr_final_watchdog_task, 5)
+
+    assert runtime._asr_route_mode == "blocked"
+    assert "ASR_PROVIDER_FINAL_TIMEOUT" in _sent_status_codes(runtime)
+    assert time.monotonic() - armed_at < 1.5
 
 
 async def test_final_does_not_double_count_sampled_streaming_wire_audio() -> None:

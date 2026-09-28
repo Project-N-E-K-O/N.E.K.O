@@ -96,6 +96,9 @@ _CANDIDATE_REJECTION_WATCHDOG_SECONDS = 10.0
 _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS = 1.0
 _CANDIDATE_REJECTION_REINSTALL_ATTEMPTS = 2
 _CONNECT_CLEANUP_TIMEOUT_SECONDS = 2.0
+# How often the provider-final watchdog re-checks a provider that is still
+# warming up (see provider_warmup_timeout_ms).
+_PROVIDER_WARMUP_POLL_SECONDS = 0.5
 
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
@@ -3867,22 +3870,62 @@ class IndependentAsrRuntime:
         task = self._asr_final_watchdog_task
         if task is not None:
             task.cancel()
-        timeout_ms = lifecycle.provider_policy.provider_final_timeout_ms
+        timeout_s = lifecycle.provider_policy.provider_final_timeout_ms / 1_000
+        warmup_timeout_s = (
+            lifecycle.provider_policy.provider_warmup_timeout_ms / 1_000
+        )
+
+        def is_stale() -> bool:
+            return bool(
+                epoch != self._asr_session_epoch
+                or self._asr_lifecycle is not lifecycle
+                or self._asr_sealed_turn_token != sealed_token
+                or lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING
+            )
 
         async def expire() -> None:
             try:
-                await asyncio.sleep(timeout_ms / 1_000)
-                if (
-                    epoch != self._asr_session_epoch
-                    or self._asr_lifecycle is not lifecycle
-                    or self._asr_sealed_turn_token != sealed_token
-                    or lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING
-                ):
-                    return
+                sealed_at = time.monotonic()
+                deadline = sealed_at + timeout_s
+                status_code = "ASR_PROVIDER_FINAL_TIMEOUT"
+                while True:
+                    await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+                    if is_stale():
+                        return
+                    if warmup_timeout_s <= 0:
+                        break
+                    # One-off provider preparation (a local model loading or
+                    # downloading) is not recognition time: wait it out within
+                    # its own budget, then count the final timeout from the
+                    # moment the provider became ready.
+                    session = self._asr_session
+                    now = time.monotonic()
+                    if getattr(session, "provider_warmup_pending", False) is True:
+                        warmup_deadline = sealed_at + warmup_timeout_s
+                        if now >= warmup_deadline:
+                            status_code = "ASR_PROVIDER_WARMUP_TIMEOUT"
+                            break
+                        deadline = min(
+                            now + _PROVIDER_WARMUP_POLL_SECONDS,
+                            warmup_deadline,
+                        )
+                        continue
+                    completed_at = getattr(
+                        session,
+                        "provider_warmup_completed_at",
+                        None,
+                    )
+                    if (
+                        isinstance(completed_at, (int, float))
+                        and completed_at + timeout_s > now
+                    ):
+                        deadline = completed_at + timeout_s
+                        continue
+                    break
                 await self._handle_independent_asr_error(
                     epoch,
                     self._asr_provider or "unknown",
-                    status_code="ASR_PROVIDER_FINAL_TIMEOUT",
+                    status_code=status_code,
                 )
             except asyncio.CancelledError:
                 return

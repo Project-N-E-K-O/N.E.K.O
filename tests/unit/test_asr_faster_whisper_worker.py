@@ -525,6 +525,11 @@ def test_registry_meta_and_policy_for_local_provider() -> None:
     assert policy.transport == "segmented"
     assert policy.smart_turn_required is True
     assert policy.provider_final_timeout_ms >= 60_000
+    # Model preparation has its own budget; cloud providers never warm up.
+    assert policy.provider_warmup_timeout_ms > policy.provider_final_timeout_ms
+    for key, value in ASR_PROVIDER_REGISTRY.items():
+        if key != "faster_whisper":
+            assert value.provider_warmup_timeout_ms == 0, key
 
 
 def test_persisted_preference_values_match_registry() -> None:
@@ -737,6 +742,43 @@ def test_idle_model_is_released_after_timeout() -> None:
     time.sleep(0.4)
     assert pool.loaded_count() == 1
     assert pool.lease_count(spec) == 1
+
+
+async def test_worker_publishes_model_warmup_on_its_queue(pool) -> None:
+    from main_logic.asr_client._infra import _RealtimeAsrSessionImpl
+    from main_logic.asr_client.warmup import provider_warmup_state
+
+    gate = threading.Event()
+    model = _FakeModel(_segment("好"))
+
+    def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
+        gate.wait(5)
+        return model
+
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), slow_loader, pool
+    )
+    await _next_event(responses, "ready")
+    # Ready is reported before the model exists; the session can tell.
+    session_view = SimpleNamespace(_request_queue=requests)
+    state = provider_warmup_state(requests)
+    assert state is not None and state.pending is True
+    assert _RealtimeAsrSessionImpl.provider_warmup_pending.fget(session_view) is True
+    assert (
+        _RealtimeAsrSessionImpl.provider_warmup_completed_at.fget(session_view)
+        is None
+    )
+
+    await _send_utterance(requests)
+    before_ready = time.monotonic()
+    gate.set()
+    assert (await _next_event(responses, "final")).text == "好"
+    assert _RealtimeAsrSessionImpl.provider_warmup_pending.fget(session_view) is False
+    completed_at = _RealtimeAsrSessionImpl.provider_warmup_completed_at.fget(
+        session_view
+    )
+    assert completed_at is not None and completed_at >= before_ready
+    await _shutdown(task, requests, responses)
 
 
 async def test_shutdown_during_load_returns_the_abandoned_lease(pool) -> None:

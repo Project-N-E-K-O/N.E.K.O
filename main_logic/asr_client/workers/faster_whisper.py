@@ -52,6 +52,7 @@ from config.prompts.prompts_voice import WHISPER_SILENCE_HALLUCINATIONS
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write
+from ..warmup import begin_provider_warmup, complete_provider_warmup
 from ._shared import MAX_SEGMENT_PCM_BYTES, PCM16_SAMPLE_WIDTH_BYTES
 
 
@@ -516,6 +517,9 @@ async def faster_whisper_asr_worker(
 
     async def acquire_model() -> _TranscribeModel:
         loop = asyncio.get_running_loop()
+        # Tell the runtime that model preparation (possibly a first download)
+        # is in progress, so its per-utterance final watchdog does not count it.
+        begin_provider_warmup(request_queue)
         future = loop.run_in_executor(None, pool.acquire, spec, loader)
         try:
             return await asyncio.shield(future)
@@ -526,6 +530,8 @@ async def faster_whisper_asr_worker(
                 functools.partial(_release_abandoned_lease, pool, spec)
             )
             raise
+        finally:
+            complete_provider_warmup(request_queue)
 
     async def transcribe(key: _UtteranceKey, pcm16: bytes) -> _AsrWorkerEvent:
         generation, buffer_epoch, utterance_id = key

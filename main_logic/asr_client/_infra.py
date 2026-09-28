@@ -29,6 +29,7 @@ import numpy as np
 import soxr
 
 from .delivery import delivery_evidence, log_delivery_phase
+from .warmup import provider_warmup_state
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -422,6 +423,18 @@ class _RealtimeAsrSessionImpl:
         """Audio payload bytes after successful socket send, not queue admission."""
         evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
         return evidence.written_audio_bytes if evidence else 0
+
+    @property
+    def provider_warmup_pending(self) -> bool:
+        """The worker is still preparing (e.g. loading a local model)."""
+        state = provider_warmup_state(self._request_queue)
+        return bool(state is not None and state.pending)
+
+    @property
+    def provider_warmup_completed_at(self) -> float | None:
+        """Monotonic time the worker finished preparing, if it ever started."""
+        state = provider_warmup_state(self._request_queue)
+        return state.completed_at if state is not None else None
 
     @property
     def transport_delivery_trace_id(self) -> str | None:

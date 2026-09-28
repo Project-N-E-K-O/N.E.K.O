@@ -74,6 +74,10 @@ class AsrProviderMeta:
     warm_transport_ms: int = 25_000
     replay_policy: AsrReplayPolicy = "preconnect_only"
     provider_final_timeout_ms: int = 10_000
+    # Upper bound on one-off provider preparation (a local model load or first
+    # download) that the provider-final watchdog waits out before it starts
+    # counting ``provider_final_timeout_ms``. Zero: the provider never warms up.
+    provider_warmup_timeout_ms: int = 0
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
@@ -106,6 +110,8 @@ class AsrProviderMeta:
             raise ValueError("warm_transport_ms must not be negative")
         if self.provider_final_timeout_ms <= 0:
             raise ValueError("provider_final_timeout_ms must be positive")
+        if self.provider_warmup_timeout_ms < 0:
+            raise ValueError("provider_warmup_timeout_ms must not be negative")
         if self.connect_max_attempts <= 0:
             raise ValueError("connect_max_attempts must be positive")
         if self.connect_retry_base_seconds <= 0:
@@ -274,10 +280,15 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         max_segment_ms=27_000,
         warm_transport_ms=0,
         replay_policy="none",
-        # The watchdog starts at the turn seal. The first turn of a session may
-        # still be waiting for the model to load (or, on first use, download),
-        # and CPU decoding of a long utterance takes several seconds.
+        # Decoding only: model preparation is excluded (see below). CPU decoding
+        # of a long utterance with a larger model can take tens of seconds.
         provider_final_timeout_ms=120_000,
+        # The worker reports ready before its model is loaded, and the first
+        # turn may be sealed while the model is still loading or downloading
+        # (medium is ~1.5 GB). The final watchdog waits this long for that
+        # preparation, then applies provider_final_timeout_ms from the moment
+        # the model became available.
+        provider_warmup_timeout_ms=900_000,
         requires_credential=False,
         user_selectable=True,
         optional_dependency="faster_whisper",
