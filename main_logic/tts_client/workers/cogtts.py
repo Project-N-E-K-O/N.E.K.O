@@ -38,9 +38,11 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
     if not voice_id:
         voice_id = "tongtong"
 
-    from utils.glm_tts import glm_speech_url
+    from utils.glm_tts import GLM_TTS_SPEECH_MODEL, glm_speech_url
 
     tts_url = glm_speech_url(base_url)
+    # telemetry 按 provider 归类：GLM 克隆音色记 glm_tts，原生 CogTTS 记 cogtts。
+    telemetry_provider = "glm_tts" if model == GLM_TTS_SPEECH_MODEL else "cogtts"
 
     async def setup(response_queue):
         headers = {
@@ -81,7 +83,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
                 # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
                 # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
                 # 长输入会高估实际计费/上行的字符数。
-                _record_tts_telemetry("cogtts", min(len(text), 1024))
+                _record_tts_telemetry(telemetry_provider, min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
 

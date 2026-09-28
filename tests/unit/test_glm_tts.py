@@ -315,8 +315,9 @@ def test_glm_tts_registry_meta_matches_cogtts_runtime_behavior():
 
 @pytest.mark.unit
 def test_glm_clone_resolver_uses_glm_tts_model():
-    """官方 /audio/speech 文档 model 枚举仅 glm-tts：克隆音色合成必须传 glm-tts，
-    而原生 CogTTS 路径保持默认 cogtts 不变。"""
+    """The official /audio/speech docs list only glm-tts in the model enum, so
+    cloned-voice synthesis must send glm-tts while the native CogTTS path keeps
+    its cogtts default."""
     import inspect
 
     from utils.glm_tts import GLM_TTS_SPEECH_MODEL
@@ -339,6 +340,52 @@ def test_glm_clone_resolver_uses_glm_tts_model():
     assert worker.keywords["model"] == "glm-tts"
     native_default = inspect.signature(tts_client.cogtts_tts_worker).parameters["model"].default
     assert native_default == "cogtts"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "expected_provider"),
+    [("glm-tts", "glm_tts"), ("cogtts", "cogtts")],
+)
+async def test_cogtts_worker_records_telemetry_by_provider(monkeypatch, model, expected_provider):
+    """Cloned GLM voices must be attributed to glm_tts in telemetry, while the
+    native CogTTS route keeps reporting cogtts."""
+    from main_logic.tts_client.workers import cogtts as cogtts_worker_module
+
+    captured = {}
+    recorded = []
+
+    def fake_run_sentence_worker(_request_queue, _response_queue, setup, **_kwargs):
+        captured["setup"] = setup
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(await request.aread())
+            return httpx.Response(200, content=b"")
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = _Transport()
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cogtts_worker_module, "_run_sentence_tts_worker", fake_run_sentence_worker)
+    monkeypatch.setattr(
+        cogtts_worker_module,
+        "_record_tts_telemetry",
+        lambda provider, count: recorded.append((provider, count)),
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    cogtts_worker_module.cogtts_tts_worker(None, None, "glm-key", "voice_x", model=model)
+    synthesize, cleanup = await captured["setup"](None)
+    try:
+        await synthesize("hello", "speech-1")
+    finally:
+        await cleanup()
+
+    assert captured["body"]["model"] == model
+    assert recorded == [(expected_provider, len("hello"))]
 
 
 @pytest.mark.unit
