@@ -1054,3 +1054,75 @@ async def test_decode_slot_is_returned_when_the_decode_finishes(pool) -> None:
         await _next_event(responses, "final")
     assert pool._decode_slots_used == 0
     await _shutdown(task, requests, responses)
+
+
+def test_failed_cuda_candidate_is_released_before_the_next_one(monkeypatch) -> None:
+    # A model that loaded but failed its CUDA probe must be gone before the
+    # lower-memory candidate is built, or its VRAM makes that retry fail too.
+    import gc
+    import weakref
+
+    alive_at_construction: list[bool] = []
+    previous: list[weakref.ref] = []
+
+    class _ProbeModel:
+        def __init__(self, name: str, device: str, compute_type: str) -> None:
+            self.device = device
+
+        def transcribe(self, audio: Any, **kwargs: Any):
+            if self.device == "cuda":
+                raise RuntimeError("CUDA out of memory")
+            return iter(()), SimpleNamespace()
+
+    def whisper_model(name: str, *, device: str, compute_type: str) -> _ProbeModel:
+        gc.collect()
+        alive_at_construction.append(any(ref() is not None for ref in previous))
+        model = _ProbeModel(name, device, compute_type)
+        previous.append(weakref.ref(model))
+        return model
+
+    monkeypatch.setattr(
+        faster_whisper,
+        "_import_faster_whisper",
+        lambda: SimpleNamespace(WhisperModel=whisper_model),
+    )
+    monkeypatch.setattr(faster_whisper, "_cuda_device_count", lambda: 1)
+
+    model = faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+
+    assert model.device == "cpu"
+    # No failed candidate was still referenced when the next one was built.
+    assert alive_at_construction == [False, False, False]
+
+
+async def test_cancelled_queued_decode_keeps_its_slot_until_dequeued(pool) -> None:
+    # The executor keeps a cancelled work item (and its PCM) queued until the
+    # single decode thread reaches it, so its process-wide slot stays taken
+    # until then; otherwise commit/end/start churn could pile up PCM.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    loader = _RecordingLoader(model)
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    second = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        await _next_event(first[2], "ready")
+        await _send_utterance(first[1])
+        for _ in range(100):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        await _next_event(second[2], "ready")
+        await _send_utterance(second[1])
+        await asyncio.wait_for(second[1].join(), 2)
+        await asyncio.sleep(0.05)
+        await _shutdown(*second)
+        assert pool._decode_slots_used == 2
+    finally:
+        model.release.set()
+    await _next_event(first[2], "final")
+    await _shutdown(*first)
+    deadline = time.monotonic() + 2
+    while pool._decode_slots_used and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert pool._decode_slots_used == 0
+    assert len(model.calls) == 1  # the cancelled job was skipped, not decoded

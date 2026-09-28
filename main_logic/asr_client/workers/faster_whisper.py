@@ -247,6 +247,7 @@ def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
         model_name = spec.model or (
             _DEFAULT_MODEL_CUDA if device == "cuda" else _DEFAULT_MODEL_CPU
         )
+        model = None
         try:
             model = whisper_model_cls(
                 model_name,
@@ -256,7 +257,13 @@ def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
             if device == "cuda":
                 _probe_model(model)
         except Exception as exc:
-            last_error = exc
+            # Drop a model that loaded but failed its probe before building the
+            # next candidate: its VRAM would otherwise make the lower-memory
+            # retry on the same GPU fail too.
+            model = None
+            # Keep the error but not its traceback: the probe's frame in it
+            # still references the failed model and would pin its VRAM.
+            last_error = exc.with_traceback(None)
             logger.warning(
                 "faster-whisper load failed model=%s device=%s compute=%s: %s",
                 model_name,
@@ -534,6 +541,12 @@ def _transcribe_pcm16(
     return text
 
 
+def _consume_decode_outcome(future: asyncio.Future[Any]) -> None:
+    """Retrieve a decode's result so an abandoned one never logs as unretrieved."""
+    if not future.cancelled():
+        future.exception()
+
+
 def _decodes_in_flight(pending: dict[asyncio.Task[Any], Any]) -> int:
     """Decode tasks still waiting for or running on the decoder."""
     return sum(1 for task in pending if not task.done())
@@ -624,41 +637,62 @@ async def faster_whisper_asr_worker(
             complete_provider_warmup(request_queue)
 
     async def transcribe(key: _UtteranceKey, pcm16: bytes) -> _AsrWorkerEvent:
-        generation, buffer_epoch, utterance_id = key
-        assert model_task is not None
-        # Shield: cancelling one utterance must not cancel the shared load.
-        model = await asyncio.shield(model_task)
-        # The decoder actually starting on the PCM is this provider's transport
-        # write. Waiting in the decode queue is not: a job cancelled before it
-        # starts never reached the model and must stay a definite non-delivery.
-        # The decode thread marks the attempt itself, before the model sees
-        # the audio, so a reader on the loop never finds a running decode still
-        # reported as not attempted. The evidence object is created here, on
-        # the loop, so the thread only flips one attribute on it.
-        evidence = delivery_evidence(request_queue)
-
-        def decode() -> str:
-            begin_transport_write(request_queue)
-            return _transcribe_pcm16(model, pcm16, language)
-
+        # The process-wide decode slot was taken at commit. It is given back
+        # by the decode thread once this job leaves the executor queue (run or
+        # skipped), or here if the job never reached the queue.
+        submitted = False
         try:
-            # Cancelling this task (a new buffer epoch, session end) drops the
-            # job if it has not started yet; one already running finishes on
-            # the pool's single decode thread, which bounds decodes process-wide.
-            text = await asyncio.get_running_loop().run_in_executor(
+            generation, buffer_epoch, utterance_id = key
+            assert model_task is not None
+            # Shield: cancelling one utterance must not cancel the shared load.
+            model = await asyncio.shield(model_task)
+            # The decoder actually starting on the PCM is this provider's
+            # transport write. Waiting in the decode queue is not: a job
+            # cancelled before it starts never reached the model and must stay
+            # a definite non-delivery. The decode thread marks the attempt
+            # itself, before the model sees the audio, so a reader on the loop
+            # never finds a running decode still reported as not attempted.
+            # The evidence object is created here, on the loop, so the thread
+            # only flips one attribute on it.
+            evidence = delivery_evidence(request_queue)
+            skip = threading.Event()
+
+            def decode() -> str | None:
+                try:
+                    if skip.is_set():
+                        # Cancelled while queued: drop the PCM without decoding.
+                        return None
+                    begin_transport_write(request_queue)
+                    return _transcribe_pcm16(model, pcm16, language)
+                finally:
+                    pool.release_decode()
+
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 pool.decoder_executor(), decode
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise _LocalAsrFailure(
-                "ASR_LOCAL_TRANSCRIBE_FAILED",
-                "faster-whisper transcription failed",
-            ) from exc
-        complete_transport_write(
-            evidence, len(pcm16), generation=generation,
-            buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,
-        )
+            submitted = True
+            decode_future.add_done_callback(_consume_decode_outcome)
+            try:
+                # Not cancelled through: the executor keeps a cancelled work
+                # item (and its PCM) queued until the single thread reaches it,
+                # so the slot must stay taken until then. The skip flag makes
+                # that dequeue cheap instead.
+                text = await asyncio.shield(decode_future)
+            except asyncio.CancelledError:
+                skip.set()
+                raise
+            except Exception as exc:
+                raise _LocalAsrFailure(
+                    "ASR_LOCAL_TRANSCRIBE_FAILED",
+                    "faster-whisper transcription failed",
+                ) from exc
+            complete_transport_write(
+                evidence, len(pcm16), generation=generation,
+                buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,
+            )
+        finally:
+            if not submitted:
+                pool.release_decode()
         return _AsrWorkerEvent(
             kind="final",
             generation=generation,
@@ -810,8 +844,6 @@ async def faster_whisper_asr_worker(
                                         transcribe(key, bytes(pcm16)),
                                         name="faster-whisper-asr-transcribe",
                                     )
-                                    # 任务结束（完成、失败、被取消）即归还名额。
-                                    task.add_done_callback(pool.release_decode)
                                     pending[task] = key
                         else:
                             await emit_error(
