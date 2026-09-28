@@ -1153,6 +1153,26 @@ test('cancelling a replacement start after the preflight cancels the new session
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
 });
 
+test('cancelling a resumed enrollment during the permission prompt releases the page', async () => {
+    const mediaGate = deferred();
+    const harness = createHarness({ initialEnrollmentNextSegment: 2, mediaGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(2);
+    await harness.emit('voice-identity-cancel');
+    await flush(4);
+
+    assert.equal(harness.serverEnrollmentId, null);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
+    mediaGate.resolve();
+    await enrolling;
+    await flush(2);
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
 test('voice-activity renders do not rewrite the unchanged live prompt', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();

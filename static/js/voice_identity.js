@@ -98,6 +98,7 @@
         closeCancellationPromise: null,
         closeCancellationEnrollmentId: null,
         unconfirmedCancelEnrollmentId: null,
+        microphoneSetupEpoch: null,
         startSettled: null,
         voiceStatus: 'waiting',
         lastVoiceAt: 0,
@@ -1149,7 +1150,14 @@
         setMessage('');
         render();
         try {
-            await ensureMicrophone();
+            // Marks the initial permission/setup wait so Cancel can release the
+            // page immediately, also when resuming an existing server session.
+            state.microphoneSetupEpoch = operationEpoch;
+            try {
+                await ensureMicrophone();
+            } finally {
+                if (state.microphoneSetupEpoch === operationEpoch) state.microphoneSetupEpoch = null;
+            }
             ownedMediaStream = state.mediaStream;
             ownedAudioContext = state.audioContext;
             if (isStale()) return;
@@ -1466,7 +1474,9 @@
     async function cancelEnrollment(options) {
         const config = options || {};
         const pendingStart = state.startSettled;
-        const waitingForMicrophone = !pendingStart && !state.enrollmentId && state.busy;
+        const waitingForMicrophone = !pendingStart && state.busy && (
+            !state.enrollmentId || state.microphoneSetupEpoch === state.statusEpoch
+        );
         state.statusEpoch += 1;
         state.cancelPending = true;
         if (state.statusAbort) state.statusAbort.abort();
