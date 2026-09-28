@@ -3054,7 +3054,11 @@
 
             // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
             function createSourceOption(source, screenIndex) {
-                var displayName = getScreenSourceDisplayName(source, screenIndex);
+                // 系统对话框只返回用户选的那一块屏幕时，它在列表里排第一不代表
+                // 它是第 1 块显示器，与副标题一样只显示「屏幕」。
+                var displayName = isPortalPick && source.id.startsWith('screen:')
+                    ? (window.t ? window.t('app.screenSource.screens') : '屏幕')
+                    : getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
                 option.dataset.sourceId = source.id;
