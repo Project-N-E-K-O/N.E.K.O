@@ -2740,14 +2740,26 @@
 
         // 延迟枚举时列表是空的，在按钮上方显示当前选中的来源。
         function appendCurrentSourceSummary(targetPopup) {
-            var currentLabel = getSelectedScreenSourceLabel();
-            if (!currentLabel) return;
             var summary = document.createElement('div');
             summary.className = 'screen-source-current';
-            summary.textContent = window.t
-                ? window.t('app.screenSource.selected', { source: currentLabel })
-                : '已选择 ' + currentLabel;
-            summary.title = currentLabel;
+            function renderSummary() {
+                var currentLabel = getSelectedScreenSourceLabel();
+                summary.hidden = !currentLabel;
+                summary.textContent = !currentLabel ? '' : (window.t
+                    ? window.t('app.screenSource.selected', { source: currentLabel })
+                    : '已选择 ' + currentLabel);
+                summary.title = currentLabel;
+            }
+            // 面板开着时来源可能在别处（其他窗口、自动回退）变化，跟着设置行一起刷新。
+            function onSourceChanged() {
+                if (!summary.isConnected) {
+                    window.removeEventListener('neko:screen-source-changed', onSourceChanged);
+                    return;
+                }
+                renderSummary();
+            }
+            renderSummary();
+            window.addEventListener('neko:screen-source-changed', onSourceChanged);
             Object.assign(summary.style, {
                 padding: '4px 12px 8px',
                 color: 'var(--neko-popup-text-sub)',
@@ -2842,14 +2854,17 @@
             var windows = sources.filter(function (s) { return s.id.startsWith('window:'); });
             var previewHosts = new Map();
 
-            // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
-            // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
-            var selectedBeforeReconcile = S.selectedScreenSourceId;
-            reconcileRememberedWindowSource(sources);
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源，它在结果里的位置不是物理屏幕序号。
             var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
                 && sources.length === 1;
+            // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
+            // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
+            // 系统对话框的结果本身就是用户这次的明确选择，下面按新选择处理；
+            // 这里若按旧标题比对，会在换窗口时先把进行中的分享停掉。
+            if (!isPortalPick) {
+                reconcileRememberedWindowSource(sources);
+            }
             refreshSelectedScreenSourceLabelFromSources(screens, windows, {
                 screenIndexKnown: !isPortalPick
             });
@@ -3148,30 +3163,16 @@
                 var portalLabel = portalSource.id.startsWith('screen:')
                     ? (window.t ? window.t('app.screenSource.screens') : '屏幕')
                     : getScreenSourceDisplayName(portalSource, null);
-                var reconciledToPortalSource = S.selectedScreenSourceId === portalSource.id
-                    && selectedBeforeReconcile !== portalSource.id;
-                if (!reconciledToPortalSource) {
-                    // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
-                    // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
-                    selectScreenSource(
-                        portalSource.id,
-                        portalSource.name,
-                        portalLabel,
-                        null
-                    )
-                        .catch(function (error) {
-                            console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
-                        });
-                } else {
-                    // 「记住窗口」对账刚切到这个 id，已经重启过捕获；这里只需记成
-                    // 本次显式选择，否则 prepareRememberedWindowCapture 会把它当成
-                    // 不可信的恢复 id 拒绝。
-                    markCurrentScreenSourceSelectionExplicit(portalSource.name || '');
-                    if (isScreenSourceTitleMatchEnabled() && portalSource.id.startsWith('window:')) {
-                        storeRememberedWindowTitle(portalSource.name || '');
-                    }
-                    // 名称已由上面的 refreshSelectedScreenSourceLabelFromSources 按本次枚举记录。
+                // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
+                // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。等重建
+                // 完成再露出「重新选择」，否则用户马上再选时，还没结束的重启会
+                // 把上一次的来源重新分享出去。
+                try {
+                    await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
+                } catch (error) {
+                    console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
                 }
+                if (!isPopupAvailable()) return false;
             }
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成

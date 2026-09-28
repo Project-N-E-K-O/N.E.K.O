@@ -1077,6 +1077,80 @@ def test_portal_result_already_selected_is_trusted_for_capture(
 
 
 @pytest.mark.frontend
+def test_portal_pick_switches_an_active_share_even_when_remembering(
+    page: Page,
+) -> None:
+    # "Remember window" holds the previous title. The portal answer is the
+    # user's new choice: the running share must move to it, and the render
+    # must not finish (exposing "choose again") before the restart is done.
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"screenSourceTitleMatchEnabled": "true"},
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const captureCalls = [];
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(constraints.video.mandatory.chromeMediaSourceId);
+                        const track = {
+                            readyState: 'live',
+                            stop() { this.readyState = 'ended'; },
+                            addEventListener() {},
+                        };
+                        return {
+                            active: true,
+                            getVideoTracks() { return [track]; },
+                            getTracks() { return [track]; },
+                        };
+                    },
+                },
+            });
+            const popup = document.getElementById('live2d-popup-screen');
+            window.__metadataSources = [{ id: 'window:2', name: 'Editor', display_id: '' }];
+            await window.renderFloatingScreenSourceList(popup);
+            await window.startScreenSharing();
+            const firstShare = captureCalls.slice();
+            const rememberedBefore = window.__storedValues.get('selectedScreenWindowTitle');
+            // Treat the share as running, as selectScreenSource does.
+            document.getElementById('stopButton').disabled = false;
+
+            window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
+            await window.renderFloatingScreenSourceList(popup);
+            return {
+                firstShare,
+                rememberedBefore,
+                // Read right when the render resolves: the restart already ran.
+                callsWhenRendered: captureCalls.slice(),
+                selected: window.getSelectedScreenSourceId(),
+                remembered: window.__storedValues.get('selectedScreenWindowTitle'),
+            };
+        }"""
+    )
+
+    assert result == {
+        "firstShare": ["window:2"],
+        "rememberedBefore": "Editor",
+        "callsWhenRendered": ["window:2", "window:5"],
+        "selected": "window:5",
+        "remembered": "Browser",
+    }
+
+
+@pytest.mark.frontend
 def test_portal_result_with_reused_id_releases_cached_stream(page: Page) -> None:
     _install_screen_source_harness(
         page,
@@ -1240,33 +1314,57 @@ def test_deferred_panel_shows_the_current_source_above_the_button(page: Page) ->
                 cls: node.className,
                 text: node.textContent,
                 title: node.title || '',
+                hidden: node.hidden,
             }));
+            function syncFromOtherWindow(key, value) {
+                if (value === null) window.__storedValues.delete(key);
+                else window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+                return snapshot()[0];
+            }
             await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
             const nothingSelected = snapshot();
             await window.renderFloatingScreenSourceList(popup);
             document.querySelector('.screen-source-option[data-source-id="screen:1"]').click();
             await new Promise((resolve) => setTimeout(resolve, 0));
             await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
-            return { nothingSelected, selected: snapshot() };
+            const selected = snapshot();
+            // The panel stays open while another window changes the selection.
+            syncFromOtherWindow(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2', name: 'Editor' })
+            );
+            const otherWindowPicked = syncFromOtherWindow('selectedScreenSourceId', 'window:2');
+            const otherWindowCleared = syncFromOtherWindow('selectedScreenSourceId', null);
+            return { nothingSelected, selected, otherWindowPicked, otherWindowCleared };
         }"""
     )
 
+    load_button = {
+        "cls": "screen-source-deferred-load",
+        "text": "app.screenSource.clickToChoose",
+        "title": "",
+        "hidden": False,
+    }
+    empty_summary = {"cls": "screen-source-current", "text": "", "title": "", "hidden": True}
     assert result == {
-        "nothingSelected": [
-            {
-                "cls": "screen-source-deferred-load",
-                "text": "app.screenSource.clickToChoose",
-                "title": "",
-            },
-        ],
+        "nothingSelected": [empty_summary, load_button],
         "selected": [
-            {"cls": "screen-source-current", "text": "Selected Screen 1", "title": "Screen 1"},
             {
-                "cls": "screen-source-deferred-load",
-                "text": "app.screenSource.clickToChoose",
-                "title": "",
+                "cls": "screen-source-current",
+                "text": "Selected Screen 1",
+                "title": "Screen 1",
+                "hidden": False,
             },
+            load_button,
         ],
+        "otherWindowPicked": {
+            "cls": "screen-source-current",
+            "text": "Selected Editor",
+            "title": "Editor",
+            "hidden": False,
+        },
+        "otherWindowCleared": empty_summary,
     }
 
 
