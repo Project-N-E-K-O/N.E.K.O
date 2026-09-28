@@ -1322,7 +1322,6 @@ async def cancel_task(task_id: str):
                 Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
-                    conversation_id=info.get("conversation_id") or info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
                 ),

@@ -133,6 +133,20 @@ else:
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def _pin_project_root_first() -> None:
+    """Put the bundle / repository root first on ``sys.path``.
+
+    ``plugin/`` doubles as an import root for user-plugin processes and holds
+    a sibling ``config`` package, and plugin hosts insert plugin ``vendor/``
+    dirs at index 0. Without this the launcher's (or a spawned child's)
+    top-level ``config`` / ``utils`` imports could resolve to one of those.
+    """
+    root = os.path.abspath(bundle_dir)
+    while root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+
+
 def _configure_ssl_cert_bundle() -> None:
     """Explicitly feed certifi's CA bundle to OpenSSL, only in frozen distributions.
 

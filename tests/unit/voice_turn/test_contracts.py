@@ -28,6 +28,22 @@ def _turn_token(*, session_epoch: int = 1, turn_id: int = 2) -> VoiceTurnToken:
     )
 
 
+def test_unavailable_without_a_result_constructs():
+    # 模型缺失时的合法形态：没有 decision 也没有 probability。__post_init__
+    # 若收得过严，这条路径会在运行时崩掉，而下面的反向用例照样全绿。
+    evaluation = TurnEvaluation(
+        status=EvaluationStatus.UNAVAILABLE,
+        decision=None,
+        probability=None,
+        generation=1,
+        activity_seq=2,
+        reason="model_missing",
+    )
+    assert evaluation.status is EvaluationStatus.UNAVAILABLE
+    assert evaluation.decision is None
+    assert evaluation.probability is None
+
+
 def test_unavailable_carries_no_decision():
     # UNAVAILABLE 不得携带语义结果：带上 decision 会被构造契约直接拒绝，
     # 而不是静默吞掉（吞掉会让上层把「模型缺失」误读成回合结论）。

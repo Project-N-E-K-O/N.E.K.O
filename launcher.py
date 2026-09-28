@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, bundle_dir
+from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
 
 
 if __name__ == "__main__":
@@ -56,10 +56,7 @@ if __name__ == "__main__":
 # ``plugin`` / ``main_logic`` imports resolve. Frozen children are unaffected
 # either way: spawn.prepare() replaces sys.path after this runs, and Nuitka's
 # loader precedes the path finder.
-_PROJECT_ROOT = os.path.abspath(bundle_dir)
-while _PROJECT_ROOT in sys.path:
-    sys.path.remove(_PROJECT_ROOT)
-sys.path.insert(0, _PROJECT_ROOT)
+_pin_project_root_first()
 
 if __name__ == "__main__":
     # Only the real entry path needs the runtime chain; spawn children import

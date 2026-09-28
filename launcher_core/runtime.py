@@ -25,6 +25,7 @@ from .bootstrap import (
     _configure_stdio_utf8,
     _get_project_venv_python,
     _maybe_reexec_into_project_venv,
+    _pin_project_root_first,
 )
 
 # Runtime helpers historically resolved __file__ to the repository launcher.
@@ -48,14 +49,10 @@ from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 
-# ``plugin/`` is also used as an import root for user-plugin processes and it
-# contains a sibling ``config`` package.  Keep the repository root first here,
+# Keep the repository root first before the top-level ``config`` import below,
 # otherwise a long-lived test process (or an embedded plugin host) can resolve
-# the launcher's top-level ``config`` imports to ``plugin.config`` instead.
-_PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
-while _PROJECT_ROOT in sys.path:
-    sys.path.remove(_PROJECT_ROOT)
-sys.path.insert(0, _PROJECT_ROOT)
+# it to ``plugin.config`` instead.
+_pin_project_root_first()
 
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
@@ -123,7 +120,8 @@ INTERNAL_DEFAULT_PORTS = {
     "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
-AVOID_FALLBACK_PORTS = set(range(48911, 48917)) | {48961, 48962, 48963}
+# 48917/48918 已退役，仍保留：本机可能还跑着占用它们的旧版本。
+AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
 
 # 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
 MODULE_TO_PORT_KEY: dict[str, str] = {

@@ -1095,13 +1095,12 @@ class OpenClawAdapter:
         *,
         sender_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
         role_name: Optional[str] = None,
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         self.last_error = None
         sender = sender_id or self.default_sender_id
-        resolved_session_id = session_id or conversation_id
+        resolved_session_id = session_id
         if not resolved_session_id:
             resolved_session_id = await asyncio.to_thread(
                 self.get_or_create_persistent_session_id,

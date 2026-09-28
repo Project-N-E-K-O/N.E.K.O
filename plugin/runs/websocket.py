@@ -11,7 +11,6 @@ from plugin.logging_config import logger
 
 from plugin.core.state import state
 from plugin.runs.manager import ExportListResponse, RunRecord, get_run, list_export_for_run
-from plugin.runs.tokens import issue_run_token  # noqa: F401  (经 plugin.runs.__init__ 再导出)
 from plugin.runs.tokens import verify_run_token
 
 

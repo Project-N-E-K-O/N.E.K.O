@@ -113,7 +113,7 @@ def test_merge_with_no_fields_still_normalizes_a_non_dict_output():
 # ============================================================================
 
 
-from main_routers.tool_router import (  # noqa: E402
+from main_logic.tool_calling import (  # noqa: E402
     _MAX_TOOL_IMAGES,
     _MAX_TOOL_IMAGE_B64_BYTES,
 )
