@@ -123,6 +123,10 @@ class _ToolingMixin:
         if ("tools" in msg and "not support" in msg) or (
             "tool use" in msg and ("unsupported" in msg or "not supported" in msg)
         ):
+            # 措辞明确指向模型本身（"... not supported by / for this model"）
+            # 也是模型级：否则之后每轮都要先被拒一次再重发。
+            if "this model" in msg:
+                return "model"
             return "request"
         return None
 

@@ -2495,6 +2495,23 @@ async def test_offline_openai_request_specific_tools_refusal_is_not_sticky():
     assert client._openai_tools_payload() is not None
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("registry.ollama.ai/library/llava:latest does not support tools", "model"),
+        ("Error 400: tools are not supported by this model", "model"),
+        ("tool use is not supported for this model", "model"),
+        ("tool use is not supported with images", "request"),
+        ("tools are not supported in combination with response_format", "request"),
+        ("upstream overloaded", None),
+    ],
+)
+def test_classify_openai_tools_refusal(message, expected):
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    assert OmniOfflineClient._classify_openai_tools_refusal(RuntimeError(message)) == expected
+
+
 @pytest.mark.asyncio
 async def test_offline_openai_unrelated_error_is_not_treated_as_tools_unsupported():
     calls = []
