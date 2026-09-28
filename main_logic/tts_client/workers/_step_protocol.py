@@ -311,7 +311,7 @@ def run_step_protocol_tts_worker(
                 # current_speech_id 再 await 关旧连接，此刻旧 receive 任务若读到
                 # 迟到的 done 事件，会把上一轮的收尾错标到新一轮。
                 async def receive_messages_after_reconnect(bound_ws, bound_speech_id):
-                    nonlocal _text_done_error_suppressed
+                    nonlocal _text_done_error_suppressed, rejected_speech_id
                     cancelled = False
                     try:
                         async for message in bound_ws:
@@ -351,8 +351,9 @@ def run_step_protocol_tts_worker(
                     except websockets.exceptions.ConnectionClosed as closed_exc:
                         # Expected while replacing or shutting down this socket;
                         # a server rejection (e.g. quota spent mid-round) is
-                        # surfaced instead of swallowed.
-                        _report_server_close(closed_exc)
+                        # surfaced and ends this speech like a connect rejection.
+                        if _report_server_close(closed_exc):
+                            rejected_speech_id = bound_speech_id
                     except asyncio.CancelledError:
                         cancelled = True
                         raise
@@ -699,6 +700,14 @@ def run_step_protocol_tts_worker(
                         audio_done.end_interrupt()
                     continue
 
+                if rejected_speech_id is not None and (
+                    sid == rejected_speech_id
+                    or (sid is None and current_speech_id == rejected_speech_id)
+                ):
+                    # 这一轮已被服务端拒绝并上报过：剩余 chunk 与收尾都丢弃，
+                    # 不再逐个重连，也不往已被关掉的 socket 上发。
+                    continue
+
                 if sid is None:
                     # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
                     # 音频继续通过 receive_task 流入 response_queue。lanlan.app 由
@@ -720,10 +729,6 @@ def run_step_protocol_tts_worker(
                     # for another text chunk that may never arrive.
                     finish_requested = True
                     sid = current_speech_id
-
-                if rejected_speech_id is not None and sid == rejected_speech_id:
-                    # 这一轮已被服务端拒绝并上报过，剩余 chunk 不再逐个重连。
-                    continue
 
                 # 新语音，或当前语音的 socket 已失效：重新建立连接。
                 # 同一语音的恢复重连必须保留尚未发送成功的文本前缀。
@@ -872,7 +877,7 @@ def run_step_protocol_tts_worker(
                         _text_done_error_suppressed = False  # 重连后重置错误抑制标记
 
                         async def receive_messages(bound_ws, bound_speech_id):
-                            nonlocal _text_done_error_suppressed
+                            nonlocal _text_done_error_suppressed, rejected_speech_id
                             cancelled = False
                             try:
                                 async for message in bound_ws:
@@ -918,8 +923,10 @@ def run_step_protocol_tts_worker(
                                 # Normal when reconnect/shutdown closes the
                                 # socket while the receiver is awaiting data;
                                 # a server rejection (e.g. quota spent
-                                # mid-round) is surfaced instead of swallowed.
-                                _report_server_close(closed_exc)
+                                # mid-round) is surfaced and ends this speech
+                                # like a connect rejection.
+                                if _report_server_close(closed_exc):
+                                    rejected_speech_id = bound_speech_id
                             except asyncio.CancelledError:
                                 cancelled = True
                                 raise

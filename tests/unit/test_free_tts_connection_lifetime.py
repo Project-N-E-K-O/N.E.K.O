@@ -334,6 +334,37 @@ def test_mid_round_quota_close_is_reported(monkeypatch):
     assert [error["code"] for error in _errors(responses)] == ["API_QUOTA_TIME"]
 
 
+def test_mid_round_rejection_ends_the_rest_of_that_speech(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    _skip_backoff(monkeypatch)
+    speech = _Socket(
+        [{"type": "tts.connection.done", "data": {"session_id": "speech"}}],
+    )
+    next_speech = _speech_socket("next", final_events=[])
+    connects = _install_sockets(monkeypatch, _warmup_socket(), speech, next_speech)
+    responses = queue.Queue()
+
+    def server_spends_quota():
+        speech._server_close = Close(1008, "Total connection time limit reached for today")
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            server_spends_quota,
+            _observe({}, "reported", lambda: bool(_errors(responses))),
+            ("speech-1", " More text of the rejected reply."),
+            (None, None),
+            ("speech-2", _OPENING),
+        ),
+        responses,
+    )
+
+    # No reconnect for the rest of speech-1; speech-2 is the next retry.
+    assert connects == [connects[0], speech, next_speech]
+    assert [event["type"] for event in speech.sent] == ["tts.create", "tts.text.delta"]
+    assert [error["code"] for error in _errors(responses)] == ["API_QUOTA_TIME"]
+
+
 @pytest.mark.parametrize(
     ("close", "expected_code"),
     (

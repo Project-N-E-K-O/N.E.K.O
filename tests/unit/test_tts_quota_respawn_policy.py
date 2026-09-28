@@ -140,23 +140,96 @@ async def test_quota_does_not_block_the_implicit_respawn_on_the_next_reply():
     assert mgr._last_tts_error_code not in NO_RETRY_TTS_CODES
 
 
+class _DeadThread:
+    def is_alive(self):
+        return False
+
+
+def _arm_implicit_respawn(mgr):
+    mgr.tts_thread = _DeadThread()
+    mgr._last_tts_respawn_time = 0.0
+    mgr.started = []
+    mgr._start_tts_thread = lambda **kwargs: mgr.started.append(kwargs)
+    mgr.tts_handler_task = None
+    mgr._start_tts_response_handler = lambda: None
+
+
 @pytest.mark.asyncio
-async def test_recovery_after_quota_replays_only_the_reply_that_retried():
+async def test_recovery_after_quota_drops_only_rounds_rejected_before_the_retry():
     mgr = _make_mgr()
     mgr._tts_quota_blocked = True
-    # Tail chunks of an earlier rejected reply, then the reply whose first
-    # chunk triggered the successful respawn.
+    _arm_implicit_respawn(mgr)
+    # Tail of a reply rejected earlier, then the reply whose first chunk
+    # triggers the implicit respawn (callers cache before respawning).
     mgr.tts_pending_chunks = [
         ("sid-stale", "tail of a rejected reply"),
         ("sid-live", "first chunk"),
-        ("sid-live", "second chunk"),
     ]
+    LLMSessionManager._respawn_tts_worker(mgr)
+    assert len(mgr.started) == 1
+    # Queued legitimately while the new worker connects: the rest of the
+    # live reply, and a new speech id that does not interrupt (mirror).
+    mgr.tts_pending_chunks.append(("sid-live", "second chunk"))
+    mgr.tts_pending_chunks.append(("sid-mirror", "mirrored speech"))
     mgr.tts_response_queue.put(("__ready__", True))
 
     await _drain(mgr)
 
-    assert mgr.flushed == [[("sid-live", "first chunk"), ("sid-live", "second chunk")]]
+    assert mgr.flushed == [[
+        ("sid-live", "first chunk"),
+        ("sid-live", "second chunk"),
+        ("sid-mirror", "mirrored speech"),
+    ]]
     assert mgr._tts_quota_blocked is False
+    assert mgr._tts_quota_stale_speech_ids == frozenset()
+
+
+def test_implicit_respawn_waits_out_the_rate_limit_backoff(monkeypatch):
+    import time as time_module
+
+    mgr = _make_mgr()
+    _arm_implicit_respawn(mgr)
+    mgr._last_tts_error_code = "API_RATE_LIMIT"
+    mgr._tts_rate_limit_respawn_delay = 52.0
+    now = time_module.monotonic()
+    mgr._last_tts_respawn_time = now - 20.0
+
+    LLMSessionManager._respawn_tts_worker(mgr)
+    assert mgr.started == []
+
+    mgr._last_tts_respawn_time = now - 53.0
+    LLMSessionManager._respawn_tts_worker(mgr)
+    assert len(mgr.started) == 1
+
+
+def test_implicit_respawn_keeps_the_plain_cooldown_for_quota():
+    import time as time_module
+
+    mgr = _make_mgr()
+    _arm_implicit_respawn(mgr)
+    mgr._last_tts_error_code = "API_QUOTA_TIME"
+    mgr._tts_rate_limit_respawn_delay = 300.0  # stale value must not apply
+    mgr._last_tts_respawn_time = time_module.monotonic() - 13.0
+
+    LLMSessionManager._respawn_tts_worker(mgr)
+
+    assert len(mgr.started) == 1
+
+
+def test_session_retry_reset_clears_rate_limit_and_quota_state():
+    mgr = _make_mgr()
+    mgr._tts_rate_limit_backoff_level = 5
+    mgr._tts_rate_limit_respawn_delay = 300.0
+    mgr._tts_quota_blocked = True
+    mgr._tts_quota_stale_speech_ids = frozenset({"sid-stale"})
+    mgr._cancel_tts_soft_flush = lambda: None
+
+    LLMSessionManager._reset_tts_retry_state(mgr)
+
+    assert mgr._tts_rate_limit_backoff_level == 0
+    assert mgr._tts_rate_limit_respawn_delay == 0.0
+    assert mgr._tts_quota_blocked is False
+    assert mgr._tts_quota_stale_speech_ids == frozenset()
 
 
 @pytest.mark.asyncio

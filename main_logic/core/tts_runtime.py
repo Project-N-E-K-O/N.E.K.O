@@ -1364,6 +1364,10 @@ class TtsRuntimeMixin:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
+        self._tts_rate_limit_backoff_level = 0
+        self._tts_rate_limit_respawn_delay = 0.0
+        self._tts_quota_blocked = False
+        self._tts_quota_stale_speech_ids = frozenset()
         notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
         if notified_error_keys is not None:
             notified_error_keys.clear()
@@ -1453,7 +1457,9 @@ class TtsRuntimeMixin:
         _flush_tts_pending_chunks to flush the cache.
 
         Rate limit: at most one respawn per 12 seconds, avoiding a reconnect
-        storm when the service is completely down.
+        storm when the service is completely down. After a server rate-limit
+        rejection the cooldown stretches to the current backoff delay, so
+        per-reply respawns cannot outpace the timed backoff.
         """
         if self.tts_thread and self.tts_thread.is_alive():
             return
@@ -1465,8 +1471,20 @@ class TtsRuntimeMixin:
 
         import time
         now = time.monotonic()
-        if now - self._last_tts_respawn_time < 12.0:
+        cooldown = 12.0
+        if self._last_tts_error_code == 'API_RATE_LIMIT':
+            cooldown = max(cooldown, getattr(self, '_tts_rate_limit_respawn_delay', 0.0))
+        if now - self._last_tts_respawn_time < cooldown:
             return  # 冷却中，保留待执行的延迟任务和错误码状态
+
+        if getattr(self, '_tts_quota_blocked', False) and self.tts_pending_chunks:
+            # 调用方都是先缓存再拉起，此刻最后一条就是触发这次重试的回复；
+            # 缓存里其余 speech_id 都是配额期间被拒轮次的残尾。
+            trigger_speech_id = self.tts_pending_chunks[-1][0]
+            self._tts_quota_stale_speech_ids = frozenset(
+                speech_id for speech_id, _text in self.tts_pending_chunks
+                if speech_id != trigger_speech_id
+            )
 
         # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
         if self._tts_respawn_task and not self._tts_respawn_task.done():
@@ -2015,16 +2033,21 @@ class TtsRuntimeMixin:
                             self._last_tts_error_code = ''
                             self._tts_retry_notify_count = 0
                             self._tts_rate_limit_backoff_level = 0
+                            self._tts_rate_limit_respawn_delay = 0.0
                             if getattr(self, '_tts_quota_blocked', False):
-                                # 配额期间缓存的是之前各轮被拒回复的残尾；恢复后只播
-                                # 触发这次重试的那一轮（缓存里最新的 speech_id）。
+                                # 配额期间缓存里有之前各轮被拒回复的残尾；只丢掉触发
+                                # 这次重试那一刻已判为旧轮次的 speech_id，之后合法排队
+                                # 的语音（触发重试的那一轮、镜像播报等）照常播出。
+                                stale_speech_ids = getattr(
+                                    self, '_tts_quota_stale_speech_ids', frozenset()
+                                )
                                 self._tts_quota_blocked = False
-                                async with self.tts_cache_lock:
-                                    if self.tts_pending_chunks:
-                                        latest_speech_id = self.tts_pending_chunks[-1][0]
+                                self._tts_quota_stale_speech_ids = frozenset()
+                                if stale_speech_ids:
+                                    async with self.tts_cache_lock:
                                         self.tts_pending_chunks[:] = [
                                             chunk for chunk in self.tts_pending_chunks
-                                            if chunk[0] == latest_speech_id
+                                            if chunk[0] not in stale_speech_ids
                                         ]
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
@@ -2055,6 +2078,7 @@ class TtsRuntimeMixin:
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
                                 self._tts_quota_blocked = True
+                                self._tts_quota_stale_speech_ids = frozenset()
                                 async with self.tts_cache_lock:
                                     self.tts_pending_chunks.clear()
                             else:
@@ -2066,6 +2090,7 @@ class TtsRuntimeMixin:
                                         TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS,
                                     )
                                     self._tts_rate_limit_backoff_level = backoff_level + 1
+                                    self._tts_rate_limit_respawn_delay = respawn_delay
                                 else:
                                     respawn_delay = TTS_RESPAWN_DELAY_SECONDS
                                 logger.warning(f"⚠️ 收到TTS未就绪信号，{respawn_delay}秒后尝试重新拉起Worker")
