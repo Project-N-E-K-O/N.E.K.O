@@ -27,12 +27,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import threading
 
 import httpx
 import pytest
 
 import utils.connection.onebot as onebot
 from utils.connection.base import ConnectionBase
+from utils.connection.qq import open_platform_media as media_module
 from utils.connection.qq.open_platform import QQOpenPlatformConnection
 from utils.connection.qq.open_platform_media import (
     MAX_IMAGE_BYTES,
@@ -356,6 +358,62 @@ def test_oversized_image_is_refused_before_uploading(tmp_path, monkeypatch):
     assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == ""
     assert connection._http.calls == []
     assert MAX_IMAGE_BYTES > 32, "the module constant is the real limit; the test only lowered it"
+
+
+def _spy_on_read(monkeypatch, record):
+    """Replace the module's reader, keeping a note of every call."""
+    real = media_module._read_source
+
+    def spy(source):
+        record.append(source)
+        return real(source)
+
+    monkeypatch.setattr(media_module, "_read_source", spy)
+    return spy
+
+
+def test_an_oversized_file_is_refused_without_reading_it(tmp_path, monkeypatch):
+    """The size limit has to reject a file *before* its bytes are pulled into memory."""
+    sticker = tmp_path / "huge.png"
+    sticker.write_bytes(b"b" * 4096)
+    monkeypatch.setattr(media_module, "MAX_IMAGE_BYTES", 64)
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == ""
+    assert read == [], "an oversized file must not be read at all"
+    assert connection._http.calls == []
+
+
+def test_a_missing_file_is_refused_without_reading_it(tmp_path, monkeypatch):
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(connection.upload_image(scope="users", owner_id="U1", source=str(tmp_path / "nope.png"))) == ""
+    assert read == [], "a missing file must not be read"
+    assert connection._http.calls == []
+
+
+def test_a_local_file_is_read_off_the_event_loop(tmp_path, monkeypatch):
+    """Blocking file I/O must not run on the loop: a big file (or a slow volume) would stall it."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"x" * 8)
+    threads: list[bool] = []
+    real = media_module._read_source
+
+    def spy(source):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(source)
+
+    monkeypatch.setattr(media_module, "_read_source", spy)
+    connection = _make_connection(
+        lambda method, url, body: _legacy_ok() if method == "POST" else {"file_info": "FI-legacy"},
+    )
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-legacy"
+    assert threads == [False], "the read must happen in a worker thread, not on the event loop"
 
 
 def test_token_failure_does_not_raise(tmp_path):

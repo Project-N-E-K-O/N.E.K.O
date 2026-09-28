@@ -48,6 +48,7 @@ Connection members only: ``_http``, ``_API_BASE``, ``_ensure_token()``,
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
 import os
@@ -73,7 +74,12 @@ def _local_path(source: str) -> str:
 
 
 def _read_source(source: str) -> tuple[bytes, str]:
-    """Read a local file -> ``(bytes, file_name)``; unreadable is ``(b"", "")``."""
+    """Read a local file -> ``(bytes, file_name)``; unreadable is ``(b"", "")``.
+
+    Blocking on purpose: callers run it off the event loop (``asyncio.to_thread``) after
+    checking the size, so a slow or huge file never stalls the loop or gets read just to
+    be rejected.
+    """
     path = _local_path(source)
     if not path or not os.path.isfile(path):
         return b"", ""
@@ -304,15 +310,35 @@ class QQOpenPlatformMediaMixin:
                 self._media_log("warning", "图片 URL 上传失败")
             return file_info
 
+        # Size first, bytes later: the soft limit has to be able to reject a file
+        # *without* pulling it into memory, and the read itself must not run on the
+        # event loop (a local image can be arbitrarily large or on a slow volume).
+        path = _local_path(url)
         try:
-            payload, file_name = _read_source(url)
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size <= 0:
+            self._media_log("warning", f"图片文件不存在或为空: {path}")
+            return ""
+        if size > MAX_IMAGE_BYTES:
+            self._media_log(
+                "warning",
+                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {size} 字节",
+            )
+            return ""
+
+        try:
+            payload, file_name = await asyncio.to_thread(_read_source, url)
         except Exception as exc:
             self._media_log("warning", f"图片读取失败: {exc}")
             return ""
         if not payload:
-            self._media_log("warning", f"图片文件不存在或为空: {_local_path(url)}")
+            self._media_log("warning", f"图片文件不存在或为空: {path}")
             return ""
         if len(payload) > MAX_IMAGE_BYTES:
+            # Second line of defence: the file can grow (or be swapped) between the stat
+            # above and the read.
             self._media_log(
                 "warning",
                 f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {len(payload)} 字节",
