@@ -334,7 +334,6 @@
         try {
             const request = apiRequest('/status', {
                 method: 'GET',
-                keepalive: Boolean(config.keepalive),
                 signal: statusController ? statusController.signal : undefined
             });
             const timeoutMs = Number(config.timeoutMs);
@@ -1330,11 +1329,8 @@
                 if (timeoutId !== null) window.clearTimeout(timeoutId);
             }
             await cancelSession(config);
-            if (!state.enrollmentId && pendingStart) {
-                const reconciled = await reconcileStatus({
-                    timeoutMs: CANCEL_STATUS_TIMEOUT_MS,
-                    keepalive: config.keepalive,
-                });
+            if (!config.keepalive && !state.enrollmentId && pendingStart) {
+                const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
                 if (reconciled && state.enrollmentId) await cancelSession(config);
             }
             if (!config.silent) setMessage('');

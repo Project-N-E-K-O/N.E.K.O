@@ -1442,7 +1442,7 @@ test('slow enrollment start uses keepalive cancellation after close wait expires
     assert.ok(cancel);
 });
 
-test('close reconciles a server-created enrollment after start response abort', async () => {
+test('close does not cancel an unowned session after start response abort', async () => {
     const harness = createHarness({ startResponseErrorAfterAbort: true, manualAudio: true });
     await harness.initialize();
 
@@ -1451,13 +1451,7 @@ test('close reconciles a server-created enrollment after start response abort', 
     await harness.beforeClose();
     await enrolling;
 
-    const statusCalls = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`);
-    assert.equal(statusCalls.at(-1).options.keepalive, true);
-    const cancel = harness.fetchCalls.find(call => (
-        call.url === `${API_ROOT}/enrollment/cancel`
-        && call.options.keepalive === true
-    ));
-    assert.ok(cancel);
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`), false);
 });
 
 test('BFCache restore invalidates the pending enrollment workflow', async () => {
