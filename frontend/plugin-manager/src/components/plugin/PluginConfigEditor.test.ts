@@ -45,8 +45,13 @@ afterEach(() => {
 })
 async function mountEditor({
   expectNav = true,
+  navCount = 3,
   onLayoutModeChange,
-}: { expectNav?: boolean; onLayoutModeChange?: (pageScroll: boolean) => void } = {}) {
+}: {
+  expectNav?: boolean
+  navCount?: number
+  onLayoutModeChange?: (pageScroll: boolean) => void
+} = {}) {
   const host = document.createElement('main')
   host.dataset.yuiGuideId = 'plugin-main'
   Object.defineProperty(host, 'clientHeight', { value: 1000 })
@@ -67,7 +72,7 @@ async function mountEditor({
   // Plugins without configurable sections render no navigation at all.
   await vi.waitFor(() =>
     expect(host.querySelectorAll(expectNav ? '.config-nav button' : '.config-footer')).toHaveLength(
-      expectNav ? 3 : 1
+      expectNav ? navCount : 1
     )
   )
   return { host, pluginId, unmount }
@@ -746,6 +751,27 @@ describe('schema integration', () => {
     expect(row.querySelector('.field-key')?.textContent).toBe('max_results')
     expect(row.textContent).toContain('How many results to return')
     expect(upsert).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('navigates to and searches a section that only the schema declares', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: {
+        type: 'object',
+        properties: {
+          extra: { type: 'object', properties: { token: { type: 'string' } } },
+        },
+      },
+    } as never)
+    const { host, unmount } = await mountEditor({ navCount: 4 })
+    await search(host, 'token')
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.config-nav button')]
+    // Only the schema-only section matches; the form shows its field instead of no results.
+    expect(buttons.filter((button) => !button.disabled)).toHaveLength(1)
+    expect(host.textContent).not.toContain('plugins.configUi.emptySearch')
+    expect(host.querySelector('[data-config-path="extra.token"]')).not.toBeNull()
     unmount()
   })
 

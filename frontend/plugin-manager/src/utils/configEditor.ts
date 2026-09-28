@@ -1,4 +1,5 @@
 // Configuration view helpers. They never persist data or alter backend merge rules.
+import type { ConfigEditorSchema } from '@/types/configSchema'
 
 const hasOwn = (value: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -136,6 +137,24 @@ export function restoreConfigPath(
   return next
 }
 
+const SCHEMA_RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+
+/** Fields a schema declares that the form lists even before they hold a value. */
+export function schemaFieldKeys(schema: ConfigEditorSchema | undefined): string[] {
+  return Object.keys(schema?.properties ?? {}).filter(
+    (key) => !key.includes('.') && !SCHEMA_RESERVED_KEYS.has(key)
+  )
+}
+
+/** The schema of one declared field, read as an own property. */
+export function schemaField(
+  schema: ConfigEditorSchema | undefined,
+  key: string
+): ConfigEditorSchema | undefined {
+  const properties = schema?.properties
+  return properties && hasOwn(properties, key) ? properties[key] : undefined
+}
+
 export function configNodeMatches(
   overlay: any,
   baseline: any,
@@ -143,16 +162,20 @@ export function configNodeMatches(
   query: string,
   filter: ConfigFilter,
   changes: ConfigChange[],
-  replacement = false
+  replacement = false,
+  schema?: ConfigEditorSchema
 ): boolean {
   const value = overlay !== undefined ? overlay : baseline
-  if (isConfigObject(value)) {
+  // The form lists fields a schema declares even before they hold a value, so search and
+  // navigation have to reach them too, including a table that exists only in the schema.
+  const declaredTable = value === undefined && isConfigObject(schema?.properties)
+  if (isConfigObject(value) || declaredTable) {
     const a = isConfigObject(overlay) ? overlay : {}
     const replaces = replacement || replacesBaseTable(overlay, path)
     const b = !replaces && isConfigObject(baseline) ? baseline : {}
-    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(
-      (k) => path.length || k !== 'plugin'
-    )
+    const keys = [
+      ...new Set([...Object.keys(a), ...Object.keys(b), ...schemaFieldKeys(schema)]),
+    ].filter((k) => path.length || k !== 'plugin')
     // Test the current path before recursing, so section names match themselves
     const matchesState =
       filter === 'all' ||
@@ -176,7 +199,8 @@ export function configNodeMatches(
           query,
           filter,
           changes,
-          replaces
+          replaces,
+          schemaField(schema, k)
         )
       )
     return false

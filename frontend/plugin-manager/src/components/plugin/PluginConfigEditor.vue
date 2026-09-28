@@ -370,6 +370,8 @@ import {
   configuredFieldCount,
   configNodeMatches,
   configValueAt,
+  schemaField,
+  schemaFieldKeys,
   configValueText,
   deepClone,
   type ConfigFilter,
@@ -474,7 +476,11 @@ const configuredCount = computed(() =>
     : 0
 )
 const sectionNames = computed(() => {
-  const names = new Set([...Object.keys(base.value), ...Object.keys(current.value?.draft || {})])
+  const names = new Set([
+    ...Object.keys(base.value),
+    ...Object.keys(current.value?.draft || {}),
+    ...schemaFieldKeys(schema.value),
+  ])
   names.delete('plugin')
   // Match the editor order, including the runtime section pinned at the end.
   if (names.delete('plugin_runtime')) names.add('plugin_runtime')
@@ -492,7 +498,9 @@ const visibleSections = computed(() =>
       [name],
       search.value,
       filter.value,
-      changes.value
+      changes.value,
+      false,
+      schemaField(schema.value, name)
     )
   )
 )
@@ -523,7 +531,9 @@ const hasVisibleFields = computed(() =>
     [],
     search.value,
     filter.value,
-    changes.value
+    changes.value,
+    false,
+    schema.value
   )
 )
 const visibleError = computed(() => error.value || current.value?.error || operationError.value)

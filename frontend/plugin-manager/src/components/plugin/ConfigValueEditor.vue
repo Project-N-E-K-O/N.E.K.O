@@ -297,6 +297,8 @@ import {
   configValueText,
   hasConfigChangesAt,
   replacesBaseTable,
+  schemaField,
+  schemaFieldKeys,
   REPLACE_MARKER,
   type ConfigChange,
   type ConfigFilter,
@@ -337,10 +339,7 @@ const emit = defineEmits<{
 const { t, locale } = useConfigEditorI18n()
 const enumValues = computed(() => schemaEnum(props.schema))
 function fieldSchema(key: string): ConfigEditorSchema | undefined {
-  const properties = props.schema?.properties
-  return properties && Object.prototype.hasOwnProperty.call(properties, key)
-    ? properties[key]
-    : undefined
+  return schemaField(props.schema, key)
 }
 function fieldTitle(key: string) {
   return schemaText(fieldSchema(key), 'title', locale.value, key)
@@ -379,7 +378,8 @@ function visibleKey(k: string) {
     props.search || '',
     props.filter || 'all',
     props.changes || [],
-    replacesBaseline.value
+    replacesBaseline.value,
+    fieldSchema(k)
   )
 }
 async function fieldCommand(k: string, command: string) {
@@ -495,9 +495,7 @@ const objectKeys = computed(() => {
   // editing; append profile-only fields instead of promoting every edited key.
   // Declared fields are listed even when absent; spellings that could not be written as a
   // plain key are ignored, and undeclared existing fields always stay.
-  const declared = Object.keys(props.schema?.properties ?? {}).filter(
-    (key) => !key.includes('.') && !FORBIDDEN_KEYS.has(key)
-  )
+  const declared = schemaFieldKeys(props.schema)
   const keys = new Set<string>(
     props.compact
       ? [...Object.keys(b), ...Object.keys(a), ...declared]

@@ -229,6 +229,23 @@ describe('configNodeMatches', () => {
     expect(configNodeMatches({ net: {} }, baseline, [], 'ttl', 'all', [], false)).toBe(true)
   })
 
+  it('reaches fields and tables that only the schema declares', () => {
+    // The form lists them before they hold a value, so search must find them.
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        search: { type: 'object' as const, properties: { api_key: { type: 'string' as const } } },
+        extra: { type: 'object' as const, properties: { token: { type: 'string' as const } } },
+      },
+    }
+    const baseline = { search: { max_results: 8 } }
+    expect(configNodeMatches({}, baseline, [], 'api_key', 'all', [], false, schema)).toBe(true)
+    expect(configNodeMatches({}, baseline, [], 'token', 'all', [], false, schema)).toBe(true)
+    expect(configNodeMatches({}, baseline, [], 'api_key', 'all', [], false)).toBe(false)
+    // Declared but unset fields are not configured in this profile.
+    expect(configNodeMatches({}, baseline, [], '', 'configured', [], false, schema)).toBe(false)
+  })
+
   it('does not match the root as configured when the overlay is empty', () => {
     const overlay = {}
     const baseline = { cache: { ttl: 120 }, nested: { value: 1 } }
