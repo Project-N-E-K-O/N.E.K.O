@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding
+from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, bundle_dir
 
 
 if __name__ == "__main__":
@@ -48,12 +48,22 @@ if __name__ == "__main__":
 
         sys.exit(_run_voice_identity_release_smoke())
 
-# Imported after the aux dispatch above so those entry points never pay the
-# full runtime import chain, but still at module scope: multiprocessing spawn
-# children re-enter this file as ``__mp_main__`` (``__parents_main__`` when
-# frozen) and keep getting the runtime's import-time setup there (repo root
-# pinned first on sys.path, config preloaded), same as the parent.
-from launcher_core.runtime import start_launcher  # noqa: E402
+# multiprocessing spawn children re-enter this file (as ``__mp_main__`` from
+# source) before unpickling their target, with the parent's sys.path copied
+# verbatim. In a plugin host that list can carry plugin ``vendor/`` dirs ahead
+# of the repo root (plugin/core/registry.py inserts them at index 0), so pin
+# the repo root first again here, before the target's ``config`` / ``utils`` /
+# ``plugin`` / ``main_logic`` imports resolve. Frozen children are unaffected
+# either way: spawn.prepare() replaces sys.path after this runs, and Nuitka's
+# loader precedes the path finder.
+_PROJECT_ROOT = os.path.abspath(bundle_dir)
+while _PROJECT_ROOT in sys.path:
+    sys.path.remove(_PROJECT_ROOT)
+sys.path.insert(0, _PROJECT_ROOT)
 
 if __name__ == "__main__":
+    # Only the real entry path needs the runtime chain; spawn children import
+    # what their target needs when unpickling it.
+    from launcher_core.runtime import start_launcher
+
     sys.exit(start_launcher())

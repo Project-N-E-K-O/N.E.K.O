@@ -49,8 +49,8 @@ def _configure_stdio_utf8() -> None:
             pass
 
 
-# 模块级立即 reconfigure 一次：即使 launcher 被作为 module import（比如
-# tests/unit/test_cloudsave_startup_flow.py 里 8 处 import launcher），也
+# 模块级立即 reconfigure 一次：即使 launcher / launcher_core.runtime 被作为
+# module import（比如测试里 `from launcher_core import runtime`），也
 # 能保证 Windows 下中文 log 不崩。stream.reconfigure 幂等，
 # _bootstrap_launcher_runtime 里再调一次只是 no-op。
 _configure_stdio_utf8()
