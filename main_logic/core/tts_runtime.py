@@ -487,6 +487,12 @@ class TtsRuntimeMixin:
         cleaned = strip_tts_muted_symbols(text)
         if leading_name_hash:
             cleaned = leading_name_hash + cleaned
+        if pending_name_hash and (not cleaned or not cleaned.strip()):
+            # 暂存的 # 后面跟的整块都是会被删的符号：它确实是名字的一部分，
+            # 这就放出，不能随这一块一起被丢掉。
+            self._tts_symbol_gap_pending = False
+            self._tts_last_spoken_char = pending_name_hash
+            return pending_name_hash
         if not cleaned or not cleaned.strip():
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
             if text and text.strip() and is_tts_word_char(last):
@@ -541,6 +547,10 @@ class TtsRuntimeMixin:
         self._tts_bracket_stripper.flush()
         if flushed:
             flushed = self._strip_tts_symbols_across_chunks(flushed)
+        if not flushed:
+            # 以「C」「#」结束的一轮：暂存的 # 没有下一块来补了，收尾时放出。
+            flushed = getattr(self, "_tts_pending_name_hash", "")
+            self._tts_pending_name_hash = ""
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)

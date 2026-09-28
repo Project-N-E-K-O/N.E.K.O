@@ -508,6 +508,8 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         # ... but between two letters it is still a separator.
         (("a", "#", "b"), [("s1", "a"), ("s1", " b")]),
         (("标签", "#", "热门"), [("s1", "标签"), ("s1", "热门")]),
+        # The chunk after the held "#" is symbols only: the "#" is still said.
+        (("C", "#", "\U0001f600"), [("s1", "C"), ("s1", "#")]),
     ],
 )
 def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):
@@ -559,6 +561,24 @@ def test_tilde_held_by_markdown_still_keeps_the_gap_at_turn_end():
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert mgr._request_tts_done_locked() == "queued"
     assert _drain(mgr.tts_request_queue) == [("s1", "3"), ("s1", " 5天"), (None, None)]
+
+
+def test_held_name_hash_is_released_at_turn_end():
+    # A turn that ends on "C" / "#" has no next chunk to settle the "#":
+    # the turn-end flush must still send it, or "C#" is read as "C".
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in ("C", "#"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "#"), (None, None)]
 
 
 def test_split_compound_emoji_leaves_no_joiner_in_the_next_chunk():
