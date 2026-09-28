@@ -1272,6 +1272,9 @@ def test_prompting_single_source_is_adopted_without_second_click(
                 highlighted: Array.from(
                     document.querySelectorAll('.screen-source-option.selected')
                 ).map((option) => option.dataset.sourceId),
+                // Only the name enumeration; no second (thumbnail) getSources
+                // that could reopen the system picker.
+                enumerations: window.__captureCalls.length,
             };
         }""",
         source_count,
@@ -1283,6 +1286,7 @@ def test_prompting_single_source_is_adopted_without_second_click(
             "label": "Editor",
             "pushed": ["window:2"],
             "highlighted": ["window:2"],
+            "enumerations": 1,
         }
     else:
         assert result == {
@@ -1290,6 +1294,8 @@ def test_prompting_single_source_is_adopted_without_second_click(
             "label": "",
             "pushed": [],
             "highlighted": [],
+            # Non-prompting providers still fetch thumbnails in a second pass.
+            "enumerations": 1 if prompting else 2,
         }
 
 

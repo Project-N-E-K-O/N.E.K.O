@@ -2961,8 +2961,7 @@
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源，它在结果里的位置不是物理屏幕序号。
             // 与悬停延迟列来源一致：未声明该能力的旧版桌面端也按「可能弹窗」处理。
-            var isPortalPick = !!desktopProvider
-                && desktopProvider.sourceEnumerationMayPrompt !== false
+            var isPortalPick = desktopProvider.sourceEnumerationMayPrompt !== false
                 && sources.length === 1;
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
@@ -3298,7 +3297,9 @@
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+            // 刚按系统对话框的结果采用了来源（含未声明能力的旧版桌面端）时同样
+            // 不再为缩略图枚举，否则可能再弹一次系统对话框。
+            if (desktopSourceEnumerationMayPrompt(desktopProvider) || isPortalPick) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
