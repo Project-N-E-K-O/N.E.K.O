@@ -453,6 +453,54 @@ def test_send_that_hits_a_server_rejection_ends_that_speech(monkeypatch, failing
     assert ("__audio_done__", "speech-1") in list(responses.queue)
 
 
+class _CloseDuringSendSocket(_Socket):
+    """The server's close lands while a send is in flight.
+
+    The receive task observes the close during the send's yields, then the
+    send itself fails with the same close.
+    """
+
+    def __init__(self, events, *, close, fail_type, successes):
+        super().__init__(events)
+        self._close = close
+        self._fail_type = fail_type
+        self._successes = successes
+
+    async def send(self, payload):
+        event = json.loads(payload)
+        already_sent = sum(1 for sent in self.sent if sent["type"] == event["type"])
+        if event["type"] == self._fail_type and already_sent >= self._successes:
+            self._server_close = self._close
+            for _ in range(20):
+                await asyncio.sleep(0)
+            raise websockets.exceptions.ConnectionClosedError(self._close, None)
+        await super().send(payload)
+
+
+def test_one_close_seen_by_sender_and_receiver_is_reported_once(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    _skip_backoff(monkeypatch)
+    speech = _CloseDuringSendSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "speech"}}],
+        close=Close(1013, "Rate limit exceeded. Try again later."),
+        fail_type="tts.text.delta",
+        successes=1,
+    )
+    _install_sockets(monkeypatch, _warmup_socket(), speech)
+    responses = queue.Queue()
+
+    _run(
+        _Requests(
+            ("speech-1", _OPENING),
+            ("speech-1", " A later chunk sent while the close arrives."),
+            (None, None),
+        ),
+        responses,
+    )
+
+    assert [error["code"] for error in _errors(responses)] == ["API_RATE_LIMIT"]
+
+
 @pytest.mark.parametrize(
     "close",
     [Close(1008, "Access denied: IP is blacklisted"), Close(4004, "Not Found")],

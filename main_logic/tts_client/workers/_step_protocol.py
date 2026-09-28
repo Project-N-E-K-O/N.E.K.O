@@ -231,14 +231,21 @@ def run_step_protocol_tts_worker(
 
         _text_done_error_suppressed = False
 
-        def _report_server_close(exc) -> bool:
-            """Forward a free-server rejection close as a structured error."""
+        def _report_server_close(exc, speech_id=None) -> bool:
+            """Forward a free-server rejection close as a structured error.
+
+            The sender and the receive task can both observe one close; the
+            first to report marks the speech rejected and the second only
+            classifies, so the core counts a single failure.
+            """
             nonlocal permanent_rejection
             if not is_free:
                 return False
             classified = _classify_lanlan_server_close(exc)
             if classified is None:
                 return False
+            if speech_id is not None and speech_id == rejected_speech_id:
+                return True
             _enqueue_error(response_queue, classified)
             if classified["code"] in _PERMANENT_REJECTION_CODES:
                 permanent_rejection = True
@@ -252,7 +259,7 @@ def run_step_protocol_tts_worker(
             sender has to report the rejection itself.
             """
             nonlocal rejected_speech_id, pending_text_buffer
-            if not _report_server_close(exc):
+            if not _report_server_close(exc, current_speech_id):
                 return False
             rejected_speech_id = current_speech_id
             pending_text_buffer = ""
@@ -376,7 +383,7 @@ def run_step_protocol_tts_worker(
                         # Expected while replacing or shutting down this socket;
                         # a server rejection (e.g. quota spent mid-round) is
                         # surfaced and ends this speech like a connect rejection.
-                        if _report_server_close(closed_exc):
+                        if _report_server_close(closed_exc, bound_speech_id):
                             rejected_speech_id = bound_speech_id
                     except asyncio.CancelledError:
                         cancelled = True
@@ -393,7 +400,7 @@ def run_step_protocol_tts_worker(
                 return True
             except Exception as reconnect_exc:
                 logger.warning("缓冲文本发送失败后的 TTS 重连失败: %s", reconnect_exc)
-                if _report_server_close(reconnect_exc):
+                if _report_server_close(reconnect_exc, current_speech_id):
                     # 与新语音建连被拒同一处理：本轮上报一次后整体放弃。
                     rejected_speech_id = current_speech_id
                     pending_text_buffer = ""
@@ -848,7 +855,7 @@ def run_step_protocol_tts_worker(
                                 # as diagnostic context. An explicit server
                                 # rejection is the one exception that is
                                 # reported and ends this speech's retries.
-                                candidate_rejected = _report_server_close(e)
+                                candidate_rejected = _report_server_close(e, current_speech_id)
                                 logger.debug("等待新 TTS 连接确认失败: %s", e)
 
                         try:
@@ -966,7 +973,7 @@ def run_step_protocol_tts_worker(
                                 # a server rejection (e.g. quota spent
                                 # mid-round) is surfaced and ends this speech
                                 # like a connect rejection.
-                                if _report_server_close(closed_exc):
+                                if _report_server_close(closed_exc, bound_speech_id):
                                     rejected_speech_id = bound_speech_id
                             except asyncio.CancelledError:
                                 cancelled = True
