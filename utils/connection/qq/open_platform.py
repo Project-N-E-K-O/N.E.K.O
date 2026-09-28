@@ -12,6 +12,7 @@ import httpx
 import websockets
 
 from ..base import ConnectionBase
+from .open_platform_media import QQOpenPlatformMediaMixin
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
@@ -156,7 +157,7 @@ def pick_actor_id(author: Any, keys: tuple[str, ...]) -> str:
     return ""
 
 
-class QQOpenPlatformConnection(ConnectionBase):
+class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     #: Observed transport (see OneBotClient.CHANNEL). Never a key.
     CHANNEL: str = "open"
 
@@ -164,6 +165,12 @@ class QQOpenPlatformConnection(ConnectionBase):
 
     WebSocket events -> internal unified message format -> upper-layer pipeline;
     HTTP API -> send messages.
+
+    The media mixin comes first in the bases on purpose: this class inherits
+    ``send_group_image`` (and its ``image`` segment handling) from
+    ``ConnectionBase``, and the mixin has to win for the upload part to be the
+    platform's current two-step protocol (see ``open_platform_media``) instead of
+    the legacy direct upload nobody's docs list anymore.
     """
 
     #: Production and sandbox are **two different domains**. An unpublished bot only
@@ -724,14 +731,37 @@ class QQOpenPlatformConnection(ConnectionBase):
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
-        if image_url and not content:
-            content = "[图片]"
 
         await self._ensure_token()
+        body: dict[str, Any] = {}
+        # Private images are the same two steps as group ones (upload -> msg_type=7 +
+        # media.file_info); what makes the platform accept the send is the **users**
+        # upload scope, since an upload made through one interface can only be sent
+        # through that same one. Before this, a private image was never uploaded at
+        # all: the whole segment collapsed into a "[图片]" text line, so a sticker
+        # reply arrived as three characters of text.
+        if image_url and str(user_id or "").strip():
+            file_info = await self.upload_image(
+                scope="users", owner_id=str(user_id), source=image_url,
+            )
+            if file_info:
+                body["msg_type"] = 7
+                body["media"] = {"file_info": file_info}
+                if content:
+                    body["content"] = content
+            else:
+                # upload failed -> degrade to text, as the group path does
+                body["content"] = content or "[图片]"
+        else:
+            if image_url and not content:
+                # No usable private id to upload against: keep the old text fallback.
+                content = "[图片]"
+            body["content"] = content
+
         try:
             resp = await self._http.post(
                 f"{self._API_BASE}/v2/users/{user_id}/messages",
-                json={"content": content},
+                json=body,
                 headers=self._auth_headers(),
             )
             data = resp.json()
@@ -875,55 +905,19 @@ class QQOpenPlatformConnection(ConnectionBase):
             await self._refresh_token()
 
     async def _upload_group_image(self, group_id: str, image_url: str) -> str:
-        """Upload a group image to the Open Platform; returns file_info or empty."""
-        import os, mimetypes
-        image_url = str(image_url or "").strip()
-        if not image_url:
-            return ""
-        # Get local file path (file:// or a raw path).
-        file_path = image_url
-        if file_path.startswith("file://"):
-            file_path = file_path[7:]
-        if not os.path.isfile(file_path):
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片文件不存在: {file_path}")
-            return ""
-        try:
-            mime_type = mimetypes.guess_type(file_path)[0] or "image/png"
-            file_size = os.path.getsize(file_path)
-            # Step 1: request upload
-            resp = await self._http.post(
-                f"{self._API_BASE}/v2/groups/{group_id}/files",
-                json={"file_type": 1, "file_name": os.path.basename(file_path),
-                      "file_size": file_size, "mime_type": mime_type},
-                headers=self._auth_headers(),
-            )
-            data = resp.json()
-            upload_url = str(data.get("upload_url") or "")
-            if not upload_url:
-                if self.logger:
-                    self.logger.warning(f"[QQOpenPlatform] 申请上传URL失败: {data}")
-                return ""
-            # Step 2: upload file
-            with open(file_path, "rb") as f:
-                upload_resp = await self._http.put(
-                    upload_url,
-                    content=f.read(),
-                    headers={"Content-Type": mime_type},
-                )
-            upload_data = upload_resp.json() if upload_resp.text else {}
-            file_info = str(upload_data.get("file_info") or data.get("file_info") or "")
-            if file_info:
-                if self.logger:
-                    self.logger.info(f"[QQOpenPlatform] 图片上传成功: {file_info}")
-                return file_info
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传失败: {upload_data}")
-            return ""
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传异常: {e}")
-            return ""
+        """Upload a group image to the Open Platform; returns file_info or empty.
+
+        Kept as the group path's entry point (``send_group_message_segments`` calls
+        it) and forwarded to ``upload_image`` so both directions upload the same way:
+        the upload scope is ``groups``, and the two protocols (legacy direct upload
+        first, then the documented chunked one) are tried inside the mixin. This used
+        to be an inline copy of the legacy protocol only -- which is why the group
+        image path silently degraded to a plain text placeholder on a live run
+        (2026-09-26), while private images never uploaded at all.
+        """
+        return await self.upload_image(
+            scope="groups", owner_id=str(group_id or ""), source=str(image_url or ""),
+        )
 
     async def _get_gateway_url(self) -> str:
         await self._ensure_token()
