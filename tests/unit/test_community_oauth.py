@@ -170,6 +170,54 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
+    # /oauth/status 放行无 Origin 的本机进程且不验身份，手机号不能从这里读到。
+    def load_records():
+        return (
+            {"access_token": "access", "auth_source": "oauth"},
+            {
+                "user": {
+                    "display_name": "User",
+                    "email": "user@example.com",
+                    "phone": "+8613800000000",
+                }
+            },
+        )
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
+
+    async def lookup_identity(_base, _access):
+        return C._CloudIdentityLookup(
+            C._CloudIdentity(USER_ID, "oauth", {}),
+            200,
+        )
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+
+    result = await O.oauth_status_endpoint(object())
+
+    assert result["logged_in"] is True
+    assert result["user"] == {"display_name": "User", "email": "user@example.com"}
+
+
+@pytest.mark.unit
+def test_public_user_profile_keeps_phone_for_persisted_auth():
+    # 回调落盘的 community_auth.json 仍保留手机号，桌面端设置页靠它显示账号。
+    profile = O._public_user_profile(
+        {"username": "User", "email": None, "phone_number": " +8613800000000 "},
+        USER_ID,
+    )
+
+    assert profile == {
+        "id": USER_ID,
+        "display_name": "User",
+        "email": None,
+        "phone": "+8613800000000",
+    }
+
+
+@pytest.mark.unit
 async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
     old_snapshot = {
         "base_url": "https://community.example",

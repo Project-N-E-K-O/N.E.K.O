@@ -685,11 +685,14 @@ async def oauth_status_endpoint(request: Request):
             "user": None,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+    # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
+    public_profile = _public_user_profile(user)
+    public_profile.pop("phone", None)
     return {
         "logged_in": True,
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
-        "user": _public_user_profile(user),
+        "user": public_profile,
     }
 
 
