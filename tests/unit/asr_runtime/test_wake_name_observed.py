@@ -39,9 +39,9 @@ def test_observed_spelling_preserves_surrounding_whitespace_and_quotes(raw, expe
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
-    ("欢迎优依，帮我打开灯。", "悠怡悠怡，帮我打开灯。"),
-    ("欢迎悠怡帮我打开灯。", "悠怡悠怡帮我打开灯。"),
-    ("有有有，今天有什么安排？", "悠怡悠怡，今天有什么安排？"),
+    ("欢迎优依，帮我打开灯。", "欢迎优依，帮我打开灯。"),
+    ("欢迎悠怡帮我打开灯。", "欢迎悠怡帮我打开灯。"),
+    ("有有有，今天有什么安排？", "有有有，今天有什么安排？"),
     ("优姨，解释一下优姨。", "悠怡，解释一下优姨。"),
     ("忧郁", "悠怡"),
     ("忧郁？！", "悠怡？！"),
@@ -78,6 +78,25 @@ def test_known_prefix_keeps_command_and_standalone_word_allows_only_endings(raw,
 ])
 def test_unobserved_or_interior_words_are_preserved(text):
     assert correct_wake_name_prefix(text) == text
+
+
+@pytest.mark.asyncio
+@pytest.mark.runtime
+@pytest.mark.parametrize("spelling", ["有有有", "欢迎悠怡", "欢迎优依"])
+@pytest.mark.parametrize("suffix", [
+    "，今天有什么安排？", "帮我打开灯。", "。欢迎回来。", "？真的吗？",
+    "、", "，", "；",
+])
+async def test_ambiguous_wake_spellings_preserve_following_content(spelling, suffix):
+    raw = f' \t“{spelling}{suffix}”\n'
+    assert correct_wake_name_prefix(raw) == raw
+    runtime = _runtime()
+    _status(runtime)
+    token = _token(runtime, 1)
+    assert await runtime._prepare_voice_input_turn(token)
+    await _final(runtime, token, raw)
+    assert _texts(runtime) == [raw]
+    runtime.session.create_response.assert_awaited_once_with(raw)
 
 
 @pytest.mark.asyncio

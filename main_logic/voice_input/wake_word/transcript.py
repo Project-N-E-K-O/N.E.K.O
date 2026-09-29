@@ -24,13 +24,10 @@ _OPENING_QUOTES = frozenset("\"'“‘「『")
 # Observed Qwen spellings from user reports and recording/TTS replays.
 # Keep compound matches before singles.
 _PREFIX_CORRECTIONS = (
-    ("欢迎悠怡", "悠怡悠怡"),
-    ("欢迎优依", "悠怡悠怡"),
     ("悠宜悠宜", "悠怡悠怡"),
     ("悠移悠移", "悠怡悠怡"),
     ("优仪优仪", "悠怡悠怡"),
     ("悠矣悠矣", "悠怡悠怡"),
-    ("有有有", "悠怡悠怡"),
     ("呦呦呦", "悠怡悠怡"),
     ("哟哟哟", "悠怡悠怡"),
     ("悠宜", "悠怡"),
@@ -43,6 +40,9 @@ _PREFIX_CORRECTIONS = (
 )
 # Ambiguous words/names must not become a general prefix rewrite (e.g. 忧郁症).
 _STANDALONE_CORRECTIONS = (
+    ("欢迎悠怡", "悠怡悠怡"),
+    ("欢迎优依", "悠怡悠怡"),
+    ("有有有", "悠怡悠怡"),
     ("又一又一", "悠怡悠怡"),
     ("忧郁忧郁", "悠怡悠怡"),
     ("忧郁", "悠怡"),
