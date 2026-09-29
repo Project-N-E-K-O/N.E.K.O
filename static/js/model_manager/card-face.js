@@ -444,9 +444,19 @@ async function offerCardFaceAfterModelSave(state = {}) {
     if (window._modelManagerCardFacePromptActive) return;
     cleanupCardMakerCloseFallbackWatcher();
     window._modelManagerCardFacePromptActive = true;
+    const saveContextIsCurrent = () => {
+        if (!state.saveContext) return true;
+        if (typeof isModelManagerSaveContextCurrent !== 'function') return true;
+        const currentContext = typeof state.getCurrentSaveContext === 'function'
+            ? state.getCurrentSaveContext()
+            : undefined;
+        return isModelManagerSaveContextCurrent(state.saveContext, currentContext || {});
+    };
+    const shouldCancelCardFaceFlow = () => !saveContextIsCurrent();
     try {
         const lanlanName = await resolveModelManagerLanlanName();
         if (!lanlanName) return;
+        if (!saveContextIsCurrent()) return;
 
         const cardFaceChoice = await showDecisionPrompt({
             title: modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
@@ -464,6 +474,7 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 }
             ]
         });
+        if (!saveContextIsCurrent()) return;
 
         if (cardFaceChoice === 'edit') {
             const fallbackToken = createCardMakerFallbackToken();
@@ -475,37 +486,50 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
                 try {
-                    await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                    await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                        shouldCancel: shouldCancelCardFaceFlow
+                    });
                 } catch (error) {
-                    console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                    if (!error || error.name !== 'AbortError') {
+                        console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                        setModelManagerStatusText(
+                            error && error.message
+                                ? error.message
+                                : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                        );
+                    }
+                }
+            } else {
+                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, {
+                    fallbackToken,
+                    shouldCancel: shouldCancelCardFaceFlow
+                });
+            }
+        } else if (cardFaceChoice === 'default') {
+            try {
+                await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                    shouldCancel: shouldCancelCardFaceFlow
+                });
+            } catch (error) {
+                if (!error || error.name !== 'AbortError') {
+                    console.error('[模型管理] 生成默认卡面失败:', error);
                     setModelManagerStatusText(
                         error && error.message
                             ? error.message
                             : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
                     );
                 }
-            } else {
-                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
-            }
-        } else if (cardFaceChoice === 'default') {
-            try {
-                await generateDefaultCardFaceFromModelManager(lanlanName, state);
-            } catch (error) {
-                console.error('[模型管理] 生成默认卡面失败:', error);
-                setModelManagerStatusText(
-                    error && error.message
-                        ? error.message
-                        : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
-                );
             }
         }
         // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
         // 都要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
 
-        window.hasUnsavedChanges = false;
-        await notifyMainPageModelReload();
-        window._modelManagerModelChangedSinceSave = false;
-        window._modelManagerLoadedFallbackModel = false;
+        if (saveContextIsCurrent()) {
+            window.hasUnsavedChanges = false;
+            window._modelManagerModelChangedSinceSave = false;
+            window._modelManagerLoadedFallbackModel = false;
+            await notifyMainPageModelReload();
+        }
     } finally {
         window._modelManagerCardFacePromptActive = false;
     }

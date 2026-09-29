@@ -2790,6 +2790,8 @@
             "noSources": "No hay fuentes de pantalla disponibles",
             "loadFailed": "No se pudieron cargar las fuentes de la pantalla",
             "screens": "Pantallas",
+            "genericScreen": "Pantalla",
+            "genericWindow": "Ventana",
             "screenLabel": "Pantalla {{index}}",
             "windows": "ventanas",
             "titleFilterPlaceholder": "Filtrar títulos de ventanas",
@@ -2798,8 +2800,11 @@
             "rememberWindow": "Recordar ventana",
             "rememberedWindowUnavailable": "No se pudo identificar de forma única la ventana recordada. Vuelva a seleccionar una fuente de pantalla",
             "selected": "Seleccionado {{source}}",
+            "current": "Actual: {{source}}",
             "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
-            "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente"
+            "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente",
+            "clickToChoose": "Haz clic para elegir una fuente de pantalla",
+            "chooseAgain": "Elegir otra fuente de pantalla"
         },
         "deviceSwitchFailed": "Error en el cambio de dispositivo",
         "deviceSwitching": "Dispositivo de conmutación...",

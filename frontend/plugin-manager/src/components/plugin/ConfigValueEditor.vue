@@ -1,6 +1,21 @@
 <template>
   <div class="cve" :class="{ compact, 'is-root': !path }" :style="indentStyle">
-    <template v-if="kind === 'object'">
+    <template v-if="schema?.writeOnly">
+      <div class="input-wrap">
+        <el-input
+          :id="inputId"
+          :aria-label="path"
+          v-model="strVal"
+          type="password"
+          show-password
+          autocomplete="new-password"
+          :disabled="isReadOnly"
+          :maxlength="schema?.maxLength"
+          @input="emitUpdate"
+        />
+      </div>
+    </template>
+    <template v-else-if="kind === 'object'">
       <div class="obj">
         <div
           v-for="k in objectKeys"
@@ -79,14 +94,14 @@
                 :can-undo="!fieldReadOnly(k) && !replacesBaseline && changedKey(k)"
                 :can-restore="!fieldReadOnly(k) && isOverriddenKey(k)"
                 :can-delete="!fieldReadOnly(k) && isDeletableKey(k)"
-                :baseline="baselineChild(k)"
+                :baseline="displayBaseline(k)"
                 @command="fieldCommand(k, $event)"
               />
             </div>
             <div v-if="compact && hasOverlayKey(k) && !containerKey(k)" class="source-note">
               <span>{{ t('plugins.configUi.configured') }}</span
-              ><span v-if="hasBaselineKey(k)" :title="configValueText(baselineChild(k))">{{
-                t('plugins.configUi.baseValue', { value: configValueText(baselineChild(k)) })
+              ><span v-if="hasBaselineKey(k)" :title="configValueText(displayBaseline(k))">{{
+                t('plugins.configUi.baseValue', { value: configValueText(displayBaseline(k)) })
               }}</span>
             </div>
           </div>
@@ -98,7 +113,7 @@
               :can-undo="!fieldReadOnly(k) && !replacesBaseline && changedKey(k)"
               :can-restore="!fieldReadOnly(k) && isOverriddenKey(k)"
               :can-delete="!fieldReadOnly(k) && isDeletableKey(k)"
-              :baseline="baselineChild(k)"
+              :baseline="displayBaseline(k)"
               @command="fieldCommand(k, $event)"
             />
             <el-button
@@ -141,7 +156,7 @@
           <el-form-item :label="t('plugins.fieldName')">
             <el-input v-model="newKey" />
           </el-form-item>
-          <el-form-item :label="t('plugins.fieldType')">
+          <el-form-item v-if="!dynamicFieldSchema" :label="t('plugins.fieldType')">
             <el-select v-model="newType" style="width: 100%">
               <el-option label="string" value="string" />
               <el-option label="number" value="number" />
@@ -306,6 +321,8 @@ import {
 import { parseNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
 import {
   newSchemaValue,
+  redactConfigSecrets,
+  schemaDecidesValue,
   schemaEnum,
   schemaText,
   type ConfigEditorSchema,
@@ -346,6 +363,9 @@ function fieldTitle(key: string) {
 }
 function fieldDescription(key: string) {
   return schemaText(fieldSchema(key), 'description', locale.value)
+}
+function displayBaseline(key: string) {
+  return redactConfigSecrets(baselineChild(key), fieldSchema(key))
 }
 function fieldReadOnly(key: string) {
   return isReadOnly.value || fieldSchema(key)?.readOnly === true
@@ -528,9 +548,11 @@ const numberText = ref('')
 const boolVal = ref(false)
 
 watch(
-  [displayValue, () => props.schema?.type],
+  [displayValue, () => props.schema?.type, () => props.schema?.writeOnly],
   ([v]) => {
-    if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
+    // A malformed secret container is replaced through an empty password field.
+    if (props.schema?.writeOnly && v !== null && typeof v === 'object') strVal.value = ''
+    else if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') {
       numVal.value = typeof v === 'number' ? v : undefined
       // Keep the text when it already reads as this value: the field's own update
@@ -825,6 +847,16 @@ function addArrayItem() {
 const addKeyDialog = ref(false)
 const newKey = ref('')
 const newType = ref<'string' | 'number' | 'boolean' | 'object' | 'array'>('string')
+// A dynamic-key schema that fixes the initial value makes the type choice meaningless.
+const dynamicFieldSchema = computed(() => {
+  const additional = props.schema?.additionalProperties
+  return (
+    !!additional &&
+    typeof additional === 'object' &&
+    !Array.isArray(additional) &&
+    schemaDecidesValue(additional)
+  )
+})
 
 function openAddKey() {
   addKeyDialog.value = true
@@ -864,7 +896,9 @@ function confirmAddKey() {
   }
 
   const declared = fieldSchema(key)
-  next[key] = declared ? newSchemaValue(declared) : initialValueByType(newType.value)
+  next[key] = schemaDecidesValue(declared)
+    ? newSchemaValue(declared)
+    : initialValueByType(newType.value)
   // An explicitly empty nested table replaces its base table. Its first field would
   // turn it back into a merge and bring every base field back, so keep the replacement
   // explicit.

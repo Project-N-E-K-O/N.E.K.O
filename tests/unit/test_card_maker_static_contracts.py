@@ -389,7 +389,7 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
 def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_export():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
     get_canvas_block = script[
-        script.index("    function getModelCanvas(options = {})"):
+        script.index("    function getModelCanvas()"):
         script.index("    /**\n     * 在截图前确保渲染器输出最新帧")
     ]
     export_block = script[
@@ -397,10 +397,56 @@ def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_exp
         script.index("    async function renderFullCard(options = {})")
     ]
 
-    assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
-    assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
-    assert "if (snapshot) return snapshot;" in get_canvas_block
-    assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
+    assert "if (pngtuberCardFrame) return pngtuberCardFrame.canvas;" in get_canvas_block
+    assert "preparePNGTuberCardFrame(mgr);" in script
+    assert "const srcCanvas = getModelCanvas();" in export_block
+
+
+def test_card_maker_preserves_full_pngtuber_bounds_when_composing_card_face():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    draw_block = script[
+        script.index("    function drawModelWithComposition("):
+        script.index("    // ====== 预览循环 =====", script.index("    function drawModelWithComposition("))
+    ]
+
+    assert "const preservePNGTuberBounds = currentModelType === 'pngtuber';" in draw_block
+    assert "if (!preservePNGTuberBounds && srcAspect > dstAspect)" in draw_block
+    assert "const fitScale = preservePNGTuberBounds" in draw_block
+    assert "const sourceBounds = getPNGTuberSourceBounds(srcCanvas, sourceSize);" in draw_block
+    assert "sourceBounds.width * fitScale" in draw_block
+    assert "sourceBounds.height * fitScale" in draw_block
+
+
+def test_model_manager_save_completion_is_scoped_to_the_original_model_context():
+    script = read_model_manager_source()
+
+    assert "function captureModelManagerSaveContext(currentState = {})" in script
+    assert "function isModelManagerSaveContextCurrent(context, currentState = {})" in script
+    assert "settingsSnapshot: settingsSnapshot == null ? null : { ...settingsSnapshot }" in script
+    assert "&& snapshotsEqual(context.settingsSnapshot, currentSnapshot);" in script
+    assert "const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {" in script
+    assert "&& saveContextStillCurrent" in script
+    assert "saveContext" in script[script.index("offerCardFaceAfterModelSave({"):script.index("offerCardFaceAfterModelSave({") + 300]
+    card_face = (MODEL_MANAGER_JS_DIR / "card-face.js").read_text(encoding="utf-8")
+    assert "getCurrentSaveContext" in card_face
+    assert "isModelManagerSaveContextCurrent(state.saveContext, currentContext || {})" in card_face
+    assert "const shouldCancelCardFaceFlow = () => !saveContextIsCurrent();" in card_face
+    assert "shouldCancel: shouldCancelCardFaceFlow" in card_face
+    assert card_face.count("if (!error || error.name !== 'AbortError')") >= 2
+    bridge = (MODEL_MANAGER_JS_DIR / "page-bridge.js").read_text(encoding="utf-8")
+    assert "const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;" in bridge
+    assert "shouldCancel: () => cardFaceSaved || (shouldCancel && shouldCancel())" in bridge
+
+
+def test_card_maker_freezes_layered_pngtuber_frame_for_preview_and_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+
+    assert "let pngtuberCardFrame = null;" in script
+    assert "function clonePNGTuberDrawable(source)" in script
+    assert "canvas = clonePNGTuberDrawable(getPNGTuberDrawableSource(mgr));" in script
+    assert "preparePNGTuberCardFrame(mgr);" in script
+    assert "if (pngtuberCardFrame) return pngtuberCardFrame.canvas;" in script
+    assert "if (pngtuberCardFrame) return;" in script
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
@@ -414,6 +460,21 @@ def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     assert "|| await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo })" in script
     assert "parameterEditedSinceSave ||" in script
     assert "offerCardFaceAfterModelSave" in script
+
+
+def test_model_manager_model_type_switch_marks_unsaved_for_card_face_prompt():
+    script = read_model_manager_source()
+    start = script.index("// 模型类型选择事件")
+    end = script.index("// 加载 VRM 模型列表", start)
+    block = script[start:end]
+    switch_block = block[
+        block.index("await switchModelDisplay(type, restoredSubType);"):
+        block.index("// 从 VRM 切回 Live2D", block.index("await switchModelDisplay(type, restoredSubType);"))
+    ]
+
+    assert "window.hasUnsavedChanges = true;" in switch_block
+    assert "if (savePositionBtn) savePositionBtn.disabled = false;" in switch_block
+    assert "markModelChangedForCardFacePrompt();" in switch_block
 
 
 def test_card_maker_supports_closeup_model_scale():

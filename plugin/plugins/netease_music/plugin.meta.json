@@ -479,10 +479,11 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 68416,
+  "source_bytes": 72120,
   "source_files": [
     "README.md",
     "__init__.py",
+    "config.schema.json",
     "credential_ui.py",
     "credentials.py",
     "i18n/en.json",
@@ -498,5 +499,5 @@
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "185cfa16c05c5e2fa755d51608ecfa369d894e7ee29ac1c780e4a378344c7b05"
+  "source_sha256": "e79348d720840f769e104a902cf2648692414e976690cb5a4af603919dc110eb"
 }

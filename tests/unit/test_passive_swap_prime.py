@@ -6,7 +6,7 @@ no user-turn drain to carry them. Their delivery point is the next
 NATURALLY-occurring hot swap: ``_select_passive_callbacks_for_swap_prime``
 folds them into the new session's prime text as background context (PASSIVE
 templates, never flipping ``skipped``), removal is deferred to promote
-success (``_remove_swap_delivered_passive_cbs``), and the post-promote death
+success (``_remove_swap_delivered_callbacks``), and the post-promote death
 exits restore what was removed (``_restore_undelivered_swap_passive_cbs``).
 """
 import pytest
@@ -146,7 +146,7 @@ def test_select_shares_token_budget_with_extras(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _remove_swap_delivered_passive_cbs
+# _remove_swap_delivered_callbacks
 # ---------------------------------------------------------------------------
 
 def test_remove_at_promote_dequeues_by_identity_and_acks_true():
@@ -157,7 +157,7 @@ def test_remove_at_promote_dequeues_by_identity_and_acks_true():
     other = _passive_cb("delivered")  # equal content, different object
     mgr.pending_agent_callbacks = [delivered, other]
 
-    removed = mgr._remove_swap_delivered_passive_cbs([delivered])
+    removed = mgr._remove_swap_delivered_callbacks([delivered])
 
     assert removed == [delivered]
     assert mgr.pending_agent_callbacks == [other]
@@ -208,7 +208,7 @@ def test_remove_noops_for_entries_consumed_in_window():
     mgr = _make_session_mgr()
     consumed = _passive_cb("consumed")
     mgr.pending_agent_callbacks = []
-    assert mgr._remove_swap_delivered_passive_cbs([consumed]) == []
+    assert mgr._remove_swap_delivered_callbacks([consumed]) == []
 
 
 # ---------------------------------------------------------------------------

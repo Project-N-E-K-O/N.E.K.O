@@ -246,11 +246,11 @@
           </div>
           <div>
             <small>{{ t('plugins.configUi.beforeSave') }}</small>
-            <pre>{{ configValueText(configValueAt(originalPreview, change.path)) }}</pre>
+            <pre>{{ configValueText(configValueAt(displayOriginalPreview, change.path)) }}</pre>
           </div>
           <div>
             <small>{{ t('plugins.configUi.draftValue') }}</small>
-            <pre>{{ configValueText(configValueAt(preview, change.path)) }}</pre>
+            <pre>{{ configValueText(configValueAt(displayPreview, change.path)) }}</pre>
             <span class="change-intent">{{
               t(
                 change.afterPresent
@@ -389,6 +389,7 @@ import {
 import { isRequestTimeout } from '@/utils/request'
 import { isAxiosError } from 'axios'
 import PluginConfigForm from './PluginConfigForm.vue'
+import { redactConfigSecrets } from './configEditorSchema'
 
 const props = defineProps<{ pluginId: string }>()
 const emit = defineEmits<{ (event: 'layout-mode-change', pageScroll: boolean): void }>()
@@ -562,13 +563,20 @@ const preview = computed(() => applyProfileOverlay(base.value, current.value?.dr
 const originalPreview = computed(() =>
   applyProfileOverlay(base.value, current.value?.original || {})
 )
+const displayPreview = computed(() => redactConfigSecrets(preview.value, schema.value))
+const displayOriginalPreview = computed(() =>
+  redactConfigSecrets(originalPreview.value, schema.value)
+)
 const dataJson = computed(() =>
   JSON.stringify(
-    dataTab.value === 'effective'
-      ? effective.value
-      : dataTab.value === 'draft'
-        ? current.value?.draft || {}
-        : preview.value,
+    redactConfigSecrets(
+      dataTab.value === 'effective'
+        ? effective.value
+        : dataTab.value === 'draft'
+          ? current.value?.draft || {}
+          : preview.value,
+      schema.value
+    ),
     null,
     2
   )

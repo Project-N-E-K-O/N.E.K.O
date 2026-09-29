@@ -13,7 +13,7 @@ from plugin.server.infrastructure.config_editor_schema import load_config_editor
 from plugin.server.infrastructure.packaged_metadata import read_packaged_metadata
 
 _PLUGINS = Path(__file__).resolve().parents[3] / "plugins"
-_MIGRATED = ("web_search", "lifekit", "game_agent_minecraft")
+_MIGRATED = tuple(sorted(path.parent.name for path in _PLUGINS.glob("*/plugin.toml")))
 _LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 
 pytestmark = pytest.mark.plugin_unit
@@ -55,6 +55,15 @@ def test_schema_covers_every_editable_manifest_and_example_field(plugin_id: str)
     manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
     manifest.pop("plugin")
     schema = _schema(plugin_id)
+    # Claude companion consumes an optional section not shipped in plugin.toml.
+    # Keep those existing runtime defaults documented without changing the manifest.
+    if plugin_id == "claude_companion":
+        assert "claude_companion" not in manifest
+        manifest["claude_companion"] = {
+            "port": 48920,
+            "cooldown_seconds": 60,
+            "api_token": "",
+        }
     _check_fields(schema, manifest)
     example = plugin_dir / "config.example.toml"
     if example.is_file():
@@ -107,7 +116,46 @@ def test_schema_keeps_zero_sentinels_and_runtime_limits() -> None:
     assert search["retry_attempts"]["maximum"] == 3
     assert search["queue_wait_seconds"]["minimum"] == 0.1
     assert search["backend"]["enum"] == ["auto", "anysearch", "baidu", "duckduckgo"]
+    assert search["anysearch_api_key"]["writeOnly"] is True
     life = _schema("lifekit")["properties"]["lifekit"]["properties"]
     assert "" in life["locale"]["enum"]
+    for key in ("amap_key", "baidu_map_key"):
+        assert life[key]["writeOnly"] is True
     assert life["forecast_days"]["minimum"] == 1
     assert life["forecast_days"]["maximum"] == 7
+
+
+def test_remaining_schemas_preserve_open_maps_and_zero_sentinels() -> None:
+    mcp = _schema("mcp_adapter")["properties"]
+    servers = mcp["mcp_servers"]
+    assert servers["properties"] == {}
+    assert servers.get("additionalProperties", True) is True
+    connection = mcp["mcp_adapter"]["properties"]
+    assert connection["reconnect_interval"]["minimum"] == 0
+    assert connection["max_reconnect_attempts"]["minimum"] == 0
+    # Runtime accepts fractional timeouts and maps non-positive values to defaults.
+    for key in ("connect_timeout", "tool_timeout"):
+        assert connection[key]["type"] == "number"
+        assert "minimum" not in connection[key]
+    memo = _schema("memo_reminder")["properties"]["memo"]["properties"]
+    assert memo["max_reminders"]["minimum"] == 0
+    assert "enum" not in memo["timezone"]  # Any installed IANA zone is supported.
+    netease = _schema("netease_music")["properties"]["plugin_runtime"]["properties"]
+    assert netease["enabled"]["default"] is False
+    claude = _schema("claude_companion")["properties"]["claude_companion"]["properties"]
+    assert claude["api_token"]["default"] == ""
+    assert claude["api_token"]["writeOnly"] is True
+    assert claude["cooldown_seconds"]["minimum"] == 0
+    assert (claude["port"]["minimum"], claude["port"]["maximum"]) == (1, 65535)
+
+
+def test_remaining_schemas_match_runtime_mode_choices() -> None:
+    from plugin.plugins.proactive_controller import _VALID_MODES
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    proactive = _schema("proactive_controller")["properties"]["proactive_controller"]["properties"]
+    assert proactive["default_mode_on_first_run"]["enum"] == list(_VALID_MODES)
+    mcp = _schema("mcp_adapter")["properties"]
+    assert "adapter" not in mcp
+    assert set(mcp["plugin_state"]["properties"]["backend"]["enum"]) == PluginStatePersistence.VALID_BACKENDS
+    assert set(mcp["plugin_state"]["properties"]["persist_mode"]["enum"]) == {"auto", "manual", "off"}
