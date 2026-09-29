@@ -8,6 +8,7 @@ from playwright.sync_api import Page
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
 APP_SCREEN = ROOT / "static" / "app" / "app-screen.js"
+DESKTOP_CAPTURE_PROVIDER = ROOT / "static" / "app" / "desktop-capture-provider.js"
 VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
@@ -816,6 +817,82 @@ def test_screen_source_hover_infers_legacy_provider_prompting(
     assert page.locator(".screen-source-title-filter").count() == (
         0 if prompting else 1
     )
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("platform", "prompting"),
+    [
+        ("Macintosh; Intel Mac OS X 14_0", False),
+        ("Windows NT 10.0; Win64; x64", False),
+        ("X11; Linux x86_64", True),
+    ],
+)
+def test_legacy_provider_hover_runs_real_source_enumeration(
+    page: Page, platform: str, prompting: bool,
+) -> None:
+    """Hover drives the real app-screen.js list against an unflagged bridge."""
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """(platform) => {
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
+            });
+            const storedValues = new Map();
+            Object.defineProperty(window, 'localStorage', {
+                configurable: true,
+                value: {
+                    getItem: (key) => (storedValues.has(key) ? storedValues.get(key) : null),
+                    setItem: (key, value) => { storedValues.set(key, String(value)); },
+                    removeItem: (key) => { storedValues.delete(key); },
+                },
+            });
+            window.appUtils.isMobile = () => false;
+            window.appConst.SCREEN_SOURCE_THUMBNAIL_TIMEOUT = 15000;
+            window.safeT = (_key, fallback) => fallback;
+            window.__getSourcesCalls = [];
+            const emptyThumbnail = { isEmpty: () => true, toDataURL: () => '' };
+            // A bridge from before sourceEnumerationMayPrompt existed.
+            window.electronDesktopCapturer = {
+                getSources(options) {
+                    window.__getSourcesCalls.push(options);
+                    return Promise.resolve([
+                        { id: 'screen:1', name: 'Entire Screen', display_id: '1', thumbnail: emptyThumbnail },
+                        { id: 'window:2', name: 'Editor', display_id: '', thumbnail: emptyThumbnail },
+                    ]);
+                },
+            };
+        }""",
+        platform,
+    )
+    page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
+    page.add_script_tag(path=str(APP_SCREEN))
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"]'
+    )
+    load = panel.locator("[data-neko-screen-source-deferred-load]")
+    options = panel.locator(".screen-source-option")
+    if prompting:
+        load.wait_for()
+        assert page.evaluate("window.__getSourcesCalls.length") == 0
+        assert options.count() == 0
+        load.click()
+
+    options.first.wait_for()
+    assert options.count() == 2
+    assert page.evaluate("window.__getSourcesCalls.length") >= 1
+    # Prompting providers keep a "choose again" button above the list;
+    # macOS / Windows list sources with no extra button at all.
+    assert load.count() == (1 if prompting else 0)
     assert page.evaluate("window.__screenToggleCalls") == 0
 
 
