@@ -200,6 +200,7 @@ class TranscriptDispatcher:
             maxsize=capacity
         )
         self._reservations: set[FinalKey] = set()
+        self._queued_turns: dict[FinalKey, VoiceTurnToken] = {}
         self._worker: asyncio.Task[None] | None = None
         self._active: TranscriptEnvelope | None = None
         self._idle = asyncio.Event()
@@ -214,6 +215,14 @@ class TranscriptDispatcher:
             or not self._queue.empty()
             or self._active is not None
         )
+
+    def pending_turn_tokens(self) -> frozenset[VoiceTurnToken]:
+        """Return turns whose accepted final is queued or still dispatching."""
+
+        tokens = set(self._queued_turns.values())
+        if self._active is not None:
+            tokens.add(self._active.turn_token)
+        return frozenset(tokens)
 
     def try_reserve(self, key: FinalKey) -> bool:
         if key in self._reservations:
@@ -238,6 +247,7 @@ class TranscriptDispatcher:
             raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
         self._reservations.remove(key)
         self._queue.put_nowait(envelope)
+        self._queued_turns[key] = envelope.turn_token
         self._idle.clear()
         self._ensure_worker()
 
@@ -245,6 +255,7 @@ class TranscriptDispatcher:
         """Synchronously cancel active/queued Core work at an identity barrier."""
 
         self._reservations.clear()
+        self._queued_turns.clear()
         while True:
             try:
                 self._queue.get_nowait()
@@ -286,6 +297,7 @@ class TranscriptDispatcher:
         try:
             while True:
                 envelope = await self._queue.get()
+                self._queued_turns.pop(envelope.final_key, None)
                 self._active = envelope
                 try:
                     await self._dispatch(envelope)

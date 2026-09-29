@@ -1392,13 +1392,13 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
     await adapter.close()
 
 
-async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> (
-    None
-):
+async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
+    committed = asyncio.Event()
     commits: list[tuple[int, int, int]] = []
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
 
     coordinator = _FakeCoordinator([_incomplete()] * 20)
     adapter = _VoiceTurnAdapter(
@@ -1415,11 +1415,14 @@ async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit
     await adapter.push_audio(
         generation=31, buffer_epoch=32, utterance_id=33, pcm16=b"\x01\x00"
     )
-    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+    await asyncio.wait_for(committed.wait(), 1)
+    await asyncio.sleep(0.05)
 
-    assert failure.stage == "smart_turn"
-    assert commits == []
+    # A semantic "not finished yet" past the deadline is an answer, not an
+    # endpointing failure: the turn is sealed once and the session survives.
+    assert commits == [(31, 32, 33)]
     assert coordinator.evaluate_calls >= 2
+    assert adapter._failed is False
     await adapter.close()
 
 

@@ -160,6 +160,7 @@ async def test_sink_writes_only_privacy_safe_ordered_jsonl_under_data(
         threshold=0.5,
     )
     sink.complete(reason="candidate_pause")
+    sink.complete(reason="semantic_timeout")
     sink.failure(kind="runtime_error", stage="smart_turn")
     await sink.flush()
     await sink.close()
@@ -167,15 +168,17 @@ async def test_sink_writes_only_privacy_safe_ordered_jsonl_under_data(
 
     records = [json.loads(line) for line in target.read_text("utf-8").splitlines()]
     assert sink.enabled is True
-    assert [record["sequence"] for record in records] == [1, 2, 3, 4, 5, 6]
+    assert [record["sequence"] for record in records] == [1, 2, 3, 4, 5, 6, 7]
     assert [record["event"] for record in records] == [
         "session_start",
         "candidate",
         "evaluation",
         "complete",
+        "complete",
         "failure",
         "session_end",
     ]
+    assert records[4]["reason"] == "semantic_timeout"
     elapsed = [record["elapsed_ms"] for record in records]
     assert elapsed == sorted(elapsed)
     assert all(isinstance(value, int) and value >= 0 for value in elapsed)

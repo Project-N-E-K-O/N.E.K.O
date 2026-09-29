@@ -54,10 +54,11 @@ _SAFE_ROTATION_SECONDS = 295 * 60
 _MAX_REPLAY_BYTES = 16_000 * 2 * 30
 # Provider endpointing keeps streaming microphone audio while a turn's
 # ``<end>`` token is in flight, so the tail of the replay buffer at ``<end>``
-# processing time may already contain the next turn's opening frames. Two
-# seconds of 16 kHz PCM16 generously covers the endpoint silence window plus
-# token delivery latency.
+# processing time may already contain the next turn's opening frames. Without
+# token timestamps, two seconds of 16 kHz PCM16 generously covers the endpoint
+# silence window plus token delivery latency.
 _REPLAY_TURN_TAIL_BYTES = 16_000 * 2 * 2
+_PCM_BYTES_PER_MS = 16_000 * 2 // 1_000
 _RETRY_BACKOFF_BASE_SECONDS = 0.5
 _RETRY_BACKOFF_CAP_SECONDS = 8.0
 
@@ -87,6 +88,8 @@ class SonioxUtteranceState:
     buffer_epoch: int = 0
     utterance_id: int = 1
     final_tokens: list[str] = field(default_factory=list)
+    # Connection-relative end of the last final word, when Soniox reports it.
+    final_end_ms: int | None = None
     provisional_tokens: list[str] = field(default_factory=list)
     speech_started: bool = False
     completed: bool = False
@@ -96,6 +99,7 @@ class SonioxUtteranceState:
     def reset_for_next(self) -> None:
         self.utterance_id += 1
         self.final_tokens.clear()
+        self.final_end_ms = None
         self.provisional_tokens.clear()
         self.speech_started = False
         self.completed = False
@@ -106,6 +110,7 @@ class SonioxUtteranceState:
         self.generation = generation
         self.buffer_epoch = buffer_epoch
         self.final_tokens.clear()
+        self.final_end_ms = None
         self.provisional_tokens.clear()
         self.speech_started = False
         self.completed = False
@@ -114,6 +119,7 @@ class SonioxUtteranceState:
 
     def reset_for_replay(self) -> None:
         self.final_tokens.clear()
+        self.final_end_ms = None
         self.provisional_tokens.clear()
         self.speech_started = False
         self.completed = False
@@ -195,6 +201,10 @@ async def soniox_asr_worker(
     # but do not count as audio sent for the current turn.
     replay_carryover_bytes = 0
     provider_wire_audio_bytes = 0
+    # PCM bytes sent on the current connection, replay included. Soniox token
+    # timestamps share this origin, and replay_audio is always its suffix
+    # while replay_complete holds.
+    connection_audio_bytes = 0
     failure_sent = False
     ready_sent = False
     intentional_shutdown = False
@@ -339,14 +349,21 @@ async def soniox_asr_worker(
             len(text),
         )
         if config.endpointing_mode == "provider":
-            # The protocol exposes no byte-exact endpoint position, and
-            # microphone frames for the next turn may already sit in the
+            # Microphone frames for the next turn may already sit in the
             # replay buffer while this turn's <end> token was in flight.
-            # Retain a bounded tail so a disconnect during the next turn
-            # cannot replay away its opening frames; the residual is a short
-            # over-replay of this turn's trailing audio on reconnect, which
-            # is preferable to silently losing the next turn's speech.
-            del replay_audio[: max(0, len(replay_audio) - _REPLAY_TURN_TAIL_BYTES)]
+            # Cut exactly after this turn's last final word when Soniox
+            # reports its end; otherwise retain a bounded tail so a
+            # disconnect during the next turn cannot replay away its opening
+            # frames, at the cost of a short over-replay of this turn.
+            end_ms = state.final_end_ms
+            if end_ms is not None and replay_complete:
+                replay_origin = connection_audio_bytes - len(replay_audio)
+                cut = end_ms * _PCM_BYTES_PER_MS - replay_origin
+                del replay_audio[: min(len(replay_audio), max(0, cut))]
+            else:
+                del replay_audio[
+                    : max(0, len(replay_audio) - _REPLAY_TURN_TAIL_BYTES)
+                ]
         else:
             # Manual endpointing defers the next turn's audio until the
             # pending finalize completes, so the buffer holds only this
@@ -421,6 +438,13 @@ async def soniox_asr_worker(
                         continue
                     if token.get("is_final") is True:
                         state.final_tokens.append(text)
+                        end_ms = token.get("end_ms")
+                        if (
+                            isinstance(end_ms, int)
+                            and not isinstance(end_ms, bool)
+                            and end_ms >= 0
+                        ):
+                            state.final_end_ms = end_ms
                     else:
                         provisional.append(text)
                 state.provisional_tokens = provisional
@@ -438,7 +462,7 @@ async def soniox_asr_worker(
 
     async def send_requests(connection, connected_at: float) -> _ConnectionAction:
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
-        nonlocal pending_finalize, provider_wire_audio_bytes
+        nonlocal connection_audio_bytes, pending_finalize, provider_wire_audio_bytes
         nonlocal reconnect_attempted, replay_carryover_bytes, replay_complete
         delivery_evidence(request_queue)
         while True:
@@ -607,6 +631,7 @@ async def soniox_asr_worker(
                                 replay_audio.clear()
                                 replay_carryover_bytes = 0
                         provider_wire_audio_bytes += len(request.audio)
+                        connection_audio_bytes += len(request.audio)
                         delivery = begin_transport_write(request_queue)
                         await connection.send(request.audio)
                         complete_transport_write(
@@ -677,7 +702,9 @@ async def soniox_asr_worker(
                 close_timeout=_CLOSE_TIMEOUT_SECONDS,
             )
             await websocket.send(json.dumps(_soniox_config(api_key, config)))
+            connection_audio_bytes = 0
             if replay_audio and replay_complete:
+                connection_audio_bytes = len(replay_audio)
                 delivery = begin_transport_write(request_queue)
                 await websocket.send(bytes(replay_audio))
                 complete_transport_write(

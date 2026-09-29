@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from main_logic.asr_client.lifecycle import VoiceLifecycleState, VoiceRouteMode
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
@@ -276,3 +276,100 @@ async def test_provider_overflow_waiting_on_final_lock_is_identity_fenced(
     watchdog = runtime._asr_final_watchdog_task
     if watchdog is not None:
         watchdog.cancel()
+
+
+async def _complete_turn(runtime: _Runtime, epoch: int, text: str) -> None:
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final(text, epoch, "qwen")
+
+
+async def _block_first_delivery_behind_queued_final_and_active_turn(
+    runtime: _Runtime,
+) -> asyncio.Event:
+    """Leave turn 1 dispatching, turn 2 queued and turn 3 ACTIVE."""
+
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def blocking_input(text: str, **_kwargs) -> bool:
+        if text == "first":
+            delivery_started.set()
+            await release_delivery.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = blocking_input
+    epoch = runtime._asr_session_epoch
+    await _complete_turn(runtime, epoch, "first")
+    await asyncio.wait_for(delivery_started.wait(), 1)
+    await _complete_turn(runtime, epoch, "second")
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_turn_prepared is True
+    return release_delivery
+
+
+async def test_core_backpressure_delivers_accepted_finals_exactly_once() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    # Only the interrupted third turn loses its audio; both finals the runtime
+    # had already accepted still reach the model, in order, exactly once.
+    assert runtime.session.create_response.await_args_list == [
+        call("first"),
+        call("second"),
+    ]
+    assert call(f"asr-{epoch}-3") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+
+
+async def test_runtime_backpressure_delivers_accepted_finals_exactly_once() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+    ingress_token = runtime._asr_runtime._asr_current_ingress_token
+    assert ingress_token is not None
+
+    await runtime._handle_audio_ingress_backpressure(ingress_token)
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime.session.create_response.await_args_list == [
+        call("first"),
+        call("second"),
+    ]
+    assert "ASR_INGRESS_BACKPRESSURE" in str(runtime.send_status.await_args_list)
+
+
+async def test_non_backpressure_abort_still_retires_accepted_finals() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+
+    await runtime._abort_independent_asr("microphone_stopped")
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()

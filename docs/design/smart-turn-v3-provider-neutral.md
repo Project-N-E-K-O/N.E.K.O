@@ -83,19 +83,35 @@ frame and continues toward a partial transcript.
 When that ingress queue is full, Core rejects the current frame, clears every
 pending frame, and invokes the identity-scoped backpressure handler. The
 handler invalidates the candidate or active turn and its audio generation
-before another frame can be routed. A separate overflow inside the detector's
+before another frame can be routed. Backpressure retires only the turn whose
+PCM was interrupted: finals the runtime already accepted keep their queued or
+in-flight Core delivery and their pinned Registry route, so the previous
+sentence is still answered exactly once. Only the session epoch, or an
+explicit teardown such as stop, suspend, route swap, or a fatal error, retires
+accepted finals. A separate overflow inside the detector's
 adapter queue clears candidate bindings and installs a serialized reset
 barrier; every submission returns `BACKPRESSURE` until that reset completes.
+A completion evaluated before that overflow can neither advance the new
+detector epoch's semantic identity nor publish its turn completion.
 Only a frame carrying the then-current ingress identity may start the next
 candidate. Boundary coverage lives in
 `test_audio_stream_queue_clears_whole_candidate_when_full`,
-`test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen`, and
-`test_overflow_reset_rejects_audio_until_barrier_finishes`.
+`test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen`,
+`test_core_backpressure_delivers_accepted_finals_exactly_once`,
+`test_overflow_reset_rejects_audio_until_barrier_finishes`, and
+`test_pre_overflow_completion_cannot_advance_successor_epoch`.
 
 Silero remains serial, while Smart Turn evaluation uses one in-flight task and
 at most one coalesced retry. Evaluation results re-enter the ordered detector
 lane behind PCM that arrived before inference completed. A resumed-speech
 activity revision therefore makes an older COMPLETE result stale.
+
+On a Smart Turn-sealed route, a semantic `INCOMPLETE` result is retried every
+continuation interval until the maximum endpoint wait (15 seconds) expires.
+A result that is still `INCOMPLETE` after that deadline seals the turn through
+the ordinary completion path with reason `semantic_timeout`; it is a semantic
+answer, not an endpointing failure, and never blocks the ASR session. Only
+`UNAVAILABLE` assets, inference errors, and VAD failures fail the route.
 
 Core handles identity-scoped detector events through its own serial dispatcher.
 Provider commands use one independent-ASR dispatcher with one of these orders:
@@ -109,6 +125,11 @@ Hard mute, Focus suppression, game takeover, stop, route swap, and abort first
 invalidate the ingress/turn identity. Queued writes then fail validation before
 they can start. A write already in progress may finish, but no later write or
 seal from that identity can begin.
+
+Soniox reconnect replay keeps only audio after the previous turn's last final
+word. The cut uses that token's `end_ms` against the current connection's
+stream origin, which restarts at the first replayed byte after a reconnect;
+without token timestamps the worker retains a bounded two-second tail instead.
 
 These rules are safety contracts rather than resource optimizations. Disabling
 `voice_input_resource_optimization_enabled` keeps the independent ASR

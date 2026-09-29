@@ -549,11 +549,16 @@ class IndependentAsrRuntime:
         provider = self._asr_provider or "unknown"
         if lifecycle is not None:
             lifecycle.invalidate_audio()
+        preserve_accepted_finals = reason == "ingress_backpressure"
         if cleanup_timeout is None:
-            post_detach = await self._abort_transport(reason)
+            post_detach = await self._abort_transport(
+                reason, preserve_accepted_finals=preserve_accepted_finals
+            )
         else:
             post_detach = await self._abort_transport(
-                reason, cleanup_timeout=cleanup_timeout
+                reason,
+                cleanup_timeout=cleanup_timeout,
+                preserve_accepted_finals=preserve_accepted_finals,
             )
         if not self._runtime_identity_matches(
             post_detach
@@ -593,6 +598,11 @@ class IndependentAsrRuntime:
         """Return whether an accepted final has not finished Core dispatch."""
 
         return self._asr_transcript_dispatcher.has_pending_delivery
+
+    def pending_transcript_turn_tokens(self) -> frozenset[VoiceTurnToken]:
+        """Return turns whose accepted final is still owed to Core."""
+
+        return self._asr_transcript_dispatcher.pending_turn_tokens()
 
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
@@ -1682,7 +1692,8 @@ class IndependentAsrRuntime:
             try:
                 lifecycle.invalidate_audio()
                 post_detach = await self._abort_transport(
-                    "detector_audio_backpressure"
+                    "detector_audio_backpressure",
+                    preserve_accepted_finals=True,
                 )
                 if not self._runtime_identity_matches(
                     post_detach
@@ -3591,12 +3602,22 @@ class IndependentAsrRuntime:
         reason: str,
         *,
         cleanup_timeout: float | None = None,
+        preserve_accepted_finals: bool = False,
     ) -> _AsrRuntimeIdentity:
-        """Invalidate provider I/O before closing a live transport."""
+        """Invalidate provider I/O before closing a live transport.
+
+        ``preserve_accepted_finals`` keeps queued and in-flight Core delivery
+        of already accepted finals; only the interrupted turn is retired.
+        """
 
         self._begin_asr_start_operation()
         self._asr_audio_generation += 1
-        self._asr_transcript_dispatcher.invalidate_all()
+        if preserve_accepted_finals:
+            reserved_final_key = self._asr_reserved_final_key
+            if reserved_final_key is not None:
+                self._asr_transcript_dispatcher.release(reserved_final_key)
+        else:
+            self._asr_transcript_dispatcher.invalidate_all()
         self._asr_detector_dispatcher.invalidate_all()
         self._asr_audio_dispatcher.abort()
         self._reset_asr_turn_state()
@@ -4885,9 +4906,11 @@ class IndependentAsrRuntime:
         envelope: TranscriptEnvelope,
     ) -> None:
         ingress_token = envelope.turn_token.ingress
-        if not self._ingress_token_matches(ingress_token):
-            # The envelope was accepted before the audio generation moved on,
-            # so neither on_final nor a teardown path will run for this turn.
+        # Only the session epoch retires an accepted final here. Ingress
+        # backpressure bumps the audio generation to retire the interrupted
+        # turn, and every other retirement purges this queue synchronously.
+        if ingress_token.session_epoch != self._asr_session_epoch:
+            # Neither on_final nor a teardown path will run for this turn.
             # Release the Core-side pause keyed to it instead of leaking the
             # pause until the next turn.
             await self._notify_asr_turn_abandoned(envelope.turn_token)

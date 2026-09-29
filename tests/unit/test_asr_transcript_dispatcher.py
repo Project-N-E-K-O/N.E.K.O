@@ -52,6 +52,34 @@ async def test_pending_delivery_spans_reservation_queue_and_active_dispatch() ->
     assert dispatcher.has_pending_delivery is False
 
 
+async def test_pending_turn_tokens_cover_queued_and_active_envelopes() -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    first = _envelope(1)
+    second = _envelope(2)
+    reserved = _envelope(3)
+    for envelope in (first, second, reserved):
+        assert dispatcher.try_reserve(envelope.final_key) is True
+    dispatcher.submit(first)
+    dispatcher.submit(second)
+    await dispatch_started.wait()
+
+    # A bare reservation has no accepted final yet, so it is not owed Core.
+    assert dispatcher.pending_turn_tokens() == frozenset(
+        {first.turn_token, second.turn_token}
+    )
+
+    dispatcher.invalidate_all()
+    assert dispatcher.pending_turn_tokens() == frozenset()
+    release_dispatch.set()
+
+
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
     release_first = asyncio.Event()
     delivered: list[int] = []

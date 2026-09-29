@@ -15,7 +15,7 @@ import os
 import struct
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, ClassVar, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Collection, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -2854,7 +2854,16 @@ class AsrRuntimeMixin:
         await self._asr_runtime.abort(reason)
         if still_current is not None and not still_current():
             return
-        self._invalidate_voice_pcm_sync(reason)
+        keep_turns: Collection[VoiceTurnToken] = ()
+        if reason == "ingress_backpressure":
+            # Backpressure retires only the interrupted turn; finals the
+            # runtime already accepted still owe Core their pinned route.
+            pending_turns = getattr(
+                self._asr_runtime, "pending_transcript_turn_tokens", None,
+            )
+            if callable(pending_turns):
+                keep_turns = pending_turns()
+        self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
@@ -4803,9 +4812,16 @@ class AsrRuntimeMixin:
                     "ingress_backpressure"
                 )
 
-    def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+    def _invalidate_voice_pcm_sync(
+        self,
+        reason: str,
+        *,
+        keep_turns: Collection[VoiceTurnToken] = (),
+    ) -> None:
         self._wake_name_correction = None
-        self._voice_input_registry.invalidate_utterance(reason=reason)
+        self._voice_input_registry.invalidate_utterance(
+            reason=reason, keep=keep_turns,
+        )
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
         self._native_activation_idle_reconnect_identity = None

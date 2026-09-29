@@ -863,6 +863,22 @@ class _VoiceTurnAdapter:
             )
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
+            if (
+                not reevaluate
+                and item.reason != "periodic_no_vad"
+                and self._strict_endpoint_wait_expired()
+            ):
+                # An unfinished-sounding pause is still a semantic answer, not
+                # an endpointing failure: seal the turn instead of blocking
+                # the whole ASR session.
+                await self._publish_complete_result(
+                    item.identity,
+                    item.detector_identity,
+                    "semantic_timeout",
+                    probability=probability,
+                    evaluation_tail=evaluation_tail,
+                )
+                return
             self._observe_evaluation_tail(evaluation_tail)
             if reevaluate:
                 self._request_evaluation(
@@ -1147,21 +1163,32 @@ class _VoiceTurnAdapter:
             or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
         ):
             return
-        deadline = self._strict_endpoint_deadline
-        if deadline is None or asyncio.get_running_loop().time() >= deadline:
+        if self._strict_endpoint_deadline is None:
             self._report_failure("unavailable", "smart_turn")
             return
+        # Past the deadline this retry is the last one: a still-incomplete
+        # result seals the turn as ``semantic_timeout``.
         self._request_evaluation(
             identity,
             "strict_retry",
             self._latest_detector_identity,
         )
 
+    def _strict_endpoint_wait_expired(self) -> bool:
+        deadline = self._strict_endpoint_deadline
+        return (
+            self._smart_turn_required
+            and deadline is not None
+            and asyncio.get_running_loop().time() >= deadline
+        )
+
     async def _publish_complete_result(
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: Literal[
+            "candidate_pause", "periodic_no_vad", "strict_retry", "semantic_timeout"
+        ],
         *,
         probability: float | None,
         evaluation_tail: tuple[_AudioItem, ...],
@@ -1538,6 +1565,10 @@ class DetectorRuntime:
                 turn_id: int,
                 identity: DetectorIngressIdentity,
             ) -> _Identity:
+                if identity.detector_epoch != self._detector_epoch:
+                    # A result evaluated before an overflow reset must not
+                    # advance the successor epoch's semantic identity.
+                    return (generation, buffer_epoch, turn_id)
                 successor_present = self._sequence_no > identity.sequence_no
                 fence = SmartTurnCompletionFence(
                     detector_epoch=identity.detector_epoch,
@@ -1567,6 +1598,12 @@ class DetectorRuntime:
                     (generation, buffer_epoch, turn_id),
                     None,
                 )
+                if fence is None and (generation, turn_id) != (
+                    self._semantic_generation,
+                    self._semantic_turn_id,
+                ):
+                    # An overflow or reset already retired this semantic turn.
+                    return
                 if fence is None:
                     self._candidate_open = False
                     self._policy_event_candidate = None
