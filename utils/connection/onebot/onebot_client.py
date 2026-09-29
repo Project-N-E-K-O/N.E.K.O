@@ -162,8 +162,13 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             del self._group_muted[gid]
         return False
 
-    def _handle_group_ban_notice(self, notice: dict[str, Any]) -> None:
-        """Handle group-ban notice: track whether the bot is muted/unmuted."""
+    def _handle_group_ban_notice(self, notice: dict[str, Any]) -> bool:
+        """Handle group-ban notice.
+
+        Returns True when this notice should travel upstream (a **third party** was
+        banned/unbanned). Self or whole-group mute/unmute only updates local
+        bookkeeping -- and returns False: when she is muted she cannot speak anyway.
+        """
         import time
         gid = str(notice.get("group_id") or "").strip()
         if not gid:
@@ -177,7 +182,17 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         is_self = bool(self._self_id and user_id == str(self._self_id))
 
         if not is_whole_group and not is_self:
-            return  # someone else muted; not our concern
+            # Someone else was banned/unbanned: nothing to track here (`_group_muted`
+            # only answers "can the bot speak in this group"), but the notice must
+            # still reach the plugin -- it decides whether that person is the one she
+            # is currently talking with (2026-09-29 使用者口径：对正在聊天的人的禁言
+            # 做出反应). True = enqueue.
+            self._emit_log(
+                "INFO",
+                f"[Mute] {'解除禁言' if sub_type == 'lift_ban' else '被禁言'}: "
+                f"group={gid} user={user_id} duration={duration}s",
+            )
+            return True
 
         if sub_type == "ban":
             until = time.time() + max(duration, 1) if duration > 0 else float("inf")
@@ -188,6 +203,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             self._group_muted.pop(gid, None)
             who = "全体" if is_whole_group else "自己"
             self._emit_log("INFO", f"[Mute] {who}解除禁言: group={gid}")
+        return False
 
     @staticmethod
     def _looks_like_path(value: str) -> bool:
@@ -671,8 +687,22 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             if self.logger:
                 self.logger.info(f"Queued poke notice: group {message.get('group_id')}, target {message.get('target_id')}, user {message.get('user_id')}")
         elif message.get("post_type") == "notice" and message.get("notice_type") == "group_ban":
-            # Group ban notice: bot self muted/unmuted, or whole-group mute/unmute
-            self._handle_group_ban_notice(message)
+            # Group ban notice. Self / whole-group mute only updates local bookkeeping;
+            # a third party's ban/unban is enqueued so the plugin can decide whether to
+            # say something about it (it is the only side that knows who she is chatting
+            # with). See `_handle_group_ban_notice` for the return value.
+            if self._handle_group_ban_notice(message):
+                if not self._message_queue:
+                    return
+                try:
+                    self._message_queue.put_nowait(message)
+                except asyncio.QueueFull:
+                    pass
+                if self.logger:
+                    self.logger.info(
+                        f"Queued group_ban notice: group {message.get('group_id')}, "
+                        f"user {message.get('user_id')}, sub_type {message.get('sub_type')}"
+                    )
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
         """Receive one message and return the normalized form."""
@@ -686,13 +716,22 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             if self_id:
                 self._self_id = str(self_id)
 
-            # Poke notice event
+            # Poke / group-ban notice events
             if raw_msg.get("post_type") == "notice":
+                raw_notice = str(raw_msg.get("notice_type") or "").strip()
+                sub_type = str(raw_msg.get("sub_type") or "").strip()
+                # poke 的形状是 `notice_type=notify, sub_type=poke`，那一类要拿 sub_type
+                # 当事件名；group_ban 的 sub_type 是 ban/lift_ban（那是"哪一种禁言"，
+                # 不是"哪一类事件"），必须单独取名，否则上游认不出这是什么通知。
+                notice_kind = "group_ban" if raw_notice == "group_ban" else sub_type
                 return {
                     "message_type": "notice",
                     "channel": self.CHANNEL,
-                    "notice_type": raw_msg.get("sub_type", ""),
+                    "notice_type": notice_kind,
+                    "sub_type": sub_type,
                     "user_id": str(raw_msg.get("user_id") or ""),
+                    "operator_id": str(raw_msg.get("operator_id") or ""),
+                    "duration": int(raw_msg.get("duration") or 0),
                     "group_id": str(raw_msg.get("group_id") or ""),
                     "target_id": str(raw_msg.get("target_id") or ""),
                     "timestamp": raw_msg.get("time"),
