@@ -4613,6 +4613,7 @@
                                         console.log(window.t('console.autoRestartFailedEndSession'));
                                     }
 
+                                    S.localAsrPreparingMessage = null;
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                                     if (!isMicrophoneStartCancelled
                                             && typeof window.showStatusToast === 'function') {
@@ -5577,6 +5578,7 @@
                             'while pending', S._pendingSessionStartMode);
                         return;
                     }
+                    S.localAsrPreparingMessage = null;
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -5653,6 +5655,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
+                    S.localAsrPreparingMessage = null;
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
 
                     // Restore UI to idle state
@@ -6013,6 +6016,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
+            S.localAsrPreparingMessage = null;
             if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
 
             // Reset button states

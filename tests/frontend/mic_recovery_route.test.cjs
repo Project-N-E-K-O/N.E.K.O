@@ -647,3 +647,28 @@ test('a new READY retires a preparing notice left over from an earlier session',
     assert.equal(env.S.localAsrPreparingMessage, null);
     assert.equal(preparing, null);
 });
+
+test('the preparing notice is put away for good when the session ends', () => {
+    for (const end of ['session_failed', 'session_ended_by_server', 'onclose']) {
+        const env = loadCapture(true);
+        let preparing = null;
+        env.window.showVoicePreparingToast = message => { preparing = message; };
+        // Mirrors the real helper: a pending local-model notice is kept up.
+        env.window.hideVoicePreparingToast = () => {
+            preparing = env.S.localAsrPreparingMessage || null;
+        };
+        env.loadWebsocket();
+        env.S.voiceSessionEpoch = 12;
+        env.status('ASR_INDEPENDENT_PREPARING', {
+            provider: 'faster_whisper', session_epoch: 12, reason: 'ASR_LOCAL_MODEL_LOADING',
+        });
+        assert.equal(preparing, 'microphone.localAsrPreparing');
+        if (end === 'onclose') {
+            env.S.socket.onclose();
+        } else {
+            env.S.socket.onmessage({ data: JSON.stringify({ type: end, input_mode: 'audio' }) });
+        }
+        assert.equal(env.S.localAsrPreparingMessage, null, end);
+        assert.equal(preparing, null, end);
+    }
+});
