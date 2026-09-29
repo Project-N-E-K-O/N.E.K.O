@@ -344,7 +344,8 @@ class TtsRuntimeMixin:
         text = self._tts_bracket_stripper.feed(text)
         if not text:
             return
-        # 最后一道：删掉会被念出来的符号（%、#、= …），句读标点保留
+        # 最后一道：删掉会被念出来的装饰 / 技术符号（%、@、| …）；运算符、货币、
+        # 负号和 C# 的 # 保留，句读标点照常
         text = self._strip_tts_symbols_across_chunks(text)
         if getattr(self, "_tts_pending_name_hash", ""):
             # 「C」「#」时 # 还没定：空闲软 flush 会先把「C」合成出去，C# 的读法
@@ -444,6 +445,8 @@ class TtsRuntimeMixin:
 
     def _reset_tts_symbol_gap(self) -> None:
         self._tts_last_spoken_char = ""
+        # 最后念出的两个字符：判断块首的「#」是不是 C# 这类名字要看两位。
+        self._tts_last_spoken_tail = ""
         self._tts_symbol_gap_pending = False
         self._tts_prev_chunk_ended_emoji = False
         self._tts_pending_minus = ""
@@ -473,6 +476,9 @@ class TtsRuntimeMixin:
             self._tts_pending_name_hash = ""
             self._tts_deferred_symbols = ""
             self._tts_last_spoken_char = text[-1]
+            self._tts_last_spoken_tail = (
+                getattr(self, "_tts_last_spoken_tail", "") + pending_name_hash + text
+            )[-2:]
             return pending_name_hash + text
         if getattr(self, "_tts_prev_chunk_ended_emoji", False):
             # 上一块以 emoji 结尾：这块开头的零宽连接符 / 变体选择符是被切开的
@@ -482,6 +488,7 @@ class TtsRuntimeMixin:
                 return ""
         self._tts_prev_chunk_ended_emoji = tts_chunk_ends_in_emoji(text)
         last = getattr(self, "_tts_last_spoken_char", "")
+        last_tail = getattr(self, "_tts_last_spoken_tail", "") or last
         # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
         # 下一块以数字开头时再补回去。
         pending_minus = getattr(self, "_tts_pending_minus", "")
@@ -489,13 +496,13 @@ class TtsRuntimeMixin:
         # 「C」「#」「-」「5」与「C#-5」一样，「3」「%」「-」「5」与「3%-5」一样。
         deferred_symbols = getattr(self, "_tts_deferred_symbols", "")
         self._tts_pending_minus = tts_chunk_trailing_minus(
-            deferred_symbols + text, last
+            deferred_symbols + text, last_tail
         )
         # C# 可能被切开（「C」「#」「 dev」、「a#」「%」「b」）：块尾的「#」看不到
         # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
-        held_name_hash = tts_chunk_trailing_name_hash(text, last)
-        cleaned = strip_tts_muted_symbols(text, last)
+        held_name_hash = tts_chunk_trailing_name_hash(text, last_tail)
+        cleaned = strip_tts_muted_symbols(text, last_tail)
         if held_name_hash and cleaned.endswith(held_name_hash):
             cleaned = cleaned[: -len(held_name_hash)]
         if not cleaned or not cleaned.strip():
@@ -533,6 +540,7 @@ class TtsRuntimeMixin:
             cleaned[-1]
         )
         self._tts_last_spoken_char = cleaned[-1]
+        self._tts_last_spoken_tail = (last_tail + cleaned)[-2:]
         return cleaned
 
     def _request_tts_done_locked(self) -> str:

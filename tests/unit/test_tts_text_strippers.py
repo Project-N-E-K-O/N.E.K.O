@@ -441,6 +441,28 @@ def test_strip_tts_muted_symbols(text, expected):
         # emoji、装饰符、箭头仍然删
         ("好的→下一步", "好的下一步"),
         ("★重点★", "重点"),
+        # 话题标签和普通词里的 # 删掉；只有单独成词的一个字母 + # 才是名字
+        ("#ChatGPT#", " ChatGPT "),
+        ("#ChatGPT#很火", " ChatGPT很火"),
+        ("#AI#话题", " AI话题"),
+        ("tag#热门", "tag热门"),
+        ("#C#", " C "),
+        ("F#语言", "F#语言"),
+        ("用C#写", "用C#写"),
+        # 零下温度区间：第二个负号保留，和前一个数隔开
+        ("气温-10~-5℃", "气温-10 -5℃"),
+        ("气温-10～-5℃", "气温-10 -5℃"),
+        ("气温-10〜-5℃", "气温-10 -5℃"),
+        ("明天-3~-1℃", "明天-3 -1℃"),
+        # 比较号：<= >= != 换成 ≤ ≥ ≠；夹在操作数之间或挨着 = 的 < > 保留
+        ("x <= 5", "x ≤ 5"),
+        ("a >= b", "a ≥ b"),
+        ("a != b", "a ≠ b"),
+        ("x＜＝5", "x≤5"),
+        ("3<5", "3<5"),
+        ("a > b", "a > b"),
+        ("=>", "=>"),
+        ("<提示>", "提示"),
     ],
 )
 def test_filter_keeps_symbols_that_carry_meaning(text, expected):
@@ -550,6 +572,9 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         (("a#", "%", "b"), [("s1", "a"), ("s1", " b")]),
         (("a#", "b"), [("s1", "a"), ("s1", " b")]),
         (("C#", " dev"), [("s1", "C"), ("s1", "# dev")]),
+        # A lone-letter name split off its "#" across chunks.
+        (("用C", "#", "写"), [("s1", "用C"), ("s1", "#写")]),
+        (("#AI", "#", "话题"), [("s1", " AI"), ("s1", "话题")]),
     ],
 )
 def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):
@@ -619,6 +644,33 @@ def test_soft_flush_waits_while_a_name_hash_is_unresolved():
     mgr._enqueue_tts_text_chunk("s1", " dev")
     assert armed == ["s1", "s1"]
     assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "# dev")]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ("气温-10~-5℃",),
+        ("气温-10", "~", "-5℃"),
+        ("气温-10~", "-5℃"),
+        ("气温-10~-", "5℃"),
+    ],
+)
+def test_below_zero_range_keeps_both_signs_however_it_is_split(chunks):
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in chunks:
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    items = _drain(mgr.tts_request_queue)
+    assert items[-1] == (None, None)
+    assert "".join(text for _sid, text in items[:-1]) == "气温-10 -5℃"
 
 
 def test_held_name_hash_is_released_at_turn_end():

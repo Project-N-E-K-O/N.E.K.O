@@ -61,7 +61,8 @@ def replace_corner_mark(text):
 # - 常用运算符 + − × ÷ = ≠ ≈ ± ≤ ≥：算式要念得出来；
 # - 温度 / 度数 ℃ ℉ °（「22°C」的度数符号也是 °），以及 CJK 兼容单位
 #   （U+3380–33FF，如 ㎡ ㎏ ㎞）；
-# - 负号和 C# 这类名字里的 #：见 ``_muted_symbol_replacement``。
+# - 负号、比较号（<= >= != 先换成 ≤ ≥ ≠；夹在两个操作数之间的 < >）和
+#   C# 这类名字里的 #：见 ``_kept_symbols``。
 # 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
 # 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
 # 天城文等文字里正常使用的零宽连接符不受影响。
@@ -126,31 +127,61 @@ def is_tts_word_char(char: str) -> bool:
 
 _TTS_MINUS_SIGNS = frozenset("-－﹣")
 _TTS_HASH_SIGNS = frozenset("#＃")
+# 范围连接符：「-10~-5℃」里第二个负号前面的 ~。
+_TTS_RANGE_SIGNS = frozenset("~～〜")
+_TTS_COMPARISON_SIGNS = frozenset("<>＜＞")
+_TTS_EQUALS_SIGNS = frozenset("=＝")
+# 「<=」「>=」「!=」先换成单个比较符号，否则 < > ! 被删后只剩「=」，意思就反了。
+_TTS_COMPARISON_DIGRAPH_RE = regex.compile(r"[<＜][=＝]|[>＞][=＝]|[!！][=＝]")
+_TTS_COMPARISON_DIGRAPHS = {"<": "≤", "＜": "≤", ">": "≥", "＞": "≥", "!": "≠", "！": "≠"}
 
 
 # 只由 emoji、零宽连接符、变体选择符组成的一段（「🌡️」）。
 _TTS_EMOJI_RUN_RE = regex.compile(r"(?:\p{So}|[\u200d\ufe0e\ufe0f\u20e3])+")
 
 
-def _kept_symbols(symbol: str, prev_char: str, next_char: str) -> str | None:
+def _is_name_hash_context(prev_char: str, prev2: str) -> bool:
+    # 「C#」「F#」「用C#」：# 前面是单独成词的一个英文字母。
+    # 「tag#」「#AI#」「#C#」这类是话题标签或普通词，不算名字。
+    return (
+        prev_char.isascii()
+        and prev_char.isalpha()
+        and not (prev2.isascii() and prev2.isalnum())
+        and prev2 not in _TTS_HASH_SIGNS
+    )
+
+
+def _kept_symbols(
+    symbol: str, prev_char: str, next_char: str, prev2: str = ""
+) -> str | None:
     """What a run of removable symbols keeps, or None to drop it as usual.
 
-    - "C#" / "F#": a "#" right after an ASCII letter, not followed by a
+    - "C#" / "F#": a "#" right after a single ASCII letter that stands on its
+      own (``prev2`` is the character before that letter), not followed by a
       letter or digit, is part of the name ("C#😀 dev" keeps it as well);
-      "C#-5" keeps both the "#" and the minus sign.
+      "C#-5" keeps both the "#" and the minus sign. Hashtags ("#AI#话题")
+      and words ("tag#热门") lose the "#".
+    - "-10~-5℃": a range sign followed by a minus before a digit keeps the
+      minus with a separating space, so the upper bound stays below zero.
     - A minus sign before a digit, when no letter/digit precedes the run
       ("-5", "x = -3", "~-5°C"), or when only emoji precede it within the run
       ("temp🌡️-5°C"). Between a letter/digit and other removed symbols it is
       a separator, as in "3%-5", spoken "3 5" whether or not it was split.
     """
     head, rest = symbol[0], symbol[1:]
-    if head in _TTS_HASH_SIGNS and prev_char.isascii() and prev_char.isalpha():
+    if head in _TTS_HASH_SIGNS and _is_name_hash_context(prev_char, prev2):
         if rest in _TTS_MINUS_SIGNS and next_char.isdigit():
             return symbol
         if not (next_char.isascii() and next_char.isalnum()):
             return head
     if symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
         lead = symbol[:-1]
+        if (
+            lead
+            and all(char in _TTS_RANGE_SIGNS for char in lead)
+            and is_tts_word_char(prev_char)
+        ):
+            return " " + symbol[-1]
         if not is_tts_word_char(prev_char):
             return symbol[-1]
         if lead and _TTS_EMOJI_RUN_RE.fullmatch(lead):
@@ -193,8 +224,8 @@ def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
     run = _trailing_symbol_run(text)
     if run is None or run.group(0)[-1] not in _TTS_MINUS_SIGNS:
         return ""
-    prev_char = text[run.start() - 1] if run.start() > 0 else before
-    kept = _kept_symbols(run.group(0), prev_char, "0")
+    context = (before or "") + text[: run.start()]
+    kept = _kept_symbols(run.group(0), context[-1:], "0", context[-2:-1])
     return run.group(0)[-1] if kept and kept[-1] in _TTS_MINUS_SIGNS else ""
 
 
@@ -210,8 +241,10 @@ def tts_chunk_trailing_name_hash(text: str, before: str = "") -> str:
     run = _trailing_symbol_run(text)
     if run is None or run.group(0)[0] not in _TTS_HASH_SIGNS:
         return ""
-    prev_char = text[run.start() - 1] if run.start() > 0 else before
-    return run.group(0)[0] if prev_char.isascii() and prev_char.isalpha() else ""
+    context = (before or "") + text[: run.start()]
+    if _is_name_hash_context(context[-1:], context[-2:-1]):
+        return run.group(0)[0]
+    return ""
 
 
 def tts_first_unmuted_char(text: str) -> str:
@@ -229,12 +262,23 @@ def _muted_symbol_replacement(match, before: str = "") -> str:
     text = match.string
     start, end = match.span()
     symbol = match.group(0)
-    prev_char = text[start - 1] if start > 0 else before
+    context = (before or "") + text[:start]
+    prev_char = context[-1:]
     next_char = text[end] if end < len(text) else ""
     # C# 的「#」和负号保留（「C#」「-5℃」「🌡️-5°C」），规则见 _kept_symbols。
-    kept = _kept_symbols(symbol, prev_char, next_char)
+    kept = _kept_symbols(symbol, prev_char, next_char, context[-2:-1])
     if kept is not None:
         return kept
+    if symbol in _TTS_COMPARISON_SIGNS:
+        # 「3<5」「a > b」「=>」：夹在两个操作数之间、或挨着等号的 < > 是比较号。
+        left = context.rstrip(" ")[-1:]
+        right = text[end:].lstrip(" ")[:1]
+        if (
+            prev_char in _TTS_EQUALS_SIGNS
+            or next_char in _TTS_EQUALS_SIGNS
+            or (left.isalnum() and right.isalnum())
+        ):
+            return symbol
     prev_ok = is_tts_word_char(prev_char) if prev_char else True
     next_ok = is_tts_word_char(next_char) if next_char else True
     if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
@@ -250,12 +294,16 @@ def strip_tts_muted_symbols(text: str, before: str = "") -> str:
     units, a minus sign before a number and the "#" of names like C#. A symbol between two letters/digits of a
     space-delimited script becomes a space so the neighbours are not read as
     one number or word. Safe for streaming chunks: the chunk's own
-    leading/trailing whitespace is left alone. ``before`` is the character
-    spoken just before a streamed chunk, so a symbol at the chunk's start is
-    judged as it would be unsplit ("3" + "-5" is a range, not a minus).
+    leading/trailing whitespace is left alone. ``before`` holds the last
+    characters spoken before a streamed chunk (two are enough), so a symbol
+    at the chunk's start is judged as it would be unsplit ("3" + "-5" is a
+    range, not a minus; "用C" + "#" is a name).
     """
     if not text:
         return text
+    text = _TTS_COMPARISON_DIGRAPH_RE.sub(
+        lambda match: _TTS_COMPARISON_DIGRAPHS[match.group(0)[0]], text
+    )
     cleaned = _TTS_MUTED_SYMBOL_RE.sub(
         lambda match: _muted_symbol_replacement(match, before), text
     )
