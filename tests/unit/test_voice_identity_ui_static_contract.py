@@ -87,6 +87,27 @@ def test_voice_identity_page_is_routed_and_available_in_settings_window() -> Non
     assert api_index < identity_index < memory_index
 
 
+def test_settings_menu_hides_voice_identity_only_when_runtime_is_off() -> None:
+    popup = (ROOT / "static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
+    helper = popup[
+        popup.index("function hideAvatarVoiceIdentityEntryWhenDisabled") : popup.index(
+            "function clearAvatarSidePanelHoverState"
+        )
+    ]
+    menu_items = popup[
+        popup.index("ManagerProto._createSettingsMenuItems = function") : popup.index(
+            "ManagerProto.renderScreenSourceList = async function"
+        )
+    ]
+
+    assert "fetch('/api/voice-identity/status'" in helper
+    assert "status && status.runtime_mode === 'off'" in helper
+    assert "menuItem.style.display = 'none'" in helper
+    assert ".catch(() => { })" in helper
+    assert "if (item.id === 'voice-identity')" in menu_items
+    assert "hideAvatarVoiceIdentityEntryWhenDisabled(menuItem)" in menu_items
+
+
 def test_settings_menu_icons_are_decorative_for_button_names() -> None:
     popup = (ROOT / "static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
     menu_item = popup[
@@ -466,7 +487,7 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "reasonEnrollmentActive",
         "reasonRuntimeDegraded",
         "reasonUnsupportedAsrRoute",
-        "reasonShadowMode",
+        "featureDisabled",
         "enrollmentComplete",
         "microphoneDenied",
         "requestFailed",

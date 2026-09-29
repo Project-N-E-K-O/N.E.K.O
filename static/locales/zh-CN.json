@@ -3013,7 +3013,7 @@
         "reasonEnrollmentActive": "正在录入新声纹；完成前不会启动声纹激活，待机音频不会上传",
         "reasonRuntimeDegraded": "声纹激活运行时暂时不可用，待机音频不会上传",
         "reasonUnsupportedAsrRoute": "当前语音路线暂未接入声纹激活；开启期间待机音频不会上传",
-        "reasonShadowMode": "声纹激活当前仅观察，尚未允许上传待机音频",
+        "featureDisabled": "声纹功能当前已关闭，无法录入或开启声纹激活；已保存的声纹仍可删除。",
         "sessionWaiting": "等待你说话来激活语音对话",
         "sessionActive": "语音对话已激活",
         "sessionUnavailable": "声纹激活暂时不可用，待机音频不会上传",

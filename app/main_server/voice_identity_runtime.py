@@ -1392,9 +1392,9 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
         .lower()
     )
     runtime_mode = (
-        configured_mode if configured_mode in {"off", "shadow", "enforce"} else "off"
+        configured_mode if configured_mode in {"off", "enforce"} else "off"
     )
-    if configured_mode not in {"off", "shadow", "enforce"}:
+    if configured_mode not in {"off", "enforce"}:
         logger.warning(
             "Unsupported NEKO_VOICE_IDENTITY_MODE value %r; Owner voice "
             "filtering is disabled",

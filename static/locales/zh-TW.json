@@ -3013,7 +3013,7 @@
         "reasonEnrollmentActive": "正在錄入新聲紋；完成前不會啟動聲紋啟用，待機音訊不會上傳",
         "reasonRuntimeDegraded": "聲紋啟用執行環境暫時不可用，待機音訊不會上傳",
         "reasonUnsupportedAsrRoute": "目前語音路線尚未接入聲紋啟用；開啟期間待機音訊不會上傳",
-        "reasonShadowMode": "聲紋啟用目前僅觀察，尚未允許上傳待機音訊",
+        "featureDisabled": "聲紋功能目前已關閉，無法錄入或開啟聲紋啟用；已儲存的聲紋仍可刪除。",
         "sessionWaiting": "等待你說話來啟用語音對話",
         "sessionActive": "語音對話已啟用",
         "sessionUnavailable": "聲紋啟用暫時不可用，待機音訊不會上傳",
