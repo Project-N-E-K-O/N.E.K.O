@@ -159,9 +159,9 @@ def _kept_symbols(
     - "C#" / "F#": a "#" right after a single ASCII letter that stands on its
       own (``prev2`` is the character before that letter), not followed by a
       letter or digit, is part of the name ("C#😀 dev" keeps it as well);
-      "C#-5" keeps both the "#" and the minus sign. Hashtags ("#AI#话题")
-      and words ("tag#热门") lose the "#".
-    - "-10~-5℃": a range sign followed by a minus before a digit keeps the
+      "C#-5" keeps both the "#" and the minus sign. Hashtags ("#AI#") and
+      words ("tag#") lose the "#".
+    - "-10~-5 C": a range sign followed by a minus before a digit keeps the
       minus with a separating space, so the upper bound stays below zero.
     - A minus sign before a digit, when no letter/digit precedes the run
       ("-5", "x = -3", "~-5°C"), or when only emoji precede it within the run
@@ -297,7 +297,7 @@ def strip_tts_muted_symbols(text: str, before: str = "") -> str:
     leading/trailing whitespace is left alone. ``before`` holds the last
     characters spoken before a streamed chunk (two are enough), so a symbol
     at the chunk's start is judged as it would be unsplit ("3" + "-5" is a
-    range, not a minus; "用C" + "#" is a name).
+    range, not a minus; " C" + "#" is a name).
     """
     if not text:
         return text
