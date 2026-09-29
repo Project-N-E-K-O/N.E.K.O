@@ -172,12 +172,22 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         import time
         gid = str(notice.get("group_id") or "").strip()
         if not gid:
-            return
+            return False
         sub_type = str(notice.get("sub_type") or "").strip()  # "ban" / "lift_ban"
         user_id = str(notice.get("user_id") or "").strip()
         duration = int(notice.get("duration") or 0)  # seconds, only valid on ban
 
-        # Whole-group mute (user_id=0) or self being muted
+        # Whole-group mute (user_id=0) or self being muted.
+        #
+        # The bot's own id comes from the **notice** when the client has not learned it
+        # yet: a ban notice can arrive before ``get_login_info`` answers or before any
+        # group message passes through ``receive_message()`` (which is where `_self_id`
+        # is normally set). With an empty `_self_id` her own mute looks like a third
+        # party's -- the notice would be enqueued and `_group_muted` never updated, so
+        # she would keep trying to speak in a group where she is muted.
+        notice_self_id = str(notice.get("self_id") or "").strip()
+        if notice_self_id and not self._self_id:
+            self._self_id = notice_self_id
         is_whole_group = (user_id == "0")
         is_self = bool(self._self_id and user_id == str(self._self_id))
 
@@ -725,7 +735,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                 # 当事件名；group_ban 的 sub_type 是 ban/lift_ban（那是"哪一种禁言"，
                 # 不是"哪一类事件"），必须单独取名，否则上游认不出这是什么通知。
                 notice_kind = "group_ban" if raw_notice == "group_ban" else sub_type
-                return {
+                notice = {
                     "message_type": "notice",
                     "channel": self.CHANNEL,
                     "notice_type": notice_kind,
@@ -738,6 +748,13 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                     "timestamp": raw_msg.get("time"),
                     "raw": raw_msg,
                 }
+                # Notices go to the registered inbound sink as well (the message path
+                # below dispatches every normalized message): a sink-only consumer --
+                # `set_inbound_sink` exists exactly for those -- would otherwise never
+                # see a poke or a ban notice, and the ban notice is the one this change
+                # newly forwards.
+                await self._dispatch_inbound(notice)
+                return notice
 
             msg_type = raw_msg.get("message_type")
             sender_info = raw_msg.get("sender", {})

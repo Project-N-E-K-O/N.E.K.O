@@ -765,19 +765,53 @@ def test_a_dead_legacy_protocol_is_not_retried_for_every_image(tmp_path):
 
 
 def test_local_path_handles_real_file_uris():
-    """`file:///C:/x.png` and `%20` are not handled by stripping a prefix (review nit)."""
-    assert media_module._local_path("file:///tmp/a%20b.png").endswith("a b.png")
-    assert not media_module._local_path("file:///tmp/a.png").startswith("file:")
-    # Three slashes plus a drive letter: `C:\x.png` on Windows, and on other platforms
-    # at least the `C:` part has to survive.
-    drive = media_module._local_path("file:///C:/x.png")
-    assert "C:" in drive and not drive.startswith("/C:")
+    """`file:///C:/x.png` and percent-escapes are not handled by stripping a prefix.
+
+    Written so it holds on **any** platform (CI runs on ubuntu-latest): the drive letter
+    comes out as `C:/...` everywhere -- Windows' `url2pathname` answers it directly,
+    POSIX's leaves `/C:/...` and `_local_path` drops the URI slash. Only the separator
+    stays platform-native, so comparisons go through `_slash`.
+    """
+    def _slash(text: str) -> str:
+        return text.replace("\\", "/")
+
+    assert _slash(media_module._local_path("file:///tmp/a%20b.png")).endswith("tmp/a b.png")
+    assert not media_module._local_path("file:///tmp/a.png").lower().startswith("file:")
+    assert _slash(media_module._local_path("file:///C:/x.png")) == "C:/x.png"
     # UNC keeps the host name (url2pathname switches separators to backslashes on
     # Windows).
     unc = media_module._local_path("file://server/share/a.png")
-    assert unc.replace("\\", "/").startswith("//server/share"), unc
+    assert _slash(unc).startswith("//server/share"), unc
     # A plain path goes through untouched
     assert media_module._local_path("C:/plain/a.png") == "C:/plain/a.png"
+
+
+def test_a_percent_escape_is_decoded_exactly_once():
+    """`%2520` means a literal `%20` -- decoding twice would open the wrong file.
+
+    `url2pathname` already unquotes on both platforms (POSIX: it *is* `unquote`;
+    Windows: `nturl2path` decodes too), so an extra `unquote` in `_local_path` turns
+    `a%2520b.png` into `a b.png`: the wrong path, silently.
+    """
+    decoded = media_module._local_path("file:///tmp/a%2520b.png")
+
+    assert decoded.replace("\\", "/").endswith("tmp/a%20b.png"), decoded
+
+
+def test_the_drive_letter_is_normalized_whatever_url2pathname_answers(monkeypatch):
+    """Both `url2pathname` flavours land on the same drive-letter path.
+
+    POSIX's is `unquote` (it leaves ``/C:/x.png`` alone), Windows' `nturl2path` converts
+    it -- a Windows-made URI must not resolve differently when the host is Linux.
+    """
+    monkeypatch.setattr(media_module, "url2pathname", lambda path: path)      # posixpath
+    assert media_module._local_path("file:///C:/x.png").replace("\\", "/") == "C:/x.png"
+
+    monkeypatch.setattr(
+        media_module, "url2pathname",
+        lambda path: path.lstrip("/").replace("/", "\\"),                    # nturl2path
+    )
+    assert media_module._local_path("file:///C:/x.png").replace("\\", "/") == "C:/x.png"
 
 
 def test_the_connection_docstring_survives_the_channel_assignment():

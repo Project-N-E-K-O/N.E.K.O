@@ -50,11 +50,12 @@ def _take(client: OneBotClient) -> dict:
     return asyncio.run(client.receive_message(timeout=0.05))
 
 
-def _ban(*, user_id: str, sub_type: str = "ban", duration: int = 600) -> dict:
+def _ban(*, user_id: str, sub_type: str = "ban", duration: int = 600, self_id: str = BOT) -> dict:
+    """A raw OneBot event: every event carries the bot's own ``self_id``."""
     return {
         "post_type": "notice", "notice_type": "group_ban", "sub_type": sub_type,
         "group_id": GROUP, "user_id": user_id, "operator_id": ADMIN,
-        "duration": duration, "time": 1_790_000_000,
+        "duration": duration, "time": 1_790_000_000, "self_id": self_id,
     }
 
 
@@ -137,3 +138,106 @@ def test_other_notices_are_still_dropped():
     })
 
     assert client._message_queue.qsize() == 0
+
+
+# ---- identity: her own mute, before the client has learned its own id ----------
+
+
+def test_her_own_ban_before_login_info_is_still_hers():
+    """A ban notice can arrive before ``get_login_info`` (or any group message).
+
+    `_self_id` is normally set while a message passes through ``receive_message()``, so at
+    this point it is still empty. Classifying by that empty id made her own mute look like
+    a third party's: the notice got enqueued (wrong) and `_group_muted` never updated
+    (also wrong -- she would keep trying to speak in a group where she is muted). The
+    notice carries `self_id`, so it is the identity source here.
+    """
+    client = _client(self_id="")
+    assert client._self_id == "", "the fixture starts without an identity"
+
+    _feed(client, _ban(user_id=BOT))
+
+    assert client._message_queue.qsize() == 0, "her own mute was forwarded as a third party"
+    assert client.is_group_muted(GROUP) is True, "her own mute was not tracked"
+    assert client._self_id == BOT, "the notice did not teach the client its own id"
+
+
+def test_a_third_party_ban_with_an_unknown_identity_is_still_forwarded():
+    """The same notice shape, but the muted user is somebody else: forward it."""
+    client = _client(self_id="")
+    assert client._self_id == ""
+
+    _feed(client, _ban(user_id=ALICE))
+
+    assert client._message_queue.qsize() == 1
+    assert client.is_group_muted(GROUP) is False, "a third party's mute must not mute the bot"
+    assert client._self_id == BOT
+
+
+def test_whole_group_ban_before_login_info_is_tracked():
+    client = _client(self_id="")
+    _feed(client, _ban(user_id="0", duration=0))
+
+    assert client._message_queue.qsize() == 0
+    assert client.is_group_muted(GROUP) is True
+
+
+# ---- the registered inbound sink sees the notice too --------------------------
+
+
+def test_the_normalized_notice_reaches_the_registered_sink():
+    """A sink-only consumer must see notices: the message path dispatches every message.
+
+    Without this the ban notice (the one this change newly forwards) would only reach
+    consumers that poll ``receive_message()`` themselves, and a plugin that attached a
+    sink via ``set_inbound_sink`` would never learn that anyone was muted.
+    """
+    seen: list[dict] = []
+
+    async def sink(message):
+        seen.append(message)
+
+    client = _client()
+    client.set_inbound_sink(sink)
+    # Feeds **before** the loop starts: `_feed` calls ``asyncio.run`` itself, and this
+    # repo's ``tests/conftest.py`` patches that call to allow nesting (for the Playwright
+    # greenlet) while a plain suite -- the plugin's, for one -- does not. Keeping the two
+    # apart is what makes this test mean the same thing in both places.
+    _feed(client, _ban(user_id=ALICE))
+
+    async def scenario():
+        notice = await client.receive_message(timeout=0.05)
+        await asyncio.sleep(0.05)          # the sink runs on its own task
+        return notice
+
+    notice = asyncio.run(scenario())
+
+    assert notice["notice_type"] == "group_ban"
+    assert len(seen) == 1, "the sink never saw the notice"
+    assert seen[0]["notice_type"] == "group_ban"
+    assert seen[0]["user_id"] == ALICE
+    assert seen[0]["sub_type"] == "ban"
+
+
+def test_a_poke_notice_reaches_the_sink_too():
+    """Same branch, same rule -- poke notices were equally invisible to sinks."""
+    seen: list[dict] = []
+
+    async def sink(message):
+        seen.append(message)
+
+    client = _client()
+    client.set_inbound_sink(sink)
+    _feed(client, {
+        "post_type": "notice", "notice_type": "notify", "sub_type": "poke",
+        "group_id": GROUP, "user_id": ALICE, "target_id": BOT, "time": 1_790_000_000,
+    })
+
+    async def scenario():
+        await client.receive_message(timeout=0.05)
+        await asyncio.sleep(0.05)
+        return seen
+
+    seen = asyncio.run(scenario())
+
+    assert [item["notice_type"] for item in seen] == ["poke"]

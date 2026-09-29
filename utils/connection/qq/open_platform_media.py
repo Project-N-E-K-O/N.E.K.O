@@ -59,7 +59,7 @@ import hashlib
 import mimetypes
 import os
 from typing import Any, NamedTuple, Optional
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 #: Platform media type for an image.
@@ -78,18 +78,29 @@ def _local_path(source: str) -> str:
 
     Parsed rather than prefix-stripped: ``file:///C:/x.png`` is a three-slash URI whose
     path is ``/C:/x.png``, and naively dropping ``file://`` leaves ``/C:/x.png`` -- not a
-    path Windows can open. Percent-escapes (``a%20b.png``) need decoding too.
-    ``url2pathname`` is the platform-correct half of that pair (on Windows it also turns
-    ``/C:/...`` into ``C:\\...``), and a UNC-style ``file://host/share/x`` keeps the host.
+    path Windows can open.
+
+    Percent-escapes are decoded **exactly once**, by ``url2pathname``: it already unquotes
+    on both platforms (POSIX: it *is* ``unquote``; Windows: ``nturl2path`` decodes too), so
+    unquoting here as well would turn ``a%2520b.png`` into ``a b.png`` and open the wrong
+    file (or none).
+
+    A drive-letter URI resolves the same way on every platform: Windows' ``url2pathname``
+    answers ``C:\\x.png`` on its own, and on POSIX the leading slash is dropped here, so
+    both hand the caller the same ``C:/x.png`` shape. Only the separator stays
+    platform-native. A UNC-style ``file://host/share/x`` keeps the host.
     """
     text = str(source or "").strip()
     if not text.lower().startswith("file:"):
         return text
     parsed = urlsplit(text)
-    path = url2pathname(unquote(parsed.path))
+    path = url2pathname(parsed.path)
     host = parsed.netloc.strip()
     if host and host.lower() != "localhost":
         return f"//{host}{path}"
+    if len(path) > 2 and path[0] == "/" and path[1].isalpha() and path[2] == ":":
+        # `/C:/...` -- a Windows drive letter behind the URI's leading slash.
+        return path[1:]
     return path
 
 
