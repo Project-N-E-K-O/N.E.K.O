@@ -1,20 +1,23 @@
-"""`group_ban` 通知：**第三方**被禁言/解禁要往上游送（改之前是被丢掉的）。
+"""``group_ban`` notices: a **third party's** ban/unban must travel upstream.
 
-使用者口径（2026-09-29）：「可以让猫娘对正在聊天的对象的禁言做出反应吗」——
-要回答这个问题，插件首先得**看得到**这件事；而改之前连接层在这里直接 return：
+Before this change the connector dropped that case outright:
 
     if not is_whole_group and not is_self:
         return  # someone else muted; not our concern
 
-于是插件永远不知道群里有人被禁言。现在：第三方 → 入队（由插件判断要不要开口）；
-她自己 / 全员被禁言 → 仍然只做本地记账（那种情况她也发不出去），不入队。
+so the plugin could never learn that someone in the group had been muted, and reacting to
+"the person she is talking with got muted" was not implementable. Now a third party's
+ban/unban is enqueued (the plugin decides whether to say anything), while her own or a
+whole-group mute stays local bookkeeping only -- she cannot speak in that state anyway.
 
-归一化那一处也一并守着：poke 的形状是 ``notice_type=notify, sub_type=poke``，
-而 group_ban 的 sub_type 是 ban/lift_ban（那是"哪一种禁言"，不是"哪一类事件"），
-所以事件名不能取 sub_type —— 否则上游认不出这是禁言通知。
+The normalization is pinned here too: a poke arrives as ``notice_type=notify,
+sub_type=poke``, whereas ``group_ban``'s ``sub_type`` is ``ban``/``lift_ban`` (which kind
+of ban it is, not which kind of event). Taking the event name from ``sub_type`` would make
+the notice unrecognizable upstream.
 
-插件仓库里那份 `_vendor/connection_onebot/onebot_client.py` 是回退副本，
-`tests/test_qq_group_ban_notice.py` 守着同一份形状；两份必须同改。
+The plugin repository carries a fallback copy of this connector
+(``_vendor/connection_onebot/onebot_client.py``) whose shape is guarded by
+``tests/test_qq_group_ban_notice.py``; the two must change together.
 Follows ``tests/unit`` conventions: sync tests via ``asyncio.run``, no real sockets.
 """
 

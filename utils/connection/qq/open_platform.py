@@ -16,10 +16,11 @@ from .open_platform_media import QQOpenPlatformMediaMixin
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
-#: 打在「由 CQ 码展开出来的段」上的标记。**这些段不是调用方交过来的**：文本来自
-#: LLM 回复，所以从里面解析出来的 image 段一律不上传（见 `send_group_message_segments`
-#: 与 `send_private_message_segments` 里的 image 分支）。段是临时构造的 dict，
-#: 多一个键不影响其它消费方（它们只读 `type` / `data`）。
+#: Mark on segments that were **expanded out of CQ codes**, i.e. not handed over by the
+#: caller: the text comes from an LLM reply, so an image segment parsed out of it is never
+#: uploaded (see the image branches of `send_group_message_segments` and
+#: `send_private_message_segments`). These dicts are built here and thrown away after the
+#: send, and other consumers only read `type` / `data`, so the extra key is inert.
 _CQ_MARK = "from_cq"
 
 # ==========================================
@@ -178,9 +179,10 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
 
     #: Observed transport (see OneBotClient.CHANNEL). Never a key.
     #:
-    #: 这个赋值**必须**在类说明字符串之后：写在前面时，那个字符串只是一条被丢弃的
-    #: 表达式语句，`__doc__` 是 None —— 本文件里"为什么 mixin 要排在第一"那段说明
-    #: 也就不会出现在 docstring 里（原有问题，顺手修掉）。
+    #: This assignment has to sit **after** the class docstring: placed before it, the
+    #: string is just a discarded expression statement and `__doc__` is None -- which is
+    #: why the explanation above ("why the mixin comes first") never showed up as a
+    #: docstring at all (pre-existing, fixed here).
     CHANNEL: str = "open"
 
     #: Production and sandbox are **two different domains**. An unpublished bot only
@@ -590,9 +592,10 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
                 if seg.get(_CQ_MARK):
-                    # 文本是 LLM 生成的：`[CQ:image,file=<本地路径>]` 会让这一层去读
-                    # 进程可读的任意文件并发出去。只有调用方**显式**传进来的 image 段
-                    # 才上传（插件就是这么发的：`media_seam`）。
+                    # The text is LLM-authored, and `[CQ:image,file=<path>]` would make
+                    # this layer read any file the process can read and send it out.
+                    # Only an image segment the caller passed **explicitly** is uploaded
+                    # (that is how the plugin sends pictures, via `media_seam`).
                     self._media_log(
                         "warning",
                         "忽略 LLM 文本里的 CQ 图片（不上传本地文件）；要发图请用显式 image 段",
@@ -614,7 +617,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         body: dict[str, Any] = {}
         # Group images must be uploaded first to get file_info, then sent via msg_type=7 + media.
         if image_url:
-            # 上面那次 `_ensure_token()` 已经保证 token 有效，upload 不必再查一遍。
+            # The `_ensure_token()` above already made the token valid; the upload does
+            # not have to ask again.
             file_info = await self._upload_group_image(group_id, image_url, token_checked=True)
             if file_info:
                 body["msg_type"] = 7
@@ -723,7 +727,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
                 if seg.get(_CQ_MARK):
-                    # 与群聊同一条口径：LLM 文本里的 CQ 图片不上传（见那里的注释）。
+                    # Same rule as the group path: no upload for a CQ image taken from
+                    # LLM text (see the comment there).
                     self._media_log(
                         "warning",
                         "忽略 LLM 文本里的 CQ 图片（不上传本地文件）；要发图请用显式 image 段",
@@ -770,7 +775,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # all: the whole segment collapsed into a "[图片]" text line, so a sticker
         # reply arrived as three characters of text.
         if image_url and str(user_id or "").strip():
-            # 同上：外层的 `_ensure_token()` 已经把 token 备好，这里不重复查。
+            # As above: the outer `_ensure_token()` already prepared the token.
             file_info = await self.upload_image(
                 scope="users", owner_id=str(user_id), source=image_url, token_checked=True,
             )

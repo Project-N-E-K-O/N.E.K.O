@@ -184,9 +184,10 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         if not is_whole_group and not is_self:
             # Someone else was banned/unbanned: nothing to track here (`_group_muted`
             # only answers "can the bot speak in this group"), but the notice must
-            # still reach the plugin -- it decides whether that person is the one she
-            # is currently talking with (2026-09-29 使用者口径：对正在聊天的人的禁言
-            # 做出反应). True = enqueue.
+            # still reach the plugin -- it is the only side that knows whether that
+            # person is the one she is currently talking with (product decision,
+            # 2026-09-29: react to a mute aimed at the current conversation partner).
+            # True = enqueue.
             self._emit_log(
                 "INFO",
                 f"[Mute] {'解除禁言' if sub_type == 'lift_ban' else '被禁言'}: "

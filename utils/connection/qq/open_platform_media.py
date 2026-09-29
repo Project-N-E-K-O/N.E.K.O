@@ -247,8 +247,9 @@ class QQOpenPlatformMediaMixin:
         # then slice `payload[0:]` (the whole file), and the second part would slice an
         # empty chunk and abort the merge -- a multi-part upload could never succeed.
         fallback_size = _positive_int(prepare.get("block_size"))
-        # 把平台给的分片形状记一行：索引基准（0 起还是 1 起）与大小写在哪一层，只能从
-        # 真机响应确证 —— 这行日志就是下一次真机运行能给答案的地方。
+        # Log the part shape the platform handed us: whether indices are 0- or 1-based,
+        # and which level carries the part size, can only be confirmed against a real
+        # response -- this line is where the next live run answers both.
         self._media_log(
             "info",
             f"分片上传: {len(ordered)} 片，首片 index={ordered[0].get('index')}，"
