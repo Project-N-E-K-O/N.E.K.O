@@ -550,6 +550,7 @@ async def test_session_start_failure_distinguishes_quota_from_429(error_text, ex
     manager.send_status = AsyncMock()
     manager.send_session_failed = AsyncMock()
     manager.cleanup = AsyncMock()
+    manager.end_session = AsyncMock()
     manager.input_cache_lock = asyncio.Lock()
     manager.pending_input_data = []
     manager._clear_pending_context_appends = lambda: None
