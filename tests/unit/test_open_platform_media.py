@@ -559,3 +559,217 @@ def test_an_empty_source_is_not_an_upload(source):
     connection = _make_connection(lambda method, url, body: {"file_info": "FI"})
     assert _run(connection.upload_image(scope="users", owner_id="U1", source=source)) == ""
     assert connection._http.calls == []
+
+
+# ── review（2026-09-29）：分片的 block_size 回退、索引基准、CQ 图片不上传 ──────
+
+
+def _top_level_block_size_only(method, url, body):
+    """prepare 只在**顶层**给分片大小，part 里没有 —— 真机的形状之一。
+
+    不回退到顶层的实现会怎么错：第一片切 `payload[0:]`（整个文件）PUT 上去，
+    第二片切出空 chunk 直接 return ""，多片上传必然失败。
+    """
+    if method == "PUT":
+        return {"file_info": "FI-legacy"}
+    if url.endswith("/upload_prepare"):
+        return {
+            "upload_id": "upload_1",
+            "block_size": "8",
+            "parts": [
+                {"index": 0, "presigned_url": "https://cos.example/part/0"},
+                {"index": 1, "presigned_url": "https://cos.example/part/1"},
+            ],
+        }
+    if url.endswith("/upload_part_finish"):
+        return {}
+    if url.endswith("/files") and body.get("upload_id"):
+        return {"file_info": "FI-chunked"}
+    return {}
+
+
+def _one_based_indices(method, url, body):
+    """平台若从 1 开始编号：实现只用 index 排序与回传，所以两种基准都该工作。"""
+    if method == "PUT":
+        return {"file_info": "FI-legacy"}
+    if url.endswith("/upload_prepare"):
+        return {
+            "upload_id": "upload_1",
+            "parts": [
+                {"index": 1, "presigned_url": "https://cos.example/part/1", "block_size": "8"},
+                {"index": 2, "presigned_url": "https://cos.example/part/2", "block_size": "8"},
+            ],
+        }
+    if url.endswith("/upload_part_finish"):
+        return {}
+    if url.endswith("/files") and body.get("upload_id"):
+        return {"file_info": "FI-chunked"}
+    return {}
+
+
+def test_a_part_without_its_own_block_size_falls_back_to_the_top_level(tmp_path):
+    """**review 必修**：part 不带 block_size 时用 prepare 顶层的那个。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+    connection = _make_connection(_top_level_block_size_only)
+
+    file_info = _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker)))
+
+    assert file_info == "FI-chunked", "顶层 block_size 没有回退：多片上传必然失败"
+    assert [len(body) for _url, body in connection._http.puts()] == [8, 8], (
+        "两片应各 8 字节（第一片把整个文件 PUT 上去就是没回退）"
+    )
+
+
+def test_one_based_part_indices_work_too(tmp_path):
+    """索引基准（0 起还是 1 起）不影响实现：它只用 index 排序、并原样回传。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+    connection = _make_connection(_one_based_indices)
+
+    file_info = _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker)))
+
+    assert file_info == "FI-chunked"
+    assert [len(body) for _url, body in connection._http.puts()] == [8, 8]
+    finished = [
+        body["part_index"] for url, body in connection._http.posts()
+        if url.endswith("/upload_part_finish")
+    ]
+    assert finished == [1, 2], f"回传的 part_index 必须与平台给的一致：{finished}"
+
+
+def test_a_cq_image_in_the_llm_text_is_never_uploaded(tmp_path, monkeypatch):
+    """**review 必修（安全）**：文本里的 `[CQ:image,file=<本地路径>]` 不上传。
+
+    文本来自 LLM 回复：诱导它输出 `[CQ:image,file=<本地路径>]` 就能让这一层读进程可读的
+    任意文件并发出去。只有调用方**显式**传进来的 image 段才上传。
+    """
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"TOP-SECRET" * 4)
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    connection = _make_connection(lambda method, url, body: {"id": "MID"} if url.endswith("/messages") else {})
+
+    message_id = _run(connection.send_private_message_segments(
+        "U1", [{"type": "text", "data": {"text": f"看看这个[CQ:image,file={secret}]"}}],
+    ))
+
+    assert message_id == "MID"
+    assert read == [], "CQ 图片被当成上传源去读本地文件了"
+    assert not any("/files" in url for url, _body in connection._http.posts())
+    sent = [body for url, body in connection._http.posts() if url.endswith("/messages")]
+    assert sent == [{"content": "看看这个[图片]"}], sent
+
+
+def test_a_cq_image_in_the_group_text_is_never_uploaded(tmp_path, monkeypatch):
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"TOP-SECRET" * 4)
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    connection = _make_connection(lambda method, url, body: {"id": "MID"} if url.endswith("/messages") else {})
+
+    _run(connection.send_group_message_segments(
+        "G1", [{"type": "text", "data": {"text": f"看看这个[CQ:image,file={secret}]"}}],
+        record_sent=False,
+    ))
+
+    assert read == []
+    assert not any("/files" in url for url, _body in connection._http.posts())
+
+
+def test_an_explicit_image_segment_still_uploads(tmp_path):
+    """反面：调用方显式传的 image 段照旧上传（插件就是这么发图的）。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+    connection = _make_connection(_chunked_with_ids)
+
+    message_id = _run(connection.send_private_message_segments(
+        "U1", [{"type": "image", "data": {"file": str(sticker)}}], record_sent=False,
+    ))
+
+    assert message_id == "MID-private"
+    assert any(url.endswith("/upload_prepare") for url, _body in connection._http.posts())
+
+
+def test_digests_are_computed_off_the_event_loop(tmp_path, monkeypatch):
+    """摘要（md5+sha1+10MB 前缀）跟着读取一起在 worker 线程里算，不占事件循环。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"x" * 8)
+    threads: list[bool] = []
+    real = media_module._digests
+
+    def spy(payload):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(payload)
+
+    monkeypatch.setattr(media_module, "_digests", spy)
+    connection = _make_connection(_legacy_ok_for_put)
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-legacy"
+    assert threads == [False], "摘要在事件循环上算了"
+
+
+def _legacy_ok_for_put(method, url, body):
+    return _legacy_ok() if method == "POST" else {"file_info": "FI-legacy"}
+
+
+def test_the_token_is_ensured_once_per_send(tmp_path):
+    """发图那条路不再查两次 token（外层一次 + upload 里一次）。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    for send in ("group", "private"):
+        connection = _make_connection(_chunked_with_ids)
+        calls: list[int] = []
+
+        async def _counting():
+            calls.append(1)
+
+        connection._ensure_token = _counting
+        if send == "group":
+            _run(connection.send_group_message_segments(
+                "G1", [{"type": "image", "data": {"file": str(sticker)}}], record_sent=False,
+            ))
+        else:
+            _run(connection.send_private_message_segments(
+                "U1", [{"type": "image", "data": {"file": str(sticker)}}], record_sent=False,
+            ))
+        assert len(calls) == 1, f"{send} 路径查了 {len(calls)} 次 token"
+
+
+def test_a_dead_legacy_protocol_is_not_retried_for_every_image(tmp_path):
+    """直传拿不到 file_info 后，本连接不再为每一张图重试它（少一次必然失败的请求）。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+    connection = _make_connection(_legacy_then_nothing)
+
+    first = _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker)))
+    second = _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker)))
+
+    assert (first, second) == ("FI-chunked", "FI-chunked")
+    legacy_attempts = [
+        url for url, body in connection._http.posts()
+        if url.endswith("/files") and "file_size" in body
+    ]
+    assert len(legacy_attempts) == 1, f"直传被重试了 {len(legacy_attempts)} 次"
+
+
+def test_local_path_handles_real_file_uris():
+    """`file:///C:/x.png` 与 `%20` 这类 URI 不能靠剥前缀处理（review nit）。"""
+    assert media_module._local_path("file:///tmp/a%20b.png").endswith("a b.png")
+    assert not media_module._local_path("file:///tmp/a.png").startswith("file:")
+    # 三斜杠 + 盘符：Windows 上要还原成 C:\x.png，其它平台至少要有 C: 这一段
+    drive = media_module._local_path("file:///C:/x.png")
+    assert "C:" in drive and not drive.startswith("/C:")
+    # UNC：主机名要保留（Windows 上 url2pathname 会把分隔符换成反斜杠）
+    unc = media_module._local_path("file://server/share/a.png")
+    assert unc.replace("\\", "/").startswith("//server/share"), unc
+    # 普通路径原样返回
+    assert media_module._local_path("C:/plain/a.png") == "C:/plain/a.png"
+
+
+def test_the_connection_docstring_survives_the_channel_assignment():
+    """`CHANNEL = "open"` 写在类说明字符串前面时，那段说明不会是 `__doc__`（review nit）。"""
+    assert QQOpenPlatformConnection.CHANNEL == "open"
+    doc = QQOpenPlatformConnection.__doc__ or ""
+    assert "media mixin comes first" in doc, "类说明又变回一条被丢弃的表达式了"

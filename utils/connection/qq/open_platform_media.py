@@ -26,6 +26,12 @@ working deployment working, and whichever succeeds is named in the log, which is
 ``file_info`` and the chunked upload then succeeding, so the chunked path is the live
 one.
 
+A legacy attempt that comes back without ``file_info`` is remembered for the rest of the
+process (``_legacy_upload_unsupported``): on 2026-09-27 the platform answered the legacy
+request with nothing at all, so retrying it for every image only buys a guaranteed-failing
+request per send. The per-protocol log line still fires the first time, and a reconnect
+starts a fresh connection with the flag clear.
+
 Shape
 -----
 
@@ -52,7 +58,9 @@ import asyncio
 import hashlib
 import mimetypes
 import os
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 #: Platform media type for an image.
 FILE_TYPE_IMAGE = 1
@@ -66,25 +74,50 @@ _MD5_10M_BYTES = 10_002_432
 
 
 def _local_path(source: str) -> str:
-    """The local path behind ``source`` (a ``file://`` URI is unwrapped)."""
+    """The local path behind ``source`` (a ``file://`` URI is unwrapped).
+
+    Parsed rather than prefix-stripped: ``file:///C:/x.png`` is a three-slash URI whose
+    path is ``/C:/x.png``, and naively dropping ``file://`` leaves ``/C:/x.png`` -- not a
+    path Windows can open. Percent-escapes (``a%20b.png``) need decoding too.
+    ``url2pathname`` is the platform-correct half of that pair (on Windows it also turns
+    ``/C:/...`` into ``C:\\...``), and a UNC-style ``file://host/share/x`` keeps the host.
+    """
     text = str(source or "").strip()
-    if text.startswith("file://"):
-        text = text[7:]
-    return text
+    if not text.lower().startswith("file:"):
+        return text
+    parsed = urlsplit(text)
+    path = url2pathname(unquote(parsed.path))
+    host = parsed.netloc.strip()
+    if host and host.lower() != "localhost":
+        return f"//{host}{path}"
+    return path
 
 
-def _read_source(source: str) -> tuple[bytes, str]:
-    """Read a local file -> ``(bytes, file_name)``; unreadable is ``(b"", "")``.
+class SourceFile(NamedTuple):
+    """A local file ready to upload. ``digests`` is empty when nothing could be read."""
+
+    payload: bytes
+    file_name: str
+    digests: dict[str, str]
+
+
+def _read_source(source: str) -> SourceFile:
+    """Read a local file -> ``SourceFile``; unreadable is an empty payload.
 
     Blocking on purpose: callers run it off the event loop (``asyncio.to_thread``) after
     checking the size, so a slow or huge file never stalls the loop or gets read just to
     be rejected.
+
+    The digests are computed **here**, in the same worker thread: hashing up to 20MB
+    (md5 + sha1 + the 10MB prefix) is tens of milliseconds, and doing it here is what
+    keeps it off the event loop -- the caller already paid for moving this call off it.
     """
     path = _local_path(source)
     if not path or not os.path.isfile(path):
-        return b"", ""
+        return SourceFile(b"", "", {})
     with open(path, "rb") as handle:
-        return handle.read(), os.path.basename(path)
+        payload = handle.read()
+    return SourceFile(payload, os.path.basename(path), _digests(payload))
 
 
 def _digests(payload: bytes) -> dict[str, str]:
@@ -94,6 +127,19 @@ def _digests(payload: bytes) -> dict[str, str]:
         "sha1": hashlib.sha1(payload).hexdigest(),
         "md5_10m": hashlib.md5(payload[:_MD5_10M_BYTES]).hexdigest(),
     }
+
+
+def _positive_int(value: Any) -> int:
+    """``value`` as a positive int, or 0 when it is missing / unparsable.
+
+    The platform sends numbers as strings (``"8"``); a JSON float (``8.0``) is accepted
+    too, because ``int("8.0")`` is a ``ValueError``.
+    """
+    try:
+        number = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
 
 
 def _media_error(data: dict[str, Any]) -> str:
@@ -168,9 +214,15 @@ class QQOpenPlatformMediaMixin:
 
     async def _media_upload_chunked(
         self, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
+        digests: Optional[dict[str, str]] = None,
     ) -> str:
-        """Documented chunked upload: prepare -> per-part PUT + finish -> merge."""
-        digests = _digests(payload)
+        """Documented chunked upload: prepare -> per-part PUT + finish -> merge.
+
+        ``digests`` comes from the caller when the file was read off the event loop
+        already (``upload_image`` passes what ``_read_source`` computed); computing them
+        here is the fallback for direct callers.
+        """
+        digests = digests or _digests(payload)
         prepare = await self._media_post(
             f"/v2/{scope}/{owner_id}/upload_prepare",
             {
@@ -190,16 +242,26 @@ class QQOpenPlatformMediaMixin:
             (p for p in parts if isinstance(p, dict)),
             key=lambda p: int(p.get("index") or 0),
         )
+        # The part size may only be stated **once, at the top level** of the prepare
+        # answer. Falling back to 0 there is not a harmless default: the first part would
+        # then slice `payload[0:]` (the whole file), and the second part would slice an
+        # empty chunk and abort the merge -- a multi-part upload could never succeed.
+        fallback_size = _positive_int(prepare.get("block_size"))
+        # 把平台给的分片形状记一行：索引基准（0 起还是 1 起）与大小写在哪一层，只能从
+        # 真机响应确证 —— 这行日志就是下一次真机运行能给答案的地方。
+        self._media_log(
+            "info",
+            f"分片上传: {len(ordered)} 片，首片 index={ordered[0].get('index')}，"
+            f"每片 {_positive_int(ordered[0].get('block_size')) or fallback_size} 字节，"
+            f"文件 {len(payload)} 字节",
+        )
         offset = 0
         for part in ordered:
-            try:
-                index = int(part.get("index") or 0)
-            except (TypeError, ValueError):
-                index = 0
-            try:
-                size = int(part.get("block_size") or 0)
-            except (TypeError, ValueError):
-                size = 0
+            index = _positive_int(part.get("index"))
+            # `index` is only used for ordering and for echoing back in
+            # `upload_part_finish`, so a 0-based and a 1-based platform both work; the
+            # fixture and the real response do not have to agree on the base.
+            size = _positive_int(part.get("block_size")) or fallback_size
             chunk = payload[offset:offset + size] if size > 0 else payload[offset:]
             presigned = str(part.get("presigned_url") or "")
             if not chunk or not presigned:
@@ -284,20 +346,26 @@ class QQOpenPlatformMediaMixin:
 
     # ── public operations ──────────────────────────────────────────────
 
-    async def upload_image(self, *, scope: str, owner_id: str, source: str) -> str:
+    async def upload_image(
+        self, *, scope: str, owner_id: str, source: str, token_checked: bool = False,
+    ) -> str:
         """Upload one image into ``scope`` (``"groups"`` / ``"users"``), return ``file_info``.
 
         ``scope`` is the platform's own isolation: an upload made through the private
         interface can only be sent privately, and the other way round, so callers must
         pass the one matching where the image goes. Failure returns ``""`` and leaves
         the degradation choice to the caller.
+
+        ``token_checked=True`` says the caller (the connection's own send paths) has just
+        ensured a token, so this call does not ask for one again.
         """
         url = str(source or "").strip()
         if not url:
             return ""
         if url.startswith(("http://", "https://")):
             try:
-                await self._ensure_token()
+                if not token_checked:
+                    await self._ensure_token()
                 file_info = await self._media_upload_by_url(
                     scope=scope, owner_id=owner_id, url=url, file_type=FILE_TYPE_IMAGE,
                 )
@@ -329,10 +397,11 @@ class QQOpenPlatformMediaMixin:
             return ""
 
         try:
-            payload, file_name = await asyncio.to_thread(_read_source, url)
+            source_file = await asyncio.to_thread(_read_source, url)
         except Exception as exc:
             self._media_log("warning", f"图片读取失败: {exc}")
             return ""
+        payload, file_name, digests = source_file
         if not payload:
             self._media_log("warning", f"图片文件不存在或为空: {path}")
             return ""
@@ -345,22 +414,32 @@ class QQOpenPlatformMediaMixin:
             )
             return ""
 
-        try:
-            await self._ensure_token()
-        except Exception as exc:
-            self._media_log("warning", f"取 token 失败，无法上传图片: {exc}")
-            return ""
+        if not token_checked:
+            try:
+                await self._ensure_token()
+            except Exception as exc:
+                self._media_log("warning", f"取 token 失败，无法上传图片: {exc}")
+                return ""
 
         # Both protocols, legacy first: never worse than the behaviour that shipped,
-        # and the log says which one worked.
-        for label, attempt in (
-            ("直传", self._media_upload_legacy),
-            ("分片", self._media_upload_chunked),
-        ):
+        # and the log says which one worked. A legacy attempt that answered without
+        # `file_info` is remembered (see `_legacy_upload_unsupported`): retrying a
+        # protocol the platform already stopped answering only spends a request per image.
+        #
+        # Only the chunked protocol takes `digests` -- it is the one that puts them in
+        # `upload_prepare`. The legacy request has its own field set and rejects unknown
+        # kwargs, so each attempt carries its own extras.
+        attempts: list[tuple[str, Any, dict[str, Any]]] = [
+            ("分片", self._media_upload_chunked, {"digests": digests}),
+        ]
+        if not getattr(self, "_legacy_upload_unsupported", False):
+            attempts.insert(0, ("直传", self._media_upload_legacy, {}))
+        for label, attempt, extra in attempts:
             try:
                 file_info = await attempt(
                     scope=scope, owner_id=owner_id,
                     payload=payload, file_name=file_name, file_type=FILE_TYPE_IMAGE,
+                    **extra,
                 )
             except Exception as exc:
                 self._media_log("warning", f"图片{label}上传异常: {exc}")
@@ -369,6 +448,14 @@ class QQOpenPlatformMediaMixin:
                 self._media_log("info", f"图片上传成功({label}): {file_info[:24]}")
                 return file_info
             self._media_log("warning", f"图片{label}上传未拿到 file_info")
+            if label == "直传":
+                # Protocol-level failure, not a per-file one: the answer carried no
+                # `upload_url` at all (09-27 live log). Remember it so the next image
+                # does not pay for the same guaranteed-failing request; a fresh
+                # connection starts with the flag clear, so a platform that brings the
+                # old flow back is picked up on the next reconnect.
+                self._legacy_upload_unsupported = True
+                self._media_log("info", "直传协议已不再返回 file_info，本连接后续只用分片上传")
         return ""
 
     async def send_private_image(
@@ -379,6 +466,13 @@ class QQOpenPlatformMediaMixin:
 
         Returns the message id, or ``None`` at any failure for the caller to degrade
         (``send_private_message_segments`` turns that into a plain text placeholder).
+
+        Consumers should prefer the **segment** API (``send_private_message_segments``):
+        this method is not the uniform one. Its OneBot twin takes ``(user_id,
+        image_data)`` with no keyword arguments at all, and it records the sent id by
+        default where OneBot's does not -- so calling it by name across connectors is a
+        signature mismatch waiting to happen (see ``tests/unit/test_open_platform_media``
+        and the plugin's ``media_seam``).
         """
         target = str(user_id or "").strip()
         if not target:

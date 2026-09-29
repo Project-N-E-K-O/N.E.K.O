@@ -16,6 +16,12 @@ from .open_platform_media import QQOpenPlatformMediaMixin
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
+#: 打在「由 CQ 码展开出来的段」上的标记。**这些段不是调用方交过来的**：文本来自
+#: LLM 回复，所以从里面解析出来的 image 段一律不上传（见 `send_group_message_segments`
+#: 与 `send_private_message_segments` 里的 image 分支）。段是临时构造的 dict，
+#: 多一个键不影响其它消费方（它们只读 `type` / `data`）。
+_CQ_MARK = "from_cq"
+
 # ==========================================
 # R11 identity scope: resolved
 # (docs/design/speaker-trust-entity-semantics.md §2.15.4)
@@ -158,9 +164,6 @@ def pick_actor_id(author: Any, keys: tuple[str, ...]) -> str:
 
 
 class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
-    #: Observed transport (see OneBotClient.CHANNEL). Never a key.
-    CHANNEL: str = "open"
-
     """Official QQ Open Platform Bot API connection.
 
     WebSocket events -> internal unified message format -> upper-layer pipeline;
@@ -172,6 +175,13 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     platform's current two-step protocol (see ``open_platform_media``) instead of
     the legacy direct upload nobody's docs list anymore.
     """
+
+    #: Observed transport (see OneBotClient.CHANNEL). Never a key.
+    #:
+    #: 这个赋值**必须**在类说明字符串之后：写在前面时，那个字符串只是一条被丢弃的
+    #: 表达式语句，`__doc__` 是 None —— 本文件里"为什么 mixin 要排在第一"那段说明
+    #: 也就不会出现在 docstring 里（原有问题，顺手修掉）。
+    CHANNEL: str = "open"
 
     #: Production and sandbox are **two different domains**. An unpublished bot only
     #: exists in the sandbox: connecting to the production gateway completes the
@@ -553,7 +563,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                     if "=" in param:
                         k, v = param.split("=", 1)
                         data[k.strip()] = v.strip()
-                expanded.append({"type": cq_type, "data": data})
+                expanded.append({"type": cq_type, "data": data, _CQ_MARK: True})
                 pos = m.end()
             if pos < len(raw):
                 expanded.append({"type": "text", "data": {"text": raw[pos:]}})
@@ -579,7 +589,17 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             elif seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
-                image_url = str(data.get("file") or "")
+                if seg.get(_CQ_MARK):
+                    # 文本是 LLM 生成的：`[CQ:image,file=<本地路径>]` 会让这一层去读
+                    # 进程可读的任意文件并发出去。只有调用方**显式**传进来的 image 段
+                    # 才上传（插件就是这么发的：`media_seam`）。
+                    self._media_log(
+                        "warning",
+                        "忽略 LLM 文本里的 CQ 图片（不上传本地文件）；要发图请用显式 image 段",
+                    )
+                    content_parts.append("[图片]")
+                else:
+                    image_url = str(data.get("file") or "")
             elif seg_type == "face":
                 # small emoji -> text placeholder
                 content_parts.append(f"[表情{data.get('id','')}]")
@@ -594,7 +614,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         body: dict[str, Any] = {}
         # Group images must be uploaded first to get file_info, then sent via msg_type=7 + media.
         if image_url:
-            file_info = await self._upload_group_image(group_id, image_url)
+            # 上面那次 `_ensure_token()` 已经保证 token 有效，upload 不必再查一遍。
+            file_info = await self._upload_group_image(group_id, image_url, token_checked=True)
             if file_info:
                 body["msg_type"] = 7
                 body["media"] = {"file_info": file_info}
@@ -701,7 +722,15 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             if seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
-                image_url = str(data.get("file") or "")
+                if seg.get(_CQ_MARK):
+                    # 与群聊同一条口径：LLM 文本里的 CQ 图片不上传（见那里的注释）。
+                    self._media_log(
+                        "warning",
+                        "忽略 LLM 文本里的 CQ 图片（不上传本地文件）；要发图请用显式 image 段",
+                    )
+                    content_parts.append("[图片]")
+                else:
+                    image_url = str(data.get("file") or "")
             elif seg_type == "reply":
                 content_parts.append("[回复]")
             elif seg_type == "at":
@@ -741,8 +770,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # all: the whole segment collapsed into a "[图片]" text line, so a sticker
         # reply arrived as three characters of text.
         if image_url and str(user_id or "").strip():
+            # 同上：外层的 `_ensure_token()` 已经把 token 备好，这里不重复查。
             file_info = await self.upload_image(
-                scope="users", owner_id=str(user_id), source=image_url,
+                scope="users", owner_id=str(user_id), source=image_url, token_checked=True,
             )
             if file_info:
                 body["msg_type"] = 7
@@ -904,7 +934,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         if time.time() >= self._token_expires_at:
             await self._refresh_token()
 
-    async def _upload_group_image(self, group_id: str, image_url: str) -> str:
+    async def _upload_group_image(
+        self, group_id: str, image_url: str, *, token_checked: bool = False,
+    ) -> str:
         """Upload a group image to the Open Platform; returns file_info or empty.
 
         Kept as the group path's entry point (``send_group_message_segments`` calls
@@ -917,6 +949,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         """
         return await self.upload_image(
             scope="groups", owner_id=str(group_id or ""), source=str(image_url or ""),
+            token_checked=token_checked,
         )
 
     async def _get_gateway_url(self) -> str:
