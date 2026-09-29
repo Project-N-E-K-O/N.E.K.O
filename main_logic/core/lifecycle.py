@@ -1453,7 +1453,8 @@ class LifecycleMixin:
             self._check_start_operation()
             runtime = self._snapshot_tts_runtime()
             if runtime is not None and not self._tts_runtime_is_current(runtime):
-                raise asyncio.CancelledError("TTS runtime retired during startup")
+                self._check_start_operation()
+                raise RuntimeError("TTS runtime retired during startup")
             async with self.tts_cache_lock:
                 self._check_start_operation()
                 if not self._tts_runtime_is_current(runtime):
@@ -4320,8 +4321,14 @@ class LifecycleMixin:
         if expected_session is not None and self.session is not expected_session:
             return
         generation = self._session_generation
-        await self.end_session(by_server=True, expected_session=expected_session,
-                               reset_starting_count=reset_starting_count)
+        try:
+            await self.end_session(by_server=True, expected_session=expected_session,
+                                   reset_starting_count=reset_starting_count)
+        except Exception as exc:
+            # Disconnect is terminal for this socket even when physical close
+            # failed. The retirement registry retains unsafe resources and
+            # capacity; unbinding below still obeys socket/generation identity.
+            logger.warning("Session disconnect cleanup failed: %s", exc)
         # A microphone pause uses end_session directly. Only a matching
         # disconnected transport may unbind the chat socket, after rechecking
         # both the connection and conversation ownership behind the lock.

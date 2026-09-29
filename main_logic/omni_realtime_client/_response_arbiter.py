@@ -898,6 +898,10 @@ class RealtimeResponseArbiter:
         self._dispatch_wakeup.set()
 
     def _can_dispatch(self, queued: _QueuedResponse) -> bool:
+        if queued.interrupted:
+            # Selection only settles the ticket: _process checks interruption
+            # before sending any event, even behind an active preparation.
+            return True
         return self._turn_preparations == 0 and (
             self._dispatch_allowed.is_set() or queued.dispatch_while_paused
         )
@@ -1025,6 +1029,7 @@ class RealtimeResponseArbiter:
             return False
         queued.interrupted = True
         queued.interrupt_event.set()
+        self._dispatch_wakeup.set()
         # A ticket still waiting in the priority queue will observe the
         # interrupt before dispatch. Do not cancel the unrelated current owner.
         if queued is not self._current:

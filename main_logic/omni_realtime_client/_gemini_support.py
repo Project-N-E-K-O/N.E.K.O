@@ -533,6 +533,7 @@ class _GeminiMixin:
         """
         if (
             not self._gemini_context_manager
+            and not self._gemini_close_retry_contexts
             and getattr(self, "_gemini_proactive_submit_task", None) is None
             and getattr(self, "_gemini_external_submit_task", None) is None
         ):
@@ -546,18 +547,30 @@ class _GeminiMixin:
                 close_error = close_task.exception()
             except asyncio.CancelledError:
                 close_error = asyncio.CancelledError()
-            if close_error is not None or self._gemini_context_manager is not None:
+            if (close_error is not None or self._gemini_context_manager is not None
+                    or self._gemini_close_retry_contexts):
                 self._gemini_close_task = None
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
+
+    async def _retry_gemini_contexts(self, contexts) -> None:
+        """Retry captured retired SDK owners, never reread a replacement."""
+        for context, session in contexts:
+            retained = self._gemini_close_retry_contexts.get(id(context))
+            if retained is not None and retained[0] is context:
+                await self._close_gemini_context(context, session)
 
     def _detach_for_gemini_close(self):
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
         tool_tasks = self._advance_tool_scope()
-        return self._close_gemini_context(
+        return self._close_gemini_with_retries(
             self._gemini_context_manager,
             self._gemini_session,
             tool_tasks,
+            retired_contexts=tuple(
+                pair for pair in self._gemini_close_retry_contexts.values()
+                if pair[0] is not self._gemini_context_manager
+            ),
             proactive_submit_task=getattr(
                 self, "_gemini_proactive_submit_task", None
             ),
@@ -565,6 +578,14 @@ class _GeminiMixin:
                 self, "_gemini_external_submit_task", None
             ),
         )
+
+    async def _close_gemini_with_retries(
+        self, context, session, tool_tasks, *, retired_contexts, **submit_tasks,
+    ) -> None:
+        # All owners were captured before spawning this shielded teardown.
+        # A connection attaching during either await is never ours to close.
+        await self._close_gemini_context(context, session, tool_tasks, **submit_tasks)
+        await self._retry_gemini_contexts(retired_contexts)
 
     async def _cancel_gemini_submit_tasks(
         self,
@@ -694,22 +715,23 @@ class _GeminiMixin:
                     if close_error is None:
                         close_error = e
                 else:
-                    self._gemini_close_retry_contexts.discard(context_key)
+                    self._gemini_close_retry_contexts.pop(context_key, None)
                     # The SDK context reported an error, but the retained
                     # session has now confirmed the underlying transport is
                     # closed, which is the ownership condition we need.
                     close_error = None
 
         if close_error is not None:
-            # Keep the failed context and session attached so a later
-            # retirement attempt can retry the authoritative SDK exit.  The
+            # Keep strong references even if a replacement overwrote the
+            # current fields while this exit awaited. A later retirement can
+            # retry the authoritative SDK transport close. The
             # connection registry will keep its capacity slot occupied until
             # one such retry completes successfully.
             if self._gemini_context_manager is context:
                 logger.warning(
                     "Gemini close failed; retaining the context for a later retry"
                 )
-            self._gemini_close_retry_contexts.add(context_key)
+            self._gemini_close_retry_contexts[context_key] = (context, session)
             raise close_error
 
         if self._gemini_context_manager is not context:

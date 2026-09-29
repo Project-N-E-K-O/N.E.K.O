@@ -4124,6 +4124,7 @@ class _TransportMixin:
                 close_error is not None
                 or self.ws is not None
                 or self._retired_websockets
+                or self._gemini_close_retry_contexts
             ):
                 self._close_task = None
         await self._own_teardown("_close_task", self._detach_for_close)
@@ -4149,6 +4150,10 @@ class _TransportMixin:
         self._local_failure_recovery = None
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
+        retired_gemini_contexts = tuple(
+            pair for pair in self._gemini_close_retry_contexts.values()
+            if pair[0] is not gemini_context
+        )
         gemini_close_task = self._gemini_close_task
         gemini_proactive_submit_task = getattr(
             self,
@@ -4183,6 +4188,7 @@ class _TransportMixin:
             gemini_proactive_submit_task,
             gemini_external_submit_task,
             tool_tasks,
+            retired_gemini_contexts,
         )
 
     async def _close_impl(
@@ -4195,6 +4201,7 @@ class _TransportMixin:
         gemini_proactive_submit_task,
         gemini_external_submit_task,
         tool_tasks=(),
+        retired_gemini_contexts=(),
     ) -> None:
         # 先取消在飞的 Gemini 提交，再等退休的工具调用收尾：前者是可能一直挂着的
         # SDK 写，把它留到后面会让整段拆除跟着它一起等。取消逻辑只有
@@ -4233,6 +4240,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # 重置静默超时相关状态
@@ -4261,6 +4269,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # Gemini uses different cleanup
@@ -4269,6 +4278,7 @@ class _TransportMixin:
                 await asyncio.shield(gemini_close_task)
             else:
                 await self._close_gemini()
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         await self._release_retired_connection(ws, gemini_context, gemini_close_task)

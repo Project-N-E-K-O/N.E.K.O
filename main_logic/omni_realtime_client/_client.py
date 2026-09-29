@@ -217,7 +217,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
-        self._gemini_close_retry_contexts: set[int] = set()
+        self._gemini_close_retry_contexts: dict[int, tuple[Any, Any]] = {}
         # A provider close can fail after the socket has been detached from
         # ``self.ws``. Keep that physical owner until a later close retry
         # confirms release; connect() must not discard this uncertainty.

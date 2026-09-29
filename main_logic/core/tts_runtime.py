@@ -364,7 +364,7 @@ class TtsRuntimeMixin:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
-        logger.info(
+        logger.debug(
             "[voice-chain] stage=tts_enqueue speech_id=%s text_len=%d",
             speech_id,
             len(text),
@@ -2734,7 +2734,7 @@ class TtsRuntimeMixin:
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
                     sent = await self.send_speech(audio_payload, speech_id=speech_id)
-                    logger.info(
+                    logger.debug(
                         "[voice-chain] stage=tts_audio_delivery speech_id=%s bytes=%d sent=%s",
                         speech_id,
                         len(audio_payload) if isinstance(audio_payload, (bytes, bytearray)) else 0,

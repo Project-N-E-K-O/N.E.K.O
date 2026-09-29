@@ -200,9 +200,18 @@ class SessionOwnershipMixin:
             existing_record = self._connection_record(session)
             if existing_record is not None and existing_record.retired:
                 raise RuntimeError('Cannot reconnect a manager-retired session')
+            retried = set()
             while True:
                 live = [record for record in self._connection_records
                         if not record.closed and record is not existing_record]
+                for stale in live:
+                    if (stale.retired and stale not in retried
+                            and (stale.close_task is None or stale.close_task.done())):
+                        # Retry once per admission, not every 20ms. Failure
+                        # still occupies capacity and the startup budget bounds
+                        # waiting; a subsequent request may make a fresh attempt.
+                        retried.add(stale)
+                        self._close_connection_record(stale)
                 serial = not getattr(session, 'supports_session_overlap', True) or any(
                     not getattr(record.session, 'supports_session_overlap', True) for record in live
                 )
