@@ -59,12 +59,18 @@ function getAvatarNavigationWindowFeatures(finalUrl) {
 }
 
 // 声纹运行模式在进程启动时固定；拿不到状态时保留入口，由后端拒绝写操作。
+// off 模式下仍有已存声纹或过滤请求时保留入口，让用户能关闭过滤或删除声纹。
 function hideAvatarVoiceIdentityEntryWhenDisabled(menuItem) {
     if (!menuItem || typeof fetch !== 'function') return;
     fetch('/api/voice-identity/status', { cache: 'no-store' })
         .then(response => (response.ok ? response.json() : null))
         .then(status => {
-            if (status && status.runtime_mode === 'off') {
+            if (
+                status
+                && status.runtime_mode === 'off'
+                && status.has_profile !== true
+                && status.requested_enabled !== true
+            ) {
                 menuItem.style.display = 'none';
             }
         })
