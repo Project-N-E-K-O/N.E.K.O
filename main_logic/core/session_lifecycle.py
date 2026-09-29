@@ -40,9 +40,39 @@ class SessionOwnershipMixin:
 
     def _current_start_deadline(self):
         operation = self._current_start_request()
-        return operation.deadline if operation is not None else (
+        # Long-lived handlers inherit the start context, but startup's budget
+        # stops governing recovery once publication has finished.
+        return operation.deadline if operation is not None and not operation.finished.is_set() else (
             asyncio.get_running_loop().time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
         )
+
+    async def _wait_session_end(self, task):
+        """Bound the caller's wait while the manager retains physical cleanup."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
+        record = next((item for item in self._session_retirements if item.task is task), None)
+        handoff = asyncio.create_task(record.handoff_safe.wait()) if record is not None else None
+        try:
+            watched = (task, handoff) if handoff is not None else (task,)
+            done, _ = await asyncio.wait(
+                watched, timeout=max(0, deadline - loop.time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                return task.result()  # Preserve close errors and cancellation.
+            if handoff is None or not handoff.done():
+                raise TimeoutError("Session end did not reach safe handoff")
+            # Preserve prompt physical cleanup/error reporting, without making
+            # existing end-then-start callers depend on an uncooperative worker.
+            done, _ = await asyncio.wait(
+                (task,), timeout=min(2.0, max(0, deadline - loop.time())),
+            )
+            if task in done:
+                return task.result()
+        finally:
+            if handoff is not None:
+                handoff.cancel()
+                await asyncio.gather(handoff, return_exceptions=True)
 
     async def _wait_session_handoff(self, deadline):
         self._init_session_lifecycle_state()

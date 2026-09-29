@@ -4315,6 +4315,7 @@ class LifecycleMixin:
         after_memory_settlement=None, memory_settlement_timeout=15.0,
         preserve_pending_input=False,
     ):
+        """Wait for safe handoff with bounded cleanup grace; retain slow resources."""
         task = self.request_end_session(
             by_server=by_server, expected_session=expected_session,
             reset_starting_count=reset_starting_count,
@@ -4322,7 +4323,7 @@ class LifecycleMixin:
             memory_settlement_timeout=memory_settlement_timeout,
             preserve_pending_input=preserve_pending_input,
         )
-        await asyncio.shield(task)
+        await self._wait_session_end(task)
 
     async def cleanup(self, expected_websocket=None, *, expected_session=None, reset_starting_count=True):
         self._init_session_lifecycle_state()
