@@ -1075,6 +1075,33 @@ async def test_warmup_is_published_before_ready_only_when_the_model_must_load(po
     await _shutdown(task, requests, responses)
 
 
+async def test_warmup_reason_tells_a_first_load_from_a_reload(monkeypatch) -> None:
+    from main_logic.asr_client.warmup import provider_warmup_reason
+
+    pool = faster_whisper._WhisperModelPool(idle_release_seconds=0.05)
+    model = _FakeModel(_segment("好"))
+    loader = _RecordingLoader(model)
+
+    task, requests, responses = _start_probed_worker(pool, loader)
+    await _next_event(responses, "ready")
+    assert provider_warmup_reason(requests) == "ASR_LOCAL_MODEL_LOADING"
+    await _send_utterance(requests)
+    await _next_event(responses, "final")
+    await _shutdown(task, requests, responses)
+
+    # Dropped after idling: loading it again is a reload, not a first use.
+    for _ in range(200):
+        if pool.loaded_count() == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert pool.loaded_count() == 0
+    task, requests, responses = _start_probed_worker(pool, loader)
+    await _next_event(responses, "ready")
+    assert responses.pending_at_ready is True
+    assert provider_warmup_reason(requests) == "ASR_LOCAL_MODEL_RELOADING"
+    await _shutdown(task, requests, responses)
+
+
 async def test_warmup_taken_before_ready_ends_even_if_the_load_never_ran(pool) -> None:
     # "ready" fails to go out, so the worker ends before its load task ever
     # ran: that task never reaches its own cleanup, the worker's must.

@@ -30,7 +30,9 @@ def _sent_statuses(runtime: _Runtime) -> list[dict]:
     return statuses
 
 
-async def _start_with_session(monkeypatch, session) -> tuple[_Runtime, list[dict]]:
+async def _start_with_session(
+    monkeypatch, session, *, instant_sleep: bool = True
+) -> tuple[_Runtime, list[dict]]:
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     selection = _selection("soniox", "provider")
@@ -51,18 +53,20 @@ async def _start_with_session(monkeypatch, session) -> tuple[_Runtime, list[dict
     monkeypatch.setattr(
         runtime_module, "_create_asr_session_from_selection", build_candidate
     )
-    monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock())
+    if instant_sleep:
+        monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock())
 
     await runtime._start_independent_asr_if_enabled("audio")
     assert runtime._asr_session is session
     return runtime, callbacks
 
 
-def _session(*, warming_up: bool):
+def _session(*, warming_up: bool, reason: str = ""):
     session = type("Provider", (), {})()
     session.connect = AsyncMock()
     session.close = AsyncMock()
     session.provider_warmup_pending = warming_up
+    session.provider_warmup_reason = reason
     return session
 
 
@@ -219,3 +223,72 @@ async def test_start_failure_carries_the_provider_code_as_reason(monkeypatch) ->
         status["details"].get("reason") == "ASR_LOCAL_MODEL_LOAD_FAILED"
         for status in failures
     )
+
+
+async def test_blocked_lifecycle_carries_the_failure_reason(monkeypatch) -> None:
+    # A recording window may drop the later FAILED status on its lease check,
+    # so BLOCKED itself must say why.
+    runtime, callbacks = await _start_with_session(
+        monkeypatch, _session(warming_up=False)
+    )
+    await callbacks[0]["on_connection_error"](
+        "ASR_LOCAL_MODEL_LOAD_FAILED: faster-whisper model could not be loaded"
+    )
+    await asyncio.sleep(0)
+    blocked = [
+        status for status in _sent_statuses(runtime)
+        if status.get("code") == "ASR_LIFECYCLE_STATE"
+        and status["details"].get("state") == "blocked"
+    ]
+    assert blocked
+    assert blocked[-1]["details"].get("reason") == "ASR_LOCAL_MODEL_LOAD_FAILED"
+
+
+async def test_runtime_failure_code_becomes_the_blocked_reason() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_provider = "faster_whisper"
+    runtime._asr_lifecycle = None
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_error(
+        epoch, "faster_whisper", status_code="ASR_PROVIDER_WARMUP_TIMEOUT"
+    )
+    await asyncio.sleep(0)
+    blocked = [
+        status for status in _sent_statuses(runtime)
+        if status.get("code") == "ASR_LIFECYCLE_STATE"
+        and status["details"].get("state") == "blocked"
+    ]
+    assert blocked
+    assert blocked[-1]["details"].get("reason") == "ASR_PROVIDER_WARMUP_TIMEOUT"
+
+
+async def test_preparing_says_why_and_prepared_follows_when_ready(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_PROVIDER_WARMUP_POLL_SECONDS", 0.01)
+    session = _session(warming_up=True, reason="ASR_LOCAL_MODEL_RELOADING")
+    # Real sleeps: an instant one would also fire the idle-transport expiry
+    # at once and close the session before it could get ready.
+    runtime, _callbacks = await _start_with_session(
+        monkeypatch, session, instant_sleep=False
+    )
+
+    preparing = [
+        status for status in _sent_statuses(runtime)
+        if status.get("code") == "ASR_INDEPENDENT_PREPARING"
+    ]
+    assert preparing
+    assert preparing[-1]["details"].get("reason") == "ASR_LOCAL_MODEL_RELOADING"
+    assert "ASR_INDEPENDENT_PREPARED" not in [
+        status.get("code") for status in _sent_statuses(runtime)
+    ]
+
+    # The runtime keeps watching and tells the client once the model is ready.
+    session.provider_warmup_pending = False
+    task = runtime._asr_warmup_watch_task
+    assert task is not None
+    await asyncio.wait_for(task, 2)
+    codes = [status.get("code") for status in _sent_statuses(runtime)]
+    assert codes.count("ASR_INDEPENDENT_PREPARED") == 1

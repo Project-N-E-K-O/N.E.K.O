@@ -104,6 +104,11 @@ _PROVIDER_WARMUP_POLL_SECONDS = 0.5
 _PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
 
 
+def _provider_warmup_reason(asr_session: Any) -> str:
+    reason = getattr(asr_session, "provider_warmup_reason", "")
+    return reason if isinstance(reason, str) else ""
+
+
 def _provider_warmup_snapshot(asr_session: Any) -> tuple[bool, float | None]:
     """``(pending, completed_at)`` of a provider session's warm-up, read at once.
 
@@ -659,6 +664,8 @@ class IndependentAsrRuntime:
         self._asr_transport_lock = asyncio.Lock()
         self._asr_warm_expiry_task: asyncio.Task[None] | None = None
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
+        # Tells the client when a provider announced as preparing is ready.
+        self._asr_warmup_watch_task: asyncio.Task[None] | None = None
         self._asr_pending_speech_confirmed = False
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
@@ -2668,6 +2675,7 @@ class IndependentAsrRuntime:
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -3698,6 +3706,7 @@ class IndependentAsrRuntime:
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -5053,6 +5062,11 @@ class IndependentAsrRuntime:
         expected_identity: _AsrRuntimeIdentity | None = None,
         failure_reason: str = "",
     ) -> None:
+        # What BLOCKED tells the client: the provider's own code, else the
+        # runtime's specific failure (e.g. ASR_PROVIDER_WARMUP_TIMEOUT).
+        blocked_reason = failure_reason or (
+            status_code if status_code != "ASR_INDEPENDENT_FAILED" else ""
+        )
         if epoch != self._asr_session_epoch or (
             expected_identity is not None
             and not self._runtime_identity_matches(expected_identity)
@@ -5108,6 +5122,7 @@ class IndependentAsrRuntime:
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -5138,6 +5153,7 @@ class IndependentAsrRuntime:
                 provider=provider,
                 session_epoch=failure_epoch,
                 expected_identity=failure_identity,
+                reason=blocked_reason,
             )
             if not delivered or not self._runtime_identity_matches(failure_identity):
                 return
@@ -5202,12 +5218,77 @@ class IndependentAsrRuntime:
 
         if getattr(asr_session, "provider_warmup_pending", False) is not True:
             return self._runtime_identity_matches(expected_identity)
-        return await self._send_asr_status(
+        delivered = await self._send_asr_status(
             "ASR_INDEPENDENT_PREPARING",
             provider,
             session_epoch=session_epoch,
             expected_identity=expected_identity,
+            reason=_provider_warmup_reason(asr_session),
         )
+        if delivered:
+            self._watch_provider_warmup(
+                asr_session,
+                provider,
+                session_epoch=session_epoch,
+                expected_identity=expected_identity,
+            )
+        return delivered
+
+    def _watch_provider_warmup(
+        self,
+        asr_session: Any,
+        provider: str,
+        *,
+        session_epoch: int,
+        expected_identity: _AsrRuntimeIdentity,
+    ) -> None:
+        """Send ASR_INDEPENDENT_PREPARED once the announced warm-up ends.
+
+        The client keeps its "preparing" notice up until then. Nothing is
+        sent if the session or route changes first (its failure or teardown
+        tells the client instead).
+        """
+
+        previous = self._asr_warmup_watch_task
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        def still_this_session() -> bool:
+            # The route moves on after start (lifecycle / route generations),
+            # so this only asks whether the same provider session is current.
+            return (
+                self._asr_session is asr_session
+                and self._asr_session_epoch == session_epoch
+            )
+
+        async def watch() -> None:
+            try:
+                while _provider_warmup_snapshot(asr_session)[0]:
+                    await asyncio.sleep(_PROVIDER_WARMUP_POLL_SECONDS)
+                    if not still_this_session():
+                        return
+                if not still_this_session():
+                    return
+                current = self._capture_runtime_identity()
+                if current.session_epoch != session_epoch:
+                    return
+                await self._send_asr_status(
+                    "ASR_INDEPENDENT_PREPARED",
+                    provider,
+                    session_epoch=session_epoch,
+                    expected_identity=current,
+                )
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._asr_warmup_watch_task is asyncio.current_task():
+                    self._asr_warmup_watch_task = None
+
+        task = asyncio.create_task(
+            watch(), name="independent-asr-warmup-watch"
+        )
+        task.add_done_callback(self._log_asr_background_task_failure)
+        self._asr_warmup_watch_task = task
 
     async def _send_asr_status(
         self,
@@ -5248,6 +5329,7 @@ class IndependentAsrRuntime:
         provider: str,
         session_epoch: int,
         expected_identity: _AsrRuntimeIdentity,
+        reason: str = "",
     ) -> bool:
         if (
             session_epoch != expected_identity.session_epoch
@@ -5260,6 +5342,7 @@ class IndependentAsrRuntime:
                     state=state.value,
                     provider=provider,
                     session_epoch=session_epoch,
+                    reason=reason,
                 )
             )
         except Exception:

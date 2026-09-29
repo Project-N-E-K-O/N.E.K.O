@@ -52,10 +52,15 @@ def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
         "S.independentAsrActive = false;"
     )
     # The teardown runs before the toast, so the failure message is what stays
-    # on screen.
+    # on screen. The text follows the reason BLOCKED carries, generic fallback
+    # otherwise.
     assert blocked_branch.index("tearDownBlockedVoiceRoute();") < blocked_branch.index(
-        "microphone.independentAsrFallback"
+        "independentAsrFailureToastText(blockedReason)"
     )
+    helper = source.split("function independentAsrFailureToastText(reason) {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "microphone.independentAsrFallback" in helper
 
     # Cross-reference comment so backend changes to the failure path get
     # traced back here.

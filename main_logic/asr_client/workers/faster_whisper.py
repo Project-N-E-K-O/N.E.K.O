@@ -384,6 +384,9 @@ class _WhisperModelPool:
         self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
         self._decoder_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._decode_slots_used = 0
+        # Specs loaded at least once in this process: loading one again is a
+        # reload after idling, not a first use that may have to download.
+        self._ever_loaded: set[_ModelSpec] = set()
 
     def try_reserve_decode(self) -> bool:
         """Take one process-wide decode slot, or return False when all are used."""
@@ -507,6 +510,7 @@ class _WhisperModelPool:
             model = loader(spec)
             with self._state_lock:
                 self._entries[spec] = _PoolEntry(model=model, leases=1)
+                self._ever_loaded.add(spec)
             return model
 
     def release(self, spec: _ModelSpec) -> None:
@@ -538,6 +542,12 @@ class _WhisperModelPool:
         # CTranslate2 model releases native (possibly GPU) memory.
         del model
         logger.info("faster-whisper model released after idling")
+
+    def warmup_reason(self, spec: _ModelSpec) -> str:
+        """Why a session must wait for ``spec``: a first load or a reload."""
+        with self._state_lock:
+            reloading = spec in self._ever_loaded
+        return "ASR_LOCAL_MODEL_RELOADING" if reloading else "ASR_LOCAL_MODEL_LOADING"
 
     def is_loaded(self, spec: _ModelSpec) -> bool:
         with self._state_lock:
@@ -761,7 +771,9 @@ async def faster_whisper_asr_worker(
                 if model is not None:
                     return model
                 if warmup_token is None:
-                    warmup_token = begin_provider_warmup(request_queue)
+                    warmup_token = begin_provider_warmup(
+                        request_queue, pool.warmup_reason(spec)
+                    )
                 # Shared per spec; cancelling this session only stops waiting.
                 # No lease is taken until the load is done, so there is none
                 # to hand back when the session ends mid-download.
@@ -909,7 +921,9 @@ async def faster_whisper_asr_worker(
         # still has to be loaded is published as warming up before "ready", so
         # the runtime can tell the client right when the session connects.
         if not pool.is_loaded(spec):
-            initial_warmup = begin_provider_warmup(request_queue)
+            initial_warmup = begin_provider_warmup(
+                request_queue, pool.warmup_reason(spec)
+            )
         model_task = asyncio.create_task(
             acquire_model(initial_warmup),
             name="faster-whisper-asr-load",

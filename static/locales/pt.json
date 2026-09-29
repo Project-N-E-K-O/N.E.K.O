@@ -560,6 +560,7 @@
         "clearScreenshotsConfirm": "Tem certeza de que deseja limpar todas as capturas de tela pendentes?"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "O modelo de reconhecimento de voz local demorou demais para ficar pronto. A entrada de voz desta sessão foi interrompida. No primeiro uso, o modelo é baixado do HuggingFace; se a conexão estiver lenta ou indisponível, defina a variável de ambiente HF_ENDPOINT (por exemplo https://hf-mirror.com) e reinicie, ou desative o reconhecimento de voz local.",
         "emotionTimeout": "Tempo limite de análise de emoções",
         "noAudioTrack": "Nenhuma faixa de áudio disponível",
         "cameraStreamFailed": "Falha ao obter stream da câmera",
@@ -1049,8 +1050,11 @@
         "localAsr": "Reconhecimento de voz local",
         "localAsrHint": "Reconhece a voz neste computador com o faster-whisper. Requer instalar o faster-whisper separadamente; o modelo é baixado no primeiro uso",
         "localAsrDependencyMissing": "O reconhecimento de voz local precisa do faster-whisper, que não está instalado. A entrada de voz desta sessão foi interrompida. Instale-o ou desative o reconhecimento de voz local e depois inicie uma nova sessão de voz.",
-        "localAsrPreparing": "Preparando o modelo de reconhecimento de voz local. No primeiro uso ele é baixado, o que pode levar alguns minutos. O que você disser enquanto isso será reconhecido quando o modelo estiver pronto.",
-        "localAsrModelLoadFailed": "Não foi possível carregar o modelo de reconhecimento de voz local. A entrada de voz desta sessão foi interrompida. No primeiro uso, o modelo é baixado do HuggingFace; se não for possível acessá-lo, defina a variável de ambiente HF_ENDPOINT (por exemplo https://hf-mirror.com) e reinicie, ou desative o reconhecimento de voz local."
+        "localAsrPreparing": "Carregando o modelo de reconhecimento de voz local. No primeiro uso ele também é baixado, o que pode levar alguns minutos. Sua primeira frase será reconhecida quando o modelo estiver pronto; aguarde antes de continuar falando.",
+        "localAsrModelLoadFailed": "Não foi possível carregar o modelo de reconhecimento de voz local. A entrada de voz desta sessão foi interrompida. No primeiro uso, o modelo é baixado do HuggingFace; se não for possível acessá-lo, defina a variável de ambiente HF_ENDPOINT (por exemplo https://hf-mirror.com) e reinicie, ou desative o reconhecimento de voz local.",
+        "localAsrReloading": "Recarregando o modelo de reconhecimento de voz local, aguarde. Sua primeira frase será reconhecida quando o modelo estiver pronto.",
+        "localAsrReady": "O reconhecimento de voz local está pronto",
+        "localAsrWarmupTimeout": "O modelo de reconhecimento de voz local demorou demais para ficar pronto. A entrada de voz desta sessão foi interrompida. No primeiro uso, o modelo é baixado do HuggingFace; se a conexão estiver lenta ou indisponível, defina a variável de ambiente HF_ENDPOINT (por exemplo https://hf-mirror.com) e reinicie, ou desative o reconhecimento de voz local."
     },
     "speaker": {
         "volumeLabel": "Volume do alto-falante",

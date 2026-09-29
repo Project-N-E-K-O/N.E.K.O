@@ -1399,6 +1399,10 @@
                 const _status = statusElement();
                 if (_status && _status.textContent.includes(noSoundText)) {
                     window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+                    // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+                    if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                        window.showVoicePreparingToast(S.localAsrPreparingMessage);
+                    }
                     console.log('麦克风静音检测：检测到声音，已清除警告');
                 }
             }
@@ -1817,6 +1821,7 @@
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
+        S.localAsrPreparingMessage = null;
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
         if (typeof window.syncVoiceChatComposerHidden === 'function') {
@@ -2215,6 +2220,10 @@
             if (_stop)   _stop.disabled = true;
             if (_reset)  _reset.disabled = false;
             window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+            // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+            if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                window.showVoicePreparingToast(S.localAsrPreparingMessage);
+            }
 
             // 确保active类存在
             if (_mic && !_mic.classList.contains('active')) {
@@ -2290,6 +2299,7 @@
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
+        S.localAsrPreparingMessage = null;
 
         // 清理 session Promise 相关状态
         if (window.sessionTimeoutId) {

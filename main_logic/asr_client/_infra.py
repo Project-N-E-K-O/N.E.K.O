@@ -29,7 +29,11 @@ import numpy as np
 import soxr
 
 from .delivery import delivery_evidence, log_delivery_phase
-from .warmup import provider_warmup_snapshot, provider_warmup_state
+from .warmup import (
+    provider_warmup_reason,
+    provider_warmup_snapshot,
+    provider_warmup_state,
+)
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -439,6 +443,11 @@ class _RealtimeAsrSessionImpl:
         # sees the wait over also sees its completion time.
         with state.lock:
             return bool(state.pending)
+
+    @property
+    def provider_warmup_reason(self) -> str:
+        """Why the provider is preparing (an ``ASR_*`` code), or ``""``."""
+        return provider_warmup_reason(self._request_queue)
 
     @property
     def provider_warmup_snapshot(self) -> tuple[bool, float | None]:

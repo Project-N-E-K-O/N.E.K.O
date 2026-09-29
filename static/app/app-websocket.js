@@ -1553,7 +1553,37 @@
     // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
     // so before this was shared they showed a toast and left the hardware
     // microphone running for the whole session.
+    // Text for an independent-ASR failure. ``reason`` is the provider /
+    // runtime ASR_* code behind it (carried by ASR_LIFECYCLE_STATE blocked and
+    // by the terminal failure status), when it has its own explanation.
+    function independentAsrFailureToastText(reason) {
+        var t = window.t;
+        if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
+            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
+            // Installed but not importable (e.g. a broken native CTranslate2
+            // build): same guidance as not installed.
+            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.';
+        }
+        if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
+            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        return t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.';
+    }
+
+    // The persistent "local model preparing" notice (ASR_INDEPENDENT_PREPARING
+    // until ASR_INDEPENDENT_PREPARED); cleared on failure and teardown.
+    function clearLocalAsrPreparingNotice() {
+        if (!S.localAsrPreparingMessage) return;
+        S.localAsrPreparingMessage = null;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+    }
+
     function tearDownBlockedVoiceRoute() {
+        clearLocalAsrPreparingNotice();
 
     removeExternalAsrPreview();
     S.independentAsrActive = false;
@@ -3779,9 +3809,13 @@
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
+                                    // BLOCKED carries the failure reason: a recording
+                                    // window's later FAILED status can be fenced by
+                                    // its lease, so this may be the only notice it gets.
+                                    var blockedReason = statusDetails && statusDetails.reason;
                                     window.showStatusToast(
-                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
-                                        5000
+                                        independentAsrFailureToastText(blockedReason),
+                                        blockedReason ? 8000 : 5000
                                     );
                                 }
                             }
@@ -3944,15 +3978,28 @@
                         if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
                             // Connected, but the provider is still preparing (a
                             // local model loading, or downloading on first use).
-                            // Not a failure: the route stays as it is and speech
-                            // is recognized once the model is ready.
-                            if (typeof window.showStatusToast === 'function') {
-                                window.showStatusToast(
-                                    window.t
-                                        ? window.t('microphone.localAsrPreparing')
-                                        : 'Preparing the local speech recognition model. The first use downloads it, which can take a few minutes. Anything you say meanwhile is recognized once the model is ready.',
-                                    10000
-                                );
+                            // Not a failure: the route stays as it is. The notice
+                            // stays up until ASR_INDEPENDENT_PREPARED (the mic
+                            // start re-shows it over its own toast).
+                            var preparingText = statusDetails
+                                && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
+                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait. Your first sentence is recognized once the model is ready.')
+                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Loading the local speech recognition model. The first use also downloads it, which can take a few minutes. Your first sentence is recognized once the model is ready; please wait before saying more.');
+                            S.localAsrPreparingMessage = preparingText;
+                            if (typeof window.showVoicePreparingToast === 'function') {
+                                window.showVoicePreparingToast(preparingText);
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
+                            if (S.localAsrPreparingMessage) {
+                                clearLocalAsrPreparingNotice();
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready',
+                                        3000
+                                    );
+                                }
                             }
                             return;
                         }
@@ -3974,25 +4021,12 @@
                                 );
                                 return;
                             }
-                            // The provider's own failure code, when it sent one:
-                            // replaces the generic text the BLOCKED lifecycle
-                            // event has just shown.
-                            if (statusDetails && statusDetails.reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
-                                // Installed but not importable (e.g. a broken native
-                                // CTranslate2 build): same guidance as not installed.
+                            // The provider's / runtime's own failure code, when it
+                            // sent one: replaces the generic text the BLOCKED
+                            // lifecycle event has just shown.
+                            if (statusDetails && statusDetails.reason) {
                                 window.showStatusToast(
-                                    window.t
-                                        ? window.t('microphone.localAsrDependencyMissing')
-                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
-                                    5000
-                                );
-                                return;
-                            }
-                            if (statusDetails && statusDetails.reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
-                                window.showStatusToast(
-                                    window.t
-                                        ? window.t('microphone.localAsrModelLoadFailed')
-                                        : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.',
+                                    independentAsrFailureToastText(statusDetails.reason),
                                     8000
                                 );
                                 return;

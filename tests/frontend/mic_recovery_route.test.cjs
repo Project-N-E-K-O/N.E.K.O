@@ -555,3 +555,79 @@ test('a superseded microphone start failing late cannot retire the new owner rec
     env.sendFrame();
     assert.equal(env.frames.length, 0);
 });
+
+test('a recording window shows the model-load guidance even when its FAILED status is fenced', () => {
+    const env = loadCapture(true);
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.S.voiceInputCurrentLeaseGeneration = 5;
+    // The runtime broadcasts BLOCKED (carrying the reason) first; its teardown
+    // moves this window's lease on, so the FAILED status that follows carries
+    // a lease generation that no longer matches and is dropped.
+    env.status('ASR_LIFECYCLE_STATE', {
+        state: 'blocked', provider: 'faster_whisper', session_epoch: 12,
+        reason: 'ASR_LOCAL_MODEL_LOAD_FAILED',
+    });
+    env.S.voiceInputCurrentLeaseGeneration = 6;
+    env.status('ASR_INDEPENDENT_FAILED', {
+        provider: 'faster_whisper', session_epoch: 12, lease_generation: 5,
+        reason: 'ASR_LOCAL_MODEL_LOAD_FAILED',
+    });
+    assert.equal(env.messages.at(-1), 'microphone.localAsrModelLoadFailed');
+});
+
+test('BLOCKED for a warm-up timeout names the model-download guidance, not a raw key', () => {
+    const env = loadCapture(true);
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_LIFECYCLE_STATE', {
+        state: 'blocked', provider: 'faster_whisper', session_epoch: 12,
+        reason: 'ASR_PROVIDER_WARMUP_TIMEOUT',
+    });
+    assert.equal(env.messages.at(-1), 'microphone.localAsrWarmupTimeout');
+});
+
+test('the local-model preparing notice survives the mic start and clears when ready', async () => {
+    const env = loadCapture(true);
+    env.installMicrophone();
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_INDEPENDENT_PREPARING', {
+        provider: 'faster_whisper', session_epoch: 12, reason: 'ASR_LOCAL_MODEL_LOADING',
+    });
+    assert.equal(preparing, 'microphone.localAsrPreparing');
+    // session_started hides the voice-preparing notice before the mic opens;
+    // the mic start then shows its own toast and must bring the notice back.
+    env.window.hideVoicePreparingToast();
+    assert.equal(await env.window.startMicCapture(), true);
+    assert.equal(env.messages.at(-1), 'app.speaking');
+    assert.equal(preparing, 'microphone.localAsrPreparing');
+    env.status('ASR_INDEPENDENT_PREPARED', { provider: 'faster_whisper', session_epoch: 12 });
+    assert.equal(preparing, null);
+    assert.equal(env.messages.at(-1), 'microphone.localAsrReady');
+});
+
+test('a reload after idling does not claim a first-use download', () => {
+    const env = loadCapture(true);
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_INDEPENDENT_PREPARING', {
+        provider: 'faster_whisper', session_epoch: 12, reason: 'ASR_LOCAL_MODEL_RELOADING',
+    });
+    assert.equal(preparing, 'microphone.localAsrReloading');
+    // A failure while preparing clears the notice before its own message,
+    // also in a window that is not capturing (no mic teardown to rely on).
+    env.S.isRecording = false;
+    env.status('ASR_LIFECYCLE_STATE', {
+        state: 'blocked', provider: 'faster_whisper', session_epoch: 12,
+        reason: 'ASR_LOCAL_MODEL_LOAD_FAILED',
+    });
+    assert.equal(preparing, null);
+    assert.equal(env.messages.at(-1), 'microphone.localAsrModelLoadFailed');
+});

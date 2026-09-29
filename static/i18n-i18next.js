@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 本地语音识别新增「模型准备中」与「模型加载失败（含 HF_ENDPOINT 提示）」两条文案，
+    // 本地语音识别新增「重新加载 / 已就绪 / 准备超时」文案，并改写「准备中」文案，
     // 递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-29-local-asr-model-status';
+    const LOCALE_VERSION = '2026-09-29-local-asr-prepare-notices';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

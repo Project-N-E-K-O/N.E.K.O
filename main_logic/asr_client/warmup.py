@@ -27,6 +27,9 @@ class ProviderWarmupState:
     waiters: set[object] = field(default_factory=set)
     # Waits begin on the event loop and may end on a worker thread.
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Why the provider is preparing, as an ``ASR_*`` code the client can
+    # explain (a first load that may download, or a reload after idling).
+    reason: str = ""
 
 
 def provider_warmup_state(queue: object) -> ProviderWarmupState | None:
@@ -62,9 +65,10 @@ def ensure_provider_warmup_state(queue: object) -> ProviderWarmupState:
     return state
 
 
-def begin_provider_warmup(queue: object) -> object:
+def begin_provider_warmup(queue: object, reason: str = "") -> object:
     """Start one warm-up wait and return the token that ends it.
 
+    ``reason`` (an ``ASR_*`` code) replaces the published reason when given.
     Call on the event loop unless ``ensure_provider_warmup_state`` already ran
     there: the state object is created lazily here.
     """
@@ -73,7 +77,18 @@ def begin_provider_warmup(queue: object) -> object:
     with state.lock:
         state.waiters.add(token)
         state.pending = True
+        if reason:
+            state.reason = reason
     return token
+
+
+def provider_warmup_reason(queue: object) -> str:
+    """The published reason of the queue's warm-up, or ``""``."""
+    state = provider_warmup_state(queue)
+    if state is None:
+        return ""
+    with state.lock:
+        return state.reason
 
 
 def complete_provider_warmup(queue: object, token: object) -> None:

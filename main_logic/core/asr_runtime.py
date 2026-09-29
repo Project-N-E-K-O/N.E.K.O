@@ -6387,6 +6387,7 @@ class AsrRuntimeMixin:
                             "state": event.state,
                             "route_mode": self._asr_route_mode,
                             "session_epoch": event.session_epoch,
+                            **({"reason": event.reason} if event.reason else {}),
                         },
                     }
                 ),

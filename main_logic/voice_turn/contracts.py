@@ -138,6 +138,10 @@ class AsrLifecycleNotification:
     state: str
     provider: str
     session_epoch: int
+    # For BLOCKED: the provider / runtime ``ASR_*`` code behind it, so every
+    # window (also one whose later failure status is fenced by its lease) can
+    # show the matching explanation. Opaque to Core.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

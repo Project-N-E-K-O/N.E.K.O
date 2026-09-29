@@ -303,27 +303,39 @@ def test_preparing_status_informs_without_tearing_the_route_down() -> None:
     )
 
 
-def test_worker_dependency_failure_reason_uses_the_install_guidance() -> None:
-    block = _independent_asr_status_block()
-    terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
-    branch = terminal.split(
-        "statusDetails.reason === 'ASR_LOCAL_DEPENDENCY_MISSING'", 1
-    )[1].split("return;", 1)[0]
-    assert "window.t('microphone.localAsrDependencyMissing')" in branch
-    assert terminal.index("'ASR_LOCAL_DEPENDENCY_MISSING'") < terminal.index(
-        "microphone.independentAsrFallback"
+def _failure_toast_helper() -> str:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    ).replace(chr(13) + chr(10), chr(10))
+    return websocket.split("function independentAsrFailureToastText(reason) {", 1)[1].split(
+        chr(10) + "    }", 1
+    )[0]
+
+
+def test_failure_reasons_map_to_their_own_guidance() -> None:
+    helper = _failure_toast_helper()
+    for reason, key in (
+        ("ASR_LOCAL_MODEL_LOAD_FAILED", "microphone.localAsrModelLoadFailed"),
+        ("ASR_LOCAL_DEPENDENCY_MISSING", "microphone.localAsrDependencyMissing"),
+        ("ASR_PROVIDER_WARMUP_TIMEOUT", "microphone.localAsrWarmupTimeout"),
+    ):
+        branch = helper.split(f"reason === '{reason}'", 1)[1].split("}", 1)[0]
+        assert f"t('{key}')" in branch, reason
+    # Anything else keeps the generic text.
+    assert helper.rstrip().endswith(
+        "'Independent ASR unavailable. Voice input has stopped for this session. "
+        "Check the independent ASR configuration, then start a new voice session.';"
     )
 
 
-def test_model_load_failure_reason_has_its_own_toast() -> None:
+def test_terminal_failure_status_uses_its_reason_before_the_generic_text() -> None:
     block = _independent_asr_status_block()
     terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
-    branch = terminal.split(
-        "statusDetails.reason === 'ASR_LOCAL_MODEL_LOAD_FAILED'", 1
-    )[1].split("return;", 1)[0]
-    assert "window.t('microphone.localAsrModelLoadFailed')" in branch
-    # Checked before the generic fallback text of the same tail.
-    assert terminal.index("'ASR_LOCAL_MODEL_LOAD_FAILED'") < terminal.index(
+    branch = terminal.split("if (statusDetails && statusDetails.reason) {", 1)[1].split(
+        "return;", 1
+    )[0]
+    assert "independentAsrFailureToastText(statusDetails.reason)" in branch
+    assert terminal.index("if (statusDetails && statusDetails.reason) {") < terminal.index(
         "microphone.independentAsrFallback"
     )
 
@@ -334,7 +346,15 @@ def test_local_model_copy_exists_in_every_locale_and_names_hf_endpoint() -> None
             (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
         )["microphone"]
         assert microphone.get("localAsrPreparing"), locale
+        assert microphone.get("localAsrReloading"), locale
+        assert microphone.get("localAsrReady"), locale
         assert "HF_ENDPOINT" in microphone.get("localAsrModelLoadFailed", ""), locale
+        assert "HF_ENDPOINT" in microphone.get("localAsrWarmupTimeout", ""), locale
+        # The raw status code must never be what a user sees.
+        errors = json.loads(
+            (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
+        )["errors"]
+        assert "HF_ENDPOINT" in errors.get("ASR_PROVIDER_WARMUP_TIMEOUT", ""), locale
 
 
 def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() -> None:
