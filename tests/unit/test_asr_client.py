@@ -228,10 +228,10 @@ def test_phase2_registry_routes_and_capabilities():
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
     assert CORE_ASR_ROUTES["qwen"].region == "cn"
-    assert CORE_ASR_ROUTES["qwen"].default_endpointing_mode == "provider"
+    assert CORE_ASR_ROUTES["qwen"].default_endpointing_mode == "manual"
     assert CORE_ASR_ROUTES["qwen_intl"].credential_field == ("ASSIST_API_KEY_QWEN_INTL")
     assert CORE_ASR_ROUTES["qwen_intl"].region == "intl"
-    assert CORE_ASR_ROUTES["qwen_intl"].default_endpointing_mode == "provider"
+    assert CORE_ASR_ROUTES["qwen_intl"].default_endpointing_mode == "manual"
     assert CORE_ASR_ROUTES["openai"].credential_field == "ASSIST_API_KEY_OPENAI"
     assert CORE_ASR_ROUTES["openai"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["step"].credential_field == "ASSIST_API_KEY_STEP"
@@ -320,7 +320,7 @@ def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
     selection = asr_client._resolve_asr_selection("qwen")
 
     assert selection.provider_key == "qwen"
-    assert selection.endpointing_mode == "provider"
+    assert selection.endpointing_mode == "manual"
 
 
 def test_openai_core_resolves_to_provider_endpointing_without_smart_turn(
@@ -467,8 +467,8 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
     )
 
     assert session._api_key == "snapshot-key"
-    assert session._config.endpointing_mode == "provider"
-    assert session._voice_turn_factory is None
+    assert session._config.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
 
 
 @pytest.mark.parametrize(
@@ -710,7 +710,10 @@ def test_provider_endpoint_does_not_install_smart_turn_factory(monkeypatch):
     assert session._voice_turn_factory is None
 
 
-def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
+@pytest.mark.parametrize("qwen_core", ["qwen", "qwen_intl"])
+def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch, qwen_core):
+    from main_logic.asr_client.workers.qwen import _qwen_session_update
+
     callback = AsyncMock()
     observed_modes: list[tuple[str, str]] = []
 
@@ -731,16 +734,18 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
         on_connection_error=callback,
     )
     qwen_session = create_asr_session(
-        "qwen",
+        qwen_core,
         on_input_transcript=callback,
         on_connection_error=callback,
     )
 
     assert grok_session._config.endpointing_mode == "provider"
-    assert qwen_session._config.endpointing_mode == "provider"
+    assert qwen_session._config.endpointing_mode == "manual"
     assert grok_session._voice_turn_factory is None
-    assert qwen_session._voice_turn_factory is None
-    assert observed_modes == [("grok", "provider"), ("qwen", "provider")]
+    assert qwen_session._voice_turn_factory is not None
+    assert observed_modes == [("grok", "provider"), (qwen_core, "manual")]
+    assert resolve_provider_policy("qwen", qwen_session._config.endpointing_mode).smart_turn_required
+    assert _qwen_session_update(qwen_session._config, language="zh")["session"]["turn_detection"] is None
     with pytest.raises(ValueError, match="manual.*provider"):
         AsrSessionConfig(endpointing_mode="server_vad")
 

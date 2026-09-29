@@ -134,7 +134,8 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         provider_key="qwen",
         credential_field="ASSIST_API_KEY_QWEN",
         region="cn",
-        default_endpointing_mode="provider",
+        # Local Silero/SmartTurn owns the endpoint; Qwen receives an explicit commit.
+        default_endpointing_mode="manual",
     ),
     "qwen_intl": AsrCoreRoute(
         provider_key="qwen",
@@ -142,7 +143,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         region="intl",
         # The separate credential slot prevents cross-region key reuse; real
         # Qwen Intl permission/scope acceptance is still required before release.
-        default_endpointing_mode="provider",
+        default_endpointing_mode="manual",
     ),
     "openai": AsrCoreRoute(
         provider_key="openai",
