@@ -27,6 +27,9 @@ async def _start_connected(manager, created):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('expired,occupied', [(False, True), (True, True), (True, False)])
 async def test_runtime_fallback_real_elapsed_deadline(monkeypatch, expired, occupied):
+    test_start_budget = 2.0
+    monkeypatch.setattr(lifecycle, 'FRONTEND_START_SESSION_TIMEOUT_SECONDS', test_start_budget)
+    monkeypatch.setattr(session_lifecycle, 'FRONTEND_START_SESSION_TIMEOUT_SECONDS', test_start_budget)
     manager, created, clients = await make_full_manager(monkeypatch)
     manager._config_manager.core['DISABLE_TTS'] = False
     monkeypatch.setattr(manager, '_resolve_session_use_tts', lambda *args: True)
@@ -73,10 +76,11 @@ async def test_runtime_fallback_real_elapsed_deadline(monkeypatch, expired, occu
             await asyncio.wait_for(asyncio.shield(retirement), 3)
             assert manager._live_tts_runtime_count() == 1
         if expired:
-            # Let the unmodified, default 15-second startup budget really expire.
+            # Let the short test budget really expire without changing the
+            # operation's deadline or bypassing the runtime fallback path.
             reached = asyncio.Event()
             loop.call_at(original_deadline + 0.05, reached.set)
-            await asyncio.wait_for(reached.wait(), 17)
+            await asyncio.wait_for(reached.wait(), test_start_budget + 2)
         assert operation.deadline == original_deadline
         assert (loop.time() > original_deadline) == expired
         current = manager._tts_runtime
