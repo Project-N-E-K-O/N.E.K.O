@@ -244,11 +244,26 @@ def _default_signal_store_path():
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        if not config_manager.ensure_local_state_directory():
-            return None
-        return config_manager.local_state_dir / "topic_signals.json"
+        runtime_state_dir = getattr(config_manager, "runtime_state_dir", None)
+        if runtime_state_dir is None:
+            runtime_state_dir = config_manager.local_state_dir
+        return runtime_state_dir / "topic_signals.json"
     except Exception:
         return None
+
+
+def _default_signal_store_write_guard():
+    from utils.config_manager import get_config_manager
+
+    config_manager = get_config_manager()
+    ensure_runtime_state_directory = getattr(
+        config_manager,
+        "ensure_runtime_state_directory",
+        None,
+    )
+    if ensure_runtime_state_directory is None:
+        ensure_runtime_state_directory = config_manager.ensure_local_state_directory
+    return ensure_runtime_state_directory()
 
 
 def _used_topics_path_for_signal_store(path: Any | None) -> Path | None:
@@ -277,6 +292,7 @@ class TopicHookPool:
         min_user_turns_for_topic: int = 8,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
         signal_store_path: Any | None = None,
+        signal_store_write_guard=None,
         delivery_available: DeliveryAvailable | None = None,
     ) -> None:
         self._analyzer = analyzer or _default_analyzer
@@ -304,8 +320,10 @@ class TopicHookPool:
         self._signal_store = TopicSignalStore(
             min_user_turns_for_topic=min_user_turns_for_topic,
             persistence_path=signal_store_path or None,
+            persistence_write_guard=signal_store_write_guard,
         )
         self._used_topics_path = _used_topics_path_for_signal_store(signal_store_path)
+        self._signal_store_write_guard = signal_store_write_guard
         self._langs: dict[str, str] = {}
         self._materials: dict[str, list[dict[str, Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
@@ -1315,6 +1333,8 @@ class TopicHookPool:
                 },
             }
             try:
+                if self._signal_store_write_guard is not None:
+                    self._signal_store_write_guard()
                 path.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             except Exception:
@@ -1341,6 +1361,7 @@ def _default_delivery_available():
 _GLOBAL_TOPIC_POOL = TopicHookPool(
     topic_trigger=_default_topic_trigger(),
     signal_store_path=_default_signal_store_path(),
+    signal_store_write_guard=_default_signal_store_write_guard,
     delivery_available=_default_delivery_available(),
 )
 

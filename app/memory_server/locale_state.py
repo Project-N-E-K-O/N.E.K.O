@@ -116,9 +116,11 @@ def _subject_locale_forget_cutoff_path() -> str:
     from utils.config_manager import get_config_manager
 
     config_manager = get_config_manager()
-    config_manager.ensure_local_state_directory()
+    state_dir = getattr(config_manager, "runtime_state_dir", None)
+    if state_dir is None:
+        state_dir = config_manager.local_state_dir
     return os.path.join(
-        config_manager.local_state_dir,
+        str(state_dir),
         "scoped_prompt_locale_forget_cutoffs.json",
     )
 
@@ -163,6 +165,17 @@ def _persist_subject_locale_forget_cutoffs_unlocked() -> None:
         for (name, key), cutoff in _subject_locale_forget_cutoffs.items():
             characters.setdefault(name, {})[key] = cutoff
         try:
+            from utils.config_manager import get_config_manager
+
+            config_manager = get_config_manager()
+            ensure_runtime_state_directory = getattr(
+                config_manager,
+                "ensure_runtime_state_directory",
+                None,
+            )
+            if ensure_runtime_state_directory is None:
+                ensure_runtime_state_directory = config_manager.ensure_local_state_directory
+            ensure_runtime_state_directory()
             atomic_write_json(
                 _subject_locale_forget_cutoff_path(),
                 {"version": 1, "characters": characters},

@@ -71,6 +71,20 @@ _MIGRATION_HEARTBEAT_SECONDS = 30
 
 _MIGRATION_LOCK = threading.Lock()
 
+# Files written by features before ``runtime_state_dir`` was separated from
+# the fixed anchor state directory.  Keep this list deliberately explicit:
+# control state and cloudsave state must never be copied by this compatibility
+# import, and a broad directory copy would re-introduce the original bug.
+_LEGACY_RUNTIME_STATE_FILENAMES = (
+    "voice_identity.profile",
+    "voice_identity.settings.json",
+    "initial_personality_prompt.json",
+    "new_character_greeting_state.json",
+    "scoped_prompt_locale_forget_cutoffs.json",
+    "topic_signals.json",
+    "topic_signals.used_topics.json",
+)
+
 
 def _release_inherited_workspace_lock() -> None:
     """Drop the workspace lock this process inherited but does not own.
@@ -782,6 +796,146 @@ def _fsync_tree(root, beat=None):
 
 class MigrationsMixin:
     """One-shot startup migrations into the runtime root."""
+
+    def import_legacy_runtime_state(self):
+        """Import functional state left in the former anchor state directory.
+
+        The split from ``anchor/state`` to ``effective_root/state`` must not
+        lose state written by an older build.  This is intentionally a small,
+        file-by-file compatibility import rather than a directory migration:
+        control state and cloudsave metadata remain fixed at the anchor.  The
+        source is retained, destination files are authoritative when already
+        present, and publication is no-replace/atomic so a restart can safely
+        retry any file that did not finish.
+
+        Returns a diagnostic report for callers and tests.  The report is not
+        persisted as a new checkpoint; the filesystem itself is the idempotent
+        progress record.
+        """
+        report = {
+            "status": "noop",
+            "copied": [],
+            "conflicts": [],
+            "skipped": [],
+            "failed": [],
+        }
+
+        # In deferred recovery ``runtime_state_dir`` may physically resolve to
+        # anchor/state.  It is not a usable selected root and must never cause
+        # a write to the anchor, even when legacy files are present.
+        if bool(getattr(self, "recovery_committed_root_unavailable", False)):
+            report["status"] = "deferred"
+            report["skipped"].append("recovery_committed_root_unavailable")
+            return report
+
+        source_dir = Path(self.anchor_state_dir)
+        target_dir = Path(self.runtime_state_dir)
+        try:
+            if source_dir.resolve(strict=False) == target_dir.resolve(strict=False):
+                report["status"] = "same_root"
+                report["skipped"].append("selected_root_is_anchor_root")
+                return report
+        except OSError:
+            # If either path cannot be resolved, retaining the explicit path
+            # check below is safer than risking a self-copy.
+            if source_dir == target_dir:
+                report["status"] = "same_root"
+                report["skipped"].append("selected_root_is_anchor_root")
+                return report
+
+        candidates = []
+        for filename in _LEGACY_RUNTIME_STATE_FILENAMES:
+            source_path = source_dir / filename
+            try:
+                if source_path.is_symlink():
+                    report["skipped"].append(filename)
+                    self._log(
+                        f"[ConfigManager] Skip legacy runtime state symlink: {filename}"
+                    )
+                elif source_path.is_file():
+                    candidates.append((filename, source_path))
+            except OSError as exc:
+                report["failed"].append({"file": filename, "reason": type(exc).__name__})
+
+        if not candidates:
+            return report
+
+        try:
+            if not self.ensure_runtime_state_directory():
+                report["failed"].extend(
+                    {"file": filename, "reason": "runtime_state_directory_unavailable"}
+                    for filename, _source_path in candidates
+                )
+                report["status"] = "failed"
+                return report
+        except Exception as exc:
+            report["failed"].extend(
+                {"file": filename, "reason": type(exc).__name__}
+                for filename, _source_path in candidates
+            )
+            report["status"] = "failed"
+            self._log(
+                "[ConfigManager] Legacy runtime state import deferred: "
+                f"{type(exc).__name__}"
+            )
+            return report
+
+        # Serialise with the existing startup migration lock.  This keeps two
+        # concurrently-created ConfigManagers from racing the same target
+        # files while retaining the no-replace check as the final authority.
+        with _MIGRATION_LOCK:
+            for filename, source_path in candidates:
+                target_path = target_dir / filename
+                if target_path.is_symlink() or target_path.exists():
+                    report["conflicts"].append(filename)
+                    self._log(
+                        f"[ConfigManager] Keep existing runtime state; "
+                        f"legacy source retained: {filename}"
+                    )
+                    continue
+
+                staged_path = None
+                try:
+                    fd, staged_name = tempfile.mkstemp(
+                        prefix=f".{filename}.",
+                        suffix=".tmp",
+                        dir=str(target_dir),
+                    )
+                    staged_path = Path(staged_name)
+                    with os.fdopen(fd, "wb") as target_file, open(
+                        source_path, "rb"
+                    ) as source_file:
+                        shutil.copyfileobj(source_file, target_file)
+                        target_file.flush()
+                        os.fsync(target_file.fileno())
+                    publish_without_replacing(staged_path, target_path)
+                    _fsync_directory(target_dir)
+                    report["copied"].append(filename)
+                    self._log(f"[ConfigManager] Imported legacy runtime state: {filename}")
+                except FileExistsError:
+                    report["conflicts"].append(filename)
+                except Exception as exc:
+                    report["failed"].append({"file": filename, "reason": type(exc).__name__})
+                    self._log(
+                        f"[ConfigManager] Failed to import legacy runtime state "
+                        f"{filename}: {type(exc).__name__}"
+                    )
+                finally:
+                    if staged_path is not None and staged_path.exists():
+                        try:
+                            staged_path.unlink()
+                        except OSError:
+                            pass
+
+        if report["failed"]:
+            report["status"] = "failed"
+        elif report["copied"]:
+            report["status"] = "copied"
+        elif report["conflicts"]:
+            report["status"] = "conflicts"
+        else:
+            report["status"] = "noop"
+        return report
 
     def migrate_default_card_faces(self):
         """Backfill built-in default card faces without overwriting user-created ones."""

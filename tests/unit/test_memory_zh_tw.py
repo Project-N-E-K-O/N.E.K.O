@@ -2222,6 +2222,24 @@ def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
     ) == "zh-TW"
 
 
+def test_scoped_prompt_locale_forget_cutoff_uses_runtime_state_dir(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state
+    from utils import config_manager as config_manager_module
+
+    config = SimpleNamespace(
+        local_state_dir=tmp_path / "anchor" / "state",
+        runtime_state_dir=tmp_path / "selected" / "state",
+    )
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: config)
+
+    assert locale_state._subject_locale_forget_cutoff_path() == str(
+        config.runtime_state_dir / "scoped_prompt_locale_forget_cutoffs.json"
+    )
+
+
 def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject

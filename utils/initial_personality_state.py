@@ -55,7 +55,10 @@ def _normalize_state(raw_state: object) -> dict:
 
 def get_initial_personality_state_path(config_manager=None) -> Path:
     config_manager = config_manager or get_config_manager()
-    return Path(config_manager.local_state_dir) / "initial_personality_prompt.json"
+    state_dir = getattr(config_manager, "runtime_state_dir", None)
+    if state_dir is None:
+        state_dir = config_manager.local_state_dir
+    return Path(state_dir) / "initial_personality_prompt.json"
 
 
 def load_initial_personality_state(config_manager=None) -> dict:
@@ -73,8 +76,13 @@ def load_initial_personality_state(config_manager=None) -> dict:
 def save_initial_personality_state(state: dict, config_manager=None) -> dict:
     config_manager = config_manager or get_config_manager()
     normalized_state = _normalize_state(state)
-    if hasattr(config_manager, "ensure_local_state_directory"):
-        config_manager.ensure_local_state_directory()
+    ensure_runtime_state_directory = getattr(
+        config_manager,
+        "ensure_runtime_state_directory",
+        getattr(config_manager, "ensure_local_state_directory", None),
+    )
+    if ensure_runtime_state_directory is not None:
+        ensure_runtime_state_directory()
     atomic_write_json(
         get_initial_personality_state_path(config_manager),
         normalized_state,

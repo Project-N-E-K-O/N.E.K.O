@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from typing import Callable
 
 
 class VoiceIdentityPreferenceStoreError(RuntimeError):
@@ -17,10 +18,11 @@ class VoiceIdentityPreferenceStoreError(RuntimeError):
 class VoiceIdentityPreferenceStore:
     """Store the requested enable bit separately from encrypted biometrics."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, write_guard: Callable[[], object] | None = None) -> None:
         if not isinstance(path, Path):
             raise TypeError("path must be pathlib.Path")
         self._path = path
+        self._write_guard = write_guard
         self._lock = threading.RLock()
 
     def load(self) -> bool:
@@ -56,6 +58,7 @@ class VoiceIdentityPreferenceStore:
     def save(self, requested_enabled: bool) -> None:
         if type(requested_enabled) is not bool:
             raise TypeError("requested_enabled must be bool")
+        self._assert_write_allowed()
         encoded = json.dumps(
             {
                 "requested_enabled": requested_enabled,
@@ -70,6 +73,20 @@ class VoiceIdentityPreferenceStore:
 
     async def asave(self, requested_enabled: bool) -> None:
         await asyncio.to_thread(self.save, requested_enabled)
+
+    def _assert_write_allowed(self) -> None:
+        if self._write_guard is None:
+            return
+        try:
+            allowed = self._write_guard()
+        except Exception as exc:
+            raise VoiceIdentityPreferenceStoreError(
+                "voice identity preference storage is unavailable"
+            ) from exc
+        if not allowed:
+            raise VoiceIdentityPreferenceStoreError(
+                "voice identity preference storage is unavailable"
+            )
 
     def _atomic_write(self, encoded: bytes) -> None:
         temporary_path: Path | None = None

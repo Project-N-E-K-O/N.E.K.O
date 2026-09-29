@@ -256,21 +256,35 @@ class StorageRootsMixin:
         return self.anchor_root / "cloudsave_backups"
 
     @property
+    def anchor_state_dir(self) -> Path:
+        """Fixed state directory belonging to ``anchor_root``.
+
+        This names the existing local-state location explicitly so callers can
+        distinguish it from runtime state under the effective application root.
+        """
+        return self.anchor_root / "state"
+
+    @property
+    def runtime_state_dir(self) -> Path:
+        """State directory under the effective (selected or recovery) root."""
+        return self.app_docs_dir / "state"
+
+    @property
     def local_state_dir(self) -> Path:
         """Local state directory, holding sync metadata that never goes to the cloud."""
         return self.anchor_root / "state"
 
     @property
     def root_state_path(self) -> Path:
-        return self.local_state_dir / "root_state.json"
+        return self.anchor_state_dir / "root_state.json"
 
     @property
     def cloudsave_local_state_path(self) -> Path:
-        return self.local_state_dir / "cloudsave_local_state.json"
+        return self.anchor_state_dir / "cloudsave_local_state.json"
 
     @property
     def character_tombstones_state_path(self) -> Path:
-        return self.local_state_dir / "character_tombstones.json"
+        return self.anchor_state_dir / "character_tombstones.json"
 
     def _build_selected_root_unavailable_recovery_state(self, state=None):
         unavailable_root = str(self.committed_selected_root)
@@ -892,6 +906,71 @@ class StorageRootsMixin:
             )
             self._last_local_state_directory_error = diagnostic
             print(f"Warning: Failed to create local state directory: {diagnostic}", file=sys.stderr)
+            return False
+
+    def ensure_runtime_state_directory(self):
+        """Ensure the selected/effective runtime state directory is writable.
+
+        Runtime feature state must not silently fall back to the fixed anchor
+        while storage bootstrap is deferred or the committed selected root is
+        unavailable.  Reuse the existing root-state write fence so callers
+        receive the same maintenance-mode error used by other runtime writes.
+        """
+        runtime_state_dir = self.runtime_state_dir
+        self._last_runtime_state_directory_error = None
+        from utils.cloudsave_runtime import (
+            ROOT_MODE_DEFERRED_INIT,
+            MaintenanceModeError,
+            assert_cloudsave_writable,
+        )
+
+        if self.recovery_committed_root_unavailable:
+            raise MaintenanceModeError(
+                ROOT_MODE_DEFERRED_INIT,
+                operation="preparing runtime state",
+                target=str(runtime_state_dir),
+            )
+
+        assert_cloudsave_writable(
+            self,
+            operation="preparing runtime state",
+            target=str(runtime_state_dir),
+        )
+        try:
+            if runtime_state_dir.exists() and not runtime_state_dir.is_dir():
+                raise LocalStateDirectoryError(
+                    "Runtime state directory is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=runtime_state_dir,
+                    failed_path=runtime_state_dir,
+                    reason="runtime_state_dir exists but is not a directory",
+                )
+            runtime_state_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = runtime_state_dir / f".neko_runtime_state_write_probe.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(probe_path, "w", encoding="utf-8") as probe_file:
+                    probe_file.write("probe")
+                    probe_file.flush()
+            finally:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
+            return True
+        except LocalStateDirectoryError as e:
+            self._last_runtime_state_directory_error = e
+            print(f"Warning: Failed to create runtime state directory: {e}", file=sys.stderr)
+            return False
+        except Exception as e:
+            diagnostic = LocalStateDirectoryError(
+                "Runtime state directory is unavailable",
+                anchor_root=self.anchor_root,
+                local_state_dir=runtime_state_dir,
+                failed_path=runtime_state_dir,
+                reason=str(e),
+            )
+            self._last_runtime_state_directory_error = diagnostic
+            print(f"Warning: Failed to create runtime state directory: {diagnostic}", file=sys.stderr)
             return False
 
     def _raise_local_state_directory_error(self, operation):

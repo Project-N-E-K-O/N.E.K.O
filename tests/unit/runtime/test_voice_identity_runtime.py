@@ -2767,12 +2767,17 @@ async def test_runtime_install_and_wrapper_lifecycle(
         ),
     )
     monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
-    config = SimpleNamespace(local_state_dir=tmp_path)
+    config = SimpleNamespace(
+        local_state_dir=tmp_path / "anchor" / "state",
+        runtime_state_dir=tmp_path / "selected" / "state",
+    )
 
     service = runtime_module.install_voice_identity_runtime(config)
     assert service.runtime_mode == "off"
     assert "Unsupported NEKO_VOICE_IDENTITY_MODE" in caplog.text
     assert isinstance(service.args[0], runtime_module._UnavailableProfileStore)
+    assert service.args[0]._path == config.runtime_state_dir / "voice_identity.profile"
+    assert service.args[1].path == config.runtime_state_dir / "voice_identity.settings.json"
     assert installed == [service]
     assert runtime_module.install_voice_identity_runtime(config) is service
 

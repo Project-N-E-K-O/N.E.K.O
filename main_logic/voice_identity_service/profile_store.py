@@ -11,7 +11,7 @@ from pathlib import Path
 import tempfile
 import threading
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Callable, Final, Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -202,11 +202,13 @@ class VoiceIdentityProfileStore:
         path: Path,
         *,
         key_protector: _KeyProtector | None = None,
+        write_guard: Callable[[], object] | None = None,
     ) -> None:
         if not isinstance(path, Path):
             raise TypeError("path must be pathlib.Path")
         self._path = path
         self._key_protector = key_protector or WindowsDpapiKeyProtector()
+        self._write_guard = write_guard
         self._lock = threading.RLock()
 
     @property
@@ -254,6 +256,7 @@ class VoiceIdentityProfileStore:
         if type(audio_contract) is not VoiceIdentityAudioContractSnapshot:
             raise TypeError("audio_contract must be VoiceIdentityAudioContractSnapshot")
         with self._lock:
+            self._assert_write_allowed()
             encoded = self._encode(profile, audio_contract)
             temporary_path = self._write_temporary(encoded)
         return VoiceIdentityProfileWrite(self, temporary_path)
@@ -295,6 +298,7 @@ class VoiceIdentityProfileStore:
         """Delete the encrypted profile if present."""
 
         with self._lock:
+            self._assert_write_allowed()
             try:
                 self._path.unlink()
             except FileNotFoundError:
@@ -304,6 +308,20 @@ class VoiceIdentityProfileStore:
                     "voice identity profile could not be deleted"
                 ) from exc
             return True
+
+    def _assert_write_allowed(self) -> None:
+        if self._write_guard is None:
+            return
+        try:
+            allowed = self._write_guard()
+        except Exception as exc:
+            raise VoiceIdentityProfileStoreError(
+                "voice identity profile storage is unavailable"
+            ) from exc
+        if not allowed:
+            raise VoiceIdentityProfileStoreError(
+                "voice identity profile storage is unavailable"
+            )
 
     async def adelete(self) -> bool:
         """Run :meth:`delete` away from the event-loop thread."""

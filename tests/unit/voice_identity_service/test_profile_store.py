@@ -22,9 +22,27 @@ from main_logic.voice_identity_service.profile_store import (
     VoiceIdentityProfileStoreError,
     WindowsDpapiKeyProtector,
 )
+from utils.cloudsave_runtime import MaintenanceModeError
 
 
 AUDIO_CONTRACT = desktop_audio_contract_snapshot(noise_reduction_enabled=True)
+
+
+@pytest.mark.unit
+def test_profile_write_guard_keeps_maintenance_errors_inside_store_contract(tmp_path: Path) -> None:
+    path = tmp_path / "voice_identity.profile"
+
+    def blocked_write():
+        raise MaintenanceModeError("deferred_init", operation="save", target=str(path))
+
+    store = VoiceIdentityProfileStore(
+        path,
+        key_protector=_TestKeyProtector(),
+        write_guard=blocked_write,
+    )
+
+    with pytest.raises(VoiceIdentityProfileStoreError):
+        store.delete()
 
 
 class _TestKeyProtector:

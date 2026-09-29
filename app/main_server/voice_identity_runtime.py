@@ -1401,14 +1401,22 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
             configured_mode,
         )
     registry = OwnerVoiceRuntimeRegistry(enforce=runtime_mode == "enforce")
-    local_state_dir = Path(config_manager.local_state_dir)
+    runtime_state_dir = getattr(config_manager, "runtime_state_dir", None)
+    if runtime_state_dir is None:
+        runtime_state_dir = config_manager.local_state_dir
+    runtime_state_dir = Path(runtime_state_dir)
+    write_guard = getattr(config_manager, "ensure_runtime_state_directory", None)
+    if write_guard is None and hasattr(config_manager, "ensure_local_state_directory"):
+        write_guard = config_manager.ensure_local_state_directory
     try:
+        profile_kwargs = {"write_guard": write_guard} if write_guard is not None else {}
         profile_store = VoiceIdentityProfileStore(
-            local_state_dir / "voice_identity.profile"
+            runtime_state_dir / "voice_identity.profile",
+            **profile_kwargs,
         )
     except SecureStorageUnavailableError:
         profile_store = _UnavailableProfileStore(
-            local_state_dir / "voice_identity.profile"
+            runtime_state_dir / "voice_identity.profile",
         )
     suppression = VoiceInputSuppressionController(
         registry.suppress,
@@ -1418,7 +1426,10 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
     )
     service = VoiceIdentityService(
         profile_store,
-        VoiceIdentityPreferenceStore(local_state_dir / "voice_identity.settings.json"),
+        VoiceIdentityPreferenceStore(
+            runtime_state_dir / "voice_identity.settings.json",
+            **profile_kwargs,
+        ),
         suppression,
         CampPlusEmbeddingModel,
         registry.activate,

@@ -30,7 +30,10 @@ _lock = asyncio.Lock()
 
 
 def _state_path(config_manager) -> Path:
-    return Path(config_manager.local_state_dir) / STATE_FILENAME
+    state_dir = getattr(config_manager, "runtime_state_dir", None)
+    if state_dir is None:
+        state_dir = config_manager.local_state_dir
+    return Path(state_dir) / STATE_FILENAME
 
 
 def _empty_state() -> dict[str, Any]:
@@ -59,7 +62,15 @@ async def _load_state(config_manager) -> dict[str, Any]:
 
 async def _save_state(config_manager, state: dict[str, Any]) -> None:
     path = _state_path(config_manager)
-    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+    ensure_runtime_state_directory = getattr(
+        config_manager,
+        "ensure_runtime_state_directory",
+        None,
+    )
+    if ensure_runtime_state_directory is not None:
+        await asyncio.to_thread(ensure_runtime_state_directory)
+    else:
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
     await atomic_write_json_async(path, _normalize_state(state), ensure_ascii=False, indent=2)
 
 

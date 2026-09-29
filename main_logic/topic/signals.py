@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from main_logic.topic.common import clean_text
 from utils.file_utils import atomic_write_json
@@ -174,6 +174,7 @@ class TopicSignalStore:
         retention_seconds: float = _SIGNAL_RETENTION_SECONDS,
         persistence_path: str | Path | None = None,
         persistence_flush_delay_seconds: float = 1.0,
+        persistence_write_guard: Callable[[], object] | None = None,
     ) -> None:
         self._min_user_turns_for_topic = max(1, int(min_user_turns_for_topic))
         self._max_turns = max(1, int(max_turns))
@@ -183,6 +184,7 @@ class TopicSignalStore:
             0.0,
             float(persistence_flush_delay_seconds),
         )
+        self._persistence_write_guard = persistence_write_guard
         self._persist_lock = threading.RLock()
         self._persist_write_lock = threading.Lock()
         self._persist_timer: threading.Timer | None = None
@@ -490,6 +492,8 @@ class TopicSignalStore:
         if path is None:
             return True
         try:
+            if self._persistence_write_guard is not None:
+                self._persistence_write_guard()
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             return True

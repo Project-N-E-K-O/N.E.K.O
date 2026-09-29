@@ -46,6 +46,25 @@ def test_initial_personality_state_defaults_to_pending(tmp_path):
 
 
 @pytest.mark.unit
+def test_initial_personality_state_uses_runtime_state_dir_when_available(tmp_path):
+    config = DummyConfig(tmp_path)
+    config.runtime_state_dir = tmp_path / "selected" / "state"
+
+    saved = mark_initial_personality_state(
+        "completed",
+        config_manager=config,
+        now_iso="2026-04-29T12:00:00Z",
+    )
+
+    assert saved["status"] == "completed"
+    assert get_initial_personality_state_path(config) == (
+        tmp_path / "selected" / "state" / "initial_personality_prompt.json"
+    )
+    assert (tmp_path / "selected" / "state" / "initial_personality_prompt.json").is_file()
+    assert not (tmp_path / "state" / "initial_personality_prompt.json").exists()
+
+
+@pytest.mark.unit
 def test_mark_initial_personality_state_persists_completed_and_skipped(tmp_path):
     config = DummyConfig(tmp_path)
 

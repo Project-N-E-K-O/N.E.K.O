@@ -75,7 +75,11 @@ _DYNAMIC_PROPERTY_WHITELIST: frozenset[str] = frozenset({
     "cloudsave_manifest_path",
     "cloudsave_staging_dir",
     "cloudsave_backups_dir",
-    # Local state (not cloud-synced), also under app_docs_dir.
+    # Explicit anchor/runtime state roots.  The runtime root follows the
+    # effective app root; the anchor root remains fixed for control state.
+    "anchor_state_dir",
+    "runtime_state_dir",
+    # Backward-compatible local state alias and its control-state children.
     "local_state_dir",
     "root_state_path",
     "cloudsave_local_state_path",

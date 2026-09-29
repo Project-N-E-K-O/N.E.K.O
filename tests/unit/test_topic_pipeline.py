@@ -12,6 +12,7 @@ from main_logic.topic.pipeline import (
     TopicHookPool,
     _ANALYZER_RETRY_BASE_SECONDS,
     _ANALYZER_RETRY_CAP_SECONDS,
+    _default_signal_store_path,
     _clean_material,
     _UNANSWERED_TOPIC_WEIGHT,
     _record_weight,
@@ -72,6 +73,30 @@ def test_topic_signal_store_persists_recent_turns_across_instances(tmp_path):
     )
     assert reloaded.is_ready("妮可")
     assert "换工作" in reloaded.format_global_signals("妮可", lang="zh-CN")
+
+
+def test_default_signal_store_path_does_not_create_runtime_state(monkeypatch, tmp_path):
+    runtime_state_dir = tmp_path / "selected" / "state"
+    ensure_called = False
+
+    class Config:
+        local_state_dir = tmp_path / "anchor" / "state"
+
+        def ensure_runtime_state_directory(self):
+            nonlocal ensure_called
+            ensure_called = True
+            raise AssertionError("path resolution must not initialize runtime state")
+
+    Config.runtime_state_dir = runtime_state_dir
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager",
+        lambda: Config(),
+    )
+
+    assert _default_signal_store_path() == runtime_state_dir / "topic_signals.json"
+    assert ensure_called is False
+    assert not runtime_state_dir.exists()
 
 
 def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):

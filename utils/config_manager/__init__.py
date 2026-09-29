@@ -207,6 +207,19 @@ def _ensure_config_manager_migrated():
         return _config_manager
     if bool(getattr(_config_manager, "recovery_committed_root_unavailable", False)):
         return _config_manager
+    # Compatibility import for functional state written by pre-split builds.
+    # It is deliberately before the regular config/memory migrations so the
+    # first feature read sees the selected runtime state.  The import is
+    # idempotent and never creates a second persistent checkpoint.
+    try:
+        _config_manager.import_legacy_runtime_state()
+    except Exception as exc:
+        # A compatibility import must not prevent the normal startup path;
+        # source files remain in anchor/state and the next start can retry.
+        logger.warning(
+            "[ConfigManager] legacy runtime state import failed: %s",
+            type(exc).__name__,
+        )
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
