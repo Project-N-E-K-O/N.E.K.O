@@ -1452,14 +1452,25 @@ class LifecycleMixin:
         while True:
             self._check_start_operation()
             runtime = self._snapshot_tts_runtime()
+            ready = False
             if runtime is not None and not self._tts_runtime_is_current(runtime):
                 self._check_start_operation()
-                raise RuntimeError("TTS runtime retired during startup")
-            async with self.tts_cache_lock:
-                self._check_start_operation()
-                if not self._tts_runtime_is_current(runtime):
-                    continue
-                ready = bool(self.tts_ready and self.tts_thread and self.tts_thread.is_alive())
+                fallback_task = runtime.fallback_task
+                if not (
+                    fallback_task is not None
+                    and fallback_task is self.tts_handler_task
+                    and not fallback_task.done()
+                    and not fallback_task.cancelling()
+                ):
+                    raise RuntimeError("TTS runtime retired during startup")
+                # An owned fallback may wait for this worker's physical exit.
+                # Use the same bounded polling below until its successor is ready.
+            else:
+                async with self.tts_cache_lock:
+                    self._check_start_operation()
+                    if not self._tts_runtime_is_current(runtime):
+                        continue
+                    ready = bool(self.tts_ready and self.tts_thread and self.tts_thread.is_alive())
             if ready:
                 await self._flush_tts_pending_chunks()
                 self._check_start_operation()

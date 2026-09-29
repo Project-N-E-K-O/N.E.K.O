@@ -26,6 +26,7 @@ class TtsRuntimeRecord:
     shutdown_sent: bool = False
     supports_runtime_overlap: bool = True
     cleanup_task: asyncio.Task | None = None
+    fallback_task: asyncio.Task | None = None
     cleanup_complete: asyncio.Event = field(default_factory=asyncio.Event)
     handoff_safe: asyncio.Event = field(default_factory=asyncio.Event)
 

@@ -2,6 +2,7 @@
 
 import asyncio
 from queue import Queue
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -16,6 +17,98 @@ from tests.unit.test_realtime_close_ownership import _make_client
 from tests.unit.test_session_handoff_lifecycle import make_manager
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+@pytest.mark.parametrize("outcome", ["recover", "timeout", "cancel", "handler_exit"])
+async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcome):
+    manager, created, clients = await make_full_manager(monkeypatch)
+    manager._config_manager.core["DISABLE_TTS"] = False
+    monkeypatch.setattr(manager, "_resolve_session_use_tts", lambda *args: True)
+    socket = manager.websocket
+    release_old = Event()
+    retired_poll = asyncio.Event()
+    workers = []
+
+    def configured_worker(requests, responses, *_):
+        workers.append("configured")
+        responses.put(("__ready__", False))
+        while requests.get()[0] != "__shutdown__":
+            pass
+        release_old.wait()
+
+    configured_worker.supports_runtime_overlap = False
+
+    def replacement_worker(requests, responses, *_):
+        workers.append("replacement")
+        responses.put(("__ready__", True))
+        while requests.get()[0] != "__shutdown__":
+            pass
+
+    def select_worker(**kwargs):
+        if "custom" in kwargs.get("excluded_provider_keys", ()):
+            return replacement_worker, "test", "qwen"
+        return configured_worker, "test", "custom"
+
+    # Only supply external workers; startup, handler, fallback, retirement and
+    # capacity admission all run their real implementations.
+    monkeypatch.setattr(lifecycle._core_facade, "get_tts_worker", select_worker)
+    check_operation = manager._check_start_operation
+
+    def observe_start_poll(*args, **kwargs):
+        check_operation(*args, **kwargs)
+        task = asyncio.current_task()
+        runtime = manager._tts_runtime
+        if (task.get_coro().__name__ == "_start_session_start_tts_if_needed"
+                and runtime is not None and runtime.retired):
+            retired_poll.set()
+
+    monkeypatch.setattr(manager, "_check_start_operation", observe_start_poll)
+    starting = asyncio.create_task(manager.start_session(
+        socket, request_id="tts-fallback",
+        _deadline=asyncio.get_running_loop().time() + (1 if outcome == "timeout" else 5),
+    ))
+    try:
+        client = await asyncio.wait_for(created.get(), 2)
+        client.allow_connect.set()
+        await asyncio.wait_for(retired_poll.wait(), 2)
+        old = manager._tts_runtime
+        assert old.retired and old.thread.is_alive()
+        assert not old.cleanup_complete.is_set()
+        assert old.fallback_task is manager.tts_handler_task
+        if outcome == "recover":
+            release_old.set()
+        elif outcome == "cancel":
+            manager.request_end_session(by_server=False)
+        elif outcome == "handler_exit":
+            manager.tts_handler_task.cancel()
+            await asyncio.gather(manager.tts_handler_task, return_exceptions=True)
+
+        if outcome == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(starting, 2)
+        else:
+            await asyncio.wait_for(starting, 2)
+        started = [m for m in socket.messages if m.get("type") == "session_started"]
+        failed = [m for m in socket.messages if m.get("type") == "session_failed"]
+        if outcome == "recover":
+            assert workers == ["configured", "replacement"]
+            assert len(started) == 1 and not failed
+            assert manager.tts_ready
+            assert manager._tts_runtime is not old
+        else:
+            assert workers == ["configured"]
+            assert not started
+            assert len(failed) == (0 if outcome == "cancel" else 1)
+            assert manager._live_tts_runtime_count() == 1
+            assert not old.cleanup_task.cancelled()
+        assert manager.session_start_failure_count == (outcome in {"timeout", "handler_exit"})
+        if failed:
+            assert failed[0]["request_id"] == "tts-fallback"
+    finally:
+        release_old.set()
+        await asyncio.wait_for(drain_manager(manager, clients, starting), 4)
+        await asyncio.wait_for(asyncio.gather(*manager._tts_cleanup_tasks), 3)
+    assert old.fallback_task is None
 
 
 @pytest.mark.parametrize("cancel_start", [False, True])

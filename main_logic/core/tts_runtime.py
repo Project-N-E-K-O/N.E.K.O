@@ -1643,6 +1643,11 @@ class TtsRuntimeMixin:
                 if not cleanup_tasks:
                     raise
                 self._tts_capacity_exhausted = False
+                # Retirement can precede replacement admission. Keep the
+                # waiting handler's ownership visible to startup polling.
+                fallback_task = asyncio.current_task()
+                if runtime is not None:
+                    runtime.fallback_task = fallback_task
                 try:
                     await asyncio.wait_for(
                         asyncio.gather(
@@ -1653,6 +1658,9 @@ class TtsRuntimeMixin:
                     )
                 except asyncio.TimeoutError as error:
                     raise TtsCapacityError("TTS fallback capacity did not clear") from error
+                finally:
+                    if runtime is not None and runtime.fallback_task is fallback_task:
+                        runtime.fallback_task = None
                 if (
                     getattr(self, "session", None) is not expected_session
                     or getattr(self, "use_tts", None) != expected_use_tts
