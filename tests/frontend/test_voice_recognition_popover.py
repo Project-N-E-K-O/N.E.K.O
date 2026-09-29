@@ -357,6 +357,7 @@ def _install_voice_popover_harness(
     )
     harness = harness.replace("__PERMISSION_SOURCE__", permission_source)
     harness = harness.replace("__RENDER_EXPRESSION__", render_expression)
+    page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
     page.add_script_tag(content=harness)
 
 
@@ -705,7 +706,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
+@pytest.mark.parametrize("capability", [False, True, "browser"])
 def test_screen_source_hover_defers_prompting_enumeration(
     page: Page, capability: bool | str,
 ) -> None:
@@ -719,17 +720,12 @@ def test_screen_source_hover_defers_prompting_enumeration(
     page.evaluate(
         """(capability) => {
             window.getDesktopCaptureProvider = () => capability === 'browser'
-                ? null : {
-                    getSources() {},
-                    sourceEnumerationMayPrompt: capability === 'unknown'
-                        ? undefined : capability,
-                };
+                ? null : { getSources() {}, sourceEnumerationMayPrompt: capability };
         }""",
         capability,
     )
-    # The harness omits app-screen.js's shared inference helper, so an
-    # unflagged provider hits the conservative "may prompt" fallback here.
-    prompting = capability is True or capability == "unknown"
+    # Unflagged providers are covered per platform by the tests below.
+    prompting = capability is True
     action = page.locator('[data-neko-mic-main-action="screen"]')
     action.hover()
     page.wait_for_function("window.__screenRenderOptions.length === 1")
@@ -754,17 +750,6 @@ def test_screen_source_hover_defers_prompting_enumeration(
     assert page.evaluate("window.__screenToggleCalls") == 0
 
 
-def _source_list_enumeration_may_prompt_source() -> str:
-    source = APP_SCREEN.read_text(encoding="utf-8")
-    start = source.index("function sourceListEnumerationMayPrompt(provider)")
-    end = source.index("\n    }\n", start) + len("\n    }")
-    assert (
-        "window.sourceListEnumerationMayPrompt = sourceListEnumerationMayPrompt;"
-        in source
-    )
-    return source[start:end]
-
-
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     ("capability", "platform", "prompting"),
@@ -784,14 +769,11 @@ def test_screen_source_hover_infers_legacy_provider_prompting(
 ) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
-        """([helperSource, capability, platform]) => {
+        """([capability, platform]) => {
             Object.defineProperty(navigator, 'userAgent', {
                 configurable: true,
                 value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
             });
-            window.sourceListEnumerationMayPrompt = new Function(
-                helperSource + '\\nreturn sourceListEnumerationMayPrompt;'
-            )();
             window.getDesktopCaptureProvider = () => {
                 const provider = { getSources() {} };
                 if (capability !== null) {
@@ -800,7 +782,7 @@ def test_screen_source_hover_infers_legacy_provider_prompting(
                 return provider;
             };
         }""",
-        [_source_list_enumeration_may_prompt_source(), capability, platform],
+        [capability, platform],
     )
     page.evaluate(
         """async () => {
@@ -889,7 +871,19 @@ def test_legacy_provider_hover_runs_real_source_enumeration(
 
     options.first.wait_for()
     assert options.count() == 2
-    assert page.evaluate("window.__getSourcesCalls.length") >= 1
+    if prompting:
+        # A second getSources would reopen the portal on Wayland; the
+        # thumbnail phase must reuse the first enumeration.
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__getSourcesCalls.length") == 1
+    else:
+        # Names first, then one cached thumbnail batch.
+        page.wait_for_function("window.__getSourcesCalls.length === 2")
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__getSourcesCalls.length") == 2
+        assert page.evaluate(
+            "window.__getSourcesCalls[1].thumbnailCache"
+        ) is True
     # Prompting providers keep a "choose again" button above the list;
     # macOS / Windows list sources with no extra button at all.
     assert load.count() == (1 if prompting else 0)

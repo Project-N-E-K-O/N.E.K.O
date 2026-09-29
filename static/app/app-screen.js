@@ -162,21 +162,10 @@
             && typeof provider.captureSourceAsDataUrl === 'function');
     }
 
+    // 归一化逻辑在 desktop-capture-provider.js：旧版桌面端没有声明标志时按平台推断。
+    // 两个函数来自同一个脚本，没有它就不会有 provider。
     function desktopSourceEnumerationMayPrompt(provider) {
-        return !!(provider && provider.sourceEnumerationMayPrompt === true);
-    }
-
-    // 列来源面板专用：旧版桌面端没有声明 sourceEnumerationMayPrompt 时，按它
-    // 现在的取值规则（process.platform === 'linux'）推断，只把 Linux 当作可能弹窗。
-    // 不能一律当作可能弹窗：旧版 macOS 在单显示器、无屏幕录制权限时也只返回
-    // 一项，会被误当成系统对话框的结果，每次打开列表都重启分享。
-    function sourceListEnumerationMayPrompt(provider) {
-        if (!provider) return false;
-        if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
-            return provider.sourceEnumerationMayPrompt;
-        }
-        var userAgent = String((navigator && navigator.userAgent) || '');
-        return /Linux/.test(userAgent) && !/Android/.test(userAgent);
+        return window.desktopSourceEnumerationMayPrompt(provider) === true;
     }
 
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
@@ -2975,7 +2964,7 @@
 
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源，它在结果里的位置不是物理屏幕序号。
-            var isPortalPick = sourceListEnumerationMayPrompt(desktopProvider)
+            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
                 && !!sources && sources.length === 1;
 
             if (!isPopupAvailable()) {
@@ -2994,7 +2983,7 @@
                 // 会弹系统对话框的桌面端返回空列表，基本就是用户取消了对话框；
                 // 这时「没有可用的屏幕源」会误导，只留当前来源和重试按钮。
                 var portalCancelled = renderOptions.retryOnFailure === true
-                    && sourceListEnumerationMayPrompt(desktopProvider);
+                    && desktopSourceEnumerationMayPrompt(desktopProvider);
                 if (!portalCancelled) {
                     var noSourcesItem = document.createElement('div');
                     noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
@@ -3332,7 +3321,7 @@
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
-            if (sourceListEnumerationMayPrompt(desktopProvider)) {
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
@@ -3407,7 +3396,6 @@
     // ======================== getSelectedScreenSourceId ========================
     window.getSelectedScreenSourceId = function () { return S.selectedScreenSourceId; };
     window.getSelectedScreenSourceLabel = getSelectedScreenSourceLabel;
-    window.sourceListEnumerationMayPrompt = sourceListEnumerationMayPrompt;
 
     // ======================== detectScreenshotCaptureType ========================
     /**

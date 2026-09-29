@@ -178,7 +178,7 @@ def test_wayland_agent_never_reopens_portal_for_each_frame():
     request = source.split("response.type === 'capture_bridge_computer_use_request'", 1)[1].split(
         "response.type === 'capture_bridge_region_request'", 1
     )[0]
-    portal_guard = request.index("if (dc.sourceEnumerationMayPrompt === true")
+    portal_guard = request.index("if (window.desktopSourceEnumerationMayPrompt(dc)")
     one_shot = request.index("dc, 'captureComputerUseScreen'")
     assert portal_guard < one_shot
     assert "error: 'SCREEN_STREAM_REQUIRED'" in request

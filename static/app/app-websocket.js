@@ -4779,7 +4779,7 @@
                             // A Linux source enumeration may reopen the desktop
                             // portal every step. A broker reads the already-owned
                             // stream in Chat without enumerating sources.
-                            if (dc.sourceEnumerationMayPrompt === true
+                            if (window.desktopSourceEnumerationMayPrompt(dc)
                                 && !(dc.computerUseSharedStreamBroker === true
                                     && dc.computerUseNeedsStream === true)) {
                                 sendResult({ success: false, error: 'SCREEN_STREAM_REQUIRED' });
