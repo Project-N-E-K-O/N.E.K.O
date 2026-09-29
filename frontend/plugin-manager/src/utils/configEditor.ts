@@ -146,13 +146,17 @@ export function schemaFieldKeys(schema: ConfigEditorSchema | undefined): string[
   )
 }
 
-/** The schema of one declared field, read as an own property. */
+/** Named fields take precedence over an optional schema for dynamic keys. */
 export function schemaField(
   schema: ConfigEditorSchema | undefined,
   key: string
 ): ConfigEditorSchema | undefined {
   const properties = schema?.properties
-  return properties && hasOwn(properties, key) ? properties[key] : undefined
+  if (properties && hasOwn(properties, key)) return properties[key]
+  const additional = schema?.additionalProperties
+  return additional && typeof additional === 'object' && !Array.isArray(additional)
+    ? additional
+    : undefined
 }
 
 export function configNodeMatches(

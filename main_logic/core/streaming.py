@@ -672,16 +672,15 @@ class StreamingMixin:
                     # 废，passive callback 跟用户输入一起留在 history 让 AI
                     # 后续仍能 reference）。
                     #
-                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
-                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
-                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
-                    # snapshot 回滚。
+                    # Drain also removes hot-swap mirrors. Keep every drained
+                    # callback retryable until this turn reaches history.
                     _agent_cb_ctx = ""
                     _agent_cb_images = []
-                    _agent_cb_media_drained = []
+                    _agent_cb_drained = []
+                    _agent_cb_extra_snapshot = []
                     # ⚠️ 必须在外层 try **之前**绑定：回滚发生在 drain 之后的任意
                     # 一个 await 上，包括早于下面赋值点的那些。定义在 try 内部的话，
-                    # 早期取消会让 except 里读到未绑定的名字，回滚静默失效。
+                    # 早期取消会让 finally 里读到未绑定的名字，回滚静默失效。
                     _cb_turn_committed = False
                     if self.pending_agent_callbacks:
                         callbacks_snapshot = self._claim_agent_callbacks_for_llm()
@@ -690,6 +689,15 @@ class StreamingMixin:
                                 callbacks_snapshot,
                                 self.session,
                             )
+                            _agent_cb_extra_snapshot = list(
+                                getattr(self, "pending_extra_replies", None) or []
+                            )
+                            # Taken after the media await and before the
+                            # synchronous drain: a callback another path
+                            # dequeued during that await is not this drain's.
+                            _queued_before_drain = {
+                                id(cb) for cb in self.pending_agent_callbacks
+                            }
                             _agent_cb_ctx = (
                                 self.drain_agent_callbacks_for_llm(
                                     callbacks_snapshot
@@ -703,19 +711,16 @@ class StreamingMixin:
                                         [],
                                     )
                                 )
-                                # 记下**真正被 drain 掉的、带图的**那些 callback。
-                                # 下面这轮如果在 user message 落 history 之前就抛
-                                # 了（offline 切 vision model 会新建 LLM 客户端，
-                                # 网络抖 / key 失效都会抛），文本和图一起消失且已
-                                # 报告投递成功，再也不会重试。
+                                # Track only callbacks this drain consumed;
+                                # deferred entries must retain their queue order.
                                 _still_queued = {
                                     id(cb) for cb in self.pending_agent_callbacks
                                 }
-                                _agent_cb_media_drained = [
+                                _agent_cb_drained = [
                                     cb
                                     for cb in callbacks_snapshot
                                     if isinstance(cb, dict)
-                                    and cb.get("media_images")
+                                    and id(cb) in _queued_before_drain
                                     and id(cb) not in _still_queued
                                 ]
                         except Exception as _cb_err:
@@ -786,25 +791,10 @@ class StreamingMixin:
 
                         if _agent_cb_images:
                             stream_text_kwargs["system_prefix_images"] = _agent_cb_images
-                        if _agent_cb_media_drained:
-                            # 装载判据必须跟下面回滚的判据**是同一个**。回滚看的是
-                            # _agent_cb_media_drained（带图且已出队的 callback），
-                            # 按 _agent_cb_images 装的话，两者一旦分叉，那一轮就没
-                            # 人置 _cb_turn_committed：stream_text 把文字写进
-                            # history 之后再抛，外层回滚会认定"没提交过"而把
-                            # callback 放回队列，下一轮重复投递同一条通知。
-                            #
-                            # 今天这两个集合在 Offline 上是同进同出的——staging 的
-                            # _renderable 截断、预算延后标志、drain 的 STOP 判据三
-                            # 者对齐，凡是被 drain 摘走的带图 callback 都拿得到图，
-                            # 所以现在**构造不出**上面那个分叉（Codex P2 提的场景
-                            # 我没能复现）。改成按回滚判据装，是不让这个"同进同出"
-                            # 变成隐式前提：它由三处独立代码共同维持，任一处以后
-                            # 松动，分叉就会以"重复投递"的形式出现在用户面前，而
-                            # 那时没有任何断言会先红。
-                            #
-                            # 本次调用自己的「已进 history」标记。不能拿全局 history
-                            # 长度判断：并发的另一条文本请求同样会追加。
+                        if _agent_cb_drained:
+                            # Use this request's commit notification for both
+                            # text-only and image callbacks. Another request's
+                            # history growth cannot establish this one's delivery.
                             stream_text_kwargs["on_turn_committed"] = (
                                 _mark_cb_turn_committed
                             )
@@ -840,7 +830,7 @@ class StreamingMixin:
                             # / error turns. _push_focus_thinking is idempotent, so a no-op
                             # clear when nothing pulsed costs nothing.
                             await self._push_focus_thinking(False)
-                    except BaseException:
+                    finally:
                         # drain 之后到本轮进 history 之间的**每一个** await 都要
                         # 覆盖，不只是 stream_text：会话拆除时这条输入任务可能在
                         # _focus_inline_decision / _push_focus_thinking(True) 里就
@@ -850,11 +840,10 @@ class StreamingMixin:
                         # 仍然只在**这一轮没进 history** 时回滚：已提交之后的失败
                         # 属于既有的 best-effort 契约（内容已经在模型眼前了），
                         # 回滚反而会重复投递。
-                        if _agent_cb_media_drained and not _cb_turn_committed:
-                            self._requeue_undelivered_callback_media(
-                                _agent_cb_media_drained
+                        if _agent_cb_drained and not _cb_turn_committed:
+                            self._requeue_undelivered_callbacks(
+                                _agent_cb_drained, _agent_cb_extra_snapshot
                             )
-                        raise
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

@@ -221,7 +221,26 @@ def _install_voice_popover_harness(
     }
     let deferScreenSources = false;
     const screenSourceResolvers = [];
-    window.renderFloatingScreenSourceList = async (container) => {
+    window.__screenRenderOptions = [];
+    window.renderFloatingScreenSourceList = async (container, options = {}) => {
+        window.__screenRenderOptions.push({
+            deferEnumeration: options.deferEnumeration === true,
+        });
+        if (options.deferEnumeration === true) {
+            container.innerHTML = '';
+            const load = document.createElement('button');
+            load.type = 'button';
+            load.dataset.nekoScreenSourceDeferredLoad = '';
+            load.addEventListener('click', async () => {
+                const rendered = await window.renderFloatingScreenSourceList(
+                    container, { ...options, deferEnumeration: false }
+                );
+                options.onDeferredRender?.(rendered);
+            });
+            container.appendChild(load);
+            return true;
+        }
+        container.innerHTML = '';
         if (deferScreenSources) {
             await new Promise((resolve) => {
                 screenSourceResolvers.push(resolve);
@@ -685,7 +704,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
-def test_screen_source_hover_respects_current_provider(
+def test_screen_source_hover_defers_prompting_enumeration(
     page: Page, capability: bool | str,
 ) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
@@ -703,25 +722,55 @@ def test_screen_source_hover_respects_current_provider(
                     sourceEnumerationMayPrompt: capability === 'unknown'
                         ? undefined : capability,
                 };
-            window.__sourceRenderCalls = 0;
-            const render = window.renderFloatingScreenSourceList;
-            window.renderFloatingScreenSourceList = (...args) => {
-                window.__sourceRenderCalls += 1;
-                return render(...args);
-            };
         }""",
         capability,
     )
+    prompting = capability is True or capability == "unknown"
     action = page.locator('[data-neko-mic-main-action="screen"]')
     action.hover()
-    page.wait_for_timeout(50)
-    expected = 1 if capability is False or capability == "browser" else 0
-    assert page.evaluate("window.__sourceRenderCalls") == expected
-    assert page.evaluate("window.__voicePopoverTest.panels()") == expected
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    # Every row expands on hover; only prompting providers wait for a click.
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenRenderOptions") == [
+        {"deferEnumeration": prompting}
+    ]
+    load = page.locator("[data-neko-screen-source-deferred-load]")
+    assert load.count() == (1 if prompting else 0)
+
     action.click()
-    page.wait_for_function("window.__sourceRenderCalls === 1")
+    expected = [{"deferEnumeration": prompting}]
+    if prompting:
+        expected.append({"deferEnumeration": False})
+    page.wait_for_function(
+        "window.__screenRenderOptions.length === %d" % len(expected)
+    )
+    assert page.evaluate("window.__screenRenderOptions") == expected
+    assert page.locator(".screen-source-title-filter").count() == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
     assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+def test_deferred_screen_panel_loads_from_its_own_button(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.getDesktopCaptureProvider = () => ({
+                getSources() {}, sourceEnumerationMayPrompt: true,
+            });
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    load = page.locator("[data-neko-screen-source-deferred-load]")
+    load.wait_for(state="visible")
+    load.click()
+    page.locator(".screen-source-title-filter").wait_for(state="attached")
+    assert page.evaluate("window.__screenRenderOptions") == [
+        {"deferEnumeration": True},
+        {"deferEnumeration": False},
+    ]
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
 
 
 @pytest.mark.frontend
@@ -760,8 +809,8 @@ def test_screen_row_summary_follows_selected_source_label(page: Page) -> None:
         "initial": {"text": "Editor", "title": "Editor"},
         "changed": {"text": "Screen 2", "title": "Screen 2"},
         "cleared": {
-            "text": "app.screenSource.screens",
-            "title": "app.screenSource.screens",
+            "text": "app.screenSource.genericScreen",
+            "title": "app.screenSource.genericScreen",
         },
         "live": "polite",
     }

@@ -327,7 +327,8 @@
             "es": "Opcional; rutas y lugares cercanos con AMap. El transporte público requiere una clave de mapas compatible.",
             "pt": "Opcional; rotas e locais próximos pelo AMap. Transporte público exige uma chave de mapas compatível."
           },
-          "default": ""
+          "default": "",
+          "writeOnly": true
         },
         "baidu_map_key": {
           "type": "string",
@@ -353,7 +354,8 @@
             "es": "Opcional; rutas y lugares cercanos con Baidu. Sin claves siguen disponibles las rutas OSRM sin transporte público.",
             "pt": "Opcional; rotas e locais próximos pelo Baidu. Sem chaves, rotas OSRM sem transporte público continuam disponíveis."
           },
-          "default": ""
+          "default": "",
+          "writeOnly": true
         }
       }
     }

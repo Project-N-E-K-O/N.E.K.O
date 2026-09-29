@@ -1020,3 +1020,171 @@ describe('ConfigValueEditor — schema bounds in the compact field', () => {
     expect(input.value).toBe('5')
   })
 })
+
+describe('ConfigValueEditor confidential controls', () => {
+  it('masks enum-backed secrets instead of exposing them in a dropdown', async () => {
+    const { host, emitted } = mountSchemaEditor(undefined, 'fixture-secret', {
+      type: 'string',
+      writeOnly: true,
+      enum: ['fixture-secret'],
+    })
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.type).toBe('password')
+    expect(host.querySelector('.el-select')).toBeNull()
+    expect(host.textContent).not.toContain('fixture-secret')
+    typeInto(input, 'fixture-replacement')
+    await nextTick()
+    expect(lastEmit(emitted)).toBe('fixture-replacement')
+  })
+
+  it.each([
+    { source: 'baseline', value: { token: 'fixture-secret' } },
+    { source: 'baseline', value: ['fixture-secret'] },
+    { source: 'overlay', value: { token: 'fixture-secret' } },
+    { source: 'overlay', value: ['fixture-secret'] },
+  ])(
+    'allows replacing a hidden container from $source with a secret string',
+    async ({ source, value }) => {
+      const { host, emitted } = mountSchemaEditor(
+        source === 'overlay' ? value : undefined,
+        source === 'baseline' ? value : 'fixture-baseline',
+        { type: 'string', writeOnly: true }
+      )
+      await nextTick()
+      const input = host.querySelector('input')!
+      expect(input.type).toBe('password')
+      expect(input.disabled).toBe(false)
+      expect(input.value).toBe('')
+      expect(host.textContent).not.toContain('fixture-')
+      expect(emitted).toEqual([])
+      typeInto(input, 'fixture-replacement')
+      await nextTick()
+      expect(lastEmit(emitted)).toBe('fixture-replacement')
+      expect(host.textContent).not.toContain('fixture-')
+    }
+  )
+
+  it('offers a reveal toggle while keeping the secret masked by default', async () => {
+    const { host } = mountSchemaEditor(undefined, 'fixture-secret', {
+      type: 'string',
+      writeOnly: true,
+    })
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.type).toBe('password')
+    const toggle = host.querySelector<HTMLElement>('.el-input__password')
+    expect(toggle).not.toBeNull()
+    toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelector('input')!.type).toBe('text')
+  })
+
+  it('keeps malformed read-only secrets disabled', async () => {
+    const { host, emitted } = mountSchemaEditor(
+      undefined,
+      { token: 'fixture-secret' },
+      {
+        type: 'string',
+        writeOnly: true,
+        readOnly: true,
+      }
+    )
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.disabled).toBe(true)
+    expect(input.value).toBe('')
+    typeInto(input, 'fixture-replacement')
+    await nextTick()
+    expect(emitted).toEqual([])
+  })
+
+  it('clears a previous scalar value when a secret becomes a container', async () => {
+    const baseline = ref<unknown>('fixture-previous')
+    const emitted: unknown[] = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(
+      defineComponent(
+        () => () =>
+          h(ConfigValueEditor, {
+            modelValue: undefined,
+            baselineValue: baseline.value,
+            schema: { type: 'string', writeOnly: true },
+            'onUpdate:modelValue': (value: unknown) => emitted.push(value),
+          })
+      )
+    )
+    app.use(ElementPlus)
+    app.mount(host)
+    mounted.push({ unmount: () => app.unmount(), host })
+    await nextTick()
+    expect(host.querySelector('input')!.value).toBe('fixture-previous')
+    baseline.value = { token: 'fixture-current' }
+    await nextTick()
+    expect(host.querySelector('input')!.value).toBe('')
+    expect(host.querySelector('input')!.disabled).toBe(false)
+    expect(host.textContent).not.toContain('fixture-')
+    expect(emitted).toEqual([])
+  })
+})
+
+describe('ConfigValueEditor add field dialog', () => {
+  async function openDialog(schema?: ConfigEditorSchema) {
+    const { host, emitted } = mountSchemaEditor({}, {}, schema)
+    await nextTick()
+    ;(host.querySelector('.add button') as HTMLButtonElement).click()
+    await nextTick()
+    const dialog = [...document.querySelectorAll<HTMLElement>('.el-dialog')].at(-1)!
+    return { dialog, emitted }
+  }
+
+  it('offers a type choice for undeclared keys', async () => {
+    const { dialog } = await openDialog({ type: 'object', properties: {} })
+    expect(dialog.querySelector('.el-select')).not.toBeNull()
+  })
+
+  it('hides the type choice when a dynamic-key schema decides the value', async () => {
+    const { dialog, emitted } = await openDialog({
+      type: 'object',
+      properties: {},
+      additionalProperties: { type: 'string', writeOnly: true },
+    })
+    expect(dialog.querySelector('.el-select')).toBeNull()
+    typeInto(dialog.querySelector('input')!, 'token')
+    await nextTick()
+    const confirm = [...dialog.querySelectorAll('button')].find(
+      (b) => (b.textContent || '').trim() === 'common.confirm'
+    ) as HTMLButtonElement
+    confirm.click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ token: '' })
+  })
+
+  it.each([{}, { title: 'Entry' }])(
+    'keeps the type choice when the dynamic-key schema %j leaves the value open',
+    async (additionalProperties) => {
+      const { dialog, emitted } = await openDialog({
+        type: 'object',
+        properties: {},
+        additionalProperties,
+      })
+      const select = dialog.querySelector<HTMLElement>('.el-select__wrapper')
+      expect(select).not.toBeNull()
+      typeInto(dialog.querySelector('input')!, 'entry')
+      select!.click()
+      await nextTick()
+      const option = [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')].find(
+        (item) => item.textContent?.trim() === 'array'
+      )!
+      option.click()
+      await nextTick()
+      const confirm = [...dialog.querySelectorAll('button')].find(
+        (b) => (b.textContent || '').trim() === 'common.confirm'
+      ) as HTMLButtonElement
+      confirm.click()
+      await nextTick()
+      expect(lastEmit(emitted)).toEqual({ entry: [] })
+    }
+  )
+})

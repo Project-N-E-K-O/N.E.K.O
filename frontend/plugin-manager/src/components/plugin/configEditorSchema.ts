@@ -1,4 +1,5 @@
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { schemaField } from '@/utils/configEditor'
 
 import type { ConfigEditorSchema } from '@/types/configSchema'
 export type { ConfigEditorSchema } from '@/types/configSchema'
@@ -20,6 +21,15 @@ export function schemaEnum(schema?: ConfigEditorSchema): Array<string | number |
   return values as Array<string | number | boolean>
 }
 
+/** Whether the schema alone fixes a new field's initial value (see newSchemaValue). */
+export function schemaDecidesValue(schema?: ConfigEditorSchema): boolean {
+  return (
+    (schema?.default !== undefined && schema.default !== null) ||
+    schemaEnum(schema).length > 0 ||
+    schema?.type !== undefined
+  )
+}
+
 /** Used only for explicit additions, never to materialize defaults on page load. */
 export function newSchemaValue(schema?: ConfigEditorSchema): unknown {
   if (schema?.default !== undefined && schema.default !== null) {
@@ -35,4 +45,20 @@ export function newSchemaValue(schema?: ConfigEditorSchema): unknown {
     case 'integer': return Math.ceil(schema.minimum ?? 0)
     default: return ''
   }
+}
+
+
+/** Redact display copies only; configuration values and save payloads stay intact. */
+export function redactConfigSecrets(value: unknown, schema?: ConfigEditorSchema): unknown {
+  if (value === undefined) return undefined
+  // An empty secret stays visible: unset and set must remain distinguishable.
+  if (schema?.writeOnly) return value === '' ? '' : '********'
+  if (Array.isArray(value)) return value.map((item) => redactConfigSecrets(item, schema?.items))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      const field = schemaField(schema, key)
+      return [key, redactConfigSecrets(child, field)]
+    }))
+  }
+  return value
 }

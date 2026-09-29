@@ -138,3 +138,59 @@ def test_supported_scalar_enum_values_are_preserved(manifest: Path) -> None:
     }}}
     manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
     assert load_config_editor_schema(manifest) == (schema, [])
+
+
+@pytest.mark.parametrize("field", [
+    {"type": "string", "writeOnly": "true"},
+    {"type": "number", "writeOnly": True},
+    {"writeOnly": True},
+])
+def test_invalid_secret_controls_warn(manifest: Path, field: dict) -> None:
+    schema = {"type": "object", "properties": {"credential": field}}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    loaded, warnings = load_config_editor_schema(manifest)
+    assert loaded is None
+    assert warnings[0]["code"] == "PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID"
+
+
+def test_secret_annotations_survive_schema_loading(manifest: Path) -> None:
+    schema = {"type": "object", "properties": {
+        "credential": {"type": "string", "writeOnly": True, "default": ""},
+        "label": {"type": "string", "writeOnly": False},
+    }}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    assert load_config_editor_schema(manifest) == (schema, [])
+
+
+@pytest.mark.parametrize("additional", [
+    True, False, {"type": "string", "writeOnly": True},
+])
+def test_additional_properties_annotations_are_preserved(manifest: Path, additional) -> None:
+    schema = {"type": "object", "additionalProperties": additional}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    assert load_config_editor_schema(manifest) == (schema, [])
+
+
+@pytest.mark.parametrize("additional", [
+    None, 0, "true", [], {"type": "string", "writeOnly": "true"},
+    {"type": "object", "writeOnly": True},
+])
+def test_invalid_additional_properties_warn(manifest: Path, additional) -> None:
+    schema = {"type": "object", "additionalProperties": additional}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    loaded, warnings = load_config_editor_schema(manifest)
+    assert loaded is None
+    assert warnings[0]["code"] == "PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID"
+
+
+def test_additional_properties_nesting_is_bounded(manifest: Path) -> None:
+    schema = {"type": "object"}
+    node = schema
+    for _ in range(34):
+        child = {"type": "object"}
+        node["additionalProperties"] = child
+        node = child
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    loaded, warnings = load_config_editor_schema(manifest)
+    assert loaded is None
+    assert warnings[0]["code"] == "PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID"
