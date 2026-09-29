@@ -214,14 +214,19 @@ function watchdogTimers(timers) {
   return timers.filter((timer) => timer.delay === 20000);
 }
 
+// 成功的 start 会重新计时（先清掉入口处那一个），只数仍然有效的。
+function activeWatchdogTimers(timers) {
+  return watchdogTimers(timers).filter((timer) => !timer.cleared);
+}
+
 async function watchdogReleasesAbandonedProbeCase() {
   // The settings window can die without sending stop (crash, reload, force
   // close). The page must release the mic on its own.
   const env = loadModule();
   const timers = env.captureTimeouts();
   assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts');
-  const armed = watchdogTimers(timers);
-  assert(armed.length === 1 && !armed[0].cleared, 'a settings start arms one watchdog');
+  const armed = activeWatchdogTimers(timers);
+  assert(armed.length === 1, 'a settings start leaves one armed watchdog');
 
   armed[0].callback();
   assert(!isLive(env.streams[0]) && env.contexts[0].state === 'closed',
@@ -259,8 +264,9 @@ async function probeResumesAfterLiveEndsCase() {
   const probeContext = env.contexts[env.contexts.length - 1];
   assert(probeContext.state !== 'closed', 'the rebuilt probe has an open context');
 
-  const armed = watchdogTimers(timers);
-  assert(armed.length === 1, 'rebuilding the probe must not extend the watchdog');
+  const armed = activeWatchdogTimers(timers);
+  assert(armed.length === 1 && watchdogTimers(timers).length === 2,
+         'rebuilding the probe must not extend the watchdog');
   armed[0].callback();
   assert(!isLive(env.streams[streamsBefore]) && probeContext.state === 'closed',
          'the original watchdog still bounds the rebuilt probe');
@@ -278,6 +284,81 @@ async function liveOnlySampleIgnoresProbeCase() {
          'a liveOnly sample must leave the probe running');
 }
 
+async function deadTrackFallsBackCase() {
+  // 选中设备给出的音轨已 ended：和正式录音一样合成 NotReadableError，退回默认麦克风。
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'usb-mic';
+  env.endTrackOnGetUserMediaCall(1);
+  const result = await env.win.startSettingsMicVolumeTest();
+
+  assert(result.ok === true && result.mode === 'probe', 'a dead selected track falls back to a working probe');
+  assert(env.getUserMediaCalls.length === 2, 'exactly one fallback open after the dead track');
+  assert(env.getUserMediaCalls[0].audio.deviceId.exact === 'usb-mic', 'the first open targets the selected device');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined, 'the fallback open targets the default device');
+  assert(!isLive(env.streams[0]) && isLive(env.streams[1]), 'the dead stream is stopped, the fallback stream runs');
+}
+
+async function resumeDuringLiveReturnsLiveCase() {
+  // 只挂起 probe 自己的 context.resume()；挂起期间正式录音接管，start 应报 live 而不是失败。
+  const env = loadModule();
+  const Base = env.win.AudioContext;
+  let probeContext = null;
+  let releaseResume;
+  const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+  env.win.AudioContext = class extends Base {
+    constructor(options) {
+      super(options);
+      if (!probeContext) { probeContext = this; this.state = 'suspended'; }
+    }
+    resume() { return this === probeContext ? resumeGate : super.resume(); }
+  };
+  const pending = env.win.startSettingsMicVolumeTest();
+  await settle();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the real recording commits while the probe resume is parked');
+  releaseResume();
+  const result = await pending;
+
+  assert(result.ok === true && result.mode === 'live', 'a probe overtaken by real recording reports live');
+  assert(!isLive(env.streams[0]), 'the overtaken probe stream is released');
+}
+
+async function rebuildFailureIsTerminalCase() {
+  const env = loadModule();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
+  await env.mod.startMicCapture();
+  env.S.isRecording = false;
+  env.S.inputAnalyser = null;
+  env.failNextGetUserMedia(mediaError('NotReadableError'));
+  env.mod.sampleMicVolumeLevel();
+  await settle(10);
+  const callsAfterRebuild = env.getUserMediaCalls.length;
+
+  for (let i = 0; i < 5; i += 1) {
+    const sample = env.mod.sampleMicVolumeLevel();
+    assert(sample.failed === true && sample.recording === false, 'a failed rebuild is reported to the settings page');
+  }
+  await settle(10);
+  assert(env.getUserMediaCalls.length === callsAfterRebuild, 'a failed rebuild must not be retried on every poll');
+  assert(env.mod.sampleMicVolumeLevel({ liveOnly: true }).failed !== true,
+         'the floating-button sampler never reports the settings failure');
+}
+
+async function deviceSwitchReopensProbeCase() {
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  env.S.selectedMicrophoneId = 'mic-A';
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts on mic-A');
+  await env.win.selectMicrophone('mic-B');
+  await settle(10);
+
+  assert(env.getUserMediaCalls.length === 2, 'switching device reopens the probe once');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'mic-B', 'the reopened probe targets mic-B');
+  assert(!isLive(env.streams[0]) && isLive(env.streams[1]), 'mic-A is released and mic-B runs');
+  assert(activeWatchdogTimers(timers).length === 1 && watchdogTimers(timers).length === 2,
+         'reopening on device switch must not extend the watchdog');
+}
+
 (async () => {
   await stopDuringPermissionCase();
   await overlappingStartsCase();
@@ -290,6 +371,10 @@ async function liveOnlySampleIgnoresProbeCase() {
   await watchdogReleasesAbandonedProbeCase();
   await probeResumesAfterLiveEndsCase();
   await liveOnlySampleIgnoresProbeCase();
+  await deadTrackFallsBackCase();
+  await resumeDuringLiveReturnsLiveCase();
+  await rebuildFailureIsTerminalCase();
+  await deviceSwitchReopensProbeCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));
@@ -310,3 +395,13 @@ def test_settings_mic_probe_never_leaks_or_steals_a_stream_harness():
         f"stderr:\n{result.stderr}"
     )
     assert "HARNESS_OK" in result.stdout
+
+
+@pytest.mark.unit
+def test_floating_volume_bar_samples_live_only():
+    # 悬浮按钮弹窗里的音量条只看正式录音；无参调用会读到 / 重建设置页的 probe。
+    source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    body = source[source.index("function updateVolumeDisplay"):]
+    body = body[: body.index("\n    }\n")]
+    assert "sampleMicVolumeLevel({ liveOnly: true })" in body
+    assert "sampleMicVolumeLevel()" not in body

@@ -137,6 +137,16 @@
         microphoneSelectionGeneration += 1;
     }
 
+    // 正式录音和设置页试麦共用：试麦要预判正式录音实际能听到什么，两边必须同一套处理。
+    function micCaptureAudioConstraints() {
+        return {
+            noiseSuppression: false,
+            echoCancellation: true,
+            autoGainControl: true,
+            channelCount: 1
+        };
+    }
+
     function currentVoiceInputControlState() {
         return {
             owner: resolveMicLeaseOwner(),
@@ -980,6 +990,9 @@
         // 保存选择到服务器
         await saveSelectedMicrophone(deviceId);
 
+        // 没在录音但设置页正在试麦：按新设备重开 probe，否则音量条一直测的是旧设备。
+        if (!S.isRecording) restartSettingsMicVolumeProbe();
+
         // 如果正在录音，先显示选择提示，然后延迟重启录音
         if (S.isRecording) {
             const wasRecording = S.isRecording;
@@ -1319,7 +1332,8 @@
 
     // 正式录音已接管时，临时 probe 立即让位，避免两路流同时占着麦克风。
     function yieldSettingsMicVolumeProbeToLive() {
-        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
+        if (!settingsMicVolumeTest) return;
+        if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
         releaseSettingsMicVolumeProbe();
         settingsMicVolumeTest = { mode: 'live' };
     }
@@ -2160,12 +2174,7 @@
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
-            const baseAudioConstraints = {
-                noiseSuppression: false,
-                echoCancellation: true,
-                autoGainControl: true,
-                channelCount: 1
-            };
+            const baseAudioConstraints = micCaptureAudioConstraints();
 
             // Attempt-local, for the same reason the audio graph is: publishing
             // the stream here put it OUTSIDE the single publish point in
@@ -2530,6 +2539,10 @@
         if (S.isRecording && S.inputAnalyser) analyser = S.inputAnalyser;
         else if (!liveOnly && settingsMicVolumeTest) analyser = settingsMicVolumeTest.analyser;
         if (!analyser) {
+            // 重建失败是终态：如实报给设置页，而不是退化成普通的 0 音量。
+            if (!liveOnly && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'failed') {
+                return { recording: false, percent: 0, tone: 'idle', failed: true };
+            }
             return { recording: false, percent: 0, tone: 'idle' };
         }
         // 用时域数据反映 worklet/AI 实际收到的线性振幅。
@@ -2761,12 +2774,7 @@
     }
 
     function settingsMicTestConstraints(deviceId) {
-        const audio = {
-            noiseSuppression: false,
-            echoCancellation: true,
-            autoGainControl: true,
-            channelCount: 1,
-        };
+        const audio = micCaptureAudioConstraints();
         if (deviceId) audio.deviceId = { exact: deviceId };
         return { audio };
     }
@@ -2840,18 +2848,35 @@
         }
     }
 
+    // 在试麦窗口内重开 probe（正式录音结束后 / 切换设备后）。走内部 start，不续期 watchdog。
+    // start 在第一个 await 之前就同步清掉了旧标记，重建进行中的采样会直接返回 idle，
+    // 所以不需要另设“重建中”标志。本代次的重建失败写入 failed 终态交给设置页，
+    // 不在 80ms 的轮询里反复重试。
+    function reopenSettingsMicVolumeProbe() {
+        const pending = startSettingsMicVolumeTest();
+        const generation = settingsMicVolumeGeneration;
+        const markFailed = function () {
+            if (generation === settingsMicVolumeGeneration && settingsMicVolumeTest === null) {
+                settingsMicVolumeTest = { mode: 'failed' };
+            }
+        };
+        pending.then(function (result) {
+            if (!result || result.ok !== true) markFailed();
+        }, markFailed);
+    }
+
     // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
     // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
-    let settingsMicVolumeResumePending = false;
-
     function resumeSettingsMicVolumeProbeAfterLive() {
         if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
         if (S.isRecording && S.inputAnalyser) return;
-        if (settingsMicVolumeResumePending) return;
-        settingsMicVolumeResumePending = true;
-        startSettingsMicVolumeTest()
-            .catch(function () {})
-            .finally(function () { settingsMicVolumeResumePending = false; });
+        reopenSettingsMicVolumeProbe();
+    }
+
+    function restartSettingsMicVolumeProbe() {
+        if (!settingsMicVolumeTest) return;
+        if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
+        reopenSettingsMicVolumeProbe();
     }
 
     function stopSettingsMicVolumeTest() {
@@ -2863,14 +2888,25 @@
 
     // 内部抛错路径只会清理本次自己创建的资源；这里不能再无条件 release，
     // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
-    window.startSettingsMicVolumeTest = async function () {
+    // 入口先计时，兜住挂起中的 start；成功后再从头计时，让 20s 从设置页 15s 倒计时开始时算起。
+    // 被 stop / 新一轮 start 越过的旧 start 不碰 watchdog。
+    async function startSettingsMicVolumeTestFromSettings() {
         armSettingsMicVolumeWatchdog();
+        const pending = startSettingsMicVolumeTest();
+        const generation = settingsMicVolumeGeneration;
+        let result;
         try {
-            return await startSettingsMicVolumeTest();
+            result = await pending;
         } catch (_) {
-            return { ok: false };
+            result = { ok: false };
         }
-    };
+        if (generation === settingsMicVolumeGeneration) {
+            if (result && result.ok === true) armSettingsMicVolumeWatchdog();
+            else clearSettingsMicVolumeWatchdog();
+        }
+        return result;
+    }
+    window.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;
     window.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
 
     // ======================== 暴露到 window（向后兼容） ========================
@@ -2994,7 +3030,7 @@
     mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
     mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
-    mod.startSettingsMicVolumeTest = startSettingsMicVolumeTest;
+    mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;
     mod.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;

@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
-from utils import social_base
+from utils.social_base import auth_public_url as _configured_auth_public_url
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -91,7 +91,7 @@ def _desktop_client_id() -> str:
 
 
 def _auth_public_url() -> str:
-    return social_base.auth_public_url()
+    return _configured_auth_public_url()
 
 
 def _main_server_port() -> int:
@@ -652,6 +652,7 @@ async def oauth_start_endpoint(request: Request):
 
 
 def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
+    """可经本机路由返回的用户信息：永远不含手机号。"""
     source = user if isinstance(user, dict) else {}
     display_name = source.get("display_name") or source.get("username") or source.get("name")
     profile: dict[str, Any] = {
@@ -660,6 +661,13 @@ def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None 
     }
     if local_user_id:
         profile = {"id": local_user_id, **profile}
+    return profile
+
+
+def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
+    """落盘到 community_auth.json 的用户信息：额外保留手机号，只给桌面端设置页读盘显示。"""
+    profile = _public_user_profile(user, local_user_id)
+    source = user if isinstance(user, dict) else {}
     phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
     if isinstance(phone, str) and phone.strip():
         profile["phone"] = phone.strip()
@@ -684,7 +692,6 @@ async def oauth_status_endpoint(request: Request):
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
     # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
     public_profile = _public_user_profile(user)
-    public_profile.pop("phone", None)
     return {
         "logged_in": True,
         "auth_source": snapshot.get("auth_source") or None,
@@ -847,7 +854,7 @@ async def _handle_oauth_callback(
         "auth_source": "oauth",
         "auth_public_url": auth_public_url,
         "client_id": client_id,
-        "user": _public_user_profile(user, local_user_id),
+        "user": _persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
     credentials_saved = await asyncio.to_thread(

@@ -1335,7 +1335,14 @@ async def auth_status_endpoint(request: Request):
             "user": {"display_name": u.get("display_name"), "email": u.get("email")},
             "bind": bind,
         }
-    return {"logged_in": False, "user": None, "bind": None}
+    # 云端暂时校验不了（离线、超时、5xx、refresh unavailable）时本地会话仍在，
+    # 前端据此区分“明确登出”和“状态未知”，不能把后者提示成去登录。
+    return {
+        "logged_in": False,
+        "user": None,
+        "bind": None,
+        "session_saved": bool(status.get("snapshot")),
+    }
 
 
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")

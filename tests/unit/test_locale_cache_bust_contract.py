@@ -65,6 +65,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-28-social-settings-login-prompt-pr3172-merge",
         "2026-09-28-social-settings-login-prompt-glm-merge",
         "2026-09-28-pr3172-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-free-tts-merge",

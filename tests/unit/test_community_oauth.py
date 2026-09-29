@@ -202,12 +202,12 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 
 @pytest.mark.unit
-def test_public_user_profile_keeps_phone_for_persisted_auth():
-    # 回调落盘的 community_auth.json 仍保留手机号，桌面端设置页靠它显示账号。
-    profile = O._public_user_profile(
-        {"username": "User", "email": None, "phone_number": " +8613800000000 "},
-        USER_ID,
-    )
+def test_persisted_user_profile_keeps_phone_but_public_profile_never_does():
+    # 回调落盘的 community_auth.json 仍保留手机号，桌面端设置页靠它显示账号；
+    # 可经本机路由返回的 public 版本永远不带手机号。
+    raw = {"username": "User", "email": None, "phone_number": " +8613800000000 "}
+    assert "phone" not in O._public_user_profile(raw, USER_ID)
+    profile = O._persisted_user_profile(raw, USER_ID)
 
     assert profile == {
         "id": USER_ID,

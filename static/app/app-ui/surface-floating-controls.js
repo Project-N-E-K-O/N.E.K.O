@@ -697,7 +697,8 @@
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
-        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
+        // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
+        // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
@@ -789,24 +790,22 @@
                 }
                 return navigated;
             };
-            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
+            const waitForOAuthCompletion = async (timeoutMs) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
-                    if (requirePopup) {
-                        if (!popupRef) {
+                    if (!popupRef) {
+                        return false;
+                    }
+                    try {
+                        if (popupRef.closed) {
+                            if (typeof forgetSocialWindow === 'function') {
+                                forgetSocialWindow(popupRef, socialOpenGeneration);
+                            }
+                            popupRef = null;
                             return false;
                         }
-                        try {
-                            if (popupRef.closed) {
-                                if (typeof forgetSocialWindow === 'function') {
-                                    forgetSocialWindow(popupRef, socialOpenGeneration);
-                                }
-                                popupRef = null;
-                                return false;
-                            }
-                        } catch (_) { /* ignore */ }
-                    }
+                    } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -970,7 +969,8 @@
                 if (!nativeDelegate && pendingProofs.nativeHandoff) {
                     nativeDelegate = (await pendingProofs.nativeHandoff).nativeDelegate;
                 }
-                if (!nativeDelegate) {
+                // 已明确判定未登录时重试也只会再拿一次 409，白白多一次本地往返并延长 social-open 锁。
+                if (!nativeDelegate && !pendingProofs.loggedOut) {
                     const retryHandoff = await fetchNativeDelegate();
                     nativeDelegate = retryHandoff.nativeDelegate;
                 }
@@ -1103,7 +1103,10 @@
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             communityLoggedIn = !!(statusJson && statusJson.logged_in);
-                            communityLoggedOut = !communityLoggedIn;
+                            // 云端暂时校验不了（离线、超时、5xx）时本地会话仍在，
+                            // 后端以 session_saved 标出；这种情况不是登出，不能提示去登录。
+                            communityLoggedOut = !communityLoggedIn
+                                && !(statusJson && statusJson.session_saved);
                         }
                     } catch (statusErr) {
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
@@ -1163,8 +1166,7 @@
                             releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
-                                browserOAuthTimeoutMs,
-                                true
+                                browserOAuthTimeoutMs
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();
@@ -1196,7 +1198,8 @@
                                 initialNativeHandoff.nativeDelegate,
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
-                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                                    loggedOut: communityLoggedOut
                                 }
                             );
                         }
@@ -1210,7 +1213,7 @@
                         window.showStatusToast(
                             (settingsPrompt && settingsPrompt !== settingsPromptKey)
                                 ? settingsPrompt
-                                : '请先在设置中登录 N.E.K.O 账号',
+                                : '请从托盘菜单打开设置登录 N.E.K.O 账号，也可以直接在社区页登录',
                             4000
                         );
                     }
@@ -1219,7 +1222,8 @@
                         initialNativeHandoff.nativeDelegate,
                         {
                             nativeHandoff: initialNativeHandoffPromise,
-                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                            loggedOut: communityLoggedOut
                         }
                     );
                 }

@@ -86,6 +86,8 @@ function loadModule() {
   // and getUserMedia() (device open / permission).
   let addModuleGate = Promise.resolve();
   let getUserMediaGate = Promise.resolve();
+  // getUserMedia 调用序号 -> 返回一条 readyState 已是 ended 的音轨。
+  const endedTrackOnGetUserMediaCall = new Set();
   const getUserMediaCalls = [];
   const getUserMediaFailures = [];
   const statusToasts = [];
@@ -267,7 +269,9 @@ function loadModule() {
           if (getUserMediaFailures.length > 0) {
             throw getUserMediaFailures.shift();
           }
-          return makeStream();
+          const stream = makeStream();
+          if (endedTrackOnGetUserMediaCall.delete(callNumber)) stream.track.readyState = 'ended';
+          return stream;
         },
         enumerateDevices: async () => [],
         addEventListener() {},
@@ -356,6 +360,9 @@ function loadModule() {
     },
     failCaptureContext() {
       captureContextThrows = true;
+    },
+    endTrackOnGetUserMediaCall(callNumber) {
+      endedTrackOnGetUserMediaCall.add(callNumber);
     },
     failNextGetUserMedia(error) {
       getUserMediaFailures.push(error || new Error('getUserMedia failed'));

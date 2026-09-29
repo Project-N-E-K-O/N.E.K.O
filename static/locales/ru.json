@@ -2565,7 +2565,7 @@
         "socialUnavailable": "Сервис сообщества недоступен",
         "socialDisabled": "Сервис сообщества отключён",
         "socialOAuthPrompt": "Завершите вход в единый аккаунт в браузере",
-        "socialSettingsLoginPrompt": "Сначала войдите в аккаунт N.E.K.O в настройках",
+        "socialSettingsLoginPrompt": "Войдите в аккаунт N.E.K.O через настройки в меню трея или прямо на странице сообщества",
         "welcomeBack": "{{name}} вернулась!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} отдыхает...",
