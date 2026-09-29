@@ -21,8 +21,8 @@ class _WakeNameCorrection:
 
 
 _OPENING_QUOTES = frozenset("\"'“‘「『")
-# Observed Qwen spellings and their recording/TTS provenance are documented in
-# docs/development/wake-name-correction.md. Keep compound matches before singles.
+# Observed Qwen spellings from user reports and recording/TTS replays.
+# Keep compound matches before singles.
 _PREFIX_CORRECTIONS = (
     ("欢迎悠怡", "悠怡悠怡"),
     ("欢迎优依", "悠怡悠怡"),
