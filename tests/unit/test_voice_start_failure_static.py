@@ -841,7 +841,11 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "return !provider || typeof provider.getSources === 'function';" in screen_action
     screen_subwindow = _js_function_block(source, "openScreenSourceSubwindow")
     assert "xdg-desktop-portal" in screen_subwindow
+    # Legacy providers without the flag share app-screen.js's Linux-only
+    # inference; the conservative fallback only applies if that helper is absent.
+    assert "window.sourceListEnumerationMayPrompt(provider)" in screen_subwindow
     assert "provider.sourceEnumerationMayPrompt !== false" in screen_subwindow
+    assert "&& provider && enumerationMayPrompt);" in screen_subwindow
     assert "deferEnumeration: deferEnumeration" in screen_subwindow
     assert "retryOnFailure: true" in screen_subwindow
     assert "var micActionButton = createMainActionButton(\n                null," in source

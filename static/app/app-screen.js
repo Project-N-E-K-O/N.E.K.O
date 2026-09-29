@@ -3407,6 +3407,7 @@
     // ======================== getSelectedScreenSourceId ========================
     window.getSelectedScreenSourceId = function () { return S.selectedScreenSourceId; };
     window.getSelectedScreenSourceLabel = getSelectedScreenSourceLabel;
+    window.sourceListEnumerationMayPrompt = sourceListEnumerationMayPrompt;
 
     // ======================== detectScreenshotCaptureType ========================
     /**

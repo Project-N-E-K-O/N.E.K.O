@@ -7,6 +7,7 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
+APP_SCREEN = ROOT / "static" / "app" / "app-screen.js"
 VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
@@ -725,6 +726,8 @@ def test_screen_source_hover_defers_prompting_enumeration(
         }""",
         capability,
     )
+    # The harness omits app-screen.js's shared inference helper, so an
+    # unflagged provider hits the conservative "may prompt" fallback here.
     prompting = capability is True or capability == "unknown"
     action = page.locator('[data-neko-mic-main-action="screen"]')
     action.hover()
@@ -747,6 +750,72 @@ def test_screen_source_hover_defers_prompting_enumeration(
     assert page.evaluate("window.__screenRenderOptions") == expected
     assert page.locator(".screen-source-title-filter").count() == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+def _source_list_enumeration_may_prompt_source() -> str:
+    source = APP_SCREEN.read_text(encoding="utf-8")
+    start = source.index("function sourceListEnumerationMayPrompt(provider)")
+    end = source.index("\n    }\n", start) + len("\n    }")
+    assert (
+        "window.sourceListEnumerationMayPrompt = sourceListEnumerationMayPrompt;"
+        in source
+    )
+    return source[start:end]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("capability", "platform", "prompting"),
+    [
+        # Legacy bridges without the flag: only Linux may show a portal.
+        (None, "Macintosh; Intel Mac OS X 14_0", False),
+        (None, "Windows NT 10.0; Win64; x64", False),
+        (None, "X11; Linux x86_64", True),
+        (None, "Linux; Android 14; Pixel 8", False),
+        # An explicit flag always wins over the platform guess.
+        (True, "Macintosh; Intel Mac OS X 14_0", True),
+        (False, "X11; Linux x86_64", False),
+    ],
+)
+def test_screen_source_hover_infers_legacy_provider_prompting(
+    page: Page, capability: bool | None, platform: str, prompting: bool,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """([helperSource, capability, platform]) => {
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
+            });
+            window.sourceListEnumerationMayPrompt = new Function(
+                helperSource + '\\nreturn sourceListEnumerationMayPrompt;'
+            )();
+            window.getDesktopCaptureProvider = () => {
+                const provider = { getSources() {} };
+                if (capability !== null) {
+                    provider.sourceEnumerationMayPrompt = capability;
+                }
+                return provider;
+            };
+        }""",
+        [_source_list_enumeration_may_prompt_source(), capability, platform],
+    )
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    assert page.evaluate("window.__screenRenderOptions") == [
+        {"deferEnumeration": prompting}
+    ]
+    load = page.locator("[data-neko-screen-source-deferred-load]")
+    assert load.count() == (1 if prompting else 0)
+    assert page.locator(".screen-source-title-filter").count() == (
+        0 if prompting else 1
+    )
     assert page.evaluate("window.__screenToggleCalls") == 0
 
 
