@@ -658,7 +658,7 @@ async def oauth_start_endpoint(request: Request):
 
 
 def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
-    """可经本机路由返回的用户信息：永远不含手机号。"""
+    """User profile safe to return from local routes; never includes the phone number."""
     source = user if isinstance(user, dict) else {}
     display_name = source.get("display_name") or source.get("username") or source.get("name")
     profile: dict[str, Any] = {
@@ -671,7 +671,7 @@ def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None 
 
 
 def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
-    """落盘到 community_auth.json 的用户信息：额外保留手机号，只给桌面端设置页读盘显示。"""
+    """User profile persisted to community_auth.json; keeps the phone number for the desktop settings page only."""
     profile = _public_user_profile(user, local_user_id)
     source = user if isinstance(user, dict) else {}
     phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
