@@ -48,6 +48,10 @@ def _check_node(node: object, depth: int = 0) -> None:
             raise ValueError("Invalid schema properties")
         for child in properties.values():
             _check_node(child, depth + 1)
+    if "additionalProperties" in node:
+        additional = node["additionalProperties"]
+        if not isinstance(additional, bool):
+            _check_node(additional, depth + 1)
     if "items" in node:
         _check_node(node["items"], depth + 1)
     if "enum" in node:
@@ -71,6 +75,11 @@ def _check_node(node: object, depth: int = 0) -> None:
             raise ValueError("Invalid schema string length")
     if "readOnly" in node and not isinstance(node["readOnly"], bool):
         raise ValueError("Invalid schema readOnly")
+    if "writeOnly" in node:
+        if not isinstance(node["writeOnly"], bool):
+            raise ValueError("Invalid schema writeOnly")
+        if node["writeOnly"] and node.get("type") != "string":
+            raise ValueError("writeOnly controls require type string")
 
 
 def load_config_editor_schema(manifest_path: Path) -> tuple[dict[str, object] | None, list[dict[str, object]]]:

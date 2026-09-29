@@ -166,6 +166,19 @@
         return !!(provider && provider.sourceEnumerationMayPrompt === true);
     }
 
+    // 列来源面板专用：旧版桌面端没有声明 sourceEnumerationMayPrompt 时，按它
+    // 现在的取值规则（process.platform === 'linux'）推断，只把 Linux 当作可能弹窗。
+    // 不能一律当作可能弹窗：旧版 macOS 在单显示器、无屏幕录制权限时也只返回
+    // 一项，会被误当成系统对话框的结果，每次打开列表都重启分享。
+    function sourceListEnumerationMayPrompt(provider) {
+        if (!provider) return false;
+        if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
+            return provider.sourceEnumerationMayPrompt;
+        }
+        var userAgent = String((navigator && navigator.userAgent) || '');
+        return /Linux/.test(userAgent) && !/Android/.test(userAgent);
+    }
+
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
         if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
             return null;
@@ -357,10 +370,17 @@
         }
         // 窗口标题 / 屏幕序号未知（其他窗口、重启后、系统对话框只返回一块屏幕）：
         // 只说是窗口或屏幕，不把某个具体名称安到可能已被复用的 id 上。
-        if (sourceId.startsWith('window:')) {
-            return window.t ? window.t('app.screenSource.windows') : '窗口';
+        return getGenericScreenSourceLabel(sourceId);
+    }
+
+    // 已选中但具体名称未知时的单数兜底文案。来源列表的分组标题
+    // app.screenSource.screens / windows 是复数，不能拿来当某一个来源的名字
+    // （英文会显示成 "Windows"）。
+    function getGenericScreenSourceLabel(sourceId) {
+        if (typeof sourceId === 'string' && sourceId.startsWith('window:')) {
+            return window.t ? window.t('app.screenSource.genericWindow') : '窗口';
         }
-        return window.t ? window.t('app.screenSource.screens') : '屏幕';
+        return window.t ? window.t('app.screenSource.genericScreen') : '屏幕';
     }
 
     function notifyScreenSourceChanged() {
@@ -426,14 +446,18 @@
      * 用本次枚举结果刷新当前选中源的名称：升级前保存的选择没有名称记录，
      * 窗口标题也可能已经变了，以当前枚举为准。
      */
-    function refreshSelectedScreenSourceLabelFromSources(screens, windows) {
+    function refreshSelectedScreenSourceLabelFromSources(screens, windows, options) {
         var sourceId = S.selectedScreenSourceId;
         if (!sourceId) return;
         var screenIndex = screens.findIndex(function (s) { return s.id === sourceId; });
         var source = screenIndex >= 0
             ? screens[screenIndex]
             : windows.find(function (s) { return s.id === sourceId; });
+        // partial：系统对话框只返回用户选中的那一项，不是完整列表——当前来源
+        // 不在里面不代表它已不存在，结果里的位置也不是物理屏幕序号。
+        var partial = !!(options && options.partial);
         if (!source) {
+            if (partial) return;
             // 窗口已关、屏幕已拔：这次枚举证明来源不在了，不再显示它的具体名称。
             var persisted = readPersistedScreenSourceMeta();
             var persistedIsThisSource = !!(persisted && persisted.id === sourceId);
@@ -448,7 +472,7 @@
             }
             return;
         }
-        var nextIndex = screenIndex >= 0 ? screenIndex : null;
+        var nextIndex = screenIndex >= 0 && !partial ? screenIndex : null;
         var current = getKnownScreenSourceMeta(sourceId);
         if (current && current.screenIndex === nextIndex
             && current.name === String(source.name || '')) {
@@ -459,6 +483,23 @@
 
     // 语言切换后屏幕名称要按新语言重算。
     window.addEventListener('localechange', notifyScreenSourceChanged);
+
+    // 延迟枚举面板里的「当前来源：<来源>」。面板开着时来源可能在别处（其他窗口、
+    // 自动回退）变化；这里只注册一个模块级监听，刷新页面上现存的摘要，
+    // 面板反复开关不会累积监听器。常驻状态行用「标签：值」的写法，不复用
+    // 描述一次事件的 toast 模板 app.screenSource.selected（西语、葡语配上
+    // 阴性名词会出现性数不一致）。
+    function renderScreenSourceSummary(summary) {
+        var currentLabel = getSelectedScreenSourceLabel();
+        summary.hidden = !currentLabel;
+        summary.textContent = !currentLabel ? '' : (window.t
+            ? window.t('app.screenSource.current', { source: currentLabel })
+            : '当前来源：' + currentLabel);
+        summary.title = currentLabel;
+    }
+    window.addEventListener('neko:screen-source-changed', function () {
+        document.querySelectorAll('.screen-source-current').forEach(renderScreenSourceSummary);
+    });
 
     // ======================== clearSelectedScreenSource ========================
     /**
@@ -2819,6 +2860,101 @@
             return false;
         }
 
+        // 悬停打开时调用方传 deferEnumeration：Linux 上枚举来源可能弹出系统
+        // 分享对话框，先只放一个按钮，用户点击后再枚举。
+        if (renderOptions.deferEnumeration === true) {
+            screenPopup.innerHTML = '';
+            appendCurrentSourceSummary(screenPopup);
+            appendDeferredLoadButton(screenPopup, renderOptions);
+            return true;
+        }
+
+        // 延迟枚举时列表是空的，在按钮上方显示当前选中的来源。
+        function appendCurrentSourceSummary(targetPopup) {
+            var summary = document.createElement('div');
+            summary.className = 'screen-source-current';
+            renderScreenSourceSummary(summary);
+            Object.assign(summary.style, {
+                padding: '4px 12px 8px',
+                color: 'var(--neko-popup-text-sub)',
+                fontSize: '12px',
+                textAlign: 'center',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+            });
+            targetPopup.appendChild(summary);
+        }
+
+        // 采用系统对话框返回的唯一来源：它就是用户这次在系统层面的明确选择。
+        async function adoptPortalSource(portalSource) {
+            var portalLabel = portalSource.id.startsWith('screen:')
+                ? getGenericScreenSourceLabel(portalSource.id)
+                : getScreenSourceDisplayName(portalSource, null);
+            // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
+            // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
+            // id 相同时 selectScreenSource 不推进选择代次；这里手动推进，让还在
+            // 等待的分享启动像换了 id 一样作废，不会把上一次选的窗口分享出去。
+            if (S.selectedScreenSourceId === portalSource.id) {
+                markScreenSourceSelectionChanged();
+            }
+            try {
+                await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
+            } catch (error) {
+                console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+            }
+        }
+
+        // 用户取消系统对话框或列来源失败：保留提示，放回当前来源摘要和按钮以便
+        // 重试——选择本身没有变，面板不应看起来像来源没了。无论这次是从延迟
+        // 按钮还是直接点击（含键盘）触发的都适用。
+        function appendRetryButtonIfRequested() {
+            if (renderOptions.retryOnFailure === true) {
+                appendCurrentSourceSummary(screenPopup);
+                appendDeferredLoadButton(screenPopup, renderOptions);
+            }
+        }
+
+        function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
+            var deferredLoadButton = document.createElement('button');
+            deferredLoadButton.type = 'button';
+            deferredLoadButton.className = 'screen-source-deferred-load';
+            deferredLoadButton.dataset.nekoScreenSourceDeferredLoad = '';
+            deferredLoadButton.textContent = buttonText || (window.t
+                ? window.t('app.screenSource.clickToChoose')
+                : '点击选择屏幕来源');
+            Object.assign(deferredLoadButton.style, {
+                width: '100%',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-hover)',
+                color: 'var(--neko-popup-text)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                textAlign: 'center'
+            });
+            deferredLoadButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                if (!targetPopup.isConnected || !deferredLoadButton.isConnected) return;
+                var loadOptions = Object.assign({}, deferredOptions, {
+                    deferEnumeration: false,
+                    retryOnFailure: true
+                });
+                Promise.resolve(window.renderFloatingScreenSourceList(targetPopup, loadOptions))
+                    .then(function (rendered) {
+                        if (typeof deferredOptions.onDeferredRender === 'function') {
+                            deferredOptions.onDeferredRender(rendered);
+                        }
+                    })
+                    .catch(function (error) {
+                        console.warn('[屏幕源] 加载屏幕来源失败:', error);
+                    });
+            });
+            targetPopup.appendChild(deferredLoadButton);
+            return deferredLoadButton;
+        }
+
         try {
             // 显示加载中
             screenPopup.innerHTML = '';
@@ -2837,18 +2973,38 @@
                 thumbnailSize: { width: 0, height: 0 }
             });
 
-            if (!isPopupAvailable()) return false;
+            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
+            // 来源，它在结果里的位置不是物理屏幕序号。
+            var isPortalPick = sourceListEnumerationMayPrompt(desktopProvider)
+                && !!sources && sources.length === 1;
+
+            if (!isPopupAvailable()) {
+                // 系统对话框期间面板被收起（例如对话框关闭后指针落回左侧菜单）。
+                // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
+                // 容器已经开始了更新的一轮渲染时交给那一轮。
+                if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
+                    await adoptPortalSource(sources[0]);
+                }
+                return false;
+            }
 
             screenPopup.innerHTML = '';
 
             if (!sources || sources.length === 0) {
-                var noSourcesItem = document.createElement('div');
-                noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
-                noSourcesItem.style.padding = '12px';
-                noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
-                noSourcesItem.style.fontSize = '13px';
-                noSourcesItem.style.textAlign = 'center';
-                screenPopup.appendChild(noSourcesItem);
+                // 会弹系统对话框的桌面端返回空列表，基本就是用户取消了对话框；
+                // 这时「没有可用的屏幕源」会误导，只留当前来源和重试按钮。
+                var portalCancelled = renderOptions.retryOnFailure === true
+                    && sourceListEnumerationMayPrompt(desktopProvider);
+                if (!portalCancelled) {
+                    var noSourcesItem = document.createElement('div');
+                    noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
+                    noSourcesItem.style.padding = '12px';
+                    noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
+                    noSourcesItem.style.fontSize = '13px';
+                    noSourcesItem.style.textAlign = 'center';
+                    screenPopup.appendChild(noSourcesItem);
+                }
+                appendRetryButtonIfRequested();
                 return false;
             }
 
@@ -2859,8 +3015,14 @@
 
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
-            reconcileRememberedWindowSource(sources);
-            refreshSelectedScreenSourceLabelFromSources(screens, windows);
+            // 系统对话框的结果本身就是用户这次的明确选择，下面按新选择处理；
+            // 这里若按旧标题比对，会在换窗口时先把进行中的分享停掉。
+            if (!isPortalPick) {
+                reconcileRememberedWindowSource(sources);
+            }
+            refreshSelectedScreenSourceLabelFromSources(screens, windows, {
+                partial: isPortalPick
+            });
 
             function previewFrameStyles() {
                 return {
@@ -2963,7 +3125,11 @@
 
             // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
             function createSourceOption(source, screenIndex) {
-                var displayName = getScreenSourceDisplayName(source, screenIndex);
+                // 系统对话框只返回用户选的那一块屏幕时，它在列表里排第一不代表
+                // 它是第 1 块显示器，与副标题一样只显示「屏幕」。
+                var displayName = isPortalPick && source.id.startsWith('screen:')
+                    ? getGenericScreenSourceLabel(source.id)
+                    : getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
                 option.dataset.sourceId = source.id;
@@ -3021,7 +3187,13 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name, displayName, screenIndex);
+                    // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
+                    await selectScreenSource(
+                        source.id,
+                        source.name,
+                        displayName,
+                        isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
+                    );
                 });
 
                 option.addEventListener('mouseenter', function () {
@@ -3149,12 +3321,29 @@
                 screenPopup.appendChild(noWindowMatchesItem);
             }
 
+            // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
+            // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
+            if (isPortalPick) {
+                // 等重建完成再露出「重新选择」，否则用户马上再选时，还没结束的
+                // 重启会把上一次的来源重新分享出去。
+                await adoptPortalSource(sources[0]);
+                if (!isPopupAvailable()) return false;
+            }
+
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+            if (sourceListEnumerationMayPrompt(desktopProvider)) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
+                // 换来源要重新枚举（Wayland 下会再次弹出系统对话框）。保留同一个
+                // 按钮，点击设置行时 _nekoOnExplicitOpen 也能找到它。
+                var chooseAgainButton = appendDeferredLoadButton(
+                    screenPopup,
+                    renderOptions,
+                    window.t ? window.t('app.screenSource.chooseAgain') : '重新选择屏幕来源'
+                );
+                chooseAgainButton.style.marginTop = '6px';
                 return true;
             }
 
@@ -3210,6 +3399,7 @@
             errorItem.style.fontSize = '13px';
             errorItem.style.textAlign = 'center';
             screenPopup.appendChild(errorItem);
+            appendRetryButtonIfRequested();
             return false;
         }
     };

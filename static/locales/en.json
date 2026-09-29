@@ -2661,6 +2661,8 @@
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
             "screens": "Screens",
+            "genericScreen": "Screen",
+            "genericWindow": "Window",
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "titleFilterPlaceholder": "Filter window titles",
@@ -2669,8 +2671,11 @@
             "rememberWindow": "Remember window",
             "rememberedWindowUnavailable": "The remembered window could not be identified uniquely. Select a screen source again",
             "selected": "Selected {{source}}",
+            "current": "Selected: {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
-            "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
+            "captureFailed": "Screen capture stopped. Check system permissions or select the source again",
+            "clickToChoose": "Click to choose a screen source",
+            "chooseAgain": "Choose a different screen source"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",
