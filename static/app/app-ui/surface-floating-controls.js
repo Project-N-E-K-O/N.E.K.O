@@ -893,6 +893,7 @@
                         signal: controller.signal,
                     });
                     if (!response.ok) {
+                        // 后端只在确实没有桌面会话时回 409；凭据并发轮换、云端暂不可验证都回 503。
                         if (response.status === 409) {
                             return { nativeDelegate: '', loginState: 'logged-out' };
                         }
@@ -1213,7 +1214,7 @@
                         window.showStatusToast(
                             (settingsPrompt && settingsPrompt !== settingsPromptKey)
                                 ? settingsPrompt
-                                : '请从托盘菜单打开设置登录 N.E.K.O 账号，也可以直接在社区页登录',
+                                : '桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录',
                             4000
                         );
                     }

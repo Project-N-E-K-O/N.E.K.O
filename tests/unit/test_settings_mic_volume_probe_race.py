@@ -248,19 +248,11 @@ async function probeResumesAfterLiveEndsCase() {
   assert(!isLive(env.streams[0]), 'the probe yields to real recording');
 
   // Real recording ends while the settings test window is still open.
-  env.S.isRecording = false;
-  env.S.inputAnalyser = null;
   const streamsBefore = env.streams.length;
-  assert(env.mod.sampleMicVolumeLevel({ liveOnly: true }).recording === false,
-         'a liveOnly sample reports idle once recording ends');
-  await settle();
-  assert(env.streams.length === streamsBefore, 'a liveOnly sample must not rebuild the probe');
-
-  env.mod.sampleMicVolumeLevel();
-  env.mod.sampleMicVolumeLevel();
+  env.mod.stopRecording({ notifyServer: false });
   await settle(10);
   assert(env.streams.length === streamsBefore + 1 && isLive(env.streams[streamsBefore]),
-         'a settings sample rebuilds exactly one probe after recording ends');
+         'stopping real recording rebuilds exactly one probe');
   const probeContext = env.contexts[env.contexts.length - 1];
   assert(probeContext.state !== 'closed', 'the rebuilt probe has an open context');
 
@@ -327,10 +319,8 @@ async function rebuildFailureIsTerminalCase() {
   const env = loadModule();
   assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
   await env.mod.startMicCapture();
-  env.S.isRecording = false;
-  env.S.inputAnalyser = null;
   env.failNextGetUserMedia(mediaError('NotReadableError'));
-  env.mod.sampleMicVolumeLevel();
+  env.mod.stopRecording({ notifyServer: false });
   await settle(10);
   const callsAfterRebuild = env.getUserMediaCalls.length;
 
@@ -376,6 +366,46 @@ async function deviceSwitchDuringPermissionCase() {
          'the mic-A stream granted after the switch is released, mic-B runs');
 }
 
+async function samplerIsReadOnlyCase() {
+  // 轮询只读：正式录音结束后，采样不会自己重建 probe（重建只由 stopRecording 等转换点触发）。
+  const env = loadModule();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
+  await env.mod.startMicCapture();
+  env.S.isRecording = false;
+  env.S.inputAnalyser = null;
+  const streamsBefore = env.streams.length;
+  for (let i = 0; i < 3; i += 1) env.mod.sampleMicVolumeLevel();
+  await settle(10);
+  assert(env.streams.length === streamsBefore, 'sampling must not open a microphone');
+}
+
+async function liveDeviceSwitchKeepsProbeOffCase() {
+  // 正式录音中切换设备：切换期间 inputAnalyser 被清空，probe 不能趁机抢占设备。
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'mic-A';
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
+  await env.mod.startMicCapture();
+  const liveStreamsBefore = env.streams.length;
+
+  env.enableDeferredTimeouts();
+  const releaseSwitch = env.parkGetUserMedia();
+  const switching = env.win.selectMicrophone('mic-B');
+  await settle();
+  assert(env.S.inputAnalyser === null, 'the switch tears the old pipeline down first');
+  for (let i = 0; i < 3; i += 1) env.mod.sampleMicVolumeLevel();
+  await settle(10);
+  assert(env.streams.length === liveStreamsBefore,
+         'no probe may open while the live pipeline is switching devices');
+
+  releaseSwitch();
+  await switching;
+  await settle(10);
+  assert(env.S.isRecording === true && isLive(env.S.stream), 'real recording resumes on mic-B');
+  assert(env.streams.length === liveStreamsBefore + 1,
+         'only the live pipeline reopens the device; no probe is rebuilt');
+  assert(env.contexts[0].state === 'closed', 'the yielded probe context stays closed after the switch');
+}
+
 (async () => {
   await stopDuringPermissionCase();
   await overlappingStartsCase();
@@ -393,6 +423,8 @@ async function deviceSwitchDuringPermissionCase() {
   await rebuildFailureIsTerminalCase();
   await deviceSwitchReopensProbeCase();
   await deviceSwitchDuringPermissionCase();
+  await samplerIsReadOnlyCase();
+  await liveDeviceSwitchKeepsProbeOffCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

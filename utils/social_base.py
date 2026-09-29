@@ -6,11 +6,29 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
 DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
+
+
+def validate_http_url(value: str, *, name: str, allow_empty: bool = False) -> str:
+    """Return ``value`` stripped, or raise ``ValueError`` unless it is an http(s) URL."""
+
+    value = value.strip()
+    if allow_empty and not value:
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{name} must be a valid http(s) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{name} must not include credentials")
+    return value
 
 
 def configured_social_base_url() -> str | None:
@@ -34,4 +52,10 @@ def auth_public_url() -> str:
     """
 
     raw = (os.environ.get("NEKO_AUTH_URL", "") or "").strip().rstrip("/")
+    try:
+        # Same rule the plugin settings enforce, so both see one origin.
+        raw = validate_http_url(raw, name="NEKO_AUTH_URL", allow_empty=True)
+    except ValueError as exc:
+        logger.warning("%s; falling back to %s", exc, DEFAULT_AUTH_URL)
+        return DEFAULT_AUTH_URL
     return raw or DEFAULT_AUTH_URL

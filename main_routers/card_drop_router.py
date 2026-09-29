@@ -1332,7 +1332,7 @@ async def auth_status_endpoint(request: Request):
         bind = a.get("bind") or {"bound": True, "error": None}
         return {
             "logged_in": True,
-            "user": {"display_name": u.get("display_name"), "email": u.get("email")},
+            "user": community_oauth._public_user_profile(u),
             "bind": bind,
         }
     # 云端暂时校验不了（离线、超时、5xx、refresh unavailable）时本地会话仍在，
@@ -1453,25 +1453,35 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     # issued delegate immediately after the community tab opens.
     from main_routers import community_oauth
 
-    status = await community_oauth.resolve_saved_oauth_status()
-    if not status.get("logged_in"):
-        return None, "unavailable" if status.get("snapshot") else "missing"
+    for _attempt in range(2):
+        status = await community_oauth.resolve_saved_oauth_status()
+        if not status.get("logged_in"):
+            # A snapshot the cloud already rejected (local cleanup failed) is a
+            # definite logout, not an unverifiable session.
+            if status.get("snapshot") and not status.get("rejected"):
+                return None, "unavailable"
+            return None, "missing"
 
-    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
-    if snapshot is None:
-        return None, "missing"
-    verified = status.get("snapshot") or {}
-    credentials_changed = any(
-        snapshot.get(key) != verified.get(key)
-        for key in ("base_url", "access_token", "refresh_token")
-    )
-    identity_changed = any(
-        verified.get(key) and snapshot.get(key) != verified.get(key)
-        for key in ("local_user_id", "auth_source")
-    )
-    if credentials_changed or identity_changed:
-        # A local replacement after cloud validation is not itself validated.
-        return None, "missing"
+        snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+        if snapshot is None:
+            return None, "missing"
+        verified = status.get("snapshot") or {}
+        credentials_changed = any(
+            snapshot.get(key) != verified.get(key)
+            for key in ("base_url", "access_token", "refresh_token")
+        )
+        identity_changed = any(
+            verified.get(key) and snapshot.get(key) != verified.get(key)
+            for key in ("local_user_id", "auth_source")
+        )
+        if not (credentials_changed or identity_changed):
+            break
+        # A local replacement after cloud validation is not itself validated;
+        # usually it is a concurrent token refresh, so validate it once more.
+    else:
+        # Still churning: the session exists but cannot be pinned right now.
+        # Report it as retryable rather than as a logout.
+        return None, "unavailable"
     # A concurrent proof request may have backfilled missing identity metadata
     # for these same validated credentials. Preserve that verified enrichment.
     if _desktop_session_fingerprint(snapshot):

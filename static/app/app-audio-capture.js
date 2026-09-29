@@ -1185,6 +1185,7 @@
                 return;
             } finally {
                 window._isSwitchingMicDevice = false;
+                scheduleSettingsMicVolumeProbeResume();
             }
         } else {
             // 如果不在录音，直接显示选择提示
@@ -1338,11 +1339,18 @@
         settingsMicVolumeTest = { mode: 'live' };
     }
 
-    function settingsMicTestLinearGain(gainDb) {
-        if (window.appUtils && typeof window.appUtils.dbToLinear === 'function') {
-            return window.appUtils.dbToLinear(gainDb);
-        }
-        return Math.pow(10, Number(gainDb) / 20);
+    // 正式录音占着麦克风，或马上要占用（start 进行中 / 正在切换设备）。
+    // 不看 S.inputAnalyser：切换设备时它先被清空，但设备随后就会被正式录音重开。
+    function isLiveMicCaptureActiveOrPending() {
+        return S.isRecording === true
+            || pendingMicStartUiOwnerToken !== null
+            || window._isSwitchingMicDevice === true;
+    }
+
+    // 正式录音在状态转换点（停止 / start 结束 / 切换结束）调用。推迟到微任务再判断：
+    // 先 stop 再同步 start 的重启流程这时已经占住了 start，probe 不会去抢设备。
+    function scheduleSettingsMicVolumeProbeResume() {
+        Promise.resolve().then(resumeSettingsMicVolumeProbeAfterLive);
     }
 
     function releaseSettingsMicVolumeProbe() {
@@ -1355,16 +1363,22 @@
         } catch (_) {}
     }
 
+    // 正式链路和设置页 probe 共用的增益写入，保证两边听到的音量一致。不做持久化。
+    function applyMicrophoneGainDb(gainDb) {
+        S.microphoneGainDb = gainDb;
+        const linear = window.appUtils.dbToLinear(gainDb);
+        if (S.micGainNode) {
+            S.micGainNode.gain.value = linear;
+        }
+        if (settingsMicVolumeTest && settingsMicVolumeTest.gain) {
+            settingsMicVolumeTest.gain.gain.value = linear;
+        }
+    }
+
     // 更新麦克风增益（供外部调用，参数为分贝值）
     window.setMicrophoneGain = function (gainDb) {
         if (gainDb >= C.MIN_MIC_GAIN_DB && gainDb <= C.MAX_MIC_GAIN_DB) {
-            S.microphoneGainDb = gainDb;
-            if (S.micGainNode) {
-                S.micGainNode.gain.value = window.appUtils.dbToLinear(gainDb);
-            }
-            if (settingsMicVolumeTest && settingsMicVolumeTest.gain) {
-                settingsMicVolumeTest.gain.gain.value = settingsMicTestLinearGain(gainDb);
-            }
+            applyMicrophoneGainDb(gainDb);
             saveMicGainSetting();
             // 更新 UI 滑块（如果存在）
             const slider = document.getElementById('mic-gain-slider');
@@ -1881,6 +1895,7 @@
         S.voiceChatActive = false;
         S.voiceStartPending = false;
         window.isMicStarting = false;
+        scheduleSettingsMicVolumeProbeResume();
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -2341,6 +2356,8 @@
             if (pendingMicStartUiOwnerToken === micStartToken) {
                 pendingMicStartUiOwnerToken = null;
             }
+            // 没能提交的 start 也要把让位出去的试麦还回去。
+            scheduleSettingsMicVolumeProbeResume();
         }
     }
 
@@ -2521,6 +2538,8 @@
                 action: 'pause_session'
             }));
         }
+
+        scheduleSettingsMicVolumeProbeResume();
     }
 
     // ======================== 音量可视化 ========================
@@ -2531,10 +2550,9 @@
 
     // liveOnly：主页面弹窗只反映真正送给 AI 的音量，不借设置页试麦的 probe，
     // 否则没在录音时弹窗也会显示“正在收音”。
+    // 只读：probe 的让位 / 重建由正式录音的状态转换驱动，轮询方不会因此开关麦克风。
     function sampleMicVolumeLevel(options) {
         const liveOnly = !!(options && options.liveOnly);
-        if (S.isRecording && S.inputAnalyser) yieldSettingsMicVolumeProbeToLive();
-        else if (!liveOnly) resumeSettingsMicVolumeProbeAfterLive();
         let analyser = null;
         if (S.isRecording && S.inputAnalyser) analyser = S.inputAnalyser;
         else if (!liveOnly && settingsMicVolumeTest) analyser = settingsMicVolumeTest.analyser;
@@ -2783,7 +2801,7 @@
         const generation = ++settingsMicVolumeGeneration;
         const isCurrent = function () { return generation === settingsMicVolumeGeneration; };
         releaseSettingsMicVolumeProbe();
-        if (S.isRecording && S.inputAnalyser) {
+        if (isLiveMicCaptureActiveOrPending()) {
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
         }
@@ -2812,8 +2830,8 @@
             stopMicrophoneStreamTracks(stream);
             stream = null;
         }
-        // 等待期间正式录音已启动：直接用正式录音的 analyser。
-        if (S.isRecording && S.inputAnalyser) {
+        // 等待期间正式录音已启动或开始接管：让位给正式录音。
+        if (isLiveMicCaptureActiveOrPending()) {
             stopMicrophoneStreamTracks(stream);
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
@@ -2825,7 +2843,7 @@
             context = new AudioContextConstructor();
             const source = context.createMediaStreamSource(stream);
             const gain = context.createGain();
-            gain.gain.value = settingsMicTestLinearGain(S.microphoneGainDb);
+            gain.gain.value = window.appUtils.dbToLinear(S.microphoneGainDb);
             const analyser = context.createAnalyser();
             analyser.fftSize = 2048;
             analyser.smoothingTimeConstant = 0.8;
@@ -2879,7 +2897,7 @@
     // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
     function resumeSettingsMicVolumeProbeAfterLive() {
         if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
-        if (S.isRecording && S.inputAnalyser) return;
+        if (isLiveMicCaptureActiveOrPending()) return;
         reopenSettingsMicVolumeProbe();
     }
 
@@ -3965,11 +3983,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             gainSlider.addEventListener('input', function (e) {
                 var newGainDb = parseFloat(e.target.value);
-                S.microphoneGainDb = newGainDb;
+                applyMicrophoneGainDb(newGainDb);
                 gainValueEl.textContent = formatGainDisplay(newGainDb);
-                if (S.micGainNode) {
-                    S.micGainNode.gain.value = window.appUtils.dbToLinear(newGainDb);
-                }
             });
             gainSlider.addEventListener('change', function () { saveMicGainSetting(); });
             gainContainer.appendChild(gainSlider);

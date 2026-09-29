@@ -2565,7 +2565,7 @@
         "socialUnavailable": "Serviço social indisponível",
         "socialDisabled": "O serviço social está desativado",
         "socialOAuthPrompt": "Conclua o login da conta unificada no navegador",
-        "socialSettingsLoginPrompt": "Entre na sua conta N.E.K.O pelas Configurações no menu da bandeja ou diretamente na página da comunidade",
+        "socialSettingsLoginPrompt": "O aplicativo de desktop ainda não entrou na conta N.E.K.O. Se você já entrou na página da comunidade, a sessão será sincronizada automaticamente; também é possível entrar pelas Configurações no menu da bandeja",
         "welcomeBack": "{{name}} está de volta!",
         "title": "Projeto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",

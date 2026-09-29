@@ -2565,7 +2565,7 @@
         "socialUnavailable": "社交服务不可用",
         "socialDisabled": "社交服务已禁用",
         "socialOAuthPrompt": "请在浏览器完成统一账号登录",
-        "socialSettingsLoginPrompt": "请从托盘菜单打开设置登录 N.E.K.O 账号，也可以直接在社区页登录",
+        "socialSettingsLoginPrompt": "桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录",
         "welcomeBack": "{{name}}回来了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",

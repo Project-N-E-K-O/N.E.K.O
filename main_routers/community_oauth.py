@@ -670,13 +670,24 @@ def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None 
     return profile
 
 
+def _mask_phone(phone: str) -> str:
+    """Keep only enough of a phone number to recognise the account (138****0000)."""
+    if len(phone) >= 8:
+        return f"{phone[:-8]}****{phone[-4:]}"
+    return f"****{phone[-2:]}"
+
+
 def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
-    """User profile persisted to community_auth.json; keeps the phone number for the desktop settings page only."""
+    """User profile persisted to community_auth.json.
+
+    The file is plaintext and read by other local modules, so the phone number
+    (shown by the desktop settings page when there is no email) is stored masked.
+    """
     profile = _public_user_profile(user, local_user_id)
     source = user if isinstance(user, dict) else {}
     phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
     if isinstance(phone, str) and phone.strip():
-        profile["phone"] = phone.strip()
+        profile["phone"] = _mask_phone(phone.strip())
     return profile
 
 

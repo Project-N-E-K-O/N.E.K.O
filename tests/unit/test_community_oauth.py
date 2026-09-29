@@ -202,9 +202,9 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 
 @pytest.mark.unit
-def test_persisted_user_profile_keeps_phone_but_public_profile_never_does():
-    # 回调落盘的 community_auth.json 仍保留手机号，桌面端设置页靠它显示账号；
-    # 可经本机路由返回的 public 版本永远不带手机号。
+def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
+    # 回调落盘的 community_auth.json 是明文、本机还有其它读取方，只存脱敏手机号，
+    # 桌面端设置页用它在没有邮箱时显示账号；经本机路由返回的 public 版本永远不带手机号。
     raw = {"username": "User", "email": None, "phone_number": " +8613800000000 "}
     assert "phone" not in O._public_user_profile(raw, USER_ID)
     profile = O._persisted_user_profile(raw, USER_ID)
@@ -213,8 +213,18 @@ def test_persisted_user_profile_keeps_phone_but_public_profile_never_does():
         "id": USER_ID,
         "display_name": "User",
         "email": None,
-        "phone": "+8613800000000",
+        "phone": "+86138****0000",
     }
+    assert "+8613800000000" not in json.dumps(profile)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "masked"),
+    [("13800000000", "138****0000"), ("1234567", "****67")],
+)
+def test_mask_phone_hides_the_middle_digits(raw, masked):
+    assert O._mask_phone(raw) == masked
 
 
 @pytest.mark.unit
