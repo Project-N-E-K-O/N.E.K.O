@@ -10,7 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client.endpointing.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.endpointing.detector_runtime import (
+    _EvaluationResultItem,
+    _VoiceTurnAdapter,
+)
 from main_logic.asr_client.endpointing.detector import DetectorIngressIdentity
 from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
@@ -1423,6 +1426,69 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
     assert commits == [(31, 32, 33)]
     assert coordinator.evaluate_calls >= 2
     assert adapter._failed is False
+    await adapter.close()
+
+
+async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    coordinator = _FakeCoordinator([_incomplete()] * 5)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    identity = (41, 42, 43)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
+    # VAD-degraded audio merged a periodic request into the in-flight retry.
+    adapter._reevaluation_requested = True
+    adapter._reevaluation_reason = "periodic_no_vad"
+
+    await adapter._process_evaluation_result(
+        _EvaluationResultItem(
+            identity=identity,
+            coordinator_generation=0,
+            activity_seq=0,
+            reason="strict_retry",
+            result=_incomplete(),
+        )
+    )
+    await adapter.wait_idle()
+
+    assert commits == [identity]
+    assert coordinator.evaluate_calls == 0
+    await adapter.close()
+
+
+async def test_coalesced_periodic_request_keeps_pending_strict_retry() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    identity = (51, 52, 53)
+    adapter._identity = identity
+    in_flight = asyncio.get_running_loop().create_future()
+    adapter._evaluation_task = in_flight
+
+    adapter._request_evaluation(identity, "periodic_no_vad")
+    adapter._request_evaluation(identity, "strict_retry")
+    adapter._request_evaluation(identity, "periodic_no_vad")
+
+    # Only a strict retry can seal the turn past the deadline, so a later
+    # periodic tick must not overwrite it.
+    assert adapter._reevaluation_reason == "strict_retry"
+    adapter._evaluation_task = None
+    in_flight.cancel()
     await adapter.close()
 
 

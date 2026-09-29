@@ -704,7 +704,10 @@ class _VoiceTurnAdapter:
         if self._evaluation_task is not None:
             self._smart_turn_coalesced_evaluation_count += 1
             self._reevaluation_requested = True
-            self._reevaluation_reason = reason
+            if reason != "periodic_no_vad" or self._reevaluation_reason is None:
+                # A periodic tick must not erase a pending pause or strict
+                # retry: only those can seal the turn once the wait expires.
+                self._reevaluation_reason = reason
             return
         coordinator_generation = int(getattr(self._coordinator, "generation", 0))
         activity_seq = int(getattr(self._coordinator, "activity_seq", 0))
@@ -864,8 +867,7 @@ class _VoiceTurnAdapter:
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
             if (
-                not reevaluate
-                and item.reason != "periodic_no_vad"
+                item.reason != "periodic_no_vad"
                 and self._strict_endpoint_wait_expired()
             ):
                 # An unfinished-sounding pause is still a semantic answer, not

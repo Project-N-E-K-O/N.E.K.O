@@ -439,12 +439,15 @@ async def soniox_asr_worker(
                     if token.get("is_final") is True:
                         state.final_tokens.append(text)
                         end_ms = token.get("end_ms")
-                        if (
-                            isinstance(end_ms, int)
+                        # Only the latest final word may define the cut; an
+                        # older word's end would replay confirmed audio.
+                        state.final_end_ms = (
+                            end_ms
+                            if isinstance(end_ms, int)
                             and not isinstance(end_ms, bool)
                             and end_ms >= 0
-                        ):
-                            state.final_end_ms = end_ms
+                            else None
+                        )
                     else:
                         provisional.append(text)
                 state.provisional_tokens = provisional

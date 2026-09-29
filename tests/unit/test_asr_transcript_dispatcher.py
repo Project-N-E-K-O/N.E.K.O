@@ -80,6 +80,32 @@ async def test_pending_turn_tokens_cover_queued_and_active_envelopes() -> None:
     release_dispatch.set()
 
 
+async def test_accepted_reservation_is_pending_until_submit_release_or_purge() -> (
+    None
+):
+    dispatcher = TranscriptDispatcher(AsyncMock())
+    submitted = _envelope(1)
+    released = _envelope(2)
+    purged = _envelope(3)
+    with pytest.raises(RuntimeError, match="ASR_TRANSCRIPT_SLOT_NOT_RESERVED"):
+        dispatcher.mark_accepted(submitted.final_key, submitted.turn_token)
+    for envelope in (submitted, released, purged):
+        assert dispatcher.try_reserve(envelope.final_key) is True
+        dispatcher.mark_accepted(envelope.final_key, envelope.turn_token)
+
+    assert dispatcher.pending_turn_tokens() == frozenset(
+        {submitted.turn_token, released.turn_token, purged.turn_token}
+    )
+    dispatcher.release(released.final_key)
+    assert dispatcher.holds_accepted(released.final_key) is False
+    dispatcher.submit(submitted)
+    assert dispatcher.holds_accepted(submitted.final_key) is False
+    assert submitted.turn_token in dispatcher.pending_turn_tokens()
+    dispatcher.invalidate_all()
+    assert dispatcher.holds_accepted(purged.final_key) is False
+    assert dispatcher.pending_turn_tokens() == frozenset()
+
+
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
     release_first = asyncio.Event()
     delivered: list[int] = []

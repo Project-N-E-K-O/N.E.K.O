@@ -84,8 +84,9 @@ When that ingress queue is full, Core rejects the current frame, clears every
 pending frame, and invokes the identity-scoped backpressure handler. The
 handler invalidates the candidate or active turn and its audio generation
 before another frame can be routed. Backpressure retires only the turn whose
-PCM was interrupted: finals the runtime already accepted keep their queued or
-in-flight Core delivery and their pinned Registry route, so the previous
+PCM was interrupted: finals the runtime already accepted, including one whose
+Smart Turn lease is still being released, keep their queued or in-flight Core
+delivery and their pinned Registry route, so the previous
 sentence is still answered exactly once. Only the session epoch, or an
 explicit teardown such as stop, suspend, route swap, or a fatal error, retires
 accepted finals. A separate overflow inside the detector's
@@ -110,7 +111,9 @@ On a Smart Turn-sealed route, a semantic `INCOMPLETE` result is retried every
 continuation interval until the maximum endpoint wait (15 seconds) expires.
 A result that is still `INCOMPLETE` after that deadline seals the turn through
 the ordinary completion path with reason `semantic_timeout`; it is a semantic
-answer, not an endpointing failure, and never blocks the ASR session. Only
+answer, not an endpointing failure, and never blocks the ASR session. A
+periodic no-VAD request coalesced into that retry neither replaces a pending
+strict retry nor postpones the deadline seal. Only
 `UNAVAILABLE` assets, inference errors, and VAD failures fail the route.
 
 Core handles identity-scoped detector events through its own serial dispatcher.
@@ -129,7 +132,8 @@ seal from that identity can begin.
 Soniox reconnect replay keeps only audio after the previous turn's last final
 word. The cut uses that token's `end_ms` against the current connection's
 stream origin, which restarts at the first replayed byte after a reconnect;
-without token timestamps the worker retains a bounded two-second tail instead.
+when that last final word carries no timestamp the worker retains a bounded
+two-second tail instead of trusting an earlier word's end.
 
 These rules are safety contracts rather than resource optimizations. Disabling
 `voice_input_resource_optimization_enabled` keeps the independent ASR

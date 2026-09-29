@@ -351,7 +351,10 @@ async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> N
     assert lease is not None
 
     async def bumping_release() -> None:
+        # A retiring identity barrier purges the dispatcher; a bare audio
+        # generation bump is ingress backpressure, which keeps the final.
         component._asr_audio_generation += 1
+        component._asr_transcript_dispatcher.invalidate_all()
 
     lease.release = bumping_release
 

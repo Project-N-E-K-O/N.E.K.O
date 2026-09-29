@@ -200,6 +200,7 @@ class TranscriptDispatcher:
             maxsize=capacity
         )
         self._reservations: set[FinalKey] = set()
+        self._accepted_turns: dict[FinalKey, VoiceTurnToken] = {}
         self._queued_turns: dict[FinalKey, VoiceTurnToken] = {}
         self._worker: asyncio.Task[None] | None = None
         self._active: TranscriptEnvelope | None = None
@@ -217,12 +218,23 @@ class TranscriptDispatcher:
         )
 
     def pending_turn_tokens(self) -> frozenset[VoiceTurnToken]:
-        """Return turns whose accepted final is queued or still dispatching."""
+        """Return turns whose accepted final is not yet delivered to Core."""
 
-        tokens = set(self._queued_turns.values())
+        tokens = set(self._accepted_turns.values())
+        tokens.update(self._queued_turns.values())
         if self._active is not None:
             tokens.add(self._active.turn_token)
         return frozenset(tokens)
+
+    def mark_accepted(self, key: FinalKey, turn_token: VoiceTurnToken) -> None:
+        """Pin a reserved slot whose final was accepted but not yet submitted."""
+
+        if key not in self._reservations:
+            raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
+        self._accepted_turns[key] = turn_token
+
+    def holds_accepted(self, key: FinalKey) -> bool:
+        return key in self._accepted_turns
 
     def try_reserve(self, key: FinalKey) -> bool:
         if key in self._reservations:
@@ -239,6 +251,7 @@ class TranscriptDispatcher:
 
     def release(self, key: FinalKey) -> None:
         self._reservations.discard(key)
+        self._accepted_turns.pop(key, None)
         self._set_idle_if_empty()
 
     def submit(self, envelope: TranscriptEnvelope) -> None:
@@ -246,6 +259,7 @@ class TranscriptDispatcher:
         if key not in self._reservations:
             raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
         self._reservations.remove(key)
+        self._accepted_turns.pop(key, None)
         self._queue.put_nowait(envelope)
         self._queued_turns[key] = envelope.turn_token
         self._idle.clear()
@@ -255,6 +269,7 @@ class TranscriptDispatcher:
         """Synchronously cancel active/queued Core work at an identity barrier."""
 
         self._reservations.clear()
+        self._accepted_turns.clear()
         self._queued_turns.clear()
         while True:
             try:

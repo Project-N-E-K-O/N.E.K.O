@@ -4728,6 +4728,55 @@ async def test_soniox_turn_boundary_trims_replay_at_last_final_word_end(
     await _stop_worker(task, requests, responses, utterance_id=2)
 
 
+async def test_soniox_untimed_last_final_word_falls_back_to_retained_tail(
+    monkeypatch,
+) -> None:
+    first = _FakeWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    first_word = b"\x01\x00" * 160
+    last_word = b"\x03\x00" * 160
+    turn2_prefix = b"\x02\x00" * 160
+    for pcm in (first_word, last_word, turn2_prefix):
+        await requests.put(
+            _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm)
+        )
+        await _wait_until(lambda pcm=pcm: pcm in first.sent)
+    await first.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True, "start_ms": 0, "end_ms": 10},
+                {"text": " last", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "first last"
+    await first.server_end()
+
+    # The earlier word's end is not this turn's end, so the cut falls back to
+    # the bounded tail instead of an unbounded replay from that stale point.
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(
+        lambda: any(isinstance(sent, bytes) and sent for sent in second.sent)
+    )
+    replayed = next(sent for sent in second.sent if isinstance(sent, bytes) and sent)
+    assert replayed == first_word + last_word + turn2_prefix
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_soniox_replay_trim_uses_reconnected_stream_origin(
     monkeypatch,
 ) -> None:

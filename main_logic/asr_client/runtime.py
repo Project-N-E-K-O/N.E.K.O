@@ -4718,6 +4718,9 @@ class IndependentAsrRuntime:
         lease = self._asr_smart_turn_lease
         if lease is not None and lease.token == accepted_turn_token:
             self._asr_smart_turn_lease = None
+            # Keep the accepted final visible to Core while the release
+            # awaits: ingress backpressure retires only unaccepted turns.
+            transcript_dispatcher.mark_accepted(final_key, accepted_turn_token)
             try:
                 await lease.release()
             except Exception:
@@ -4728,6 +4731,17 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
             if not self._runtime_identity_matches(final_identity):
+                if (
+                    envelope is not None
+                    and transcript_dispatcher.holds_accepted(final_key)
+                    and accepted_turn_token.ingress.session_epoch
+                    == self._asr_session_epoch
+                ):
+                    # No purge retired the pinned slot, so the final is still
+                    # owed to Core, the same rule as for a queued envelope.
+                    # Lifecycle follow-up belongs to whoever moved identity.
+                    transcript_dispatcher.submit(envelope)
+                    return
                 transcript_dispatcher.release(final_key)
                 # The accepted final can no longer be delivered, so release
                 # the Core-side pause keyed to this turn.

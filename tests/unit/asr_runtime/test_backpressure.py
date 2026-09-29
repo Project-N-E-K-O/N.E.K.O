@@ -373,3 +373,75 @@ async def test_non_backpressure_abort_still_retires_accepted_finals() -> None:
 
     runtime.session.create_response.assert_not_awaited()
     assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def _accept_final_behind_blocked_lease_release(
+    runtime: _Runtime,
+) -> tuple[asyncio.Task[None], asyncio.Event]:
+    """Leave turn 1's final accepted while its SmartTurn lease still releases."""
+
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+
+    class _BlockingLease:
+        token = sealed.turn
+
+        async def release(self) -> None:
+            release_started.set()
+            await finish_release.wait()
+
+    runtime._asr_runtime._asr_smart_turn_lease = _BlockingLease()
+    final_task = asyncio.create_task(
+        runtime._handle_independent_asr_final("first", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_started.wait(), 1)
+    assert sealed.turn in runtime._asr_runtime.pending_transcript_turn_tokens()
+    return final_task, finish_release
+
+
+async def test_backpressure_during_lease_release_keeps_accepted_final() -> None:
+    runtime = _Runtime()
+    final_task, finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    finish_release.set()
+    await asyncio.wait_for(final_task, 1)
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    # The final was accepted before the abort, so the user still gets an
+    # answer even though the lease release outlived the old identity.
+    assert runtime.session.create_response.await_args_list == [call("first")]
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def test_non_backpressure_abort_during_lease_release_abandons_final() -> None:
+    runtime = _Runtime()
+    final_task, finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+
+    await runtime._abort_independent_asr("microphone_stopped")
+    finish_release.set()
+    await asyncio.wait_for(final_task, 1)
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert call(f"asr-{epoch}-1") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
