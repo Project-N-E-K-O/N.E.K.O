@@ -1336,6 +1336,49 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
     assert len(C._native_sync_tickets) == len(before) + 1
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ({"logged_in": False, "snapshot": {"access_token": "t"}, "auth": {}}, True),
+        (
+            {
+                "logged_in": False,
+                "snapshot": {"access_token": "t"},
+                "auth": {},
+                "rejected": True,
+            },
+            False,
+        ),
+        ({"logged_in": False, "snapshot": None, "auth": {}}, False),
+    ],
+)
+def test_auth_status_session_saved_excludes_rejected_leftover(
+    client, monkeypatch, status, expected
+):
+    from main_routers import community_oauth
+
+    async def resolve_saved_oauth_status():
+        return status
+
+    monkeypatch.setattr(
+        community_oauth,
+        "resolve_saved_oauth_status",
+        resolve_saved_oauth_status,
+    )
+
+    response = client.get(
+        "/api/card-drop/auth-status",
+        headers={
+            "Origin": "http://localhost:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["logged_in"] is False
+    assert response.json()["session_saved"] is expected
+
+
 def test_auth_status_rejects_cross_site_before_cloud_lookup(client, monkeypatch):
     from main_routers import community_oauth
 

@@ -1337,11 +1337,12 @@ async def auth_status_endpoint(request: Request):
         }
     # 云端暂时校验不了（离线、超时、5xx、refresh unavailable）时本地会话仍在，
     # 前端据此区分“明确登出”和“状态未知”，不能把后者提示成去登录。
+    # 云端已明确拒绝、只是本地清理失败而残留的快照不算。
     return {
         "logged_in": False,
         "user": None,
         "bind": None,
-        "session_saved": bool(status.get("snapshot")),
+        "session_saved": bool(status.get("snapshot")) and not status.get("rejected"),
     }
 
 

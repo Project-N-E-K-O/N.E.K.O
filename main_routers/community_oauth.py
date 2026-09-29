@@ -422,11 +422,17 @@ async def _resolve_saved_oauth_status(
         return await _resolve_saved_oauth_status(_attempt + 1)
     if cleared:
         return {"logged_in": False, "snapshot": current, "auth": current_auth}
-    return {
+    # Cleanup failed, so the snapshot left on disk may still be the one the
+    # cloud just rejected. Flag it: callers must treat that as a definite
+    # logout, not as an unverified-but-saved session.
+    status = {
         "logged_in": False,
         "snapshot": current or snapshot,
         "auth": current_auth or auth,
     }
+    if not current or _status_snapshot_matches(current, snapshot):
+        status["rejected"] = True
+    return status
 
 
 async def _run_oauth_status_resolution(

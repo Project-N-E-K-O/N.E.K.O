@@ -2789,18 +2789,28 @@
         }
         // 和正式录音同一套判定：拿到的音轨已 ended 时合成 NotReadableError，
         // 只有设备类错误才退回默认麦克风；权限拒绝 / 安全 / 中止类错误直接抛出。
+        // 等授权 / 开设备期间用户又切了麦克风：此时还没有 probe，restart 找不到对象，
+        // 由这里丢掉旧设备的流，按新选中的设备重开。
         let stream = null;
-        try {
-            stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(S.selectedMicrophoneId));
-        } catch (error) {
-            if (!isCurrent()) return { ok: false };
-            if (!S.selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
-            stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
-        }
-        // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
-        if (!isCurrent()) {
+        for (;;) {
+            const selectionGeneration = microphoneSelectionGeneration;
+            const selectedMicrophoneId = S.selectedMicrophoneId;
+            try {
+                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(selectedMicrophoneId));
+            } catch (error) {
+                if (!isCurrent()) return { ok: false };
+                if (selectionGeneration !== microphoneSelectionGeneration) continue;
+                if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
+                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+            }
+            // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
+            if (!isCurrent()) {
+                stopMicrophoneStreamTracks(stream);
+                return { ok: false };
+            }
+            if (selectionGeneration === microphoneSelectionGeneration) break;
             stopMicrophoneStreamTracks(stream);
-            return { ok: false };
+            stream = null;
         }
         // 等待期间正式录音已启动：直接用正式录音的 analyser。
         if (S.isRecording && S.inputAnalyser) {

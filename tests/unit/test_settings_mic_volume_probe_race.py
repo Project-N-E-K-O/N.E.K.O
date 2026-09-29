@@ -359,6 +359,23 @@ async function deviceSwitchReopensProbeCase() {
          'reopening on device switch must not extend the watchdog');
 }
 
+async function deviceSwitchDuringPermissionCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'mic-A';
+  const release = env.parkGetUserMedia();
+  const pending = env.win.startSettingsMicVolumeTest();
+  await settle();
+  await env.win.selectMicrophone('mic-B');
+  release();
+  const result = await pending;
+
+  assert(result.ok === true && result.mode === 'probe', 'the start still succeeds after the switch');
+  assert(env.getUserMediaCalls.length === 2, 'the stale mic-A grant is replaced by one mic-B open');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'mic-B', 'the probe reopens on mic-B');
+  assert(!isLive(env.streams[0]) && isLive(env.streams[1]),
+         'the mic-A stream granted after the switch is released, mic-B runs');
+}
+
 (async () => {
   await stopDuringPermissionCase();
   await overlappingStartsCase();
@@ -375,6 +392,7 @@ async function deviceSwitchReopensProbeCase() {
   await resumeDuringLiveReturnsLiveCase();
   await rebuildFailureIsTerminalCase();
   await deviceSwitchReopensProbeCase();
+  await deviceSwitchDuringPermissionCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

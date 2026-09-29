@@ -630,6 +630,7 @@ async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeyp
         "logged_in": False,
         "snapshot": snapshot,
         "auth": auth,
+        "rejected": True,
     }
 
 
