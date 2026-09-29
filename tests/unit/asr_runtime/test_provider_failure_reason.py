@@ -292,3 +292,36 @@ async def test_preparing_says_why_and_prepared_follows_when_ready(monkeypatch) -
     await asyncio.wait_for(task, 2)
     codes = [status.get("code") for status in _sent_statuses(runtime)]
     assert codes.count("ASR_INDEPENDENT_PREPARED") == 1
+
+
+async def test_worker_that_queued_its_error_and_exited_keeps_the_code() -> None:
+    # The real worker enqueues its model-load error and returns at once;
+    # connect() may find it already done with the error still queued.
+    from main_logic.asr_client._infra import (
+        AsrSessionConfig,
+        _AsrWorkerEvent,
+        _RealtimeAsrSessionImpl,
+    )
+
+    async def fail_and_exit(request_queue, response_queue, _api_key, _config):
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=0,
+                error_code="ASR_LOCAL_MODEL_LOAD_FAILED",
+                error_message="faster-whisper model could not be loaded",
+            )
+        )
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=fail_and_exit,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="manual"),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        await session.connect()
+    assert str(excinfo.value).startswith("ASR_LOCAL_MODEL_LOAD_FAILED:")
+    await session.close()

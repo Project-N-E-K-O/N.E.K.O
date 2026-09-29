@@ -104,6 +104,9 @@ _PROVIDER_WARMUP_POLL_SECONDS = 0.5
 _PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
 
 
+_BLOCKED_DISPLAY_STATUS_CODES = frozenset({"ASR_PROVIDER_WARMUP_TIMEOUT"})
+
+
 def _provider_warmup_reason(asr_session: Any) -> str:
     reason = getattr(asr_session, "provider_warmup_reason", "")
     return reason if isinstance(reason, str) else ""
@@ -666,6 +669,8 @@ class IndependentAsrRuntime:
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
         # Tells the client when a provider announced as preparing is ready.
         self._asr_warmup_watch_task: asyncio.Task[None] | None = None
+        # Session epoch whose PREPARING has not been followed by PREPARED yet.
+        self._asr_preparing_announced_epoch: int | None = None
         self._asr_pending_speech_confirmed = False
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
@@ -5062,10 +5067,11 @@ class IndependentAsrRuntime:
         expected_identity: _AsrRuntimeIdentity | None = None,
         failure_reason: str = "",
     ) -> None:
-        # What BLOCKED tells the client: the provider's own code, else the
-        # runtime's specific failure (e.g. ASR_PROVIDER_WARMUP_TIMEOUT).
+        # What BLOCKED tells the client: the provider's own code, else a
+        # runtime failure that has its own explanation. Delivery-failure codes
+        # have their own once-only notice and must not ride along here.
         blocked_reason = failure_reason or (
-            status_code if status_code != "ASR_INDEPENDENT_FAILED" else ""
+            status_code if status_code in _BLOCKED_DISPLAY_STATUS_CODES else ""
         )
         if epoch != self._asr_session_epoch or (
             expected_identity is not None
@@ -5217,6 +5223,16 @@ class IndependentAsrRuntime:
         """
 
         if getattr(asr_session, "provider_warmup_pending", False) is not True:
+            if getattr(self, "_asr_preparing_announced_epoch", None) == session_epoch:
+                # PREPARING went out for this epoch, but its session was
+                # replaced before PREPARED could: close that notice now.
+                self._asr_preparing_announced_epoch = None
+                return await self._send_asr_status(
+                    "ASR_INDEPENDENT_PREPARED",
+                    provider,
+                    session_epoch=session_epoch,
+                    expected_identity=expected_identity,
+                )
             return self._runtime_identity_matches(expected_identity)
         delivered = await self._send_asr_status(
             "ASR_INDEPENDENT_PREPARING",
@@ -5226,6 +5242,7 @@ class IndependentAsrRuntime:
             reason=_provider_warmup_reason(asr_session),
         )
         if delivered:
+            self._asr_preparing_announced_epoch = session_epoch
             self._watch_provider_warmup(
                 asr_session,
                 provider,
@@ -5272,12 +5289,14 @@ class IndependentAsrRuntime:
                 current = self._capture_runtime_identity()
                 if current.session_epoch != session_epoch:
                     return
-                await self._send_asr_status(
+                if await self._send_asr_status(
                     "ASR_INDEPENDENT_PREPARED",
                     provider,
                     session_epoch=session_epoch,
                     expected_identity=current,
-                )
+                ):
+                    if self._asr_preparing_announced_epoch == session_epoch:
+                        self._asr_preparing_announced_epoch = None
             except asyncio.CancelledError:
                 return
             finally:

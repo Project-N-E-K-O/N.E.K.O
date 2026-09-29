@@ -631,3 +631,19 @@ test('a reload after idling does not claim a first-use download', () => {
     assert.equal(preparing, null);
     assert.equal(env.messages.at(-1), 'microphone.localAsrModelLoadFailed');
 });
+
+test('a new READY retires a preparing notice left over from an earlier session', () => {
+    const env = loadCapture(true);
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_INDEPENDENT_PREPARING', {
+        provider: 'faster_whisper', session_epoch: 12, reason: 'ASR_LOCAL_MODEL_LOADING',
+    });
+    assert.equal(env.S.localAsrPreparingMessage, 'microphone.localAsrPreparing');
+    env.status('ASR_INDEPENDENT_READY', { provider: 'faster_whisper', session_epoch: 13 });
+    assert.equal(env.S.localAsrPreparingMessage, null);
+    assert.equal(preparing, null);
+});

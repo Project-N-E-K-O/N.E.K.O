@@ -545,11 +545,24 @@ class _RealtimeAsrSessionImpl:
                     or "ASR_WORKER_FAILED: worker exited during connect"
                 )
             if worker_task.done():
-                await self._fail(
-                    "ASR_WORKER_FAILED",
-                    "worker exited immediately after becoming ready",
+                # The worker may have queued its own failure (e.g. a local
+                # model that failed to load) just before returning: keep that
+                # code instead of classifying the exit generically.
+                queued_error = self._queued_worker_error()
+                if queued_error is not None:
+                    await self._fail(
+                        queued_error.error_code or "ASR_WORKER_FAILED",
+                        queued_error.error_message or "worker reported a provider error",
+                    )
+                else:
+                    await self._fail(
+                        "ASR_WORKER_FAILED",
+                        "worker exited immediately after becoming ready",
+                    )
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
                 )
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
             if self._voice_turn_factory is not None:
                 adapter: _VoiceTurnAdapterProtocol | None = None
                 try:
@@ -1540,6 +1553,14 @@ class _RealtimeAsrSessionImpl:
 
         await self._fail("ASR_WORKER_FAILED", "worker returned an unknown event")
         return True
+
+    def _queued_worker_error(self) -> "_AsrWorkerEvent | None":
+        """The first error event still queued from the worker, if any."""
+        queue = getattr(self, "_response_queue", None)
+        for event in list(getattr(queue, "_queue", ()) or ()):
+            if getattr(event, "kind", None) == "error":
+                return event
+        return None
 
     async def _fail(self, error_code: str, message: str) -> None:
         if self._state in (_SessionState.FAILED, _SessionState.CLOSED):

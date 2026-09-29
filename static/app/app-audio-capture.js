@@ -1818,10 +1818,10 @@
         S.voiceChatActive = false;
         S.voiceStartPending = false;
         window.isMicStarting = false;
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
-        S.localAsrPreparingMessage = null;
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
         if (typeof window.syncVoiceChatComposerHidden === 'function') {
@@ -2296,10 +2296,10 @@
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
-        S.localAsrPreparingMessage = null;
 
         // 清理 session Promise 相关状态
         if (window.sessionTimeoutId) {

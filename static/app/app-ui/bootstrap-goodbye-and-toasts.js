@@ -726,6 +726,13 @@ I.mod = window.appUi;
 
     // --- hideVoicePreparingToast ---
     I.hideVoicePreparingToast = function hideVoicePreparingToast() {
+        // 本地语音识别模型还在准备（ASR_INDEPENDENT_PREPARING 之后、PREPARED 之前）：
+        // 语音会话启动流程里的隐藏不能把这条等待原因收掉，改为继续显示它。
+        // 需要真正收起时，调用方先清掉 S.localAsrPreparingMessage。
+        if (I.S && I.S.localAsrPreparingMessage) {
+            I.showVoicePreparingToast(I.S.localAsrPreparingMessage);
+            return;
+        }
         const toast = document.getElementById('voice-preparing-toast');
         if (toast) {
             toast.style.animation = 'voiceToastFadeIn 0.3s ease reverse';

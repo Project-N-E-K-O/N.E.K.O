@@ -621,6 +621,7 @@
         }
         await releaseVoiceCaptureResources();
 
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
         if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
         if (typeof window.stopGameVoiceSttGate === 'function') window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
@@ -3939,6 +3940,11 @@
                             S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            // A (re)connected provider: whatever it still has to
+                            // prepare is announced again right after this READY,
+                            // so an older preparing notice (e.g. of a session that
+                            // ended mid-load) must not linger.
+                            clearLocalAsrPreparingNotice();
                             var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
@@ -4012,15 +4018,6 @@
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
-                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
-                                window.showStatusToast(
-                                    window.t
-                                        ? window.t('microphone.localAsrDependencyMissing')
-                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
-                                    5000
-                                );
-                                return;
-                            }
                             // The provider's / runtime's own failure code, when it
                             // sent one: replaces the generic text the BLOCKED
                             // lifecycle event has just shown.
@@ -4028,6 +4025,16 @@
                                 window.showStatusToast(
                                     independentAsrFailureToastText(statusDetails.reason),
                                     8000
+                                );
+                                return;
+                            }
+                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'
+                                    && !(statusDetails && statusDetails.reason)) {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.localAsrDependencyMissing')
+                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
                                 );
                                 return;
                             }
