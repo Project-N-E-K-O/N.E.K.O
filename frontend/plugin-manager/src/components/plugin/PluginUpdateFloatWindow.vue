@@ -326,7 +326,16 @@ function isItemDisabled(candidate: MarketUpdateCandidate): boolean {
 function announceOutcome(pluginId: string, name: string, succeeded: boolean): void {
   const candidate = updates.candidates.find((entry) => entry.pluginId === pluginId)
   if (succeeded) {
-    ElMessage.success(t('pluginUpdates.updateSucceeded', { name }))
+    // The progress panel already turned amber for a warned install; a green
+    // toast next to it would contradict that verdict.
+    const warnings = installTask.owner === 'float' && installTask.context?.pluginId === pluginId
+      ? installTask.warnings
+      : []
+    if (warnings.length > 0) {
+      ElMessage.warning(t('package.install.completedWithWarnings', { plugin: name, reasons: warnings.join('; ') }))
+    } else {
+      ElMessage.success(t('pluginUpdates.updateSucceeded', { name }))
+    }
     return
   }
   // Dropped without an upgrade (no longer installed / no longer outdated): the

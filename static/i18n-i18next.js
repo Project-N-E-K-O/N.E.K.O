@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 本地语音识别新增「重新加载 / 已就绪 / 准备超时」文案，并改写「准备中」文案，
-    // 递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-29-local-asr-prepare-notices';
+    // 在主分支屏幕来源「点击选择 / 重新选择 / 当前来源」等 key 之上，合入本地语音识别的
+    // 「重新加载 / 已就绪 / 准备超时」文案与改写的「准备中」文案，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-29-local-asr-prepare-screen-source-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

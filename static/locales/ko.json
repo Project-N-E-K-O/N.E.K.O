@@ -2670,6 +2670,8 @@
             "noSources": "사용 가능한 화면 소스가 없습니다.",
             "loadFailed": "화면 소스를 로드하지 못했습니다.",
             "screens": "화면",
+            "genericScreen": "화면",
+            "genericWindow": "창",
             "screenLabel": "화면 {{index}}",
             "windows": "윈도우",
             "titleFilterPlaceholder": "창 제목 필터",
@@ -2678,8 +2680,11 @@
             "rememberWindow": "창 기억",
             "rememberedWindowUnavailable": "기억한 창을 고유하게 찾을 수 없습니다. 화면 소스를 다시 선택해 주세요",
             "selected": "{{source}} 선택됨",
+            "current": "선택됨: {{source}}",
             "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다",
-            "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요"
+            "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요",
+            "clickToChoose": "클릭하여 화면 소스 선택",
+            "chooseAgain": "다른 화면 소스 선택"
         },
         "deviceSwitchFailed": "장치 전환 실패",
         "deviceSwitching": "장치 전환 중...",

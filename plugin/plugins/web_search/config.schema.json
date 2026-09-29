@@ -162,7 +162,8 @@
             "es": "Opcional; déjala vacía para acceso anónimo con límites menores.",
             "pt": "Opcional; deixe vazio para acesso anônimo com limites menores."
           },
-          "default": ""
+          "default": "",
+          "writeOnly": true
         },
         "max_results": {
           "type": "integer",

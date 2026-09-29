@@ -305,6 +305,7 @@ For example, a schema for the `[notes]` section:
 | Keyword | Form behavior |
 | --- | --- |
 | `properties` | Describes object fields using the actual configuration structure. Existing undeclared fields remain editable. |
+| `additionalProperties` | An object schema describes dynamic keys absent from `properties`, including password controls and preview masking. Named properties take precedence. Boolean values supply no field annotations; this editor does not enforce key admission. |
 | `title` / `description` | Plain-text label and help text. The raw key remains visible as secondary information and is the fallback label. |
 | `type` | A single `string`, `number`, `integer`, `boolean`, `object`, or `array` selects the corresponding control. Without it, the editor infers the type from the current value. |
 | `items` | One child schema for array elements, including nested objects and arrays. |
@@ -312,6 +313,7 @@ For example, a schema for the `[notes]` section:
 | `minimum` / `maximum` | Numeric control bounds; `integer` controls accept only integers. |
 | `maxLength` | Maximum text input length. |
 | `readOnly` | Disables editing of the field and its child controls. |
+| String fields with `writeOnly: true` | Uses a password input with a reveal toggle and masks non-empty values in baseline hints, change summaries, and JSON data views. Real values are retained for saving; this is display masking, not encryption or access control. |
 | `default` | Initial value when explicitly adding a field or array item; not a runtime configuration default. |
 | `x-title-i18n` / `x-description-i18n` | Optional locale-to-text maps. Standard `title` and `description` remain strings. |
 
@@ -321,4 +323,4 @@ This is a form presentation contract, **not a complete JSON Schema validator or 
 
 Opening the page never inserts schema defaults or writes a profile. Schema-only fields are shown but are only written after editing. Object merging and whole-array replacement retain existing behavior. The top-level `plugin` section remains protected and excluded from profile editing.
 
-The file must be UTF-8 JSON with an object root (`"type": "object"`), at most 256 KiB and at most 32 levels of `properties` / `items` nesting. Missing files retain the old editor. Invalid files or malformed supported keywords produce a warning and fall back to generic editing. Configuration queries return metadata separately as `config_schema`; it never becomes part of `config` or the profile.
+The file must be UTF-8 JSON with an object root (`"type": "object"`), at most 256 KiB and at most 32 levels of `properties` / `items` / `additionalProperties` nesting. Missing files retain the old editor. Invalid files or malformed supported keywords produce a warning and fall back to generic editing. Configuration queries return metadata separately as `config_schema`; it never becomes part of `config` or the profile.

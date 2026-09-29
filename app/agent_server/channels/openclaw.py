@@ -340,7 +340,6 @@ async def _cancel_openclaw_tasks_for_stop(
                 stop_result = await _shared.Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
-                    conversation_id=info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
                 )
@@ -875,7 +874,6 @@ async def dispatch(
                     attachments=attachments,
                     sender_id=nk_sender_id,
                     session_id=nk_session_id,
-                    conversation_id=conversation_id,
                     role_name=lanlan_name,
                 )
                 success = bool(nk_result.get("success"))

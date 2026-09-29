@@ -17,7 +17,8 @@ vi.mock('vue-i18n', () => ({
     te: () => true,
     getLocaleMessage: () => ({}),
     locale: ref('en-US'),
-    t: (key: string) => key,
+    t: (key: string, params?: { value?: unknown }) =>
+      params?.value === undefined ? key : key + ': ' + String(params.value),
   }),
 }))
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
@@ -873,4 +874,145 @@ describe('schema integration', () => {
     expect(host.querySelector('input[aria-label="search.max_results"]')).not.toBeNull()
     unmount()
   })
+})
+
+describe('PluginConfigEditor confidential values', () => {
+  it.each([
+    { overridden: false, dynamic: false },
+    { overridden: true, dynamic: false },
+    { overridden: false, dynamic: true },
+    { overridden: true, dynamic: true },
+  ])(
+    'masks all display surfaces and saves real edits (override=$overridden, dynamic=$dynamic)',
+    async ({ overridden, dynamic }) => {
+      const baseline = {
+        auth: { token: 'fixture-baseline-token' },
+        servers: [{ token: 'fixture-array-token' }],
+      }
+      vi.spyOn(configApi, 'getPluginConfig').mockResolvedValue({ config: baseline } as never)
+      vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+        config: baseline,
+        config_schema: {
+          type: 'object',
+          properties: {
+            auth: {
+              type: 'object',
+              ...(dynamic
+                ? {
+                    additionalProperties: {
+                      type: 'string',
+                      title: 'Access token',
+                      writeOnly: true,
+                    },
+                  }
+                : {
+                    properties: {
+                      token: { type: 'string', title: 'Access token', writeOnly: true },
+                    },
+                  }),
+            },
+            servers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                ...(dynamic
+                  ? {
+                      additionalProperties: { type: 'string', writeOnly: true },
+                    }
+                  : {
+                      properties: {
+                        token: { type: 'string', writeOnly: true },
+                      },
+                    }),
+              },
+            },
+          },
+        },
+      } as never)
+      vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+        plugin_id: 'test',
+        profiles_path: '',
+        profiles_exists: true,
+        config_profiles: {
+          active: 'saved',
+          files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+        },
+      })
+      const profile = { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true }
+      vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+        plugin_id: 'test',
+        profile,
+        config: overridden ? { auth: { token: 'fixture-profile-token' } } : {},
+      })
+      const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
+        plugin_id: 'test',
+        profile,
+        config: { auth: { token: 'fixture-edited-token' } },
+      })
+      const { host, unmount } = await mountEditor({ navCount: 2 })
+      const inputs = host.querySelectorAll<HTMLInputElement>('input[type="password"]')
+      expect(inputs).toHaveLength(2)
+      expect(inputs[0]!.value).toBe(overridden ? 'fixture-profile-token' : 'fixture-baseline-token')
+      expect(inputs[1]!.value).toBe('fixture-array-token')
+      expect(host.textContent).not.toContain('fixture-')
+      expect(
+        [...host.querySelectorAll('[title]')].map((node) => node.getAttribute('title')).join()
+      ).not.toContain('fixture-')
+      inputs[0]!.value = 'fixture-edited-token'
+      inputs[0]!.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      const button = (root: ParentNode, label: string) =>
+        [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+          (node) => node.textContent?.trim() === label
+        )!
+      button(host, 'plugins.configUi.reviewChanges').click()
+      await vi.waitFor(() => expect(document.querySelector('.change-review')).not.toBeNull())
+      expect(document.querySelector('.change-review')!.textContent).toContain('********')
+      expect(document.querySelector('.change-review')!.textContent).not.toContain('fixture-')
+      const reviewDialog = document.querySelector('.change-review')!.closest('.el-dialog')!
+      reviewDialog.querySelector<HTMLButtonElement>('.el-dialog__headerbtn')!.click()
+      await nextTick()
+
+      // The raw-data dialog has three independent sources; all must be masked.
+      host
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="plugins.configUi.configData / common.refresh"]'
+        )!
+        .click()
+      await vi.waitFor(() =>
+        expect(
+          [...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')].find(
+            (node) => node.textContent?.trim() === 'plugins.configUi.configData'
+          )
+        ).toBeDefined()
+      )
+      ;[...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')]
+        .find((node) => node.textContent?.trim() === 'plugins.configUi.configData')!
+        .click()
+      await vi.waitFor(() => expect(document.querySelector('.config-json')).not.toBeNull())
+      const dataDialog = document.querySelector('.config-json')!.closest('.el-dialog')!
+      for (const tab of dataDialog.querySelectorAll<HTMLElement>('[role="tab"]')) {
+        tab.click()
+        await nextTick()
+        expect(dataDialog.querySelector('.config-json')!.textContent).toContain('********')
+        expect(dataDialog.querySelector('.config-json')!.textContent).not.toContain('fixture-')
+      }
+      dataDialog.querySelector<HTMLButtonElement>('.el-dialog__headerbtn')!.click()
+      await nextTick()
+      expect(host.textContent).not.toContain('fixture-')
+      button(host, 'plugins.configUi.saveProfile').click()
+      await vi.waitFor(() =>
+        expect(upsert).toHaveBeenCalledWith(
+          'test',
+          'saved',
+          { auth: { token: 'fixture-edited-token' } },
+          false
+        )
+      )
+      expect(baseline.auth.token).toBe('fixture-baseline-token')
+      expect(baseline.servers[0]!.token).toBe('fixture-array-token')
+      unmount()
+    }
+  )
 })

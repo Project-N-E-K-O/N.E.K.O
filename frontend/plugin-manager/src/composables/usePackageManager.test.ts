@@ -341,10 +341,33 @@ describe('usePackageManager safe installation flow', () => {
 
     await manager.handleInstall()
 
-    expect(ElMessage.success).toHaveBeenCalledWith('安装完成，处理了 1 个插件')
+    expect(ElMessage.success).toHaveBeenCalledWith('package.install.installSucceeded{"count":1}')
     expect(ElMessage.warning).toHaveBeenCalledWith('插件列表刷新存在失败项: broken_plugin')
     expect(vi.mocked(ElMessage.success).mock.invocationCallOrder[0]!)
       .toBeLessThan(vi.mocked(ElMessage.warning).mock.invocationCallOrder[0]!)
+  })
+
+  it('shows a warning instead of success when the install reports source warnings', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: 'install',
+      current_version: '',
+      target_version: '1.0.0',
+      confirmation_token: '',
+    })
+    vi.mocked(installPluginPackage).mockResolvedValue({
+      ...installResponse,
+      install_source_warning: 'lock_write_failed; sha_mismatch',
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith(
+      'package.install.completedWithWarnings{"plugin":"demo_plugin","reasons":"lock_write_failed; sha_mismatch"}',
+    )
   })
 
   it('does not install when the user cancels an upgrade', async () => {

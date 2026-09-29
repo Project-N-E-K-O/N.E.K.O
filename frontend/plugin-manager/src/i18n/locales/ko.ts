@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
       blockedOwnershipUnknown: '기존 플러그인 디렉터리의 소유권을 확인할 수 없습니다. 설치 원본 기록을 복구한 후 다시 시도하세요.',
       blockedInstallSourceReadOnly: '설치 원본 기록을 사용할 수 없거나 읽기 전용입니다. 기록을 복구한 후 다시 시도하세요.',
+      installSucceeded: '설치가 완료되었습니다. 플러그인 {count}개를 처리했습니다.',
+      completedWithWarnings: '{plugin}이(가) 설치되었지만 경고가 있습니다: {reasons}',
       rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
       rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: '플러그인 plugin.toml 형식이 잘못되었습니다. 작성자에게 수정 후 다시 빌드하도록 요청하세요.',
         identityMismatch: '플러그인 폴더 이름과 plugin.toml의 ID가 일치하지 않습니다. 작성자에게 패키지 수정을 요청하세요.',
         hashMismatch: '패키지 내용이 검증 정보와 일치하지 않아 설치를 거부했습니다. 설치 변경은 남지 않았습니다.',
+        profileOwnershipConflict: '이 패키지의 프로필 폴더가 이미 있지만 이 패키지 소유가 아닙니다. 이전 설치에서 남은 것일 수 있습니다. 설치하지 않았습니다.',
         inspectFailed: '이 플러그인 패키지를 검사할 수 없습니다. 파일이 존재하고 올바른 N.E.K.O 패키지인지 확인한 후 다시 시도하세요.',
         verifyFailed: '이 플러그인 패키지를 검증할 수 없습니다. 다시 다운로드하거나 작성자에게 재빌드를 요청한 후 다시 시도하세요.',
         installFailed: '이 플러그인 패키지를 설치할 수 없습니다. 확인되지 않은 설치 변경은 남지 않았습니다.'

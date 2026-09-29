@@ -525,6 +525,7 @@ import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
@@ -1206,7 +1207,10 @@ async function importSelectedPluginPackage() {
     })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
-    ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    notifyPluginInstallOutcome(result, t, ElMessage, {
+      plugin: file.name,
+      successMessage: t('plugins.importSuccess', { name: file.name, count }),
+    })
     importDialogVisible.value = false
     await refreshAfterPluginChange()
   } catch (error: any) {

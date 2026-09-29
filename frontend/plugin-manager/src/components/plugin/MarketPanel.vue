@@ -307,6 +307,7 @@ import {
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { createStaleResponseGuard } from '@/utils/staleResponseGuard'
 import {
   confirmBuiltinOverride,
@@ -447,10 +448,19 @@ async function runInstallTask(
     return false
   }
   if (outcome.ok) {
-    ElMessage.success(
-      mode === 'install'
-        ? t('market.installSuccess', { name: plugin.name })
-        : t('market.upgradeSuccess', { name: plugin.name }),
+    notifyPluginInstallOutcome(
+      {
+        install_source_warning: installTask.task?.install_source_warning,
+        rollback_status: installTask.task?.result?.rollback_status,
+      },
+      t,
+      ElMessage,
+      {
+        plugin: plugin.name,
+        successMessage: mode === 'install'
+          ? t('market.installSuccess', { name: plugin.name })
+          : t('market.upgradeSuccess', { name: plugin.name }),
+      },
     )
     await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
     await yankSweep().catch(() => undefined)

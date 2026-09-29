@@ -24,7 +24,9 @@ def _b64url_encode(raw: bytes) -> str:
 def _b64url_decode(value: str) -> bytes:
     pad = "=" * ((4 - (len(value) % 4)) % 4)
     try:
-        return base64.b64decode((value + pad).encode("ascii"), altchars=b"-_", validate=True)
+        return base64.b64decode(
+            (value + pad).encode("ascii"), altchars=b"-_", validate=True
+        )
     except (ValueError, UnicodeError) as exc:
         raise ValueError("invalid token") from exc
 
@@ -37,7 +39,9 @@ def issue_run_token(*, run_id: str, perm: str = "read") -> tuple[str, int]:
         "nonce": secrets.token_urlsafe(16),
         "perm": str(perm),
     }
-    payload_raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    payload_raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     payload_b64 = _b64url_encode(payload_raw)
     key = _get_run_token_key()
     sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()

@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
       blockedOwnershipUnknown: 'N.E.K.O could not verify who owns the existing plugin directory. Restore its install-source record before trying again.',
       blockedInstallSourceReadOnly: 'The install-source record is unavailable or read-only. Restore it before trying again.',
+      installSucceeded: 'Install complete. Processed {count} plugin(s).',
+      completedWithWarnings: '{plugin} was installed, but with warnings: {reasons}',
       rollbackCompleted: 'The upgrade failed and the previous version was restored.',
       rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: 'A plugin.toml in this package is invalid. Ask the plugin author to fix and rebuild it.',
         identityMismatch: 'The plugin folder name and the ID in plugin.toml do not match. Ask the plugin author to fix the package.',
         hashMismatch: 'The package contents do not match its verification data. Nothing was installed.',
+        profileOwnershipConflict: 'A profile folder for this package already exists but does not belong to it, possibly left over from an earlier install. Nothing was installed.',
         inspectFailed: 'Could not inspect this plugin package. Check that the file exists and is a valid N.E.K.O package, then try again.',
         verifyFailed: 'Could not verify this plugin package. Download it again or ask the author to rebuild it, then try again.',
         installFailed: 'The plugin package could not be installed. No confirmed installation changes were kept.'
