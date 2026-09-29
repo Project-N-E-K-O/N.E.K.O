@@ -4723,6 +4723,13 @@ class IndependentAsrRuntime:
             transcript_dispatcher.mark_accepted(final_key, accepted_turn_token)
             try:
                 await lease.release()
+            except asyncio.CancelledError:
+                # Session shutdown may cancel this callback mid-release; the
+                # pinned slot must not outlive it.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
+                raise
             except Exception:
                 # The final is already accepted; a failed release must not
                 # skip transcript delivery or pending-turn activation below.
@@ -4731,21 +4738,10 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
             if not self._runtime_identity_matches(final_identity):
-                if (
-                    envelope is not None
-                    and transcript_dispatcher.holds_accepted(final_key)
-                    and accepted_turn_token.ingress.session_epoch
-                    == self._asr_session_epoch
-                ):
-                    # No purge retired the pinned slot, so the final is still
-                    # owed to Core, the same rule as for a queued envelope.
-                    # Lifecycle follow-up belongs to whoever moved identity.
-                    transcript_dispatcher.submit(envelope)
-                    return
-                transcript_dispatcher.release(final_key)
-                # The accepted final can no longer be delivered, so release
-                # the Core-side pause keyed to this turn.
-                await self._notify_asr_turn_abandoned(accepted_turn_token)
+                # Lifecycle follow-up belongs to whoever moved identity.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
                 return
         elif not self._runtime_identity_matches(final_identity):
             transcript_dispatcher.release(final_key)
@@ -4914,6 +4910,29 @@ class IndependentAsrRuntime:
                 and self._asr_pending_speech_onset_at == overlap_onset_at
             ):
                 self._asr_pending_speech_onset_at = None
+
+    async def _settle_pinned_final(
+        self,
+        transcript_dispatcher: TranscriptDispatcher,
+        envelope: TranscriptEnvelope | None,
+        final_key: FinalKey,
+        turn_token: VoiceTurnToken,
+    ) -> None:
+        """Deliver or retire an accepted final whose follow-up was interrupted."""
+
+        if (
+            envelope is not None
+            and transcript_dispatcher.holds_accepted(final_key)
+            and turn_token.ingress.session_epoch == self._asr_session_epoch
+        ):
+            # No purge retired the pinned slot, so the final is still owed to
+            # Core, the same rule as for a queued envelope.
+            transcript_dispatcher.submit(envelope)
+            return
+        transcript_dispatcher.release(final_key)
+        # The accepted final can no longer be delivered, so release the
+        # Core-side pause keyed to this turn.
+        await self._notify_asr_turn_abandoned(turn_token)
 
     async def _dispatch_asr_transcript_envelope(
         self,

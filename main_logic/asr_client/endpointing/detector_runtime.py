@@ -882,7 +882,7 @@ class _VoiceTurnAdapter:
                 )
                 return
             self._observe_evaluation_tail(evaluation_tail)
-            if reevaluate:
+            if reevaluate and reevaluation_reason != "periodic_no_vad":
                 self._request_evaluation(
                     item.identity,
                     reevaluation_reason,
@@ -890,12 +890,20 @@ class _VoiceTurnAdapter:
                 )
                 return
             if item.reason != "periodic_no_vad":
+                # A periodic result never schedules a strict retry, so the
+                # strict wait must keep running across a coalesced tick.
                 if self._smart_turn_required and self._strict_endpoint_deadline is None:
                     self._strict_endpoint_deadline = (
                         asyncio.get_running_loop().time()
                         + self._max_endpoint_wait_seconds
                     )
                 self._schedule_fallback(item.identity, "semantic_incomplete")
+            if reevaluate:
+                self._request_evaluation(
+                    item.identity,
+                    reevaluation_reason,
+                    self._latest_detector_identity,
+                )
             return
         if self._smart_turn_required:
             failure_kind = (
@@ -1158,12 +1166,13 @@ class _VoiceTurnAdapter:
         """Schedule one strict retry through the single SmartTurn lane."""
 
         await asyncio.sleep(self._continuation_timeout_seconds)
-        if (
-            self._closed
-            or self._failed
-            or identity != self._identity
-            or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
-        ):
+        state = self._coordinator.state
+        # A periodic no-VAD inference may be running; the retry then coalesces
+        # behind it instead of silently ending the strict wait.
+        waiting = state is CoordinatorState.WAIT_CONTINUATION or (
+            state is CoordinatorState.EVALUATING and self._evaluation_task is not None
+        )
+        if self._closed or self._failed or identity != self._identity or not waiting:
             return
         if self._strict_endpoint_deadline is None:
             self._report_failure("unavailable", "smart_turn")

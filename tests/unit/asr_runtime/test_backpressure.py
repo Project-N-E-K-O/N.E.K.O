@@ -427,6 +427,42 @@ async def test_backpressure_during_lease_release_keeps_accepted_final() -> None:
     assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
 
 
+async def test_cancelled_lease_release_still_delivers_pinned_final() -> None:
+    runtime = _Runtime()
+    final_task, _finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+
+    # Session shutdown cancels the provider callback after its drain window.
+    final_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime.session.create_response.await_args_list == [call("first")]
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def test_cancelled_lease_release_after_purge_abandons_final() -> None:
+    runtime = _Runtime()
+    final_task, _finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+    runtime._asr_runtime._asr_transcript_dispatcher.invalidate_all()
+
+    final_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert call(f"asr-{epoch}-1") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
 async def test_non_backpressure_abort_during_lease_release_abandons_final() -> None:
     runtime = _Runtime()
     final_task, finish_release = (

@@ -4747,7 +4747,8 @@ async def test_soniox_untimed_last_final_word_falls_back_to_retained_tail(
     )
     await _next_event(responses, "ready")
     first_word = b"\x01\x00" * 160
-    last_word = b"\x03\x00" * 160
+    # Longer than the retained tail, so the assertion pins its exact bound.
+    last_word = b"\x03\x00" * 40_000
     turn2_prefix = b"\x02\x00" * 160
     for pcm in (first_word, last_word, turn2_prefix):
         await requests.put(
@@ -4773,7 +4774,8 @@ async def test_soniox_untimed_last_final_word_falls_back_to_retained_tail(
         lambda: any(isinstance(sent, bytes) and sent for sent in second.sent)
     )
     replayed = next(sent for sent in second.sent if isinstance(sent, bytes) and sent)
-    assert replayed == first_word + last_word + turn2_prefix
+    buffered = first_word + last_word + turn2_prefix
+    assert replayed == buffered[-soniox._REPLAY_TURN_TAIL_BYTES :]
     await _stop_worker(task, requests, responses, utterance_id=2)
 
 

@@ -1467,6 +1467,67 @@ async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -
     await adapter.close()
 
 
+async def test_early_strict_incomplete_keeps_strict_wait_behind_periodic() -> None:
+    coordinator = _FakeCoordinator([_incomplete()] * 5, block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    identity = (61, 62, 63)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 60
+    adapter._reevaluation_requested = True
+    adapter._reevaluation_reason = "periodic_no_vad"
+
+    await adapter._process_evaluation_result(
+        _EvaluationResultItem(
+            identity=identity,
+            coordinator_generation=0,
+            activity_seq=0,
+            reason="strict_retry",
+            result=_incomplete(),
+        )
+    )
+
+    # The periodic tick runs, and the strict wait still owns the next retry.
+    assert adapter._evaluation_task is not None
+    assert adapter._fallback_task is not None
+    assert not adapter._fallback_task.done()
+    coordinator.evaluate_release.set()
+    await adapter.close()
+
+
+async def test_strict_wait_coalesces_retry_behind_running_evaluation() -> None:
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+        continuation_timeout_seconds=0.001,
+    )
+    identity = (71, 72, 73)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 60
+    coordinator.state = CoordinatorState.EVALUATING
+    in_flight = asyncio.get_running_loop().create_future()
+    adapter._evaluation_task = in_flight
+
+    await adapter._strict_incomplete_wait(identity)
+
+    assert adapter._reevaluation_requested is True
+    assert adapter._reevaluation_reason == "strict_retry"
+    assert adapter._failed is False
+    adapter._evaluation_task = None
+    in_flight.cancel()
+    await adapter.close()
+
+
 async def test_coalesced_periodic_request_keeps_pending_strict_retry() -> None:
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
