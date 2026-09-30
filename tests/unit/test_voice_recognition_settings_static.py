@@ -305,17 +305,17 @@ def test_preparing_status_informs_without_tearing_the_route_down() -> None:
     )
 
 
-def _failure_toast_helper() -> str:
+def _toast_helper(name: str) -> str:
     websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
         encoding="utf-8"
     ).replace(chr(13) + chr(10), chr(10))
-    return websocket.split("function independentAsrFailureToastText(reason) {", 1)[1].split(
+    return websocket.split(f"function {name}(reason) {{", 1)[1].split(
         chr(10) + "    }", 1
     )[0]
 
 
 def test_failure_reasons_map_to_their_own_guidance() -> None:
-    helper = _failure_toast_helper()
+    helper = _toast_helper("independentAsrReasonToastText")
     for reason, key in (
         ("ASR_LOCAL_MODEL_LOAD_FAILED", "microphone.localAsrModelLoadFailed"),
         ("ASR_LOCAL_DEPENDENCY_MISSING", "microphone.localAsrDependencyMissing"),
@@ -323,22 +323,25 @@ def test_failure_reasons_map_to_their_own_guidance() -> None:
     ):
         branch = helper.split(f"reason === '{reason}'", 1)[1].split("}", 1)[0]
         assert f"t('{key}')" in branch, reason
-    # Anything else keeps the generic text.
-    assert helper.rstrip().endswith(
-        "'Independent ASR unavailable. Voice input has stopped for this session. "
-        "Check the independent ASR configuration, then start a new voice session.';"
-    )
+    # Other reasons have no text of their own ...
+    assert helper.rstrip().endswith("return '';")
+    # ... and where a message is always needed, fall back to the generic one.
+    wrapper = _toast_helper("independentAsrFailureToastText")
+    assert "independentAsrReasonToastText(reason)" in wrapper
+    assert "microphone.independentAsrFallback" in wrapper
 
 
 def test_terminal_failure_status_uses_its_reason_before_the_generic_text() -> None:
+    # Only a reason with guidance of its own pre-empts the per-code toasts; a
+    # cloud failure reason keeps e.g. "temporarily unavailable".
     block = _independent_asr_status_block()
     terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
-    branch = terminal.split("if (statusDetails && statusDetails.reason) {", 1)[1].split(
-        "return;", 1
-    )[0]
-    assert "independentAsrFailureToastText(statusDetails.reason)" in branch
-    assert terminal.index("if (statusDetails && statusDetails.reason) {") < terminal.index(
-        "microphone.independentAsrFallback"
+    assert "independentAsrReasonToastText(" in terminal
+    assert "independentAsrFailureToastText(" not in terminal
+    branch = terminal.split("if (reasonToastText) {", 1)[1].split("return;", 1)[0]
+    assert "showStatusToast(reasonToastText" in branch
+    assert terminal.index("if (reasonToastText) {") < terminal.index(
+        "microphone.independentAsrProviderUnavailable"
     )
 
 

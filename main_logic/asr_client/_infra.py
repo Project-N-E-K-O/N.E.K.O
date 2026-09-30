@@ -32,8 +32,8 @@ from .delivery import delivery_evidence, log_delivery_phase
 from .warmup import (
     provider_warmup_reason,
     provider_warmup_snapshot,
-    provider_warmup_state,
 )
+from .worker_failure import recorded_worker_failure
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -433,18 +433,6 @@ class _RealtimeAsrSessionImpl:
         return evidence.written_audio_bytes if evidence else 0
 
     @property
-    def provider_warmup_pending(self) -> bool:
-        """The worker is still preparing (e.g. loading a local model)."""
-        state = provider_warmup_state(self._request_queue)
-        if state is None:
-            return False
-        # A worker thread ends waits under this lock, setting ``pending`` and
-        # ``completed_at`` together; reading under it means a caller that
-        # sees the wait over also sees its completion time.
-        with state.lock:
-            return bool(state.pending)
-
-    @property
     def provider_warmup_reason(self) -> str:
         """Why the provider is preparing (an ``ASR_*`` code), or ``""``."""
         return provider_warmup_reason(self._request_queue)
@@ -453,15 +441,6 @@ class _RealtimeAsrSessionImpl:
     def provider_warmup_snapshot(self) -> tuple[bool, float | None]:
         """``(pending, completed_at)`` taken together; see provider_warmup_snapshot()."""
         return provider_warmup_snapshot(self._request_queue)
-
-    @property
-    def provider_warmup_completed_at(self) -> float | None:
-        """Monotonic time the worker finished preparing, if it ever started."""
-        state = provider_warmup_state(self._request_queue)
-        if state is None:
-            return None
-        with state.lock:
-            return state.completed_at
 
     @property
     def transport_delivery_trace_id(self) -> str | None:
@@ -540,19 +519,21 @@ class _RealtimeAsrSessionImpl:
 
             worker_task = self._worker_task
             if self._state is not _SessionState.READY or worker_task is None:
+                recorded = recorded_worker_failure(self._request_queue)
                 raise RuntimeError(
                     getattr(self, "_failure_error", None)
+                    or (f"{recorded[0]}: {recorded[1]}" if recorded else None)
                     or "ASR_WORKER_FAILED: worker exited during connect"
                 )
             if worker_task.done():
                 # The worker may have queued its own failure (e.g. a local
                 # model that failed to load) just before returning: keep that
                 # code instead of classifying the exit generically.
-                queued_error = self._queued_worker_error()
-                if queued_error is not None:
+                recorded = recorded_worker_failure(self._request_queue)
+                if recorded is not None:
                     await self._fail(
-                        queued_error.error_code or "ASR_WORKER_FAILED",
-                        queued_error.error_message or "worker reported a provider error",
+                        recorded[0] or "ASR_WORKER_FAILED",
+                        recorded[1] or "worker reported a provider error",
                     )
                 else:
                     await self._fail(
@@ -1553,14 +1534,6 @@ class _RealtimeAsrSessionImpl:
 
         await self._fail("ASR_WORKER_FAILED", "worker returned an unknown event")
         return True
-
-    def _queued_worker_error(self) -> "_AsrWorkerEvent | None":
-        """The first error event still queued from the worker, if any."""
-        queue = getattr(self, "_response_queue", None)
-        for event in list(getattr(queue, "_queue", ()) or ()):
-            if getattr(event, "kind", None) == "error":
-                return event
-        return None
 
     async def _fail(self, error_code: str, message: str) -> None:
         if self._state in (_SessionState.FAILED, _SessionState.CLOSED):

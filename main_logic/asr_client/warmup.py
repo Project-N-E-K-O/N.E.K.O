@@ -101,6 +101,10 @@ def complete_provider_warmup(queue: object, token: object) -> None:
     if state is None:
         return
     with state.lock:
+        if token not in state.waiters:
+            # Already ended (e.g. by both the load task and the worker's own
+            # cleanup) or never began: nothing to end, no new completion time.
+            return
         state.waiters.discard(token)
         if not state.waiters:
             # Stamp first: a reader seeing ``pending`` False must also see

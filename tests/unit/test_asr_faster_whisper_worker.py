@@ -393,9 +393,45 @@ async def test_rejects_provider_endpointing(pool) -> None:
     )
     error = await _next_event(responses, "error")
     assert error.error_code == "ASR_ENDPOINTING_NOT_SUPPORTED"
+    # The code is also recorded on the shared request queue, so a session
+    # whose worker has already returned still knows why.
+    from main_logic.asr_client.worker_failure import recorded_worker_failure
+
+    assert recorded_worker_failure(requests)[0] == "ASR_ENDPOINTING_NOT_SUPPORTED"
     await _next_event(responses, "closed")
     await asyncio.wait_for(task, 3)
     assert loader.calls == 0
+
+
+def test_decode_thread_is_a_daemon_and_runs_calls_in_order() -> None:
+    # A native decode cannot be interrupted; interpreter exit must not wait
+    # for one still running.
+    executor = faster_whisper._DaemonSerialExecutor("test-decode")
+    order: list[int] = []
+    threads: list[threading.Thread] = []
+    gate = threading.Event()
+
+    def first() -> int:
+        threads.append(threading.current_thread())
+        gate.wait(5)
+        order.append(1)
+        return 1
+
+    def fails() -> None:
+        raise ValueError("boom")
+
+    running = executor.submit(first)
+    cancelled = executor.submit(order.append, 99)
+    failing = executor.submit(fails)
+    last = executor.submit(lambda: order.append(2) or 2)
+    assert cancelled.cancel()
+    gate.set()
+    assert running.result(5) == 1
+    with pytest.raises(ValueError):
+        failing.result(5)
+    assert last.result(5) == 2
+    assert order == [1, 2]
+    assert threads[0].daemon is True
 
 
 # ---------------------------------------------------------------------------
@@ -998,20 +1034,19 @@ async def test_worker_publishes_model_warmup_on_its_queue(pool) -> None:
     session_view = SimpleNamespace(_request_queue=requests)
     state = provider_warmup_state(requests)
     assert state is not None and state.pending is True
-    assert _RealtimeAsrSessionImpl.provider_warmup_pending.fget(session_view) is True
-    assert (
-        _RealtimeAsrSessionImpl.provider_warmup_completed_at.fget(session_view)
-        is None
+    assert _RealtimeAsrSessionImpl.provider_warmup_snapshot.fget(session_view) == (
+        True,
+        None,
     )
 
     await _send_utterance(requests)
     before_ready = time.monotonic()
     gate.set()
     assert (await _next_event(responses, "final")).text == "好"
-    assert _RealtimeAsrSessionImpl.provider_warmup_pending.fget(session_view) is False
-    completed_at = _RealtimeAsrSessionImpl.provider_warmup_completed_at.fget(
+    pending, completed_at = _RealtimeAsrSessionImpl.provider_warmup_snapshot.fget(
         session_view
     )
+    assert pending is False
     assert completed_at is not None and completed_at >= before_ready
     await _shutdown(task, requests, responses)
 
@@ -1468,41 +1503,6 @@ async def test_waiting_behind_another_sessions_decode_counts_as_warmup(pool) -> 
         await _shutdown(task, requests, responses)
 
 
-def test_session_reads_warmup_state_under_its_lock() -> None:
-    # A decode thread ends a wait by setting ``pending`` and ``completed_at``
-    # together under the state's lock. The watchdog's reads must take it too,
-    # or they can see the wait over with no (or a stale) completion time.
-    from main_logic.asr_client._infra import _RealtimeAsrSessionImpl
-    from main_logic.asr_client.warmup import (
-        begin_provider_warmup,
-        complete_provider_warmup,
-        provider_warmup_state,
-    )
-
-    queue: asyncio.Queue[Any] = asyncio.Queue()
-    token = begin_provider_warmup(queue)
-    state = provider_warmup_state(queue)
-    session_view = SimpleNamespace(_request_queue=queue)
-    for prop, expected in (
-        (_RealtimeAsrSessionImpl.provider_warmup_pending, False),
-        (_RealtimeAsrSessionImpl.provider_warmup_completed_at, None),
-    ):
-        results: list[Any] = []
-        with state.lock:
-            reader = threading.Thread(
-                target=lambda: results.append(prop.fget(session_view))
-            )
-            reader.start()
-            reader.join(0.1)
-            assert reader.is_alive()  # blocked while the writer holds the lock
-            state.pending = False
-        reader.join(2)
-        assert results == [expected]
-        state.pending = True
-    complete_provider_warmup(queue, token)
-    assert state.pending is False and state.completed_at is not None
-
-
 async def test_running_decode_keeps_the_model_leased_after_its_session_ends(pool) -> None:
     # A native decode cannot be interrupted and may outlive its session. Until
     # it has left the decoder it holds a lease of its own, so the idle timer
@@ -1583,6 +1583,13 @@ def test_warmup_ends_only_when_every_wait_has_ended() -> None:
     assert state.pending is True
     complete_provider_warmup(queue, newer)
     assert state.pending is False and state.completed_at is not None
+    ended_at = state.completed_at
+    # A wait that already ended (or never began) changes nothing: the
+    # completion time the watchdog measures from is not pushed back.
+    time.sleep(0.01)
+    complete_provider_warmup(queue, newer)
+    complete_provider_warmup(queue, object())
+    assert state.pending is False and state.completed_at == ended_at
 
 
 async def test_waiting_behind_own_earlier_decode_does_not_pause_its_watchdog(pool) -> None:

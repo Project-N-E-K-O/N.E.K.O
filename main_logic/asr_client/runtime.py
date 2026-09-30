@@ -116,8 +116,8 @@ def _provider_warmup_snapshot(asr_session: Any) -> tuple[bool, float | None]:
     """``(pending, completed_at)`` of a provider session's warm-up, read at once.
 
     Sessions expose one locked snapshot; separate reads could straddle a wait
-    that begins on a worker thread in between (pending read before it began,
-    completion time read after). Sessions without warm-up report none.
+    that begins on a worker thread in between. Sessions without warm-up
+    report none.
     """
 
     snapshot = getattr(asr_session, "provider_warmup_snapshot", None)
@@ -127,11 +127,7 @@ def _provider_warmup_snapshot(asr_session: Any) -> tuple[bool, float | None]:
         and isinstance(snapshot[0], bool)
     ):
         return snapshot
-    completed_at = getattr(asr_session, "provider_warmup_completed_at", None)
-    return (
-        getattr(asr_session, "provider_warmup_pending", False) is True,
-        completed_at if isinstance(completed_at, (int, float)) else None,
-    )
+    return False, None
 
 
 def _provider_failure_reason(message: str) -> str:
@@ -5222,7 +5218,7 @@ class IndependentAsrRuntime:
         sent when the provider is ready.
         """
 
-        if getattr(asr_session, "provider_warmup_pending", False) is not True:
+        if not _provider_warmup_snapshot(asr_session)[0]:
             if getattr(self, "_asr_preparing_announced_epoch", None) == session_epoch:
                 # PREPARING went out for this epoch, but its session was
                 # replaced before PREPARED could: close that notice now.

@@ -115,8 +115,7 @@ def _warming_runtime(monkeypatch, *, final_ms: int, warmup_ms: int):
     asr = SimpleNamespace(
         is_ready=True,
         close=AsyncMock(),
-        provider_warmup_pending=True,
-        provider_warmup_completed_at=None,
+        provider_warmup_snapshot=(True, None),
     )
     runtime._asr_session = asr
     runtime._asr_provider = "faster_whisper"
@@ -162,9 +161,8 @@ async def test_provider_final_watchdog_does_not_count_model_warmup(monkeypatch) 
     assert not watchdog.done()
 
     # Model ready: from here on the ordinary final timeout applies.
-    asr.provider_warmup_pending = False
-    asr.provider_warmup_completed_at = time.monotonic()
-    ready_at = asr.provider_warmup_completed_at
+    ready_at = time.monotonic()
+    asr.provider_warmup_snapshot = (False, ready_at)
     await asyncio.wait_for(watchdog, 5)
     elapsed = time.monotonic() - ready_at
 
@@ -194,8 +192,7 @@ async def test_warmup_finished_before_seal_keeps_the_plain_final_timeout(
     monkeypatch,
 ) -> None:
     runtime, asr = _warming_runtime(monkeypatch, final_ms=100, warmup_ms=60_000)
-    asr.provider_warmup_pending = False
-    asr.provider_warmup_completed_at = time.monotonic() - 30
+    asr.provider_warmup_snapshot = (False, time.monotonic() - 30)
 
     await _start_and_seal_turn(runtime, "faster_whisper")
     armed_at = time.monotonic()
@@ -212,8 +209,7 @@ async def test_provider_final_watchdog_reads_warmup_as_one_snapshot(
     # A session that offers the locked snapshot is read through it only: the
     # separate getters could straddle a wait that begins in between.
     runtime, asr = _warming_runtime(monkeypatch, final_ms=100, warmup_ms=60_000)
-    asr.provider_warmup_pending = False
-    asr.provider_warmup_completed_at = time.monotonic() - 30
+    asr.provider_warmup_snapshot = (False, time.monotonic() - 30)
     asr.provider_warmup_snapshot = (True, None)
 
     await _start_and_seal_turn(runtime, "faster_whisper")

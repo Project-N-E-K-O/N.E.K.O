@@ -65,7 +65,7 @@ def _session(*, warming_up: bool, reason: str = ""):
     session = type("Provider", (), {})()
     session.connect = AsyncMock()
     session.close = AsyncMock()
-    session.provider_warmup_pending = warming_up
+    session.provider_warmup_snapshot = (warming_up, None)
     session.provider_warmup_reason = reason
     return session
 
@@ -286,7 +286,7 @@ async def test_preparing_says_why_and_prepared_follows_when_ready(monkeypatch) -
     ]
 
     # The runtime keeps watching and tells the client once the model is ready.
-    session.provider_warmup_pending = False
+    session.provider_warmup_snapshot = (False, None)
     task = runtime._asr_warmup_watch_task
     assert task is not None
     await asyncio.wait_for(task, 2)
@@ -295,16 +295,22 @@ async def test_preparing_says_why_and_prepared_follows_when_ready(monkeypatch) -
 
 
 async def test_worker_that_queued_its_error_and_exited_keeps_the_code() -> None:
-    # The real worker enqueues its model-load error and returns at once;
-    # connect() may find it already done with the error still queued.
+    # The real worker records and enqueues its model-load error and returns
+    # at once; connect() may find it already done with the error unread.
     from main_logic.asr_client._infra import (
         AsrSessionConfig,
         _AsrWorkerEvent,
         _RealtimeAsrSessionImpl,
     )
+    from main_logic.asr_client.worker_failure import record_worker_failure
 
     async def fail_and_exit(request_queue, response_queue, _api_key, _config):
         await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        record_worker_failure(
+            request_queue,
+            "ASR_LOCAL_MODEL_LOAD_FAILED",
+            "faster-whisper model could not be loaded",
+        )
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="error",

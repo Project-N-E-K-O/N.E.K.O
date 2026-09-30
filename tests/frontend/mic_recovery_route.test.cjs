@@ -576,6 +576,18 @@ test('a recording window shows the model-load guidance even when its FAILED stat
     assert.equal(env.messages.at(-1), 'microphone.localAsrModelLoadFailed');
 });
 
+test('a cloud failure reason keeps the per-status toast instead of the generic text', () => {
+    const env = loadCapture(true);
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.S.voiceInputCurrentLeaseGeneration = 5;
+    env.status('ASR_INDEPENDENT_PROVIDER_UNAVAILABLE', {
+        provider: 'qwen', session_epoch: 12, lease_generation: 5,
+        reason: 'ASR_CONNECT_TIMEOUT',
+    });
+    assert.equal(env.messages.at(-1), 'microphone.independentAsrProviderUnavailable');
+});
+
 test('BLOCKED for a warm-up timeout names the model-download guidance, not a raw key', () => {
     const env = loadCapture(true);
     env.loadWebsocket();

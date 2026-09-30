@@ -41,6 +41,7 @@ import functools
 import importlib
 import logging
 import os
+import queue
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ from ..delivery import (
     complete_transport_write,
     delivery_evidence,
 )
+from ..worker_failure import record_worker_failure
 from ..warmup import (
     begin_provider_warmup,
     complete_provider_warmup,
@@ -356,6 +358,49 @@ def _load_whisper_model(spec: _ModelSpec) -> _TranscribeModel:
     ) from (last_error or download_error)
 
 
+class _DaemonSerialExecutor(concurrent.futures.Executor):
+    """Run submitted calls one at a time, in order, on one daemon thread.
+
+    A ThreadPoolExecutor's threads are joined at interpreter exit, so a long
+    CPU decode still running would hold up shutdown. A work item cancelled
+    before it starts is skipped, as with ThreadPoolExecutor.
+    """
+
+    def __init__(self, thread_name: str) -> None:
+        self._thread_name = thread_name
+        self._items: "queue.SimpleQueue[tuple[Any, ...]]" = queue.SimpleQueue()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
+        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, name=self._thread_name, daemon=True
+                )
+                self._thread.start()
+        self._items.put((future, fn, args, kwargs))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            future, fn, args, kwargs = self._items.get()
+            if not future.set_running_or_notify_cancel():
+                continue
+            done = False
+            try:
+                result = fn(*args, **kwargs)
+                done = True
+            except Exception as exc:
+                future.set_exception(exc)
+            finally:
+                if done:
+                    future.set_result(result)
+                elif not future.done():
+                    future.set_exception(RuntimeError("decode was interrupted"))
+
+
 @dataclass(slots=True)
 class _PoolEntry:
     model: _TranscribeModel | None
@@ -382,7 +427,7 @@ class _WhisperModelPool:
         # interpreter joins executor threads at exit, so a stalled first-use
         # download would otherwise hold up application shutdown.
         self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
-        self._decoder_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._decoder_executor: _DaemonSerialExecutor | None = None
         self._decode_slots_used = 0
         # Specs loaded at least once in this process: loading one again is a
         # reload after idling, not a first use that may have to download.
@@ -402,7 +447,7 @@ class _WhisperModelPool:
             if self._decode_slots_used > 0:
                 self._decode_slots_used -= 1
 
-    def decoder_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def decoder_executor(self) -> "_DaemonSerialExecutor":
         """The single thread every local decode runs on, process-wide.
 
         A session's decode cannot be interrupted once started, and a session
@@ -413,9 +458,10 @@ class _WhisperModelPool:
         """
         with self._state_lock:
             if self._decoder_executor is None:
-                self._decoder_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1,
-                    thread_name_prefix="faster-whisper-decode",
+                # A daemon thread: the interpreter does not wait for a long
+                # decode still running at exit.
+                self._decoder_executor = _DaemonSerialExecutor(
+                    "faster-whisper-decode"
                 )
             return self._decoder_executor
 
@@ -731,6 +777,9 @@ async def faster_whisper_asr_worker(
         if failure_sent:
             return
         failure_sent = True
+        # Published before the event: the worker may return right after, and
+        # the session must still see this code, not a generic exit.
+        record_worker_failure(request_queue, code, message)
         generation, buffer_epoch, utterance_id = (
             item_key if item_key is not None else (last_generation, 0, None)
         )

@@ -1559,6 +1559,15 @@
     // by the terminal failure status), when it has its own explanation.
     function independentAsrFailureToastText(reason) {
         var t = window.t;
+        return independentAsrReasonToastText(reason)
+            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
+    }
+
+    // The explanation for a failure reason that has one of its own, or ''.
+    // Other reasons (e.g. a cloud ASR_CONNECT_TIMEOUT) keep the per-status
+    // messages instead of a generic "check the configuration".
+    function independentAsrReasonToastText(reason) {
+        var t = window.t;
         if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
             return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
         }
@@ -1570,7 +1579,7 @@
         if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
             return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
         }
-        return t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.';
+        return '';
     }
 
     // The persistent "local model preparing" notice (ASR_INDEPENDENT_PREPARING
@@ -4028,15 +4037,14 @@
                             // The provider's / runtime's own failure code, when it
                             // sent one: replaces the generic text the BLOCKED
                             // lifecycle event has just shown.
-                            if (statusDetails && statusDetails.reason) {
-                                window.showStatusToast(
-                                    independentAsrFailureToastText(statusDetails.reason),
-                                    8000
-                                );
+                            var reasonToastText = independentAsrReasonToastText(
+                                statusDetails && statusDetails.reason
+                            );
+                            if (reasonToastText) {
+                                window.showStatusToast(reasonToastText, 8000);
                                 return;
                             }
-                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'
-                                    && !(statusDetails && statusDetails.reason)) {
+                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
                                 window.showStatusToast(
                                     window.t
                                         ? window.t('microphone.localAsrDependencyMissing')

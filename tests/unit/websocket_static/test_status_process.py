@@ -60,6 +60,7 @@ def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
     helper = source.split("function independentAsrFailureToastText(reason) {", 1)[1].split(
         "\n    }", 1
     )[0]
+    # BLOCKED always needs a message: unknown reasons get the generic text.
     assert "microphone.independentAsrFallback" in helper
 
     # Cross-reference comment so backend changes to the failure path get
