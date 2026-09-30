@@ -1004,9 +1004,9 @@
                     window.stopProactiveVisionDuringSpeech();
                 }
                 // 只临时停掉屏幕共享的发送，切换完成后按 shouldRestartScreening
-                // 恢复；进行中的换源重启和启动都要保留，不能走收尾的 stopScreening。
-                if (typeof window.pauseScreenFrameSender === 'function') {
-                    window.pauseScreenFrameSender();
+                // 恢复；进行中的换源重启和启动都要保留，不能用 teardownScreenSharing。
+                if (typeof window.stopScreening === 'function') {
+                    window.stopScreening();
                 }
                 // 停止静音检测
                 stopSilenceDetection();
@@ -1136,9 +1136,9 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
 
-                // 清理资源
-                if (typeof window.stopScreening === 'function') {
-                    window.stopScreening();
+                // 清理资源（会话结束：屏幕共享要完整收尾）
+                if (typeof window.teardownScreenSharing === 'function') {
+                    window.teardownScreenSharing();
                 }
                 stopSilenceDetection();
                 S.inputAnalyser = null;
@@ -2381,8 +2381,8 @@
             window.invalidatePendingMusicSearch();
         }
 
-        if (typeof window.stopScreening === 'function') {
-            window.stopScreening();
+        if (typeof window.teardownScreenSharing === 'function') {
+            window.teardownScreenSharing();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (typeof window.removeExternalAsrPreview === 'function') {

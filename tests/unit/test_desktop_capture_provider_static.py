@@ -278,12 +278,11 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
     # Whitespace-insensitive: a native start, a switch restart or any start in
     # flight also counts as sharing, so switching sources restarts it.
-    assert re.search(
-        r"var isScreenSharingRunning = isNativeCaptureActive\s*\|\|"
-        r"\s*!!\(stopBtn && !stopBtn\.disabled\)\s*\|\|"
-        r"\s*sourceSwitchRestart !== null;",
-        select_source,
-    )
+    assert "var isScreenSharingRunning = isScreenShareRunning();" in select_source
+    running = screen.split("function isScreenShareRunning()", 1)[1][:400]
+    assert "activeNativeCaptureSourceId !== null" in running
+    assert re.search(r"!!\(stop && !stop\.disabled\)", running)
+    assert "sourceSwitchRestart !== null" in running
     assert re.search(
         r"var isScreenSharingActive = isScreenSharingRunning\s*\|\|"
         r"\s*isScreenSharingStartPending\(\);",
@@ -291,27 +290,41 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     )
 
 
-def test_sender_only_callers_pause_instead_of_tearing_down() -> None:
-    # window.stopScreening is a teardown: it cancels a source-switch restart
-    # and any start in flight. Callers that only pause the frame sender while
-    # manual sharing continues (microphone switch, privacy mode) must use
-    # window.pauseScreenFrameSender, or the new source never resumes.
+def test_screening_callers_pick_pause_or_teardown_explicitly() -> None:
+    # window.stopScreening keeps its original meaning (pause the frame sender).
+    # Real teardowns (session end, backend error, goodbye) call
+    # window.teardownScreenSharing, which also cancels a source-switch restart
+    # and any start in flight. Pausing callers must not tear down, or the new
+    # source never resumes.
     screen = read_text("static/app/app-screen.js")
     audio = read_text("static/app/app-audio-capture.js")
     settings = read_text("static/app/app-settings.js")
-    assert "window.stopScreening = stopScreeningForTeardown;" in screen
-    assert "window.pauseScreenFrameSender = stopScreening;" in screen
-    teardown = screen.split("function stopScreeningForTeardown()", 1)[1][:600]
+    buttons = read_text("static/app/app-buttons.js")
+    websocket = read_text("static/app/app-websocket.js")
+    assert "window.stopScreening = stopScreening;" in screen
+    assert "window.teardownScreenSharing = teardownScreenSharing;" in screen
+    teardown = screen.split("function teardownScreenSharing()", 1)[1][:1200]
     assert "cancelPendingScreenSharingStart();" in teardown
     assert "sourceSwitchRestart = null;" in teardown
+    # isRecording may still be on during stopRecording: only clear indicators.
+    assert "clearScreenSharingIndicators()" in teardown
+    assert "finishScreenSharingStopped" not in teardown
 
     mic_switch = audio.split("const shouldRestartScreening", 1)[1][:1500]
-    assert "window.pauseScreenFrameSender();" in mic_switch
-    assert "window.stopScreening(" not in mic_switch
+    assert "window.stopScreening();" in mic_switch
+    assert "window.teardownScreenSharing(" not in mic_switch
+
+    stop_recording = audio.split("function stopRecording(options)", 1)[1][:3000]
+    assert "window.teardownScreenSharing();" in stop_recording
+    assert "window.stopScreening(" not in stop_recording
+    assert "window.teardownScreenSharing();" in buttons
+    assert "window.stopScreening(" not in buttons
+    assert websocket.count("window.teardownScreenSharing();") == 3
+    assert "window.stopScreening(" not in websocket
 
     privacy = settings.split("function stopVisionAfterPrivacyEnabled()", 1)[1][:1500]
-    assert "window.pauseScreenFrameSender();" in privacy
-    assert "window.stopScreening(" not in privacy
+    assert "window.stopScreening();" in privacy
+    assert "window.teardownScreenSharing(" not in privacy
     # A manual start still waiting on its permission request is manual
     # sharing too: privacy mode must leave its stream alone.
     assert re.search(r"window\.isScreenSharingStartPending\(\)\)\s*return;", privacy)

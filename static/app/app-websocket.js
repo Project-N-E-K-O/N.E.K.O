@@ -3624,7 +3624,7 @@
                     var translatedMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMsg, 4000);
 
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
 
                     if (S.screenCaptureStream) {
                         S.screenCaptureStream.getTracks().forEach(function (track) { track.stop(); });
@@ -5174,7 +5174,7 @@
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
-                        if (typeof window.stopScreening === 'function') window.stopScreening();
+                        if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -5520,7 +5520,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                     stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 

@@ -1182,8 +1182,8 @@
 
         try {
             // 这里停的是主动视觉的发送，不是收尾，不取消任何分享启动。
-            if (typeof window.pauseScreenFrameSender === 'function') {
-                window.pauseScreenFrameSender();
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
             }
         } catch (error) {
             console.warn('[app-settings] 停止屏幕发送循环失败:', error);

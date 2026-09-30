@@ -16,6 +16,7 @@ def _install_screen_source_harness(
     thumbnail_timeout_ms: int = 15_000,
     source_enumeration_may_prompt: bool = False,
     initial_storage: dict[str, str] | None = None,
+    mobile: bool = False,
 ) -> None:
     page.set_content(
         '<div id="live2d-popup-screen" '
@@ -43,7 +44,7 @@ def _install_screen_source_harness(
             window.appConst = {
                 SCREEN_SOURCE_THUMBNAIL_TIMEOUT: options.thumbnailTimeoutMs,
             };
-            window.appUtils = { isMobile: () => false };
+            window.appUtils = { isMobile: () => options.mobile };
             window.safeT = (_key, fallback) => fallback;
             window.t = (key, options = {}) => {
                 if (key === 'app.screenSource.loading') return 'Loading...';
@@ -100,6 +101,7 @@ def _install_screen_source_harness(
             "thumbnailTimeoutMs": thumbnail_timeout_ms,
             "sourceEnumerationMayPrompt": source_enumeration_may_prompt,
             "initialStorage": initial_storage or {},
+            "mobile": mobile,
         },
     )
     page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
@@ -1685,6 +1687,8 @@ def test_pick_while_a_start_is_pending_shares_the_new_source(
             share.holds.add('window:2');
             share.holds.add('window:7');
             const start = window.startScreenSharing();
+            // What a caller like the voice auto-share reads once its start returns.
+            const startResult = start.then(() => share.state().active);
             await share.waitFor(() => share.pending.length > 0);
             const pick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
             await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1703,7 +1707,13 @@ def test_pick_while_a_start_is_pending_shares_the_new_source(
                 new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
             ]);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            return { pendingAfterPick, pickSettled, calls: share.calls, ...share.state() };
+            return {
+                pendingAfterPick,
+                pickSettled,
+                activeWhenStartReturned: await startResult,
+                calls: share.calls,
+                ...share.state(),
+            };
         }""",
         then,
     )
@@ -1712,6 +1722,7 @@ def test_pick_while_a_start_is_pending_shares_the_new_source(
     assert result == {
         "pendingAfterPick": True,
         "pickSettled": True,
+        "activeWhenStartReturned": sharing,
         "calls": ["window:2", "window:7"],
         "active": sharing,
         "stopEnabled": sharing,
@@ -1752,6 +1763,7 @@ def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> 
         "stop",
         "toggle",
         "teardown",
+        "session_end",
         "session_flag",
         "sender_pause",
         "external_start_rejected",
@@ -1761,7 +1773,9 @@ def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> 
 def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
     # The controls keep showing "sharing" through a source switch's pause.
     # stop / toggle: both read as "stop" and must stay stopped.
-    # teardown: window.stopScreening (backend error, session end, goodbye).
+    # teardown: window.teardownScreenSharing (backend error, goodbye).
+    # session_end: stopRecording tears down while isRecording is still on; the
+    #   screen button must not be re-enabled nor proactive vision re-armed.
     # session_flag: the session ended (isRecording off) with nothing else
     #   telling the restart; it must not start or complain about the mic.
     # sender_pause: switching microphones only pauses the frame sender; the
@@ -1781,6 +1795,10 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
             await window.startScreenSharing();
             if (gesture === 'external_start_rejected') share.rejects.add('window:5');
             if (gesture === 'external_start_rejected_late') share.holds.add('window:5');
+            let proactiveResumes = 0;
+            window.appState.proactiveVisionEnabled = true;
+            window.startProactiveVisionDuringSpeech = () => { proactiveResumes += 1; };
+            const screenDisabledBefore = document.getElementById('screenButton').disabled;
 
             const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1793,11 +1811,15 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
             } else if (gesture === 'toggle') {
                 await window.switchScreenSharing();
             } else if (gesture === 'teardown') {
-                window.stopScreening();
+                window.teardownScreenSharing();
+            } else if (gesture === 'session_end') {
+                // stopRecording order: tear down first, clear isRecording after.
+                window.teardownScreenSharing();
+                window.appState.isRecording = false;
             } else if (gesture === 'session_flag') {
                 window.appState.isRecording = false;
             } else if (gesture === 'sender_pause') {
-                window.pauseScreenFrameSender();
+                window.stopScreening();
             } else if (gesture === 'external_start_rejected') {
                 await window.startScreenSharing();
             } else if (gesture === 'external_start_rejected_late') {
@@ -1818,11 +1840,28 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
                 micToasts: share.toasts.filter(
                     (m) => m === 'app.micRequired' || m === 'app.micNotOpen'
                 ).length,
+                screenDisabledBefore,
+                screenDisabledAfter: document.getElementById('screenButton').disabled,
+                proactiveResumes,
             };
         }""",
         gesture,
     )
 
+    if gesture == "session_end":
+        # The session's own teardown owns the buttons; ours must not re-enable
+        # the screen button.
+        assert result.pop("screenDisabledAfter") is result["screenDisabledBefore"]
+    else:
+        result.pop("screenDisabledAfter")
+    result.pop("screenDisabledBefore")
+    # Proactive vision is re-armed once when a share really stops while the
+    # session goes on, never twice (stop and the waking restart), and not at
+    # all on a teardown or when sharing resumes.
+    assert result.pop("proactiveResumes") == (
+        1 if gesture in ("stop", "toggle", "external_start_rejected", "external_start_rejected_late")
+        else 0
+    )
     resumed = gesture == "sender_pause"
     assert result == {
         "duringPause": {"active": True, "stopEnabled": True, "pending": False},
@@ -1861,8 +1900,8 @@ def test_gestures_while_source_switch_restart_awaits_capture(
             await share.waitFor(() => share.pending.length > 0);
             const whileWaiting = { ...share.state(), pending: window.isScreenSharingStartPending() };
             if (gesture === 'teardown') {
+                window.teardownScreenSharing();
                 window.appState.isRecording = false;
-                window.stopScreening();
             } else if (gesture === 'toggle') {
                 await window.switchScreenSharing();
             } else {
@@ -1965,6 +2004,78 @@ def test_cancelled_start_does_not_act_on_late_source_validation(page: Page) -> N
     )
 
     assert result == {"selected": "window:old", "stored": "window:old", "calls": []}
+
+
+@pytest.mark.frontend
+def test_privacy_releases_a_reused_stream_when_the_start_does_not_happen(
+    page: Page,
+) -> None:
+    # Privacy mode leaves a manual start in flight alone, including the
+    # proactive-vision stream it reuses. When that start is torn down before
+    # it shares, nothing uses the stream any more: release it right away.
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const stream = document.createElement('canvas').captureStream(1);
+            window.appState.screenCaptureStream = stream;
+            window.appState.proactiveVisionEnabled = false;
+            let releaseAudio;
+            window.ensureAudioPlayerContext = () => new Promise((resolve) => {
+                releaseAudio = resolve;
+            });
+            const start = window.startScreenSharing();
+            await window.__share.waitFor(() => typeof releaseAudio === 'function');
+            window.teardownScreenSharing();
+            await start;
+            releaseAudio();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+                cached: window.appState.screenCaptureStream === stream,
+                trackState: stream.getVideoTracks()[0].readyState,
+            };
+        }"""
+    )
+
+    assert result == {"cached": False, "trackState": "ended"}
+
+
+@pytest.mark.frontend
+def test_cancelled_mobile_camera_start_stays_quiet(page: Page) -> None:
+    # A cancelled camera start (mobile) must not report its late failure.
+    _install_screen_source_harness(page, mobile=True)
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            const rejects = [];
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia() {
+                        share.calls.push('camera');
+                        return new Promise((_, reject) => { rejects.push(reject); });
+                    },
+                },
+            });
+            const start = window.startScreenSharing();
+            await share.waitFor(() => rejects.length > 0);
+            await window.stopScreenSharing();
+            await start;
+            rejects.splice(0).forEach((reject) => reject(new Error('camera busy')));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+                cameraAttempts: share.calls.length,
+                errorToasts: share.toasts.filter((m) => m.includes('camera busy')).length,
+            };
+        }"""
+    )
+
+    # The first camera failed after the cancel: no other camera is tried and
+    # nothing is reported.
+    assert result == {"cameraAttempts": 1, "errorToasts": 0}
 
 
 @pytest.mark.frontend

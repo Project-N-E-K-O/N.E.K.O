@@ -453,6 +453,7 @@ function discardCancelledScreenSharingStart(attempt) {{
   discardCalls += 1;
   return attempt.cancelled;
 }}
+function releaseReusedStreamUnderPrivacy() {{}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
@@ -717,7 +718,7 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     )[1].split("\n    };", 1)[0]
     # Every stop also drops a source-switch restart that has not started yet.
     assert "sourceSwitchRestart = null;" in stop
-    assert "return releaseScreenSharing(forceRelease, false);" in stop
+    assert "releaseScreenSharing(forceRelease, false);" in stop
     assert "cancelPendingScreenSharingStart();" in stop_body
     assert "if (isScreenSharingStartPending())" in switch
 

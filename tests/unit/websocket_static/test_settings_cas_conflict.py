@@ -120,7 +120,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             focusModeEnabled: false,
             stopProactiveVisionDuringSpeech() { runtime.stoppedSpeech += 1; },
             // Privacy mode only pauses the frame sender; it never tears down.
-            pauseScreenFrameSender() { runtime.stoppedScreening += 1; },
+            stopScreening() { runtime.stoppedScreening += 1; },
             scheduleProactiveChat() { runtime.scheduled += 1; },
             addEventListener(type, listener) {
               if (type === 'storage') storageListener = listener;
