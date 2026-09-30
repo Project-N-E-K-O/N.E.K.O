@@ -107,8 +107,13 @@ _QUARANTINED_TOOL_IDS: dict[str, set[str]] = {}
 logger = logging.getLogger(__name__)
 
 
-def _fsync_directory(path: Path | str) -> None:
-    """Best-effort persistence for a directory entry on supported platforms."""
+def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
+    """Best-effort persistence for a directory entry on supported platforms.
+
+    Platforms that cannot open a directory are always tolerated. With ``strict``,
+    an ``fsync`` failure on an opened directory propagates, for callers that must
+    not continue unless the entry change is durable.
+    """
     try:
         handle = os.open(str(path), os.O_RDONLY)
     except OSError:
@@ -116,7 +121,8 @@ def _fsync_directory(path: Path | str) -> None:
     try:
         os.fsync(handle)
     except OSError:
-        pass
+        if strict:
+            raise
     finally:
         os.close(handle)
 
@@ -654,7 +660,8 @@ class AvatarToolStore:
                 shutil.rmtree(marker)
             else:
                 marker.unlink(missing_ok=True)
-            _fsync_directory(marker.parent)
+            # 撤授权没落盘就清副本，崩溃后授权可能重新出现在半删的副本旁边。
+            _fsync_directory(marker.parent, strict=True)
         except OSError as exc:
             raise AvatarToolStoreError(
                 "tool_delete_failed",

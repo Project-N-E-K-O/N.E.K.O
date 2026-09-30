@@ -1630,6 +1630,31 @@ def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_p
     assert final.is_dir()
 
 
+def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+
+    def failing_fsync(_fd):
+        raise OSError("simulated I/O error")
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", failing_fsync)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    # 撤授权没能落盘：副本和正式目录都不能动。
+    assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert final.is_dir()
+
+
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
