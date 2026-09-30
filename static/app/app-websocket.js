@@ -3983,7 +3983,6 @@
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
-                            tearDownBlockedVoiceRoute();
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
