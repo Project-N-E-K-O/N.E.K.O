@@ -286,6 +286,7 @@ async def _qwen_finish_and_reconnect(
     finish_task = asyncio.create_task(state.finish_received.wait())
     queue_task = asyncio.create_task(request_queue.get())
     deadline = asyncio.get_running_loop().time() + _QWEN_FINISH_TIMEOUT_SECONDS
+    deferred_shutdown: _AsrWorkerRequest | None = None
     try:
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
@@ -297,11 +298,16 @@ async def _qwen_finish_and_reconnect(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if queue_task in done:
-                deferred_requests.append(queue_task.result())
-                queue_task = asyncio.create_task(request_queue.get())
+                arrived = queue_task.result()
+                if arrived.kind == "shutdown":
+                    deferred_shutdown = arrived
+                    break
+                # Keep the deferral bounded: leave subsequent audio in the
+                # public queue so its existing backpressure still applies.
+                deferred_requests.append(arrived)
                 if finish_task in done:
                     break
-                continue
+                break
             if finish_task in done:
                 break
             break
@@ -319,6 +325,20 @@ async def _qwen_finish_and_reconnect(
         await ws.close()
     except Exception:
         pass
+    if deferred_shutdown is not None:
+        state.shutdown_request = deferred_shutdown
+        if not state.closed_sent.is_set():
+            state.closed_sent.set()
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="closed",
+                    generation=deferred_shutdown.generation,
+                    buffer_epoch=deferred_shutdown.buffer_epoch,
+                    utterance_id=deferred_shutdown.utterance_id,
+                )
+            )
+        request_queue.task_done()
+        return "shutdown", deferred_shutdown
     return "reconnect", None
 
 
@@ -406,27 +426,39 @@ async def _qwen_sender(
                 if state.fallback_key is not None
                 else None
             )
-            tasks = {queue_task}
-            if fallback_task is not None:
-                tasks.add(fallback_task)
-            try:
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                # Ownership follows the actual task state after cancellation,
-                # not wait()'s earlier snapshot: a getter may finish meanwhile.
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-
             request: _AsrWorkerRequest | None = None
-            if not queue_task.cancelled():
+            try:
+                done, _ = await asyncio.wait(
+                    {queue_task, *({fallback_task} if fallback_task is not None else set())},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                queue_task.cancel()
+                if fallback_task is not None:
+                    fallback_task.cancel()
+                await asyncio.gather(
+                    queue_task,
+                    *( [fallback_task] if fallback_task is not None else [] ),
+                    return_exceptions=True,
+                )
+                raise
+            if queue_task in done:
                 request = queue_task.result()
-            else:
+                if fallback_task is not None and not fallback_task.done():
+                    fallback_task.cancel()
+                    await asyncio.gather(fallback_task, return_exceptions=True)
+            elif fallback_task is not None and fallback_task in done:
+                # Awaiting a getter after cancelling it lets a simultaneous
+                # completion win; only an actually cancelled getter requires a
+                # second queue read.
+                queue_task.cancel()
                 try:
-                    request = request_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+                    request = await queue_task
+                except asyncio.CancelledError:
+                    try:
+                        request = request_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        request = None
             if request is None:
                 # Endpoint/final processing may have cancelled fallback while
                 # we joined the getter.  Never read a cancelled getter result.

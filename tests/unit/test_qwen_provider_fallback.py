@@ -244,6 +244,8 @@ async def test_audio_arriving_after_finish_stays_bounded_and_reaches_new_connect
         for chunk in chunks:
             await requests.put(_AsrWorkerRequest("audio", 0, utterance_id=1, audio=chunk))
         await asyncio.wait_for(first_finish_waiting.wait(), 1)
+        # The control request may be the single bounded handoff; audio remains
+        # in the public queue and is still counted by normal backpressure.
         assert requests.waiting_audio_bytes == sum(map(len, chunks))
         assert not any(json.loads(p)["type"] == "input_audio_buffer.append" for p in first.sent)
         if acknowledge:
@@ -271,6 +273,41 @@ async def test_audio_arriving_after_finish_stays_bounded_and_reaches_new_connect
         })
         assert (await _next_event(responses, "final")).text == "new result"
         await _stop_worker(task, requests, responses, utterance_id=3)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_shutdown_during_finish_closes_old_session_without_reconnect(monkeypatch):
+    finish_sent = asyncio.Event()
+
+    async def on_send(ws, payload):
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "session.finish":
+            finish_sent.set()
+
+    first, second = _FakeWebSocket(on_send=on_send), _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    task = asyncio.create_task(qwen.qwen_asr_worker(
+        requests, responses, "key", AsrSessionConfig(endpointing_mode="provider")
+    ))
+    try:
+        await _next_event(responses, "ready")
+        await first.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
+        await _next_event(responses, "utterance_started")
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
+        await asyncio.wait_for(finish_sent.wait(), 1)
+        await requests.put(_AsrWorkerRequest("shutdown", 0, utterance_id=2))
+        closed = await _next_event(responses, "closed", timeout=2)
+        assert closed.utterance_id == 2
+        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(requests.join(), 1)
+        assert len(connector.calls) == 1
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
