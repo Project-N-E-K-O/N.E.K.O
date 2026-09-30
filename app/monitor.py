@@ -130,7 +130,7 @@ async def authenticate_monitor_websocket(websocket: WebSocket) -> bool:
     token = extract_monitor_token(headers=websocket.headers, query_token=websocket.query_params.get("token"), cookie_token=cookie_token)
     explicit_token = extract_monitor_token(headers=websocket.headers, query_token=websocket.query_params.get("token"))
     origin = websocket.headers.get("origin")
-    if cookie_token and not explicit_token and origin:
+    if monitor_auth_enabled() and cookie_token and not explicit_token and origin:
         expected_scheme = "https" if websocket.url.scheme == "wss" else "http"
         expected_origin = f"{expected_scheme}://{websocket.headers.get('host', '')}"
         parsed_origin = urlsplit(origin)

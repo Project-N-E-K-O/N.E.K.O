@@ -10,3 +10,4 @@ def test_monitor_connector_host_maps_wildcard_bind_addresses_to_loopback():
 def test_monitor_connector_host_preserves_specific_host():
     assert _monitor_connector_host("localhost") == "localhost"
     assert _monitor_connector_host("192.168.1.20") == "192.168.1.20"
+    assert _monitor_connector_host("::1") == "[::1]"

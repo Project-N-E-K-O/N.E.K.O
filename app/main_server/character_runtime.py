@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Optional
 from urllib.parse import urlsplit
+import ipaddress
 
 from PIL import Image
 
@@ -49,7 +50,13 @@ from plugin.sdk.shared.core.images import (
 def _monitor_connector_host(host: str) -> str:
     """Map wildcard bind addresses to a loopback dial target for local Monitor."""
 
-    return "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    if host in {"0.0.0.0", "::", "[::]"}:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return host
+    return f"[{address}]" if address.version == 6 else str(address)
 
 
 from utils.config_manager import get_reserved

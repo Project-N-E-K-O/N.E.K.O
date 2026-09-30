@@ -84,13 +84,13 @@ def test_cookie_authenticated_websocket_rejects_cross_origin(client):
 
 def test_cookie_authenticated_websocket_accepts_same_origin(client):
     with client.websocket_connect(
-        "/ws/neko",
+        "/subtitle_ws",
         headers={
             "Origin": "http://testserver",
             "Cookie": "monitor_token=route-secret",
         },
     ) as websocket:
-        assert websocket is not None
+        assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
 
 
 @pytest.mark.parametrize("path", ["/subtitle_ws", "/ws/neko", "/sync/neko", "/sync_binary/neko"])
