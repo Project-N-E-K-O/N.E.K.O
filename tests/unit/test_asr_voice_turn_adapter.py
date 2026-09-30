@@ -221,6 +221,7 @@ class _EvidenceSpy:
         self.accepted: list[bytes] = []
         self.current: list[bytes] = []
         self.completed: list[tuple[bytes, ...]] = []
+        self.completed_reasons: list[str] = []
 
     @property
     def enabled(self) -> bool:
@@ -232,8 +233,9 @@ class _EvidenceSpy:
         self.current.append(pcm16)
 
     def complete(self, *, identity, reason, probability, threshold) -> None:
-        del identity, reason, probability, threshold
+        del identity, probability, threshold
         self.completed.append(tuple(self.current))
+        self.completed_reasons.append(reason)
         self.current.clear()
 
     def discard(self) -> None:
@@ -1404,6 +1406,7 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
         committed.set()
 
     coordinator = _FakeCoordinator([_incomplete()] * 20)
+    evidence = _EvidenceSpy()
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
@@ -1413,6 +1416,7 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
         smart_turn_required=True,
         max_endpoint_wait_seconds=0.035,
     )
+    adapter._smart_turn_audio_evidence = evidence
     await adapter.start()
 
     await adapter.push_audio(
@@ -1424,6 +1428,7 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
     # A semantic "not finished yet" past the deadline is an answer, not an
     # endpointing failure: the turn is sealed once and the session survives.
     assert commits == [(31, 32, 33)]
+    assert evidence.completed_reasons == ["semantic_timeout"]
     assert coordinator.evaluate_calls >= 2
     assert adapter._failed is False
     await adapter.close()
