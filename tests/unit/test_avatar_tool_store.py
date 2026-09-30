@@ -1932,6 +1932,35 @@ def test_recovery_keeps_a_parked_copy_it_cannot_place_and_blocks_only_its_id(tmp
     assert restarted.delete_tool(other["id"]) == other["id"]
 
 
+def test_a_crash_while_parking_beside_a_directory_marker_recovers(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    parked = store.root / f".{tool_id}.retained"
+    # 副本已经停放、授权（被同步客户端换成了目录）还没移进去时崩溃。
+    shutil.copytree(final, parked)
+    marker.mkdir()
+    (marker / "stray.bin").write_bytes(b"synced")
+    parked_record = (parked / "record.json").read_bytes()
+
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    # 恢复不能卡在删不掉的目录授权上：副本连同原授权回到「保留副本」状态。
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    assert (deleting / "record.json").read_bytes() == parked_record
+    assert (marker / "stray.bin").read_bytes() == b"synced"
+    assert not parked.exists()
+    assert restarted.delete_tool(tool_id) == tool_id
+    assert not deleting.exists()
+    assert not final.exists()
+
+
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

@@ -1148,12 +1148,24 @@ class AvatarToolStore:
                 )
             ):
                 deleting = candidate.with_name(candidate.name.removesuffix(".unverified"))
+                parked = deleting.with_name(deleting.name.removesuffix(".deleting") + ".retained")
                 deleting_kind, _, probe_error = _probe_entry(deleting)
-                if probe_error is not None:
+                parked_kind, _, parked_error = _probe_entry(parked)
+                if probe_error is not None or parked_error is not None:
                     complete = False
-                elif deleting_kind == "absent":
-                    # 移动尚未发生就退出的授权记录不包含用户资源。
-                    candidate.unlink(missing_ok=True)
+                elif deleting_kind == "absent" and parked_kind == "absent":
+                    # 移动尚未发生就退出的授权记录不包含用户资源。授权位置可能被
+                    # 同步客户端换成目录，删不掉就留到下次，不能让整轮恢复抛出。
+                    try:
+                        if candidate.is_dir() and not candidate.is_symlink():
+                            shutil.rmtree(candidate)
+                        else:
+                            candidate.unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning("Deferring orphaned avatar tool authorization %s: %s", candidate.name, exc)
+                        complete = False
+                # 有停放的副本时，这份授权是副本停放到一半时留下的原授权：交给下面
+                # 停放副本的处理，随副本一起回到原位。
                 continue
             if not (
                 LOCAL_AVATAR_TOOL_UPLOAD_PATTERN.fullmatch(candidate.name)
