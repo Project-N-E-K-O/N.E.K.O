@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -275,11 +276,14 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "data:image/jpeg;base64," in screen
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
     assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
-    assert (
-        "var isScreenSharingActive = isNativeCaptureActive || "
-        "!!(stopBtn && !stopBtn.disabled)\n"
-        "            || sourceSwitchRestart !== null;"
-    ) in select_source
+    # Whitespace-insensitive: a native start or a switch restart in flight
+    # also counts as sharing, so switching sources restarts it.
+    assert re.search(
+        r"var isScreenSharingActive = isNativeCaptureActive\s*\|\|"
+        r"\s*!!\(stopBtn && !stopBtn\.disabled\)\s*\|\|"
+        r"\s*sourceSwitchRestart !== null;",
+        select_source,
+    )
 
 
 def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:

@@ -1479,8 +1479,8 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
 ) -> None:
     # "Remember window" holds the previous title. The portal answer is the
     # user's new choice: the running share must move to it. The render
-    # resolves before the restart so the caller can position the panel, but
-    # "choose again" stays disabled until the restart is done.
+    # resolves before the restart so the caller can position the panel;
+    # "choose again" stays usable (a newer pick supersedes this restart).
     _install_screen_source_harness(
         page,
         source_enumeration_may_prompt=True,
@@ -1537,14 +1537,14 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
                 selected: window.getSelectedScreenSourceId(),
             };
             const deadline = Date.now() + 5000;
-            while (chooseAgain.disabled && Date.now() < deadline) {
+            while (captureCalls.length < 2 && Date.now() < deadline) {
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
             return {
                 firstShare,
                 rememberedBefore,
                 whenRendered,
-                callsWhenEnabled: chooseAgain.disabled ? null : captureCalls.slice(),
+                callsAfterRestart: captureCalls.slice(),
                 remembered: window.__storedValues.get('selectedScreenWindowTitle'),
             };
         }"""
@@ -1556,10 +1556,10 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
         "whenRendered": {
             "rendered": True,
             "calls": ["window:2"],
-            "chooseAgainDisabled": True,
+            "chooseAgainDisabled": False,
             "selected": "window:5",
         },
-        "callsWhenEnabled": ["window:2", "window:5"],
+        "callsAfterRestart": ["window:2", "window:5"],
         "remembered": "Browser",
     }
 
@@ -1662,10 +1662,9 @@ def test_second_pick_during_restart_still_shares_the_new_source(
 
 
 @pytest.mark.frontend
-def test_stopping_a_stuck_portal_restart_reenables_choose_again(page: Page) -> None:
+def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> None:
     # The restart after a portal pick hangs on a capture that never settles.
-    # Stopping cancels that start; "choose again" must come back instead of
-    # waiting for the abandoned request forever.
+    # "Choose again" must stay usable: a newer pick supersedes that restart.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
     result = page.evaluate(
@@ -1709,39 +1708,31 @@ def test_stopping_a_stuck_portal_restart_reenables_choose_again(page: Page) -> N
             window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
             await window.renderFloatingScreenSourceList(popup);
             const chooseAgain = popup.querySelector('[data-neko-screen-source-deferred-load]');
-            let deadline = Date.now() + 5000;
+            const deadline = Date.now() + 5000;
             while (!captureCalls.includes('window:5') && Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 20));
-            }
-            const disabledWhileStuck = chooseAgain.disabled;
-            await window.stopScreenSharing();
-            deadline = Date.now() + 2000;
-            while (chooseAgain.disabled && Date.now() < deadline) {
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
             return {
                 calls: captureCalls,
-                disabledWhileStuck,
-                disabledAfterStop: chooseAgain.disabled,
+                disabledWhileStuck: chooseAgain.disabled,
             };
         }"""
     )
 
     assert result == {
         "calls": ["window:2", "window:5"],
-        "disabledWhileStuck": True,
-        "disabledAfterStop": False,
+        "disabledWhileStuck": False,
     }
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("gesture", ["stop", "toggle"])
-def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
-    page: Page, gesture: str,
-) -> None:
-    # Stopping while a source switch is in its pause must not be undone when
-    # that restart wakes up. The share toggle reads the pause as "sharing"
-    # (pending), so toggling there stops instead of starting a new share.
+@pytest.mark.parametrize("gesture", ["stop", "session_end", "toggle"])
+def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
+    # During a source switch's pause the controls show "not sharing".
+    # stop / session_end: the restart must not reopen the share when it wakes
+    #   (nor complain that the mic is off after the session ended).
+    # toggle: matches what the controls show, so it starts sharing; the
+    #   waking restart must not start a second time.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
     result = page.evaluate(
@@ -1777,33 +1768,36 @@ def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
             await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
             await window.startScreenSharing();
             document.getElementById('stopButton').disabled = false;
+            const toasts = [];
+            window.showStatusToast = (message) => { toasts.push(message); };
 
             const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             await new Promise((resolve) => setTimeout(resolve, 150));
             const pendingDuringPause = window.isScreenSharingStartPending();
             if (gesture === 'toggle') {
                 await window.switchScreenSharing();
+            } else if (gesture === 'session_end') {
+                window.appState.isRecording = false;
+                window.stopScreening();
             } else {
                 await window.stopScreenSharing();
             }
             await pick;
             return {
                 pendingDuringPause,
-                pendingAfter: window.isScreenSharingStartPending(),
                 calls: captureCalls,
                 selected: window.getSelectedScreenSourceId(),
-                stopDisabled: document.getElementById('stopButton').disabled,
+                micRequiredToasts: toasts.filter((m) => m === 'app.micRequired').length,
             };
         }""",
         gesture,
     )
 
     assert result == {
-        "pendingDuringPause": True,
-        "pendingAfter": False,
-        "calls": ["window:2"],
+        "pendingDuringPause": False,
+        "calls": ["window:2", "window:5"] if gesture == "toggle" else ["window:2"],
         "selected": "window:5",
-        "stopDisabled": True,
+        "micRequiredToasts": 0,
     }
 
 

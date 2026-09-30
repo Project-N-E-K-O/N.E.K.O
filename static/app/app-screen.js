@@ -1925,13 +1925,6 @@
     }
     mod.isScreenSharingStartPending = isScreenSharingStartPending;
 
-    // 给开关用的「启动中」：换源重启的停止和停顿期间界面已经复位，但分享在
-    // 逻辑上仍开着。开关这时应当按「停止」处理（停止会清掉重启令牌），
-    // 不能当成「开始」。启动本身的去重仍只看 isScreenSharingStartPending。
-    function isScreenSharingStartOrSwitchPending() {
-        return isScreenSharingStartPending() || sourceSwitchRestart !== null;
-    }
-
     function cancelPendingScreenSharingStart() {
         var attempt = screenSharingStartAttempt;
         if (!attempt) return false;
@@ -2690,7 +2683,7 @@
 
     // ======================== switchScreenSharing ========================
     window.switchScreenSharing = async function () {
-        if (isScreenSharingStartOrSwitchPending()) {
+        if (isScreenSharingStartPending()) {
             await stopScreenSharing();
         } else if (stopButton().disabled) {
             // 检查是否在录音状态
@@ -2826,8 +2819,12 @@
                 await stopScreenSharingForSourceSwitch(true);
                 // 等待一小段时间
                 await new Promise(function (resolve) { setTimeout(resolve, 300); });
-                // 重新开始分享（使用新选择的源）
-                if (sourceSwitchRestart === restartToken) {
+                // 重新开始分享（使用新选择的源）。停顿期间界面显示未共享，用户
+                // 可能已经点开关开始了分享；那次启动还在进行时这里会并入它，
+                // 已经开始了就不再重复启动。
+                var alreadySharing = activeNativeCaptureSourceId !== null
+                    || !!(stopBtn && !stopBtn.disabled);
+                if (sourceSwitchRestart === restartToken && !alreadySharing) {
                     await startScreenSharing();
                 }
             } finally {
@@ -2935,14 +2932,15 @@
         }
 
         // 采用系统对话框返回的唯一来源：它就是用户这次在系统层面的明确选择。
+        // 调用方不等它，所以整段都在 try 里，永远不会 reject。
         async function adoptPortalSource(portalSource) {
-            var portalLabel = portalSource.id.startsWith('screen:')
-                ? getGenericScreenSourceLabel(portalSource.id)
-                : getScreenSourceDisplayName(portalSource, null);
             // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
             // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建，还在等待的
             // 分享启动也要作废，不会把上一次选的窗口分享出去。
             try {
+                var portalLabel = portalSource.id.startsWith('screen:')
+                    ? getGenericScreenSourceLabel(portalSource.id)
+                    : getScreenSourceDisplayName(portalSource, null);
                 await selectScreenSource(
                     portalSource.id, portalSource.name, portalLabel, null, { force: true }
                 );
@@ -3029,9 +3027,7 @@
                 // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
                 // 容器已经开始了更新的一轮渲染时交给那一轮。
                 if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
-                    adoptPortalSource(sources[0]).catch(function (error) {
-                        console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
-                    });
+                    adoptPortalSource(sources[0]);
                 }
                 return false;
             }
@@ -3372,8 +3368,11 @@
             // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
             // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
             // 不等采用完成就返回：分享进行中时采用要走完停止、等待、重新开始，
-            // 调用方得先拿到渲染结果去定位面板、接上悬停保持。
-            var portalAdoption = isPortalPick ? adoptPortalSource(sources[0]) : null;
+            // 调用方得先拿到渲染结果去定位面板、接上悬停保持。采用期间马上再选
+            // 也安全：新选择会换掉换源重启令牌，并让还在等待的启动作废。
+            if (isPortalPick) {
+                adoptPortalSource(sources[0]);
+            }
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
@@ -3389,19 +3388,6 @@
                     window.t ? window.t('app.screenSource.chooseAgain') : '重新选择屏幕来源'
                 );
                 chooseAgainButton.style.marginTop = '6px';
-                if (portalAdoption) {
-                    // 采用（含分享重启）结束前禁用，否则用户马上再选时，还没
-                    // 结束的重启会把上一次的来源重新分享出去。
-                    chooseAgainButton.disabled = true;
-                    chooseAgainButton.style.cursor = 'progress';
-                    chooseAgainButton.style.opacity = '0.6';
-                    var restoreChooseAgainButton = function () {
-                        chooseAgainButton.disabled = false;
-                        chooseAgainButton.style.cursor = 'pointer';
-                        chooseAgainButton.style.opacity = '';
-                    };
-                    portalAdoption.then(restoreChooseAgainButton, restoreChooseAgainButton);
-                }
                 return true;
             }
 
@@ -3696,7 +3682,7 @@
     // ======================== Backward-compat window exports ========================
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
-    window.isScreenSharingStartPending = isScreenSharingStartOrSwitchPending;
+    window.isScreenSharingStartPending = isScreenSharingStartPending;
     window.selectScreenSource = selectScreenSource;
     window.getScreenSourceDisplayName = getScreenSourceDisplayName;
     window.captureCanvasFrame = captureCanvasFrame;
@@ -3707,7 +3693,12 @@
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
-    window.stopScreening = stopScreening;
+    // 会话收尾（结束语音、结束会话）直接调这个：同时取消还没走到启动的换源
+    // 重启，否则它醒来后会在会话已结束时再去启动分享。
+    window.stopScreening = function () {
+        sourceSwitchRestart = null;
+        stopScreening();
+    };
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;

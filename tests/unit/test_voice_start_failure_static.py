@@ -719,12 +719,7 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     assert "sourceSwitchRestart = null;" in stop
     assert "return stopScreenSharingForSourceSwitch(forceRelease);" in stop
     assert "cancelPendingScreenSharingStart();" in stop_body
-    # A source-switch restart's pause counts as pending for every toggle.
-    assert "if (isScreenSharingStartOrSwitchPending())" in switch
-    assert (
-        "window.isScreenSharingStartPending = isScreenSharingStartOrSwitchPending;"
-        in screen_source
-    )
+    assert "if (isScreenSharingStartPending())" in switch
 
     toggle = common_ui_source.split(
         "window.toggleScreenShare = function () {", 1
