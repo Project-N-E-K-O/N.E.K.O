@@ -1160,17 +1160,15 @@ async def _store_session(
     if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
         raise _ClientBindingConflict()
 
+    from main_routers import community_oauth
+
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,
         "refresh_token": refresh,
         "local_user_id": local_user_id,
         "auth_source": normalized_source,
-        "user": {
-            "id": local_user_id,
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": community_oauth._persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
     await asyncio.to_thread(
@@ -1335,14 +1333,13 @@ async def auth_status_endpoint(request: Request):
             "user": community_oauth._public_user_profile(u),
             "bind": bind,
         }
-    # 云端暂时校验不了（离线、超时、5xx、refresh unavailable）时本地会话仍在，
-    # 前端据此区分“明确登出”和“状态未知”，不能把后者提示成去登录。
-    # 云端已明确拒绝、只是本地清理失败而残留的快照不算。
+    # 云端暂时校验不了时本地会话仍在，前端据此区分“明确登出”和“状态未知”，
+    # 不能把后者提示成去登录。
     return {
         "logged_in": False,
         "user": None,
         "bind": None,
-        "session_saved": bool(status.get("snapshot")) and not status.get("rejected"),
+        "session_saved": community_oauth.status_session_saved(status),
     }
 
 
@@ -1453,34 +1450,29 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     # issued delegate immediately after the community tab opens.
     from main_routers import community_oauth
 
-    for _attempt in range(2):
-        status = await community_oauth.resolve_saved_oauth_status()
-        if not status.get("logged_in"):
-            # A snapshot the cloud already rejected (local cleanup failed) is a
-            # definite logout, not an unverifiable session.
-            if status.get("snapshot") and not status.get("rejected"):
-                return None, "unavailable"
-            return None, "missing"
+    status = await community_oauth.resolve_saved_oauth_status()
+    if not status.get("logged_in"):
+        return None, (
+            "unavailable" if community_oauth.status_session_saved(status) else "missing"
+        )
 
-        snapshot = await asyncio.to_thread(_desktop_session_snapshot)
-        if snapshot is None:
-            return None, "missing"
-        verified = status.get("snapshot") or {}
-        credentials_changed = any(
-            snapshot.get(key) != verified.get(key)
-            for key in ("base_url", "access_token", "refresh_token")
-        )
-        identity_changed = any(
-            verified.get(key) and snapshot.get(key) != verified.get(key)
-            for key in ("local_user_id", "auth_source")
-        )
-        if not (credentials_changed or identity_changed):
-            break
-        # A local replacement after cloud validation is not itself validated;
-        # usually it is a concurrent token refresh, so validate it once more.
-    else:
-        # Still churning: the session exists but cannot be pinned right now.
-        # Report it as retryable rather than as a logout.
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    if snapshot is None:
+        return None, "missing"
+    verified = status.get("snapshot") or {}
+    credentials_changed = any(
+        snapshot.get(key) != verified.get(key)
+        for key in ("base_url", "access_token", "refresh_token")
+    )
+    identity_changed = any(
+        verified.get(key) and snapshot.get(key) != verified.get(key)
+        for key in ("local_user_id", "auth_source")
+    )
+    if credentials_changed or identity_changed:
+        # A local replacement after cloud validation is not itself validated,
+        # but a session still exists -- usually a concurrent token refresh.
+        # Report it as retryable (503) rather than as a logout (409); the
+        # caller retries instead of paying for a second cloud validation here.
         return None, "unavailable"
     # A concurrent proof request may have backfilled missing identity metadata
     # for these same validated credentials. Preserve that verified enrichment.
@@ -2003,10 +1995,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
     except _InvalidIdentityResponse as exc:
         return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
+    from main_routers import community_oauth
+
     return JSONResponse(
         {
             "ok": True,
-            "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+            "user": community_oauth._public_user_profile(user),
             "bind": bind,
         },
         headers=cors,

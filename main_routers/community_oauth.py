@@ -435,6 +435,15 @@ async def _resolve_saved_oauth_status(
     return status
 
 
+def status_session_saved(status: dict[str, Any]) -> bool:
+    """A saved session the cloud could not verify right now (offline, 5xx, refresh unavailable).
+
+    Not logged in, but also not a definite logout: a snapshot the cloud already
+    rejected and only local cleanup left behind does not count.
+    """
+    return bool(status.get("snapshot")) and not status.get("rejected")
+
+
 async def _run_oauth_status_resolution(
     records_key: str,
     records: tuple[dict | None, dict],

@@ -3031,6 +3031,29 @@ async def test_recoverable_bind_error_still_persists_validated_login(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_store_session_persists_the_shared_masked_profile(tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_get_client_id", lambda: None)
+
+    await C._store_session(
+        "https://community.example",
+        "new-token",
+        "new-refresh",
+        {"id": USER_A_ID, "username": "neko", "phone": "13800000000"},
+    )
+
+    saved_user = json.loads(auth.read_text(encoding="utf-8"))["user"]
+    assert saved_user == {
+        "id": USER_A_ID,
+        "display_name": "neko",
+        "email": None,
+        "phone": "138****0000",
+    }
+
+
+@pytest.mark.asyncio
 async def test_store_session_offloads_local_credential_io(monkeypatch):
     event_loop_thread = threading.get_ident()
     worker_threads: dict[str, int] = {}
@@ -3600,8 +3623,49 @@ async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validat
 
     monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: {**_delegate_session(), **replacement})
-    snapshot, _failure = await C._native_delegate_session_snapshot()
+    snapshot, failure = await C._native_delegate_session_snapshot()
     assert snapshot is None
+    # A session still exists (usually a concurrent refresh): retryable 503, not a 409 logout.
+    assert failure == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_native_session_snapshot_validates_the_cloud_once(monkeypatch):
+    from main_routers import community_oauth
+
+    calls = []
+
+    async def validated_previous_session():
+        calls.append(1)
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
+    monkeypatch.setattr(
+        C, "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "access_token": "rotated-token"},
+    )
+    await C._native_delegate_session_snapshot()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status, expected", [
+    ({"logged_in": False, "snapshot": None}, "missing"),
+    ({"logged_in": False, "snapshot": {"access_token": "t"}}, "unavailable"),
+    ({"logged_in": False, "snapshot": {"access_token": "t"}, "rejected": True}, "missing"),
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_treats_a_cloud_rejected_leftover_as_logout(
+    monkeypatch, status, expected,
+):
+    from main_routers import community_oauth
+
+    async def resolved():
+        return status
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    snapshot, failure = await C._native_delegate_session_snapshot()
+    assert snapshot is None
+    assert failure == expected
 
 
 @pytest.mark.parametrize("missing_metadata", [

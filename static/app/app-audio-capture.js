@@ -1331,7 +1331,7 @@
         }, SETTINGS_MIC_VOLUME_TEST_MAX_MS);
     }
 
-    // 正式录音已接管时，临时 probe 立即让位，避免两路流同时占着麦克风。
+    // 正式录音开始占用麦克风时，临时 probe 立即让位，避免两路流同时占着麦克风。
     function yieldSettingsMicVolumeProbeToLive() {
         if (!settingsMicVolumeTest) return;
         if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
@@ -2133,6 +2133,10 @@
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
         pendingMicStartUiOwnerToken = micStartToken;
+        // 正式录音一开始占设备就让位，不等到提交：独占式采集的驱动上，
+        // probe 还开着会让正式录音的 getUserMedia 以 NotReadableError 失败。
+        // 没能提交时 finally 会把试麦还回去。
+        yieldSettingsMicVolumeProbeToLive();
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -2550,9 +2554,19 @@
 
     // liveOnly：主页面弹窗只反映真正送给 AI 的音量，不借设置页试麦的 probe，
     // 否则没在录音时弹窗也会显示“正在收音”。
-    // 只读：probe 的让位 / 重建由正式录音的状态转换驱动，轮询方不会因此开关麦克风。
+    // 采样本身不开关设备：probe 的让位 / 重建由正式录音的状态转换驱动。
+    // 兜底：有些 teardown（WebSocket 断线等）直接改 S.isRecording，不经过那些转换点，
+    // probe 会一直停在 live。这里只把恢复排进微任务，由 resume 自己再判断一次。
     function sampleMicVolumeLevel(options) {
         const liveOnly = !!(options && options.liveOnly);
+        if (
+            !liveOnly
+            && settingsMicVolumeTest
+            && settingsMicVolumeTest.mode === 'live'
+            && !isLiveMicCaptureActiveOrPending()
+        ) {
+            scheduleSettingsMicVolumeProbeResume();
+        }
         let analyser = null;
         if (S.isRecording && S.inputAnalyser) analyser = S.inputAnalyser;
         else if (!liveOnly && settingsMicVolumeTest) analyser = settingsMicVolumeTest.analyser;
@@ -2810,9 +2824,11 @@
         // 等授权 / 开设备期间用户又切了麦克风：此时还没有 probe，restart 找不到对象，
         // 由这里丢掉旧设备的流，按新选中的设备重开。
         let stream = null;
+        let fellBack = false;
         for (;;) {
             const selectionGeneration = microphoneSelectionGeneration;
             const selectedMicrophoneId = S.selectedMicrophoneId;
+            fellBack = false;
             try {
                 stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(selectedMicrophoneId));
             } catch (error) {
@@ -2820,6 +2836,7 @@
                 if (selectionGeneration !== microphoneSelectionGeneration) continue;
                 if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
                 stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                fellBack = true;
             }
             // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
             if (!isCurrent()) {
@@ -2830,6 +2847,9 @@
             stopMicrophoneStreamTracks(stream);
             stream = null;
         }
+        // 和正式录音一样：选中的设备用不了、实际测的是系统默认麦克风时，把选中项改过去，
+        // 否则设置页还显示原设备名，用户会以为那个设备是好的。
+        if (fellBack) applySystemDefaultMicrophoneSelection();
         // 等待期间正式录音已启动或开始接管：让位给正式录音。
         if (isLiveMicCaptureActiveOrPending()) {
             stopMicrophoneStreamTracks(stream);
@@ -2867,7 +2887,7 @@
                 releaseSettingsMicVolumeProbe();
                 return { ok: false };
             }
-            return { ok: true, mode: 'probe' };
+            return fellBack ? { ok: true, mode: 'probe', fellBack: true } : { ok: true, mode: 'probe' };
         } catch (error) {
             if (probe && settingsMicVolumeTest === probe) settingsMicVolumeTest = null;
             stopMicrophoneStreamTracks(stream);
@@ -2880,9 +2900,13 @@
     // start 在第一个 await 之前就同步清掉了旧标记，重建进行中的采样会直接返回 idle，
     // 所以不需要另设“重建中”标志。本代次的重建失败写入 failed 终态交给设置页，
     // 不在 80ms 的轮询里反复重试。
+    // 最近一次内部重开：{ generation, pending }。设置页那次 start 被它越过时跟随它的结果。
+    let settingsMicVolumeReopen = null;
+
     function reopenSettingsMicVolumeProbe() {
         const pending = startSettingsMicVolumeTest();
         const generation = settingsMicVolumeGeneration;
+        settingsMicVolumeReopen = { generation, pending };
         const markFailed = function () {
             if (generation === settingsMicVolumeGeneration && settingsMicVolumeTest === null) {
                 settingsMicVolumeTest = { mode: 'failed' };
@@ -2918,15 +2942,29 @@
     // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
     // 入口先计时，兜住挂起中的 start；成功后再从头计时，让 20s 从设置页 15s 倒计时开始时算起。
     // 被 stop / 新一轮 start 越过的旧 start 不碰 watchdog。
+    // 失败时带上 error（NotAllowedError 等），设置页据此区分“去授权”和“设备不可用”。
+    // start 期间被内部 reopen（切换设备）越过不算失败，跟随那次 reopen 的结果；
+    // 被 stop 或设置页新一轮 start 越过才是过期。
     async function startSettingsMicVolumeTestFromSettings() {
         armSettingsMicVolumeWatchdog();
-        const pending = startSettingsMicVolumeTest();
-        const generation = settingsMicVolumeGeneration;
+        let pending = startSettingsMicVolumeTest();
+        let generation = settingsMicVolumeGeneration;
         let result;
-        try {
-            result = await pending;
-        } catch (_) {
-            result = { ok: false };
+        for (;;) {
+            try {
+                result = await pending;
+            } catch (error) {
+                result = { ok: false, error: (error && error.name) || 'Error' };
+            }
+            const reopen = settingsMicVolumeReopen;
+            if (
+                generation === settingsMicVolumeGeneration
+                || !reopen
+                || reopen.generation !== settingsMicVolumeGeneration
+                || reopen.pending === pending
+            ) break;
+            pending = reopen.pending;
+            generation = reopen.generation;
         }
         if (generation === settingsMicVolumeGeneration) {
             if (result && result.ok === true) armSettingsMicVolumeWatchdog();

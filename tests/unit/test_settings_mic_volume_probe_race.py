@@ -366,8 +366,9 @@ async function deviceSwitchDuringPermissionCase() {
          'the mic-A stream granted after the switch is released, mic-B runs');
 }
 
-async function samplerIsReadOnlyCase() {
-  // 轮询只读：正式录音结束后，采样不会自己重建 probe（重建只由 stopRecording 等转换点触发）。
+async function directTeardownResumesProbeCase() {
+  // WebSocket 断线等路径直接把 isRecording 置 false，不经过 stopRecording。
+  // 采样本身仍不开设备，但会排一次恢复：重复轮询只重建一个 probe。
   const env = loadModule();
   assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
   await env.mod.startMicCapture();
@@ -375,8 +376,89 @@ async function samplerIsReadOnlyCase() {
   env.S.inputAnalyser = null;
   const streamsBefore = env.streams.length;
   for (let i = 0; i < 3; i += 1) env.mod.sampleMicVolumeLevel();
+  assert(env.streams.length === streamsBefore, 'sampling itself must not open a microphone');
   await settle(10);
-  assert(env.streams.length === streamsBefore, 'sampling must not open a microphone');
+  assert(env.streams.length === streamsBefore + 1 && isLive(env.streams[streamsBefore]),
+         'a direct teardown rebuilds exactly one probe');
+  assert(env.mod.sampleMicVolumeLevel().recording === true, 'the rebuilt probe reports a level again');
+  const liveOnlyEnv = loadModule();
+  assert((await liveOnlyEnv.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts');
+  await liveOnlyEnv.mod.startMicCapture();
+  liveOnlyEnv.S.isRecording = false;
+  const liveOnlyBefore = liveOnlyEnv.streams.length;
+  liveOnlyEnv.mod.sampleMicVolumeLevel({ liveOnly: true });
+  await settle(10);
+  assert(liveOnlyEnv.streams.length === liveOnlyBefore, 'a liveOnly sample never rebuilds the probe');
+}
+
+async function probeYieldsWhenLiveStartClaimsDeviceCase() {
+  // 独占式驱动上两路流会冲突：正式录音一开始占设备就让位，不等提交。
+  const env = loadModule();
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts first');
+  const release = env.parkGetUserMedia();
+  const starting = env.mod.startMicCapture();
+  await settle();
+  assert(!isLive(env.streams[0]) && env.contexts[0].state === 'closed',
+         'the probe releases the device before the live getUserMedia resolves');
+  release();
+  await starting;
+  assert(env.S.isRecording === true && isLive(env.S.stream), 'the live recording commits');
+}
+
+async function fallbackUpdatesSelectionCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'usb-mic';
+  env.failNextGetUserMedia(mediaError('NotFoundError'));
+  const result = await env.win.startSettingsMicVolumeTest();
+  assert(result.ok === true && result.fellBack === true, 'a fallback is reported to the settings page');
+  assert(env.S.selectedMicrophoneId === null,
+         'the selection follows the device actually being tested');
+
+  const plain = loadModule();
+  plain.S.selectedMicrophoneId = 'usb-mic';
+  const plainResult = await plain.win.startSettingsMicVolumeTest();
+  assert(plainResult.fellBack === undefined && plain.S.selectedMicrophoneId === 'usb-mic',
+         'a working selected device is left alone');
+}
+
+async function failureReportsErrorNameCase() {
+  const env = loadModule();
+  env.failNextGetUserMedia(mediaError('NotAllowedError'));
+  const result = await env.win.startSettingsMicVolumeTest();
+  assert(result.ok === false && result.error === 'NotAllowedError',
+         'a permission denial reaches the settings page by name');
+}
+
+async function deviceSwitchDuringResumeCountsAsSuccessCase() {
+  // 设置页的 start 停在 context.resume() 时切了麦克风：内部 reopen 越过它不算失败。
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  env.S.selectedMicrophoneId = 'mic-A';
+  const Base = env.win.AudioContext;
+  let firstContext = null;
+  let releaseResume;
+  const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+  env.win.AudioContext = class extends Base {
+    constructor(options) {
+      super(options);
+      if (!firstContext) { firstContext = this; this.state = 'suspended'; }
+    }
+    resume() {
+      if (this !== firstContext) return super.resume();
+      return resumeGate.then(() => { this.state = 'running'; });
+    }
+  };
+  const pending = env.win.startSettingsMicVolumeTest();
+  await settle();
+  await env.win.selectMicrophone('mic-B');
+  await settle(10);
+  releaseResume();
+  const result = await pending;
+
+  assert(result.ok === true && result.mode === 'probe', 'the settings start follows the reopen and succeeds');
+  assert(env.getUserMediaCalls[env.getUserMediaCalls.length - 1].audio.deviceId.exact === 'mic-B',
+         'the running probe is on mic-B');
+  assert(activeWatchdogTimers(timers).length === 1, 'the watchdog stays armed for the running probe');
 }
 
 async function liveDeviceSwitchKeepsProbeOffCase() {
@@ -423,7 +505,11 @@ async function liveDeviceSwitchKeepsProbeOffCase() {
   await rebuildFailureIsTerminalCase();
   await deviceSwitchReopensProbeCase();
   await deviceSwitchDuringPermissionCase();
-  await samplerIsReadOnlyCase();
+  await directTeardownResumesProbeCase();
+  await probeYieldsWhenLiveStartClaimsDeviceCase();
+  await fallbackUpdatesSelectionCase();
+  await failureReportsErrorNameCase();
+  await deviceSwitchDuringResumeCountsAsSuccessCase();
   await liveDeviceSwitchKeepsProbeOffCase();
   console.log('HARNESS_OK');
 })().catch((error) => {

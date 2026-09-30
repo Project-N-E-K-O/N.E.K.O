@@ -127,6 +127,36 @@ def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_pat
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("value", [
+    "https://auth.example.test?x=1",
+    "https://auth.example.test/#frag",
+    "ftp://auth.example.test",
+    "auth.example.test",
+])
+def test_validate_http_url_rejects_values_that_cannot_take_a_path(value):
+    from utils import social_base
+
+    with pytest.raises(ValueError):
+        social_base.validate_http_url(value, name="NEKO_AUTH_URL")
+
+
+@pytest.mark.unit
+def test_invalid_auth_url_falls_back_and_is_reported_once(monkeypatch, caplog):
+    from utils import social_base
+
+    social_base._resolve_auth_public_url.cache_clear()
+    monkeypatch.setenv("NEKO_AUTH_URL", "https://auth.example.test?x=1")
+    with caplog.at_level("ERROR", logger=social_base.logger.name):
+        results = {social_base.auth_public_url() for _ in range(3)}
+    social_base._resolve_auth_public_url.cache_clear()
+
+    assert results == {"https://auth.project-neko.cn"}
+    errors = [r for r in caplog.records if "NEKO_AUTH_URL" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].levelname == "ERROR"
+
+
+@pytest.mark.unit
 def test_system_status_reports_migration_required_when_storage_selection_is_blocking(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 

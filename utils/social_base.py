@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from urllib.parse import urlparse
@@ -18,13 +19,22 @@ DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 
 
 def validate_http_url(value: str, *, name: str, allow_empty: bool = False) -> str:
-    """Return ``value`` stripped, or raise ``ValueError`` unless it is an http(s) URL."""
+    """Return ``value`` stripped, or raise ``ValueError`` unless it is an http(s) base URL.
+
+    Callers append paths (``/oauth2/auth``, ``/api/v1/...``) to these values, so a
+    query or fragment would swallow the appended path and is rejected as well.
+    """
 
     value = value.strip()
     if allow_empty and not value:
         return value
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
         raise ValueError(f"{name} must be a valid http(s) URL")
     if parsed.username or parsed.password:
         raise ValueError(f"{name} must not include credentials")
@@ -51,11 +61,22 @@ def auth_public_url() -> str:
     purge must agree on this origin.
     """
 
-    raw = (os.environ.get("NEKO_AUTH_URL", "") or "").strip().rstrip("/")
+    return _resolve_auth_public_url(os.environ.get("NEKO_AUTH_URL", "") or "")
+
+
+@functools.lru_cache(maxsize=8)
+def _resolve_auth_public_url(raw: str) -> str:
+    # Called on every OAuth request and social-config poll; cache per raw value
+    # so a misconfiguration is reported once instead of on every request.
+    value = raw.strip().rstrip("/")
     try:
         # Same rule the plugin settings enforce, so both see one origin.
-        raw = validate_http_url(raw, name="NEKO_AUTH_URL", allow_empty=True)
+        value = validate_http_url(value, name="NEKO_AUTH_URL", allow_empty=True)
     except ValueError as exc:
-        logger.warning("%s; falling back to %s", exc, DEFAULT_AUTH_URL)
+        logger.error(
+            "%s; OAuth and logout will use the production IdP %s instead",
+            exc,
+            DEFAULT_AUTH_URL,
+        )
         return DEFAULT_AUTH_URL
-    return raw or DEFAULT_AUTH_URL
+    return value or DEFAULT_AUTH_URL
