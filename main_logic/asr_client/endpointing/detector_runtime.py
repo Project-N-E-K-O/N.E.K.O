@@ -130,7 +130,7 @@ class _VoiceTurnAdapter:
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
         on_completion_fence: Callable[
-            [int, int, int, DetectorIngressIdentity], _Identity
+            [int, int, int, DetectorIngressIdentity], _Identity | None
         ]
         | None = None,
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
@@ -1215,15 +1215,20 @@ class _VoiceTurnAdapter:
         evaluation_tail: tuple[_AudioItem, ...],
         wait_for_commit: bool = False,
     ) -> None:
-        self._strict_endpoint_deadline = None
-        self._smart_turn_diagnostics.complete(reason=reason)
-        self._complete_observed_candidate(detector_identity)
         active_identity = identity
         if self._on_completion_fence is not None and detector_identity is not None:
             active_identity = self._on_completion_fence(
                 *identity,
                 detector_identity,
             )
+            if active_identity is None:
+                # The detector retired this result (for example, after an
+                # overflow reset). Do not publish stale observability data or
+                # complete the retired candidate.
+                return
+        self._strict_endpoint_deadline = None
+        self._smart_turn_diagnostics.complete(reason=reason)
+        self._complete_observed_candidate(detector_identity)
         if active_identity == identity:
             self._observe_evaluation_tail(evaluation_tail)
         self._smart_turn_audio_evidence.complete(
@@ -1585,11 +1590,12 @@ class DetectorRuntime:
                 buffer_epoch: int,
                 turn_id: int,
                 identity: DetectorIngressIdentity,
-            ) -> _Identity:
+            ) -> _Identity | None:
                 if identity.detector_epoch != self._detector_epoch:
                     # A result evaluated before an overflow reset must not
-                    # advance the successor epoch's semantic identity.
-                    return (generation, buffer_epoch, turn_id)
+                    # advance the successor epoch's semantic identity or
+                    # publish stale diagnostics/evidence.
+                    return None
                 successor_present = self._sequence_no > identity.sequence_no
                 fence = SmartTurnCompletionFence(
                     detector_epoch=identity.detector_epoch,

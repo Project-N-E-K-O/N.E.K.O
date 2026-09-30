@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -2620,7 +2620,21 @@ async def test_pre_overflow_completion_cannot_advance_successor_epoch() -> None:
 
     # The adapter was still publishing a completion evaluated before the
     # overflow; neither callback may rewrite or complete the fresh epoch.
-    assert completion_fence(*stale_semantic, stale_ingress) == stale_semantic
+    assert completion_fence(*stale_semantic, stale_ingress) is None
+    semantic_adapter._identity = stale_semantic
+    diagnostics = MagicMock()
+    evidence = MagicMock()
+    semantic_adapter._smart_turn_diagnostics = diagnostics
+    semantic_adapter._smart_turn_audio_evidence = evidence
+    await semantic_adapter._publish_complete_result(
+        stale_semantic,
+        stale_ingress,
+        "candidate_pause",
+        probability=0.9,
+        evaluation_tail=(),
+    )
+    diagnostics.complete.assert_not_called()
+    evidence.complete.assert_not_called()
     await commit(*stale_semantic)
 
     assert (
