@@ -1129,6 +1129,54 @@ def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
     ) == (0 if uses_uv else 1)
 
 
+def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
+    # uv runs in target.cwd; a relative --python or --target must still mean
+    # what it meant here, where the pip attempt resolved it.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(
+        deps_cmd, "_probe_target", lambda python: _target(cwd=tmp_path / "launcher-dir")
+    )
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+    relative_python = os.path.join("env", "bin", "python")
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=Path("staging"), python=relative_python,
+    ) == 0
+    uv_command = calls[-1]
+    assert uv_command[uv_command.index("--python") + 1] == str(tmp_path / relative_python)
+    assert uv_command[uv_command.index("--target") + 1] == str(tmp_path / "staging")
+
+
+def test_bare_python_name_stays_a_path_lookup():
+    from plugin.neko_plugin_cli.commands.deps_cmd import _absolute_if_path
+
+    assert _absolute_if_path("python3") == "python3"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink and permission bits")
+def test_symlinked_lock_dir_is_not_used_or_chmodded(tmp_path, monkeypatch):
+    # chmod would follow the link and close a shared directory to others.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o775)
+    cache = tmp_path / "cache"
+    (cache / "neko-plugin").mkdir(parents=True)
+    (cache / "neko-plugin" / "sync-locks").symlink_to(shared, target_is_directory=True)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+
+    lock_dir = real_lock_dir()
+    assert lock_dir == tmp_path / "tmp" / f"neko-plugin-sync-{os.getuid()}"
+    assert shared.stat().st_mode & 0o777 == 0o775
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_lock_dir_that_is_open_to_others_is_closed(tmp_path, monkeypatch):
     # mkdir(mode=0o700) leaves an existing, world-writable dir as it is.

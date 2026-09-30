@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import uuid
@@ -332,11 +333,21 @@ def _make_private(directory: Path) -> None:
     mkdir(mode=0o700) does not touch an existing directory, which may have
     been created (or later opened up) with group/world write access.
     """
-    info = directory.stat()
+    # lstat: a symlinked lock dir would make the chmod below change whatever
+    # shared directory it points to.
+    info = directory.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise PermissionError(f"lock directory {directory} is a symlink")
     if info.st_uid != os.getuid():
         raise PermissionError(f"lock directory {directory} is owned by another user")
     if info.st_mode & 0o077:
         os.chmod(directory, 0o700)
+
+
+def _absolute_if_path(program: str) -> str:
+    if any(sep and sep in program for sep in (os.sep, os.altsep)):
+        return os.path.abspath(program)
+    return program
 
 
 def _short_token() -> str:
@@ -564,8 +575,10 @@ def _pip_install_to_vendor(
     result = _run_installer(
         [
             uv, "pip", "install",
-            "--python", python,
-            "--target", str(vendor_dir),
+            # uv runs in target.cwd, so pin paths given relative to this
+            # process's cwd (a bare name like "python3" stays a PATH lookup).
+            "--python", _absolute_if_path(python),
+            "--target", str(vendor_dir.absolute()),
             "--upgrade",
             *(["--no-index"] if no_index else []),
             *packages,
