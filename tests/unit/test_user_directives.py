@@ -151,6 +151,52 @@ def test_directive_patterns_have_capture_group():
         )
 
 
+# ── 1b. ko 模板的空白不能被任意瓜分（ReDoS） ─────────────────────
+
+
+@pytest.mark.parametrize("text,expected_term", [
+    # 模板 1：话题 / 触发词 / 助词之间多打的空白（含 tab）照样认
+    ("그 일   에 대해서는   그만 얘기해줘", "그 일"),
+    ("회사  얘기   는   그만해", "회사"),
+    ("시험 얘기\t그만", "시험"),
+    # 模板 3：可选的 이/가 两侧都有空白
+    ("숙제  가   듣기 싫어", "숙제"),
+    ("야근   짜증나", "야근"),
+])
+def test_extract_directives_ko_whitespace_runs(text, expected_term):
+    """Extra whitespace around the ko topic still yields the same term.
+
+    Pins the behaviour the atomic ``(?>\\s*)`` runs in the ko templates must keep.
+    """
+    terms = {t for loc, _kind, t in extract_directives(text) if loc == "ko"}
+    assert terms == {expected_term}, terms
+
+
+@pytest.mark.parametrize("text", [
+    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 5~7 秒
+    " " * 480,
+    # 模板 1：触发词后的 ``\s*(?:는|은)?\s*`` 同形，前面垫一段空白让话题有很多种
+    # 切法走到 ``말``，未原子化时 1.6 秒（模板 3 同一输入 8 秒）
+    " " * 39 + "말" + " " * 480,
+], ids=["spaces", "padded_keyword"])
+def test_extract_directives_whitespace_does_not_blow_up(text):
+    """``extract_directives`` runs synchronously on every user message with no
+    length cap, so a whitespace-heavy message must not stall it.
+
+    Before the ko templates' whitespace runs were made atomic, these inputs took
+    several seconds; now they take roughly 0.2s. The ceiling is loose on purpose
+    (shared CI runners), while still far below the cubic-growth numbers.
+    """
+    import time
+
+    # 预热：别把首次正则编译算进去
+    extract_directives(" ")
+    started = time.perf_counter()
+    extract_directives(text)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.5, f"{elapsed:.3f}s"
+
+
 # ── 2. record dedup + refresh ────────────────────────────────────
 
 
