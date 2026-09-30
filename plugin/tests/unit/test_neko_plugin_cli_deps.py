@@ -62,10 +62,12 @@ sys.exit(handle_sync(argparse.Namespace(plugin=str(p), python=sys.executable,
 
     def install(command, **kwargs):
         # The first sync holds its OS lock while invoking the installer.
+        # Run from the repo root so `import plugin` works wherever pytest runs.
         child = real_run([sys.executable, "-c", child_code, str(plugin_dir)],
-                         capture_output=True, text=True, timeout=30)
+                         capture_output=True, text=True, timeout=30,
+                         cwd=Path(__file__).resolve().parents[3])
         assert child.returncode == 1
-        assert "sync already in progress" in child.stderr
+        assert "sync already in progress" in child.stderr, child.stderr
         target = Path(command[command.index("--target") + 1])
         (target / "fresh.py").write_text("complete")
         return subprocess.CompletedProcess(command, 0, stdout="ok")
@@ -181,6 +183,7 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
     backup, = plugin_dir.glob(".vendor.backup-*")
     assert not vendor.exists()
     assert (backup / "old.py").read_text() == "keep"
+    assert (backup / ".recovery-pending").is_file()
     assert "Could not roll back vendor" in capsys.readouterr().err
     monkeypatch.setattr(
         deps_cmd.subprocess,
@@ -188,7 +191,67 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
         lambda *args, **kwargs: pytest.fail("installer must not run before recovery"),
     )
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    # Still blocked when something recreates vendor/ before the retry.
+    vendor.mkdir()
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
     assert backup.exists()
+
+
+def test_uv_env_maps_pip_index_variables_without_overriding_uv():
+    from plugin.neko_plugin_cli.commands.deps_cmd import _uv_env_from_pip
+
+    env = _uv_env_from_pip({
+        "PIP_INDEX_URL": "https://mirror/simple",
+        "PIP_EXTRA_INDEX_URL": "https://extra/simple",
+    })
+    assert env["UV_INDEX_URL"] == "https://mirror/simple"
+    assert env["UV_EXTRA_INDEX_URL"] == "https://extra/simple"
+
+    env = _uv_env_from_pip({
+        "PIP_INDEX_URL": "https://mirror/simple",
+        "UV_DEFAULT_INDEX": "https://uv/simple",
+        "PIP_EXTRA_INDEX_URL": "https://extra/simple",
+        "UV_INDEX": "https://uv-extra/simple",
+    })
+    assert "UV_INDEX_URL" not in env
+    assert "UV_EXTRA_INDEX_URL" not in env
+
+
+def test_uv_fallback_receives_pip_index_env(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror/simple")
+    monkeypatch.delenv("UV_INDEX_URL", raising=False)
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+    envs = []
+
+    def run(command, **kwargs):
+        envs.append(kwargs.get("env"))
+        if command[0] == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert deps_cmd._pip_install_to_vendor(
+        ["httpx"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    assert envs[0] is None
+    assert envs[1]["UV_INDEX_URL"] == "https://mirror/simple"
+
+
+def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    stale = tmp_path / ".vendor.staging-killed"
+    stale.mkdir()
+
+    def fail(path, *args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(deps_cmd.shutil, "rmtree", fail)
+    deps_cmd._remove_stale_staging(tmp_path)
+    assert "Could not remove stale staging dir" in capsys.readouterr().err
 
 
 def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(

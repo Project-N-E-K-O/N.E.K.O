@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -187,7 +188,10 @@ def _short_token() -> str:
 def _remove_stale_staging(plugin_dir: Path) -> None:
     for path in plugin_dir.glob(f"{VENDOR_SYNC_STAGING_PREFIX}*"):
         if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path, ignore_errors=True)
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
 
 
 def _retained_backups(plugin_dir: Path) -> list[Path]:
@@ -269,6 +273,7 @@ def _pip_install_to_vendor(
             *packages,
         ],
         label="uv pip install",
+        env=_uv_env_from_pip(os.environ),
     )
     if result is None:
         return 1
@@ -279,7 +284,28 @@ def _pip_install_to_vendor(
     return 0
 
 
-def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
+# uv does not read pip's index variables; map them over unless the user
+# already configured uv's own. pip.conf cannot be read without pip.
+_PIP_TO_UV_INDEX_ENV = (
+    ("PIP_INDEX_URL", "UV_INDEX_URL", ("UV_INDEX_URL", "UV_DEFAULT_INDEX")),
+    ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL", ("UV_EXTRA_INDEX_URL", "UV_INDEX")),
+)
+
+
+def _uv_env_from_pip(environ: Mapping[str, str]) -> dict[str, str]:
+    env = dict(environ)
+    for pip_name, uv_name, uv_names in _PIP_TO_UV_INDEX_ENV:
+        if env.get(pip_name) and not any(env.get(name) for name in uv_names):
+            env[uv_name] = env[pip_name]
+    return env
+
+
+def _run_installer(
+    cmd: list[str],
+    *,
+    label: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -287,6 +313,7 @@ def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=env,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)
@@ -335,14 +362,19 @@ def _roll_back_vendor(vendor_dir: Path, backup_dir: Path) -> None:
         )
         return
     try:
-        # A failed rename leaves vendor/ missing, which still blocks retries.
-        (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+        # Keep the marker on the backup until the rename succeeds, so a failed
+        # rollback stays blocking even if vendor/ reappears before a retry.
         backup_dir.replace(vendor_dir)
     except OSError as exc:
         print(
             f"[FAIL] Could not roll back vendor; backup retained at {backup_dir}: {exc}",
             file=sys.stderr,
         )
+        return
+    try:
+        (vendor_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"[WARN] Could not clear recovery marker in {vendor_dir}: {exc}", file=sys.stderr)
 
 
 def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
