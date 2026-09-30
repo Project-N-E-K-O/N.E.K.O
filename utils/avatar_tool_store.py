@@ -666,6 +666,18 @@ class AvatarToolStore:
         deleting_kind, _, probe_error = _probe_entry(deleting)
         if probe_error is not None:
             raise _storage_total_unavailable() from probe_error
+        if deleting_kind == "absent":
+            marker_kind, _, probe_error = _probe_entry(deleting.with_name(f"{deleting.name}.unverified"))
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+            if marker_kind == "dir":
+                # 授权位置被一个恢复不敢删的目录占着：这个 ID 的删除写不进授权，
+                # 只拦这一个 ID。
+                raise AvatarToolStoreError(
+                    "tool_recovery_pending",
+                    "An interrupted change of this avatar tool is still awaiting recovery",
+                    status_code=409,
+                )
         if deleting_kind != "absent":
             recovery_pending = AvatarToolStoreError(
                 "tool_recovery_pending",
@@ -1154,16 +1166,21 @@ class AvatarToolStore:
                 if probe_error is not None or parked_error is not None:
                     complete = False
                 elif deleting_kind == "absent" and parked_kind == "absent":
-                    # 移动尚未发生就退出的授权记录不包含用户资源。授权位置可能被
-                    # 同步客户端换成目录，删不掉就留到下次，不能让整轮恢复抛出。
-                    try:
-                        if candidate.is_dir() and not candidate.is_symlink():
-                            shutil.rmtree(candidate)
-                        else:
-                            candidate.unlink(missing_ok=True)
-                    except OSError as exc:
-                        logger.warning("Deferring orphaned avatar tool authorization %s: %s", candidate.name, exc)
+                    candidate_kind, _, probe_error = _probe_entry(candidate)
+                    if probe_error is not None:
                         complete = False
+                    elif candidate_kind == "dir":
+                        # 本模块只会在这里写文件；目录是同步客户端或手工操作放进来的，
+                        # 里面是什么无从确认，不能递归删掉。保留现场、不判恢复未完成，
+                        # 由 _require_no_pending_recovery 只拦这一个 ID。
+                        logger.warning("Preserving directory at avatar tool authorization path %s", candidate)
+                    else:
+                        # 移动尚未发生就退出的授权记录不包含用户资源。
+                        try:
+                            candidate.unlink(missing_ok=True)
+                        except OSError as exc:
+                            logger.warning("Deferring orphaned avatar tool authorization %s: %s", candidate.name, exc)
+                            complete = False
                 # 有停放的副本时，这份授权是副本停放到一半时留下的原授权：交给下面
                 # 停放副本的处理，随副本一起回到原位。
                 continue

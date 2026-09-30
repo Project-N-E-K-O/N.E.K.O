@@ -1961,6 +1961,30 @@ def test_a_crash_while_parking_beside_a_directory_marker_recovers(tmp_path, monk
     assert not final.exists()
 
 
+def test_recovery_never_recursively_deletes_a_directory_at_an_orphan_marker_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    # 授权位置出现一个目录（同步客户端放进来的），旁边既没有 .deleting 也没有停放的副本。
+    marker.mkdir()
+    (marker / "unknown.bin").write_bytes(b"not ours")
+
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    # 里面是什么无从确认：不递归删除，恢复照常完成，只拦这一个 ID。
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    assert (marker / "unknown.bin").read_bytes() == b"not ours"
+    with pytest.raises(AvatarToolStoreError) as blocked:
+        restarted.delete_tool(tool_id)
+    assert (blocked.value.code, blocked.value.status_code) == ("tool_recovery_pending", 409)
+    other = restarted.create_tool_v3(manifest=_v3_manifest(f"local-{uuid.uuid4()}", name="Other"), uploads=[_png()])
+    assert restarted.delete_tool(other["id"]) == other["id"]
+
+
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
