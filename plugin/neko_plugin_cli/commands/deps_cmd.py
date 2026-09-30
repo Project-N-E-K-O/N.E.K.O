@@ -157,6 +157,7 @@ def handle_sync(args: argparse.Namespace) -> int:
                     if _mounted_inside(backup):
                         continue
                     shutil.rmtree(backup)
+                    _pending_marker(backup).unlink(missing_ok=True)
                 except OSError as exc:
                     print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
     except portalocker.exceptions.LockException:
@@ -179,7 +180,14 @@ def handle_sync(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 _HOST_PROVIDED = {"n-e-k-o"}
-_RECOVERY_MARKER = ".recovery-pending"
+# A backup whose swap or rollback has not finished carries a sibling marker
+# file. Keeping it beside the backup (never inside a vendor tree) means it
+# can not collide with package data or travel into vendor/.
+_PENDING_SUFFIX = ".pending"
+
+
+def _pending_marker(backup_dir: Path) -> Path:
+    return backup_dir.with_name(backup_dir.name + _PENDING_SUFFIX)
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -352,7 +360,7 @@ def _unreconciled_backups(plugin_dir: Path, vendor_dir: Path) -> list[Path]:
     whose cleanup failed, and does not block.
     """
     backups = _retained_backups(plugin_dir)
-    pending = [path for path in backups if (path / _RECOVERY_MARKER).is_file()]
+    pending = [path for path in backups if _pending_marker(path).is_file()]
     if pending:
         return pending
     return [] if vendor_dir.exists() else backups
@@ -373,10 +381,12 @@ def _pip_install_to_vendor(
 
     The uv fallback runs with uv's own configuration untouched. Mapping pip's
     index variables into UV_* would override uv.toml / [tool.uv] indexes,
-    because uv ranks environment variables above its config files. But when
-    pip has a package source that no matching uv variable covers, uv would
-    resolve from public PyPI instead, letting a same-name public package
-    stand in for a private one; that case fails closed.
+    because uv ranks environment variables above its config files. But uv
+    silently ignores pip's settings: a private index would fall through to
+    public PyPI (a same-name public package could stand in), and policies
+    like require-hashes or only-binary would be dropped. So any pip setting
+    that is not known to be harmless, and not covered by a matching uv
+    variable, fails closed.
     """
     if not packages:
         return 0
@@ -416,21 +426,20 @@ def _pip_install_to_vendor(
             file=sys.stderr,
         )
         return 1
-    sources, kinds = _pip_package_sources(python)
-    uncovered = [
-        kind for kind in sorted(kinds)
-        if not any(_uv_env_set(name) for name in _UV_COVERS[kind])
-    ]
+    uncovered: list[str] = []
+    for name, where in sorted(_pip_settings(python).items()):
+        if name in _PIP_HARMLESS_SETTINGS:
+            continue
+        covers = _UV_COVERS[_PIP_SETTING_KINDS.get(name, "other")]
+        if not any(_uv_env_set(uv_name) for uv_name in covers):
+            fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
+            uncovered.append(f"{name} from {', '.join(where)} ({fix})")
     if uncovered:
-        needed = "; ".join(
-            f"{kind}: {' or '.join(_UV_COVERS[kind])}" for kind in uncovered
-        )
         print(
-            "[FAIL] The target Python has no pip, and pip is configured with "
-            f"package source or hash settings ({', '.join(sources)}) that uv "
-            "does not read. Installing with uv would ignore them. "
-            f"Configure uv the same way ({needed}), or run "
-            "python -m ensurepip --upgrade.",
+            "[FAIL] The target Python has no pip, and pip has settings that uv "
+            f"does not read: {'; '.join(uncovered)}. Installing with uv would "
+            "ignore them. Configure uv the same way, or run "
+            "python -m ensurepip --upgrade so pip installs with its own settings.",
             file=sys.stderr,
         )
         return 1
@@ -454,29 +463,49 @@ def _pip_install_to_vendor(
     return 0
 
 
-# pip package-source settings (and the require-hashes install policy), by
-# kind, as env vars and config file keys.
-_PIP_ENV_KINDS = {
-    "PIP_INDEX_URL": "index",
-    "PIP_EXTRA_INDEX_URL": "extra-index",
-    "PIP_NO_INDEX": "no-index",
-    "PIP_FIND_LINKS": "find-links",
-    "PIP_REQUIRE_HASHES": "require-hashes",
-}
-_PIP_KEY_KINDS = {
+# pip settings by option name; env PIP_FOO_BAR is the same setting as the
+# config key foo-bar. Package-source and hash settings have uv counterparts.
+_PIP_SETTING_KINDS = {
     "index-url": "index",
     "extra-index-url": "extra-index",
     "no-index": "no-index",
     "find-links": "find-links",
     "require-hashes": "require-hashes",
 }
-_PIP_INDEX_KEYS = set(_PIP_KEY_KINDS)
-# Kinds set by a boolean; an explicit false value is no setting at all.
-_BOOLEAN_KINDS = {"no-index", "require-hashes"}
-# uv settings that keep each kind of pip source from falling through to
-# PyPI. pip's index-url replaces PyPI, so only a replaced uv default index
-# (or UV_NO_INDEX) covers it; UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS
-# are only added next to PyPI, so each covers only pip's additive kinds.
+# Settings that cannot make uv install different packages when dropped:
+# output, caching, retries and connection details (a missing certificate or
+# proxy only makes uv fail). Every other pip setting (only-binary,
+# constraint, pre, ...) has no checked uv counterpart here and blocks the
+# fallback, since uv would silently ignore it.
+_PIP_HARMLESS_SETTINGS = {
+    "break-system-packages",
+    "cache-dir",
+    "cert",
+    "client-cert",
+    "default-timeout",
+    "disable-pip-version-check",
+    "log",
+    "log-file",
+    "no-cache-dir",
+    "no-color",
+    "no-input",
+    "no-python-version-warning",
+    "no-warn-script-location",
+    "progress-bar",
+    "proxy",
+    "quiet",
+    "require-virtualenv",
+    "retries",
+    "root-user-action",
+    "timeout",
+    "trusted-host",
+    "user",
+    "verbose",
+}
+# uv settings that keep each kind of pip setting from being lost. pip's
+# index-url replaces PyPI, so only a replaced uv default index (or
+# UV_NO_INDEX) covers it; UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS are
+# only added next to PyPI, so each covers only pip's additive kinds.
 _UV_COVERS = {
     "index": ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_NO_INDEX"),
     "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
@@ -484,30 +513,28 @@ _UV_COVERS = {
     "no-index": ("UV_NO_INDEX",),
     # uv only reads its own variable; without it uv installs unhashed.
     "require-hashes": ("UV_REQUIRE_HASHES",),
+    "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_NO_INDEX", "UV_REQUIRE_HASHES"}
 
 
-def _pip_package_sources(python: str) -> tuple[list[str], set[str]]:
-    """Where pip takes non-default package sources from, and their kinds."""
-    sources: list[str] = []
-    kinds: set[str] = set()
-    for name, kind in _PIP_ENV_KINDS.items():
-        value = os.environ.get(name)
-        if value and not (kind in _BOOLEAN_KINDS and _pip_false(value)):
-            sources.append(name)
-            kinds.add(kind)
+def _pip_settings(python: str) -> dict[str, list[str]]:
+    """pip settings in effect in the environment or pip's config files,
+    mapped to where each one is set. Explicitly false values do not count."""
+    found: dict[str, list[str]] = {}
+    for env_name, value in os.environ.items():
+        upper = env_name.upper()
+        if upper.startswith("PIP_") and upper != "PIP_CONFIG_FILE" and value and not _pip_false(value):
+            found.setdefault(upper[4:].lower().replace("_", "-"), []).append(env_name)
     config_file = os.environ.get("PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
-        return sources, kinds
+        return found
     candidates = [Path(config_file)] if config_file else []
     for path in [*candidates, *_pip_config_files(python)]:
-        keys = _config_source_keys(path)
-        if keys:
-            sources.append(str(path))
-            kinds.update(_PIP_KEY_KINDS[key] for key in keys)
-    return sources, kinds
+        for key in _config_setting_keys(path):
+            found.setdefault(key, []).append(str(path))
+    return found
 
 
 def _pip_config_files(python: str) -> list[Path]:
@@ -539,23 +566,23 @@ def _pip_config_files(python: str) -> list[Path]:
     return files
 
 
-def _config_source_keys(path: Path) -> set[str]:
+def _config_setting_keys(path: Path) -> set[str]:
     parser = configparser.RawConfigParser()
     try:
         if not parser.read(path, encoding="utf-8"):
             return set()
     except (configparser.Error, UnicodeDecodeError):
-        # pip itself would reject this file; assume the strictest setting.
-        return set(_PIP_INDEX_KEYS)
+        # pip itself would reject this file; it counts as an unknown setting.
+        return {"(unreadable config)"}
     # Any file enabling a setting counts, even if another file might override
     # it: emulating pip's full config precedence is not worth the risk here,
-    # and the error in that case only asks for an equivalent uv setting.
+    # and the error in that case only asks for a uv setting or pip itself.
     return {
         key.replace("_", "-")
         for section in parser.sections()
         for key, value in parser[section].items()
-        if not (_PIP_KEY_KINDS.get(key.replace("_", "-")) in _BOOLEAN_KINDS and _pip_false(value))
-    } & _PIP_INDEX_KEYS
+        if not _pip_false(value)
+    }
 
 
 def _uv_env_set(name: str) -> bool:
@@ -602,7 +629,7 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
         if had_vendor:
             # Persist the uncertain state before the second rename, so a crash
             # or a failed rollback leaves a backup that blocks plain retries.
-            (backup_dir / _RECOVERY_MARKER).touch()
+            _pending_marker(backup_dir).touch()
         staging_dir.replace(vendor_dir)
     except OSError as exc:
         _report_replace_failure(vendor_dir, exc)
@@ -611,9 +638,9 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
         return False
     if had_vendor:
         try:
-            (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+            _pending_marker(backup_dir).unlink(missing_ok=True)
         except OSError as exc:
-            print(f"[WARN] Could not clear recovery marker in {backup_dir}: {exc}", file=sys.stderr)
+            print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
         shutil.rmtree(backup_dir, ignore_errors=True)
     return True
 
@@ -639,9 +666,10 @@ def _roll_back_vendor(vendor_dir: Path, backup_dir: Path) -> None:
         )
         return
     try:
-        (vendor_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+        _pending_marker(backup_dir).unlink(missing_ok=True)
     except OSError as exc:
-        print(f"[WARN] Could not clear recovery marker in {vendor_dir}: {exc}", file=sys.stderr)
+        # Without its backup dir the marker blocks nothing.
+        print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
 
 
 def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
@@ -668,10 +696,6 @@ def _clean_vendor(vendor_dir: Path) -> None:
     # Remove .pyc files
     for pyc in vendor_dir.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
-
-    # A rollback interrupted before clearing its marker leaves it in vendor/;
-    # never carry it into the next tree.
-    (vendor_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
 
     # Remove bin/ directory (CLI scripts we don't need)
     bin_dir = vendor_dir / "bin"

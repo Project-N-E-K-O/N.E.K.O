@@ -22,12 +22,12 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
 
 @pytest.fixture(autouse=True)
 def _no_host_package_index_config(monkeypatch):
-    """Keep the developer's own pip/uv index settings out of these tests."""
+    """Keep the developer's own pip/uv settings out of these tests."""
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    uv_names = {name for names in deps_cmd._UV_COVERS.values() for name in names}
-    for name in (*deps_cmd._PIP_ENV_KINDS, *uv_names, "PIP_CONFIG_FILE"):
-        monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.upper().startswith(("PIP_", "UV_")):
+            monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [])
 
 
@@ -84,6 +84,15 @@ def _missing_pip_then_uv(calls):
         ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "0"}, None, False),
         ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "true"}, None, True),
         ({"PIP_REQUIRE_HASHES": "off"}, None, True),
+        # Any other pip policy has no checked uv counterpart: fail closed.
+        ({"PIP_ONLY_BINARY": ":all:"}, None, False),
+        ({"PIP_CONSTRAINT": "/ci/constraints.txt"}, None, False),
+        ({"PIP_ONLY_BINARY": ":all:", "UV_DEFAULT_INDEX": "https://private/simple"}, None, False),
+        ({}, "[install]\nconstraint = c.txt\n", False),
+        # Output, caching and connection settings are harmless to drop.
+        ({"PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_CACHE_DIR": "1",
+          "PIP_DEFAULT_TIMEOUT": "60", "PIP_TRUSTED_HOST": "mirror"}, None, True),
+        ({}, "[global]\nprogress-bar = off\nretries = 5\n", True),
         ({}, "[global]\nno-index = off\n", True),
         ({"UV_DEFAULT_INDEX": "https://private/simple"},
          "[global]\nno-index = 0\nindex-url = https://private/simple\n", True),
@@ -127,9 +136,9 @@ def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
     config = tmp_path / "pip.ini"
     config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
-    assert deps_cmd._pip_package_sources("python") == ([str(config)], {"index"})
+    assert deps_cmd._pip_settings("python") == {"index-url": [str(config)]}
     monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
-    assert deps_cmd._pip_package_sources("python") == ([], set())
+    assert deps_cmd._pip_settings("python") == {}
 
 
 def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, monkeypatch):
@@ -223,7 +232,7 @@ def test_recovery_marker_write_failure_rolls_back_before_swap(tmp_path, monkeypa
     real_touch = Path.touch
 
     def fail_marker(path, *args, **kwargs):
-        if path.name == ".recovery-pending":
+        if path.name.endswith(".pending"):
             raise PermissionError("marker is locked")
         return real_touch(path, *args, **kwargs)
 
@@ -287,10 +296,10 @@ def test_rollback_never_deletes_a_vendor_that_reappeared(tmp_path, monkeypatch, 
     monkeypatch.setattr(Path, "replace", fail_staging_replace)
 
     assert _replace_vendor(vendor, staging) is False
-    backup, = tmp_path.glob(".vendor.backup-*")
+    backup, = [p for p in tmp_path.glob(".vendor.backup-*") if p.is_dir()]
     assert (backup / "old.py").read_text() == "keep"
     assert (vendor / "partial.py").read_text() == "partial"
-    assert (backup / ".recovery-pending").is_file()
+    assert backup.with_name(backup.name + ".pending").is_file()
     assert "reappeared after the failed swap" in capsys.readouterr().err
 
 
@@ -315,10 +324,10 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
     assert _replace_vendor(vendor, staging) is False
     monkeypatch.setattr(Path, "replace", real_replace)
 
-    backup, = plugin_dir.glob(".vendor.backup-*")
+    backup, = [p for p in plugin_dir.glob(".vendor.backup-*") if p.is_dir()]
     assert not vendor.exists()
     assert (backup / "old.py").read_text() == "keep"
-    assert (backup / ".recovery-pending").is_file()
+    assert backup.with_name(backup.name + ".pending").is_file()
     assert "Could not roll back vendor" in capsys.readouterr().err
     monkeypatch.setattr(
         deps_cmd.subprocess,
@@ -425,23 +434,27 @@ def test_sync_lock_file_is_per_user(tmp_path, monkeypatch):
     assert lock.name.startswith("neko-plugin-sync-4242-")
 
 
-def test_non_clean_sync_drops_marker_left_in_vendor(tmp_path, monkeypatch):
+@pytest.mark.parametrize("as_dir", [False, True])
+def test_package_data_named_like_a_marker_survives_sync(tmp_path, monkeypatch, as_dir):
+    # The recovery marker lives beside the backup, never inside vendor/, so
+    # a package's own top-level path of any name is left alone.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    vendor = plugin_dir / "vendor"
-    vendor.mkdir()
-    (vendor / "old.py").write_text("keep")
-    (vendor / ".recovery-pending").touch()
-    monkeypatch.setattr(
-        deps_cmd.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
-    )
 
+    def install(command, **kwargs):
+        target = Path(command[command.index("--target") + 1])
+        data = target / ".recovery-pending"
+        if as_dir:
+            data.mkdir()
+            (data / "x").write_text("pkg")
+        else:
+            data.write_text("pkg")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
-    assert (vendor / "old.py").read_text() == "keep"
-    assert not (vendor / ".recovery-pending").exists()
+    assert (plugin_dir / "vendor" / ".recovery-pending").exists()
 
 
 def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
@@ -596,9 +609,11 @@ def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
     from plugin.neko_plugin_cli.templates.generator import _render_gitignore
 
     lines = _render_gitignore().splitlines()
-    assert "/.vendor.staging-*/" in lines
-    assert "/.vendor.backup-*/" in lines
-    assert ".vendor.backup-*/" not in lines
+    # Anchored to the root; no trailing "/" so the backup's marker file is
+    # ignored too.
+    assert "/.vendor.staging-*" in lines
+    assert "/.vendor.backup-*" in lines
+    assert not any(line.startswith(".vendor.") for line in lines)
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
@@ -627,7 +642,7 @@ def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(
     backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
-    (backup / ".recovery-pending").touch()
+    backup.with_name(backup.name + ".pending").touch()
     monkeypatch.setattr(
         deps_cmd.subprocess,
         "run",
@@ -841,7 +856,7 @@ def test_sync_no_deps_refuses_unreconciled_backup(tmp_path, clean, capsys):
     backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
-    (backup / ".recovery-pending").touch()
+    backup.with_name(backup.name + ".pending").touch()
     (plugin_dir / "pyproject.toml").write_text(
         '[project]\nname = "my_plugin"\nversion = "1.0.0"\ndependencies = []\n',
         encoding="utf-8",
@@ -1143,7 +1158,7 @@ class TestTransactionalDependencyInstall:
         assert not (vendor / "fresh.py").exists()
         # Both failures roll back by renaming the backup, never by copying it.
         assert not list(tmp_path.glob(".vendor.backup-*"))
-        assert not (vendor / ".recovery-pending").exists()
+        assert not list(tmp_path.glob("*.pending"))
         error = capsys.readouterr().err
         if permission_error:
             assert "files are in use" in error

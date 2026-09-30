@@ -734,8 +734,9 @@ def test_plugin_manifest_exists() -> None:
 
 def _render_gitignore() -> str:
     # Leading "/" anchors to the plugin root, like the build rules; a nested
-    # directory with the same name is plugin source.
-    sync_dirs = "".join(f"/{prefix}*/\n" for prefix in VENDOR_SYNC_DIR_PREFIXES)
+    # directory with the same name is plugin source. No trailing "/": the
+    # pending marker beside a backup is a file.
+    sync_dirs = "".join(f"/{prefix}*\n" for prefix in VENDOR_SYNC_DIR_PREFIXES)
     return '''__pycache__/
 *.py[cod]
 .pytest_cache/
