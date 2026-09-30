@@ -47,6 +47,15 @@ export default {
     removeHint: "プラグインを停止して関連付けを解除しますか？ソースと実行データは保持されます。",
   },
   common: {
+    surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
+    surfaceApplyLanguage: "言語を適用してパネルを再読み込み",
+    surfaceApplyLanguageConfirm: "パネルを再読み込みすると、未保存の内容は失われます。続行しますか？",
+
+    languageLoading: "言語を読み込み中です。画面は引き続き利用できます",
+    languageLoadFailed: "言語を読み込めませんでした。現在の言語を維持します。",
+    languageRetry: "言語を再試行",
+    languageReload: "ページを再読み込み",
+
     loading: '読み込み中...',
     refresh: '更新',
     search: '検索',
@@ -336,6 +345,7 @@ export default {
     installFallback: 'ミラーソースを選択できないため、GitHub 直結を使用します。'
   },
   plugins: {
+    configSchemaInvalid: 'プラグインの設定スキーマが無効なため、汎用設定エディターを表示しています。',
     title: 'プラグイン一覧',
     name: 'プラグイン名',
     id: 'プラグインID',
@@ -429,6 +439,7 @@ export default {
     addItem: '項目を追加',
     fieldName: 'フィールド名',
     fieldNameRequired: 'フィールド名は必須です',
+    readOnlyField: 'この項目は読み取り専用のため追加できません。',
     invalidFieldKey: 'フィールド名が無効です',
     fieldType: 'フィールドタイプ',
     duplicateFieldKey: 'フィールド名は既に存在します。別の名前を使用してください。',
@@ -581,6 +592,8 @@ export default {
       blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
       blockedOwnershipUnknown: '既存のプラグインディレクトリの所有元を確認できません。インストール元の記録を復元してから再試行してください。',
       blockedInstallSourceReadOnly: 'インストール元の記録を利用できないか、読み取り専用です。記録を復元してから再試行してください。',
+      installSucceeded: 'インストールが完了しました。{count} 個のプラグインを処理しました。',
+      completedWithWarnings: '{plugin} はインストールされましたが、警告があります：{reasons}',
       rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
       rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。',
       error: {
@@ -591,6 +604,7 @@ export default {
         pluginManifestInvalid: 'プラグインの plugin.toml が不正です。作者に修正と再ビルドを依頼してください。',
         identityMismatch: 'プラグインのフォルダー名と plugin.toml の ID が一致しません。作者に修正を依頼してください。',
         hashMismatch: 'パッケージ内容が検証情報と一致しません。インストールは行われませんでした。',
+        profileOwnershipConflict: 'このパッケージのプロファイルフォルダーが既に存在しますが、このパッケージのものではありません（以前のインストールの残りの可能性があります）。インストールは行われませんでした。',
         inspectFailed: 'このプラグインパッケージを検査できませんでした。ファイルが存在し、有効な N.E.K.O パッケージであることを確認してから再試行してください。',
         verifyFailed: 'このプラグインパッケージを検証できませんでした。再ダウンロードするか、作者に再ビルドを依頼してから再試行してください。',
         installFailed: 'このプラグインパッケージをインストールできませんでした。未確認の変更は保存されていません。'

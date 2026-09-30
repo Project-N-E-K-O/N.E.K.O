@@ -3994,7 +3994,7 @@ export function startPluginDashboardTutorial(options: StartPluginDashboardTutori
   })
 }
 
-export function initPluginDashboardYuiGuideRuntime() {
+export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = [], options: { preactivate?: boolean; acceptOpenerMessages?: boolean } = {}) {
   if (pluginDashboardRuntimeInitialized) {
     return
   }
@@ -4002,7 +4002,7 @@ export function initPluginDashboardYuiGuideRuntime() {
 
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
-  runtime.preactivatePendingOverlay()
+  if (options.preactivate !== false) runtime.preactivatePendingOverlay()
 
   const handleDesktopInterruptAckEvent = (event: Event) => {
     runtime.handleDesktopInterruptAckEvent(event)
@@ -4015,6 +4015,7 @@ export function initPluginDashboardYuiGuideRuntime() {
   }
 
   const handleRuntimeMessage = (event: MessageEvent) => {
+    if (options.acceptOpenerMessages === false) return
     const data = event.data
     if (!data || typeof data !== 'object') {
       return
@@ -4098,4 +4099,10 @@ export function initPluginDashboardYuiGuideRuntime() {
   window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
   window.addEventListener('pagehide', handleRuntimePageHide, true)
+  for (const event of queuedEvents) {
+    if (event.type === 'message') handleRuntimeMessage(event as MessageEvent)
+    else if (event.type === DESKTOP_INTERRUPT_ACK_EVENT) handleDesktopInterruptAckEvent(event)
+    else if (event.type === DESKTOP_NARRATION_FINISHED_EVENT) handleDesktopNarrationFinishedEvent(event)
+    else if (event.type === DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT) handleDesktopSystemCursorTemporaryRevealEvent(event)
+  }
 }

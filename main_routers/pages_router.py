@@ -478,6 +478,17 @@ async def get_chat_full_page(request: Request):
     })
 
 
+@router.get("/avatar_tool_editor", response_class=HTMLResponse)
+async def get_avatar_tool_editor_page(request: Request):
+    """Dedicated custom avatar-tool editor management page."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/avatar_tool_editor.html", {
+        "request": request,
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
+
+
 @router.get("/web_chat_compact", response_class=HTMLResponse)
 async def get_web_chat_compact_page(request: Request):
     """Open the home page with React Chat initialized in compact mode."""

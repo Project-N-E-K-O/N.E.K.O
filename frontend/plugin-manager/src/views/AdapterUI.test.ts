@@ -98,7 +98,7 @@ async function mountAdapter(id = ADAPTER_ID): Promise<{ container: HTMLDivElemen
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = usePluginStore()
-  store.plugins = [{ id, name: 'Adapter Demo', description: '', version: '1.0.0', status: 'running' } as never]
+  store.pluginSummaries = [{ id, name: 'Adapter Demo', description: '', version: '1.0.0', status: 'running' } as never]
   const app = createApp(AdapterUI)
   app.use(pinia)
   app.config.globalProperties.$t = (key: string) => key

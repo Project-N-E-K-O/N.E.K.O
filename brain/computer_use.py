@@ -598,7 +598,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.click(*a, **kw)
 
@@ -608,7 +607,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.doubleClick(*a, **kw)
 
@@ -618,7 +616,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.rightClick(*a, **kw)
 
@@ -685,14 +682,6 @@ class _ScaledPyAutoGUI:
                 self._backend.moveTo(x, y, _pause=False)
             except Exception:
                 pass
-
-    def _show_click_halo(self, x: int, y: int):
-        """Show a brief expanding-ring halo at (x, y). Windows only, via ctypes."""
-        # TODO: 光圈暂未实现。当前方案存在问题：
-        #   1. ctypes.wintypes 没有 WNDCLASS 结构体，需手动定义 WNDCLASSEXW
-        #   2. GDI 绘制需要消息循环 (PeekMessage/DispatchMessage) 才能渲染
-        #   3. 可考虑改用 UpdateLayeredWindow + 内存 DC 一次性贴图，或由 Electron 前端渲染
-        pass
 
     def _clipboard_type(self, text: str):
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
@@ -778,7 +767,6 @@ class ComputerUseAdapter:
         )
 
         # Kimi-style agent state
-        self._current_session_id: Optional[str] = None
         self.actions: List[str] = []
         self.observations: List[bytes] = []
         self.cots: List[Dict[str, str]] = []
@@ -1198,9 +1186,7 @@ class ComputerUseAdapter:
         fake.sleep = _cancellable_sleep
         return fake
 
-    def run_instruction(
-        self, instruction: str, session_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def run_instruction(self, instruction: str) -> Dict[str, Any]:
         """Execute a natural-language instruction via GUI automation.
 
         Main loop: screenshot → predict → execute → repeat.
@@ -1216,9 +1202,7 @@ class ComputerUseAdapter:
         self._cancel_event.clear()
         self._done_event.clear()
 
-        if session_id is None or session_id != self._current_session_id:
-            self.reset()
-            self._current_session_id = session_id
+        self.reset()
 
         last_action = ""
         success = False

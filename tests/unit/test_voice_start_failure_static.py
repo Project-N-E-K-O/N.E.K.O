@@ -818,10 +818,9 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "arrow.textContent = '\\u203A';" in action_button or 'arrow.textContent = "\u203A";' in action_button or "arrow.textContent = '\u203A';" in action_button
     assert "fontSize: '16px'" in action_button
     assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
-    assert "openMicActionPanel(actionKey, onClick)" in action_button
+    assert "openMicActionPanel(actionKey, onClick, event)" in action_button
     assert "button.addEventListener('mouseenter'" in action_button
     assert "interactionOptions.openOnHover !== false" in action_button
-    assert "xdg-desktop-portal" in action_button
     assert "button.addEventListener('click'" in action_button
     assert "scheduleMicActionHoverCollapse()" in action_button
     assert "createMainActionButton(" in source
@@ -837,7 +836,13 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
         "var screenActionButton = createMainActionButton(", 1
     )[1].split(");", 1)[0]
     assert "openScreenSourceSubwindow" in screen_action
-    assert "{ openOnHover: false }" in screen_action
+    # Every source-capable provider expands on hover; providers that may
+    # prompt defer enumeration until a click inside the panel or on the row.
+    assert "return !provider || typeof provider.getSources === 'function';" in screen_action
+    screen_subwindow = _js_function_block(source, "openScreenSourceSubwindow")
+    assert "xdg-desktop-portal" in screen_subwindow
+    assert "deferEnumeration: deferEnumeration" in screen_subwindow
+    assert "retryOnFailure: true" in screen_subwindow
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

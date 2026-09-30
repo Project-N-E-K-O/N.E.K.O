@@ -287,8 +287,8 @@ export function usePluginListContextActions() {
           }
         }
         try {
-          await pluginStore.syncRegistryAndFetch()
-          await pluginStore.fetchPluginStatus()
+          await pluginStore.syncRegistryAndFetchSummaries()
+          await pluginStore.fetchPluginStatus(undefined, true)
         } catch (error) {
           console.warn('Failed to refresh plugin data after delete:', error)
         }

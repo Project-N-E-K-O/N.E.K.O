@@ -21,6 +21,7 @@ import { computed, ref } from 'vue'
 
 import { fetchBridge } from '@/api/marketBridge'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { collectPluginInstallWarnings } from '@/utils/pluginInstallResult'
 
 const LOG_PREFIX = '[market-install]'
 const POLL_INTERVAL_MS = 800
@@ -63,6 +64,8 @@ export interface MarketInstallTask {
   error?: string | null
   error_code?: string | null
   cancel_requested?: boolean
+  install_source_warning?: string | null
+  result?: { rollback_status?: string | null } | null
   rollback?: {
     prepared?: boolean
     restored?: boolean
@@ -209,10 +212,15 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     Math.round(Math.max(peakProgress, task.value?.progress ?? 0) * 100)
   ))
 
-  const barStatus = computed<'success' | 'exception' | undefined>(() => {
+  /** A completed task can still carry best-effort bookkeeping failures. */
+  const warnings = computed(() => (
+    task.value?.status === 'completed' ? collectPluginInstallWarnings(task.value) : []
+  ))
+
+  const barStatus = computed<'success' | 'warning' | 'exception' | undefined>(() => {
     const status = task.value?.status
     if (status === 'failed') return 'exception'
-    if (status === 'completed') return 'success'
+    if (status === 'completed') return warnings.value.length > 0 ? 'warning' : 'success'
     return undefined
   })
 
@@ -690,6 +698,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     done,
     percent,
     barStatus,
+    warnings,
     stageLabelKey,
     errorKey,
     rollback,

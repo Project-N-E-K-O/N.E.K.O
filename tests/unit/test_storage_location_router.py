@@ -108,7 +108,6 @@ def _build_client(config_manager, *, request_app_shutdown=None, release_storage_
         steamworks=None,
         templates=None,
         config_manager=config_manager,
-        logger=None,
         request_app_shutdown=request_app_shutdown,
         release_storage_startup_barrier=release_storage_startup_barrier,
     )
@@ -1235,7 +1234,6 @@ async def test_restart_keeps_checkpoint_when_cancelled_after_shutdown_is_accepte
         steamworks=None,
         templates=None,
         config_manager=config_manager,
-        logger=None,
         request_app_shutdown=request_app_shutdown,
     )
     payload = storage_location_router_module.StorageLocationSelectionRequest(

@@ -394,6 +394,22 @@ async def test_game_completion_is_false_when_audio_chunk_delivery_failed(monkeyp
         await _stop(task)
 
 
+async def test_game_completion_is_false_for_a_round_dropped_by_the_worker():
+    # A TTS worker that exits on a permanent rejection closes out rounds it
+    # drops with a speech-scoped failure marker plus audio_done.
+    mgr = _make_mgr(_RecordingWebsocket())
+    completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-dropped")
+    task = await _start_handler(
+        mgr,
+        ("__tts_sentence_failed__", "sid-dropped", ""),
+        ("__audio_done__", "sid-dropped"),
+    )
+    try:
+        assert await asyncio.wait_for(completion, timeout=2.0) is False
+    finally:
+        await _stop(task)
+
+
 async def test_game_completion_is_false_when_audio_done_delivery_failed(monkeypatch):
     monkeypatch.setattr(tts_runtime_module.logger, "warning", lambda *_a, **_k: None)
     mgr = _make_mgr(_RecordingWebsocket(connected=False))

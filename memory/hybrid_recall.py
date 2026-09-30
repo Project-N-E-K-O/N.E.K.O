@@ -190,8 +190,14 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
         seg = seg.strip()
         if not seg:
             continue
-        # CJK 占比阈值 = 与 persona._extract_keywords 完全一致（汉字 +
-        # 假名 + 谚文 = U+4E00-9FFF + U+3040-30FF + U+AC00-D7AF）。
+        # 纯 ASCII 段不可能含 CJK，直接按 Latin 段处理（等价于下面 else 分支）。
+        # 这条快速路径和 CJK 占比阈值都必须与 persona._extract_keywords 完全
+        # 一致（汉字 + 假名 + 谚文 = U+4E00-9FFF + U+3040-30FF + U+AC00-D7AF），
+        # 改一边要同步另一边，否则 hybrid recall 和 persona 的切词会分叉。
+        if seg.isascii():
+            if len(seg) >= 2:
+                out.append(seg)
+            continue
         cjk_count = sum(
             1 for ch in seg
             if '一' <= ch <= '鿿'

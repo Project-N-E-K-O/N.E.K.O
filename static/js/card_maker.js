@@ -14,6 +14,7 @@
     // ====== 状态 ======
     let currentCharaName = '';
     let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
+    let pngtuberCardFrame = null; // 制卡预览与导出共用的分层待机帧及可见边界
     let isModelLoaded = false;
     let isModelLoading = false;
     let primaryActionBusy = false;
@@ -575,6 +576,7 @@
     async function loadCharacterModel(type, cfg) {
         isModelLoaded = false;
         stopPreviewLoop();
+        pngtuberCardFrame = null;
         prepareHiddenModelViewport();
 
         // 先隐藏所有渲染容器
@@ -827,6 +829,7 @@
         resizeModelRendererForCard('pngtuber');
         await waitForPNGTuberDrawable(mgr);
         if (isEmbedMode) framePNGTuberForEmbed(mgr);
+        else preparePNGTuberCardFrame(mgr);
     }
 
     function frameLive2DModelForEmbed(mgr) {
@@ -1155,6 +1158,90 @@
         };
     }
 
+    function clonePNGTuberDrawable(source) {
+        const size = getDrawableSourceSize(source);
+        if (size.width <= 0 || size.height <= 0) return null;
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = size.width;
+            canvas.height = size.height;
+            const ctx = canvas.getContext?.('2d');
+            if (!ctx?.drawImage) return null;
+            ctx.drawImage(source, 0, 0, size.width, size.height);
+            return canvas;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function getPNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
+        if (currentModelType !== 'pngtuber' || !source) return fullBounds;
+        if (currentModelType === 'pngtuber' && source === pngtuberCardFrame?.canvas) {
+            return pngtuberCardFrame.bounds;
+        }
+        if (!window.cardMakerPNGTuberManager?.isLayeredActive?.()) return fullBounds;
+        return measurePNGTuberSourceBounds(source, sourceSize);
+    }
+
+    function preparePNGTuberCardFrame(mgr) {
+        pngtuberCardFrame = null;
+        if (!mgr?.isLayeredActive?.()) return;
+        // 卡面是静态图片：保留独立的全分辨率待机帧，避免预览和导出取到
+        // 不同动画时刻。边界只在加载时测量一次，缩放/拖动不再读取像素。
+        let canvas = mgr.renderLayeredSnapshotCanvas('idle');
+        let size = getDrawableSourceSize(canvas);
+        if (size.width <= 0 || size.height <= 0) {
+            // 快照不可用时复制当前运行时画布并冻结它，避免回退路径继续逐帧
+            // 测量动态边界，同时不阻止已加载模型保存卡面。
+            canvas = clonePNGTuberDrawable(getPNGTuberDrawableSource(mgr));
+            size = getDrawableSourceSize(canvas);
+        }
+        if (size.width <= 0 || size.height <= 0) return;
+        pngtuberCardFrame = { canvas, bounds: measurePNGTuberSourceBounds(canvas, size) };
+    }
+
+    function measurePNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = {
+            x: 0,
+            y: 0,
+            width: sourceSize.width,
+            height: sourceSize.height
+        };
+        // 分层画布的 padding 同时容纳动态偏移和物理运动，不能按固定值裁掉。
+        // 只测量已固定快照的 alpha 边界，保留进入 padding 的像素。
+        try {
+            const ctx = source.getContext?.('2d');
+            const imageData = ctx?.getImageData?.(0, 0, sourceSize.width, sourceSize.height);
+            const pixels = imageData?.data;
+            if (!pixels) return fullBounds;
+            let minX = sourceSize.width;
+            let minY = sourceSize.height;
+            let maxX = -1;
+            let maxY = -1;
+            for (let y = 0; y < sourceSize.height; y += 1) {
+                for (let x = 0; x < sourceSize.width; x += 1) {
+                    if (pixels[(y * sourceSize.width + x) * 4 + 3] <= 0) continue;
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+            if (maxX < minX || maxY < minY) return fullBounds;
+            return {
+                x: minX,
+                y: minY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1
+            };
+        } catch (_) {
+            // A tainted or unsupported canvas cannot be inspected safely; retain
+            // the complete source so export never loses part of the model.
+            return fullBounds;
+        }
+    }
+
     function isCrossOriginHttpUrl(value) {
         if (!value || typeof value !== 'string') return false;
         try {
@@ -1240,7 +1327,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas(options = {}) {
+    function getModelCanvas() {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -1257,11 +1344,7 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
-            const mgr = window.cardMakerPNGTuberManager;
-            if (options.fullResolution && mgr?.isLayeredActive?.()) {
-                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
-                if (snapshot) return snapshot;
-            }
+            if (pngtuberCardFrame) return pngtuberCardFrame.canvas;
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1288,6 +1371,7 @@
                 else mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'pngtuber') {
+            if (pngtuberCardFrame) return;
             const mgr = window.cardMakerPNGTuberManager;
             mgr?.setSpeaking?.(false);
             if (typeof mgr?.setLayeredStateIndex === 'function' && mgr.layeredStateIndex !== 0) {
@@ -1311,18 +1395,25 @@
      * @param {number} outH  目标绘制区域高度（CSS 像素）
      */
     function drawModelWithComposition(ctx, srcCanvas, outW, outH, compositionOverride = composition) {
-        // 从源画布中裁剪出 3:4 比例的区域（cover 语义）
+        // Live2D/VRM/MMD 的渲染器本身就是 3:4 画布，保持原有 cover 语义。
+        // PNGTuber 的图片比例由用户资源决定，不能先裁成 3:4，否则宽图会被裁掉
+        // 两侧，高图会被裁掉上下；先完整保留源图，再按 contain 方式放入卡面。
         const dstAspect = outW / outH;           // ≈ 0.75 (3:4)
         const sourceSize = getDrawableSourceSize(srcCanvas);
         if (sourceSize.width <= 0 || sourceSize.height <= 0) return;
-        const srcAspect = sourceSize.width / sourceSize.height;
-        let sx = 0, sy = 0, sw = sourceSize.width, sh = sourceSize.height;
+        const sourceBounds = getPNGTuberSourceBounds(srcCanvas, sourceSize);
+        const srcAspect = sourceBounds.width / sourceBounds.height;
+        let sx = sourceBounds.x;
+        let sy = sourceBounds.y;
+        let sw = sourceBounds.width;
+        let sh = sourceBounds.height;
 
-        if (srcAspect > dstAspect) {
+        const preservePNGTuberBounds = currentModelType === 'pngtuber';
+        if (!preservePNGTuberBounds && srcAspect > dstAspect) {
             // 源更宽 → 裁两侧
             sw = sourceSize.height * dstAspect;
             sx = (sourceSize.width - sw) / 2;
-        } else {
+        } else if (!preservePNGTuberBounds) {
             // 源更高 → 裁上下
             sh = sourceSize.width / dstAspect;
             sy = (sourceSize.height - sh) / 2;
@@ -1330,8 +1421,11 @@
 
         const activeComposition = compositionOverride;
         const scale = activeComposition.scale / 100;
-        const drawW = outW * scale;
-        const drawH = outH * scale;
+        const fitScale = preservePNGTuberBounds
+            ? Math.min(outW / sourceBounds.width, outH / sourceBounds.height)
+            : 1;
+        const drawW = (preservePNGTuberBounds ? sourceBounds.width * fitScale : outW) * scale;
+        const drawH = (preservePNGTuberBounds ? sourceBounds.height * fitScale : outH) * scale;
 
         // 偏移量在 450×600 坐标系下定义，按实际尺寸等比缩放
         const ratio = outW / 450;
@@ -1681,7 +1775,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
+        const srcCanvas = getModelCanvas();
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {

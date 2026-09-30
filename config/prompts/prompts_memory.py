@@ -690,7 +690,9 @@ settings_extractor_prompt = SETTINGS_EXTRACTOR_PROMPT["zh"]
 # =====================================================================
 
 HISTORY_REVIEW_PROMPT = {
-    "zh": """请审阅%s和%s之间的对话历史记录，识别并修正以下问题：
+    "zh": """推理限制：内部思考最多四句，不要复述原文，不要列举备选方案。思考结束后立刻输出 JSON，不要把思考过程写进 explanation。
+
+请审阅%s和%s之间的对话历史记录，识别并修正以下问题：
 
 <问题1> 矛盾的部分：前后不一致的信息或观点 </问题1>
 <问题2> 冗余的部分：重复的内容或信息 </问题2>
@@ -732,7 +734,9 @@ HISTORY_REVIEW_PROMPT = {
 - 移除冗余和重复内容
 - 解决明显的矛盾
 - 保持对话的自然流畅性""",
-    "zh-TW": """請審閱%s和%s之間的對話歷史紀錄，識別並修正以下問題：
+    "zh-TW": """推理限制：內部思考最多四句，不要複述原文，不要列舉備選方案。思考結束後立刻輸出 JSON，不要把思考過程寫進 explanation。
+
+請審閱%s和%s之間的對話歷史紀錄，識別並修正以下問題：
 
 <問題1> 矛盾的部分：前後不一致的資訊或觀點 </問題1>
 <問題2> 冗餘的部分：重複的內容或資訊 </問題2>
@@ -774,7 +778,9 @@ HISTORY_REVIEW_PROMPT = {
 - 移除冗餘和重複內容
 - 解決明顯的矛盾
 - 保持對話的自然流暢性""",
-    "en": """Please review the conversation history between %s and %s, and identify and correct the following issues:
+    "en": """Reasoning limit: at most four sentences of internal thinking. Do not restate the source text and do not list alternatives. After thinking, output JSON immediately. Do not put the thinking process into explanation.
+
+Please review the conversation history between %s and %s, and identify and correct the following issues:
 
 <Issue1> Contradictions: inconsistent information or viewpoints </Issue1>
 <Issue2> Redundancy: repeated content or information </Issue2>
@@ -816,7 +822,9 @@ Notes:
 - Remove redundancy and repetition
 - Resolve obvious contradictions
 - Maintain natural flow""",
-    "ja": """以下の%sと%sの間の会話履歴を確認し、以下の問題を特定して修正してください：
+    "ja": """推論の制限：内部思考は最大4文まで。原文の復唱や代替案の列挙はしないでください。思考が終わったら直ちにJSONを出力し、思考過程を explanation に書かないでください。
+
+以下の%sと%sの間の会話履歴を確認し、以下の問題を特定して修正してください：
 
 <問題1> 矛盾する部分：前後で一貫しない情報や意見 </問題1>
 <問題2> 冗長な部分：重複した内容や情報 </問題2>
@@ -850,7 +858,9 @@ Notes:
         ...
     ]
 }""",
-    "ko": """다음 %s와 %s 사이의 대화 기록을 검토하고 다음 문제를 식별하여 수정해 주세요:
+    "ko": """추론 제한: 내부 사고는 최대 네 문장입니다. 원문을 반복하거나 대안을 나열하지 마세요. 사고가 끝나면 즉시 JSON을 출력하고, 사고 과정을 explanation에 넣지 마세요.
+
+다음 %s와 %s 사이의 대화 기록을 검토하고 다음 문제를 식별하여 수정해 주세요:
 
 <문제1> 모순되는 부분: 전후 일관성이 없는 정보나 관점 </문제1>
 <문제2> 중복된 부분: 반복되는 내용이나 정보 </문제2>
@@ -884,7 +894,9 @@ Notes:
         ...
     ]
 }""",
-    "ru": """Пожалуйста, проверьте историю диалога между %s и %s и выявите и исправьте следующие проблемы:
+    "ru": """Ограничение рассуждения: внутренние рассуждения — не больше четырёх предложений. Не пересказывайте исходный текст и не перечисляйте варианты. После рассуждения сразу выведите JSON. Не помещайте ход рассуждения в explanation.
+
+Пожалуйста, проверьте историю диалога между %s и %s и выявите и исправьте следующие проблемы:
 
 <Проблема1> Противоречия: несогласованная информация или точки зрения </Проблема1>
 <Проблема2> Избыточность: повторяющееся содержание или информация </Проблема2>
@@ -918,7 +930,9 @@ Notes:
         ...
     ]
 }""",
-    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
+    "es": """Límite de razonamiento: como máximo cuatro frases de pensamiento interno. No repitas el texto original ni enumeres alternativas. Al terminar, devuelve JSON de inmediato. No escribas el proceso de pensamiento en explanation.
+
+Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
 
 [Importante] NO elimines ni fusiones la retroalimentación negativa de {MASTER_NAME} (declaraciones imperativas como "no menciones X / deja de hacer Y / no quiero oír Z") — son señales de alto valor; el sistema de memoria aguas abajo depende de ellas para evitar volver a tropezar. Manténlas textualmente aunque te parezcan "redundantes" o "repetitivas".
 
@@ -940,7 +954,9 @@ Notas:
 - Conserva la información central y el contenido importante.
 - Asegura lógica clara y coherente.
 - Elimina redundancia, repetición y contradicciones evidentes.""",
-    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
+    "pt": """Limite de raciocínio: no máximo quatro frases de pensamento interno. Não repita o texto original nem liste alternativas. Ao terminar, retorne JSON imediatamente. Não escreva o processo de pensamento em explanation.
+
+Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
 
 [Importante] NÃO remova nem mescle o feedback negativo de {MASTER_NAME} (declarações imperativas como "não mencione X / pare de fazer Y / não quero ouvir Z") — são sinais de alto valor; o sistema de memória downstream depende deles para evitar tropeçar de novo. Preserve-os literalmente mesmo que pareçam "redundantes" ou "repetitivos" para você.
 

@@ -1399,6 +1399,10 @@
                 const _status = statusElement();
                 if (_status && _status.textContent.includes(noSoundText)) {
                     window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+                    // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+                    if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                        window.showVoicePreparingToast(S.localAsrPreparingMessage);
+                    }
                     console.log('麦克风静音检测：检测到声音，已清除警告');
                 }
             }
@@ -1814,6 +1818,7 @@
         S.voiceChatActive = false;
         S.voiceStartPending = false;
         window.isMicStarting = false;
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -2215,6 +2220,10 @@
             if (_stop)   _stop.disabled = true;
             if (_reset)  _reset.disabled = false;
             window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+            // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+            if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                window.showVoicePreparingToast(S.localAsrPreparingMessage);
+            }
 
             // 确保active类存在
             if (_mic && !_mic.classList.contains('active')) {
@@ -2287,6 +2296,7 @@
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -3427,6 +3437,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var noiseToggle = null;
             var optimizationToggle = null;
             var optimizationHint = null;
+            var localAsrToggle = null;
+            var localAsrBlock = null;
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
@@ -3439,7 +3451,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     gemini: 'Gemini',
                     openai: 'OpenAI',
                     step: 'Step',
-                    grok: 'Grok'
+                    grok: 'Grok',
+                    faster_whisper: 'faster-whisper'
                 };
                 return known[value.toLowerCase()] || value;
             }
@@ -3490,6 +3503,85 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 toggle.input.setAttribute('aria-describedby', hint.id);
                 panelBody.appendChild(block);
                 return hint;
+            }
+
+            // Packaged builds do not ship faster-whisper, so only offer the
+            // option where it can run. A preference persisted while it was
+            // installed stays visible so the user can still turn it off.
+            function shouldOfferLocalAsr() {
+                return S.localAsrAvailable === true
+                    || S.independentAsrProviderPreference === 'faster_whisper';
+            }
+
+            // Local recognition is an independent-ASR provider choice: it is
+            // only actionable when the Core allows independent ASR and the
+            // master switch is on.
+            function localAsrChoiceActionable() {
+                return !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true;
+            }
+
+            function createLocalAsrSetting(panelBody, beforeNode) {
+                localAsrToggle = createVoiceSettingToggle(
+                    S.independentAsrProviderPreference === 'faster_whisper',
+                    function (enabled) {
+                        // Turning it on needs a route that can use it; turning a
+                        // saved choice off is always allowed, or a preference the
+                        // current Core cannot use could never be cleared.
+                        if (enabled && !localAsrChoiceActionable()) {
+                            updateVoiceRecognitionUi();
+                            return;
+                        }
+                        S.independentAsrProviderPreference = enabled
+                            ? 'faster_whisper'
+                            : 'auto';
+                        // 依赖不可用时关掉就收起开关，免得它又被打开、下一次会话再选中缺失的 provider。
+                        reconcileLocalAsrSetting();
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                var localAsrHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.localAsr',
+                    '本地语音识别',
+                    'microphone.localAsrHint',
+                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                    localAsrToggle
+                );
+                localAsrBlock = localAsrHint.parentNode;
+                // Disabled state is set here rather than left to the next
+                // updateVoiceRecognitionUi(), so a toggle added late never shows
+                // as operable while the master switch is off.
+                localAsrToggle.setDisabled(
+                    !localAsrChoiceActionable()
+                    && S.independentAsrProviderPreference !== 'faster_whisper'
+                );
+                // Keep the panel order stable when added late: after resource
+                // optimization, before the status line.
+                if (beforeNode && beforeNode.parentNode === panelBody) {
+                    panelBody.insertBefore(localAsrBlock, beforeNode);
+                }
+            }
+
+            // Availability can arrive after the panel opened (the capability
+            // refresh is asynchronous): add or drop the option in place.
+            function reconcileLocalAsrSetting() {
+                if (!voicePanel || !voicePanel.isConnected || !voiceStatus) return;
+                var panelBody = voiceStatus.parentNode;
+                if (!panelBody) return;
+                if (shouldOfferLocalAsr()) {
+                    if (!localAsrToggle) createLocalAsrSetting(panelBody, voiceStatus);
+                    return;
+                }
+                if (localAsrToggle) {
+                    if (localAsrBlock && localAsrBlock.parentNode) {
+                        localAsrBlock.parentNode.removeChild(localAsrBlock);
+                    }
+                    localAsrToggle = null;
+                    localAsrBlock = null;
+                }
             }
 
             function updateVoiceRecognitionUi() {
@@ -3546,6 +3638,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
+                // Local recognition is an independent-ASR provider choice, so
+                // it follows the same Core capability gate and master switch.
+                if (localAsrToggle) {
+                    // Show the saved choice as it is, even where the current
+                    // Core cannot use it, and keep an "on" choice switchable off.
+                    var localAsrChosen =
+                        S.independentAsrProviderPreference === 'faster_whisper';
+                    localAsrToggle.setChecked(localAsrChosen);
+                    localAsrToggle.setDisabled(!enabled && !localAsrChosen);
+                }
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
@@ -3611,10 +3713,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function onVoiceSettingsPendingChanged() {
+                // 其它窗口改了偏好也会走到这里：开关的有无跟着偏好走。
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
+            // 可用性（能力刷新）和偏好（设置 GET 合并）都可能在面板打开后才到，
+            // 两者任一变化都要重新决定本地语音识别开关的有无。
             function onCoreApiCapabilityChanged() {
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
@@ -3645,6 +3752,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 noiseToggle = null;
                 optimizationToggle = null;
                 optimizationHint = null;
+                localAsrToggle = null;
+                localAsrBlock = null;
                 voiceStatus = null;
                 asrSummary = null;
                 if (
@@ -3666,6 +3775,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             addVoiceWindowListener(
                 'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:conversation-settings-hydrated',
                 onCoreApiCapabilityChanged
             );
             addVoiceWindowListener(
@@ -3870,16 +3983,22 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
             }
 
-            function openMicActionPanel(actionKey, openFn) {
+            function openMicActionPanel(actionKey, openFn, triggerEvent) {
                 clearMicActionHoverCollapseTimer();
                 var existing = getOwnedMicSubwindow();
                 if (activeMicActionKey === actionKey && existing && existing.isConnected) {
                     wireMicSubwindowHoverBridge(existing);
+                    // A click on a row whose panel was opened by hover finishes
+                    // any work that hover deferred (screen-source enumeration).
+                    if (triggerEvent && triggerEvent.type === 'click'
+                        && typeof existing._nekoOnExplicitOpen === 'function') {
+                        existing._nekoOnExplicitOpen();
+                    }
                     return Promise.resolve(existing);
                 }
                 activeMicActionKey = actionKey;
                 var generation = ++micActionHoverOpenGeneration;
-                return Promise.resolve(openFn()).then(function () {
+                return Promise.resolve(openFn(triggerEvent)).then(function () {
                     if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
                     var panel = getOwnedMicSubwindow();
                     if (panel) {
@@ -3891,21 +4010,55 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function positionMicSubwindow(panel) {
-                if (!panel || !micPopup || !micPopup.isConnected) return;
+                if (!panel || !panel.isConnected || !micPopup || !micPopup.isConnected) return;
+                var anchor = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]') || micPopup;
+                if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+                    panel._popupElement = micPopup;
+                    window.AvatarPopupUI.positionSidePanel(panel, anchor);
+                    // These panels appear immediately; keep the shared scale
+                    // without the entry-animation offset used by other menus.
+                    window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+                    return;
+                }
+                // Standalone pages without the shared helper still follow the
+                // owner's direction, shrinking instead of flipping by width.
                 var rect = micPopup.getBoundingClientRect();
+                var gap = 8;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                var availableWidth = opensLeft ? rect.left - gap * 2 : window.innerWidth - rect.right - gap * 2;
+                var viewportWidth = Math.max(1, window.innerWidth - gap * 2);
+                var stackPanel = availableWidth < Math.min(240, viewportWidth);
+                panel.style.maxWidth = (stackPanel ? viewportWidth : availableWidth) + 'px';
+                if (panel._originalMaxHeight === undefined) {
+                    panel._originalMaxHeight = panel.style.maxHeight;
+                    panel._originalOverflowY = panel.style.overflowY;
+                } else {
+                    panel.style.maxHeight = panel._originalMaxHeight;
+                    panel.style.overflowY = panel._originalOverflowY;
+                }
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
-                var gap = 8;
-                var left = rect.right + gap;
-                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
-                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
-                    left = rect.left - panelWidth - gap;
+                var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
+                var desiredTop = rect.top;
+                if (stackPanel) {
+                    left = Math.min(rect.left, window.innerWidth - panelWidth - gap);
+                    var above = Math.max(0, rect.top - gap * 2);
+                    var below = Math.max(0, window.innerHeight - rect.bottom - gap * 2);
+                    var placeBelow = below >= panelHeight || (above < panelHeight && below >= above);
+                    panel.style.maxHeight = Math.max(1, Math.min(panelHeight, placeBelow ? below : above)) + 'px';
+                    panel.style.overflowY = 'auto';
+                    panelHeight = panel.offsetHeight;
+                    desiredTop = placeBelow ? rect.bottom + gap : rect.top - panelHeight - gap;
                 }
-                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
-                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                left = Math.max(gap, left);
+                var top = Math.max(gap, Math.min(desiredTop, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
             }
+
+            addVoiceWindowListener('resize', function () {
+                positionMicSubwindow(getOwnedMicSubwindow());
+            });
 
             function createMicSubwindow(title, iconText, width) {
                 // Keep activeMicActionKey; only tear down the previous DOM panel.
@@ -4086,25 +4239,24 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 function openActionPanel(event) {
                     actionSurface().style.background = 'var(--neko-popup-hover)';
-                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                    return openMicActionPanel(actionKey, onClick, event).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
                 }
 
-                // Most settings side panels may expand on hover. Screen-source
-                // enumeration is different: on Linux it can invoke
-                // xdg-desktop-portal and show an OS sharing dialog, so that
-                // action must require an explicit click/user gesture.
-                if (interactionOptions.openOnHover !== false) {
-                    button.addEventListener('mouseenter', function (event) {
+                // Resolve hover permission at event time: desktop bridges may
+                // arrive after rendering.
+                button.addEventListener('mouseenter', function (event) {
+                    var openOnHover = typeof interactionOptions.openOnHover === 'function'
+                        ? interactionOptions.openOnHover()
+                        : interactionOptions.openOnHover !== false;
+                    if (openOnHover) {
                         openActionPanel(event);
-                    });
-                } else {
-                    button.addEventListener('mouseenter', function () {
+                    } else {
                         clearMicActionHoverCollapseTimer();
                         actionSurface().style.background = 'var(--neko-popup-hover)';
-                    });
-                }
+                    }
+                });
                 button.addEventListener('mouseleave', function () {
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
@@ -4273,6 +4425,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     optimizationToggle
                 );
 
+                localAsrToggle = null;
+                localAsrBlock = null;
+                if (shouldOfferLocalAsr()) {
+                    createLocalAsrSetting(panelBody, null);
+                }
+
                 voiceStatus = document.createElement('div');
                 voiceStatus.className = 'neko-voice-recognition-status';
                 voiceStatus.setAttribute('role', 'status');
@@ -4393,12 +4551,59 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
             }
 
-            async function openScreenSourceSubwindow() {
+            async function openScreenSourceSubwindow(triggerEvent) {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
                     null,
                     '360px'
                 );
+                var provider = typeof window.getDesktopCaptureProvider === 'function'
+                    ? window.getDesktopCaptureProvider() : null;
+                var mobileCamera = window.appUtils && typeof window.appUtils.isMobile === 'function'
+                    && window.appUtils.isMobile();
+                var browserCaptureAvailable = navigator.mediaDevices && (mobileCamera
+                    ? typeof navigator.mediaDevices.getUserMedia === 'function'
+                    : typeof navigator.mediaDevices.getDisplayMedia === 'function');
+                if ((mobileCamera || !provider) && browserCaptureAvailable) {
+                    var browserBody = panel._nekoMicSubwindowBody;
+                    var hint = document.createElement('div');
+                    var hintKey = mobileCamera ? 'app.screenSource.mobileCameraHint' : 'app.screenSource.browserPickerHint';
+                    hint.textContent = window.t ? window.t(hintKey)
+                        : (mobileCamera ? 'When sharing starts, your camera will be used.'
+                            : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.');
+                    Object.assign(hint.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub)' });
+                    var browserShareButton = document.createElement('button');
+                    browserShareButton.type = 'button';
+                    browserShareButton.dataset.nekoBrowserScreenShare = '';
+                    browserShareButton.textContent = shareToggleButton.getAttribute('aria-label')
+                        || (window.t ? window.t('buttons.screenShare') : 'Screen Share');
+                    Object.assign(browserShareButton.style, {
+                        padding: '10px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                        color: 'var(--neko-popup-text)', background: 'var(--neko-popup-selected-bg)'
+                    });
+                    browserShareButton.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        var currentProvider = typeof window.getDesktopCaptureProvider === 'function'
+                            ? window.getDesktopCaptureProvider() : null;
+                        var startPending = typeof window.isScreenSharingStartPending === 'function'
+                            && window.isScreenSharingStartPending();
+                        if (!mobileCamera && currentProvider && !isScreenShareActive() && !startPending) {
+                            // The bridge can arrive after this browser panel opens.
+                            // Show its sources before allowing a new capture start.
+                            closeMicSubwindow();
+                            openMicActionPanel('screen', openScreenSourceSubwindow);
+                            return;
+                        }
+                        closeMicSubwindow();
+                        // Preserve the click gesture and reuse voice gating,
+                        // cancellation and stream cleanup from the main switch.
+                        shareToggleButton.click();
+                    });
+                    browserBody.appendChild(hint);
+                    browserBody.appendChild(browserShareButton);
+                    positionMicSubwindow(panel);
+                    return;
+                }
                 var headerActions = panel._nekoMicSubwindowHeaderActions;
                 if (headerActions
                     && typeof window.isScreenSourceTitleMatchEnabled === 'function'
@@ -4446,7 +4651,25 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
-                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    // Linux source enumeration can show an OS sharing dialog
+                    // (xdg-desktop-portal). Hover only opens the panel; the
+                    // user clicks the row or the panel's button to enumerate.
+                    // Bridges that predate the flag are inferred per platform,
+                    // so legacy macOS / Windows bridges still list on hover.
+                    var deferEnumeration = !!(triggerEvent && triggerEvent.type === 'mouseenter'
+                        && window.desktopSourceEnumerationMayPrompt(provider));
+                    panel._nekoOnExplicitOpen = function () {
+                        var loadButton = screenSourceList.querySelector(
+                            '[data-neko-screen-source-deferred-load]'
+                        );
+                        if (loadButton) loadButton.click();
+                    };
+                    await window.renderFloatingScreenSourceList(screenSourceList, {
+                        requireVisible: false,
+                        deferEnumeration: deferEnumeration,
+                        retryOnFailure: true,
+                        onDeferredRender: function () { positionMicSubwindow(panel); }
+                    });
                     positionMicSubwindow(panel);
                 }
             }
@@ -4483,14 +4706,26 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 
+            function getCurrentScreenSourceLabel() {
+                var sourceLabel = typeof window.getSelectedScreenSourceLabel === 'function'
+                    ? window.getSelectedScreenSourceLabel() : '';
+                // 未选择来源时同样用单数的「屏幕」，不用来源列表的复数分组标题。
+                return sourceLabel || (window.t ? window.t('app.screenSource.genericScreen') : 'Screen');
+            }
+            var currentScreenSourceLabel = getCurrentScreenSourceLabel();
+
             var firstContent = leftColumn.firstChild;
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
-                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                currentScreenSourceLabel,
                 'screen',
                 openScreenSourceSubwindow,
-                { openOnHover: false }
+                { openOnHover: function () {
+                    var provider = typeof window.getDesktopCaptureProvider === 'function'
+                        ? window.getDesktopCaptureProvider() : null;
+                    return !provider || typeof provider.getSources === 'function';
+                } }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(
@@ -4498,6 +4733,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 shareToggleButton
             );
             leftColumn.insertBefore(screenActionRow, firstContent);
+            var screenSummary = screenActionButton.querySelector('.neko-mic-action-sub-label');
+            if (screenSummary) {
+                screenSummary.setAttribute('aria-live', 'polite');
+                screenSummary.title = currentScreenSourceLabel;
+                // 选择、自动回退和其他窗口的选择都会派发该事件。
+                addVoiceWindowListener('neko:screen-source-changed', function () {
+                    var nextLabel = getCurrentScreenSourceLabel();
+                    screenSummary.textContent = nextLabel;
+                    screenSummary.title = nextLabel;
+                });
+            }
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示

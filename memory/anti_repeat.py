@@ -73,6 +73,7 @@ import math
 import os
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -179,7 +180,7 @@ def _ngrams(text: str) -> List[str]:
     except Exception:
         # 兜底：persona 模块在某些 entrypoint（memory-only test）可能没加载。
         # 主路径的 ``_extract_keywords`` 返回 set（同一 doc 内 ngram 去重），下游
-        # bm25_score 的 ``doc.count(term)`` 因此始终是 0/1。兜底也必须维持同款
+        # bm25_score 里每篇 doc 的 TF 因此始终是 0/1。兜底也必须维持同款
         # "每 doc 至多 1 次" 语义，否则 ``bug bug bug`` 在 fallback 入口下被算
         # 成 TF=3，BM25 阈值会比主路径敏感得多——同一段文本走两条路径分数差几倍。
         return list({t for t in (text or "").split() if len(t) >= 2})
@@ -275,6 +276,8 @@ def bm25_score(
 
     total = 0.0
     per_term_total: Dict[str, float] = {}
+    fg_counts = [Counter(doc) for doc in fg_docs]
+    fg_lens = [len(doc) or 1 for doc in fg_docs]
     for term in draft_unique:
         n = df.get(term, 0)
         # IDF Robertson-Sparck-Jones (+0.5 平滑)。term 没在 BG 里出现也按
@@ -285,11 +288,10 @@ def bm25_score(
         if idf <= 0:
             continue
         term_score = 0.0
-        for doc in fg_docs:
-            tf = doc.count(term)
-            if tf == 0:
+        for counts, dl in zip(fg_counts, fg_lens):
+            tf = counts.get(term, 0)
+            if not tf:
                 continue
-            dl = len(doc) or 1
             norm = 1 - b + b * dl / avgdl
             term_score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
         if term_score > 0:

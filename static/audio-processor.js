@@ -31,11 +31,37 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.resamplePosition = 0;
         this.resampleTailSample = 0;
         this.hasResampleTail = false;
+        this.closed = false;
+
+        // The capture owner sends this control message immediately before it
+        // tears down the AudioWorkletNode.  Full blocks keep their existing
+        // raw Int16Array message shape; only the final partial block is
+        // wrapped so the owner can wait for an explicit completion signal.
+        if (this.port) {
+            this.port.onmessage = (event) => {
+                const message = event && event.data;
+                if (!message) {
+                    return;
+                }
+                if (message.type === 'shutdown') {
+                    this.closed = true;
+                    return;
+                }
+                if (message.type !== 'flush') return;
+
+                const pcmData = this.bufferIndex > 0
+                    ? this.floatToPcm16(this.buffer.subarray(0, this.bufferIndex))
+                    : new Int16Array(0);
+                this.bufferIndex = 0;
+                this.port.postMessage({ type: 'flush_complete', pcmData });
+            };
+        }
 
         console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz, 需要重采样=${this.needsResampling}`);
     }
 
     process(inputs, outputs, parameters) {
+        if (this.closed) return false;
         // 获取输入数据 (假设是单声道)
         const input = inputs[0][0];
 

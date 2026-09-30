@@ -21,6 +21,7 @@ import json
 import base64
 import websockets
 import asyncio
+import re
 
 from urllib.parse import quote
 from utils.config_manager import get_config_manager
@@ -40,6 +41,11 @@ logger = get_module_logger(__name__, "Main")
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+# Qwen TTS 家族的型号 id（qwen3-tts-flash-realtime、qwen3-tts-instruct-…、
+# 以后换代的 qwen3.x-tts-…）。TTS_MODEL 里也可能是全模态模型名（默认抄
+# REALTIME_MODEL），或者本 worker 作回落时其它厂商留下的型号（tts-1、
+# cosyvoice-v3-plus），这些都不能送进 DashScope 的 realtime TTS 端点。
+_QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
 
 def _resolve_qwen_realtime_tts_url() -> str:
     """Pick the realtime TTS WebSocket URL based on the current Qwen/Qwen Intl core config."""
@@ -53,13 +59,17 @@ def _resolve_qwen_realtime_tts_url() -> str:
         _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
     )
     configured_model = str(core_config.get("TTS_MODEL") or "").strip()
-    model = configured_model if configured_model.startswith("qwen3-tts") else _QWEN_REALTIME_TTS_MODEL
+    if _QWEN_TTS_MODEL_PATTERN.match(configured_model):
+        model = configured_model
+    else:
+        model = _QWEN_REALTIME_TTS_MODEL
     return f"{base_ws_url}?model={quote(model, safe='')}"
 
 def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     Qwen realtime TTS worker (for default voices)
-    Uses Aliyun's realtime TTS API (qwen3-tts-flash-realtime)
+    Uses Aliyun's realtime TTS API. The model comes from TTS_MODEL when it
+    names a Qwen TTS model; otherwise qwen3-tts-flash-realtime.
     
     Args:
         request_queue: multiprocess request queue receiving (speech_id, text) tuples

@@ -39,6 +39,7 @@ from utils.tokenize import acount_tokens
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+    MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -191,7 +192,9 @@ async def review_context_token_count(messages: list) -> int:
     return await acount_tokens('\n\n'.join(rows))
 
 
-def _review_response_hit_output_limit(response) -> bool:
+def _review_response_hit_output_limit(
+    response, output_cap: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
+) -> bool:
     """Classify only strong evidence that the provider exhausted output tokens."""
     metadata = getattr(response, 'response_metadata', None) or {}
     finish_reason = str(metadata.get('finish_reason') or '').strip().lower()
@@ -206,9 +209,25 @@ def _review_response_hit_output_limit(response) -> bool:
     if output_tokens is None:
         output_tokens = usage.get('output_tokens')
     try:
-        return int(output_tokens or 0) >= LLM_OUTPUT_GUARD_MAX_TOKENS
+        return int(output_tokens or 0) >= output_cap
     except (TypeError, ValueError):
         return False
+
+
+def _review_output_cap_rejected(exc: BaseException) -> bool:
+    """True when a 400 says the requested output cap exceeds the model's limit.
+
+    Correction endpoints are user-configurable; a model whose output limit is
+    below ``MEMORY_REVIEW_OUTPUT_MAX_TOKENS`` rejects the request before
+    generating anything, so the review must retry once at the shared guard.
+    """
+    if getattr(exc, 'status_code', None) != 400:
+        return False
+    text = str(exc).lower()
+    return any(
+        key in text
+        for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
+    )
 
 
 def _msg_identity(m) -> tuple[str, str]:
@@ -615,7 +634,7 @@ class CompressedRecentHistoryManager:
             provider_type=api_config.get('provider_type'),
         )
 
-    def _get_review_llm(self):
+    def _get_review_llm(self, max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
         """Fetch the review LLM instance dynamically to support config hot-reload.
 
         timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
@@ -634,7 +653,7 @@ class CompressedRecentHistoryManager:
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
-            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
+            max_completion_tokens=max_completion_tokens,  # thinking shares this budget with the corrected-dialogue JSON
             extra_body=None,
             provider_type=api_config.get('provider_type'),
         )
@@ -1670,9 +1689,24 @@ class CompressedRecentHistoryManager:
                     )
                     .replace("{MASTER_NAME}", self.name_mapping['human'])
                 )
+                # 审阅额度高于共享护栏；输出上限更低的自定义纠错模型会在生成前
+                # 400，这时退回共享护栏重发一次，保持以前能跑的配置照旧能跑。
+                review_cap = MEMORY_REVIEW_OUTPUT_MAX_TOKENS
                 review_llm = self._get_review_llm()
                 try:
-                    response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
+                    try:
+                        response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
+                    except Exception as cap_error:
+                        if not _review_output_cap_rejected(cap_error):
+                            raise
+                        logger.info(
+                            f"[RecentHistory] {lanlan_name} 纠错模型拒绝 {review_cap} 输出额度，"
+                            f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
+                        )
+                        await review_llm.aclose()
+                        review_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
+                        review_llm = self._get_review_llm(review_cap)
+                        response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same capped prompt, lower output cap.
                 finally:
                     await review_llm.aclose()
 
@@ -1681,7 +1715,7 @@ class CompressedRecentHistoryManager:
                     _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
-                if _review_response_hit_output_limit(response):
+                if _review_response_hit_output_limit(response, review_cap):
                     _safe_print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
                     return ('output_exhausted', None)
 

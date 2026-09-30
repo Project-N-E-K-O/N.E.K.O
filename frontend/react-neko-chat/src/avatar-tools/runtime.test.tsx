@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
-import { buildLocalAvatarToolDefinition, type LocalAvatarToolDto } from './localTools';
+import {
+  buildLocalAvatarToolDefinition,
+  type LocalAvatarToolV2Dto,
+  type LocalAvatarToolV3Dto,
+} from './localTools';
 import AvatarToolVisuals from './presentation';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
@@ -27,10 +31,10 @@ const INITIAL_BOUNDS = {
 };
 const LOCAL_TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 
-function localToolDto(version: number): LocalAvatarToolDto {
+function localToolDto(version: number): LocalAvatarToolV2Dto {
   return {
     id: LOCAL_TOOL_ID,
-    revision: `2-${version}`,
+    recordVersion: 2, revision: `2-${version}`,
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/default.png?v=${version}`,
@@ -42,6 +46,52 @@ function localToolDto(version: number): LocalAvatarToolDto {
 function localToolRegistry(version: number): AvatarToolRegistrySnapshot {
   return createAvatarToolRegistrySnapshot([
     buildLocalAvatarToolDefinition(localToolDto(version)),
+  ]);
+}
+
+function localGraphToolDto(version: number): LocalAvatarToolV3Dto {
+  const asset = (name: string) => `/user_avatar_tools/${LOCAL_TOOL_ID}/${name}.png?v=${version}`;
+  return {
+    recordVersion: 3,
+    id: LOCAL_TOOL_ID,
+    revision: `3-${version}`,
+    name: 'Flow',
+    initialImageUrl: asset('image-000'),
+    runtime: {
+      images: [
+        { id: 'img-a', url: asset('image-000'), hasMeaning: true },
+        { id: 'img-b', url: asset('image-001'), hasMeaning: false },
+        { id: 'img-c', url: asset('image-002'), hasMeaning: true },
+      ],
+      initialImageId: 'img-a',
+      initialInteractionIds: ['ix-click'],
+      interactions: [
+        {
+          id: 'ix-click',
+          trigger: { kind: 'mouse-click' },
+          actions: {
+            press: { kind: 'show', imageId: 'img-b' },
+            release: { kind: 'show', imageId: 'img-c' },
+          },
+        },
+        {
+          id: 'ix-delay',
+          trigger: { kind: 'after', delayMs: 800 },
+          actions: { complete: { kind: 'show', imageId: 'img-a' } },
+        },
+      ],
+      links: [
+        { from: 'ix-click', to: 'ix-delay' },
+        { from: 'ix-delay', to: 'ix-click' },
+      ],
+      normalSoundUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/normal.mp3?v=${version}`,
+    },
+  };
+}
+
+function localGraphToolRegistry(version: number): AvatarToolRegistrySnapshot {
+  return createAvatarToolRegistrySnapshot([
+    buildLocalAvatarToolDefinition(localGraphToolDto(version)),
   ]);
 }
 
@@ -824,6 +874,159 @@ describe('useAvatarToolRuntime press lifecycle', () => {
 
     fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
     expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+  });
+
+  it('sends the pressed A image while a v3 graph locally advances through B, C and delay', () => {
+    vi.useFakeTimers();
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localGraphToolRegistry(1)}
+      />,
+    );
+
+    try {
+      selectTool();
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      expect(onInteraction).toHaveBeenCalledTimes(1);
+      expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: LOCAL_TOOL_ID,
+        toolRevision: '3-1',
+        imageId: 'img-a',
+      }));
+      expect(onInteraction.mock.calls[0][0]).not.toHaveProperty('changeIndex');
+      expect(audioInstances.some(audio => audio.play.mock.calls.length === 1)).toBe(true);
+
+      act(() => vi.advanceTimersByTime(799));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps actual click feedback active after a finite image flow reaches its end', () => {
+    const dto = localGraphToolDto(1);
+    dto.runtime.interactions = [dto.runtime.interactions[0]];
+    dto.runtime.links = [];
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={createAvatarToolRegistrySnapshot([
+          buildLocalAvatarToolDefinition(dto),
+        ])}
+      />,
+    );
+
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+    expect(onInteraction).toHaveBeenLastCalledWith(expect.objectContaining({ imageId: 'img-a' }));
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+    expect(onInteraction).toHaveBeenCalledTimes(2);
+    expect(onInteraction).toHaveBeenLastCalledWith(expect.objectContaining({ imageId: 'img-c' }));
+    view.unmount();
+  });
+
+  it('keeps v3 empty B local-only and sends one C fact when C has a description', () => {
+    for (const [initialImageId, shouldSend] of [['img-b', false], ['img-c', true]] as const) {
+      const dto = localGraphToolDto(1);
+      dto.runtime.initialImageId = initialImageId;
+      dto.initialImageUrl = dto.runtime.images.find(image => image.id === initialImageId)!.url;
+      const onInteraction = vi.fn();
+      const view = render(
+        <Harness onInteraction={onInteraction} providers={createProviders()}
+          toolId={LOCAL_TOOL_ID} registry={createAvatarToolRegistrySnapshot([
+            buildLocalAvatarToolDefinition(dto),
+          ])} />,
+      );
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      expect(onInteraction).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
+      if (shouldSend) expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({ imageId: 'img-c' }));
+      view.unmount();
+    }
+  });
+
+  it('sends only a special fact when a v3 special always triggers', () => {
+    const dto = localGraphToolDto(1);
+    dto.runtime.special = {
+      probability: 1,
+      imageUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/special.png?v=1`,
+      hasMeaning: true,
+    };
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness onInteraction={onInteraction} providers={createProviders()}
+        toolId={LOCAL_TOOL_ID} registry={createAvatarToolRegistrySnapshot([
+          buildLocalAvatarToolDefinition(dto),
+        ])} />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    expect(onInteraction).toHaveBeenCalledTimes(1);
+    expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      imageId: 'img-a', specialTriggered: true,
+    }));
+    view.unmount();
+  });
+
+  it('restores a v3 graph press on moved release and clears its pending delay on revision reset', async () => {
+    vi.useFakeTimers();
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localGraphToolRegistry(1)}
+      />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { pointerId: 7, clientX: 160, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 160, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      view.rerender(
+        <Harness
+          onInteraction={vi.fn()}
+          providers={createProviders()}
+          toolId={LOCAL_TOOL_ID}
+          registry={localGraphToolRegistry(2)}
+        />,
+      );
+      await act(async () => Promise.resolve());
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+      act(() => vi.advanceTimersByTime(800));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('selects a local tool first loaded after the runtime mounted', async () => {

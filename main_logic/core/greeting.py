@@ -104,28 +104,44 @@ class GreetingMixin:
         }
 
     @staticmethod
-    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict:
-        change_items = record.get("imageChange", {}).get("items")
-        change_index = raw.get("change_index")
-        if (
-            not isinstance(change_items, list)
-            or isinstance(change_index, bool)
-            or not isinstance(change_index, int)
-            or change_index < 0
-            or change_index >= len(change_items)
-        ):
-            raise ValueError("invalid local change index")
+    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict | None:
+        version = record.get("recordVersion")
+        if version == 2:
+            change_items = record.get("imageChange", {}).get("items")
+            change_index = raw.get("change_index")
+            if (
+                "image_id" in raw
+                or not isinstance(change_items, list)
+                or isinstance(change_index, bool)
+                or not isinstance(change_index, int)
+                or change_index < 0
+                or change_index >= len(change_items)
+            ):
+                raise ValueError("invalid local change index")
+            meaning = change_items[change_index]["meaning"]
+        elif version == 3:
+            image_id = raw.get("image_id")
+            images = record.get("images")
+            if "change_index" in raw or not isinstance(images, list):
+                raise ValueError("invalid local image ID")
+            image = next((item for item in images if item["id"] == image_id), None)
+            if image is None:
+                raise ValueError("invalid local image ID")
+            meaning = image["meaning"]
+        else:
+            raise ValueError("invalid local record version")
         special = record.get("interaction", {}).get("special")
         has_special_fact = "special_triggered" in raw
         if bool(special) != has_special_fact:
             raise ValueError("local special fact does not match record")
+        selected_meaning = (
+            special["meaning"] if special and raw["special_triggered"] is True else meaning
+        )
+        if not selected_meaning:
+            return None
         return {
             "name": record["name"],
-            "meaning": (
-                special["meaning"]
-                if special and raw["special_triggered"] is True
-                else change_items[change_index]["meaning"]
-            ),
+            "meaning": selected_meaning,
         }
 
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
@@ -265,7 +281,7 @@ class GreetingMixin:
                     )
                     gate_rejection = (raw_interaction_id, "invalid_payload")
 
-            if not cooldown_hit and gate_rejection is None:
+            if not cooldown_hit and gate_rejection is None and (local_store is None or local_prompt_record is not None):
                 self._remember_avatar_interaction_id(interaction_id)
                 self._last_avatar_interaction_at = now_ms
 
@@ -280,6 +296,10 @@ class GreetingMixin:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
+
+        if local_store is not None and local_prompt_record is None:
+            await self.send_avatar_interaction_ack(interaction_id, False, "no_meaning")
+            return {"accepted": False, "reason": "no_meaning", "interaction_id": interaction_id}
 
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)

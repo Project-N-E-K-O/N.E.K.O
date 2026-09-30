@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Awaitable, Callable
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import TypeAlias
 
 
 class TurnDecision(Enum):
@@ -94,6 +94,10 @@ class AsrFailureEvent:
     # Captured before the failure callback yields, so Core can reject a late
     # failure after a different microphone lease has taken over.
     ingress_token: VoiceIngressToken | None = None
+    # The provider's own ``ASR_*`` failure code when it reported one (e.g. a
+    # local model that failed to load). Opaque to Core: only forwarded so the
+    # client can explain the failure; ``code`` stays the routing decision.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +127,8 @@ class AsrStatusEvent:
     # ingress identity that produced them so the consumer can fence stale
     # notifications without rejecting the handler's own blocked transition.
     ingress_token: VoiceIngressToken | None = None
+    # Provider failure detail for the client; see AsrFailureEvent.reason.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +138,10 @@ class AsrLifecycleNotification:
     state: str
     provider: str
     session_epoch: int
+    # For BLOCKED: the provider / runtime ``ASR_*`` code behind it, so every
+    # window (also one whose later failure status is fenced by its lease) can
+    # show the matching explanation. Opaque to Core.
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,39 +180,3 @@ class TurnEvaluation:
                 raise ValueError("probability must be within [0, 1]")
         elif self.decision is not None or self.probability is not None:
             raise ValueError("non-OK evaluations must not carry a semantic result")
-
-
-@runtime_checkable
-class TurnDetector(Protocol):
-    """Contract consumed by the future ASR Controller."""
-
-    async def on_speech_started(self) -> None: ...
-
-    async def evaluate(self, audio_tail: bytes) -> TurnEvaluation: ...
-
-    async def reset(self) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AsrTurnCapabilities:
-    """Only the capability needed to choose an endpoint authority."""
-
-    semantic_endpoint: bool
-
-
-def requires_external_turn_detector(capabilities: AsrTurnCapabilities) -> bool:
-    """Return false for Soniox-like providers with authoritative endpoints."""
-
-    return not capabilities.semantic_endpoint
-
-
-def build_turn_detector_if_required(
-    capabilities: AsrTurnCapabilities, factory: Callable[[], TurnDetector]
-) -> TurnDetector | None:
-    """Construct only for providers without an authoritative semantic endpoint."""
-
-    if not requires_external_turn_detector(capabilities):
-        return None
-    return factory()

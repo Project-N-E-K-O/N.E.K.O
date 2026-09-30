@@ -112,6 +112,12 @@ dependencies = [
 # Install the locally built 1.13.8+neko.kws2 wheel as documented in
 # docs/development/wake-word-runtime.md.
 wake-word = []
+# Optional local speech recognition (main_logic/asr_client/workers/faster_whisper.py),
+# selectable in the voice-recognition settings. Not part of the default install
+# or packaged builds: it pulls in CTranslate2 and model downloads. Until it is
+# installed (`uv sync --extra local-asr`), the provider reports
+# ASR_INDEPENDENT_DEPENDENCY_MISSING instead of starting.
+local-asr = ["faster-whisper>=1.1.0"]
 
 [tool.hatch.version]
 path = "config/application.py"
