@@ -6,7 +6,9 @@ import argparse
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
+from tempfile import mkdtemp
 
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
@@ -66,22 +68,33 @@ def handle_sync(args: argparse.Namespace) -> int:
         print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
         return 0
 
-    # 2. Optionally clean vendor/
+    # 2. Install into a sibling staging directory.  Keeping the current
+    # vendor untouched until installation succeeds makes sync transactional.
     vendor_dir = plugin_dir / "vendor"
-    if args.clean and vendor_dir.exists():
-        shutil.rmtree(vendor_dir)
+    staging_dir = Path(mkdtemp(prefix=f".{vendor_dir.name}.staging-", dir=plugin_dir))
+    try:
+        if not args.clean and vendor_dir.is_dir():
+            shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True)
 
-    # 3. Install all declared deps into vendor/
-    exit_code = _pip_install_to_vendor(
-        external_deps,
-        vendor_dir=vendor_dir,
-        python=args.python,
-    )
-    if exit_code != 0:
-        return exit_code
+        # 3. Install all declared deps into the staging directory.
+        exit_code = _pip_install_to_vendor(
+            external_deps,
+            vendor_dir=staging_dir,
+            python=args.python,
+        )
+        if exit_code != 0:
+            return exit_code
 
-    # 4. Clean vendor artifacts
-    _clean_vendor(vendor_dir)
+        # 4. Clean vendor artifacts before making staging live.
+        _clean_vendor(staging_dir)
+
+        # 5. Atomically replace vendor/, retaining a short-lived backup so a
+        # failed rename can restore the previous installation.
+        if not _replace_vendor(vendor_dir, staging_dir):
+            return 1
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
     print(f"  vendor={vendor_dir}")
@@ -127,33 +140,123 @@ def _pip_install_to_vendor(
     vendor_dir: Path,
     python: str,
 ) -> int:
-    """Run pip install --target vendor/ for the given packages."""
+    """Install packages into vendor/ using uv, then fall back to pip."""
     if not packages:
         return 0
 
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        python, "-m", "pip", "install",
-        "--target", str(vendor_dir),
-        "--upgrade",
-        "--no-user",
-        *packages,
-    ]
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [
+            uv, "pip", "install",
+            "--python", python,
+            "--target", str(vendor_dir),
+            "--upgrade",
+            *packages,
+        ]
+    else:
+        cmd = [
+            python, "-m", "pip", "install",
+            "--target", str(vendor_dir),
+            "--upgrade",
+            "--no-user",
+            *packages,
+        ]
 
     print(f"  running: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as exc:
+        if not uv:
+            print(
+                "[FAIL] Unable to install plugin dependencies: uv was not found "
+                "and the target Python has no pip. Install uv, or run "
+                "python -m ensurepip --upgrade.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[FAIL] uv pip install could not start: {exc}", file=sys.stderr)
+        return 1
     if result.returncode != 0:
-        print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
+        output = result.stdout or ""
+        if not uv and "No module named pip" in output:
+            print(
+                "[FAIL] Unable to install plugin dependencies: uv was not found "
+                "and the target Python has no pip. Install uv, or run "
+                "python -m ensurepip --upgrade.",
+                file=sys.stderr,
+            )
+        else:
+            installer = "uv pip" if uv else "pip"
+            print(f"[FAIL] {installer} install failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         return 1
     return 0
 
+
+def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
+    """Replace vendor/ and roll back if the second rename fails."""
+    backup_dir = vendor_dir.parent / f".{vendor_dir.name}.backup-{uuid.uuid4().hex}"
+    had_vendor = vendor_dir.exists()
+    try:
+        if had_vendor:
+            vendor_dir.replace(backup_dir)
+        try:
+            staging_dir.replace(vendor_dir)
+        except PermissionError:
+            print(
+                f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
+                "Close processes using the plugin and retry.",
+                file=sys.stderr,
+            )
+            if vendor_dir.exists():
+                shutil.rmtree(vendor_dir, ignore_errors=True)
+            if backup_dir.exists():
+                try:
+                    # Restore a copy while retaining the backup for manual recovery.
+                    shutil.copytree(backup_dir, vendor_dir, dirs_exist_ok=True)
+                except OSError as exc:
+                    print(
+                        f"[FAIL] Could not restore vendor; backup retained at "
+                        f"{backup_dir}: {exc}",
+                        file=sys.stderr,
+                    )
+            return False
+        except OSError as exc:
+            print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
+            if vendor_dir.exists():
+                shutil.rmtree(vendor_dir, ignore_errors=True)
+            if backup_dir.exists():
+                try:
+                    backup_dir.replace(vendor_dir)
+                except OSError as rollback_exc:
+                    print(
+                        f"[FAIL] Could not roll back vendor; backup retained at "
+                        f"{backup_dir}: {rollback_exc}",
+                        file=sys.stderr,
+                    )
+            return False
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        return True
+    except PermissionError:
+        location = f" Backup retained at {backup_dir}." if backup_dir.exists() else ""
+        print(
+            f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
+            f"Close processes using the plugin and retry.{location}",
+            file=sys.stderr,
+        )
+        return False
+    except OSError as exc:
+        location = f" Backup retained at {backup_dir}." if backup_dir.exists() else ""
+        print(f"[FAIL] Failed to replace {vendor_dir}: {exc}.{location}", file=sys.stderr)
+        return False
 
 def _clean_vendor(vendor_dir: Path) -> None:
     """Remove common unwanted artifacts from vendor/."""

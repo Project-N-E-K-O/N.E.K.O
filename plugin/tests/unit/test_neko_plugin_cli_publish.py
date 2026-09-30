@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -781,10 +782,12 @@ def test_publish_github_rechecks_worktree_after_release_preflight(
     assert "git working tree has uncommitted changes" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", [["publish"], ["publish", "github"]])
 def test_publish_stops_before_release_check_when_clean_sync_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    command: list[str],
 ) -> None:
     plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
     calls: list[str] = []
@@ -792,6 +795,7 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
     def fail_clean_sync(args: object) -> int:
         assert getattr(args, "plugin") == str(plugin_dir)
         assert getattr(args, "clean") is True
+        assert getattr(args, "python") == sys.executable
         calls.append("sync")
         return 1
 
@@ -806,9 +810,7 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
         unexpected_release_check,
     )
 
-    exit_code = neko_plugin_cli.main(
-        ["publish", "github", str(plugin_dir)]
-    )
+    exit_code = neko_plugin_cli.main([*command, str(plugin_dir)])
 
     assert exit_code == 1
     assert calls == ["sync"]

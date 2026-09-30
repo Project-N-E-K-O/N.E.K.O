@@ -12,6 +12,7 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _clean_vendor,
     _filter_external,
     _read_dependencies,
+    _replace_vendor,
     handle_sync,
 )
 
@@ -58,6 +59,7 @@ class TestHelpers:
 
         assert not (vendor / "__pycache__").exists()
         assert not (vendor / "bin").exists()
+
         assert (vendor / "httpx" / "__init__.py").exists()
 
 
@@ -137,3 +139,242 @@ class TestHandleSync:
         )
         exit_code = handle_sync(args)
         assert exit_code == 0
+
+@pytest.mark.plugin_unit
+class TestTransactionalDependencyInstall:
+    def _defaults(self, tmp_path: Path):
+        from plugin.neko_plugin_cli.paths import CliDefaults
+
+        return CliDefaults(
+            plugin_root=tmp_path,
+            target_dir=tmp_path / "target",
+            plugins_root=tmp_path,
+            profiles_root=tmp_path / "profiles",
+        )
+
+    def _args(self, plugin_dir: Path, tmp_path: Path, *, clean: bool = False):
+        import argparse
+
+        return argparse.Namespace(
+            plugin=str(plugin_dir),
+            python="target-python",
+            clean=clean,
+            _defaults=self._defaults(tmp_path),
+        )
+
+    def test_uv_installs_when_target_python_has_no_pip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda name: "uv.exe" if name == "uv" else None,
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
+        assert calls
+        assert calls[0][:4] == ["uv.exe", "pip", "install", "--python"]
+        assert "target-python" in calls[0]
+        assert "--target" in calls[0]
+
+    def test_falls_back_to_target_python_pip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: None,
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
+        assert calls[0][:3] == ["target-python", "-m", "pip"]
+        assert "--no-user" in calls[0]
+
+    def test_reports_missing_uv_and_pip_clearly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        vendor = plugin_dir / "vendor"
+        vendor.mkdir()
+        marker = vendor / "old.txt"
+        marker.write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: None,
+        )
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, 1, stdout="target-python: No module named pip\\n"
+            ),
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path, clean=True)) == 1
+        assert marker.read_text(encoding="utf-8") == "keep"
+        error = capsys.readouterr().err
+        assert "uv was not found" in error
+        assert "ensurepip" in error
+
+    @pytest.mark.parametrize("clean", [False, True])
+    def test_install_failure_preserves_existing_vendor(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        clean: bool,
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        vendor = plugin_dir / "vendor"
+        vendor.mkdir()
+        marker = vendor / "old.txt"
+        marker.write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv",
+        )
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, 2, stdout="download failed\\n"
+            ),
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path, clean=clean)) == 1
+        assert marker.read_text(encoding="utf-8") == "keep"
+
+    def test_clean_success_removes_stale_dependencies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        vendor = plugin_dir / "vendor"
+        vendor.mkdir()
+        (vendor / "stale.py").write_text("stale", encoding="utf-8")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv",
+        )
+
+        def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            target = Path(command[command.index("--target") + 1])
+            (target / "fresh.py").write_text("fresh", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+        )
+        assert handle_sync(self._args(plugin_dir, tmp_path, clean=True)) == 0
+        assert (vendor / "fresh.py").exists()
+        assert not (vendor / "stale.py").exists()
+
+    def test_success_cleans_python_artifacts_from_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv",
+        )
+
+        def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            target = Path(command[command.index("--target") + 1])
+            (target / "package" / "__pycache__").mkdir(parents=True)
+            (target / "package" / "__pycache__" / "module.pyc").write_text("x")
+            (target / "module.pyc").write_text("x")
+            (target / "bin").mkdir()
+            (target / "bin" / "tool").write_text("x")
+            (target / "package" / "__init__.py").parent.mkdir(exist_ok=True)
+            (target / "package" / "__init__.py").write_text("x")
+            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+        )
+        assert handle_sync(self._args(plugin_dir, tmp_path, clean=True)) == 0
+        vendor = plugin_dir / "vendor"
+        assert (vendor / "package" / "__init__.py").exists()
+        assert not (vendor / "package" / "__pycache__").exists()
+        assert not (vendor / "module.pyc").exists()
+        assert not (vendor / "bin").exists()
+
+
+    def test_non_clean_success_retains_existing_extra_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        vendor = plugin_dir / "vendor"
+        vendor.mkdir()
+        (vendor / "extra.py").write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which", lambda _: "uv"
+        )
+
+        def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            target = Path(command[command.index("--target") + 1])
+            (target / "fresh.py").write_text("fresh", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+        )
+        assert handle_sync(
+            TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)
+        ) == 0
+        assert (vendor / "extra.py").read_text(encoding="utf-8") == "keep"
+        assert (vendor / "fresh.py").exists()
+
+    @pytest.mark.parametrize("permission_error", [False, True])
+    def test_second_rename_failure_restores_old_vendor(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        permission_error: bool,
+    ) -> None:
+        vendor = tmp_path / "vendor"
+        staging = tmp_path / ".vendor.staging"
+        vendor.mkdir()
+        staging.mkdir()
+        (vendor / "old.py").write_text("keep", encoding="utf-8")
+        (staging / "fresh.py").write_text("new", encoding="utf-8")
+        real_replace = Path.replace
+
+        def fail_staging_replace(source: Path, destination: Path) -> Path:
+            if source == staging:
+                if permission_error:
+                    raise PermissionError("file locked")
+                raise OSError("rename failed")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(Path, "replace", fail_staging_replace)
+        assert _replace_vendor(vendor, staging) is False
+        assert (vendor / "old.py").read_text(encoding="utf-8") == "keep"
+        assert not (vendor / "fresh.py").exists()
+        backups = list(tmp_path.glob(".vendor.backup-*"))
+        error = capsys.readouterr().err
+        if permission_error:
+            assert len(backups) == 1
+            assert (backups[0] / "old.py").read_text(encoding="utf-8") == "keep"
+            assert "files are in use" in error
+        else:
+            assert backups == []
+            assert "rename failed" in error

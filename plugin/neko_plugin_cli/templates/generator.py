@@ -586,7 +586,6 @@ def _render_readme_md(
     sync_command = layout.readme_plugin_command(
         "sync",
         suffix=" --clean",
-        with_pip=True,
     )
     check_commands = (
         f'{layout.readme_plugin_command("check")}\n'
@@ -777,7 +776,6 @@ def _render_vscode_tasks(
     sync_command = layout.vscode_plugin_command(
         "sync",
         suffix=" --clean",
-        with_pip=True,
     )
     check_command = layout.vscode_plugin_command("check")
     release_check_command = layout.vscode_plugin_command("check -r")

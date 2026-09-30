@@ -1677,7 +1677,7 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     readme = (repo_dir / "README.md").read_text(encoding="utf-8")
     tasks = (repo_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
 
-    sync_command = "uv run --with pip --project"
+    sync_command = "uv run --project"
     assert sync_command in readme
     assert "neko-plugin sync . --clean" in readme
     assert "`vendor/`" in readme
@@ -1691,7 +1691,7 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     assert "Use that GitHub Release URL when publishing" not in readme
     assert "N.E.K.O: sync dependency_demo" in tasks
     assert (
-        'uv run --with pip neko-plugin sync \\"${workspaceFolder}\\" --clean'
+        'uv run neko-plugin sync \\"${workspaceFolder}\\" --clean'
         in tasks
     )
 
