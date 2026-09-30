@@ -403,6 +403,24 @@ async def test_rejects_provider_endpointing(pool) -> None:
     assert loader.calls == 0
 
 
+
+def test_decode_thread_that_failed_to_start_is_retried(monkeypatch) -> None:
+    # A thread that could not be created must not be kept: later work would
+    # sit in a queue nothing reads.
+    executor = faster_whisper._DaemonSerialExecutor("test-decode")
+    real_start = threading.Thread.start
+    failures = [RuntimeError("can't start new thread")]
+
+    def flaky_start(self: threading.Thread) -> None:
+        if failures:
+            raise failures.pop()
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", flaky_start)
+    with pytest.raises(RuntimeError):
+        executor.submit(lambda: 1)
+    assert executor.submit(lambda: 2).result(5) == 2
+
 def test_decode_thread_is_a_daemon_and_runs_calls_in_order() -> None:
     # A native decode cannot be interrupted; interpreter exit must not wait
     # for one still running.

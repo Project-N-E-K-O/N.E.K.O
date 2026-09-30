@@ -376,10 +376,13 @@ class _DaemonSerialExecutor(concurrent.futures.Executor):
         future: concurrent.futures.Future[Any] = concurrent.futures.Future()
         with self._lock:
             if self._thread is None:
-                self._thread = threading.Thread(
+                # Adopt the thread only once it runs: if it cannot start, the
+                # next submit tries again instead of queueing work no one reads.
+                thread = threading.Thread(
                     target=self._run, name=self._thread_name, daemon=True
                 )
-                self._thread.start()
+                thread.start()
+                self._thread = thread
         self._items.put((future, fn, args, kwargs))
         return future
 
