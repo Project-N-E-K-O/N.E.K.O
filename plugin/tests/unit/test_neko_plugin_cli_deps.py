@@ -64,7 +64,13 @@ def _missing_pip_then_uv(calls):
         ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
           "UV_INDEX": "https://private/simple"}, None, False),
         ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
-          "UV_INDEX": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, True),
+          "UV_DEFAULT_INDEX": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, True),
+        # pip's index-url replaces PyPI; uv's additive indexes do not.
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_INDEX": "https://private/simple"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple",
+          "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_INDEX_URL": "https://private/simple"}, None, True),
+        ({"PIP_EXTRA_INDEX_URL": "https://private/simple", "UV_INDEX": "https://private/simple"}, None, True),
         # A false UV_NO_INDEX leaves uv's PyPI enabled.
         ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "0"}, None, False),
         ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "false"}, None, False),
@@ -408,6 +414,46 @@ def test_non_clean_sync_drops_marker_left_in_vendor(tmp_path, monkeypatch):
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
     assert (vendor / "old.py").read_text() == "keep"
     assert not (vendor / ".recovery-pending").exists()
+
+
+def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
+    # The sync lock is per user, so another user's staging may be live.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    stale = tmp_path / ".vendor.staging-other"
+    stale.mkdir()
+    owner = stale.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
+    deps_cmd._remove_stale_staging(tmp_path)
+    assert stale.exists()
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner, raising=False)
+    deps_cmd._remove_stale_staging(tmp_path)
+    assert not stale.exists()
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, clean):
+    # Removing the old vendor/ backup would delete the mounted tree's files.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    mount = plugin_dir / "vendor" / "pkg" / "mnt"
+    mount.mkdir(parents=True)
+    (mount / "external.dat").write_text("keep")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: Path(p) == mount)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run"),
+    )
+
+    assert handle_sync(
+        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)
+    ) == 1
+    assert (mount / "external.dat").read_text() == "keep"
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "mount point" in capsys.readouterr().err
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):

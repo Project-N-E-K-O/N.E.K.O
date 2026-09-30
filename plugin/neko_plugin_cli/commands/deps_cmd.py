@@ -78,8 +78,8 @@ def handle_sync(args: argparse.Namespace) -> int:
     staging_dir: Path | None = None
     try:
         with portalocker.Lock(lock_path, timeout=0):
-            # Holding the lock means no other sync of this plugin is running,
-            # so any staging dir still here was left by a killed run.
+            # Holding the lock means no other sync of this plugin by this user
+            # is running, so this user's staging dirs were left by killed runs.
             _remove_stale_staging(plugin_dir)
 
             pyproject_path = plugin_dir / "pyproject.toml"
@@ -122,21 +122,22 @@ def handle_sync(args: argparse.Namespace) -> int:
                 )
                 return 1
 
+            if vendor_dir.is_dir():
+                foreign = _find_foreign_subdir(vendor_dir, junctions=not args.clean)
+                if foreign is not None:
+                    print(
+                        f"[FAIL] {foreign} is a directory junction or mount point "
+                        "inside vendor/; sync would copy or delete what it points "
+                        "to. Remove it and retry.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
             # Install into a sibling staging dir so vendor/ stays untouched
             # until the install succeeds. A plain mkdir (unlike mkdtemp's 0700)
             # keeps the new vendor/ readable by other users per the umask.
             staging_dir = plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
             if not args.clean and vendor_dir.is_dir():
-                # copytree(symlinks=True) keeps symlinks but copies a Windows
-                # junction's whole target tree in as a real directory.
-                junction = _find_nested_junction(vendor_dir)
-                if junction is not None:
-                    print(
-                        f"[FAIL] {junction} is a directory junction; sync would copy "
-                        "its target into vendor/. Remove it, or use --clean.",
-                        file=sys.stderr,
-                    )
-                    return 1
                 shutil.copytree(vendor_dir, staging_dir, symlinks=True)
             else:
                 staging_dir.mkdir()
@@ -215,13 +216,23 @@ def _is_link(path: Path) -> bool:
     return True
 
 
-def _find_nested_junction(root: Path) -> Path | None:
-    if sys.platform != "win32":
+def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
+    """A subdirectory of vendor/ that belongs to another tree.
+
+    A POSIX mount point would have its contents deleted when the old vendor/
+    (now a backup) is removed. A Windows junction is only a problem for the
+    non-clean copy: copytree(symlinks=True) copies its whole target tree in
+    as a real directory, while rmtree removes just the junction.
+    """
+    if sys.platform == "win32" and not junctions:
         return None
     for dirpath, dirnames, _ in os.walk(root):
         for name in dirnames:
             path = Path(dirpath, name)
-            if not path.is_symlink() and _is_link(path):
+            if sys.platform == "win32":
+                if junctions and not path.is_symlink() and _is_link(path):
+                    return path
+            elif os.path.ismount(path):
                 return path
     return None
 
@@ -233,8 +244,13 @@ def _short_token() -> str:
 
 
 def _remove_stale_staging(plugin_dir: Path) -> None:
+    # The sync lock is per user, so holding it only rules out this user's
+    # own runs; another user's staging dir may belong to a live install.
+    uid = os.getuid() if hasattr(os, "getuid") else None
     for path in plugin_dir.glob(f"{VENDOR_SYNC_STAGING_PREFIX}*"):
         if path.is_dir() and not path.is_symlink():
+            if uid is not None and path.stat().st_uid != uid:
+                continue
             try:
                 shutil.rmtree(path)
             except OSError as exc:
@@ -358,22 +374,24 @@ def _pip_install_to_vendor(
 # pip package-source settings, by kind, as env vars and config file keys.
 _PIP_ENV_KINDS = {
     "PIP_INDEX_URL": "index",
-    "PIP_EXTRA_INDEX_URL": "index",
+    "PIP_EXTRA_INDEX_URL": "extra-index",
     "PIP_NO_INDEX": "no-index",
     "PIP_FIND_LINKS": "find-links",
 }
 _PIP_KEY_KINDS = {
     "index-url": "index",
-    "extra-index-url": "index",
+    "extra-index-url": "extra-index",
     "no-index": "no-index",
     "find-links": "find-links",
 }
 _PIP_INDEX_KEYS = set(_PIP_KEY_KINDS)
 # uv settings that keep each kind of pip source from falling through to
-# PyPI. Only UV_NO_INDEX turns off uv's default index; extra indexes and
-# find-links are merely added next to it, so each covers only its own kind.
+# PyPI. pip's index-url replaces PyPI, so only a replaced uv default index
+# (or UV_NO_INDEX) covers it; UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS
+# are only added next to PyPI, so each covers only pip's additive kinds.
 _UV_COVERS = {
-    "index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
+    "index": ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_NO_INDEX"),
+    "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
     "find-links": ("UV_FIND_LINKS", "UV_NO_INDEX"),
     "no-index": ("UV_NO_INDEX",),
 }
