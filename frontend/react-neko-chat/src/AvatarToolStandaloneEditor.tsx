@@ -145,8 +145,10 @@ export default function AvatarToolStandaloneEditor() {
     // target switch here instead of navigating over an unsaved draft.
     // 同一请求经 BroadcastChannel 和 storage 各到一次，两路之间还可能插进另一条
     // 请求（委派导航后紧跟一次 focus），只比较上一条会把导航处理两次、连弹两次
-    // 「放弃未保存修改」。按类型和时间戳记住最近处理过的请求。
-    const handledMessages: string[] = [];
+    // 「放弃未保存修改」。按类型、时间戳和 URL 记住处理过的请求；按时间而不是按条数
+    // 淘汰，连续多次打开时，慢的那一路送达前它的记录也还在。
+    const HANDLED_MESSAGE_TTL_MS = 60_000;
+    const handledMessages = new Map<string, number>();
     const markActive = () => {
       try {
         window.localStorage.setItem(SHARED_WINDOW_REGISTRY_KEY, JSON.stringify({
@@ -164,9 +166,12 @@ export default function AvatarToolStandaloneEditor() {
       // common_dialogs.js sends each request over BroadcastChannel and storage.
       if (data.timestamp !== undefined) {
         const messageKey = `${data.type}:${String(data.timestamp)}:${typeof data.payload?.url === 'string' ? data.payload.url : ''}`;
-        if (handledMessages.includes(messageKey)) return;
-        handledMessages.push(messageKey);
-        if (handledMessages.length > 16) handledMessages.shift();
+        const now = Date.now();
+        handledMessages.forEach((handledAt, key) => {
+          if (now - handledAt > HANDLED_MESSAGE_TTL_MS) handledMessages.delete(key);
+        });
+        if (handledMessages.has(messageKey)) return;
+        handledMessages.set(messageKey, now);
       }
       restoreAndFocusEditorWindow();
       const payload = data.payload;

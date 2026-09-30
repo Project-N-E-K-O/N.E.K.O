@@ -1682,6 +1682,44 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     assert not final.exists()
 
 
+@pytest.mark.parametrize("replaced", ("copy", "marker"))
+def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_path, monkeypatch, replaced):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    synced_record = b'{"synced": "newer version"}'
+
+    def sync_during_fence(*_args, **kwargs):
+        # 写入围栏落在「观察到副本」和「丢弃副本」之间：同步客户端恰好换掉了副本或授权。
+        if kwargs.get("operation") != "delete":
+            return
+        if replaced == "copy":
+            shutil.rmtree(deleting)
+            deleting.mkdir()
+            (deleting / "record.json").write_bytes(synced_record)
+        else:
+            marker.unlink()
+            marker.write_bytes(b"[]")
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", sync_during_fence)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    # 换进来的可能是更新的版本：整个删除拒绝，副本、授权和正式目录都不动。
+    assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 409)
+    assert deleting.is_dir()
+    assert marker.is_file()
+    assert final.is_dir()
+    if replaced == "copy":
+        assert (deleting / "record.json").read_bytes() == synced_record
+
+
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

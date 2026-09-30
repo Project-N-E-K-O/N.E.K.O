@@ -345,6 +345,23 @@ describe('AvatarToolStandaloneEditor', () => {
       expect(window.location.search).toBe('?mode=create');
       expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('New tool');
 
+      // 连续多次打开时一路跑在前面：更早那条导航的 storage 副本在十几条别的请求
+      // 之后才到，也不能再处理一次。
+      const burstNavigations = Array.from({ length: 12 }, (_, index) => ({
+        ...navigation,
+        timestamp: 200 + index,
+        payload: { ...navigation.payload, url: `${navigation.payload.url}&n=${index}` },
+      }));
+      burstNavigations.forEach((burstNavigation, index) => {
+        act(() => channels[0]?.onmessage?.({
+          data: { ...focusRequest, timestamp: 100 + index },
+        } as MessageEvent));
+        act(() => channels[0]?.onmessage?.({ data: burstNavigation } as MessageEvent));
+      });
+      const promptsBeforeLateDuplicate = confirm.mock.calls.length;
+      viaStorage(burstNavigations[0]);
+      expect(confirm).toHaveBeenCalledTimes(promptsBeforeLateDuplicate);
+
       unmount();
       expect(window.localStorage.getItem(registryKey)).toBeNull();
       expect(channels[0]?.closed).toBe(true);

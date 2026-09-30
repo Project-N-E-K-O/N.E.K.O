@@ -129,6 +129,10 @@ def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
         os.close(handle)
 
 
+# (deleting, marker, observed identity of deleting, observed identity of marker)
+_RetainedDelete = tuple[Path, Path, tuple, tuple]
+
+
 class AvatarToolStoreError(ValueError):
     def __init__(
         self,
@@ -566,7 +570,7 @@ class AvatarToolStore:
 
     def _require_no_pending_recovery(
         self, tool_id: str, *, allow_retained_delete: bool = False
-    ) -> tuple[Path, Path] | None:
+    ) -> _RetainedDelete | None:
         """Refuse to mutate an ID whose recovery artifacts are still unresolved.
 
         Recovery keeps a ``.deleting`` directory whose identity does not match its
@@ -577,8 +581,8 @@ class AvatarToolStore:
         ID rather than the whole store.
 
         With ``allow_retained_delete`` (an explicit delete of this ID), such a retained
-        ``.deleting`` copy does not block; its ``(deleting, marker)`` paths are returned
-        so the caller can discard it as part of that delete.
+        ``.deleting`` copy does not block; its paths and observed identities are
+        returned so the caller can discard it as part of that delete.
         """
         retained_delete = None
         deleting = self.root / f".{tool_id}.deleting"
@@ -622,18 +626,18 @@ class AvatarToolStore:
             status_code=409,
         )
 
-    def _retained_unconfirmed_delete(self, tool_id: str, deleting: Path) -> tuple[Path, Path] | None:
-        """Return ``(deleting, marker)`` when recovery retained an unconfirmed delete copy.
+    def _retained_unconfirmed_delete(self, tool_id: str, deleting: Path) -> _RetainedDelete | None:
+        """Describe the unconfirmed delete copy recovery retained for ``tool_id``, if any.
 
         That is exactly the state recovery leaves alone: a ``.deleting`` directory whose
         authorization does not match while the published directory of the same ID exists.
         """
         marker = deleting.with_name(f"{deleting.name}.unverified")
         try:
-            deleting_kind, _, probe_error = _probe_entry(deleting)
+            deleting_kind, _, deleting_identity, probe_error = _probe_entry_state(deleting)
             if probe_error is not None:
                 raise probe_error
-            marker_kind, _, probe_error = _probe_entry(marker)
+            marker_kind, _, marker_identity, probe_error = _probe_entry_state(marker)
             if probe_error is not None:
                 raise probe_error
             final_kind, _, probe_error = _probe_entry(self.root / tool_id)
@@ -646,10 +650,24 @@ class AvatarToolStore:
                 return None
         except OSError as exc:
             raise _storage_total_unavailable() from exc
-        return deleting, marker
+        return deleting, marker, (deleting_kind, deleting_identity), (marker_kind, marker_identity)
 
-    def _discard_retained_delete(self, deleting: Path, marker: Path) -> None:
+    def _discard_retained_delete(
+        self, deleting: Path, marker: Path, deleting_state: tuple, marker_state: tuple
+    ) -> None:
         """Drop a retained unconfirmed delete copy on an explicit delete of its ID."""
+        # 只丢弃最初观察到的那份副本和授权：从观察到现在（修订号校验、写入围栏期间）
+        # 同步客户端换进来的东西可能是更新的版本，对不上就整个拒绝，什么都不动。
+        for path, observed in ((deleting, deleting_state), (marker, marker_state)):
+            kind, _, identity, probe_error = _probe_entry_state(path)
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+            if (kind, identity) != observed:
+                raise AvatarToolStoreError(
+                    "tool_delete_failed",
+                    "Avatar tool could not be deleted",
+                    status_code=409,
+                )
         # 先撤授权并持久化：之后任何一步失败或崩溃，剩下的 .deleting 都是没有授权
         # 文件的已确认删除，恢复会把它清掉，不会再挪回或拦住这个 ID。
         try:
