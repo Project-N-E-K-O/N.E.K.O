@@ -14,3 +14,8 @@ updates:
     directory: /docs
     schedule:
       interval: monthly
+
+  - package-ecosystem: npm
+    directory: /frontend/plugin-manager
+    schedule:
+      interval: monthly
