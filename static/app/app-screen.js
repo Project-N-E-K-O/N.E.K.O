@@ -2022,6 +2022,14 @@
         }
     }
 
+    // 换源重启以外的启动入口（开关、按钮、恢复分享）：用当前选中的来源开始
+    // 分享，取代还没走到启动的换源重启。无论这次成败，重启都不再补一次，
+    // 否则用户在系统对话框里拒绝后会马上又弹一次。
+    function startScreenSharingSupersedingSourceSwitch() {
+        sourceSwitchRestart = null;
+        return startScreenSharing();
+    }
+
     async function startScreenSharingOnce(attempt) {
         // 检查是否在录音状态
         if (!S.isRecording) {
@@ -2691,7 +2699,7 @@
                 window.showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);
                 return;
             }
-            await startScreenSharing();
+            await startScreenSharingSupersedingSourceSwitch();
         } else {
             await stopScreenSharing();
         }
@@ -2819,12 +2827,10 @@
                 await stopScreenSharingForSourceSwitch(true);
                 // 等待一小段时间
                 await new Promise(function (resolve) { setTimeout(resolve, 300); });
-                // 重新开始分享（使用新选择的源）。停顿期间界面显示未共享，用户
-                // 可能已经点开关开始了分享；那次启动还在进行时这里会并入它，
-                // 已经开始了就不再重复启动。
-                var alreadySharing = activeNativeCaptureSourceId !== null
-                    || !!(stopBtn && !stopBtn.disabled);
-                if (sourceSwitchRestart === restartToken && !alreadySharing) {
+                // 重新开始分享（使用新选择的源）。停顿期间用户或其他入口已经
+                // 发起过启动时令牌已被清掉，不论那次成败都不再补一次；会话在
+                // 停顿中结束（isRecording 已关）也不再启动。
+                if (sourceSwitchRestart === restartToken && S.isRecording) {
                     await startScreenSharing();
                 }
             } finally {
@@ -3680,7 +3686,7 @@
     mod.getAvatarScreenPosition = getAvatarScreenPosition;
 
     // ======================== Backward-compat window exports ========================
-    window.startScreenSharing = startScreenSharing;
+    window.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
     window.stopScreenSharing = stopScreenSharing;
     window.isScreenSharingStartPending = isScreenSharingStartPending;
     window.selectScreenSource = selectScreenSource;
@@ -3693,12 +3699,7 @@
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
-    // 会话收尾（结束语音、结束会话）直接调这个：同时取消还没走到启动的换源
-    // 重启，否则它醒来后会在会话已结束时再去启动分享。
-    window.stopScreening = function () {
-        sourceSwitchRestart = null;
-        stopScreening();
-    };
+    window.stopScreening = stopScreening;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;

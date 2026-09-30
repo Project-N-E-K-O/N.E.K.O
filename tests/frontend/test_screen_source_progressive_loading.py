@@ -1726,13 +1726,18 @@ def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> 
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("gesture", ["stop", "session_end", "toggle"])
+@pytest.mark.parametrize(
+    "gesture", ["stop", "session_end", "mic_switch", "toggle", "toggle_rejected"]
+)
 def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
     # During a source switch's pause the controls show "not sharing".
     # stop / session_end: the restart must not reopen the share when it wakes
     #   (nor complain that the mic is off after the session ended).
-    # toggle: matches what the controls show, so it starts sharing; the
-    #   waking restart must not start a second time.
+    # mic_switch: switching microphones only tears down the frame sender; the
+    #   restart must still bring sharing back on the new source.
+    # toggle / toggle_rejected: matches what the controls show, so it starts
+    #   sharing; that start supersedes the restart, which must not ask again
+    #   even when the user rejected the request.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
     result = page.evaluate(
@@ -1751,7 +1756,11 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
                 configurable: true,
                 value: {
                     async getUserMedia(constraints) {
-                        captureCalls.push(constraints.video.mandatory.chromeMediaSourceId);
+                        const id = constraints.video.mandatory.chromeMediaSourceId;
+                        captureCalls.push(id);
+                        if (gesture === 'toggle_rejected' && id === 'window:5') {
+                            throw new DOMException('denied', 'NotAllowedError');
+                        }
                         const track = {
                             readyState: 'live',
                             stop() { this.readyState = 'ended'; },
@@ -1774,8 +1783,10 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
             const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             await new Promise((resolve) => setTimeout(resolve, 150));
             const pendingDuringPause = window.isScreenSharingStartPending();
-            if (gesture === 'toggle') {
+            if (gesture === 'toggle' || gesture === 'toggle_rejected') {
                 await window.switchScreenSharing();
+            } else if (gesture === 'mic_switch') {
+                window.stopScreening();
             } else if (gesture === 'session_end') {
                 window.appState.isRecording = false;
                 window.stopScreening();
@@ -1795,7 +1806,10 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
 
     assert result == {
         "pendingDuringPause": False,
-        "calls": ["window:2", "window:5"] if gesture == "toggle" else ["window:2"],
+        "calls": (
+            ["window:2"] if gesture in ("stop", "session_end")
+            else ["window:2", "window:5"]
+        ),
         "selected": "window:5",
         "micRequiredToasts": 0,
     }
