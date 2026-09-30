@@ -47,6 +47,10 @@ LOCAL_AVATAR_TOOL_BACKUP_PATTERN = re.compile(
 LOCAL_AVATAR_TOOL_DELETING_PATTERN = re.compile(
     r"^\.(local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.deleting$"
 )
+# 明确删除时停放的保留副本（原授权在它里面）：正式目录的删除暂存之前一直可以挪回。
+LOCAL_AVATAR_TOOL_RETAINED_PATTERN = re.compile(
+    r"^\.(local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.retained$"
+)
 PUBLIC_AVATAR_TOOL_FIXED_RESOURCE_NAMES = frozenset(
     {"default.png", "normal.mp3", "special.png", "special.mp3"}
 )
@@ -766,15 +770,26 @@ class AvatarToolStore:
     ) -> tuple[Path, Path]:
         """Move a retained unconfirmed delete copy aside for an explicit delete of its ID.
 
-        The copy goes to an orphan-upload name that recovery always removes, and its
-        marker moves inside it, so the caller deletes both only once the published
-        directory has been staged. Each entry is claimed by the rename first and
+        The copy goes to ``.<id>.retained`` and its marker moves inside it, so the
+        caller deletes both only once the published directory has been staged; until
+        then recovery puts them back after a crash. Each entry is claimed by the rename first and
         validated afterwards: a check followed by a rename would leave a window in
         which a newer copy synced into place gets parked and deleted. Every rollback
         is a rename back, so it needs no free space.
         """
-        parked = self.root / f".local-{uuid.uuid4()}.uploading"
+        parked = deleting.with_name(deleting.name.removesuffix(".deleting") + ".retained")
         parked_marker = parked / f".retained-{uuid.uuid4()}.unverified"
+        parked_kind, _, probe_error = _probe_entry(parked)
+        if probe_error is not None:
+            raise _storage_total_unavailable() from probe_error
+        if parked_kind != "absent":
+            # 上一次停放的副本还没被恢复处理：POSIX rename 会静默顶掉一个空目录，
+            # 不能拿这次的副本去覆盖它。
+            raise AvatarToolStoreError(
+                "tool_recovery_pending",
+                "An interrupted change of this avatar tool is still awaiting recovery",
+                status_code=409,
+            )
         try:
             os.replace(deleting, parked)
         except OSError as exc:
@@ -819,8 +834,8 @@ class AvatarToolStore:
         deleting_kind, _, probe_error = _probe_entry(deleting)
         if probe_error is not None or deleting_kind != "absent":
             # .deleting 被别的东西占着（比如正式目录已经挪进去、核对失败又挪不回），
-            # 原位的授权属于它，不能动。副本按上传孤儿由恢复清掉，这次删除本来就是
-            # 用户要删这个 ID。
+            # 原位的授权属于它，不能动。副本留在停放名下，由恢复按正式目录的状态
+            # 决定挪回还是丢弃。
             _RECOVERY_PENDING_ROOTS.add(self._root_key())
             return
         # 原授权一律改名放回原位，覆盖这次删除写下的授权或期间出现在那里的任何
@@ -1114,6 +1129,48 @@ class AvatarToolStore:
             # 清掉：它进不了公开目录、UI 也删不掉，却一直算在 _current_storage_bytes
             # 里，足够大就会让后续创建永久 storage_limit_reached。
             remove_owned_directory(backup)
+
+        # 明确删除停放的保留副本要先于 .deleting / 孤立授权的处理：它的原授权
+        # 可能已经挪回原位、却还没有 .deleting 可以依附。
+        for candidate in list(self.root.iterdir()):
+            match = LOCAL_AVATAR_TOOL_RETAINED_PATTERN.fullmatch(candidate.name)
+            if match is None:
+                continue
+            tool_id = match.group(1)
+            deleting = self.root / f".{tool_id}.deleting"
+            marker = self.root / f".{tool_id}.deleting.unverified"
+            probes = [_probe_entry(path) for path in (candidate, deleting, self.root / tool_id)]
+            probe_error = next((error for _, _, error in probes if error is not None), None)
+            if probe_error is not None:
+                logger.warning("Deferring retained avatar tool copy %s: %s", candidate.name, probe_error)
+                complete = False
+                continue
+            candidate_kind, deleting_kind, final_kind = (kind for kind, _, _ in probes)
+            if candidate_kind != "dir":
+                continue
+            if deleting_kind != "absent" or final_kind == "absent":
+                # 正式目录的删除已经暂存（或已经完成）：用户要删的就是这个 ID，停放的
+                # 副本和原授权随之丢弃。
+                shutil.rmtree(candidate)
+                continue
+            if final_kind != "dir":
+                # 正式路径被别的东西占着：不判断，保留现场，只拦这个 ID。
+                continue
+            # 正式目录还在、删除没有暂存就中断了：这次删除没有发生，副本连同原授权
+            # 回到「保留副本」状态。
+            parked_markers = [
+                entry
+                for entry in candidate.iterdir()
+                if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
+            ]
+            self._unpark_retained_delete(
+                candidate,
+                parked_markers[0] if parked_markers else candidate / ".retained-missing.unverified",
+                deleting,
+                marker,
+            )
+            if _probe_entry(candidate)[0] != "absent":
+                complete = False
 
         for candidate in self.root.iterdir():
             if (
@@ -2156,7 +2213,8 @@ class AvatarToolStore:
             is_published = is_local_avatar_tool_id(directory.name)
             is_pending_delete = LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(directory.name) is not None
             is_update_backup = LOCAL_AVATAR_TOOL_BACKUP_PATTERN.fullmatch(directory.name) is not None
-            if not (is_published or is_pending_delete or is_update_backup):
+            is_parked_retained = LOCAL_AVATAR_TOOL_RETAINED_PATTERN.fullmatch(directory.name) is not None
+            if not (is_published or is_pending_delete or is_update_backup or is_parked_retained):
                 continue
             directory_kind, _, probe_error = _probe_entry(directory)
             if probe_error is not None:
@@ -2319,7 +2377,7 @@ class AvatarToolStore:
                 try:
                     shutil.rmtree(parked)
                 except OSError:
-                    # 停放名是上传孤儿，恢复会清掉它。
+                    # 正式目录已经暂存删除，恢复会清掉停放的副本。
                     _RECOVERY_PENDING_ROOTS.add(self._root_key())
                     logger.warning("Could not clean retained avatar tool copy %s", parked)
             try:

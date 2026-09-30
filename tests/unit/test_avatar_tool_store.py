@@ -1834,8 +1834,8 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         pass
 
     def crash_on_discard(path, *args, **kwargs):
-        # 副本被挪到上传孤儿名下，正式目录暂存成功后才真正删掉它；在这一步崩溃。
-        if Path(path).name.endswith(".uploading"):
+        # 副本被停放到 .retained 名下，正式目录暂存成功后才真正删掉它；在这一步崩溃。
+        if Path(path).name.endswith(".retained"):
             raise SimulatedCrash()
         return real_rmtree(path, *args, **kwargs)
 
@@ -1844,16 +1844,54 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         store.delete_tool(tool_id)
     monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
 
-    # 授权已经撤掉：剩下的都是已确认删除（停放的副本按上传孤儿），恢复直接清掉。
+    # 正式目录的删除已经暂存：剩下的是已确认删除和停放的副本，恢复直接清掉。
     assert not marker.exists()
     assert not final.exists()
-    assert list(store.root.glob(".local-*.uploading"))
+    assert list(store.root.glob(".*.retained"))
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
     assert not deleting.exists()
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
     restarted.create_tool_v3(manifest=_v3_manifest(tool_id, name="Reborn"), uploads=[_png()])
+
+
+def test_a_crash_before_the_published_delete_is_staged_keeps_the_retained_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def crash_before_staging(*_args, **_kwargs):
+        # 副本和原授权已经停放、正式目录的删除还没暂存：进程在这里退出。
+        raise SimulatedCrash()
+
+    monkeypatch.setattr(AvatarToolStore, "_stage_delete_locked", crash_before_staging)
+    with pytest.raises(SimulatedCrash):
+        store.delete_tool(tool_id)
+    monkeypatch.undo()
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    # 正式目录还在，删除没有发生：副本连同原授权回到「保留副本」状态，不当成孤儿清掉。
+    assert final.is_dir()
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.read_bytes() == b"{"
+    assert not list(store.root.glob(".*.retained"))
+    assert restarted.delete_tool(tool_id) == tool_id
+    assert not deleting.exists()
+    assert not final.exists()
 
 
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
@@ -1885,7 +1923,7 @@ def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, mon
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
     assert final.is_dir()
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     assert store.delete_tool(tool_id) == tool_id
     assert not deleting.exists()
@@ -1909,7 +1947,7 @@ def test_a_retained_copy_synced_in_just_before_it_is_parked_is_not_discarded(tmp
     def sync_right_before_parking(source, destination, *args, **kwargs):
         # 核对之后、改名之前：同步客户端恰好把副本整个换掉。先核对再改名留下的
         # 就是这个窗口，只能先改名认领、再核对认领到的东西。
-        if not swapped and Path(source) == deleting and Path(destination).name.endswith(".uploading"):
+        if not swapped and Path(source) == deleting and Path(destination).name.endswith(".retained"):
             swapped.append(True)
             shutil.rmtree(deleting)
             shutil.copytree(final, deleting)
@@ -1926,7 +1964,7 @@ def test_a_retained_copy_synced_in_just_before_it_is_parked_is_not_discarded(tmp
     assert (deleting / "record.json").read_bytes() == synced_record
     assert marker.read_bytes() == b"{"
     assert final.is_dir()
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
 
 
 def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(tmp_path, monkeypatch):
@@ -1957,7 +1995,7 @@ def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.read_bytes() == b"{"
     assert final.is_dir()
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
     # 重启恢复看到的仍是「授权对不上、正式目录在」：保留副本，而不是当成已确认删除清掉。
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
@@ -2004,8 +2042,17 @@ def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypat
     # 无授权的 .deleting 会被恢复当成已确认删除：宁可让副本留在停放名下。
     assert not (deleting.exists() and not marker.exists())
     assert not deleting.exists()
-    assert list(store.root.glob(".local-*.uploading"))
+    assert list(store.root.glob(".*.retained"))
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    # 故障过去之后，恢复看到正式目录还在、删除没有暂存：把副本连同原授权挪回。
+    monkeypatch.setattr(Path, "open", real_open)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert (deleting / "record.json").is_file()
+    assert marker.read_bytes() == b"{"
+    assert not list(store.root.glob(".*.retained"))
 
 
 def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_path, monkeypatch):
@@ -2046,7 +2093,7 @@ def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_pat
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
     assert final.is_dir()
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
 
 
 def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path, monkeypatch):
@@ -2082,7 +2129,7 @@ def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path
     # 副本带着已知对不上的原授权回到原位，外来的授权不能留在它旁边。
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.read_bytes() == b"{"
-    assert not list(store.root.glob(".local-*.uploading"))
+    assert not list(store.root.glob(".*.retained"))
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
