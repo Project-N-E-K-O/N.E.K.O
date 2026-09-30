@@ -154,9 +154,14 @@ def handle_sync(args: argparse.Namespace) -> int:
             _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
-            # A complete successful sync supersedes retained backups.
+            # A complete successful sync supersedes this user's retained
+            # backups. Another user's may belong to their live swap (the lock
+            # is per user), so leave those alone.
+            uid = os.getuid() if hasattr(os, "getuid") else None
             for backup in _retained_backups(plugin_dir):
                 try:
+                    if uid is not None and backup.stat().st_uid != uid:
+                        continue
                     if _mounted_inside(backup):
                         continue
                     shutil.rmtree(backup)
@@ -561,12 +566,30 @@ def _pip_config_files(python: str) -> list[Path]:
         files.append(home / ".pip" / "pip.conf")
         site_name = "pip.conf"
     # Site config sits in the target environment's prefix.
-    interpreter = Path(shutil.which(python) or python)
-    prefix = interpreter.parent
+    files.append(_target_prefix(python) / site_name)
+    return files
+
+
+def _target_prefix(python: str) -> Path:
+    """The target interpreter's sys.prefix. Ask it directly: a launcher or
+    shim (pyenv, asdf) does not live inside the environment it runs."""
+    try:
+        result = subprocess.run(
+            [python, "-c", "import sys; print(sys.prefix)"],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        lines = (result.stdout or "").strip().splitlines()
+        if result.returncode == 0 and lines:
+            return Path(lines[-1])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # Fall back to the usual venv layout: <prefix>/bin or <prefix>\Scripts.
+    prefix = Path(shutil.which(python) or python).parent
     if sys.platform != "win32" or prefix.name.lower() == "scripts":
         prefix = prefix.parent
-    files.append(prefix / site_name)
-    return files
+    return prefix
 
 
 def _config_setting_keys(path: Path) -> set[str]:

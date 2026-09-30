@@ -273,6 +273,49 @@ def test_default_clean_never_discards_a_pending_backup(tmp_path, monkeypatch, ca
         assert "unreconciled dependency backup" in capsys.readouterr().err
 
 
+def test_success_leaves_another_users_backup_alone(tmp_path, monkeypatch):
+    # The lock is per user; another user's backup may be mid-swap.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "vendor").mkdir()
+    theirs = plugin_dir / ".vendor.backup-0000ffff"
+    theirs.mkdir()
+    owner = theirs.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert theirs.exists()
+
+
+def test_target_prefix_asks_the_interpreter(tmp_path, monkeypatch):
+    # A pyenv/asdf shim does not live in the environment it launches.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    real_prefix = tmp_path / "real-env"
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=f"{real_prefix}\n")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert deps_cmd._target_prefix(str(tmp_path / "shims" / "python")) == real_prefix
+    assert seen[0][1:] == ["-c", "import sys; print(sys.prefix)"]
+
+    def fail(command, **kwargs):
+        raise FileNotFoundError("no interpreter")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", fail)
+    fallback = deps_cmd._target_prefix(str(tmp_path / "venv" / "Scripts" / "python.exe"))
+    assert fallback == tmp_path / "venv"
+
+
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
