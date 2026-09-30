@@ -637,6 +637,11 @@ class AvatarToolStore:
             deleting_kind, _, deleting_identity, probe_error = _probe_entry_state(deleting)
             if probe_error is not None:
                 raise probe_error
+            # 和删除授权一样，同时绑定目录和其中的 record.json：原地改写文件不会
+            # 改变目录本身的身份。
+            record_kind, _, record_identity, probe_error = _probe_entry_state(deleting / "record.json")
+            if probe_error is not None:
+                raise probe_error
             marker_kind, _, marker_identity, probe_error = _probe_entry_state(marker)
             if probe_error is not None:
                 raise probe_error
@@ -650,7 +655,12 @@ class AvatarToolStore:
                 return None
         except OSError as exc:
             raise _storage_total_unavailable() from exc
-        return deleting, marker, (deleting_kind, deleting_identity), (marker_kind, marker_identity)
+        return (
+            deleting,
+            marker,
+            (deleting_kind, deleting_identity, record_kind, record_identity),
+            (marker_kind, marker_identity),
+        )
 
     def _discard_retained_delete(
         self, deleting: Path, marker: Path, deleting_state: tuple, marker_state: tuple
@@ -658,16 +668,21 @@ class AvatarToolStore:
         """Drop a retained unconfirmed delete copy on an explicit delete of its ID."""
         # 只丢弃最初观察到的那份副本和授权：从观察到现在（修订号校验、写入围栏期间）
         # 同步客户端换进来的东西可能是更新的版本，对不上就整个拒绝，什么都不动。
-        for path, observed in ((deleting, deleting_state), (marker, marker_state)):
+        current_states = []
+        for path in (deleting, deleting / "record.json", marker):
             kind, _, identity, probe_error = _probe_entry_state(path)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
-            if (kind, identity) != observed:
-                raise AvatarToolStoreError(
-                    "tool_delete_failed",
-                    "Avatar tool could not be deleted",
-                    status_code=409,
-                )
+            current_states.append((kind, identity))
+        if (
+            (*current_states[0], *current_states[1]) != deleting_state
+            or current_states[2] != marker_state
+        ):
+            raise AvatarToolStoreError(
+                "tool_delete_failed",
+                "Avatar tool could not be deleted",
+                status_code=409,
+            )
         # 先撤授权并持久化：之后任何一步失败或崩溃，剩下的 .deleting 都是没有授权
         # 文件的已确认删除，恢复会把它清掉，不会再挪回或拦住这个 ID。
         try:
