@@ -293,6 +293,32 @@ def test_success_leaves_another_users_backup_alone(tmp_path, monkeypatch):
     assert theirs.exists()
 
 
+@pytest.mark.parametrize("clean", [False, True])
+def test_another_users_pending_backup_blocks_with_a_usable_hint(tmp_path, monkeypatch, capsys, clean):
+    # --clean cannot clear it (it is never removed here), so the hint must
+    # not send the user in a loop.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "vendor").mkdir()
+    theirs = plugin_dir / ".vendor.backup-0000ffff"
+    theirs.mkdir()
+    theirs.with_name(theirs.name + ".pending").touch()
+    owner = theirs.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 1
+    assert theirs.exists()
+    error = capsys.readouterr().err
+    assert "belongs to another user" in error
+    assert "sync --clean" not in error
+
+
 def test_target_prefix_asks_the_interpreter(tmp_path, monkeypatch):
     # A pyenv/asdf shim does not live in the environment it launches.
     from plugin.neko_plugin_cli.commands import deps_cmd

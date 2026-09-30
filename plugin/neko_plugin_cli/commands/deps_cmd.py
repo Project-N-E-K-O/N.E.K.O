@@ -97,12 +97,20 @@ def handle_sync(args: argparse.Namespace) -> int:
             # the only full copy of the old vendor/ is never dropped silently.
             discard_backups = getattr(args, "discard_backups", args.clean)
             unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
-            if unreconciled and (not discard_backups or not external_deps):
-                hint = (
-                    "recover it or run `neko-plugin sync --clean` explicitly"
-                    if external_deps
-                    else "recover it before retrying"
-                )
+            # Another user's backup is never removed here (their swap may be
+            # live), so --clean cannot clear it; say how to instead.
+            foreign = [path for path in unreconciled if _owned_by_other_user(path)]
+            if unreconciled and (not discard_backups or not external_deps or foreign):
+                if foreign:
+                    hint = (
+                        "it belongs to another user and may be their sync in "
+                        "progress; let it finish or have them recover it, or once "
+                        "no sync is running remove the backup and its .pending file"
+                    )
+                elif external_deps:
+                    hint = "recover it or run `neko-plugin sync --clean` explicitly"
+                else:
+                    hint = "recover it before retrying"
                 locations = ", ".join(str(path) for path in unreconciled)
                 print(
                     f"[FAIL] Cannot sync with an unreconciled dependency backup; "
@@ -157,10 +165,9 @@ def handle_sync(args: argparse.Namespace) -> int:
             # A complete successful sync supersedes this user's retained
             # backups. Another user's may belong to their live swap (the lock
             # is per user), so leave those alone.
-            uid = os.getuid() if hasattr(os, "getuid") else None
             for backup in _retained_backups(plugin_dir):
                 try:
-                    if uid is not None and backup.stat().st_uid != uid:
+                    if _owned_by_other_user(backup):
                         continue
                     if _mounted_inside(backup):
                         continue
@@ -337,13 +344,19 @@ def _mounted_inside(path: Path) -> bool:
     return True
 
 
+def _owned_by_other_user(path: Path) -> bool:
+    """POSIX only; Windows has no cheap owner id and treats every dir as own."""
+    if not hasattr(os, "getuid"):
+        return False
+    return path.stat().st_uid != os.getuid()
+
+
 def _remove_stale_staging(plugin_dir: Path) -> None:
     # The sync lock is per user, so holding it only rules out this user's
     # own runs; another user's staging dir may belong to a live install.
-    uid = os.getuid() if hasattr(os, "getuid") else None
     for path in _sync_work_dirs(plugin_dir, VENDOR_SYNC_STAGING_PREFIX):
         try:
-            if uid is not None and path.stat().st_uid != uid:
+            if _owned_by_other_user(path):
                 continue
             if _mounted_inside(path):
                 continue
