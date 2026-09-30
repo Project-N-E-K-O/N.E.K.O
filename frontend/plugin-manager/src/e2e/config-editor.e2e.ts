@@ -336,6 +336,17 @@ for (const modelCount of [0, 1, 6]) {
         await expectReachable(selection)
         await selection.click()
         await page.keyboard.press('Escape')
+        // Escape only starts the leave transition. Resizing while it runs can
+        // leave the teleported dropdown open over the next size's controls.
+        await expect
+          .poll(() =>
+            page
+              .locator('.el-select__popper')
+              .evaluateAll((poppers) =>
+                poppers.every((popper) => getComputedStyle(popper).display === 'none')
+              )
+          )
+          .toBe(true)
       }
     }
   })
