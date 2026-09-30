@@ -862,10 +862,20 @@ def test_lock_location_ignores_per_process_cache_settings(tmp_path, monkeypatch)
     # one lock, or both would run and one could delete the other's staging.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
+    import types
+
+    account_home = tmp_path / "account-home"
+    fake_pwd = types.SimpleNamespace(
+        getpwuid=lambda uid: types.SimpleNamespace(pw_dir=str(account_home))
+    )
+    monkeypatch.setitem(sys.modules, "pwd", fake_pwd)
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 1000, raising=False)
+    # Per-process settings that must not move the lock.
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "per-process-cache"))
-    base = deps_cmd._lock_cache_base()
-    assert tmp_path not in base.parents
-    assert base.name == ".cache"
+    monkeypatch.setenv("HOME", str(tmp_path / "per-process-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "per-process-home"))
+
+    assert deps_cmd._lock_cache_base() == account_home / ".cache"
 
 
 def test_mount_found_in_finished_staging_stops_the_sync(tmp_path, monkeypatch, capsys):
