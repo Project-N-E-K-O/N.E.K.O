@@ -561,6 +561,7 @@
     },
     "errors": {
         "ASR_PROVIDER_WARMUP_TIMEOUT": "El modelo de reconocimiento de voz local tardó demasiado en prepararse. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si la conexión es lenta o no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "El reconocimiento de voz local esperó demasiado en la cola. La entrada de voz de esta sesión se ha detenido. Es posible que un reconocimiento anterior siga en curso; inicia una nueva sesión de voz en un momento o desactiva el reconocimiento de voz local si vuelve a ocurrir.",
         "emotionTimeout": "Tiempo de espera del análisis de emociones",
         "noAudioTrack": "No hay pista de audio disponible",
         "cameraStreamFailed": "No se pudo obtener la transmisión de la cámara",
@@ -1054,7 +1055,8 @@
         "localAsrModelLoadFailed": "No se pudo cargar el modelo de reconocimiento de voz local. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
         "localAsrReloading": "Recargando el modelo de reconocimiento de voz local, espera un momento. Tu primera frase se reconocerá cuando el modelo esté listo.",
         "localAsrReady": "El reconocimiento de voz local está listo",
-        "localAsrWarmupTimeout": "El modelo de reconocimiento de voz local tardó demasiado en prepararse. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si la conexión es lenta o no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local."
+        "localAsrWarmupTimeout": "El modelo de reconocimiento de voz local tardó demasiado en prepararse. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si la conexión es lenta o no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
+        "localAsrQueueTimeout": "El reconocimiento de voz local esperó demasiado en la cola. La entrada de voz de esta sesión se ha detenido. Es posible que un reconocimiento anterior siga en curso; inicia una nueva sesión de voz en un momento o desactiva el reconocimiento de voz local si vuelve a ocurrir."
     },
     "speaker": {
         "volumeLabel": "Volumen del altavoz",

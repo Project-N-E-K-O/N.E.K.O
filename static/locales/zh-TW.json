@@ -561,6 +561,7 @@
     },
     "errors": {
         "ASR_PROVIDER_WARMUP_TIMEOUT": "本機語音辨識模型準備逾時，本次語音輸入已停止。第一次使用需要從 HuggingFace 下載模型；網路較慢或連不上時，可以設定環境變數 HF_ENDPOINT（例如 https://hf-mirror.com）後重新啟動，或關閉本機語音辨識。",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "本機語音辨識排隊等待太久，本次語音輸入已停止。可能是之前的辨識還沒結束，請稍後重新開始語音會話；如果經常發生，可以關閉本機語音辨識。",
         "emotionTimeout": "情感分析逾時",
         "noAudioTrack": "沒有可用的音軌",
         "cameraStreamFailed": "無法取得攝影機串流",
@@ -1054,7 +1055,8 @@
         "localAsrModelLoadFailed": "本機語音辨識模型載入失敗，本次語音輸入已停止。首次使用需要從 HuggingFace 下載模型；如果連不上，可以設定環境變數 HF_ENDPOINT（例如 https://hf-mirror.com）後重新啟動，或關閉本機語音辨識。",
         "localAsrReloading": "正在重新載入本機語音辨識模型，請稍候。模型就緒後會辨識你的第一句話。",
         "localAsrReady": "本機語音辨識已就緒",
-        "localAsrWarmupTimeout": "本機語音辨識模型準備逾時，本次語音輸入已停止。第一次使用需要從 HuggingFace 下載模型；網路較慢或連不上時，可以設定環境變數 HF_ENDPOINT（例如 https://hf-mirror.com）後重新啟動，或關閉本機語音辨識。"
+        "localAsrWarmupTimeout": "本機語音辨識模型準備逾時，本次語音輸入已停止。第一次使用需要從 HuggingFace 下載模型；網路較慢或連不上時，可以設定環境變數 HF_ENDPOINT（例如 https://hf-mirror.com）後重新啟動，或關閉本機語音辨識。",
+        "localAsrQueueTimeout": "本機語音辨識排隊等待太久，本次語音輸入已停止。可能是之前的辨識還沒結束，請稍後重新開始語音會話；如果經常發生，可以關閉本機語音辨識。"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",

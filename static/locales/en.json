@@ -561,6 +561,7 @@
     },
     "errors": {
         "ASR_PROVIDER_WARMUP_TIMEOUT": "The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening.",
         "emotionTimeout": "Emotion analysis timeout",
         "noAudioTrack": "No available audio track",
         "cameraStreamFailed": "Failed to get camera stream",
@@ -1054,7 +1055,8 @@
         "localAsrModelLoadFailed": "The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
         "localAsrReloading": "Reloading the local speech recognition model, please wait. Your first sentence is recognized once the model is ready.",
         "localAsrReady": "Local speech recognition is ready",
-        "localAsrWarmupTimeout": "The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition."
+        "localAsrWarmupTimeout": "The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
+        "localAsrQueueTimeout": "Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening."
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",

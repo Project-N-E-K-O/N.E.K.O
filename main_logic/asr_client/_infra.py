@@ -30,6 +30,7 @@ import soxr
 
 from .delivery import delivery_evidence, log_delivery_phase
 from .warmup import (
+    provider_warmup_kind,
     provider_warmup_reason,
     provider_warmup_snapshot,
 )
@@ -431,6 +432,11 @@ class _RealtimeAsrSessionImpl:
         """Audio payload bytes after successful socket send, not queue admission."""
         evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
         return evidence.written_audio_bytes if evidence else 0
+
+    @property
+    def provider_warmup_kind(self) -> str:
+        """What a pending warm-up waits for (``"model"`` / ``"queue"``), or ``""``."""
+        return provider_warmup_kind(self._request_queue)
 
     @property
     def provider_warmup_reason(self) -> str:

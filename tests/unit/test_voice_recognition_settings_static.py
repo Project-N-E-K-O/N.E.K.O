@@ -320,6 +320,7 @@ def test_failure_reasons_map_to_their_own_guidance() -> None:
         ("ASR_LOCAL_MODEL_LOAD_FAILED", "microphone.localAsrModelLoadFailed"),
         ("ASR_LOCAL_DEPENDENCY_MISSING", "microphone.localAsrDependencyMissing"),
         ("ASR_PROVIDER_WARMUP_TIMEOUT", "microphone.localAsrWarmupTimeout"),
+        ("ASR_PROVIDER_QUEUE_TIMEOUT", "microphone.localAsrQueueTimeout"),
     ):
         branch = helper.split(f"reason === '{reason}'", 1)[1].split("}", 1)[0]
         assert f"t('{key}')" in branch, reason
@@ -360,6 +361,14 @@ def test_local_model_copy_exists_in_every_locale_and_names_hf_endpoint() -> None
             (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
         )["errors"]
         assert "HF_ENDPOINT" in errors.get("ASR_PROVIDER_WARMUP_TIMEOUT", ""), locale
+        # A decode queued behind another session is not a model download: its
+        # text must not send the user to HF_ENDPOINT.
+        for text in (
+            microphone.get("localAsrQueueTimeout", ""),
+            errors.get("ASR_PROVIDER_QUEUE_TIMEOUT", ""),
+        ):
+            assert text, locale
+            assert "HF_ENDPOINT" not in text, locale
 
 
 def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() -> None:

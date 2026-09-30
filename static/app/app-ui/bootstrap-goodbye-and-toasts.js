@@ -719,24 +719,34 @@ I.mod = window.appUi;
             document.head.appendChild(spinStyle);
         }
 
+        // 之前一次隐藏的淡出还没走完：取消它，别把刚显示的提示又藏掉。
+        if (I._voicePreparingHideTimer) {
+            clearTimeout(I._voicePreparingHideTimer);
+            I._voicePreparingHideTimer = null;
+        }
+        toast.style.animation = '';
         toast.style.display = 'flex';
     }
 
     I.mod.showVoicePreparingToast = I.showVoicePreparingToast;
 
     // --- hideVoicePreparingToast ---
-    I.hideVoicePreparingToast = function hideVoicePreparingToast() {
+    I.hideVoicePreparingToast = function hideVoicePreparingToast(options) {
         // 本地语音识别模型还在准备（ASR_INDEPENDENT_PREPARING 之后、PREPARED 之前）：
-        // 语音会话启动流程里的隐藏不能把这条等待原因收掉，改为继续显示它。
-        // 需要真正收起时，调用方先清掉 S.localAsrPreparingMessage。
-        if (I.S && I.S.localAsrPreparingMessage) {
+        // 只有语音会话成功启动时那两处隐藏传 keepLocalAsrNotice，收起自己的
+        // 「准备中」但留下这条等待原因。其余调用（出错、拖拽拆除、会话结束……）
+        // 一律连同这条提示一起收起，不会让转圈留在已经结束的会话上。
+        if (options && options.keepLocalAsrNotice && I.S && I.S.localAsrPreparingMessage) {
             I.showVoicePreparingToast(I.S.localAsrPreparingMessage);
             return;
         }
+        if (I.S) I.S.localAsrPreparingMessage = null;
         const toast = document.getElementById('voice-preparing-toast');
         if (toast) {
             toast.style.animation = 'voiceToastFadeIn 0.3s ease reverse';
-            setTimeout(() => {
+            if (I._voicePreparingHideTimer) clearTimeout(I._voicePreparingHideTimer);
+            I._voicePreparingHideTimer = setTimeout(() => {
+                I._voicePreparingHideTimer = null;
                 toast.style.display = 'none';
             }, 300);
         }

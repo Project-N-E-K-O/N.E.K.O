@@ -448,7 +448,10 @@ def test_decode_thread_is_a_daemon_and_runs_calls_in_order() -> None:
     with pytest.raises(ValueError):
         failing.result(5)
     assert last.result(5) == 2
-    assert order == [1, 2]
+    # A cancelled call still runs (its own cleanup must happen); its future
+    # stays cancelled.
+    assert order == [1, 99, 2]
+    assert cancelled.cancelled()
     assert threads[0].daemon is True
 
 
@@ -1412,10 +1415,10 @@ def test_failed_cuda_candidate_is_released_before_the_next_one(monkeypatch) -> N
     assert alive_at_construction == [False, False, False]
 
 
-async def test_cancelled_queued_decode_keeps_its_slot_until_dequeued(pool) -> None:
-    # The executor keeps a cancelled work item (and its PCM) queued until the
-    # single decode thread reaches it, so its process-wide slot stays taken
-    # until then; otherwise commit/end/start churn could pile up PCM.
+async def test_cancelled_queued_decode_returns_its_slot_at_once(pool) -> None:
+    # A job cancelled before the decoder reaches it drops its PCM, so its
+    # process-wide slot (a bound on queued PCM) is given back right away
+    # rather than when the single decode thread gets to it.
     model = _FakeModel(_segment("x"))
     model.release.clear()
     loader = _RecordingLoader(model)
@@ -1433,7 +1436,8 @@ async def test_cancelled_queued_decode_keeps_its_slot_until_dequeued(pool) -> No
         await asyncio.wait_for(second[1].join(), 2)
         await asyncio.sleep(0.05)
         await _shutdown(*second)
-        assert pool._decode_slots_used == 2
+        await asyncio.wait_for(second[0], 3)
+        assert pool._decode_slots_used == 1  # the first session's running decode
     finally:
         model.release.set()
     await _next_event(first[2], "final")
@@ -1519,6 +1523,138 @@ async def test_waiting_behind_another_sessions_decode_counts_as_warmup(pool) -> 
     await _next_event(first[2], "final")
     for task, requests, responses in (first, second):
         await _shutdown(task, requests, responses)
+
+
+async def test_decode_queue_wait_is_published_apart_from_model_loading(pool) -> None:
+    # The runtime reports a wait that outlives its budget differently for a
+    # model being prepared and for a decode queued behind another session.
+    from main_logic.asr_client.warmup import provider_warmup_kind
+
+    gate = threading.Event()
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+
+    def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
+        gate.wait(5)
+        return model
+
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), slow_loader, pool)
+    second = _start_worker(AsrSessionConfig(language="zh-CN"), slow_loader, pool)
+    try:
+        await _next_event(first[2], "ready")
+        assert provider_warmup_kind(first[1]) == "model"
+        gate.set()
+        await _send_utterance(first[1])
+        for _ in range(200):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        assert model.calls
+        await _next_event(second[2], "ready")
+        await _send_utterance(second[1])
+        await asyncio.wait_for(second[1].join(), 2)
+        for _ in range(200):
+            if provider_warmup_kind(second[1]) == "queue":
+                break
+            await asyncio.sleep(0.01)
+        assert provider_warmup_kind(second[1]) == "queue"
+    finally:
+        gate.set()
+        model.release.set()
+    await _next_event(second[2], "final")
+    assert provider_warmup_kind(second[1]) == ""
+    for task, requests, responses in (first, second):
+        await _shutdown(task, requests, responses)
+
+
+async def test_decodes_skipped_by_an_ended_session_free_their_slots(pool) -> None:
+    # Session A ends with one decode running and two queued. The queued ones
+    # are skipped; they must not keep holding process-wide slots until the
+    # decoder reaches them, or session B is failed for a backlog it never had.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    loader = _RecordingLoader(model)
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        await _next_event(first[2], "ready")
+        await _send_utterance(first[1], utterance_id=1)
+        for _ in range(200):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        await _send_utterance(first[1], utterance_id=2)
+        await _send_utterance(first[1], utterance_id=3)
+        await asyncio.wait_for(first[1].join(), 2)
+        await _shutdown(*first)
+        await asyncio.wait_for(first[0], 3)
+        assert pool._decode_slots_used == 1  # only the running decode
+
+        second = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+        await _next_event(second[2], "ready")
+        await _send_utterance(second[1], utterance_id=1)
+        await _send_utterance(second[1], utterance_id=2)
+        await asyncio.wait_for(second[1].join(), 2)
+        await asyncio.sleep(0.05)
+        assert not [
+            event for event in list(second[2]._queue) if event.kind == "error"
+        ]
+    finally:
+        model.release.set()
+    await _next_event(second[2], "final")
+    await _next_event(second[2], "final")
+    await _shutdown(*second)
+
+
+async def test_decode_cancelled_before_it_starts_still_returns_its_resources(
+    pool, monkeypatch
+) -> None:
+    # Nothing cancels the decode future today (it is shielded), but if one
+    # is cancelled before the decoder reaches it, its slot, model lease and
+    # warm-up wait must still be given back.
+    from main_logic.asr_client.warmup import provider_warmup_snapshot
+
+    model = _FakeModel(_segment("x"))
+    spec = faster_whisper._model_spec_from_env()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    real = pool.decoder_executor()
+    gate = threading.Event()
+    real.submit(gate.wait, 5)
+
+    class _CancellingExecutor:
+        def submit(self, fn, /, *args, **kwargs):
+            future = real.submit(fn, *args, **kwargs)
+            assert future.cancel()
+            return future
+
+    monkeypatch.setattr(pool, "decoder_executor", lambda: _CancellingExecutor())
+    # The session's own lease is taken once its background load finishes.
+    for _ in range(200):
+        if pool.lease_count(spec) >= 1:
+            break
+        await asyncio.sleep(0.01)
+    leases_before = pool.lease_count(spec)
+    assert leases_before >= 1
+    try:
+        await _send_utterance(requests)
+        await asyncio.wait_for(requests.join(), 2)
+        await asyncio.sleep(0.05)
+    finally:
+        gate.set()
+    for _ in range(200):
+        if (
+            pool._decode_slots_used == 0
+            and pool.lease_count(spec) == leases_before
+            and provider_warmup_snapshot(requests)[0] is False
+        ):
+            break
+        await asyncio.sleep(0.01)
+    assert pool._decode_slots_used == 0
+    assert pool.lease_count(spec) == leases_before
+    assert provider_warmup_snapshot(requests)[0] is False
+    await _shutdown(task, requests, responses)
 
 
 async def test_running_decode_keeps_the_model_leased_after_its_session_ends(pool) -> None:

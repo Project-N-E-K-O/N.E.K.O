@@ -54,10 +54,11 @@ def replace_corner_mark(text):
 
 # 语音合成会把这些符号念出来（「井号」「竖线」「百分号」…），入队前删掉：
 # - ``\p{S}`` 里的 emoji、装饰符、箭头、修饰符号等
-# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号（# @ & * _ | / \ % ~ 〜 等）
+# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号（# @ & * _ | / \ ~ 〜 等）
 # 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
 # 删掉会改变意思、TTS 本来就念得对的符号保留：
 # - 货币符号（``\p{Sc}``）：「$100」「€20」念成「一百美元」「二十欧元」；
+# - 百分号 % ％：「50%」念成「百分之五十」，删掉就成了「五十」；
 # - 常用运算符 + − × ÷ = ≠ ≈ ± ≤ ≥：算式要念得出来；
 # - 温度 / 度数 ℃ ℉ °（「22°C」的度数符号也是 °），以及 CJK 兼容单位
 #   （U+3380–33FF，如 ㎡ ㎏ ㎞）；
@@ -66,12 +67,12 @@ def replace_corner_mark(text):
 # 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
 # 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
 # 天城文等文字里正常使用的零宽连接符不受影响。
-_TTS_KEPT_SYMBOLS = "℃℉°+＋−×÷=＝≠≈±≤≥\u3380-\u33ff"
+_TTS_KEPT_SYMBOLS = "℃℉°+＋−×÷=＝≠≈±≤≥%％\u3380-\u33ff"
 _TTS_MUTED_SYMBOL_CLASS = (
     r"(?![" + _TTS_KEPT_SYMBOLS + r"])(?!\p{Sc})["
     r"\p{S}"
     r"#＃@＠&＆\*＊_＿\-－﹣~～〜`｀\|｜\\/／＼"
-    r"\^＾%％"
+    r"\^＾"
     r"<>＜＞«»‹›"
     r"•●○◆◇★☆※§¶†‡"
     r"]"
@@ -108,6 +109,9 @@ _TTS_UNSPACED_SCRIPT_RE = regex.compile(
     r"[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}\p{Lao}\p{Khmer}\p{Myanmar}]"
 )
 _TTS_WORD_CHAR_RE = regex.compile(r"[\p{L}\p{N}\p{M}]")
+# 「50%」这样的百分数：% 挨着被删的符号时和数字一样算操作数，「50%-60%」
+# 念「50% 60%」，不会把 - 当负号、也不会粘成「50%60%」。
+_TTS_PERCENT_SIGNS = frozenset("%％")
 
 
 def is_tts_word_char(char: str) -> bool:
@@ -123,6 +127,15 @@ def is_tts_word_char(char: str) -> bool:
         and _TTS_WORD_CHAR_RE.match(char) is not None
         and _TTS_UNSPACED_SCRIPT_RE.match(char) is None
     )
+
+
+def is_tts_operand_char(char: str) -> bool:
+    """``is_tts_word_char``, also counting a percent sign as part of its number.
+
+    For the character before a removed symbol: "50%-60%" is a range between
+    two numbers, spoken "50% 60%", not "50%60%" or a negative 60.
+    """
+    return is_tts_word_char(char) or char in _TTS_PERCENT_SIGNS
 
 
 _TTS_MINUS_SIGNS = frozenset("-－﹣")
@@ -166,7 +179,8 @@ def _kept_symbols(
     - A minus sign before a digit, when no letter/digit precedes the run
       ("-5", "x = -3", "~-5°C"), or when only emoji precede it within the run
       ("temp🌡️-5°C"). Between a letter/digit and other removed symbols it is
-      a separator, as in "3%-5", spoken "3 5" whether or not it was split.
+      a separator, as in "3@-5", spoken "3 5" whether or not it was split;
+      a percent sign counts as a digit here ("50%-60%" is "50% 60%").
     """
     head, rest = symbol[0], symbol[1:]
     if head in _TTS_HASH_SIGNS and _is_name_hash_context(prev_char, prev2):
@@ -179,10 +193,10 @@ def _kept_symbols(
         if (
             lead
             and all(char in _TTS_RANGE_SIGNS for char in lead)
-            and is_tts_word_char(prev_char)
+            and is_tts_operand_char(prev_char)
         ):
             return " " + symbol[-1]
-        if not is_tts_word_char(prev_char):
+        if not is_tts_operand_char(prev_char):
             return symbol[-1]
         if lead and _TTS_EMOJI_RUN_RE.fullmatch(lead):
             return symbol[-1]
@@ -197,12 +211,12 @@ def tts_compact_symbol_run(run: str) -> str:
 
     Only the first character (a name "#") and whether the rest is all emoji
     matter, so a long run keeps its first character plus one representative
-    of the rest; plain truncation could drop the one "%" that decides it.
+    of the rest; plain truncation could drop the one "@" that decides it.
     """
     if len(run) <= _TTS_SYMBOL_RUN_KEEP:
         return run
     rest = run[1:]
-    sample = "\u2605" if _TTS_EMOJI_RUN_RE.fullmatch(rest) else "%"
+    sample = "\u2605" if _TTS_EMOJI_RUN_RE.fullmatch(rest) else "@"
     return run[0] + sample
 
 
@@ -279,9 +293,9 @@ def _muted_symbol_replacement(match, before: str = "") -> str:
             or (left.isalnum() and right.isalnum())
         ):
             return symbol
-    prev_ok = is_tts_word_char(prev_char) if prev_char else True
+    prev_ok = is_tts_operand_char(prev_char) if prev_char else True
     next_ok = is_tts_word_char(next_char) if next_char else True
-    if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
+    if prev_ok and next_ok and (is_tts_operand_char(prev_char) or is_tts_word_char(next_char)):
         return " "
     return ""
 

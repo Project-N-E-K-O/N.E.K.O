@@ -576,6 +576,17 @@ test('a recording window shows the model-load guidance even when its FAILED stat
     assert.equal(env.messages.at(-1), 'microphone.localAsrModelLoadFailed');
 });
 
+test('BLOCKED for a decode-queue timeout does not point at the model download', () => {
+    const env = loadCapture(true);
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_LIFECYCLE_STATE', {
+        state: 'blocked', provider: 'faster_whisper', session_epoch: 12,
+        reason: 'ASR_PROVIDER_QUEUE_TIMEOUT',
+    });
+    assert.equal(env.messages.at(-1), 'microphone.localAsrQueueTimeout');
+});
+
 test('a cloud failure reason keeps the per-status toast instead of the generic text', () => {
     const env = loadCapture(true);
     env.loadWebsocket();

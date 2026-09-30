@@ -244,7 +244,10 @@ async def test_blocked_lifecycle_carries_the_failure_reason(monkeypatch) -> None
     assert blocked[-1]["details"].get("reason") == "ASR_LOCAL_MODEL_LOAD_FAILED"
 
 
-async def test_runtime_failure_code_becomes_the_blocked_reason() -> None:
+@pytest.mark.parametrize(
+    "status_code", ["ASR_PROVIDER_WARMUP_TIMEOUT", "ASR_PROVIDER_QUEUE_TIMEOUT"]
+)
+async def test_runtime_failure_code_becomes_the_blocked_reason(status_code) -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
     asr.close = AsyncMock()
@@ -254,7 +257,7 @@ async def test_runtime_failure_code_becomes_the_blocked_reason() -> None:
     runtime._asr_lifecycle = None
     epoch = runtime._asr_session_epoch
     await runtime._handle_independent_asr_error(
-        epoch, "faster_whisper", status_code="ASR_PROVIDER_WARMUP_TIMEOUT"
+        epoch, "faster_whisper", status_code=status_code
     )
     await asyncio.sleep(0)
     blocked = [
@@ -263,7 +266,7 @@ async def test_runtime_failure_code_becomes_the_blocked_reason() -> None:
         and status["details"].get("state") == "blocked"
     ]
     assert blocked
-    assert blocked[-1]["details"].get("reason") == "ASR_PROVIDER_WARMUP_TIMEOUT"
+    assert blocked[-1]["details"].get("reason") == status_code
 
 
 async def test_preparing_says_why_and_prepared_follows_when_ready(monkeypatch) -> None:

@@ -104,7 +104,9 @@ _PROVIDER_WARMUP_POLL_SECONDS = 0.5
 _PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
 
 
-_BLOCKED_DISPLAY_STATUS_CODES = frozenset({"ASR_PROVIDER_WARMUP_TIMEOUT"})
+_BLOCKED_DISPLAY_STATUS_CODES = frozenset(
+    {"ASR_PROVIDER_WARMUP_TIMEOUT", "ASR_PROVIDER_QUEUE_TIMEOUT"}
+)
 
 
 def _provider_warmup_reason(asr_session: Any) -> str:
@@ -3985,7 +3987,20 @@ class IndependentAsrRuntime:
                     if warmup_pending:
                         warmup_deadline = sealed_at + warmup_timeout_s
                         if now >= warmup_deadline:
-                            status_code = "ASR_PROVIDER_WARMUP_TIMEOUT"
+                            # A decode queued behind another session's is
+                            # not model preparation: its advice (download
+                            # the model) would not apply.
+                            kind = getattr(
+                                self._asr_session, "provider_warmup_kind", "model"
+                            )
+                            if not kind:
+                                # Ended since the snapshot: look again.
+                                continue
+                            status_code = (
+                                "ASR_PROVIDER_QUEUE_TIMEOUT"
+                                if kind == "queue"
+                                else "ASR_PROVIDER_WARMUP_TIMEOUT"
+                            )
                             break
                         deadline = min(
                             now + _PROVIDER_WARMUP_POLL_SECONDS,

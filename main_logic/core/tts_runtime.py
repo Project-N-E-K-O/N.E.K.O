@@ -35,6 +35,7 @@ from utils.frontend_utils import (
     is_only_punctuation,
     TtsMarkdownStripper,
     TtsBracketStripper,
+    is_tts_operand_char,
     is_tts_word_char,
     strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
@@ -344,7 +345,7 @@ class TtsRuntimeMixin:
         text = self._tts_bracket_stripper.feed(text)
         if not text:
             return
-        # 最后一道：删掉会被念出来的装饰 / 技术符号（%、@、| …）；运算符、货币、
+        # 最后一道：删掉会被念出来的装饰 / 技术符号（@、| …）；运算符、货币、
         # 负号和 C# 的 # 保留，句读标点照常
         text = self._strip_tts_symbols_across_chunks(text)
         if getattr(self, "_tts_pending_name_hash", ""):
@@ -493,12 +494,12 @@ class TtsRuntimeMixin:
         # 下一块以数字开头时再补回去。
         pending_minus = getattr(self, "_tts_pending_minus", "")
         # 之前只有符号、还没念出来的分块接在前面一起判断，分块方式不改变结果：
-        # 「C」「#」「-」「5」与「C#-5」一样，「3」「%」「-」「5」与「3%-5」一样。
+        # 「C」「#」「-」「5」与「C#-5」一样，「3」「@」「-」「5」与「3@-5」一样。
         deferred_symbols = getattr(self, "_tts_deferred_symbols", "")
         self._tts_pending_minus = tts_chunk_trailing_minus(
             deferred_symbols + text, last_tail
         )
-        # C# 可能被切开（「C」「#」「 dev」、「a#」「%」「b」）：块尾的「#」看不到
+        # C# 可能被切开（「C」「#」「 dev」、「a#」「@」「b」）：块尾的「#」看不到
         # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
         held_name_hash = tts_chunk_trailing_name_hash(text, last_tail)
@@ -509,7 +510,7 @@ class TtsRuntimeMixin:
             # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
             if held_name_hash:
                 self._tts_pending_name_hash = held_name_hash
-            if text and text.strip() and is_tts_word_char(last):
+            if text and text.strip() and is_tts_operand_char(last):
                 self._tts_symbol_gap_pending = True
             self._tts_deferred_symbols = tts_compact_symbol_run(
                 deferred_symbols + text
@@ -531,7 +532,7 @@ class TtsRuntimeMixin:
             cleaned = prefix + cleaned
         elif (
             getattr(self, "_tts_symbol_gap_pending", False)
-            and is_tts_word_char(last)
+            and is_tts_operand_char(last)
             and is_tts_word_char(cleaned[0])
         ):
             cleaned = " " + cleaned

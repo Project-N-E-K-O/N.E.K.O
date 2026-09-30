@@ -188,6 +188,21 @@ async def test_provider_final_watchdog_bounds_warmup_with_its_own_budget(
     assert 0.25 <= elapsed < 2.0
 
 
+async def test_decode_queue_wait_times_out_with_its_own_code(monkeypatch) -> None:
+    # The model is loaded; the wait is for another session's decode to finish.
+    # Its timeout must not be reported as model preparation (whose guidance
+    # is about downloading the model).
+    runtime, asr = _warming_runtime(monkeypatch, final_ms=50, warmup_ms=300)
+    asr.provider_warmup_kind = "queue"
+
+    await _start_and_seal_turn(runtime, "faster_whisper")
+    await asyncio.wait_for(runtime._asr_final_watchdog_task, 5)
+
+    codes = _sent_status_codes(runtime)
+    assert "ASR_PROVIDER_QUEUE_TIMEOUT" in codes
+    assert "ASR_PROVIDER_WARMUP_TIMEOUT" not in codes
+
+
 async def test_warmup_finished_before_seal_keeps_the_plain_final_timeout(
     monkeypatch,
 ) -> None:

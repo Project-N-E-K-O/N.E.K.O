@@ -62,6 +62,7 @@ from ..delivery import (
 )
 from ..worker_failure import record_worker_failure
 from ..warmup import (
+    WARMUP_KIND_QUEUE,
     begin_provider_warmup,
     complete_provider_warmup,
     ensure_provider_warmup_state,
@@ -362,8 +363,10 @@ class _DaemonSerialExecutor(concurrent.futures.Executor):
     """Run submitted calls one at a time, in order, on one daemon thread.
 
     A ThreadPoolExecutor's threads are joined at interpreter exit, so a long
-    CPU decode still running would hold up shutdown. A work item cancelled
-    before it starts is skipped, as with ThreadPoolExecutor.
+    CPU decode still running would hold up shutdown. Unlike ThreadPoolExecutor,
+    a call whose future was cancelled before it started still runs (its result
+    is dropped): resources it gives back in its own ``finally`` must not leak.
+    Callers check their own skip flag to make such a run cheap.
     """
 
     def __init__(self, thread_name: str) -> None:
@@ -390,6 +393,10 @@ class _DaemonSerialExecutor(concurrent.futures.Executor):
         while True:
             future, fn, args, kwargs = self._items.get()
             if not future.set_running_or_notify_cancel():
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    logger.debug("cancelled decode call failed", exc_info=True)
                 continue
             done = False
             try:
@@ -712,6 +719,9 @@ class _QueuedDecode:
     # The job's open wait behind other sessions' decodes, if it has one.
     warmup_token: object | None = None
     started: bool = False
+    # Its process-wide decode slot was given back (exactly once: by the
+    # decoder, or on cancel if the decoder never reached it).
+    slot_returned: bool = False
 
 
 def _return_slot_unless_handed_off(
@@ -842,9 +852,10 @@ async def faster_whisper_asr_worker(
         handoff: _DecodeHandoff,
     ) -> _AsrWorkerEvent:
         # The process-wide decode slot was taken at commit. Once the job is
-        # handed to the executor, the decode thread gives it back when the job
-        # leaves the queue (run or skipped); before that, the task's done
-        # callback does (see _return_slot_unless_handed_off).
+        # handed to the executor, it is given back when the job leaves the
+        # decoder, or at once if the job is cancelled before the decoder
+        # reaches it (its PCM is dropped then); before the hand-off, the
+        # task's done callback does (see _return_slot_unless_handed_off).
         generation, buffer_epoch, utterance_id = key
         assert model_task is not None
         # Shield: cancelling one utterance must not cancel the shared load.
@@ -876,8 +887,20 @@ async def faster_whisper_asr_worker(
         ensure_provider_warmup_state(request_queue)
         with decode_chain_lock:
             if not decode_chain:
-                job.warmup_token = begin_provider_warmup(request_queue)
+                job.warmup_token = begin_provider_warmup(
+                    request_queue, kind=WARMUP_KIND_QUEUE
+                )
             decode_chain.append(job)
+        # Held in a box so a job skipped before it starts can let go of the
+        # PCM (and its slot) while it still sits in the executor queue.
+        pcm_box = [pcm16]
+
+        def return_slot() -> None:
+            with decode_chain_lock:
+                if job.slot_returned:
+                    return
+                job.slot_returned = True
+            pool.release_decode()
 
         def leave_decoder() -> None:
             with decode_chain_lock:
@@ -890,7 +913,7 @@ async def faster_whisper_asr_worker(
                     successor = decode_chain[0]
                     if not successor.started and successor.warmup_token is None:
                         successor.warmup_token = begin_provider_warmup(
-                            request_queue
+                            request_queue, kind=WARMUP_KIND_QUEUE
                         )
 
         # A native decode cannot be interrupted and may outlive this session
@@ -914,34 +937,45 @@ async def faster_whisper_asr_worker(
                     complete_provider_warmup(request_queue, job.warmup_token)
                     job.warmup_token = None
             try:
-                if skip.is_set():
+                if skip.is_set() or not pcm_box:
                     # Cancelled while queued: drop the PCM without decoding.
                     return None
                 begin_transport_write(request_queue)
-                return _transcribe_pcm16(model, pcm16, language, initial_prompt)
+                return _transcribe_pcm16(model, pcm_box[0], language, initial_prompt)
             finally:
                 leave_decoder()
-                pool.release_decode()
+                return_slot()
                 return_job_lease()
 
         try:
-            decode_future = asyncio.get_running_loop().run_in_executor(
-                pool.decoder_executor(), decode
-            )
+            concurrent_future = pool.decoder_executor().submit(decode)
         except BaseException:
             leave_decoder()
             return_job_lease()
             raise
         handoff.submitted = True
+        # However the job's future ends up cancelled, the decode it queued
+        # must not run the model: it only cleans up.
+        concurrent_future.add_done_callback(
+            lambda future: skip.set() if future.cancelled() else None
+        )
+        decode_future = asyncio.wrap_future(concurrent_future)
         decode_future.add_done_callback(_consume_decode_outcome)
         try:
-            # Not cancelled through: the executor keeps a cancelled work
-            # item (and its PCM) queued until the single thread reaches it,
-            # so the slot must stay taken until then. The skip flag makes
-            # that dequeue cheap instead.
+            # Not cancelled through: a decode already running cannot be
+            # stopped, and one still queued is left in the executor queue.
+            # The skip flag makes that dequeue cheap.
             text = await asyncio.shield(decode_future)
         except asyncio.CancelledError:
             skip.set()
+            with decode_chain_lock:
+                reached_decoder = job.started
+            if not reached_decoder:
+                # Skipped before the decoder reached it: its PCM is dropped
+                # now, so it no longer counts against the process-wide limit
+                # (a new session must not be failed for this one's backlog).
+                pcm_box.clear()
+                return_slot()
             raise
         except Exception as exc:
             raise _LocalAsrFailure(

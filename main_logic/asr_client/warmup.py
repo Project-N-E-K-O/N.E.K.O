@@ -16,15 +16,22 @@ from dataclasses import dataclass, field
 
 _ATTRIBUTE = "_provider_warmup_state"
 
+# What a wait is for. The runtime explains a wait that outlives its budget
+# differently: a model being prepared (maybe downloading) or a decode queued
+# behind another session's.
+WARMUP_KIND_MODEL = "model"
+WARMUP_KIND_QUEUE = "queue"
+
 
 @dataclass(slots=True)
 class ProviderWarmupState:
     pending: bool = False
     completed_at: float | None = None
     # One token per outstanding wait (model load, a decode queued behind other
-    # sessions). A job finishing must only end its own wait: an older, cancelled
-    # job leaving the queue cannot clear a newer job's pending state.
-    waiters: set[object] = field(default_factory=set)
+    # sessions), mapped to its kind. A job finishing must only end its own
+    # wait: an older, cancelled job leaving the queue cannot clear a newer
+    # job's pending state.
+    waiters: dict[object, str] = field(default_factory=dict)
     # Waits begin on the event loop and may end on a worker thread.
     lock: threading.Lock = field(default_factory=threading.Lock)
     # Why the provider is preparing, as an ``ASR_*`` code the client can
@@ -65,7 +72,9 @@ def ensure_provider_warmup_state(queue: object) -> ProviderWarmupState:
     return state
 
 
-def begin_provider_warmup(queue: object, reason: str = "") -> object:
+def begin_provider_warmup(
+    queue: object, reason: str = "", *, kind: str = WARMUP_KIND_MODEL
+) -> object:
     """Start one warm-up wait and return the token that ends it.
 
     ``reason`` (an ``ASR_*`` code) replaces the published reason when given.
@@ -75,11 +84,27 @@ def begin_provider_warmup(queue: object, reason: str = "") -> object:
     state = ensure_provider_warmup_state(queue)
     token = object()
     with state.lock:
-        state.waiters.add(token)
+        state.waiters[token] = kind
         state.pending = True
         if reason:
             state.reason = reason
     return token
+
+
+def provider_warmup_kind(queue: object) -> str:
+    """What the queue's warm-up is waiting for, or ``""`` when it is not.
+
+    A model wait outranks a queue wait: while the model is not ready, that
+    is what the session is waiting for.
+    """
+    state = provider_warmup_state(queue)
+    if state is None:
+        return ""
+    with state.lock:
+        kinds = set(state.waiters.values())
+    if WARMUP_KIND_MODEL in kinds:
+        return WARMUP_KIND_MODEL
+    return WARMUP_KIND_QUEUE if kinds else ""
 
 
 def provider_warmup_reason(queue: object) -> str:
@@ -105,7 +130,7 @@ def complete_provider_warmup(queue: object, token: object) -> None:
             # Already ended (e.g. by both the load task and the worker's own
             # cleanup) or never began: nothing to end, no new completion time.
             return
-        state.waiters.discard(token)
+        del state.waiters[token]
         if not state.waiters:
             # Stamp first: a reader seeing ``pending`` False must also see
             # the new completion time, not a stale or missing one.

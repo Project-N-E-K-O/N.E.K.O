@@ -561,6 +561,7 @@
     },
     "errors": {
         "ASR_PROVIDER_WARMUP_TIMEOUT": "로컬 음성 인식 모델 준비 시간이 초과되었습니다. 이번 음성 입력이 중지되었습니다. 처음 사용할 때 HuggingFace에서 모델을 다운로드합니다. 연결이 느리거나 되지 않으면 환경 변수 HF_ENDPOINT(예: https://hf-mirror.com)를 설정한 뒤 다시 시작하거나, 로컬 음성 인식을 끄세요.",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "로컬 음성 인식 대기 시간이 너무 길어 이번 음성 입력이 중지되었습니다. 이전 인식이 아직 끝나지 않았을 수 있습니다. 잠시 후 음성 세션을 다시 시작하거나, 자주 발생하면 로컬 음성 인식을 끄세요.",
         "emotionTimeout": "감정 분석 시간 초과",
         "noAudioTrack": "사용 가능한 오디오 트랙이 없습니다",
         "cameraStreamFailed": "카메라 스트림을 가져오지 못했습니다",
@@ -1054,7 +1055,8 @@
         "localAsrModelLoadFailed": "로컬 음성 인식 모델을 불러오지 못했습니다. 이번 음성 입력이 중지되었습니다. 처음 사용할 때 HuggingFace에서 모델을 다운로드합니다. 연결할 수 없다면 환경 변수 HF_ENDPOINT(예: https://hf-mirror.com)를 설정한 뒤 다시 시작하거나, 로컬 음성 인식을 끄세요.",
         "localAsrReloading": "로컬 음성 인식 모델을 다시 불러오는 중입니다. 잠시 기다려 주세요. 모델이 준비되면 첫 문장을 인식합니다.",
         "localAsrReady": "로컬 음성 인식이 준비되었습니다",
-        "localAsrWarmupTimeout": "로컬 음성 인식 모델 준비 시간이 초과되었습니다. 이번 음성 입력이 중지되었습니다. 처음 사용할 때 HuggingFace에서 모델을 다운로드합니다. 연결이 느리거나 되지 않으면 환경 변수 HF_ENDPOINT(예: https://hf-mirror.com)를 설정한 뒤 다시 시작하거나, 로컬 음성 인식을 끄세요."
+        "localAsrWarmupTimeout": "로컬 음성 인식 모델 준비 시간이 초과되었습니다. 이번 음성 입력이 중지되었습니다. 처음 사용할 때 HuggingFace에서 모델을 다운로드합니다. 연결이 느리거나 되지 않으면 환경 변수 HF_ENDPOINT(예: https://hf-mirror.com)를 설정한 뒤 다시 시작하거나, 로컬 음성 인식을 끄세요.",
+        "localAsrQueueTimeout": "로컬 음성 인식 대기 시간이 너무 길어 이번 음성 입력이 중지되었습니다. 이전 인식이 아직 끝나지 않았을 수 있습니다. 잠시 후 음성 세션을 다시 시작하거나, 자주 발생하면 로컬 음성 인식을 끄세요."
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",
