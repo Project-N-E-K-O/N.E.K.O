@@ -5264,6 +5264,7 @@ async def test_upgrade_rollback_on_download_failure(
     with _serve_bytes(
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
         extra_release={"version": "2.0.0", "channel": "stable",
+                       "package_url": "https://example.test/e2e_rollback-2.0.0.neko-plugin",
                        "package_sha256": "f" * 64, "yanked_at": None},
     ) as package_url:
         broken_url = package_url.rsplit("/", 1)[0] + "/does_not_exist.neko-plugin"

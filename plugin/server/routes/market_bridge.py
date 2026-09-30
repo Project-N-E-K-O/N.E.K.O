@@ -3243,17 +3243,18 @@ async def _bind_market_package_hash(payload: MarketInstallRequest) -> MarketInst
         raise _TaskError(code="market_release_mismatch", message="插件包 SHA256 与市场发布记录不一致")
 
     # Provenance written to the lock and reported to /me/installs comes from
-    # the catalogue row, never from the caller. Caller values that disagree
-    # with the row are rejected; published_at is only replaced, since some
-    # callers pair it with a different release row of the same plugin.
+    # the catalogue row, never from the caller. A caller payload_hash is
+    # bound to the package bytes, so disagreement is rejected. The caller's
+    # canonical URL and published_at are only replaced: the catalogue may
+    # move a release to a new URL, and some callers pair published_at with
+    # a different release row of the same plugin.
     catalog_payload_hash = str(release.get("payload_hash") or "").strip() or None
     requested_payload_hash = str(payload.payload_hash or "").strip()
     if requested_payload_hash and requested_payload_hash.lower() != (catalog_payload_hash or "").lower():
         raise _TaskError(code="market_release_mismatch", message="插件 payload hash 与市场发布记录不一致")
     catalog_package_url = str(release.get("package_url") or "").strip() or None
-    requested_canonical_url = str(payload.canonical_package_url or "").strip()
-    if requested_canonical_url and requested_canonical_url != catalog_package_url:
-        raise _TaskError(code="market_release_mismatch", message="插件包来源地址与市场发布记录不一致")
+    if catalog_package_url is None:
+        raise _TaskError(code="market_release_mismatch", message="市场发布记录缺少插件包来源地址")
     catalog_published_at = (
         str(release.get("created_at") or release.get("published_at") or "").strip() or None
     )

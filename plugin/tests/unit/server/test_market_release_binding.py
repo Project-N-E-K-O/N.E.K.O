@@ -79,21 +79,29 @@ async def test_catalog_fills_provenance_the_caller_omitted(monkeypatch):
     assert bound.published_at == CATALOG_CREATED_AT
 
 
-@pytest.mark.parametrize("changes", [
-    {"payload_hash": "d" * 64},
-    {"canonical_package_url": "https://github.com/attacker/plugin/releases/download/v1/package.neko-plugin"},
-])
 @pytest.mark.asyncio
-async def test_caller_provenance_must_match_catalog(monkeypatch, changes):
+async def test_caller_payload_hash_must_match_catalog(monkeypatch):
     catalog(monkeypatch, [release()])
     with pytest.raises(market_bridge._TaskError, match="market_release_mismatch"):
-        await market_bridge._bind_market_package_hash(payload(**changes))
+        await market_bridge._bind_market_package_hash(payload(payload_hash="d" * 64))
 
 
 @pytest.mark.asyncio
-async def test_caller_payload_hash_without_catalog_value_rejected(monkeypatch):
+async def test_stale_caller_canonical_url_is_replaced_by_catalog(monkeypatch):
+    # The catalogue may move a release to a new URL while the page still
+    # holds the old one; the hash already binds the bytes.
+    catalog(monkeypatch, [release()])
+    bound = await market_bridge._bind_market_package_hash(payload(
+        canonical_package_url="https://github.com/example/old-name/releases/download/v1/package.neko-plugin",
+    ))
+    assert bound.canonical_package_url == CANONICAL_URL
+
+
+@pytest.mark.parametrize("changes", [{"payload_hash": None}, {"package_url": " "}])
+@pytest.mark.asyncio
+async def test_catalog_row_missing_provenance_rejected(monkeypatch, changes):
     entry = release()
-    entry["payload_hash"] = None
+    entry.update(changes)
     catalog(monkeypatch, [entry])
     with pytest.raises(market_bridge._TaskError, match="market_release_mismatch"):
         await market_bridge._bind_market_package_hash(payload())
