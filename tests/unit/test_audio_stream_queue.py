@@ -2816,6 +2816,25 @@ def test_start_session_snapshots_resource_optimization_handshake_before_await():
         "resource_optimization_override",
     )
 
+    provider_snapshot = "session_provider_preference_handshake_override"
+    provider_snapshot_lines = [
+        node.lineno
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Name)
+        and node.id == provider_snapshot
+        and isinstance(node.ctx, ast.Store)
+    ]
+    assert provider_snapshot_lines
+    assert max(provider_snapshot_lines) < min(await_lines)
+    assert any(
+        kw.arg == "provider_preference_override"
+        and isinstance(kw.value, ast.Name)
+        and kw.value.id == provider_snapshot
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+    )
+
 
 async def test_start_without_a_snapshot_still_reads_the_shared_handshake():
     # Non-vacuity, and the contract for the internal re-entry paths (hot swap,

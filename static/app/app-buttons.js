@@ -2481,7 +2481,7 @@
                 if (micStartMustStandDown()) return;
 
                 // Success — hide preparing toast, show ready
-                window.hideVoicePreparingToast();
+                window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
 
                 setTimeout(function () {
                     window.showReadyToSpeakToast();

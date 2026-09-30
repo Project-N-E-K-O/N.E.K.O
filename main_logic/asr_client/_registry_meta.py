@@ -36,6 +36,7 @@ class AsrProviderAvailability(str, Enum):
     IMPLEMENTED = "implemented"
     BLOCKED_BACKEND = "blocked_backend"
     MISSING_CREDENTIALS = "missing_credentials"
+    MISSING_DEPENDENCY = "missing_dependency"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +74,24 @@ class AsrProviderMeta:
     warm_transport_ms: int = 25_000
     replay_policy: AsrReplayPolicy = "preconnect_only"
     provider_final_timeout_ms: int = 10_000
+    # Upper bound on one-off provider preparation (a local model load or first
+    # download) that the provider-final watchdog waits out before it starts
+    # counting ``provider_final_timeout_ms``. Zero: the provider never warms up.
+    provider_warmup_timeout_ms: int = 0
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
+    # Local providers run without an API key; cloud providers must never be
+    # constructed without their credential slot.
+    requires_credential: bool = True
+    # Only user-selectable providers may be chosen through the persisted
+    # ``independentAsrProviderPreference`` conversation setting. Everything
+    # else is reached through ``CORE_ASR_ROUTES``.
+    user_selectable: bool = False
+    # Import name of an optional package the worker needs. Selection probes it
+    # with ``importlib.util.find_spec`` (no import) and reports
+    # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
+    optional_dependency: str | None = None
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -94,6 +110,8 @@ class AsrProviderMeta:
             raise ValueError("warm_transport_ms must not be negative")
         if self.provider_final_timeout_ms <= 0:
             raise ValueError("provider_final_timeout_ms must be positive")
+        if self.provider_warmup_timeout_ms < 0:
+            raise ValueError("provider_warmup_timeout_ms must not be negative")
         if self.connect_max_attempts <= 0:
             raise ValueError("connect_max_attempts must be positive")
         if self.connect_retry_base_seconds <= 0:
@@ -101,6 +119,10 @@ class AsrProviderMeta:
         if self.connect_retry_cap_seconds < self.connect_retry_base_seconds:
             raise ValueError(
                 "connect_retry_cap_seconds must cover the retry base"
+            )
+        if self.user_selectable and self.requires_credential:
+            raise ValueError(
+                "user-selectable providers must not require a Core credential"
             )
 
 
@@ -243,6 +265,33 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         implementation_status="implemented",
         replay_policy="provider_managed",
         connect_max_attempts=3,
+    ),
+    # Local faster-whisper. It is never a Core route: users opt in through the
+    # voice-recognition settings, and Core capability (``free`` disables
+    # independent ASR entirely) is still checked before this preference.
+    "faster_whisper": AsrProviderMeta(
+        provider_key="faster_whisper",
+        category="segmented_request",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
+        implementation_status="implemented",
+        requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
+        # Decoding only: model preparation is excluded (see below). CPU decoding
+        # of a long utterance with a larger model can take tens of seconds.
+        provider_final_timeout_ms=120_000,
+        # The worker reports ready before its model is loaded, and the first
+        # turn may be sealed while the model is still loading or downloading
+        # (medium is ~1.5 GB). The final watchdog waits this long for that
+        # preparation, then applies provider_final_timeout_ms from the moment
+        # the model became available.
+        provider_warmup_timeout_ms=900_000,
+        requires_credential=False,
+        user_selectable=True,
+        optional_dependency="faster_whisper",
     ),
     "free": AsrProviderMeta(
         provider_key="free",

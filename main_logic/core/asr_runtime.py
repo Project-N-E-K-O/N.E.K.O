@@ -72,6 +72,9 @@ from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
 )
+from utils.conversation_settings_constants import (
+    normalize_independent_asr_provider_preference_handshake,
+)
 from utils.game_route_state import get_active_game_route_generation_identity
 from main_logic import core as _core_facade
 
@@ -397,6 +400,10 @@ class AsrRuntimeMixin:
         self._native_activation_reconnect_timeout_s = 10.0
         self._voice_input_resource_optimization_handshake_override: bool | None = None
         self._voice_input_resource_optimization_session_value: bool | None = None
+        self._independent_asr_provider_preference_handshake_override: (
+            str | None
+        ) = None
+        self._independent_asr_provider_preference_session_value: str | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -553,6 +560,16 @@ class AsrRuntimeMixin:
             "_voice_input_resource_optimization_session_value",
         ):
             self._voice_input_resource_optimization_session_value = None
+        if not hasattr(
+            self,
+            "_independent_asr_provider_preference_handshake_override",
+        ):
+            self._independent_asr_provider_preference_handshake_override = None
+        if not hasattr(
+            self,
+            "_independent_asr_provider_preference_session_value",
+        ):
+            self._independent_asr_provider_preference_session_value = None
         if not hasattr(self, "_core_asr_preview_turn_id"):
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
@@ -2415,6 +2432,20 @@ class AsrRuntimeMixin:
             value if isinstance(value, bool) else None
         )
 
+    def set_independent_asr_provider_preference_handshake(
+        self,
+        value: object,
+    ) -> None:
+        """Pin one session's independent-ASR provider choice from start_session.
+
+        An absent field defers to the persisted setting; a malformed one is
+        treated as "auto" (follow the Core route).
+        """
+        self._ensure_asr_runtime_state()
+        self._independent_asr_provider_preference_handshake_override = (
+            normalize_independent_asr_provider_preference_handshake(value)
+        )
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
@@ -2422,6 +2453,7 @@ class AsrRuntimeMixin:
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
         connect_budget_seconds: float | None = None,
     ) -> None:
         """Resolve the microphone route for one session start.
@@ -2629,6 +2661,43 @@ class AsrRuntimeMixin:
             self._voice_input_resource_optimization_session_value = (
                 resolved_optimization_value
             )
+        # Same precedence as the resource-optimization choice: this start's own
+        # handshake snapshot, else the accepted session value (internal
+        # re-entries such as hot swap), else the shared handshake field, else
+        # the persisted setting. The handshake wins because the persisted value
+        # is stale while the settings POST is still in flight or has failed.
+        if provider_preference_override is ...:
+            provider_preference_handshake = getattr(
+                self,
+                "_independent_asr_provider_preference_session_value",
+                None,
+            )
+            if provider_preference_handshake is None:
+                provider_preference_handshake = getattr(
+                    self,
+                    "_independent_asr_provider_preference_handshake_override",
+                    None,
+                )
+        else:
+            provider_preference_handshake = (
+                normalize_independent_asr_provider_preference_handshake(
+                    provider_preference_override
+                )
+            )
+        provider_preference = (
+            provider_preference_handshake
+            if provider_preference_handshake is not None
+            else normalize_independent_asr_provider_preference_handshake(
+                settings.get("independentAsrProviderPreference", "auto")
+            )
+        )
+        if provider_preference_override is not ...:
+            # Only an accepted start_session supplies this argument; internal
+            # provider restarts reuse its resolved value instead of the shared
+            # field that a losing or deduplicated request may have overwritten.
+            self._independent_asr_provider_preference_session_value = (
+                provider_preference
+            )
         if not enabled:
             self._set_microphone_route("native")
             await self._send_core_asr_status(
@@ -2666,6 +2735,11 @@ class AsrRuntimeMixin:
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.
             "user_language": getattr(self, "user_language", None),
+            # Provider choice ("auto" follows the Core route): handshake first,
+            # persisted setting as the fallback. The route capability check
+            # above already ran, so a Core without independent-ASR support
+            # never reaches this preference.
+            "provider_preference": provider_preference,
         }
         if self._speaker_shadow_factory is not None:
             start_kwargs["speaker_shadow_factory"] = self._speaker_shadow_factory
@@ -2734,6 +2808,7 @@ class AsrRuntimeMixin:
         remaining_deadline_seconds: float,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
     ) -> None:
         """Re-decide the microphone route for a deduplicated same-mode start.
 
@@ -2799,6 +2874,7 @@ class AsrRuntimeMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            provider_preference_override=provider_preference_override,
             connect_budget_seconds=remaining_deadline_seconds,
         )
 
@@ -6079,6 +6155,7 @@ class AsrRuntimeMixin:
                     code=event.code,
                     provider=event.provider,
                     session_epoch=event.session_epoch,
+                    reason=event.reason,
                     # The failure token was validated before this handler's
                     # own independent -> blocked transition. Rebase only its
                     # route generation to that transition so the status still
@@ -6190,6 +6267,8 @@ class AsrRuntimeMixin:
                 "provider": event.provider,
                 "session_epoch": event.session_epoch,
             }
+            if event.reason:
+                status_details["reason"] = event.reason
             if event.code in {
                 "ASR_INDEPENDENT_FAILED",
                 "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
@@ -6308,6 +6387,7 @@ class AsrRuntimeMixin:
                             "state": event.state,
                             "route_mode": self._asr_route_mode,
                             "session_epoch": event.session_epoch,
+                            **({"reason": event.reason} if event.reason else {}),
                         },
                     }
                 ),
