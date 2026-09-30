@@ -68,8 +68,9 @@ def _class_is_whitespace_only(items) -> bool:
     )
 
 
-def _matches_only_whitespace(seq) -> bool:
-    consumed = False
+def _never_consumes_non_whitespace(seq) -> bool:
+    # ⚠️ 空序列算 True：``(?:\s|)*`` 的空分支什么都不吃，整体仍等价于 ``\s*``（codex P2）。
+    # 「至少能吃掉一个字」由 _consumes_something 单独判。
     for op, av in seq:
         if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
             continue
@@ -78,19 +79,41 @@ def _matches_only_whitespace(seq) -> bool:
         elif op is _sre.IN:
             ok = _class_is_whitespace_only(av)
         elif op is _sre.SUBPATTERN:
-            ok = _matches_only_whitespace(av[3])
+            ok = _never_consumes_non_whitespace(av[3])
         elif op is _sre.ATOMIC_GROUP:
-            ok = _matches_only_whitespace(av)
+            ok = _never_consumes_non_whitespace(av)
         elif op is _sre.BRANCH:
-            ok = all(_matches_only_whitespace(branch) for branch in av[1])
+            ok = all(_never_consumes_non_whitespace(branch) for branch in av[1])
         elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
-            ok = _matches_only_whitespace(av[2])
+            ok = _never_consumes_non_whitespace(av[2])
         else:
             ok = False
         if not ok:
             return False
-        consumed = True
-    return consumed
+    return True
+
+
+def _consumes_something(seq) -> bool:
+    for op, av in seq:
+        if op in (_sre.LITERAL, _sre.NOT_LITERAL, _sre.IN, _sre.ANY):
+            return True
+        if op is _sre.SUBPATTERN:
+            sub = [av[3]]
+        elif op is _sre.ATOMIC_GROUP:
+            sub = [av]
+        elif op is _sre.BRANCH:
+            sub = av[1]
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            sub = [av[2]] if av[1] else []
+        else:
+            sub = []  # lookarounds / anchors are zero-width
+        if any(_consumes_something(s) for s in sub):
+            return True
+    return False
+
+
+def _matches_only_whitespace(seq) -> bool:
+    return _never_consumes_non_whitespace(seq) and _consumes_something(seq)
 
 
 def _collect_whitespace_runs(seq, out: list[str]) -> list[str]:
