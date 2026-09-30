@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: 'Falló la verificación del paquete del plugin.',
     downloadFailed: 'Falló la descarga del paquete del plugin.',
     marketListFetchFailed: 'El Market de plugins no está disponible temporalmente.',
+    catalogNotConfigured: 'La dirección del Market de plugins no está configurada.',
+    releaseMismatch: 'La solicitud de instalación no coincide con el registro de publicación del Market. Actualiza el Market de plugins e inténtalo de nuevo.',
     unsafeProfilePath: 'La ruta registrada del perfil del paquete no es segura.',
     packageIdentityMismatch: 'La identidad del paquete no coincide con el plugin de destino.',
     confirmationChanged: 'El plugin o el paquete cambió después de confirmar. Revisa el nuevo plan.',

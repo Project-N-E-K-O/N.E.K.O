@@ -32,7 +32,6 @@ import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -144,25 +143,16 @@ def _serve_bytes(
     catalog_sha256: str | None = None,
     market_id: str | None = None,
     published_at: str | None = None,
+    catalog: bool = True,
 ) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
     Yields the absolute URL of the served file; tears the server down
     on exit. Bound to an OS-assigned port so concurrent test runs don't
-    collide.
+    collide. With ``catalog`` (the default) the package, which must then
+    be a real ``.neko-plugin`` archive, is also published to the test
+    Market catalogue for the duration of the block.
     """
-
-    with zipfile.ZipFile(io.BytesIO(content)) as archive:
-        manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
-        try:
-            metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
-        except KeyError:
-            metadata = {}
-    catalog_id = market_id if market_id is not None else str(manifest["id"])
-    payload_table = metadata.get("payload")
-    catalog_payload_hash = (
-        payload_table.get("hash") if isinstance(payload_table, dict) else None
-    )
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server convention
@@ -182,16 +172,17 @@ def _serve_bytes(
     server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/{filename}"
-    published = [
-        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
-         "package_url": url,
-         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
-         "payload_hash": catalog_payload_hash, "created_at": published_at,
-         "yanked_at": None}
-        for channel in ("stable", "beta")
-    ]
-    if extra_release is not None:
-        published.append({**extra_release, "plugin_id": catalog_id})
+    published = (
+        _package_releases(
+            content, url,
+            extra_release=extra_release,
+            catalog_sha256=catalog_sha256,
+            market_id=market_id,
+            published_at=published_at,
+        )
+        if catalog
+        else []
+    )
     _catalog_releases.extend(published)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -203,6 +194,54 @@ def _serve_bytes(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def _package_releases(
+    content: bytes,
+    url: str,
+    *,
+    extra_release: dict[str, Any] | None,
+    catalog_sha256: str | None,
+    market_id: str | None,
+    published_at: str | None,
+) -> list[dict[str, Any]]:
+    """Catalogue rows (stable and beta) describing a served package."""
+
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+        try:
+            metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+        except KeyError:
+            metadata = {}
+    catalog_id = market_id if market_id is not None else str(manifest["id"])
+    payload_table = metadata.get("payload")
+    rows = [
+        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
+         "package_url": url,
+         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
+         "payload_hash": payload_table.get("hash") if isinstance(payload_table, dict) else None,
+         "created_at": published_at,
+         "yanked_at": None}
+        for channel in ("stable", "beta")
+    ]
+    if extra_release is not None:
+        rows.append({**extra_release, "plugin_id": catalog_id})
+    return rows
+
+
+def _catalog_response(request: httpx.Request) -> httpx.Response:
+    """Answer ``/api/v1/plugins/{id}/versions`` like the Market does."""
+
+    parts = request.url.path.strip("/").split("/")
+    if len(parts) != 5 or parts[:3] != ["api", "v1", "plugins"] or parts[4] != "versions":
+        return httpx.Response(404, json={"detail": "Not Found"})
+    rows = [r for r in _catalog_releases if r["plugin_id"] == parts[3]]
+    if not rows:
+        return httpx.Response(404, json={"detail": "插件不存在"})
+    channel = request.url.params.get("channel")
+    return httpx.Response(
+        200, json=[r for r in rows if channel is None or r["channel"] == channel],
+    )
 
 
 # ─── Fixture: a fully wired bridge ASGI app pointed at tmp_path roots ──
@@ -272,22 +311,18 @@ def bridge_e2e_env(
     mgr.load()  # First_Startup seed
     set_global_manager(mgr)
 
-    original_get = httpx.AsyncClient.get
-
-    async def catalogue_get(self, url, **kwargs):
-        catalogue_prefix = market_bridge_module.MARKET_API_URL.rstrip("/") + "/api/v1/plugins/"
-        if str(url).startswith(catalogue_prefix) and str(url).endswith("/versions"):
-            market_id = unquote(str(url)[len(catalogue_prefix):-len("/versions")])
-            plugin_releases = [r for r in _catalog_releases if r["plugin_id"] == market_id]
-            channel = kwargs.get("params", {}).get("channel", "stable")
-            return httpx.Response(
-                200 if plugin_releases else 404,
-                json=[r for r in plugin_releases if r["channel"] == channel],
-                request=httpx.Request("GET", url),
-            )
-        return await original_get(self, url, **kwargs)
-
-    monkeypatch.setattr(httpx.AsyncClient, "get", catalogue_get)
+    # Only the bridge's catalogue client talks to the test Market; package
+    # downloads and other HTTP traffic stay real.
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_market_catalog_client",
+        lambda: real_async_client(
+            transport=httpx.MockTransport(_catalog_response),
+            base_url=market_bridge_module.MARKET_API_URL,
+            follow_redirects=False,
+        ),
+    )
 
     # Mount only the bridge router on a fresh FastAPI app.
     app = FastAPI(title="market-bridge-e2e")
@@ -363,10 +398,11 @@ async def test_install_rejects_another_plugins_release(
         _serve_bytes(filename="b.neko-plugin", content=package_b, market_id="402") as url_b,
     ):
         for market_id, expected_hash in (("401", hash_a), ("402", hash_b)):
-            response = await client.get(
-                f"{market_bridge_module.MARKET_API_URL.rstrip('/')}/api/v1/plugins/{market_id}/versions",
-                params={"channel": "stable"},
-            )
+            async with market_bridge_module._market_catalog_client() as catalog_client:
+                response = await catalog_client.get(
+                    f"{market_bridge_module.MARKET_API_URL.rstrip('/')}/api/v1/plugins/{market_id}/versions",
+                    params={"channel": "stable"},
+                )
             assert response.status_code == 200
             rows = response.json()
             assert len(rows) == 1
@@ -1033,9 +1069,6 @@ async def test_authenticated_market_install_reports_usage(
 
         def stream(self, *args: Any, **kwargs: Any) -> Any:
             return self._delegate.stream(*args, **kwargs)
-
-        async def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
-            return await self._delegate.get(*args, **kwargs)
 
         async def post(
             self,

@@ -33,7 +33,11 @@ def catalog(monkeypatch, releases, status=200):
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(status, json=releases)
+        channel = request.url.params.get("channel")
+        body = releases
+        if isinstance(releases, list) and channel is not None:
+            body = [r for r in releases if str(r.get("channel") or "stable").strip() == channel]
+        return httpx.Response(status, json=body)
 
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.test")
     monkeypatch.setattr(
@@ -56,7 +60,8 @@ def release():
 async def test_catalog_hash_authorizes_proxy_and_legacy_release(monkeypatch):
     requests = catalog(monkeypatch, [release()])
     request = payload()
-    bound = await market_bridge._bind_market_package_hash(request)
+    bound, row = await market_bridge._bind_market_package_hash(request)
+    assert row["package_url"] == CANONICAL_URL
     assert bound.package_sha256 == "a" * 64
     assert bound.package_url == request.package_url
     assert bound.canonical_package_url == CANONICAL_URL
@@ -70,7 +75,7 @@ async def test_catalog_hash_authorizes_proxy_and_legacy_release(monkeypatch):
 @pytest.mark.asyncio
 async def test_catalog_fills_provenance_the_caller_omitted(monkeypatch):
     catalog(monkeypatch, [release()])
-    bound = await market_bridge._bind_market_package_hash(payload(
+    bound, _ = await market_bridge._bind_market_package_hash(payload(
         channel=None, canonical_package_url=None, payload_hash=None, published_at=None,
     ))
     assert bound.channel == "stable"
@@ -91,7 +96,7 @@ async def test_stale_caller_canonical_url_is_replaced_by_catalog(monkeypatch):
     # The catalogue may move a release to a new URL while the page still
     # holds the old one; the hash already binds the bytes.
     catalog(monkeypatch, [release()])
-    bound = await market_bridge._bind_market_package_hash(payload(
+    bound, _ = await market_bridge._bind_market_package_hash(payload(
         canonical_package_url="https://github.com/example/old-name/releases/download/v1/package.neko-plugin",
     ))
     assert bound.canonical_package_url == CANONICAL_URL
@@ -127,11 +132,11 @@ async def test_override_preflight_and_task_select_the_same_row(monkeypatch, chan
     request = _override_payload()
     if accepted:
         await market_bridge._fetch_authoritative_market_override_release(request)
-        bound = await market_bridge._bind_market_package_hash(request)
+        bound, row = await market_bridge._bind_market_package_hash(request)
         assert bound.version == "1.0.0"
         assert bound.channel == "stable"
-        # The task-side upgrade path re-runs the preflight with the bound payload.
-        await market_bridge._fetch_authoritative_market_override_release(bound)
+        # The task-side upgrade path checks the bound payload against the same row.
+        market_bridge._market_override_release_evidence(bound, row)
     else:
         with pytest.raises(market_bridge.HTTPException) as exc_info:
             await market_bridge._fetch_authoritative_market_override_release(request)
@@ -156,7 +161,12 @@ async def test_unlisted_or_mismatched_release_rejected(monkeypatch, changes):
 
 
 @pytest.mark.parametrize("status,body,code", [
-    (404, [], "market_release_mismatch"),
+    (404, {"detail": "插件不存在"}, "market_release_mismatch"),
+    (422, {"detail": [{"loc": ["path", "plugin_id"]}]}, "market_release_mismatch"),
+    # A wrong base path or an old Market without the route.
+    (404, {"detail": "Not Found"}, "market_catalog_unavailable"),
+    (404, [], "market_catalog_unavailable"),
+    (200, "<!doctype html>", "market_catalog_unavailable"),
     (503, [], "market_catalog_unavailable"),
     (302, [], "market_catalog_unavailable"),
     (200, {}, "market_catalog_unavailable"),
@@ -251,7 +261,7 @@ async def test_endpoint_returns_task_before_catalog_and_cancellation_prevents_in
     async def blocked_catalog(request):
         started.set()
         await finish.wait()
-        return request
+        return request, release()
 
     async def forbidden(*args, **kwargs):
         pytest.fail("canceled task reached install")
@@ -274,3 +284,66 @@ async def test_endpoint_returns_task_before_catalog_and_cancellation_prevents_in
     finally:
         finish.set()
         await worker
+
+
+@pytest.mark.parametrize("channel,expected", [(None, "beta"), ("", "beta"), ("beta", "beta")])
+@pytest.mark.asyncio
+async def test_missing_channel_matches_release_on_either_channel(monkeypatch, channel, expected):
+    beta = release()
+    beta.update(version="1.1.0b1", channel="beta")
+    requests = catalog(monkeypatch, [release(), beta])
+    bound, _ = await market_bridge._bind_market_package_hash(
+        payload(version="1.1.0b1", channel=channel),
+    )
+    assert bound.channel == expected
+    assert requests[0].url.params.get("channel") == (channel or None)
+
+
+@pytest.mark.asyncio
+async def test_missing_channel_prefers_row_with_requested_hash(monkeypatch):
+    stable = release()
+    beta = release()
+    beta.update(channel="beta", package_sha256="b" * 64)
+    catalog(monkeypatch, [stable, beta])
+    bound, _ = await market_bridge._bind_market_package_hash(
+        payload(channel=None, package_sha256="b" * 64),
+    )
+    assert bound.channel == "beta"
+    assert bound.package_sha256 == "b" * 64
+
+
+@pytest.mark.parametrize("changes", [
+    {"plugin_id": None}, {"plugin_id": " "}, {"version": ""}, {"channel": "nightly"},
+])
+@pytest.mark.asyncio
+async def test_install_endpoint_rejects_unbindable_request_before_task(monkeypatch, changes):
+    monkeypatch.setattr(market_bridge, "_tasks", {})
+    monkeypatch.setattr(market_bridge, "_task_workers", {})
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda token: None)
+    with pytest.raises(market_bridge.HTTPException) as exc_info:
+        await market_bridge.market_install(payload(**changes), token="test")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "market_release_mismatch"
+    assert market_bridge._tasks == {}
+
+
+@pytest.mark.parametrize("mode", ["upgrade", "reinstall"])
+@pytest.mark.asyncio
+async def test_task_passes_bound_release_to_upgrade(monkeypatch, mode):
+    requests = catalog(monkeypatch, [release()])
+    seen = []
+
+    async def upgrade(task, bound, log_ctx, **kwargs):
+        seen.append(kwargs["market_release"])
+
+    async def report(*args):
+        pass
+
+    monkeypatch.setattr(market_bridge, "_do_upgrade", upgrade)
+    monkeypatch.setattr(market_bridge, "_report_market_install_best_effort", report)
+    task = {"cancel_requested": False}
+    monkeypatch.setattr(market_bridge, "_tasks", {"test": task})
+    await market_bridge._execute_install("test", payload(mode))
+    assert task["status"] == "completed"
+    assert seen == [release()]
+    assert len(requests) == 1
