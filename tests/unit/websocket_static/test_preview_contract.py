@@ -22,7 +22,7 @@ def test_independent_asr_terminal_status_clears_partial_preview():
 
     # Injection failure is a per-turn delivery failure. It must leave the
     # independent-ASR route alive so later turns can still be accepted.
-    injection_tail = terminal_branch.split("if (statusCode === 'ASR_INDEPENDENT_PREPARING')", 1)[0]
+    injection_tail = terminal_branch.split("if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING')", 1)[0]
     assert "tearDownBlockedVoiceRoute();" not in injection_tail
     # Actual startup failures follow the injection branch and must still use
     # the shared fail-closed teardown before showing their toast.
