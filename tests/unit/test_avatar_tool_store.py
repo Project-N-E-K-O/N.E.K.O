@@ -2167,6 +2167,50 @@ def test_a_parked_copy_becomes_resolvable_without_a_restart(tmp_path, monkeypatc
     assert not final.exists()
 
 
+def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_restart(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    parked = store.root / f".{tool_id}.retained"
+    shutil.copytree(final, parked)
+    (parked / f".retained-{uuid.uuid4()}.unverified").write_bytes(b"{")
+    # 另有一份授权对不上的 .deleting，正式目录也在：启动恢复两边都判断不了。
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    recovery_runs = []
+    real_recover = AvatarToolStore._recover_interrupted_mutations
+
+    def counting_recover(self):
+        recovery_runs.append(True)
+        return real_recover(self)
+
+    monkeypatch.setattr(AvatarToolStore, "_recover_interrupted_mutations", counting_recover)
+    for _ in range(3):
+        with pytest.raises(AvatarToolStoreError) as blocked:
+            restarted.delete_tool(tool_id)
+        assert blocked.value.code == "tool_recovery_pending"
+    assert recovery_runs == []
+
+    # 之后同步客户端把正式目录移走了：.deleting 可以挪回原位，停放的副本也随之
+    # 可以判断。不用重启，下一次删除就重跑恢复，再照常一并丢弃。
+    shutil.move(str(final), str(tmp_path / "moved-away"))
+    assert restarted.delete_tool(tool_id) == tool_id
+    assert recovery_runs
+    assert not parked.exists()
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert not final.exists()
+
+
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
