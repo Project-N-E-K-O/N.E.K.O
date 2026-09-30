@@ -691,9 +691,12 @@ class AvatarToolStore:
                 try:
                     os.fsync(stream.fileno())
                 except OSError:
+                    # 目录同步刚失败过，这里本来就只能尽力；文件已经写出，照常返回。
                     pass
             _fsync_directory(marker.parent)
         except FileExistsError:
+            # 已经有一份授权（原来的没删掉，或者是这次删除刚写的）：它同样对不上
+            # 副本，保留副本的状态已经成立。
             pass
         except OSError:
             _RECOVERY_PENDING_ROOTS.add(self._root_key())
