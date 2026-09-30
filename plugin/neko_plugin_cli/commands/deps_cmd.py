@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 import uuid
-from collections.abc import Mapping
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -229,6 +228,10 @@ def _pip_install_to_vendor(
     ``uv pip install``. Trying pip first keeps pip's own configuration
     (pip.conf, PIP_INDEX_URL mirrors) in effect for everyone who has pip, and
     a uv failure can never block an install pip would have completed.
+
+    The uv fallback runs with uv's own configuration untouched. Mapping pip's
+    index variables into UV_* would override uv.toml / [tool.uv] indexes,
+    because uv ranks environment variables above its config files.
     """
     if not packages:
         return 0
@@ -273,7 +276,6 @@ def _pip_install_to_vendor(
             *packages,
         ],
         label="uv pip install",
-        env=_uv_env_from_pip(os.environ),
     )
     if result is None:
         return 1
@@ -284,28 +286,7 @@ def _pip_install_to_vendor(
     return 0
 
 
-# uv does not read pip's index variables; map them over unless the user
-# already configured uv's own. pip.conf cannot be read without pip.
-_PIP_TO_UV_INDEX_ENV = (
-    ("PIP_INDEX_URL", "UV_INDEX_URL", ("UV_INDEX_URL", "UV_DEFAULT_INDEX")),
-    ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL", ("UV_EXTRA_INDEX_URL", "UV_INDEX")),
-)
-
-
-def _uv_env_from_pip(environ: Mapping[str, str]) -> dict[str, str]:
-    env = dict(environ)
-    for pip_name, uv_name, uv_names in _PIP_TO_UV_INDEX_ENV:
-        if env.get(pip_name) and not any(env.get(name) for name in uv_names):
-            env[uv_name] = env[pip_name]
-    return env
-
-
-def _run_installer(
-    cmd: list[str],
-    *,
-    label: str,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str] | None:
+def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -313,7 +294,6 @@ def _run_installer(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=env,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

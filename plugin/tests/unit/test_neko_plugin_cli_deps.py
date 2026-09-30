@@ -197,37 +197,17 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
     assert backup.exists()
 
 
-def test_uv_env_maps_pip_index_variables_without_overriding_uv():
-    from plugin.neko_plugin_cli.commands.deps_cmd import _uv_env_from_pip
-
-    env = _uv_env_from_pip({
-        "PIP_INDEX_URL": "https://mirror/simple",
-        "PIP_EXTRA_INDEX_URL": "https://extra/simple",
-    })
-    assert env["UV_INDEX_URL"] == "https://mirror/simple"
-    assert env["UV_EXTRA_INDEX_URL"] == "https://extra/simple"
-
-    env = _uv_env_from_pip({
-        "PIP_INDEX_URL": "https://mirror/simple",
-        "UV_DEFAULT_INDEX": "https://uv/simple",
-        "PIP_EXTRA_INDEX_URL": "https://extra/simple",
-        "UV_INDEX": "https://uv-extra/simple",
-    })
-    assert "UV_INDEX_URL" not in env
-    assert "UV_EXTRA_INDEX_URL" not in env
-
-
-def test_uv_fallback_receives_pip_index_env(tmp_path, monkeypatch):
+def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
+    # UV_* environment variables outrank uv.toml / [tool.uv], so injecting
+    # pip's mirror would silently override a user's configured uv index.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
     monkeypatch.setenv("PIP_INDEX_URL", "https://mirror/simple")
-    monkeypatch.delenv("UV_INDEX_URL", raising=False)
-    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
-    envs = []
+    calls = []
 
     def run(command, **kwargs):
-        envs.append(kwargs.get("env"))
+        calls.append(kwargs)
         if command[0] == "uv":
             return subprocess.CompletedProcess(command, 0, stdout="ok")
         return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
@@ -236,8 +216,8 @@ def test_uv_fallback_receives_pip_index_env(tmp_path, monkeypatch):
     assert deps_cmd._pip_install_to_vendor(
         ["httpx"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 0
-    assert envs[0] is None
-    assert envs[1]["UV_INDEX_URL"] == "https://mirror/simple"
+    assert len(calls) == 2
+    assert all(kwargs.get("env") is None for kwargs in calls)
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
