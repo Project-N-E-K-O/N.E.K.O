@@ -27,6 +27,7 @@ from plugin.sdk.shared.core.push_message_schema import (
 )
 
 from ..core.plugin_source import load_plugin_source
+from ..core.recovery import RECOVERY_DIR_PREFIXES
 from ..core.toml_utils import load_toml
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
@@ -820,7 +821,11 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
     seen_ids: dict[str, str] = {}
     for path in sorted(plugin_dir.rglob("*.py")):
         relative = path.relative_to(plugin_dir)
-        if any(part in {"__pycache__", ".venv", "venv", "vendor"} for part in relative.parts):
+        if any(
+            part in {"__pycache__", ".venv", "venv", "vendor"}
+            or part.startswith(RECOVERY_DIR_PREFIXES)
+            for part in relative.parts
+        ):
             continue
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:

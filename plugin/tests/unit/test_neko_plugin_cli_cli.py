@@ -11,6 +11,7 @@ import pytest
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.commands import init_cmd
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
+from plugin.neko_plugin_cli.core.recovery import RECOVERY_DIR_PREFIXES
 from plugin.neko_plugin_cli.paths import CliDefaults
 from plugin.neko_plugin_cli.templates.generator import PluginSpec, generate_plugin
 
@@ -375,6 +376,23 @@ def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Pat
     issues = validate_plugin_dir(plugin_dir)
 
     assert any(level == "error" and "plugin.toml could not be read" in message for level, message in issues)
+
+
+def test_validate_plugin_dir_ignores_dependency_recovery_directories(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    for prefix in RECOVERY_DIR_PREFIXES:
+        recovery_dir = plugin_dir / f"{prefix}deadbeef"
+        recovery_dir.mkdir()
+        (recovery_dir / "third_party.py").write_text(
+            "def broken(:\n",
+            encoding="utf-8",
+        )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("third_party.py" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(

@@ -10,6 +10,7 @@ import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.commands import publish_cmd
+from plugin.neko_plugin_cli.core.recovery import RECOVERY_RUFF_EXCLUDE_PATTERNS
 from plugin.neko_plugin_cli.paths import CliDefaults
 from plugin.neko_plugin_cli.templates.generator import (
     PluginSpec,
@@ -828,6 +829,24 @@ def test_publish_ignores_retained_dependency_recovery_backup(
     (backup / "old.py").write_text("keep", encoding="utf-8")
 
     publish_cmd._ensure_clean_worktree(plugin_dir)
+
+
+def test_release_ruff_excludes_dependency_recovery_directories(
+    tmp_path: Path,
+    release_ruff_process: dict[str, Any],
+) -> None:
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+
+    publish_cmd._ensure_release_ruff_passes(plugin_dir)
+
+    command = release_ruff_process["calls"][0]["command"]
+    excludes = [
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--exclude"
+    ]
+    assert excludes == list(RECOVERY_RUFF_EXCLUDE_PATTERNS)
 
 
 def test_publish_stops_before_tag_when_ruff_fails(

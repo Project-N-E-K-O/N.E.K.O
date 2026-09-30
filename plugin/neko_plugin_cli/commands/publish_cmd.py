@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 
 from ..core.plugin_source import load_plugin_source
+from ..core.recovery import RECOVERY_RUFF_EXCLUDE_PATTERNS
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..templates.generator import PluginSpec
@@ -393,24 +394,25 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
 
 
 def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
+    command = [
+        "uvx",
+        "ruff==0.12.4",
+        "check",
+        "--ignore-noqa",
+        "--isolated",
+        "--target-version",
+        "py311",
+        "--line-length",
+        "120",
+        "--select",
+        "E4,E7,E9,F,I",
+    ]
+    for pattern in RECOVERY_RUFF_EXCLUDE_PATTERNS:
+        command.extend(("--exclude", pattern))
+    command.append(".")
     try:
         completed = subprocess.run(
-            [
-                "uvx",
-                "ruff==0.12.4",
-                "check",
-                "--ignore-noqa",
-                "--isolated",
-                "--target-version",
-                "py311",
-                "--line-length",
-                "120",
-                "--select",
-                "E4,E7,E9,F,I",
-                "--exclude",
-                "vendor",
-                ".",
-            ],
+            command,
             cwd=plugin_dir,
             text=True,
             stdout=subprocess.PIPE,
