@@ -184,10 +184,7 @@ def _best_time(text: str, runs: int = 3) -> float:
     for _ in range(runs):
         started = time.perf_counter()
         extract_directives(text)
-        elapsed = time.perf_counter() - started
-        best = min(best, elapsed)
-        if elapsed > _WHITESPACE_CEILING_S:
-            break  # 已经爆了，别再多跑两遍
+        best = min(best, time.perf_counter() - started)
     return best
 
 
