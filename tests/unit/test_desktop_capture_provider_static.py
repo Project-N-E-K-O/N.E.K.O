@@ -286,6 +286,26 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     )
 
 
+def test_sender_only_screening_stops_keep_the_source_switch_restart() -> None:
+    # window.stopScreening cancels a pending source-switch restart by default
+    # (errors, session end). Callers that only pause the frame sender while
+    # manual sharing continues must opt out, or the new source never resumes.
+    screen = read_text("static/app/app-screen.js")
+    audio = read_text("static/app/app-audio-capture.js")
+    settings = read_text("static/app/app-settings.js")
+    assert "window.stopScreening = function (options) {" in screen
+    assert "options.keepSourceSwitchRestart === true" in screen
+    mic_switch = audio.split("const shouldRestartScreening", 1)[1].split(
+        "// 停止静音检测", 1
+    )[0]
+    assert "window.stopScreening({ keepSourceSwitchRestart: true });" in mic_switch
+    privacy = settings.split("function stopVisionAfterPrivacyEnabled()", 1)[1]
+    privacy = privacy.split("\n    }\n", 1)[0]
+    assert "window.stopScreening({ keepSourceSwitchRestart: true });" in privacy
+    assert audio.count("keepSourceSwitchRestart") == 1
+    assert settings.count("keepSourceSwitchRestart") == 1
+
+
 def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:
     websocket = read_text("static/app/app-websocket.js")
     proactive = read_text("static/app/app-proactive.js")

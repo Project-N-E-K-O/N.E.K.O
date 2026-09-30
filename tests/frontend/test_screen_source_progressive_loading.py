@@ -1727,14 +1727,15 @@ def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> 
 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
-    "gesture", ["stop", "session_end", "mic_switch", "toggle", "toggle_rejected"]
+    "gesture",
+    ["stop", "session_end", "share_error", "mic_switch", "toggle", "toggle_rejected"],
 )
 def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
     # During a source switch's pause the controls show "not sharing".
-    # stop / session_end: the restart must not reopen the share when it wakes
-    #   (nor complain that the mic is off after the session ended).
-    # mic_switch: switching microphones only tears down the frame sender; the
-    #   restart must still bring sharing back on the new source.
+    # stop / session_end / share_error: the restart must not reopen the share
+    #   when it wakes (nor complain that the mic is off after the session ended).
+    # mic_switch: switching microphones only tears down the frame sender (and
+    #   says so); the restart must still bring sharing back on the new source.
     # toggle / toggle_rejected: matches what the controls show, so it starts
     #   sharing; that start supersedes the restart, which must not ask again
     #   even when the user rejected the request.
@@ -1786,6 +1787,8 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
             if (gesture === 'toggle' || gesture === 'toggle_rejected') {
                 await window.switchScreenSharing();
             } else if (gesture === 'mic_switch') {
+                window.stopScreening({ keepSourceSwitchRestart: true });
+            } else if (gesture === 'share_error') {
                 window.stopScreening();
             } else if (gesture === 'session_end') {
                 window.appState.isRecording = false;
@@ -1807,7 +1810,7 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
     assert result == {
         "pendingDuringPause": False,
         "calls": (
-            ["window:2"] if gesture in ("stop", "session_end")
+            ["window:2"] if gesture in ("stop", "session_end", "share_error")
             else ["window:2", "window:5"]
         ),
         "selected": "window:5",

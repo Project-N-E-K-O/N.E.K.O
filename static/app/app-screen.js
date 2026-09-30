@@ -3699,7 +3699,16 @@
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
-    window.stopScreening = stopScreening;
+    // 外部调用默认是真正的停止（报错、会话结束、goodbye），同时取消还没走到
+    // 启动的换源重启，否则它醒来会把刚停掉的分享重新打开。只临时拆掉发送、
+    // 之后要保留分享的调用方（切换麦克风、隐私模式停主动视觉）传
+    // keepSourceSwitchRestart。
+    window.stopScreening = function (options) {
+        if (!(options && options.keepSourceSwitchRestart === true)) {
+            sourceSwitchRestart = null;
+        }
+        stopScreening();
+    };
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;

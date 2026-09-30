@@ -1178,7 +1178,9 @@
 
         try {
             if (typeof window.stopScreening === 'function') {
-                window.stopScreening();
+                // 隐私模式不关手动分享：换源重启的停顿里按钮暂时不是 active，
+                // 这里只停发送，保留那次重启。
+                window.stopScreening({ keepSourceSwitchRestart: true });
             }
         } catch (error) {
             console.warn('[app-settings] 停止屏幕发送循环失败:', error);
