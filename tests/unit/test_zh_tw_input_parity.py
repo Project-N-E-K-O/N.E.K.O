@@ -575,29 +575,30 @@ def test_peeling_is_bounded_for_pathological_input():
     from brain.openclaw_adapter import OpenClawAdapter
     from tests.wall_clock import fastest_run
 
-    # ⚠️ 两处界都先按**行为**断言，而且放在病态长输入之前：它们的可观察后果是
-    # 确定的，不依赖机器快慢；界丢了的时候这里立刻红，不用先跑完那几条长输入
-    # （_command_clause 无界时 60k 那条是分钟级）。
-    # _clause_hits 的界：无界时 2000 个 ``吧`` 以上就能一路剥回表内的 ``去执行`` /
-    # ``停下来``，返回 /daemon approve、/stop（变异验证过）。
-    assert OpenClawAdapter.rule_magic_command("去执行" + "吧" * 20000) is None
-    assert OpenClawAdapter.rule_magic_command("停下来" + "啊呀" * 10000) is None
-    # _command_clause 的界：超长尾巴剥不完 → 不跳过它 → 返回 None。
+    # ⚠️ 两处界都按**行为**断言：可观察后果是确定的，不依赖机器快慢。
+    # _command_clause 的界：超长尾巴剥不完 → 不跳过它 → 返回 None。放在所有长输入
+    # 之前，界丢了这里立刻红，不用先跑 60k 那两条（无界时是分钟级）。
     # （早先我按耗时写过一版并据此宣称「无界版也不慢」，那是拿**改剥词逻辑之前**的
     # 数字说话。现在每步都多一次整串正则，无界版实测连 120k 那一档都跑不完，
     # 界是必需的。）
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 5) == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 200) is None
 
-    # 耗时只做兜底：每条病态消息单独一秒，取多次里最快的一次。
+    def _peel(text):
+        # ⚠️ 结果断言放在计时的调用里：每条长输入只跑一遍就同时验了行为和耗时。
+        # _clause_hits 的界：无界时 2000 个 ``吧`` 以上就能一路剥回表内的 ``去执行`` /
+        # ``停下来``，返回 /daemon approve、/stop（变异验证过）；20k 那两条排在最前，
+        # 界丢了第一次调用就红。
+        assert OpenClawAdapter.rule_magic_command(text) is None, text[:8]
+
+    # 耗时是兜底，取多次里最快的一次（见 tests/wall_clock.py）。
     # ⚠️ 原先是四条长输入**合计**单次采样对一秒，而本机不加负载就要 0.4–0.9 秒
     #（``随便说说 `` 那条自己在 0.2–0.6 秒之间抖），xdist 下一次调度抢占就误红。
-    # 要守的是「单条消息不卡住事件循环」，按条计时才对得上；界丢了的时候 20k 那两条
-    # 本机要 5–11 秒，一秒的线照样拦得住。
-    # ⚠️ 这是**有意放宽**：合计预算从 1 秒变成每条 1 秒（等于合计 4 秒）。「每条都
-    # 退到 0.9 秒」这种部分回退会过，但那就是本判据允许的上限——单条消息不超过一秒。
-    # 不另加合计上限：四条最快值之和本机约 0.4 秒，Windows runner 量到过比本机慢 7 倍，
-    # 合计线收到 2 秒就会在那里重新误红。
+    # 现在两道线：每条 < 1 秒守「单条消息不卡住事件循环」；四条最快值之和 < 2 秒，
+    # 挡住「每条都退到 0.9 秒」这种单条线拦不住的部分回退（合计 3.6 秒）。之和本机约
+    # 0.4 秒；原来那道「合计单次采样 < 1 秒」在 CI（含 Windows）上平时是过的，
+    # 取最快值再放到 2 秒，余量不止两倍。界整个丢了的时候 20k 那两条本机要 5–11 秒。
+    total = 0.0
     for text in (
         "去执行" + "吧" * 20000,  # 走 _clause_hits 的剥词
         "停下来" + "啊呀" * 10000,
@@ -606,10 +607,10 @@ def test_peeling_is_bounded_for_pathological_input():
         "停下来 " + "吧" * 60000,
         "随便说说 " + "啊" * 60000,
     ):
-        elapsed = fastest_run(
-            lambda text=text: OpenClawAdapter.rule_magic_command(text), repeat=3, stop_below=1.0
-        )
+        elapsed = fastest_run(lambda text=text: _peel(text), repeat=3, stop_below=1.0)
         assert elapsed < 1.0, f"{text[:8]!r}… 最快也要 {elapsed:.2f}s，剥词的界没生效"
+        total += elapsed
+    assert total < 2.0, f"四条病态输入最快值之和 {total:.2f}s，剥词整体变慢了"
 
 
 @pytest.mark.parametrize(
