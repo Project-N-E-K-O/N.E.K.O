@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import os
 import shutil
@@ -37,7 +38,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     sync_parser.add_argument(
         "--python",
         default=sys.executable,
-        help="Python interpreter to use for pip install",
+        help="Python interpreter to use for dependency installation",
     )
     sync_parser.add_argument(
         "--clean",
@@ -165,6 +166,67 @@ def handle_sync(args: argparse.Namespace) -> int:
 
 _HOST_PROVIDED = {"n-e-k-o"}
 _RECOVERY_MARKER = ".recovery-pending"
+_PIP_SOURCE_ENV_VARS = {
+    "PIP_CERT",
+    "PIP_CLIENT_CERT",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_FIND_LINKS",
+    "PIP_INDEX_URL",
+    "PIP_NO_INDEX",
+    "PIP_TRUSTED_HOST",
+}
+_PIP_SOURCE_CONFIG_KEYS = {
+    "cert",
+    "client-cert",
+    "extra-index-url",
+    "find-links",
+    "index-url",
+    "no-index",
+    "trusted-host",
+}
+
+
+def _pip_config_paths() -> tuple[Path, ...]:
+    paths: list[Path] = []
+    configured_path = os.environ.get("PIP_CONFIG_FILE")
+    if configured_path and configured_path != os.devnull:
+        paths.append(Path(configured_path).expanduser())
+
+    home = Path.home()
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            paths.append(Path(appdata) / "pip" / "pip.ini")
+        programdata = os.environ.get("PROGRAMDATA")
+        if programdata:
+            paths.append(Path(programdata) / "pip" / "pip.ini")
+        paths.extend((home / "pip" / "pip.ini", home / ".pip" / "pip.ini"))
+        paths.append(Path(sys.prefix) / "pip.ini")
+    else:
+        paths.extend((home / ".config" / "pip" / "pip.conf", home / ".pip" / "pip.conf"))
+        paths.extend((Path(sys.prefix) / "pip.conf", Path("/etc/pip.conf")))
+
+    return tuple(dict.fromkeys(paths))
+
+
+def _pip_source_configured() -> bool:
+    if any(os.environ.get(name, "").strip() for name in _PIP_SOURCE_ENV_VARS):
+        return True
+
+    for path in _pip_config_paths():
+        if not path.is_file():
+            continue
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(path, encoding="utf-8")
+        except (configparser.Error, OSError, UnicodeError):
+            continue
+        for section in parser.sections():
+            for key, value in parser.items(section):
+                normalized_key = key.lower().replace("_", "-")
+                if normalized_key in _PIP_SOURCE_CONFIG_KEYS and value.strip():
+                    return True
+    return False
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -199,14 +261,16 @@ def _pip_install_to_vendor(
     vendor_dir: Path,
     python: str,
 ) -> int:
-    """Install packages into vendor/ using uv, then fall back to pip."""
+    """Install packages with uv unless pip source configuration is active."""
     if not packages:
         return 0
 
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
+    pip_source_configured = _pip_source_configured()
     uv = shutil.which("uv")
-    if uv:
+    use_uv = bool(uv and not pip_source_configured)
+    if use_uv:
         cmd = [
             uv, "pip", "install",
             "--python", python,
@@ -232,20 +296,28 @@ def _pip_install_to_vendor(
             stderr=subprocess.STDOUT,
         )
     except OSError as exc:
-        installer = "uv pip install" if uv else f"target Python {python!r}"
+        installer = "uv pip install" if use_uv else f"target Python {python!r}"
         print(f"[FAIL] {installer} could not start: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
         output = result.stdout or ""
-        if not uv and "No module named pip" in output:
-            print(
-                "[FAIL] Unable to install plugin dependencies: uv was not found "
-                "and the target Python has no pip. Install uv, or run "
-                "python -m ensurepip --upgrade.",
-                file=sys.stderr,
-            )
+        if not use_uv and "No module named pip" in output:
+            if pip_source_configured:
+                print(
+                    "[FAIL] Pip source configuration is active, but the target Python "
+                    "has no pip. Install pip for that interpreter or migrate the "
+                    "source settings to uv.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[FAIL] Unable to install plugin dependencies: uv was not found "
+                    "and the target Python has no pip. Install uv, or run "
+                    "python -m ensurepip --upgrade.",
+                    file=sys.stderr,
+                )
         else:
-            installer = "uv pip" if uv else "pip"
+            installer = "uv pip" if use_uv else "pip"
             print(f"[FAIL] {installer} install failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         return 1
@@ -273,31 +345,12 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
             if vendor_dir.exists():
                 shutil.rmtree(vendor_dir, ignore_errors=True)
             if backup_dir.exists():
-                restore_dir = vendor_dir.parent / (
-                    f".{vendor_dir.name}.restore-{uuid.uuid4().hex}"
-                )
                 try:
-                    # Copy to a sibling restore directory before publishing it,
-                    # so a failed copy can never expose a partial vendor tree.
-                    shutil.copytree(backup_dir, restore_dir, symlinks=True)
-                    (restore_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-                    restore_dir.replace(vendor_dir)
-                    try:
-                        (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-                    except OSError as marker_exc:
-                        print(
-                            f"[WARN] Could not clear recovery marker {backup_dir}: "
-                            f"{marker_exc}",
-                            file=sys.stderr,
-                        )
+                    (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+                    backup_dir.replace(vendor_dir)
                 except OSError as exc:
-                    # Do not leave a partially restored live directory.
-                    if restore_dir.exists():
-                        shutil.rmtree(restore_dir, ignore_errors=True)
-                    if vendor_dir.exists():
-                        shutil.rmtree(vendor_dir, ignore_errors=True)
                     print(
-                        f"[FAIL] Could not restore vendor; backup retained at "
+                        f"[FAIL] Could not restore vendor by rename; backup retained at "
                         f"{backup_dir}: {exc}",
                         file=sys.stderr,
                     )

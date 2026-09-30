@@ -72,7 +72,9 @@ sys.exit(handle_sync(argparse.Namespace(plugin=str(p), python=sys.executable,
     assert (plugin_dir / "vendor" / "fresh.py").read_text() == "complete"
 
 
-def test_failed_recovery_copy_never_exposes_partial_vendor(tmp_path, monkeypatch):
+def test_permission_recovery_renames_backup_without_copying(
+    tmp_path, monkeypatch
+):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     vendor = tmp_path / "vendor"
@@ -87,19 +89,15 @@ def test_failed_recovery_copy_never_exposes_partial_vendor(tmp_path, monkeypatch
             raise PermissionError("locked")
         return real_replace(source, target)
 
-    def fail_copy(source, target, **kwargs):
-        Path(target).mkdir(exist_ok=True)
-        (Path(target) / "partial.py").write_text("partial")
-        raise OSError("recovery copy interrupted")
-
     monkeypatch.setattr(Path, "replace", fail_replace)
-    monkeypatch.setattr(deps_cmd.shutil, "copytree", fail_copy)
+    monkeypatch.setattr(
+        deps_cmd.shutil,
+        "copytree",
+        lambda *args, **kwargs: pytest.fail("permission recovery must rename the backup"),
+    )
     assert _replace_vendor(vendor, staging) is False
-    assert not vendor.exists()
-    assert not list(tmp_path.glob(".vendor.restore-*"))
-    backup, = tmp_path.glob(".vendor.backup-*")
-    assert (backup / "old.py").read_text() == "keep"
-    assert (backup / ".recovery-pending").is_file()
+    assert (vendor / "old.py").read_text() == "keep"
+    assert not list(tmp_path.glob(".vendor.backup-*"))
 
 
 def test_recovery_marker_write_failure_still_blocks_retry(tmp_path, monkeypatch):
@@ -469,6 +467,13 @@ class TestTransactionalDependencyInstall:
     ) -> None:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         calls: list[list[str]] = []
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_EXTRA_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd._pip_config_paths",
+            lambda: (),
+        )
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
             lambda name: "uv.exe" if name == "uv" else None,
@@ -487,6 +492,42 @@ class TestTransactionalDependencyInstall:
         assert calls[0][:4] == ["uv.exe", "pip", "install", "--python"]
         assert "target-python" in calls[0]
         assert "--target" in calls[0]
+
+    @pytest.mark.parametrize("config_kind", ["environment", "file"])
+    def test_pip_source_configuration_prefers_target_python_pip(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_kind: str,
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv.exe",
+        )
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_EXTRA_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
+        if config_kind == "environment":
+            monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+        else:
+            config = tmp_path / "pip.conf"
+            config.write_text(
+                "[global]\nindex-url = https://mirror.example/simple\n",
+                encoding="utf-8",
+            )
+            monkeypatch.setenv("PIP_CONFIG_FILE", str(config))
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **_: calls.append(command)
+            or subprocess.CompletedProcess(command, 0, stdout="ok\n"),
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
+        assert calls[0][:3] == ["target-python", "-m", "pip"]
+        assert "--no-user" in calls[0]
 
     def test_falls_back_to_target_python_pip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -525,6 +566,13 @@ class TestTransactionalDependencyInstall:
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
             lambda _: None,
         )
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_EXTRA_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd._pip_config_paths",
+            lambda: (),
+        )
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(
@@ -537,6 +585,28 @@ class TestTransactionalDependencyInstall:
         error = capsys.readouterr().err
         assert "uv was not found" in error
         assert "ensurepip" in error
+
+    def test_pip_source_configuration_without_pip_fails_closed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv.exe",
+        )
+        monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **_: subprocess.CompletedProcess(
+                command, 1, stdout="target-python: No module named pip\n"
+            ),
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 1
+        assert "Pip source configuration is active" in capsys.readouterr().err
 
     @pytest.mark.parametrize("clean", [False, True])
     def test_install_failure_preserves_existing_vendor(
@@ -674,10 +744,33 @@ class TestTransactionalDependencyInstall:
         backups = list(tmp_path.glob(".vendor.backup-*"))
         error = capsys.readouterr().err
         if permission_error:
-            assert len(backups) == 1
-            assert (backups[0] / "old.py").read_text(encoding="utf-8") == "keep"
-            assert not (backups[0] / ".recovery-pending").exists()
+            assert backups == []
+            assert (vendor / "old.py").read_text(encoding="utf-8") == "keep"
             assert "files are in use" in error
         else:
             assert backups == []
             assert "rename failed" in error
+
+    def test_permission_recovery_rename_failure_retains_marked_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        vendor = tmp_path / "vendor"
+        staging = tmp_path / ".vendor.staging"
+        vendor.mkdir()
+        staging.mkdir()
+        (vendor / "old.py").write_text("keep", encoding="utf-8")
+        real_replace = Path.replace
+
+        def fail_recovery_replace(source: Path, target: Path) -> Path:
+            if source == staging or source.name.startswith(".vendor.backup-"):
+                raise PermissionError("file locked")
+            return real_replace(source, target)
+
+        monkeypatch.setattr(Path, "replace", fail_recovery_replace)
+
+        assert _replace_vendor(vendor, staging) is False
+        assert not vendor.exists()
+        backup, = tmp_path.glob(".vendor.backup-*")
+        assert (backup / "old.py").read_text(encoding="utf-8") == "keep"
+        assert (backup / ".recovery-pending").is_file()
+        assert "Could not restore vendor by rename" in capsys.readouterr().err
