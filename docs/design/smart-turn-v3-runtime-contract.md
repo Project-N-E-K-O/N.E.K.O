@@ -11,7 +11,9 @@
 
 ## 转录路由与身份
 
-`VoiceInputRegistry` 是 Core、游戏路由和受信插件桥接共用的高层 transcript 边界；它不接收 PCM，也不选择 provider。每条路由由完整 `VoiceTurnToken` 固定：consumer 切换、注销、lease 变化、PCM 缺口、abort 和 session teardown 都终止旧路由，不能把结果转交给新 consumer。
+`VoiceInputRegistry` 是 Core、游戏路由和受信插件桥接共用的高层 transcript 边界；它不接收 PCM，也不选择 provider。每条路由由完整 `VoiceTurnToken` 固定：consumer 切换、注销、lease 变化、PCM 缺口、abort 和 session teardown 通常都会终止旧路由，不能把结果转交给新 consumer。
+
+`ingress_backpressure` 是唯一的已声明例外：如果 final 已被 runtime 接受（包括仍在释放 Smart Turn lease 的 accepted final），其 pinned Registry route 必须保留到该 final 被提交或明确退休；被背压打断、尚未被接受的那一轮仍按上述规则终止。
 
 最终结果在调用业务代码前先消费路由。重复、迟到、空 final 或回调失败都不能恢复或重定向已消费的路由；空 final 只做终结清理，不进入 Core 或游戏。provider-native final 与 Smart Turn 封存的 final 共用这套 Core 路由契约。
 
@@ -38,3 +40,4 @@ Soniox 重连时，`end_ms` 以当前连接的流起点为基准。重放从上�
 Smart Turn 模型资产由 `main_logic/asr_client/endpointing/models/manifest.json` 固定版本、来源和 SHA-256。运行时按需加载并单实例 single-flight；缺失或损坏资产是 `UNAVAILABLE`，与语义 `INCOMPLETE` 分开。关闭或失败 ASR session 时必须释放 detector、model adapter 和对应任务。
 
 这些是安全和状态一致性契约，不是性能优化。回归测试覆盖 accepted final 的背压保留、DRAINING sealed turn、strict retry 与 semantic timeout、旧 epoch completion、Soniox 无时间戳回退，以及 route/identity 的一次性消费。
+
