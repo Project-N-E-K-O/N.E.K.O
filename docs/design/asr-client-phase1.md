@@ -63,8 +63,8 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 - 生产 ASR 跟随 `core_type` 路由；一个 Session 只使用一个 worker，不跨供应商 fallback。
 - 公共断句语义只有 `manual` 与 `provider`。`manual` 下 `signal_user_activity_end()` 发送 `commit`；`provider` 下不发送 `commit`，只刷新本地 48 kHz 流式重采样器尾部，最终断句由供应商决定。`server_vad`、`endpointing` 等厂商字段只存在于 worker 内部。
-- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`glm`、`gemini` 使用 `manual` 并由本地 Smart Turn 判停；`openai`、`step`、`grok` 使用 `provider`。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。仅 provider 模式以服务端端点为权威、不加载 Smart Turn；Qwen 默认本地判停后显式提交，仍由云端返回最终转写。明确指定 Qwen `provider` 模式的调用继续受支持。
-- 本地判停所需模型不可用时沿用既有阻断与错误提示，不自动回退云端判停。源码运行需先执行 `uv run python scripts/prepare_voice_turn_assets.py` 准备模型；正式发布构建已有模型准备与打包检查。默认模式变更不等于完成真人语音或 Electron 质量验收，验收边界见 [SmartTurn 验证说明](smart-turn-v3-human-electron-validation.md)。
+- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`openai`、`step`、`grok` 使用 `provider`；`glm`、`gemini` 使用 `manual` 并由 Smart Turn 切分。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。这些流式 Provider 以服务端 endpoint/final 为权威，完全不加载 Smart Turn。Qwen 的本地暂停信号只作为兜底：在云端迟迟没有 endpoint 时触发 `session.finish`，让云端结算当前缓冲后重建连接，最终转写仍由 Qwen 返回。
+- Qwen 兜底不会动态切换 VAD，也不会在云端正常返回 endpoint 时发送 `commit`；仅在本地暂停候选后经过短暂宽限仍未收到云端 endpoint 时结束当前 session。已有 endpoint 但 final 长时间未返回，继续沿用现有 stalled-item 有界收敛。其他 provider 的 provider 模式保持原有行为。
 - `endpointing_mode` 在 Session 创建时冻结，不能通过 `update_session()` 动态切换。
 - 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 16 kHz；一个 Session 首包锁定输入采样率。
 - 空音频块是 no-op；非空音频必须为偶数字节，单块最多一秒。

@@ -483,6 +483,61 @@ async def test_qwen_server_vad_speech_stopped_without_completed_expires_empty_fi
     await _stop_worker(task, requests, responses, utterance_id=3)
 
 
+async def test_qwen_provider_local_pause_finishes_session_and_reconnects(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if not isinstance(payload, str):
+            return
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "session.finish":
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "qwen-fallback",
+                    "transcript": "fallback final",
+                }
+            )
+            await ws.server_send({"type": "session.finished"})
+
+    first = _FakeWebSocket(on_send=on_send)
+    second = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0.05)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await first.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "qwen-fallback"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="activity", generation=0, utterance_id=1, speech_active=False
+        )
+    )
+    final = await _next_event(responses, "final", timeout=2)
+    assert (final.utterance_id, final.text) == (1, "fallback final")
+    await _wait_until(lambda: len(connector.calls) == 2)
+    sent_types = [json.loads(payload)["type"] for payload in first.sent if isinstance(payload, str)]
+    assert "session.finish" in sent_types
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_qwen_server_vad_partial_text_refreshes_stalled_deadline(
     monkeypatch,
 ) -> None:

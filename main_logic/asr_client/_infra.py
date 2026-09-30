@@ -79,7 +79,7 @@ _OMNI_ONLY_FIELDS = frozenset(
     }
 )
 
-_RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown"]
+_RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown", "activity"]
 _EventKind: TypeAlias = Literal[
     "ready",
     "utterance_started",
@@ -152,6 +152,8 @@ class RealtimeAsrSession(Protocol):
 
     async def signal_user_activity_end(self) -> None: ...
 
+    async def signal_local_activity(self, *, speech_active: bool) -> None: ...
+
     async def clear_audio_buffer(self) -> None: ...
 
     async def close(self) -> None: ...
@@ -166,6 +168,7 @@ class _AsrWorkerRequest:
     buffer_epoch: int = 0
     utterance_id: int | None = None
     audio: bytes = b""
+    speech_active: bool = False
 
 
 @dataclass(slots=True)
@@ -684,6 +687,22 @@ class _RealtimeAsrSessionImpl:
             ):
                 return
             await self._commit_current_utterance_locked()
+
+    async def signal_local_activity(self, *, speech_active: bool) -> None:
+        """Forward observational VAD hints without sealing a logical turn."""
+        if self._provider_policy is None or not self._provider_policy.observes_local_activity:
+            return
+        async with self._operation_lock:
+            if self._state is not _SessionState.READY:
+                return
+            await self._enqueue_request(
+                _AsrWorkerRequest(
+                    kind="activity",
+                    generation=self._generation,
+                    buffer_epoch=self._buffer_epoch,
+                    speech_active=speech_active,
+                )
+            )
 
     async def clear_audio_buffer(self) -> None:
         async with self._operation_lock:

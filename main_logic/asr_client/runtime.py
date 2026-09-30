@@ -4067,6 +4067,24 @@ class IndependentAsrRuntime:
             return
         provider = self._asr_provider or "unknown"
         lifecycle = self._asr_lifecycle
+        if lifecycle is not None and lifecycle.provider_policy.observes_local_activity:
+            asr_session = self._asr_session
+            if asr_session is not None and getattr(asr_session, "is_ready", False):
+                try:
+                    await asr_session.signal_local_activity(
+                        speech_active=event
+                        in {
+                            SpeechActivityEvent.SPEECH_STARTED,
+                            SpeechActivityEvent.SPEECH_RESUMED,
+                        }
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "[%s] local ASR activity hint failed",
+                        self.display_name,
+                    )
         if (
             lifecycle is not None
             and lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
@@ -4198,6 +4216,11 @@ class IndependentAsrRuntime:
                         self._asr_overlap_completed_onsets.append(last)
                         self._asr_overlap_completed_token = onset_token
                         self._asr_overlap_completed_turns = 1
+                # Qwen keeps server VAD as the authority.  A local pause is
+                # only a bounded fallback trigger: the Qwen worker waits for
+                # the provider endpoint and sends session.finish only when
+                # the provider remains silent.  Other provider-VAD routes
+                # retain their existing no-op behavior here.
             return
         if self._asr_turn_prepared:
             if (

@@ -92,6 +92,9 @@ class AsrProviderMeta:
     # with ``importlib.util.find_spec`` (no import) and reports
     # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
     optional_dependency: str | None = None
+    # Qwen provider VAD remains authoritative; local activity only arms its
+    # bounded session.finish recovery path.
+    observes_local_activity: bool = False
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -134,8 +137,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         provider_key="qwen",
         credential_field="ASSIST_API_KEY_QWEN",
         region="cn",
-        # Local Silero/SmartTurn owns the endpoint; Qwen receives an explicit commit.
-        default_endpointing_mode="manual",
+        default_endpointing_mode="provider",
     ),
     "qwen_intl": AsrCoreRoute(
         provider_key="qwen",
@@ -143,7 +145,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         region="intl",
         # The separate credential slot prevents cross-region key reuse; real
         # Qwen Intl permission/scope acceptance is still required before release.
-        default_endpointing_mode="manual",
+        default_endpointing_mode="provider",
     ),
     "openai": AsrCoreRoute(
         provider_key="openai",
@@ -202,6 +204,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
+        observes_local_activity=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",

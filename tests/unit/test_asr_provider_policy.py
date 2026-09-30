@@ -33,6 +33,11 @@ def test_provider_endpoint_is_the_logical_turn_authority() -> None:
     assert policy.replay_policy == "provider_managed"
 
 
+def test_qwen_provider_endpoint_can_observe_local_activity_for_fallback() -> None:
+    assert resolve_provider_policy("qwen", "provider").observes_local_activity is True
+    assert resolve_provider_policy("openai", "provider").observes_local_activity is False
+
+
 @pytest.mark.parametrize("provider_key", ["glm", "gemini"])
 def test_segmented_provider_always_requires_smart_turn(provider_key: str) -> None:
     policy = resolve_provider_policy(provider_key, "manual")
