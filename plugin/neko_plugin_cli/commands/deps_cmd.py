@@ -282,6 +282,14 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                     shutil.copytree(backup_dir, restore_dir, symlinks=True)
                     (restore_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
                     restore_dir.replace(vendor_dir)
+                    try:
+                        (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+                    except OSError as marker_exc:
+                        print(
+                            f"[WARN] Could not clear recovery marker {backup_dir}: "
+                            f"{marker_exc}",
+                            file=sys.stderr,
+                        )
                 except OSError as exc:
                     # Do not leave a partially restored live directory.
                     if restore_dir.exists():

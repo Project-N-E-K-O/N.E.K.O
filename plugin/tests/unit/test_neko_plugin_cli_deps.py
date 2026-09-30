@@ -676,6 +676,7 @@ class TestTransactionalDependencyInstall:
         if permission_error:
             assert len(backups) == 1
             assert (backups[0] / "old.py").read_text(encoding="utf-8") == "keep"
+            assert not (backups[0] / ".recovery-pending").exists()
             assert "files are in use" in error
         else:
             assert backups == []
