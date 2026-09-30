@@ -2985,7 +2985,9 @@
                 // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
                 // 容器已经开始了更新的一轮渲染时交给那一轮。
                 if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
-                    adoptPortalSource(sources[0]);
+                    adoptPortalSource(sources[0]).catch(function (error) {
+                        console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+                    });
                 }
                 return false;
             }
@@ -3349,11 +3351,12 @@
                     chooseAgainButton.disabled = true;
                     chooseAgainButton.style.cursor = 'progress';
                     chooseAgainButton.style.opacity = '0.6';
-                    portalAdoption.then(function () {
+                    var restoreChooseAgainButton = function () {
                         chooseAgainButton.disabled = false;
                         chooseAgainButton.style.cursor = 'pointer';
                         chooseAgainButton.style.opacity = '';
-                    });
+                    };
+                    portalAdoption.then(restoreChooseAgainButton, restoreChooseAgainButton);
                 }
                 return true;
             }
