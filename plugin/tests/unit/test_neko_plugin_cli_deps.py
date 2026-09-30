@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 from pathlib import Path
@@ -431,8 +432,57 @@ def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
     assert not stale.exists()
 
 
+def test_parse_mountinfo_points_unescapes_octal():
+    from plugin.neko_plugin_cli.commands.deps_cmd import _parse_mountinfo_points
+
+    lines = [
+        "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n",
+        "40 22 8:1 /data /srv/my\\040plugin/vendor/pkg rw - ext4 /dev/sda1 rw\n",
+    ]
+    assert _parse_mountinfo_points(lines) == ["/", "/srv/my plugin/vendor/pkg"]
+
+
+def test_mountinfo_does_not_flag_vendor_itself_or_outside_mounts(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    (vendor / "pkg").mkdir(parents=True)
+    real = os.path.realpath(vendor)
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(
+        deps_cmd, "_linux_mount_points",
+        lambda: ["/", real, real + "-sibling", os.path.dirname(real)],
+    )
+    assert deps_cmd._find_foreign_subdir(vendor, junctions=True) is None
+
+
+def test_stale_staging_that_vanishes_is_skipped(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    gone = tmp_path / ".vendor.staging-gone"
+    gone.mkdir()
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 0, raising=False)
+    real_stat = Path.stat
+
+    calls = []
+
+    def vanish(path, *args, **kwargs):
+        # is_dir() still sees it; the ownership check right after does not.
+        if path == gone and not kwargs.get("follow_symlinks", True) is False:
+            calls.append(path)
+            if len(calls) > 1:
+                raise FileNotFoundError(errno.ENOENT, "moved away by another user's sync")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", vanish)
+    deps_cmd._remove_stale_staging(tmp_path)  # must not raise
+    assert len(calls) == 2  # the ownership check did hit the vanished dir
+    assert capsys.readouterr().err == ""  # skipped quietly, not a cleanup failure
+
+
+@pytest.mark.parametrize("detected_by", ["ismount", "mountinfo"])
 @pytest.mark.parametrize("clean", [False, True])
-def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, clean):
+def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, clean, detected_by):
     # Removing the old vendor/ backup would delete the mounted tree's files.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -441,7 +491,15 @@ def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, c
     mount.mkdir(parents=True)
     (mount / "external.dat").write_text("keep")
     monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
-    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: Path(p) == mount)
+    if detected_by == "ismount":
+        monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+        monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: Path(p) == mount)
+    else:
+        # A same-filesystem bind mount: ismount() says no, mountinfo says yes.
+        monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+        monkeypatch.setattr(
+            deps_cmd, "_linux_mount_points", lambda: ["/", os.path.realpath(mount)]
+        )
     monkeypatch.setattr(
         deps_cmd.subprocess,
         "run",

@@ -6,6 +6,7 @@ import argparse
 import configparser
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -226,6 +227,19 @@ def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
     """
     if sys.platform == "win32" and not junctions:
         return None
+    # ismount() misses a bind mount from the same filesystem (same st_dev);
+    # the kernel's mount table on Linux lists every mount point.
+    mount_points = _linux_mount_points()
+    if mount_points is not None:
+        real_root = os.path.realpath(root)
+        for point in mount_points:
+            try:
+                inside = point != real_root and os.path.commonpath([real_root, point]) == real_root
+            except ValueError:  # different drives or mixed absolute/relative
+                inside = False
+            if inside:
+                return Path(point)
+        return None
     for dirpath, dirnames, _ in os.walk(root):
         for name in dirnames:
             path = Path(dirpath, name)
@@ -235,6 +249,29 @@ def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
             elif os.path.ismount(path):
                 return path
     return None
+
+
+def _linux_mount_points() -> list[str] | None:
+    """Mount points from /proc/self/mountinfo, or None where unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    return _parse_mountinfo_points(lines)
+
+
+def _parse_mountinfo_points(lines: list[str]) -> list[str]:
+    points = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            # Field 5 is the mount point, with space/tab/newline/backslash
+            # written as octal escapes.
+            points.append(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4]))
+    return points
 
 
 def _short_token() -> str:
@@ -249,10 +286,13 @@ def _remove_stale_staging(plugin_dir: Path) -> None:
     uid = os.getuid() if hasattr(os, "getuid") else None
     for path in plugin_dir.glob(f"{VENDOR_SYNC_STAGING_PREFIX}*"):
         if path.is_dir() and not path.is_symlink():
-            if uid is not None and path.stat().st_uid != uid:
-                continue
             try:
+                if uid is not None and path.stat().st_uid != uid:
+                    continue
                 shutil.rmtree(path)
+            except FileNotFoundError:
+                # Another user's sync moved it away between glob and here.
+                continue
             except OSError as exc:
                 print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
 
