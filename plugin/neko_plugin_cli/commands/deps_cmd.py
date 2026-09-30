@@ -317,14 +317,26 @@ def _pip_install_to_vendor(
             file=sys.stderr,
         )
         return 1
-    pip_index_source = _pip_index_source(python)
-    if pip_index_source and not any(os.environ.get(name) for name in _UV_INDEX_ENV):
+    sources, pip_no_index = _pip_package_sources(python)
+    # Only UV_NO_INDEX turns off uv's default index; extra indexes and
+    # find-links are merely added next to PyPI.
+    uv_configured = (
+        bool(os.environ.get("UV_NO_INDEX"))
+        if pip_no_index
+        else any(os.environ.get(name) for name in _UV_INDEX_ENV)
+    )
+    if sources and not uv_configured:
+        needed = (
+            "UV_NO_INDEX with UV_FIND_LINKS"
+            if pip_no_index
+            else "UV_DEFAULT_INDEX / UV_INDEX / UV_FIND_LINKS"
+        )
         print(
-            "[FAIL] The target Python has no pip, and pip is configured with a "
-            f"package source ({pip_index_source}) that uv does not read. "
+            "[FAIL] The target Python has no pip, and pip is configured with "
+            f"package sources ({', '.join(sources)}) that uv does not read. "
             "Installing with uv would resolve from its default index instead. "
-            "Configure uv the same way (UV_DEFAULT_INDEX / UV_INDEX, or "
-            "UV_NO_INDEX / UV_FIND_LINKS), or run python -m ensurepip --upgrade.",
+            f"Configure uv the same way ({needed}), or run "
+            "python -m ensurepip --upgrade.",
             file=sys.stderr,
         )
         return 1
@@ -358,20 +370,26 @@ _PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_NO_INDEX", "PIP_F
 _PIP_INDEX_KEYS = {"index-url", "extra-index-url", "no-index", "find-links"}
 
 
-def _pip_index_source(python: str) -> str | None:
-    """Where pip would take a custom package index from, if anywhere."""
+def _pip_package_sources(python: str) -> tuple[list[str], bool]:
+    """Where pip takes non-default package sources from, and whether it
+    disables package indexes altogether (no-index)."""
+    sources: list[str] = []
+    no_index = False
     for name in _PIP_INDEX_ENV:
         if os.environ.get(name):
-            return name
+            sources.append(name)
+            no_index = no_index or name == "PIP_NO_INDEX"
     config_file = os.environ.get("PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
-        return None
+        return sources, no_index
     candidates = [Path(config_file)] if config_file else []
     for path in [*candidates, *_pip_config_files(python)]:
-        if _config_sets_index(path):
-            return str(path)
-    return None
+        keys = _config_source_keys(path)
+        if keys:
+            sources.append(str(path))
+            no_index = no_index or "no-index" in keys
+    return sources, no_index
 
 
 def _pip_config_files(python: str) -> list[Path]:
@@ -403,19 +421,19 @@ def _pip_config_files(python: str) -> list[Path]:
     return files
 
 
-def _config_sets_index(path: Path) -> bool:
+def _config_source_keys(path: Path) -> set[str]:
     parser = configparser.RawConfigParser()
     try:
         if not parser.read(path, encoding="utf-8"):
-            return False
+            return set()
     except (configparser.Error, UnicodeDecodeError):
-        # pip itself would reject this file; do not guess it is index-free.
-        return True
-    return any(
-        key.replace("_", "-") in _PIP_INDEX_KEYS
+        # pip itself would reject this file; assume the strictest setting.
+        return set(_PIP_INDEX_KEYS)
+    return {
+        key.replace("_", "-")
         for section in parser.sections()
         for key in parser[section]
-    )
+    } & _PIP_INDEX_KEYS
 
 
 def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:

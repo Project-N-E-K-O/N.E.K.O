@@ -49,6 +49,13 @@ def _missing_pip_then_uv(calls):
         ({}, "[install]\nextra_index_url = https://private/simple\n", False),
         ({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "/wheels"}, None, False),
         ({"PIP_FIND_LINKS": "/wheels", "UV_FIND_LINKS": "/wheels", "UV_NO_INDEX": "1"}, None, True),
+        ({"PIP_FIND_LINKS": "/wheels", "UV_FIND_LINKS": "/wheels"}, None, True),
+        # Extra indexes and find-links leave uv's PyPI on; only UV_NO_INDEX
+        # matches pip's no-index.
+        ({"PIP_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, False),
+        ({"PIP_NO_INDEX": "1", "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
+        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, True),
+        ({"UV_FIND_LINKS": "/wheels"}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
         ({}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
         ({}, "[global]\ntimeout = 60\n", True),
         ({}, "not an ini file\n", False),
@@ -89,9 +96,9 @@ def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
     config = tmp_path / "pip.ini"
     config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
-    assert deps_cmd._pip_index_source("python") == str(config)
+    assert deps_cmd._pip_package_sources("python") == ([str(config)], False)
     monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
-    assert deps_cmd._pip_index_source("python") is None
+    assert deps_cmd._pip_package_sources("python") == ([], False)
 
 
 @pytest.mark.parametrize("failing_installer", ["pip", "uv"])
