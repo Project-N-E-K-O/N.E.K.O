@@ -75,18 +75,19 @@ def _missing_pip_then_uv(calls):
         ({}, "[global]\nindex-url = https://private/simple\n", False),
         ({}, "[install]\nextra_index_url = https://private/simple\n", False),
         ({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "/wheels"}, None, False),
-        ({"PIP_FIND_LINKS": "/wheels", "UV_FIND_LINKS": "/wheels", "UV_NO_INDEX": "1"}, None, True),
         ({"PIP_FIND_LINKS": "/wheels", "UV_FIND_LINKS": "/wheels"}, None, True),
-        # Extra indexes and find-links leave uv's PyPI on; only UV_NO_INDEX
-        # matches pip's no-index.
-        ({"PIP_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, False),
-        ({"PIP_NO_INDEX": "1", "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
-        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, True),
-        ({"UV_FIND_LINKS": "/wheels"}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
+        # pip's no-index is passed to uv as --no-index (uv has no environment
+        # variable for it); with no index pip ignores its index settings too.
+        ({"PIP_NO_INDEX": "1"}, None, True),
+        ({"PIP_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, True),
+        ({"PIP_NO_INDEX": "1", "PIP_INDEX_URL": "https://private/simple"}, None, True),
+        ({"UV_FIND_LINKS": "/wheels"}, "[global]\nno-index = true\nfind-links = /wheels\n", True),
+        # UV_NO_INDEX is not a uv variable; it covers nothing.
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "1"}, None, False),
+        ({"PIP_FIND_LINKS": "/wheels", "UV_NO_INDEX": "1"}, None, False),
         # Each pip source kind needs a uv setting of the matching kind.
         ({"PIP_INDEX_URL": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, False),
         ({"PIP_FIND_LINKS": "/wheels", "UV_DEFAULT_INDEX": "https://private/simple"}, None, False),
-        ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "1"}, None, True),
         ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
           "UV_INDEX": "https://private/simple"}, None, False),
         ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
@@ -97,10 +98,6 @@ def _missing_pip_then_uv(calls):
           "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
         ({"PIP_INDEX_URL": "https://private/simple", "UV_INDEX_URL": "https://private/simple"}, None, True),
         ({"PIP_EXTRA_INDEX_URL": "https://private/simple", "UV_INDEX": "https://private/simple"}, None, True),
-        # A false UV_NO_INDEX leaves uv's PyPI enabled.
-        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "0"}, None, False),
-        ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "false"}, None, False),
-        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "True"}, None, True),
         # An explicitly disabled no-index is not a restriction.
         ({"PIP_NO_INDEX": "false"}, None, True),
         # pip's hash-checking policy must carry over, or uv installs unhashed.
@@ -156,6 +153,26 @@ def test_uv_fallback_refuses_when_pip_has_an_index_uv_cannot_see(
     )
     if not uses_uv:
         assert "uv does not read" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("pip_no_index", [True, False])
+def test_pip_no_index_is_passed_to_uv_as_the_flag(tmp_path, monkeypatch, pip_no_index):
+    # uv binds no environment variable to --no-index, so only the flag keeps
+    # uv off PyPI.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    if pip_no_index:
+        monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    uv_command = calls[-1]
+    assert uv_command[0] == "uv"
+    assert ("--no-index" in uv_command) is pip_no_index
 
 
 def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):

@@ -499,9 +499,17 @@ def _pip_install_to_vendor(
             file=sys.stderr,
         )
         return 1
+    settings = _pip_settings(target)
+    # pip's no-index is passed on as uv's --no-index flag (uv reads no
+    # environment variable for it). With no index, pip ignores its index
+    # settings, and so will uv.
+    no_index = "no-index" in settings
     uncovered: list[str] = []
-    for name, where in sorted(_pip_settings(target).items()):
-        if name in _PIP_HARMLESS_SETTINGS:
+    for name, where in sorted(settings.items()):
+        if name in _PIP_HARMLESS_SETTINGS or name == "no-index":
+            continue
+        kind = _PIP_SETTING_KINDS.get(name, "other")
+        if no_index and kind in {"index", "extra-index"}:
             continue
         if name == "require-virtualenv":
             # pip refuses to install outside a venv; uv would not check.
@@ -510,7 +518,7 @@ def _pip_install_to_vendor(
                     f"{name} from {', '.join(where)} (the target Python is not a virtual environment)"
                 )
             continue
-        covers = _UV_COVERS[_PIP_SETTING_KINDS.get(name, "other")]
+        covers = _UV_COVERS[kind]
         if not any(_uv_env_set(uv_name) for uv_name in covers):
             fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
             uncovered.append(f"{name} from {', '.join(where)} ({fix})")
@@ -530,6 +538,7 @@ def _pip_install_to_vendor(
             "--python", python,
             "--target", str(vendor_dir),
             "--upgrade",
+            *(["--no-index"] if no_index else []),
             *packages,
         ],
         label="uv pip install",
@@ -581,20 +590,22 @@ _PIP_HARMLESS_SETTINGS = {
     "user",
     "verbose",
 }
-# uv settings that keep each kind of pip setting from being lost. pip's
-# index-url replaces PyPI, so only a replaced uv default index (or
-# UV_NO_INDEX) covers it; UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS are
-# only added next to PyPI, so each covers only pip's additive kinds.
+# uv environment variables that keep each kind of pip setting from being
+# lost (all checked against `uv pip install --help` env bindings). pip's
+# index-url replaces PyPI, so only a replaced uv default index covers it;
+# UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS are only added next to PyPI,
+# so each covers only pip's additive kinds. uv has no environment variable
+# for --no-index: pip's no-index is carried over by passing the flag itself
+# (see _pip_install_to_vendor), which only makes uv stricter.
 _UV_COVERS = {
-    "index": ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_NO_INDEX"),
-    "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
-    "find-links": ("UV_FIND_LINKS", "UV_NO_INDEX"),
-    "no-index": ("UV_NO_INDEX",),
+    "index": ("UV_DEFAULT_INDEX", "UV_INDEX_URL"),
+    "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL"),
+    "find-links": ("UV_FIND_LINKS",),
     # uv only reads its own variable; without it uv installs unhashed.
     "require-hashes": ("UV_REQUIRE_HASHES",),
     "other": (),
 }
-_UV_BOOLEAN_ENV = {"UV_NO_INDEX", "UV_REQUIRE_HASHES"}
+_UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
 
 
 @dataclass(frozen=True)
