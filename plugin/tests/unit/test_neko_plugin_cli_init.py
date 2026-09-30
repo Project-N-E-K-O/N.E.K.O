@@ -105,7 +105,7 @@ def test_init_creates_complete_plugin_source_by_default(
     assert settings["nekoPlugin.repoRoot"] == "../../.."
     assert check_task["command"] == "uv run neko-plugin check market_demo"
     assert sync_task["command"] == (
-        "uv run neko-plugin sync market_demo --clean"
+        "uv run --with pip neko-plugin sync market_demo --clean"
     )
     assert check_task["options"]["cwd"] == "${config:nekoPlugin.repoRoot}"
 
@@ -227,7 +227,7 @@ def test_init_uses_exact_custom_output_and_custom_directory_commands(
     assert output.is_dir()
     assert not (tmp_path / "n.e.k.o_plugin_custom_output").exists()
     readme = (output / "README.md").read_text(encoding="utf-8")
-    assert "uv run --project" in readme
+    assert "uv run --with pip --project" in readme
     assert "neko-plugin sync . --clean" in readme
     assert "neko-plugin check ." in readme
     assert "neko-plugin check -r ." in readme
