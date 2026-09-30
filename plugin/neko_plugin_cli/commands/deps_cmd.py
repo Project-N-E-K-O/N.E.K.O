@@ -79,11 +79,10 @@ def handle_sync(args: argparse.Namespace) -> int:
     # can let waiting processes lock different inodes for the same plugin.
     identity = os.path.normcase(str(plugin_dir.resolve()))
     lock_name = hashlib.sha256(identity.encode()).hexdigest()
-    lock_dir = Path(gettempdir()) / "neko-plugin-sync-locks"
+    lock_path = Path(gettempdir()) / f"neko-plugin-sync-{lock_name}.lock"
     staging_dir: Path | None = None
     try:
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        with portalocker.Lock(lock_dir / f"{lock_name}.lock", timeout=0):
+        with portalocker.Lock(lock_path, timeout=0):
             staging_dir = Path(mkdtemp(prefix=".vendor.staging-", dir=plugin_dir))
             if not args.clean and vendor_dir.is_dir():
                 shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True, symlinks=True)
@@ -99,7 +98,10 @@ def handle_sync(args: argparse.Namespace) -> int:
             # A complete successful sync supersedes retained recovery backups.
             for backup in plugin_dir.glob(".vendor.backup-*"):
                 if backup.is_dir() and not backup.is_symlink():
-                    shutil.rmtree(backup)
+                    try:
+                        shutil.rmtree(backup)
+                    except OSError as exc:
+                        print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
     except portalocker.exceptions.LockException:
         print(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
         return 1
@@ -291,5 +293,7 @@ def _clean_vendor(vendor_dir: Path) -> None:
 
     # Remove bin/ directory (CLI scripts we don't need)
     bin_dir = vendor_dir / "bin"
-    if bin_dir.is_dir():
+    if bin_dir.is_symlink():
+        bin_dir.unlink()
+    elif bin_dir.is_dir():
         shutil.rmtree(bin_dir, ignore_errors=True)

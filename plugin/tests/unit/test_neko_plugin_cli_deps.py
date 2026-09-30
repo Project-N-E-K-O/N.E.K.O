@@ -114,6 +114,32 @@ def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     assert not backup.exists()
 
 
+def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    backup = plugin_dir / ".vendor.backup-previous"
+    backup.mkdir()
+    (backup / "old.py").write_text("backup")
+    real_rmtree = deps_cmd.shutil.rmtree
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        if Path(path) == backup:
+            raise PermissionError("backup is locked")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(deps_cmd.shutil, "rmtree", fail_backup_cleanup)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert backup.exists()
+    assert "Could not remove old dependency backup" in capsys.readouterr().err
+
+
 def test_non_clean_sync_preserves_links_including_dangling(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -134,6 +160,23 @@ def test_non_clean_sync_preserves_links_including_dangling(tmp_path, monkeypatch
     assert (vendor / "linked.txt").readlink() == outside
     assert (vendor / "dangling.txt").is_symlink()
     assert outside.read_text() == "outside"
+
+
+def test_clean_vendor_removes_bin_directory_symlink(tmp_path: Path) -> None:
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    target = tmp_path / "bin-target"
+    target.mkdir()
+    (target / "script").write_text("x")
+    try:
+        (vendor / "bin").symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation requires OS permission")
+
+    _clean_vendor(vendor)
+
+    assert not (vendor / "bin").exists()
+    assert (target / "script").exists()
 
 
 @pytest.mark.plugin_unit
