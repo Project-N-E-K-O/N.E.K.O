@@ -2552,9 +2552,10 @@ def test_a_whitespace_only_message_does_not_blow_up():
     ⚠️ 用**增长倍率**而不是绝对秒数。写这条的时候，纯空白消息在 parent 上本来就是
     三次方（60/120/240 实测 0.006/0.05/0.43），几乎全是 ko 模板
     ``(.{1,30}?)\s*(?:이|가)?\s*…`` 贡献的，所以当时守的是「不比 parent 更差」。
-    那条 ko 模板后来也原子化了（单独的计时护栏在 test_directive_regex_whitespace_ko_ja.py），
-    现在整条 extract_directives 在纯空白上是二次方（同样三档 0.0015/0.0057/0.022）：
-    每个起点线性，起点有 n 个——所有 lazy 前置捕获的模板都是这个形状，不是 bug。
+    后来所有模板的话题捕获都不许空白起头、ja/ko 捕获后的空白也原子化了（见
+    _PATTERNS_RAW 开头；计时护栏在 test_directive_regex_whitespace.py，n 取到
+    3000），现在整条 extract_directives 在纯空白上是**线性**的：3000 / 6000 个空格
+    实测 0.8 / 1.5 毫秒。这里的倍率判据仍然有效，只是远没有贴线。
     """  # noqa: DOCSTRING_CJK
     from tests.wall_clock import fastest_run
 
@@ -2567,7 +2568,7 @@ def test_a_whitespace_only_message_does_not_blow_up():
     # ⚠️ 主判据是**倍率**。绝对秒数只当一道很松的天花板——共享 CI runner 上负载不可控，
     # 卡得紧会偶发变红（CodeRabbit）。组合爆炸时这里是 0.4 秒往上。
     assert timings[60] < 0.5, timings
-    # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右、现在的二次方是 4 倍左右，
+    # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右、现在的线性是 2 倍左右，
     # 这么小的 n 上噪声占比大，给足余量取 25
     assert timings[60] < timings[30] * 25 + 0.02, timings
 
@@ -2843,8 +2844,9 @@ def test_the_guanyu_template_spacing_is_atomic_too():
     # ⚠️ 不能计时整个 extract_directives：写这条时韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…``
     # 在纯空白上是三次方，"关于" + 80 个空格的耗时几乎全是它（本机约 20ms，
     # 模板 4 自己约 2µs），拿它的倍率当判据测的是韩语模板加机器负载——CI 和 xdist
-    # 下单次采样被调度抢占就是 {40: 0.003, 80: 0.236} 这种误红。那条后来原子化了，
-    # 但其余模板在空白上仍是二次方，整体计时照样测的是别人，理由不变。
+    # 下单次采样被调度抢占就是 {40: 0.003, 80: 0.236} 这种误红。那条后来修掉了，整条
+    # extract_directives 在空白上已是线性，但整体计时量的仍是 21 条模板之和，模板 4
+    # 自己回退时淹在里面，理由不变。
     # 模板 4 前置空白全部去原子化时，本机 80 个空格要 1 秒量级（n^5：20→40 涨 24 倍）；
     # 原子化版本是微秒级。0.1 秒的线两边都差四个数量级以上，取多次里最快的一次
     # 再把调度噪声滤掉。
@@ -4459,6 +4461,8 @@ def test_no_cross_line_gap_remains_anywhere_in_a_zh_template():
         # ⚠️ _ZH_OBJECTLESS_AHEAD 豁免：它是**零宽负前视**，只会「多挡一些」，
         # 拉不进任何内容。判据管的是会 consume 的那些空白。
         body = raw.replace(D._ZH_OBJECTLESS_AHEAD, "")
+        # 话题开头「不许空白起头」的 ``(?!\s)`` 同理：零宽、只挡不吃
+        body = body.replace(r"(?!\s)", "")
         body = body.replace(D._ZH_HSPACE, "")
         body = body.replace(chr(92) + "s*$", "")
         # 取反的字符类里出现 ``\s`` 是在**排除**空白，方向相反，不在此列。
