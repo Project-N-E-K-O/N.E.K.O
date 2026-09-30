@@ -882,6 +882,15 @@ class AvatarToolStore:
             )
         if restored:
             try:
+                # 授权回到原位这一步先落盘，再挪回副本：崩溃后只留下后一步的话，
+                # .deleting 旁边没有授权，恢复会把它当成已确认删除清掉。落不了盘就
+                # 让副本留在停放名下，恢复会连同授权一起把它挪回。
+                _fsync_directory(self.root, strict=True)
+            except OSError:
+                logger.warning("Could not persist restored avatar tool authorization %s", marker, exc_info=True)
+                restored = False
+        if restored:
+            try:
                 os.replace(parked, deleting)
             except OSError:
                 logger.warning("Could not restore retained avatar tool copy %s", parked, exc_info=True)

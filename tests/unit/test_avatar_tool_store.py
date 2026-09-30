@@ -1667,18 +1667,23 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     with pytest.raises(AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
-    # 撤授权没能落盘：副本和正式目录都不能动。
+    # 撤授权没能落盘：副本和正式目录都不能丢。目录同步一直失败，授权回到原位这一步
+    # 也确认不了落盘，所以副本先留在停放名下，原授权已经放回原位。
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
-    assert (deleting / "record.json").read_bytes() == retained_record
+    parked = store.root / f".{tool_id}.retained"
+    assert (parked / "record.json").read_bytes() == retained_record
+    assert not deleting.exists()
     assert final.is_dir()
-    # 回到「保留副本」状态：授权还在（对不上），同一进程里重试删除就能成功，
+    assert marker.read_bytes() == b"{"
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    # 同一进程里重试删除：先跑恢复把副本连同原授权挪回「保留副本」状态，再照常丢弃，
     # 不会卡在 tool_delete_pending 直到重启。
-    assert marker.is_file()
     monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
     monkeypatch.setattr("utils.avatar_tool_store.os.open", real_open)
     assert store.delete_tool(tool_id) == tool_id
     assert not deleting.exists()
     assert not marker.exists()
+    assert not parked.exists()
     assert not final.exists()
 
 
@@ -1983,6 +1988,56 @@ def test_recovery_never_recursively_deletes_a_directory_at_an_orphan_marker_path
     assert (blocked.value.code, blocked.value.status_code) == ("tool_recovery_pending", 409)
     other = restarted.create_tool_v3(manifest=_v3_manifest(f"local-{uuid.uuid4()}", name="Other"), uploads=[_png()])
     assert restarted.delete_tool(other["id"]) == other["id"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is unsupported on Windows")
+def test_a_rolled_back_copy_waits_until_its_restored_marker_is_durable(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    parked = store.root / f".{tool_id}.retained"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+    real_replace = os.replace
+    real_fsync = os.fsync
+    state = {"staging_failed": False}
+
+    def fail_staging(source, destination, *args, **kwargs):
+        if Path(source) == final and Path(destination) == deleting:
+            state["staging_failed"] = True
+            raise OSError(errno.ENOSPC, "simulated disk full")
+        return real_replace(source, destination, *args, **kwargs)
+
+    def directory_sync_fails_after_staging(fd):
+        # 回滚时存储根的目录同步失败：授权回到原位这一步不一定落了盘。
+        if state["staging_failed"] and stat_module.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "simulated I/O error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", fail_staging)
+    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", directory_sync_fails_after_staging)
+    with pytest.raises(AvatarToolStoreError):
+        store.delete_tool(tool_id)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
+
+    # 授权没确认落盘就不把副本挪回 .deleting：崩溃后那会是一个无授权、会被清掉的 .deleting。
+    assert final.is_dir()
+    assert not deleting.exists()
+    assert (parked / "record.json").read_bytes() == retained_record
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    # 之后恢复把副本连同原授权挪回「保留副本」状态。
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.read_bytes() == b"{"
+    assert not parked.exists()
 
 
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
