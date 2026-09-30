@@ -32,6 +32,7 @@ from config.prompts.prompts_directives import extract_directives
 from tests.wall_clock import fastest_run
 
 _ATOMIC_WS = r"(?>\s*)"
+_ATOMIC_WS_PLUS = r"(?>\s+)"
 _BARE_CAPTURE = re.compile(r"\(\.\{1,\d+\}\?\)")
 _GUARDED_CAPTURE = re.compile(r"\(\(\?!\\s\)\.\{1,\d+\}\?\)")
 
@@ -49,8 +50,8 @@ def _templates() -> list[tuple[str, str, re.Pattern[str]]]:
 
 _ALL = _templates()
 _NON_ZH = [t for t in _ALL if not t[0].startswith("zh")]
-# 自动发现，不是手点清单：含原子空白的模板都要过等价性比较
-_ATOMIZED = [t for t in _ALL if _ATOMIC_WS in t[1]]
+# 自动发现，不是手点清单：含原子空白（``(?>\s*)`` / ``(?>\s+)``）的模板都要过等价性比较
+_ATOMIZED = [t for t in _ALL if _ATOMIC_WS in t[1] or _ATOMIC_WS_PLUS in t[1]]
 
 
 def _ids(templates):
@@ -59,16 +60,24 @@ def _ids(templates):
 
 # ── 计时：逐条模板，只计时这一条编译后的正则 ──
 # ⚠️ 不计时整个 extract_directives：21 条模板的和里，单条回退会被淹掉。
-# 三种输入各管一件事：
+# 每种输入各管一件事：
 #   · 纯空白 3000：话题不许空白起头。任何一条回退到「空白里的每个位置都是起点」，
 #     这里就是 0.07 秒（zh 模板 3）到 1 秒（en 模板 2）；修好之后每条 0.1 毫秒以内。
 #   · ``"もうx" + 空白 300 + "y"``：ja 模板 2 捕获后的原子组。去原子化时 1.5 秒。
 #   · ``"x" + 空白 1000 + "y"``：ko 模板 3 的两个原子组。去原子化时约 0.1 秒以上。
+#   · 触发词 + 空白 8000：触发词**之后、捕获之前**的空白。起点只有一个，但话题不许空白
+#     起头之后，空白话题这条快速出口没了，前面的量词会把同一串空白的切法全试一遍：
+#     es/pt 模板 1 的 ``\s+(?:de|…)?\s*`` 去原子化时 0.33 秒；zh 模板 3 的
+#     ``(?!\s)`` 排到无宾语前视后面时 0.14 秒（前视每个位置都先扫完空白）。
+#     纯空白输入进不了这条路径——触发词没有出现，模板在第一个字上就失败。
 # 其余模板的原子组去掉之后代价小到计时分不出来，由下面的结构判据兜住。
 _TIMING_INPUTS = {
     "spaces": " " * 3000,
     "mou-x-spaces-y": "もうx" + " " * 300 + "y",
     "x-spaces-y": "x" + " " * 1000 + "y",
+    "no-hables-spaces": "no hables" + " " * 8000,
+    "nao-fale-spaces": "não fale" + " " * 8000,
+    "zh-reluctance-spaces-x": "我不想聊" + " " * 8000 + "x",
 }
 _TIMING_LIMIT = 0.03
 
@@ -94,10 +103,23 @@ def test_every_topic_capture_refuses_to_start_on_whitespace(label, raw, pat):
 
 
 def test_the_zh_topic_captures_refuse_to_start_on_whitespace_too():
-    """Structural, zh: template 2 guards its capture, template 3 only allows space after 我."""  # noqa: DOCSTRING_CJK
+    """Structural, zh: template 2 guards its capture; template 3 only allows space after 我
+    and guards its topic ahead of the objectless lookahead, which rescans the run."""  # noqa: DOCSTRING_CJK
     zh = [raw for label, raw, _pat in _ALL if label.startswith("zh")]
     assert r"((?!\s)" in zh[1]
     assert zh[2].startswith("(?:我" + D._ZH_HSPACE + ")?"), zh[2][:80]
+    assert r"(?!\s)" + D._ZH_OBJECTLESS_AHEAD in zh[2]
+
+
+# 两个裸空白量词中间只隔着可选组：``\s+(?:de|sobre)?\s*``。可选组缺席时，同一串空白
+# 在两个量词之间有 n 种切法，后继失败时每一种都会试到。
+_WS_SANDWICH = re.compile(r"\\s[*+](?:\(\?:[^()]*\)\?)+\\s[*+]")
+
+
+@pytest.mark.parametrize("label,raw,pat", _NON_ZH, ids=_ids(_NON_ZH))
+def test_no_two_bare_whitespace_quantifiers_around_an_optional_group(label, raw, pat):
+    """Structural: anywhere in the template, not only after the capture (es/pt had it before)."""
+    assert not _WS_SANDWICH.search(raw), (label, _WS_SANDWICH.search(raw).group(0))
 
 
 @pytest.mark.parametrize("label,raw,pat", _NON_ZH, ids=_ids(_NON_ZH))
@@ -120,6 +142,8 @@ _TOKENS = (
     + ["이제", "다시는", "말하지", "꺼내지", "말하지 마", "꺼내지  마세요"]
     + ["もう", "のこと", "の話", "は", "二度と", "言わないで", "嫌", "聞きたくない"]
     + ["って", "とは", "呼ばないで", "言うな"]
+    + ["no hables", "deja de hablar", "de", "sobre", "acerca de", "fútbol", "más", "por favor", ","]
+    + ["não fale", "deixa de falar", "a respeito de", "trabalho", "mais", "hoje"]
 )
 _SAMPLES = [
     "날씨가 듣기 싫어",
@@ -132,6 +156,10 @@ _SAMPLES = [
     "もう天気の話は嫌だ",
     "もう 天気 の話 は 嫌",
     "お兄ちゃん  って  呼ばないで",
+    "no hables de fútbol, por favor.",
+    "no hables  sobre  fútbol",
+    "no hables de",
+    "não fale de trabalho hoje.",
 ]
 
 
@@ -147,11 +175,11 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
     whitespace; an optional group that could would silently change matches.
     """
     # 用真实模板自己的 flags 编译对照版，不抄一份常量——模块哪天加了 flag，两边仍同一套规则
-    twin = re.compile(raw.replace(_ATOMIC_WS, r"\s*"), pat.flags)
+    twin = re.compile(raw.replace(_ATOMIC_WS, r"\s*").replace(_ATOMIC_WS_PLUS, r"\s+"), pat.flags)
     assert twin.pattern != pat.pattern
     rng = random.Random(20260930)
     corpus = _SAMPLES + [
-        "".join(rng.choice(_TOKENS) for _ in range(rng.randint(1, 14))) for _ in range(4000)
+        "".join(rng.choice(_TOKENS) for _ in range(rng.randint(1, 14))) for _ in range(3000)
     ]
     hits = 0
     for text in corpus:
@@ -159,7 +187,7 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
             expected = _match_signature(twin.search(text, pos))
             assert _match_signature(pat.search(text, pos)) == expected, (text, pos)
             hits += expected is not None
-    # 防空转：语料里真有足够多的命中，比较才有意义（seed 固定，最少的 ja#1 是 590 次）
+    # 防空转：语料里真有足够多的命中，比较才有意义（seed 固定，最少的 ja#2 是 405 次）
     assert hits > 100, (label, hits)
 
 

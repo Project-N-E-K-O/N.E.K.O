@@ -1743,6 +1743,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 本模板也**不吃** ``的事``（模板 1/2/4 已经各撤过一次，同一个理由）：它是
      # 领属加名物化，可以是名字本身的一部分——``我沒心情聊我們的事。`` 会存成
      # ``我們``，让模型回避用户本人而不是那件事（codex P2）。``了`` 保留，它是纯语气。
+     # ⚠️ 话题不许空白起头的 ``(?!\s)`` 要放在无宾语前视**之前**：那道前视在每个位置都会
+     # 先扫完后面的空白，排在它后面的话，动词后面那段横向空白每吐回一个空格就多扫一遍，
+     # ``"我不想聊" + " " * n + "x"`` 仍是二次方。两者都是零宽、判的是同一个位置，顺序不改命中。
+     + r"(?!\s)"
      + _ZH_OBJECTLESS_AHEAD
      # ⚠️ ``了`` 之前的空白也只收横向：和句末助词那一格同一条判据（一条指令不跨行）。
      # 这一格不是 codex 报的，是把结构守卫从「捕获组之前」放宽到**整条模板**之后
@@ -1896,11 +1900,15 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
 
     # ---------- es ----------
     # no hables / no menciones / deja de hablar + (de|sobre) + X
+    # ⚠️ 触发词后的 ``\s+`` 和捕获前的 ``\s*`` 都是原子组：介词缺席时两者中间只隔着
+    # 可选组，同一串空白有 n 种切法。话题不许空白起头之后，``"no hables" + " " * n``
+    # 没了空白话题这条快速出口，每种切法都会试到（n=8000 0.33 秒）。介词组本身不原子化，
+    # ``"no hables de"`` 还要能退回去把 ``de`` 当话题。pt 第一条同理。
     ("es", "ban_topic",
      r"(?:no\s+(?:hables|menciones|digas|sigas\s+hablando|me\s+llames)|"
      r"deja\s+de\s+(?:hablar|mencionar|llamarme)|"
-     r"para\s+de\s+(?:hablar|mencionar))\s+"
-     r"(?:de|sobre|acerca\s+de)?\s*((?!\s).{1,40}?)"
+     r"para\s+de\s+(?:hablar|mencionar))(?>\s+)"
+     r"(?:de|sobre|acerca\s+de)?(?>\s*)((?!\s).{1,40}?)"
      r"(?:\s+(?:más|nunca|jamás|otra\s+vez|de\s+nuevo|por\s+favor|porfa|hoy|ahora)"
      r"|[,.!?;]|$)"),
     # no quiero + (oír|hablar|saber) + (de|nada de) + X — 同 en/ru
@@ -1915,8 +1923,8 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("pt", "ban_topic",
      r"(?:não\s+(?:fale|mencione|diga|continue\s+falando|me\s+chame)|"
      r"pare\s+de\s+(?:falar|mencionar|me\s+chamar)|"
-     r"deix[ea]\s+de\s+(?:falar|mencionar))\s+"  # deixe de / deixa de（codex P2）
-     r"(?:de|sobre|a\s+respeito\s+de)?\s*((?!\s).{1,40}?)"
+     r"deix[ea]\s+de\s+(?:falar|mencionar))(?>\s+)"  # deixe de / deixa de（codex P2）
+     r"(?:de|sobre|a\s+respeito\s+de)?(?>\s*)((?!\s).{1,40}?)"
      r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
      r"|[,.!?;]|$)"),
     # não quero + (ouvir|falar|saber) + (de|sobre|nada de) + X — 同 en/ru
