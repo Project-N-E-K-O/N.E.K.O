@@ -88,11 +88,19 @@ def handle_sync(args: argparse.Namespace) -> int:
                 for path in plugin_dir.glob(".vendor.backup-*")
                 if path.is_dir() and not path.is_symlink()
             ]
-            if not args.clean and not vendor_dir.exists() and retained_backups:
-                locations = ", ".join(str(path) for path in retained_backups)
+            pending_backups = [
+                path
+                for path in retained_backups
+                if (path / ".recovery-pending").is_file()
+            ]
+            if not args.clean and (
+                (not vendor_dir.exists() and retained_backups) or pending_backups
+            ):
+                blocked_backups = pending_backups or retained_backups
+                locations = ", ".join(str(path) for path in blocked_backups)
                 print(
-                    f"[FAIL] Cannot sync without a live vendor; retained dependency "
-                    f"backup requires recovery or explicit --clean: {locations}",
+                    f"[FAIL] Cannot sync with an unreconciled dependency backup; "
+                    f"recover it or use explicit --clean: {locations}",
                     file=sys.stderr,
                 )
                 return 1
@@ -259,6 +267,7 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: {exc}",
                         file=sys.stderr,
                     )
+                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
             return False
         except OSError as exc:
             print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
@@ -271,6 +280,7 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: {cleanup_exc}",
                         file=sys.stderr,
                     )
+                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
                     return False
                 if vendor_dir.exists():
                     print(
@@ -278,6 +288,7 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: removal was incomplete",
                         file=sys.stderr,
                     )
+                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
                     return False
             if backup_dir.exists():
                 try:
