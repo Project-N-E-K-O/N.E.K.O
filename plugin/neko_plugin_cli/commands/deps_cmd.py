@@ -127,6 +127,16 @@ def handle_sync(args: argparse.Namespace) -> int:
             # keeps the new vendor/ readable by other users per the umask.
             staging_dir = plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
             if not args.clean and vendor_dir.is_dir():
+                # copytree(symlinks=True) keeps symlinks but copies a Windows
+                # junction's whole target tree in as a real directory.
+                junction = _find_nested_junction(vendor_dir)
+                if junction is not None:
+                    print(
+                        f"[FAIL] {junction} is a directory junction; sync would copy "
+                        "its target into vendor/. Remove it, or use --clean.",
+                        file=sys.stderr,
+                    )
+                    return 1
                 shutil.copytree(vendor_dir, staging_dir, symlinks=True)
             else:
                 staging_dir.mkdir()
@@ -203,6 +213,17 @@ def _is_link(path: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def _find_nested_junction(root: Path) -> Path | None:
+    if sys.platform != "win32":
+        return None
+    for dirpath, dirnames, _ in os.walk(root):
+        for name in dirnames:
+            path = Path(dirpath, name)
+            if not path.is_symlink() and _is_link(path):
+                return path
+    return None
 
 
 def _short_token() -> str:
@@ -300,10 +321,10 @@ def _pip_install_to_vendor(
     if pip_index_source and not any(os.environ.get(name) for name in _UV_INDEX_ENV):
         print(
             "[FAIL] The target Python has no pip, and pip is configured with a "
-            f"package index ({pip_index_source}) that uv does not read. "
+            f"package source ({pip_index_source}) that uv does not read. "
             "Installing with uv would resolve from its default index instead. "
-            "Set UV_DEFAULT_INDEX / UV_INDEX to the same index, or run "
-            "python -m ensurepip --upgrade.",
+            "Configure uv the same way (UV_DEFAULT_INDEX / UV_INDEX, or "
+            "UV_NO_INDEX / UV_FIND_LINKS), or run python -m ensurepip --upgrade.",
             file=sys.stderr,
         )
         return 1
@@ -327,9 +348,14 @@ def _pip_install_to_vendor(
     return 0
 
 
-_UV_INDEX_ENV = ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL")
-_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL")
-_PIP_INDEX_KEYS = {"index-url", "extra-index-url"}
+# Package-source settings: custom indexes, and no-index + find-links, which
+# restricts pip to local sources while uv would still query PyPI.
+_UV_INDEX_ENV = (
+    "UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL",
+    "UV_NO_INDEX", "UV_FIND_LINKS",
+)
+_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_NO_INDEX", "PIP_FIND_LINKS")
+_PIP_INDEX_KEYS = {"index-url", "extra-index-url", "no-index", "find-links"}
 
 
 def _pip_index_source(python: str) -> str | None:

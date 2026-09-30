@@ -47,6 +47,9 @@ def _missing_pip_then_uv(calls):
         ({"PIP_INDEX_URL": "https://private/simple", "UV_DEFAULT_INDEX": "https://private/simple"}, None, True),
         ({}, "[global]\nindex-url = https://private/simple\n", False),
         ({}, "[install]\nextra_index_url = https://private/simple\n", False),
+        ({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "/wheels"}, None, False),
+        ({"PIP_FIND_LINKS": "/wheels", "UV_FIND_LINKS": "/wheels", "UV_NO_INDEX": "1"}, None, True),
+        ({}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
         ({}, "[global]\ntimeout = 60\n", True),
         ({}, "not an ini file\n", False),
     ],
@@ -319,6 +322,31 @@ def test_symlinked_vendor_is_refused_before_any_change(tmp_path, monkeypatch, ca
     assert (real_vendor / "old.py").read_text() == "keep"
     assert not list(plugin_dir.glob(".vendor.*"))
     assert "is a symlink" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
+def test_non_clean_sync_refuses_nested_junction_before_copying(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    (vendor / "pkg").mkdir(parents=True)
+    external = tmp_path / "external_tree"
+    external.mkdir()
+    (external / "big.bin").write_text("external")
+    junction = vendor / "pkg" / "linked"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(external)],
+                   check=True, capture_output=True)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert os.readlink(junction)
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "directory junction" in capsys.readouterr().err
 
 
 def test_sync_lock_file_is_per_user(tmp_path, monkeypatch):
