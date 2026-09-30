@@ -882,6 +882,16 @@ class _VoiceTurnAdapter:
                 )
                 return
             self._observe_evaluation_tail(evaluation_tail)
+            if self._smart_turn_required and self._strict_endpoint_deadline is None:
+                # Silero may be unavailable for the whole turn.  The periodic
+                # no-VAD path still needs a strict semantic wait so an
+                # incomplete SmartTurn result cannot leave the session stuck.
+                self._strict_endpoint_deadline = (
+                    asyncio.get_running_loop().time()
+                    + self._max_endpoint_wait_seconds
+                )
+            if item.reason != "periodic_no_vad" or self._smart_turn_required:
+                self._schedule_fallback(item.identity, "semantic_incomplete")
             if reevaluate and reevaluation_reason != "periodic_no_vad":
                 self._request_evaluation(
                     item.identity,
@@ -889,15 +899,6 @@ class _VoiceTurnAdapter:
                     self._latest_detector_identity,
                 )
                 return
-            if item.reason != "periodic_no_vad":
-                # A periodic result never schedules a strict retry, so the
-                # strict wait must keep running across a coalesced tick.
-                if self._smart_turn_required and self._strict_endpoint_deadline is None:
-                    self._strict_endpoint_deadline = (
-                        asyncio.get_running_loop().time()
-                        + self._max_endpoint_wait_seconds
-                    )
-                self._schedule_fallback(item.identity, "semantic_incomplete")
             if reevaluate:
                 self._request_evaluation(
                     item.identity,

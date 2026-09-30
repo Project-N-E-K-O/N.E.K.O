@@ -1429,6 +1429,40 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
     await adapter.close()
 
 
+async def test_periodic_no_vad_incomplete_starts_strict_endpoint_wait() -> None:
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()] * 20)
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.035,
+        fallback_evaluation_interval_ms=10,
+    )
+    await adapter.start()
+
+    frame = b"\x01\x00" * 160
+    await adapter.push_audio(generation=34, buffer_epoch=35, utterance_id=36, pcm16=frame)
+    await adapter.push_audio(generation=34, buffer_epoch=35, utterance_id=36, pcm16=frame)
+    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await _eventually(lambda: adapter._strict_endpoint_deadline is not None)
+    await asyncio.wait_for(committed.wait(), 1)
+
+    assert commits == [(34, 35, 36)]
+    assert coordinator.evaluate_calls >= 2
+    assert adapter._failed is False
+    await adapter.close()
+
+
 async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -> None:
     commits: list[tuple[int, int, int]] = []
 
