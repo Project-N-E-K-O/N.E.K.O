@@ -35,6 +35,15 @@ from utils.frontend_utils import (
     is_only_punctuation,
     TtsMarkdownStripper,
     TtsBracketStripper,
+    is_tts_operand_char,
+    is_tts_word_char,
+    strip_leading_emoji_joiners,
+    strip_tts_muted_symbols,
+    tts_chunk_ends_in_emoji,
+    tts_chunk_trailing_name_hash,
+    tts_first_unmuted_char,
+    tts_chunk_trailing_minus,
+    tts_compact_symbol_run,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -322,6 +331,7 @@ class TtsRuntimeMixin:
             self._tts_stream_normalizer.reset()
             self._tts_markdown_stripper.reset()
             self._tts_bracket_stripper.reset()
+            self._reset_tts_symbol_gap()
             self._tts_norm_speech_id = speech_id
 
         if self._tts_normalize_enabled:
@@ -333,6 +343,20 @@ class TtsRuntimeMixin:
         if not text:
             return
         text = self._tts_bracket_stripper.feed(text)
+        if not text:
+            return
+        # 最后一道：删掉会被念出来的装饰 / 技术符号（@、| …）；运算符、货币、
+        # 负号和 C# 的 # 保留，句读标点照常
+        text = self._strip_tts_symbols_across_chunks(text)
+        if getattr(self, "_tts_pending_name_hash", ""):
+            # 「C」「#」时 # 还没定：空闲软 flush 会先把「C」合成出去，C# 的读法
+            # 就丢了。等下一块或收尾把 # 定下来再说。
+            self._cancel_tts_soft_flush()
+            if text:
+                self.tts_request_queue.put((speech_id, text))
+                self._remember_tts_sent_chunk(speech_id, text)
+                self._remember_pending_ai_voice_echo(speech_id, text)
+            return
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
@@ -417,7 +441,108 @@ class TtsRuntimeMixin:
         self._tts_stream_normalizer.reset()
         self._tts_markdown_stripper.reset()
         self._tts_bracket_stripper.reset()
+        self._reset_tts_symbol_gap()
         self._tts_norm_speech_id = None
+
+    def _reset_tts_symbol_gap(self) -> None:
+        self._tts_last_spoken_char = ""
+        # 最后念出的两个字符：判断块首的「#」是不是 C# 这类名字要看两位。
+        self._tts_last_spoken_tail = ""
+        self._tts_symbol_gap_pending = False
+        self._tts_prev_chunk_ended_emoji = False
+        self._tts_pending_minus = ""
+        self._tts_pending_name_hash = ""
+        self._tts_deferred_symbols = ""
+
+    def _strip_tts_symbols_across_chunks(self, text: str) -> str:
+        """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
+        separator a symbol-only chunk stood for.
+
+        Streaming often splits ``3~5`` into ``"3"``, ``"~"``, ``"5"``. The middle
+        chunk filters to nothing, and dropping it would glue the neighbours into
+        ``35``. When that happens between an ASCII letter/digit and the next
+        chunk's ASCII letter/digit, the next chunk gets a leading space instead.
+        A minus sign cut off at the end of a chunk ("x = -" + "5") is likewise
+        re-attached when the next chunk starts with a digit, and the "#" of a
+        name split off its letter ("C" + "#" + " dev") is kept.
+        Returns ``""`` when nothing is left to speak.
+        """
+        if text and not text.strip():
+            # 纯空白分块原样放行（不经 normalizer 的流式 provider 靠它分隔
+            # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
+            pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
+            self._tts_symbol_gap_pending = False
+            self._tts_prev_chunk_ended_emoji = False
+            self._tts_pending_minus = ""
+            self._tts_pending_name_hash = ""
+            self._tts_deferred_symbols = ""
+            self._tts_last_spoken_char = text[-1]
+            self._tts_last_spoken_tail = (
+                getattr(self, "_tts_last_spoken_tail", "") + pending_name_hash + text
+            )[-2:]
+            return pending_name_hash + text
+        if getattr(self, "_tts_prev_chunk_ended_emoji", False):
+            # 上一块以 emoji 结尾：这块开头的零宽连接符 / 变体选择符是被切开的
+            # 复合 emoji 的残余，一并删掉。
+            text = strip_leading_emoji_joiners(text)
+            if not text:
+                return ""
+        self._tts_prev_chunk_ended_emoji = tts_chunk_ends_in_emoji(text)
+        last = getattr(self, "_tts_last_spoken_char", "")
+        last_tail = getattr(self, "_tts_last_spoken_tail", "") or last
+        # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
+        # 下一块以数字开头时再补回去。
+        pending_minus = getattr(self, "_tts_pending_minus", "")
+        # 之前只有符号、还没念出来的分块接在前面一起判断，分块方式不改变结果：
+        # 「C」「#」「-」「5」与「C#-5」一样，「3」「@」「-」「5」与「3@-5」一样。
+        deferred_symbols = getattr(self, "_tts_deferred_symbols", "")
+        self._tts_pending_minus = tts_chunk_trailing_minus(
+            deferred_symbols + text, last_tail
+        )
+        # C# 可能被切开（「C」「#」「 dev」、「a#」「@」「b」）：块尾的「#」看不到
+        # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
+        pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
+        held_name_hash = tts_chunk_trailing_name_hash(text, last_tail)
+        cleaned = strip_tts_muted_symbols(text, last_tail)
+        if held_name_hash and cleaned.endswith(held_name_hash):
+            cleaned = cleaned[: -len(held_name_hash)]
+        if not cleaned or not cleaned.strip():
+            # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
+            if held_name_hash:
+                self._tts_pending_name_hash = held_name_hash
+            if text and text.strip() and is_tts_operand_char(last):
+                self._tts_symbol_gap_pending = True
+            self._tts_deferred_symbols = tts_compact_symbol_run(
+                deferred_symbols + text
+            )
+            return ""
+        # 本块尾暂存的「#」也算作还没念出的符号：「C#」「-」「5」与「C#-5」一样。
+        self._tts_deferred_symbols = held_name_hash
+        self._tts_pending_name_hash = held_name_hash
+        next_char = tts_first_unmuted_char(text)
+        minus_follows = bool(pending_minus) and cleaned[0].isdigit()
+        prefix = ""
+        if pending_name_hash and (
+            minus_follows or not (next_char.isascii() and next_char.isalnum())
+        ):
+            prefix += pending_name_hash
+        if minus_follows:
+            prefix += pending_minus
+        if prefix:
+            cleaned = prefix + cleaned
+        elif (
+            getattr(self, "_tts_symbol_gap_pending", False)
+            and is_tts_operand_char(last)
+            and is_tts_word_char(cleaned[0])
+        ):
+            cleaned = " " + cleaned
+        # 块尾暂存了「#」：这里原本有个分隔，下一块以字母数字开头时补空格。
+        self._tts_symbol_gap_pending = bool(held_name_hash) and is_tts_word_char(
+            cleaned[-1]
+        )
+        self._tts_last_spoken_char = cleaned[-1]
+        self._tts_last_spoken_tail = (last_tail + cleaned)[-2:]
+        return cleaned
 
     def _request_tts_done_locked(self) -> str:
         """Request that a TTS end signal be enqueued for the current turn.
@@ -447,10 +572,19 @@ class TtsRuntimeMixin:
         # 的串接顺序一致。markdown.flush 把残留的孤立 marker 字符删掉再 emit；
         # bracket.feed 处理任何残留括号字符；bracket.flush 直接 reset 不读
         # 未闭合的括号内容。normalizer.flush 永远返回 ""，省略调用。
-        flushed = self._tts_markdown_stripper.flush()
+        # 悬挂的 * _ ~ ` 留给下面的符号过滤：它记得上一块结尾，能补分隔空格。
+        flushed = self._tts_markdown_stripper.flush(keep_symbol_markers=True)
         if flushed:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
+        if flushed:
+            flushed = self._strip_tts_symbols_across_chunks(flushed)
+        # 以「C」「#」结束的一轮，或收尾缓冲本身以「C#」结尾：暂存的 # 没有
+        # 下一块来补了，收尾时一并放出。
+        pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
+        self._tts_pending_name_hash = ""
+        if pending_name_hash:
+            flushed = (flushed or "") + pending_name_hash
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
@@ -647,10 +781,12 @@ class TtsRuntimeMixin:
         )
         markdown = TtsMarkdownStripper()
         bracket = TtsBracketStripper()
-        markdown_output = markdown.feed(text) + markdown.flush()
+        markdown_output = markdown.feed(text) + markdown.flush(keep_symbol_markers=True)
         spoken = bracket.feed(markdown_output)
         bracket.flush()
-        return str(spoken or "").strip()
+        # 与实际朗读路径 _enqueue_tts_text_chunk 同一道符号过滤，缓存音频才和
+        # 同一句话真正念出来的一致。
+        return strip_tts_muted_symbols(str(spoken or "")).strip()
 
     def cancel_game_speech_preloads(self) -> None:
         """Cancel active/queued preload batches and wake their isolated workers."""

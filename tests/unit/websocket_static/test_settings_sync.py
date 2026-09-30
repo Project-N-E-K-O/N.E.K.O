@@ -422,7 +422,17 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
         1,
     )[1].split("}", 1)[0]
     assert "S.settingsHydrated = true;" in optimization_gate
-    assert listener_block.count("S.settingsHydrated = true;") == 2
+    provider_preference_gate = listener_block.split(
+        "if (providerPreferenceChangedByOtherWindow) {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in provider_preference_gate
+    assert (
+        "S.independentAsrProviderPreferenceAuthoritative = true;"
+        in provider_preference_gate
+    )
+    # One hydration mark per handshake-carried key's explicit-flip gate.
+    assert listener_block.count("S.settingsHydrated = true;") == 3
     assert listener_block.count("_dirtySettingsKeys.add('independentAsrEnabled');") == 1
 
     # No POST from the receiving window: the originating window owns

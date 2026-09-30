@@ -173,6 +173,134 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     assert "HARNESS_OK" in result.stdout
 
 
+def test_server_provider_preference_reports_pending_only_when_adopted_harness():
+    # A peer's server merge lists the provider preference as server
+    # authoritative. An older snapshot is dropped by the revision checks and
+    # must not flag a pending voice-setting change; a newer one is adopted and
+    # must notify an open voice panel.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        const postCalls = [];
+        const getCalls = [];
+        const listeners = [];
+        const dispatchedEvents = [];
+        const sandbox = {
+          console: { log() {}, warn() {}, error() {} },
+          CustomEvent: class { constructor(type) { this.type = type; } },
+          setInterval() { return 0; },
+          clearInterval() {},
+          setTimeout(fn, ms) {
+            const t = setTimeout(fn, ms);
+            if (t && typeof t.unref === 'function') t.unref();
+            return t;
+          },
+          clearTimeout,
+          localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+          document: { getElementById() { return null; } },
+          fetch(url, opts) {
+            return new Promise((resolve, reject) => {
+              if (opts && opts.method === 'POST') postCalls.push({ url, body: opts.body, resolve, reject });
+              else getCalls.push({ url, resolve, reject });
+            });
+          },
+        };
+        sandbox.window = {
+          appState: {
+            independentAsrEnabled: true,
+            independentAsrProviderPreference: 'auto',
+            voiceChatActive: false,
+            voiceSessionStartEpoch: 10,
+            voiceSettingsPendingUntilEpoch: null,
+            pendingVoiceRouteIndependentAsr: null,
+            settingsHydrated: false,
+          },
+          appConst: {},
+          appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+          addEventListener(type, fn) { listeners.push({ type, fn }); },
+          removeEventListener() {},
+          dispatchEvent(event) { dispatchedEvents.push(event.type); },
+        };
+        vm.createContext(sandbox);
+        vm.runInContext(source, sandbox);
+        const storage = listeners.filter((entry) => entry.type === 'storage')[0];
+        const S = sandbox.window.appState;
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const fire = (value, serverRevision) => storage.fn({
+          key: 'project_neko_settings',
+          newValue: JSON.stringify({
+            independentAsrProviderPreference: value,
+            _sharedWriteMeta: {
+              writeId: Date.now(),
+              writerId: 'peer-window',
+              changedKeys: [],
+              hydrated: true,
+              serverRevision,
+              serverAuthoritativeKeys: ['independentAsrProviderPreference'],
+              knownKeyWrites: {},
+            },
+          }),
+        });
+
+        async function main() {
+          getCalls[0].resolve({
+            ok: true,
+            headers: { get(name) { return /etag/i.test(name) ? '"conversation-settings-5"' : null; } },
+            json: async () => ({
+              success: true,
+              revision: 5,
+              settings: { independentAsrEnabled: true, independentAsrProviderPreference: 'auto' },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(S.independentAsrProviderPreference === 'auto', 'boot merge must apply the server value');
+          dispatchedEvents.length = 0;
+
+          // Older than what this window already merged: dropped, nothing pending.
+          fire('faster_whisper', 3);
+          assert(S.independentAsrProviderPreference === 'auto', 'an older snapshot must be dropped');
+          assert(
+            !dispatchedEvents.includes('neko:voice-settings-pending-changed'),
+            'a dropped snapshot must not report a pending voice-setting change'
+          );
+          assert(S.voiceSettingsPendingUntilEpoch === null, 'a dropped snapshot must not mark a pending epoch');
+
+          // Newer: adopted, and an open voice panel hears about it.
+          fire('faster_whisper', 7);
+          assert(S.independentAsrProviderPreference === 'faster_whisper', 'a newer snapshot must be adopted');
+          assert(
+            dispatchedEvents.includes('neko:voice-settings-pending-changed'),
+            'an adopted server value must notify an open voice panel'
+          );
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "server provider preference harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
 def test_unrelated_change_during_pending_get_preserves_server_asr_harness():
     # Behavioral pin for the field-level authority fix (Codex P2): with the
     # old whole-merge-drop, changing ANY unrelated preference while the boot

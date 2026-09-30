@@ -38,6 +38,9 @@ import uuid
 import asyncio
 import time
 
+from utils.conversation_settings_constants import (
+    normalize_independent_asr_provider_preference_handshake,
+)
 from utils.logger_config import get_module_logger
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
@@ -912,6 +915,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if isinstance(raw_optimization_override, bool)
                     else None
                 )
+                # Absent -> None (persisted setting decides); malformed -> "auto".
+                request_provider_preference_override = (
+                    normalize_independent_asr_provider_preference_handshake(
+                        message.get("independent_asr_provider_preference")
+                    )
+                )
                 # Handshake: the frontend rides its authoritative independent-ASR
                 # toggle along on every start_session so the route decision cannot
                 # use a stale persisted value (settings POST failed or still in
@@ -934,6 +943,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if callable(optimization_handshake_setter):
                     optimization_handshake_setter(
                         message.get("voice_input_resource_optimization_enabled")
+                    )
+                provider_preference_handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_independent_asr_provider_preference_handshake",
+                    None,
+                )
+                if callable(provider_preference_handshake_setter):
+                    provider_preference_handshake_setter(
+                        message.get("independent_asr_provider_preference")
                     )
                 input_type = message.get("input_type", "audio")
                 # 前端每次 start_session 自带的请求标识，原样回带进
@@ -971,6 +989,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     handshake_override=request_handshake_override,
                                     resource_optimization_override=(
                                         request_optimization_override
+                                    ),
+                                    provider_preference_override=(
+                                        request_provider_preference_override
                                     ),
                                 )
                             )
@@ -1021,6 +1042,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             handshake_override=request_handshake_override,
                             resource_optimization_override=(
                                 request_optimization_override
+                            ),
+                            provider_preference_override=(
+                                request_provider_preference_override
                             ),
                         )
                     )

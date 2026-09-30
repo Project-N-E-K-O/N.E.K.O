@@ -52,6 +52,278 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
+# 语音合成会把这些符号念出来（「井号」「竖线」「百分号」…），入队前删掉：
+# - ``\p{S}`` 里的 emoji、装饰符、箭头、修饰符号等
+# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号（# @ & * _ | / \ ~ 〜 等）
+# 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
+# 删掉会改变意思、TTS 本来就念得对的符号保留：
+# - 货币符号（``\p{Sc}``）：「$100」「€20」念成「一百美元」「二十欧元」；
+# - 百分号 % ％：「50%」念成「百分之五十」，删掉就成了「五十」；
+# - 常用运算符 + − × ÷ = ≠ ≈ ± ≤ ≥：算式要念得出来；
+# - 温度 / 度数 ℃ ℉ °（「22°C」的度数符号也是 °），以及 CJK 兼容单位
+#   （U+3380–33FF，如 ㎡ ㎏ ㎞）；
+# - 负号、比较号（<= >= != 先换成 ≤ ≥ ≠；夹在两个操作数之间的 < >）和
+#   C# 这类名字里的 #：见 ``_kept_symbols``。
+# 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
+# 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
+# 天城文等文字里正常使用的零宽连接符不受影响。
+_TTS_KEPT_SYMBOLS = "℃℉°+＋−×÷=＝≠≈±≤≥%％\u3380-\u33ff"
+_TTS_MUTED_SYMBOL_CLASS = (
+    r"(?![" + _TTS_KEPT_SYMBOLS + r"])(?!\p{Sc})["
+    r"\p{S}"
+    r"#＃@＠&＆\*＊_＿\-－﹣~～〜`｀\|｜\\/／＼"
+    r"\^＾"
+    r"<>＜＞«»‹›"
+    r"•●○◆◇★☆※§¶†‡"
+    r"]"
+)
+# 变体选择符和键帽组合符只影响显示（1️⃣ 的「1」后面就跟着它们），单独出现也删。
+_TTS_MUTED_SYMBOL_RE = regex.compile(
+    r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r")"
+    r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r"|[\u200d\ufe0e\ufe0f\u20e3])*"
+    r"|[\ufe0e\ufe0f\u20e3]+"
+)
+
+# 复合 emoji 被流式切开（「👩」「‍💻」）时，后一块开头的零宽连接符 / 变体选择符
+# 前面已经没有符号，上面的正则不会删它。由调用方记住上一块是否以被删的符号结尾，
+# 再用下面两个函数处理。
+# 只认 emoji 类符号（\p{So}，保留的单位除外）或连接符结尾：「%」「#」这类删掉的符号
+# 后面紧跟的零宽连接符属于正常文字（如天城文 क्%ष 被切开），不能当 emoji 残余删掉。
+_TTS_TRAILING_EMOJI_RE = regex.compile(
+    r"(?:(?![" + _TTS_KEPT_SYMBOLS + r"])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
+_TTS_LEADING_JOINERS_RE = regex.compile(r"\A[\u200d\ufe0e\ufe0f\u20e3]+")
+
+
+def tts_chunk_ends_in_emoji(text: str) -> bool:
+    """Whether ``text`` ends in an emoji symbol or joiner the TTS filter drops."""
+    return bool(text) and _TTS_TRAILING_EMOJI_RE.search(text) is not None
+
+
+def strip_leading_emoji_joiners(text: str) -> str:
+    """Drop joiners / variation selectors left over from a split emoji."""
+    return _TTS_LEADING_JOINERS_RE.sub("", text) if text else text
+
+
+# 不靠空格分词的文字（汉字、假名、泰文等）：这些字之间删掉符号后不补空格。
+_TTS_UNSPACED_SCRIPT_RE = regex.compile(
+    r"[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}\p{Lao}\p{Khmer}\p{Myanmar}]"
+)
+_TTS_WORD_CHAR_RE = regex.compile(r"[\p{L}\p{N}\p{M}]")
+# 「50%」这样的百分数：% 挨着被删的符号时和数字一样算操作数，「50%-60%」
+# 念「50% 60%」，不会把 - 当负号、也不会粘成「50%60%」。
+_TTS_PERCENT_SIGNS = frozenset("%％")
+
+
+def is_tts_word_char(char: str) -> bool:
+    """Whether a removed symbol next to ``char`` should leave a space behind.
+
+    Letters and digits of space-delimited scripts (Latin, Cyrillic, Greek,
+    Hangul, Devanagari, ...) qualify; scripts written without spaces between
+    words (Han, kana, Thai, ...) do not.
+    """
+    return (
+        len(char) == 1
+        # 组合标记也算：天城文等词尾常是元音符号（ौ），它不是 isalnum。
+        and _TTS_WORD_CHAR_RE.match(char) is not None
+        and _TTS_UNSPACED_SCRIPT_RE.match(char) is None
+    )
+
+
+def is_tts_operand_char(char: str) -> bool:
+    """``is_tts_word_char``, also counting a percent sign as part of its number.
+
+    For the character before a removed symbol: "50%-60%" is a range between
+    two numbers, spoken "50% 60%", not "50%60%" or a negative 60.
+    """
+    return is_tts_word_char(char) or char in _TTS_PERCENT_SIGNS
+
+
+_TTS_MINUS_SIGNS = frozenset("-－﹣")
+_TTS_HASH_SIGNS = frozenset("#＃")
+# 范围连接符：「-10~-5℃」里第二个负号前面的 ~。
+_TTS_RANGE_SIGNS = frozenset("~～〜")
+_TTS_COMPARISON_SIGNS = frozenset("<>＜＞")
+_TTS_EQUALS_SIGNS = frozenset("=＝")
+# 「<=」「>=」「!=」先换成单个比较符号，否则 < > ! 被删后只剩「=」，意思就反了。
+_TTS_COMPARISON_DIGRAPH_RE = regex.compile(r"[<＜][=＝]|[>＞][=＝]|[!！][=＝]")
+_TTS_COMPARISON_DIGRAPHS = {"<": "≤", "＜": "≤", ">": "≥", "＞": "≥", "!": "≠", "！": "≠"}
+
+
+# 只由 emoji、零宽连接符、变体选择符组成的一段（「🌡️」）。
+_TTS_EMOJI_RUN_RE = regex.compile(r"(?:\p{So}|[\u200d\ufe0e\ufe0f\u20e3])+")
+
+
+def _is_name_hash_context(prev_char: str, prev2: str) -> bool:
+    # 「C#」「F#」「用C#」：# 前面是单独成词的一个英文字母。
+    # 「tag#」「#AI#」「#C#」这类是话题标签或普通词，不算名字。
+    return (
+        prev_char.isascii()
+        and prev_char.isalpha()
+        and not (prev2.isascii() and prev2.isalnum())
+        and prev2 not in _TTS_HASH_SIGNS
+    )
+
+
+def _kept_symbols(
+    symbol: str, prev_char: str, next_char: str, prev2: str = ""
+) -> str | None:
+    """What a run of removable symbols keeps, or None to drop it as usual.
+
+    - "C#" / "F#": a "#" right after a single ASCII letter that stands on its
+      own (``prev2`` is the character before that letter), not followed by a
+      letter or digit, is part of the name ("C#😀 dev" keeps it as well);
+      "C#-5" keeps both the "#" and the minus sign. Hashtags ("#AI#") and
+      words ("tag#") lose the "#".
+    - "-10~-5 C": a range sign followed by a minus before a digit keeps the
+      minus with a separating space, so the upper bound stays below zero.
+    - A minus sign before a digit, when no letter/digit precedes the run
+      ("-5", "x = -3", "~-5°C"), or when only emoji precede it within the run
+      ("temp🌡️-5°C"). Between a letter/digit and other removed symbols it is
+      a separator, as in "3@-5", spoken "3 5" whether or not it was split;
+      a percent sign counts as a digit here ("50%-60%" is "50% 60%").
+    """
+    head, rest = symbol[0], symbol[1:]
+    if head in _TTS_HASH_SIGNS and _is_name_hash_context(prev_char, prev2):
+        if rest in _TTS_MINUS_SIGNS and next_char.isdigit():
+            return symbol
+        if not (next_char.isascii() and next_char.isalnum()):
+            return head
+    if symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
+        lead = symbol[:-1]
+        if (
+            lead
+            and all(char in _TTS_RANGE_SIGNS for char in lead)
+            and is_tts_operand_char(prev_char)
+        ):
+            return " " + symbol[-1]
+        if not is_tts_operand_char(prev_char):
+            return symbol[-1]
+        if lead and _TTS_EMOJI_RUN_RE.fullmatch(lead):
+            return symbol[-1]
+    return None
+
+
+_TTS_SYMBOL_RUN_KEEP = 32
+
+
+def tts_compact_symbol_run(run: str) -> str:
+    """Shorten held symbols without changing how ``_kept_symbols`` judges them.
+
+    Only the first character (a name "#") and whether the rest is all emoji
+    matter, so a long run keeps its first character plus one representative
+    of the rest; plain truncation could drop the one "@" that decides it.
+    """
+    if len(run) <= _TTS_SYMBOL_RUN_KEEP:
+        return run
+    rest = run[1:]
+    sample = "\u2605" if _TTS_EMOJI_RUN_RE.fullmatch(rest) else "@"
+    return run[0] + sample
+
+
+def _trailing_symbol_run(text: str):
+    run = None
+    for run in _TTS_MUTED_SYMBOL_RE.finditer(text or ""):
+        pass
+    return run if run is not None and run.end() == len(text) else None
+
+
+def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
+    """The minus sign a streamed chunk ends with, or ``""``.
+
+    It is a minus if it would be kept before a digit (see ``_kept_symbols``);
+    ``before`` is the last character spoken before this chunk, for a run that
+    starts the chunk. The caller re-attaches it when the next chunk starts
+    with a digit ("x = -" + "5"); the filter itself cannot see that far.
+    """
+    run = _trailing_symbol_run(text)
+    if run is None or run.group(0)[-1] not in _TTS_MINUS_SIGNS:
+        return ""
+    context = (before or "") + text[: run.start()]
+    kept = _kept_symbols(run.group(0), context[-1:], "0", context[-2:-1])
+    return run.group(0)[-1] if kept and kept[-1] in _TTS_MINUS_SIGNS else ""
+
+
+def tts_chunk_trailing_name_hash(text: str, before: str = "") -> str:
+    """The "#" a streamed chunk ends on that may belong to a name like C#.
+
+    That is a run of removable symbols reaching the end of the chunk, starting
+    with "#" right after an ASCII letter (``before`` stands in for the letter
+    when the run starts the chunk: "C" + "#"). Whether it is a name depends on
+    what follows, which only the next chunk shows ("C#" + " dev" keeps it,
+    "a#" + "b" does not), so the caller holds it until then.
+    """
+    run = _trailing_symbol_run(text)
+    if run is None or run.group(0)[0] not in _TTS_HASH_SIGNS:
+        return ""
+    context = (before or "") + text[: run.start()]
+    if _is_name_hash_context(context[-1:], context[-2:-1]):
+        return run.group(0)[0]
+    return ""
+
+
+def tts_first_unmuted_char(text: str) -> str:
+    """The first character of ``text`` that the symbol filter keeps, or ``""``."""
+    run = _TTS_MUTED_SYMBOL_RE.match(text or "")
+    index = run.end() if run is not None else 0
+    return text[index:index + 1] if text else ""
+
+
+def _muted_symbol_replacement(match, before: str = "") -> str:
+    # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
+    # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
+    # 会被念成另一个数 / 词。汉字、假名这类本来就不用空格分词的文字不补。
+    # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是字母数字」处理。
+    text = match.string
+    start, end = match.span()
+    symbol = match.group(0)
+    context = (before or "") + text[:start]
+    prev_char = context[-1:]
+    next_char = text[end] if end < len(text) else ""
+    # C# 的「#」和负号保留（「C#」「-5℃」「🌡️-5°C」），规则见 _kept_symbols。
+    kept = _kept_symbols(symbol, prev_char, next_char, context[-2:-1])
+    if kept is not None:
+        return kept
+    if symbol in _TTS_COMPARISON_SIGNS:
+        # 「3<5」「a > b」「=>」：夹在两个操作数之间、或挨着等号的 < > 是比较号。
+        left = context.rstrip(" ")[-1:]
+        right = text[end:].lstrip(" ")[:1]
+        if (
+            prev_char in _TTS_EQUALS_SIGNS
+            or next_char in _TTS_EQUALS_SIGNS
+            or (left.isalnum() and right.isalnum())
+        ):
+            return symbol
+    prev_ok = is_tts_operand_char(prev_char) if prev_char else True
+    next_ok = is_tts_word_char(next_char) if next_char else True
+    if prev_ok and next_ok and (is_tts_operand_char(prev_char) or is_tts_word_char(next_char)):
+        return " "
+    return ""
+
+
+def strip_tts_muted_symbols(text: str, before: str = "") -> str:
+    """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
+
+    Letters, digits, whitespace and sentence punctuation survive, as do
+    currency signs, common arithmetic operators, temperature / degree / CJK
+    units, a minus sign before a number and the "#" of names like C#. A symbol between two letters/digits of a
+    space-delimited script becomes a space so the neighbours are not read as
+    one number or word. Safe for streaming chunks: the chunk's own
+    leading/trailing whitespace is left alone. ``before`` holds the last
+    characters spoken before a streamed chunk (two are enough), so a symbol
+    at the chunk's start is judged as it would be unsplit ("3" + "-5" is a
+    range, not a minus; " C" + "#" is a name).
+    """
+    if not text:
+        return text
+    text = _TTS_COMPARISON_DIGRAPH_RE.sub(
+        lambda match: _TTS_COMPARISON_DIGRAPHS[match.group(0)[0]], text
+    )
+    cleaned = _TTS_MUTED_SYMBOL_RE.sub(
+        lambda match: _muted_symbol_replacement(match, before), text
+    )
+    # 删掉符号留下的连续空格压成一个，不动块首块尾原有的空格。
+    return regex.sub(r" {2,}", " ", cleaned)
+
 def estimate_speech_time(text, unit_duration=0.2):
     # Per-class duration coefficients (heuristic, not corpus-calibrated):
     #   - Chinese hanzi: 1.5 units/char (polysyllabic, slower TTS)
@@ -435,6 +707,8 @@ class TtsMarkdownStripper:
 
     # flush 兜底：删掉残留的孤立 marker 字符
     _DANGLING_RE = re.compile(r"[*_~`\[\]()]+")
+    # 只删括号类：括号留下会被 TtsBracketStripper 当成开括号吞掉后文。
+    _DANGLING_BRACKET_RE = re.compile(r"[\[\]()]+")
 
     def __init__(self):
         self._pending = ""
@@ -463,12 +737,19 @@ class TtsMarkdownStripper:
             return ""
         return self._strip(emit)
 
-    def flush(self) -> str:
-        """轮次收尾：strip pending，再删掉残留的孤立 marker 字符后 emit。"""
+    def flush(self, *, keep_symbol_markers: bool = False) -> str:
+        """Turn end: strip the pending text, drop dangling markers, emit it.
+
+        With ``keep_symbol_markers=True`` only bracket markers are dropped;
+        dangling ``*``, ``_``, ``~`` and backticks are left for the downstream
+        ``strip_tts_muted_symbols``, which knows how the previous chunk ended.
+        """
+        # 「3」「~5」：这里直接删「~」会把两边连成「35」，交给符号过滤才能补空格。
         if not self._pending:
             return ""
         out = self._strip(self._pending)
-        out = self._DANGLING_RE.sub("", out)
+        dangling = self._DANGLING_BRACKET_RE if keep_symbol_markers else self._DANGLING_RE
+        out = dangling.sub("", out)
         self._pending = ""
         return out
 

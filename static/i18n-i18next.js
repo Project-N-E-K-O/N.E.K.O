@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 在 GLM 声音复刻、声纹四段录入等主分支 key 之上，新增屏幕来源「点击选择」「重新选择」按钮、单数的「屏幕/窗口」兜底文案与「当前来源」摘要，递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-29-voice-identity-feature-disabled';
+    // 在主分支屏幕来源「点击选择 / 重新选择 / 当前来源」、本地语音识别「重新加载 / 已就绪 / 准备超时」等 key 之上，
+    // 删除声纹 shadow 模式提示并新增「声纹功能已关闭」提示，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-30-voice-identity-off-mode-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

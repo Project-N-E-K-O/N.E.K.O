@@ -207,6 +207,37 @@ def test_get_uses_effective_realtime_core_for_asr_capability(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('installed', [True, False])
+def test_get_reports_local_asr_availability_off_the_event_loop(
+    monkeypatch,
+    config_manager,
+    core_config_router,
+    installed,
+):
+    import threading
+
+    import main_logic.asr_client as asr_client
+
+    probes = []
+
+    def fake_probe(module_name):
+        probes.append((module_name, threading.get_ident()))
+        return installed
+
+    monkeypatch.setattr(asr_client, '_optional_dependency_available', fake_probe)
+    _write_core_config(config_manager, {'coreApi': 'qwen', 'assistApi': 'qwen'})
+
+    loop_thread = threading.get_ident()
+    response = asyncio.run(core_config_router.get_core_config_api())
+
+    assert response['success'] is True
+    assert response['localAsrAvailable'] is installed
+    assert [name for name, _ in probes] == ['faster_whisper']
+    # The import-system probe must not run on the request's event loop.
+    assert all(thread != loop_thread for _, thread in probes)
+
+
+@pytest.mark.unit
 def test_post_sentinel_preserves_every_secret_and_never_persists_it(
     config_manager,
     core_config_router,
