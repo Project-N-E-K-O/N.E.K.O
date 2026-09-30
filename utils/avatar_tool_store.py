@@ -397,7 +397,8 @@ def _validate_probability(value: object, *, field: str | None = None) -> float:
         raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid", field=field)
     try:
         probability = float(value)
-    except (TypeError, ValueError) as exc:
+    # JSON 允许任意长的整数字面量，float() 转不下时抛 OverflowError。
+    except (TypeError, ValueError, OverflowError) as exc:
         raise AvatarToolStoreError(
             "special_probability_invalid",
             "Special probability is invalid",
@@ -555,7 +556,9 @@ class AvatarToolStore:
             return
         raise _storage_total_unavailable()
 
-    def _require_no_pending_recovery(self, tool_id: str) -> None:
+    def _require_no_pending_recovery(
+        self, tool_id: str, *, allow_retained_delete: bool = False
+    ) -> tuple[Path, Path] | None:
         """Refuse to mutate an ID whose recovery artifacts are still unresolved.
 
         Recovery keeps a ``.deleting`` directory whose identity does not match its
@@ -564,11 +567,19 @@ class AvatarToolStore:
         while a non-directory occupies the final path, since the backup may be the
         only surviving copy. These artifacts concern this ID only, so they block this
         ID rather than the whole store.
+
+        With ``allow_retained_delete`` (an explicit delete of this ID), such a retained
+        ``.deleting`` copy does not block; its ``(deleting, marker)`` paths are returned
+        so the caller can discard it as part of that delete.
         """
-        deleting_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.deleting")
+        retained_delete = None
+        deleting = self.root / f".{tool_id}.deleting"
+        deleting_kind, _, probe_error = _probe_entry(deleting)
         if probe_error is not None:
             raise _storage_total_unavailable() from probe_error
-        if deleting_kind != "absent":
+        if deleting_kind != "absent" and allow_retained_delete:
+            retained_delete = self._retained_unconfirmed_delete(tool_id, deleting)
+        if deleting_kind != "absent" and retained_delete is None:
             raise AvatarToolStoreError(
                 "tool_delete_pending",
                 "An unconfirmed deletion of this avatar tool is still pending",
@@ -582,14 +593,14 @@ class AvatarToolStore:
                     raise _storage_total_unavailable() from probe_error
                 staged = staged or staged_kind == "dir"
             if not staged:
-                return
+                return retained_delete
             final_kind, _, probe_error = _probe_entry(self.root / tool_id)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
             if final_kind == "dir":
                 # 正式目录在：残留属于已完成（或已由恢复判定过）的修改，修改发布和
                 # 删除都会先清掉同 ID 的 backup / updating。
-                return
+                return retained_delete
             if final_kind != "absent" or attempt:
                 break
             # 正式目录确实不在：这是恢复能处理的状态（拿 backup 回滚或清掉无用
@@ -602,6 +613,57 @@ class AvatarToolStore:
             "An interrupted change of this avatar tool is still awaiting recovery",
             status_code=409,
         )
+
+    def _retained_unconfirmed_delete(self, tool_id: str, deleting: Path) -> tuple[Path, Path] | None:
+        """Return ``(deleting, marker)`` when recovery retained an unconfirmed delete copy.
+
+        That is exactly the state recovery leaves alone: a ``.deleting`` directory whose
+        authorization does not match while the published directory of the same ID exists.
+        """
+        marker = deleting.with_name(f"{deleting.name}.unverified")
+        try:
+            deleting_kind, _, probe_error = _probe_entry(deleting)
+            if probe_error is not None:
+                raise probe_error
+            marker_kind, _, probe_error = _probe_entry(marker)
+            if probe_error is not None:
+                raise probe_error
+            final_kind, _, probe_error = _probe_entry(self.root / tool_id)
+            if probe_error is not None:
+                raise probe_error
+            if deleting_kind != "dir" or marker_kind == "absent" or final_kind != "dir":
+                return None
+            if self._delete_authorization_matches(deleting, marker):
+                # 授权对得上的副本是恢复会自己清掉的已确认删除，不属于这里。
+                return None
+        except OSError as exc:
+            raise _storage_total_unavailable() from exc
+        return deleting, marker
+
+    def _discard_retained_delete(self, deleting: Path, marker: Path) -> None:
+        """Drop a retained unconfirmed delete copy on an explicit delete of its ID."""
+        # 先撤授权并持久化：之后任何一步失败或崩溃，剩下的 .deleting 都是没有授权
+        # 文件的已确认删除，恢复会把它清掉，不会再挪回或拦住这个 ID。
+        try:
+            marker.unlink(missing_ok=True)
+            _fsync_directory(marker.parent)
+        except OSError as exc:
+            raise AvatarToolStoreError(
+                "tool_delete_failed",
+                "Avatar tool could not be deleted",
+                status_code=500,
+            ) from exc
+        try:
+            shutil.rmtree(deleting)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+            raise AvatarToolStoreError(
+                "tool_delete_failed",
+                "Avatar tool could not be deleted",
+                status_code=500,
+            ) from exc
 
     def initialize(self) -> None:
         """Prepare the store once and recover interrupted mutations."""
@@ -1930,7 +1992,10 @@ class AvatarToolStore:
                     target=f"avatar_tools/{tool_id}",
                 )
                 self._require_recovery_complete_for_mutation()
-            self._require_no_pending_recovery(tool_id)
+            # 恢复保留下来的未确认删除副本会一直拦住这个 ID，而用户在界面上只看得到
+            # 正式目录那一份。用户明确删除这个 ID，就是这份副本最初的删除意图：随这次
+            # 删除一并丢弃，否则这个道具永远改不了也删不掉。
+            retained_delete = self._require_no_pending_recovery(tool_id, allow_retained_delete=True)
             directory = self.root / tool_id
             directory_kind, _, directory_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
@@ -2013,6 +2078,9 @@ class AvatarToolStore:
                         "Avatar tool could not be deleted",
                         status_code=500,
                     ) from exc
+            if retained_delete is not None:
+                # 放在修订号校验和写入围栏之后：被拒绝的删除不能先把副本丢掉。
+                self._discard_retained_delete(*retained_delete)
             recheck_kind, _, recheck_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error

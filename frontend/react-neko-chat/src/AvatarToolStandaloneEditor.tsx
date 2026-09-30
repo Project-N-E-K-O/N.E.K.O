@@ -143,7 +143,10 @@ export default function AvatarToolStandaloneEditor() {
     // Register in the shared named-window registry (static/common_dialogs.js)
     // so an opener without a live handle focuses this editor and delegates the
     // target switch here instead of navigating over an unsaved draft.
-    let lastMessageTimestamp: unknown = null;
+    // 同一请求经 BroadcastChannel 和 storage 各到一次，两路之间还可能插进另一条
+    // 请求（委派导航后紧跟一次 focus），只比较上一条会把导航处理两次、连弹两次
+    // 「放弃未保存修改」。按类型和时间戳记住最近处理过的请求。
+    const handledMessages: string[] = [];
     const markActive = () => {
       try {
         window.localStorage.setItem(SHARED_WINDOW_REGISTRY_KEY, JSON.stringify({
@@ -159,8 +162,12 @@ export default function AvatarToolStandaloneEditor() {
       if (!data || data.windowName !== AVATAR_TOOL_EDITOR_WINDOW_NAME) return;
       if (data.type !== 'neko:named-window-focus' && data.type !== 'neko:named-window-message') return;
       // common_dialogs.js sends each request over BroadcastChannel and storage.
-      if (data.timestamp !== undefined && data.timestamp === lastMessageTimestamp) return;
-      lastMessageTimestamp = data.timestamp;
+      if (data.timestamp !== undefined) {
+        const messageKey = `${data.type}:${String(data.timestamp)}:${typeof data.payload?.url === 'string' ? data.payload.url : ''}`;
+        if (handledMessages.includes(messageKey)) return;
+        handledMessages.push(messageKey);
+        if (handledMessages.length > 16) handledMessages.shift();
+      }
       restoreAndFocusEditorWindow();
       const payload = data.payload;
       if (payload?.type !== 'neko:navigate-on-reuse' || typeof payload.url !== 'string') return;

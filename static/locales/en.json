@@ -1042,6 +1042,8 @@
         "avatarToolDelete": "Delete {{name}}",
         "avatarToolDeleteConfirm": "Delete “{{name}}”? This cannot be undone.",
         "avatarToolDeleteError": "Could not delete this tool. Please try again.",
+        "avatarToolDeletePendingSaveError": "An earlier deletion of this tool didn't finish, so changes can't be saved. Delete this tool, then create it again.",
+        "avatarToolRecoveryPendingError": "An earlier change to this tool was interrupted and couldn't be recovered automatically, so it can't be changed or deleted right now.",
         "avatarToolTemporarilyUnavailable": "Temporarily unavailable",
         "avatarToolLibrary": "Tool library",
         "avatarToolEquipped": "Equipped",

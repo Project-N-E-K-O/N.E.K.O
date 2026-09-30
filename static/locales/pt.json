@@ -1042,6 +1042,8 @@
         "avatarToolDelete": "Excluir {{name}}",
         "avatarToolDeleteConfirm": "Excluir “{{name}}”? Esta ação não pode ser desfeita.",
         "avatarToolDeleteError": "Não foi possível excluir este item. Tente novamente mais tarde.",
+        "avatarToolDeletePendingSaveError": "A exclusão anterior deste item não terminou, então as alterações não podem ser salvas. Exclua o item e crie-o novamente.",
+        "avatarToolRecoveryPendingError": "Uma alteração anterior neste item foi interrompida e não pôde ser recuperada automaticamente, então no momento ele não pode ser alterado nem excluído.",
         "avatarToolTemporarilyUnavailable": "Temporariamente indisponível",
         "avatarToolLibrary": "Biblioteca de ferramentas",
         "avatarToolEquipped": "Equipada",

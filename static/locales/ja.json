@@ -1042,6 +1042,8 @@
         "avatarToolDelete": "{{name}}を削除",
         "avatarToolDeleteConfirm": "「{{name}}」を削除しますか？削除後は元に戻せません。",
         "avatarToolDeleteError": "このアイテムを削除できませんでした。しばらくしてからもう一度お試しください。",
+        "avatarToolDeletePendingSaveError": "このアイテムの前回の削除が完了していないため、変更を保存できません。いったん削除してから作り直してください。",
+        "avatarToolRecoveryPendingError": "このアイテムの前回の変更が中断され、自動で復旧できなかったため、今は変更も削除もできません。",
         "avatarToolTemporarilyUnavailable": "一時的に利用できません",
         "avatarToolLibrary": "ツールライブラリ",
         "avatarToolEquipped": "装備中",

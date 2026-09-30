@@ -1276,13 +1276,9 @@ def test_delete_preserves_an_unconfirmed_moved_version_across_restart(
         path.stat().st_size for path in deleting.iterdir() if path.is_file()
     )
     assert (final / "synced-note.txt").read_bytes() == b"another publication"
-    for blocked_operation in (
-        lambda: restarted.delete_tool(tool_id),
-        lambda: restarted.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()]),
-    ):
-        with pytest.raises(AvatarToolStoreError) as blocked:
-            blocked_operation()
-        assert (blocked.value.code, blocked.value.status_code) == ("tool_delete_pending", 409)
+    with pytest.raises(AvatarToolStoreError) as blocked:
+        restarted.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    assert (blocked.value.code, blocked.value.status_code) == ("tool_delete_pending", 409)
     other = restarted.create_tool_v3(
         manifest=_v3_manifest(f"local-{uuid.uuid4()}", name="Other"), uploads=[_png()]
     )
@@ -1566,7 +1562,6 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
         manifest=_v3_manifest(blocked_id, name="Changed"),
         uploads=[_png()],
     ))
-    assert_pending(lambda: restarted.delete_tool(blocked_id))
 
     updated = restarted.update_tool_v3(
         other_id,
@@ -1579,6 +1574,124 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert restarted.delete_tool(other_id) == other_id
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
+
+    # 拿着过期 revision 的删除被拒绝时，副本不能先被丢掉。
+    with pytest.raises(AvatarToolStoreError) as conflict:
+        restarted.delete_tool(blocked_id, base_revision="1-1")
+    assert (conflict.value.code, conflict.value.status_code) == ("tool_revision_conflict", 409)
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.exists()
+
+    # 用户明确删除这个 ID：保留的副本随正式目录一起清掉，这个 ID 重新可用，
+    # 不会再永远卡在 tool_delete_pending。
+    assert restarted.delete_tool(blocked_id, base_revision=republished["revision"]) == blocked_id
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert not final.exists()
+    restarted.create_tool_v3(manifest=_v3_manifest(blocked_id, name="Reborn"), uploads=[_png()])
+    assert restarted.get_detail(blocked_id)["name"] == "Reborn"
+
+
+def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    real_rmtree = shutil.rmtree
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def crash_on_discard(path, *args, **kwargs):
+        if Path(path) == deleting:
+            raise SimulatedCrash()
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", crash_on_discard)
+    with pytest.raises(SimulatedCrash):
+        store.delete_tool(tool_id)
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+
+    # 授权已经撤掉：剩下的 .deleting 是已确认的删除，恢复直接清掉，不会挪回或拦住 ID。
+    assert not marker.exists()
+    assert final.is_dir()
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert not deleting.exists()
+    assert restarted.delete_tool(tool_id) == tool_id
+    assert not final.exists()
+
+
+def _replace_probabilities(value, replacement):
+    if isinstance(value, dict):
+        return {
+            key: replacement if key == "probability" else _replace_probabilities(item, replacement)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_probabilities(item, replacement) for item in value]
+    return value
+
+
+@pytest.mark.parametrize("record_version", (2, 3))
+def test_an_overflowing_special_probability_is_invalid_not_a_server_error(
+    tmp_path, monkeypatch, record_version
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    # JSON 整数字面量没有长度上限，float() 转不下会抛 OverflowError。
+    huge = int("1" + "0" * 400)
+    special_uploads = [_png(), _png(size=(12, 10))]
+
+    def special_manifest(tool_id, probability):
+        manifest = _v3_manifest(tool_id)
+        manifest["interaction"] = {
+            "special": {
+                "probability": probability,
+                "image": {"kind": "upload", "index": 1},
+                "meaning": "sparkles appear",
+            },
+        }
+        return manifest
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool_v3(manifest=special_manifest(f"local-{uuid.uuid4()}", huge), uploads=special_uploads)
+    assert raised.value.code == "special_probability_invalid"
+    assert raised.value.status_code == 400
+
+    if record_version == 3:
+        tool_id = f"local-{uuid.uuid4()}"
+        store.create_tool_v3(manifest=special_manifest(tool_id, 0.2), uploads=special_uploads)
+    else:
+        tool_id = _create_tool(
+            store,
+            name="Tampered",
+            change_mode="press-swap",
+            change_meanings=["a gentle touch"],
+            default_image=_png(),
+            change_images=[_png()],
+            special_probability=0.1,
+            special_image=_png(size=(13, 9)),
+            special_meaning="feathers scatter",
+        )["id"]
+    other_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(other_id, name="Other"), uploads=[_png()])
+    record_path = store.root / tool_id / "record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    tampered = _replace_probabilities(record, huge)
+    assert tampered != record
+    record_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    # 磁盘上一条被改坏的记录只让它自己失效，不能让整个列表抛出。
+    listed = {item["id"] for item in store.list_items()}
+    assert other_id in listed
+    assert tool_id not in listed
 
 
 def test_delete_unpublishes_before_cleanup_and_initialize_retries_residue(tmp_path, monkeypatch):

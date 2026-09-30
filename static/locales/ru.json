@@ -1042,6 +1042,8 @@
         "avatarToolDelete": "Удалить {{name}}",
         "avatarToolDeleteConfirm": "Удалить «{{name}}»? Это действие нельзя отменить.",
         "avatarToolDeleteError": "Не удалось удалить этот предмет. Повторите попытку позже.",
+        "avatarToolDeletePendingSaveError": "Предыдущее удаление этого предмета не завершилось, поэтому изменения нельзя сохранить. Удалите предмет и создайте его заново.",
+        "avatarToolRecoveryPendingError": "Предыдущее изменение этого предмета было прервано и не восстановилось автоматически, поэтому сейчас его нельзя изменить или удалить.",
         "avatarToolTemporarilyUnavailable": "Временно недоступно",
         "avatarToolLibrary": "Библиотека инструментов",
         "avatarToolEquipped": "Уже выбрано",

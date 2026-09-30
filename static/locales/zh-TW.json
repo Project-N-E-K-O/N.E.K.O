@@ -1042,6 +1042,8 @@
         "avatarToolDelete": "刪除{{name}}",
         "avatarToolDeleteConfirm": "確定刪除「{{name}}」嗎？刪除後無法復原。",
         "avatarToolDeleteError": "無法刪除該道具，請稍後再試。",
+        "avatarToolDeletePendingSaveError": "該道具上次的刪除沒有完成，暫時無法儲存修改。請先刪除該道具，再重新建立。",
+        "avatarToolRecoveryPendingError": "該道具上次的修改被中斷，且無法自動復原，暫時無法修改或刪除。",
         "avatarToolTemporarilyUnavailable": "暫時無法使用",
         "avatarToolLibrary": "道具庫",
         "avatarToolEquipped": "已裝備",

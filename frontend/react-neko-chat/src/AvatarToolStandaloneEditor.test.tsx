@@ -313,6 +313,38 @@ describe('AvatarToolStandaloneEditor', () => {
       expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
       expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('New tool');
 
+      // opener 没有活句柄时，委派导航后紧跟一次 focus，时间戳可能跨过毫秒边界。
+      // 两路交错到达（BC 导航 → BC focus → storage 导航 → storage focus）时，
+      // 导航仍只处理一次：用户拒绝放弃后不能马上又被问一遍。
+      const navigation = {
+        type: 'neko:named-window-message',
+        windowName: 'neko_avatar_tool_editor_singleton',
+        payload: {
+          type: 'neko:navigate-on-reuse',
+          url: `${window.location.origin}/avatar_tool_editor?mode=edit&toolId=${LOCAL_ID}`,
+        },
+        timestamp: 5,
+      };
+      const focusRequest = {
+        type: 'neko:named-window-focus',
+        windowName: 'neko_avatar_tool_editor_singleton',
+        payload: null,
+        timestamp: 6,
+      };
+      const viaStorage = (message: unknown) => act(() => {
+        window.dispatchEvent(new StorageEvent('storage', {
+          key: 'neko:named-window-focus:neko_avatar_tool_editor_singleton',
+          newValue: JSON.stringify(message),
+        }));
+      });
+      act(() => channels[0]?.onmessage?.({ data: navigation } as MessageEvent));
+      act(() => channels[0]?.onmessage?.({ data: focusRequest } as MessageEvent));
+      viaStorage(navigation);
+      viaStorage(focusRequest);
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(window.location.search).toBe('?mode=create');
+      expect(screen.getByRole('textbox', { name: 'Tool name' })).toHaveValue('New tool');
+
       unmount();
       expect(window.localStorage.getItem(registryKey)).toBeNull();
       expect(channels[0]?.closed).toBe(true);
