@@ -819,16 +819,16 @@ class AvatarToolStore:
         # 授权先挪出来：它在停放的副本里面，副本挪回去之后路径就变了。
         parked_marker_kind, _, probe_error = _probe_entry(parked_marker)
         if probe_error is None and parked_marker_kind != "absent":
-            marker_kind, _, probe_error = _probe_entry(marker)
-            if probe_error is None and marker_kind == "absent":
+            marker_kind, _, marker_error = _probe_entry(marker)
+            if marker_error is None and marker_kind == "absent":
                 try:
                     os.replace(parked_marker, marker)
                 except OSError:
                     logger.warning("Could not restore retained avatar tool authorization %s", marker, exc_info=True)
-                    self._write_mismatched_marker(marker)
-            else:
+            elif marker_error is None:
                 # 这次删除已经写下了自己的授权，它同样对不上副本；原授权不再需要，
-                # 尽力从副本里拿掉，恢复原样。
+                # 尽力从副本里拿掉，恢复原样。探测失败时不知道原位有没有授权，
+                # 原授权留着不动。
                 try:
                     if parked_marker_kind == "dir":
                         shutil.rmtree(parked_marker)
@@ -836,6 +836,9 @@ class AvatarToolStore:
                         parked_marker.unlink()
                 except OSError:
                     logger.warning("Could not remove parked avatar tool authorization %s", parked_marker)
+        # 原授权没能挪回（改名失败，或者它在停放的副本里探测不到）时补写一份对不上的
+        # 授权；原位已经有授权时独占创建什么都不改。
+        self._write_mismatched_marker(marker)
         marker_kind, _, marker_error = _probe_entry(marker)
         deleting_kind, _, probe_error = _probe_entry(deleting)
         # 没有授权文件的 .deleting 会被恢复当成已确认删除清掉：授权回不到原位时

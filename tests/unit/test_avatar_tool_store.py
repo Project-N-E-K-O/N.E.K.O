@@ -2008,6 +2008,47 @@ def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypat
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
 
+def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+    real_open = Path.open
+    real_probe = avatar_tool_store._probe_entry
+    state = {"staging_failed": False, "probe_failed": False}
+
+    def staging_marker_fails_once(self, mode="r", *args, **kwargs):
+        if "x" in mode and self == marker and not state["staging_failed"]:
+            state["staging_failed"] = True
+            raise OSError(errno.ENOSPC, "simulated disk full")
+        return real_open(self, mode, *args, **kwargs)
+
+    def marker_probe_fails_once_during_rollback(path):
+        # 暂存失败后回滚时，探测授权位置恰好遇到一次瞬时错误。
+        if state["staging_failed"] and not state["probe_failed"] and Path(path) == marker:
+            state["probe_failed"] = True
+            return "unknown", 0, OSError(errno.EIO, "simulated transient error")
+        return real_probe(path)
+
+    monkeypatch.setattr(Path, "open", staging_marker_fails_once)
+    monkeypatch.setattr("utils.avatar_tool_store._probe_entry", marker_probe_fails_once_during_rollback)
+    with pytest.raises(AvatarToolStoreError):
+        store.delete_tool(tool_id)
+
+    assert state["probe_failed"]
+    # 读不到授权位置不等于那里有授权：原授权不能被当成多余的删掉，副本要带着授权回到原位。
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.exists()
+    assert final.is_dir()
+    assert not list(store.root.glob(".local-*.uploading"))
+
+
 def test_an_unreadable_retained_copy_still_blocks_saves_with_delete_pending(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
