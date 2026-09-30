@@ -279,9 +279,14 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     # Whitespace-insensitive: a native start, a switch restart or any start in
     # flight also counts as sharing, so switching sources restarts it.
     assert re.search(
-        r"var isScreenSharingActive = isNativeCaptureActive\s*\|\|"
+        r"var isScreenSharingRunning = isNativeCaptureActive\s*\|\|"
         r"\s*!!\(stopBtn && !stopBtn\.disabled\)\s*\|\|"
-        r"\s*sourceSwitchRestart !== null\s*\|\|\s*isScreenSharingStartPending\(\);",
+        r"\s*sourceSwitchRestart !== null;",
+        select_source,
+    )
+    assert re.search(
+        r"var isScreenSharingActive = isScreenSharingRunning\s*\|\|"
+        r"\s*isScreenSharingStartPending\(\);",
         select_source,
     )
 

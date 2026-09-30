@@ -2867,8 +2867,19 @@
         // 换源重启或其他启动还在进行时，分享只是还没跑起来。这次选择推进了
         // 代次，会让那次还在等待的启动作废；如果这里不接着重启，分享就停在
         // 那里了。
-        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled)
-            || sourceSwitchRestart !== null || isScreenSharingStartPending();
+        var isScreenSharingRunning = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled)
+            || sourceSwitchRestart !== null;
+        var isScreenSharingActive = isScreenSharingRunning || isScreenSharingStartPending();
+
+        if (!isScreenSharingRunning && isScreenSharingActive && window.switchScreenSharing) {
+            // 分享还没跑起来，只是启动在等授权：没有要停的分享，不走停顿，
+            // 直接取消这次启动、用新来源重新启动。期间一直处于「启动中」，
+            // 开关照旧按取消处理，不会出现一段既不在启动也不显示共享的空档。
+            console.log('[屏幕源] 启动进行中换来源，改用新来源重新启动');
+            cancelPendingScreenSharingStart();
+            await startScreenSharing();
+            return;
+        }
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');

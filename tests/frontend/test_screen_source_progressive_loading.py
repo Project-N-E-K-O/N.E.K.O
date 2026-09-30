@@ -1666,29 +1666,56 @@ def test_second_pick_during_restart_still_shares_the_new_source(
 
 
 @pytest.mark.frontend
-def test_pick_while_a_start_is_pending_shares_the_new_source(page: Page) -> None:
+@pytest.mark.parametrize("then", ["wait", "toggle"])
+def test_pick_while_a_start_is_pending_shares_the_new_source(
+    page: Page, then: str,
+) -> None:
     # Not sharing yet: a start is waiting on its permission request when the
     # user picks another source. That pick supersedes the pending start, so it
     # has to start the new source itself instead of reading "not sharing".
+    # It stays "starting" throughout (no pause), so a toggle right after the
+    # pick still cancels, as it would have cancelled the original start.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
     _install_share_session(page)
 
     result = page.evaluate(
-        """async () => {
+        """async (then) => {
             const share = window.__share;
             await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
             share.holds.add('window:2');
+            share.holds.add('window:7');
             const start = window.startScreenSharing();
             await share.waitFor(() => share.pending.length > 0);
-            await window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            const pick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const pendingAfterPick = window.isScreenSharingStartPending();
+            if (then === 'toggle') {
+                // Bounded: a toggle misread as "start" would wait on a held capture.
+                await Promise.race([
+                    window.switchScreenSharing(),
+                    new Promise((resolve) => setTimeout(resolve, 1000)),
+                ]);
+            }
             share.releaseAll();
             await start;
+            const pickSettled = await Promise.race([
+                pick.then(() => true),
+                new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+            ]);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            return { calls: share.calls, ...share.state() };
-        }"""
+            return { pendingAfterPick, pickSettled, calls: share.calls, ...share.state() };
+        }""",
+        then,
     )
 
-    assert result == {"calls": ["window:2", "window:7"], "active": True, "stopEnabled": True}
+    sharing = then == "wait"
+    assert result == {
+        "pendingAfterPick": True,
+        "pickSettled": True,
+        "calls": ["window:2", "window:7"],
+        "active": sharing,
+        "stopEnabled": sharing,
+    }
 
 
 @pytest.mark.frontend
@@ -3041,6 +3068,13 @@ def test_portal_pick_with_reused_id_discards_pending_manual_capture(
                 configurable: true,
                 value: {
                     getUserMedia() {
+                        if (window.__manualGetUserMediaStarted) {
+                            // The re-pick restarts capture for the newly chosen window.
+                            window.__newCaptures = (window.__newCaptures || 0) + 1;
+                            return Promise.resolve(
+                                document.createElement('canvas').captureStream(1)
+                            );
+                        }
                         window.__manualGetUserMediaStarted = true;
                         return new Promise((resolve) => {
                             window.__resolveManualGetUserMedia = resolve;
@@ -3060,7 +3094,9 @@ def test_portal_pick_with_reused_id_discards_pending_manual_capture(
             );
             window.__resolveManualGetUserMedia(window.__oldStream);
             await window.__manualStartPromise;
+            await new Promise((resolve) => setTimeout(resolve, 50));
             const state = {
+                newCaptures: window.__newCaptures || 0,
                 selectedId: window.appState.selectedScreenSourceId,
                 oldStreamInstalled:
                     window.appState.screenCaptureStream === window.__oldStream,
@@ -3072,6 +3108,7 @@ def test_portal_pick_with_reused_id_discards_pending_manual_capture(
     )
 
     assert result == {
+        "newCaptures": 1,
         "selectedId": "window:old",
         "oldStreamInstalled": False,
         "oldTrackStopped": True,
