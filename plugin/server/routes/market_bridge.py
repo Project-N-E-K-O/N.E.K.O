@@ -823,17 +823,28 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
-async def _fetch_authoritative_market_override_release(
+async def _fetch_authoritative_market_release(
     payload: MarketInstallRequest,
 ) -> dict[str, object]:
+    """Verify a requested release against the configured Market, not the caller."""
+
     market_id = str(payload.plugin_id or "").strip()
+    requested_version = str(payload.version or "").strip()
+    if not market_id or not requested_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_release_mismatch",
+                "message": "Market installation requires a plugin ID and version",
+            },
+        )
     base_url = _normalized_base_url(MARKET_API_URL)
-    if not market_id or not base_url:
+    if not base_url:
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "market_catalog_not_configured",
-                "message": "builtin override requires a configured Market catalog",
+                "message": "Market installation requires a configured Market catalog",
             },
         )
 
@@ -864,7 +875,6 @@ async def _fetch_authoritative_market_override_release(
 
     if not isinstance(releases, list):
         releases = []
-    requested_version = str(payload.version or "").strip()
     release = next(
         (
             item
@@ -875,14 +885,26 @@ async def _fetch_authoritative_market_override_release(
         ),
         None,
     )
+    package_url = str(payload.package_url or "").strip()
     canonical_package_url = str(
-        payload.canonical_package_url or payload.package_url or ""
+        payload.canonical_package_url
+        or _direct_github_download_fallback(package_url)
+        or package_url
     ).strip()
+    # The transport URL must be the catalogue URL or one of our existing
+    # GitHub mirrors wrapping that exact asset. A caller-supplied canonical
+    # URL alone is not evidence for an unrelated download origin.
+    transport_matches = (
+        package_url == canonical_package_url
+        or _direct_github_download_fallback(package_url) == canonical_package_url
+    )
     if release is None:
         mismatch = True
     else:
         mismatch = any(
             (
+                not transport_matches,
+                release.get("yanked_at") is not None,
                 str(release.get("package_url") or "").strip() != canonical_package_url,
                 str(release.get("package_sha256") or "").strip().lower()
                 != payload.package_sha256,
@@ -899,7 +921,7 @@ async def _fetch_authoritative_market_override_release(
             status_code=409,
             detail={
                 "code": "market_release_mismatch",
-                "message": "builtin override request does not match the Market catalog",
+                "message": "install request does not match an available Market release",
             },
         )
 
@@ -908,8 +930,8 @@ async def _fetch_authoritative_market_override_release(
         "plugin_market_id": market_id,
         "version": requested_version,
         "channel": channel,
-        "package_url": canonical_package_url,
-        "package_sha256": payload.package_sha256,
+        "package_url": str(release["package_url"]).strip(),
+        "package_sha256": _normalize_required_sha256(str(release["package_sha256"])),
         "payload_hash": release.get("payload_hash"),
         "published_at": release.get("created_at") or release.get("published_at"),
     }
@@ -983,7 +1005,7 @@ async def _build_market_override_confirmation(
             },
         )
 
-    authoritative_release = await _fetch_authoritative_market_override_release(payload)
+    authoritative_release = await _fetch_authoritative_market_release(payload)
     request_evidence = payload.model_dump(
         mode="json",
         exclude={"confirmation_token"},
@@ -1100,7 +1122,7 @@ async def _build_market_manual_takeover_confirmation(
         if isinstance(current_version_obj, str)
         else ""
     )
-    authoritative_release = await _fetch_authoritative_market_override_release(payload)
+    authoritative_release = await _fetch_authoritative_market_release(payload)
     request_evidence = payload.model_dump(
         mode="json",
         exclude={
@@ -1256,6 +1278,23 @@ async def market_install(
                     "message": "only Market or confirmed manual plugins can be replaced",
                 },
             )
+
+    # All Market modes, including fresh installs and ordinary upgrades, must
+    # bind the requested asset to the server-configured catalogue before any
+    # download is queued. Never use the request as the source of release evidence.
+    release = await _fetch_authoritative_market_release(task_payload)
+    task_payload = task_payload.model_copy(
+        update={
+            "plugin_id": release["plugin_market_id"],
+            "version": release["version"],
+            "channel": release["channel"],
+            "package_url": task_payload.package_url.strip(),
+            "canonical_package_url": release["package_url"],
+            "package_sha256": release["package_sha256"],
+            "payload_hash": release["payload_hash"],
+            "published_at": release["published_at"],
+        }
+    )
 
     _cleanup_tasks()
     task_id = secrets.token_urlsafe(16)
@@ -3708,7 +3747,7 @@ async def _do_upgrade(
     authoritative_release: dict[str, object] | None = None
     if continues_builtin_override:
         try:
-            authoritative_release = await _fetch_authoritative_market_override_release(payload)
+            authoritative_release = await _fetch_authoritative_market_release(payload)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             raise _TaskError(
@@ -4113,7 +4152,10 @@ def _direct_github_download_fallback(url: str) -> str | None:
         if source_id == "github-direct" or not url.startswith(base_url):
             continue
         candidate = url.removeprefix(base_url)
-        parsed = urlparse(candidate)
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            return None
         if (
             parsed.scheme == "https"
             and parsed.hostname == "github.com"

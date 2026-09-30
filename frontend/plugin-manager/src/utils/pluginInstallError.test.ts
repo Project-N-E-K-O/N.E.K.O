@@ -15,6 +15,9 @@ describe('resolvePluginInstallErrorKey', () => {
     ['manual_takeover_source_changed', 'market.confirmationChanged'],
     ['override_target_exists', 'market.autoUpgradeBlocked'],
     ['override_start_failed', 'market.overrideStartFailed'],
+    ['market_release_mismatch', 'market.marketReleaseMismatch'],
+    ['market_catalog_unavailable', 'market.marketReleaseUnavailable'],
+    ['market_catalog_not_configured', 'market.notConfigured'],
     ['INSTALL_SOURCE_READ_ONLY', 'market.lockWriteFailed'],
     ['PLUGIN_BUILTIN_OVERRIDE_MARKET_REQUIRED', 'market.autoUpgradeBlocked'],
   ])('maps %s to a localized key', (code, key) => {

@@ -255,6 +255,8 @@ export default {
     bundleConflict: '整合包無法自動覆蓋已安裝或內建外掛。',
     legacyPluginConflict: '包含外掛身分改名的套件無法自動升級。',
     packageHashMismatch: '外掛套件驗證失敗。',
+    marketReleaseMismatch: '安裝請求與外掛市集中的可用版本不一致，請重新整理市集後再試。',
+    marketReleaseUnavailable: '無法向外掛市集確認此版本，請稍後再試。',
     downloadFailed: '外掛套件下載失敗。',
     marketListFetchFailed: '外掛市集暫時無法使用。',
     unsafeProfilePath: '記錄的套件 Profile 路徑不安全。',

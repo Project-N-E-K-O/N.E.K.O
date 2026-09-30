@@ -255,6 +255,8 @@ export default {
     bundleConflict: '整合包不能自动覆盖已安装插件或内置插件。',
     legacyPluginConflict: '包含插件身份改名的包不能自动升级。',
     packageHashMismatch: '插件包校验失败。',
+    marketReleaseMismatch: '安装请求与插件市场中的可用版本不一致，请刷新市场后重试。',
+    marketReleaseUnavailable: '无法向插件市场核实此版本，请稍后重试。',
     downloadFailed: '插件包下载失败。',
     marketListFetchFailed: '插件市场暂时不可用。',
     unsafeProfilePath: '记录的包 Profile 路径不安全。',

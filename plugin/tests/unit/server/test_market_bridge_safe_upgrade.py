@@ -130,7 +130,7 @@ async def test_market_builtin_override_requires_current_preflight_confirmation(
 
     monkeypatch.setattr(
         market_bridge,
-        "_fetch_authoritative_market_override_release",
+        "_fetch_authoritative_market_release",
         authoritative_release,
     )
     monkeypatch.setattr(
@@ -247,7 +247,7 @@ async def test_market_manual_takeover_requires_current_bound_confirmation(
     monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
     monkeypatch.setattr(
         market_bridge,
-        "_fetch_authoritative_market_override_release",
+        "_fetch_authoritative_market_release",
         authoritative_release,
     )
     monkeypatch.setattr(
@@ -380,6 +380,20 @@ async def test_legacy_market_upgrade_matches_market_record_id_without_expected_p
         mode=mode,
     )
 
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_release",
+        lambda _payload: _async_value({
+            "plugin_market_id": "market-record-42",
+            "version": "2.0.0",
+            "channel": "stable",
+            "package_url": "https://example.invalid/demo-v2.neko-plugin",
+            "package_sha256": "b" * 64,
+            "payload_hash": None,
+            "published_at": None,
+        }),
+    )
+
     accepted = await market_bridge.market_install(
         payload,
         token=market_bridge.get_bridge_token(),
@@ -426,6 +440,20 @@ async def test_market_install_discards_caller_verified_fields_before_queueing(
         verified_manual_snapshot_sha256="c" * 64,
     )
     assert payload.verified_manual_snapshot_sha256 == "c" * 64
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_release",
+        lambda _payload: _async_value({
+            "plugin_market_id": "demo",
+            "version": "2.0.0",
+            "channel": "stable",
+            "package_url": "https://example.invalid/demo.neko-plugin",
+            "package_sha256": "a" * 64,
+            "payload_hash": None,
+            "published_at": None,
+        }),
+    )
 
     accepted = await market_bridge.market_install(
         payload,
@@ -491,7 +519,7 @@ async def test_market_builtin_override_rejects_caller_hash_not_in_catalog(
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.invalid")
 
     with pytest.raises(HTTPException) as exc_info:
-        await market_bridge._fetch_authoritative_market_override_release(payload)
+        await market_bridge._fetch_authoritative_market_release(payload)
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["code"] == "market_release_mismatch"
@@ -1714,7 +1742,7 @@ async def test_market_builtin_override_upgrade_rejects_non_catalog_release_befor
 
     monkeypatch.setattr(
         market_bridge,
-        "_fetch_authoritative_market_override_release",
+        "_fetch_authoritative_market_release",
         reject_release,
     )
     monkeypatch.setattr(market_bridge, "_download_package", unexpected_download)
@@ -1760,7 +1788,7 @@ async def test_stopped_builtin_override_upgrade_validates_runtime_and_rolls_back
     }
     monkeypatch.setattr(
         market_bridge,
-        "_fetch_authoritative_market_override_release",
+        "_fetch_authoritative_market_release",
         lambda _payload: _async_value(authoritative_release),
     )
     monkeypatch.setattr(

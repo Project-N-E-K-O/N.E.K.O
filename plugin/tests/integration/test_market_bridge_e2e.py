@@ -11,8 +11,7 @@ app, polls the resulting task to completion, then verifies:
 
 This is the hard-evidence test for "下载链路真的通了". It exercises the
 full chain — HTTP download → sha256 check → unpack → ISM record →
-lock atomic write → ``/market/installed`` projection — without any
-mocks beyond redirecting filesystem roots into ``tmp_path``.
+lock atomic write → ``/market/installed`` projection — with the Market catalogue mocked and filesystem roots redirected into ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ import socket
 import shutil
 import threading
 import time
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -133,7 +133,16 @@ def _build_neko_plugin_zip(
 
 
 @contextlib.contextmanager
-def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
+def _serve_bytes(
+    *,
+    filename: str,
+    content: bytes,
+    catalog: dict[str, list[dict[str, Any]]],
+    market_id: str | None = None,
+    published_at: str = "2026-09-30T00:00:00Z",
+    catalog_sha256: str | None = None,
+    channel: str = "stable",
+) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
     Yields the absolute URL of the served file; tears the server down
@@ -161,7 +170,22 @@ def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{port}/{filename}"
+        package_url = f"http://127.0.0.1:{port}/{filename}"
+        # Seed the trusted catalogue independently from the install request:
+        # derive the release and its hashes from the actual package fixture.
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+            metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+        record_id = market_id or manifest["id"]
+        catalog[record_id] = [{
+            "version": manifest["version"],
+            "channel": channel,
+            "package_url": package_url,
+            "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
+            "payload_hash": metadata.get("payload", {}).get("hash"),
+            "created_at": published_at,
+        }]
+        yield package_url
     finally:
         server.shutdown()
         server.server_close()
@@ -236,6 +260,26 @@ def bridge_e2e_env(
     set_global_manager(mgr)
 
     # Mount only the bridge router on a fresh FastAPI app.
+    catalog: dict[str, list[dict[str, Any]]] = {}
+    real_http_client = httpx.AsyncClient
+
+    def catalog_response(request: httpx.Request) -> httpx.Response:
+        prefix = "/api/v1/plugins/"
+        if request.url.path.startswith(prefix) and request.url.path.endswith("/versions"):
+            record_id = request.url.path.removeprefix(prefix).removesuffix("/versions")
+            return httpx.Response(200, json=catalog.get(record_id, []))
+        return httpx.Response(404)
+
+    def market_http_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        return real_http_client(
+            *args,
+            mounts={"https://market.test": httpx.MockTransport(catalog_response)},
+            **kwargs,
+        )
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", market_http_client)
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
     app = FastAPI(title="market-bridge-e2e")
     app.include_router(market_bridge_module.router)
 
@@ -257,6 +301,7 @@ def bridge_e2e_env(
     try:
         yield {
             "client": client,
+            "catalog": catalog,
             "token": token,
             "user_root": user_root,
             "builtin_root": builtin_root,
@@ -655,6 +700,8 @@ async def test_install_happy_path_writes_v2_lock_entry(
     lock_path: Path = bridge_e2e_env["lock_path"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        published_at="2026-05-16T08:00:00.000000Z",
         filename="e2e_calendar-1.2.3.neko-plugin", content=zip_bytes,
     ) as package_url:
         # Trigger the install task.
@@ -739,6 +786,9 @@ async def test_installed_endpoint_projects_latest_install_source(
     token: str = bridge_e2e_env["token"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        channel="beta",
+        published_at="2026-05-16T09:00:00.000000Z",
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -813,6 +863,8 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     profiles_root: Path = bridge_e2e_env["profiles_root"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        published_at="2026-05-21T08:00:00.000000Z",
         filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
     ) as package_url:
         resp = await client.post(
@@ -910,6 +962,9 @@ async def test_authenticated_market_install_reports_usage(
         async def __aexit__(self, *args: Any) -> None:
             await self._delegate.__aexit__(*args)
 
+        async def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
+            return await self._delegate.get(*args, **kwargs)
+
         def stream(self, *args: Any, **kwargs: Any) -> Any:
             return self._delegate.stream(*args, **kwargs)
 
@@ -973,6 +1028,9 @@ async def test_authenticated_market_install_reports_usage(
     token: str = bridge_e2e_env["token"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        published_at="2026-05-21T08:30:00.000000Z",
+        market_id="42",
         filename=f"{local_plugin_id}-{version}.neko-plugin",
         content=zip_bytes,
     ) as package_url:
@@ -4188,11 +4246,9 @@ async def test_install_rejects_sha256_mismatch(
 ) -> None:
     """SHA256 mismatch fails the task without writing a lock entry.
 
-    Note: ``"0" * 64`` is treated as "Market did not provide a hash"
-    (R3.5) and gracefully skips verification; only a real-shaped but
-    non-matching hex triggers a hard mismatch failure. We only test the
-    latter — the skip-hash branch is covered by ``_verify_sha256``'s
-    structured-log path.
+    The trusted catalogue deliberately advertises a valid-shaped hash that
+    differs from the served bytes, modelling a corrupted download. Missing,
+    zero and malformed hashes are rejected by request validation separately.
     """
 
     fake_sha = "f" * 64
@@ -4206,6 +4262,8 @@ async def test_install_rejects_sha256_mismatch(
     user_root: Path = bridge_e2e_env["user_root"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        catalog_sha256=fake_sha,
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -4294,6 +4352,7 @@ async def test_install_identity_match_no_warning(
     token: str = bridge_e2e_env["token"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -4357,6 +4416,7 @@ async def test_install_identity_mismatch_warns_but_succeeds(
     lock_path: Path = bridge_e2e_env["lock_path"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{actual_plugin_id}-{version}.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -4436,6 +4496,7 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
     (existing / "plugin.toml").write_text(original_plugin_toml, encoding="utf-8")
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -4514,6 +4575,7 @@ async def test_upgrade_happy_path_replaces_lock_entry(
     async def _install(zip_bytes: bytes, payload_hash: str, version: str, mode: str) -> dict[str, Any]:
         sha = hashlib.sha256(zip_bytes).hexdigest()
         with _serve_bytes(
+            catalog=bridge_e2e_env["catalog"],
             filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
         ) as package_url:
             resp = await client.post(
@@ -4614,6 +4676,7 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
         raise AssertionError(f"task {task_id} did not finish")
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         resp = await client.post(
@@ -4646,6 +4709,8 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
     monkeypatch.setattr(replacement_transaction, "_start_plugin", fake_start)
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        market_id=market_id,
         filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
     ) as package_url:
         resp = await client.post(
@@ -4703,6 +4768,7 @@ async def test_install_conflict_defaults_to_failure_without_lock_entry(
         raise AssertionError(f"task {task_id} did not finish")
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         resp = await client.post(
@@ -4761,6 +4827,7 @@ async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
 
     v1_sha = hashlib.sha256(v1_zip).hexdigest()
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         resp = await client.post(
@@ -4788,6 +4855,8 @@ async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
 
     intruder_sha = hashlib.sha256(intruder_zip).hexdigest()
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        market_id=plugin_id,
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=intruder_zip,
     ) as package_url:
         resp = await client.post(
@@ -4851,6 +4920,7 @@ async def test_failed_market_install_cleans_promoted_profile_dir(
     profiles_root: Path = bridge_e2e_env["profiles_root"]
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         resp = await client.post(
@@ -4877,6 +4947,8 @@ async def test_failed_market_install_cleans_promoted_profile_dir(
             await asyncio.sleep(0.05)
 
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
+        market_id=plugin_id,
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=zip_bytes,
     ) as package_url:
         resp = await client.post(
@@ -4964,6 +5036,7 @@ async def test_upgrade_accepts_same_and_older_version_replacements(
 
     # Seed v2.0.0.
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-2.0.0.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
@@ -4988,6 +5061,7 @@ async def test_upgrade_accepts_same_and_older_version_replacements(
 
     # Reinstall the current artifact through the same replacement path.
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-2.0.0-again.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
@@ -5020,6 +5094,7 @@ async def test_upgrade_accepts_same_and_older_version_replacements(
 
     # Explicitly replace with the older v1.0.0 artifact.
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=target_zip,
     ) as package_url:
         resp = await client.post(
@@ -5083,6 +5158,7 @@ async def test_upgrade_rollback_on_download_failure(
 
     # Seed v1.0.0.
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         resp = await client.post(
@@ -5116,9 +5192,17 @@ async def test_upgrade_rollback_on_download_failure(
     # server only serves the file we name, others get 404. Use a
     # different filename to force the failure.
     with _serve_bytes(
+        catalog=bridge_e2e_env["catalog"],
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
     ) as package_url:
         broken_url = package_url.rsplit("/", 1)[0] + "/does_not_exist.neko-plugin"
+        bridge_e2e_env["catalog"][plugin_id] = [{
+            "version": "2.0.0",
+            "channel": "stable",
+            "package_url": broken_url,
+            "package_sha256": "f" * 64,
+            "payload_hash": None,
+        }]
 
         resp = await client.post(
             f"/market/install?token={token}",

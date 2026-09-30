@@ -255,6 +255,8 @@ export default {
     bundleConflict: 'バンドルは既存または内蔵プラグインを自動で置き換えられません。',
     legacyPluginConflict: '既存プラグインの ID を変更するパッケージは自動アップグレードできません。',
     packageHashMismatch: 'プラグインパッケージの検証に失敗しました。',
+    marketReleaseMismatch: 'インストール要求がプラグインマーケットの利用可能なリリースと一致しません。マーケットを更新して再試行してください。',
+    marketReleaseUnavailable: 'プラグインマーケットでこのリリースを確認できません。しばらくしてから再試行してください。',
     downloadFailed: 'プラグインパッケージのダウンロードに失敗しました。',
     marketListFetchFailed: 'プラグイン Market は一時的に利用できません。',
     unsafeProfilePath: '記録されたパッケージ Profile のパスは安全ではありません。',

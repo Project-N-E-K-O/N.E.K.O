@@ -255,6 +255,8 @@ export default {
     bundleConflict: 'Bundles cannot replace an existing or built-in plugin automatically.',
     legacyPluginConflict: 'Packages that rename an existing plugin cannot be upgraded automatically.',
     packageHashMismatch: 'Plugin package verification failed.',
+    marketReleaseMismatch: 'This install request does not match an available Plugin Market release. Refresh the market and try again.',
+    marketReleaseUnavailable: 'Unable to verify this release with the Plugin Market. Please try again later.',
     downloadFailed: 'The plugin package download failed.',
     marketListFetchFailed: 'The Plugin Market is temporarily unavailable.',
     unsafeProfilePath: 'The recorded package profile path is unsafe.',

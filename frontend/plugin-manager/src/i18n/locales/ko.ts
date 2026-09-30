@@ -255,6 +255,8 @@ export default {
     bundleConflict: '번들은 기존 또는 내장 플러그인을 자동으로 대체할 수 없습니다.',
     legacyPluginConflict: '기존 플러그인의 ID를 바꾸는 패키지는 자동 업그레이드할 수 없습니다.',
     packageHashMismatch: '플러그인 패키지 검증에 실패했습니다.',
+    marketReleaseMismatch: '설치 요청이 플러그인 마켓의 사용 가능한 버전과 일치하지 않습니다. 마켓을 새로 고친 후 다시 시도하세요.',
+    marketReleaseUnavailable: '플러그인 마켓에서 이 버전을 확인할 수 없습니다. 나중에 다시 시도하세요.',
     downloadFailed: '플러그인 패키지 다운로드에 실패했습니다.',
     marketListFetchFailed: '플러그인 Market을 일시적으로 사용할 수 없습니다.',
     unsafeProfilePath: '기록된 패키지 Profile 경로가 안전하지 않습니다.',

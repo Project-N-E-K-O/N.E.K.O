@@ -255,6 +255,8 @@ export default {
     bundleConflict: 'Un paquete no puede reemplazar automáticamente un plugin instalado o integrado.',
     legacyPluginConflict: 'Los paquetes que cambian la identidad de un plugin no se pueden actualizar automáticamente.',
     packageHashMismatch: 'Falló la verificación del paquete del plugin.',
+    marketReleaseMismatch: 'La solicitud de instalación no coincide con una versión disponible en el mercado de plugins. Actualiza el mercado e inténtalo de nuevo.',
+    marketReleaseUnavailable: 'No se pudo verificar esta versión con el mercado de plugins. Inténtalo de nuevo más tarde.',
     downloadFailed: 'Falló la descarga del paquete del plugin.',
     marketListFetchFailed: 'El Market de plugins no está disponible temporalmente.',
     unsafeProfilePath: 'La ruta registrada del perfil del paquete no es segura.',
