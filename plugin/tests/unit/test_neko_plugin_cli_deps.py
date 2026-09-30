@@ -14,10 +14,21 @@ import pytest
 from plugin.neko_plugin_cli.commands.deps_cmd import (
     _clean_vendor,
     _filter_external,
+    _lock_dir as real_lock_dir,
     _read_dependencies,
     _replace_vendor,
     handle_sync,
 )
+
+
+@pytest.fixture(autouse=True)
+def _private_lock_dir(monkeypatch, tmp_path_factory):
+    """Keep sync locks out of the real home/temp; tests that fake another
+    uid would otherwise hit the real lock dir's ownership check."""
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    locks = tmp_path_factory.mktemp("locks")
+    monkeypatch.setattr(deps_cmd, "_lock_dir", lambda: locks)
 
 
 @pytest.fixture(autouse=True)
@@ -193,6 +204,8 @@ def test_installer_start_failure_is_not_missing_pip(
 def test_overlapping_sync_rejected_across_processes(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
+    # The child process uses the real lock dir; so must this one.
+    monkeypatch.setattr(deps_cmd, "_lock_dir", real_lock_dir)
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     real_run = subprocess.run
     child_code = '''
@@ -374,6 +387,77 @@ def test_failed_first_rename_leaves_no_marker(tmp_path, monkeypatch):
     assert _replace_vendor(vendor, staging) is False
     assert (vendor / "old.py").read_text() == "keep"
     assert not list(tmp_path.glob(".vendor.backup-*"))
+
+
+def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "vendor").write_text("not a directory")
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert (plugin_dir / "vendor").read_text() == "not a directory"
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "is not a directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("env", "blocked"),
+    [
+        # "off" is a real value (a file name) for non-boolean options.
+        ({"PIP_CONSTRAINT": "off"}, True),
+        ({"PIP_FIND_LINKS": "0"}, True),
+        # Boolean options switched off are not set at all.
+        ({"PIP_NO_DEPS": "false"}, False),
+        ({"PIP_PRE": "0"}, False),
+        ({"PIP_NO_DEPS": "1"}, True),
+    ],
+)
+def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch, env, blocked):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    result = deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    )
+    assert result == (1 if blocked else 0)
+
+
+@pytest.mark.parametrize("in_venv", [True, False])
+def test_require_virtualenv_is_honored_like_pip(tmp_path, monkeypatch, capsys, in_venv):
+    # pip refuses to install outside a venv; uv would not check.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setenv("PIP_REQUIRE_VIRTUALENV", "true")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["target-python", "-c"]:
+            return subprocess.CompletedProcess(command, 0, stdout=f"{in_venv}\n")
+        if command[0] == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    result = deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    )
+    assert result == (0 if in_venv else 1)
+    if not in_venv:
+        assert "not a virtual environment" in capsys.readouterr().err
+        assert all(command[0] != "uv" for command in calls)
 
 
 def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch):
@@ -605,21 +689,51 @@ def test_non_clean_sync_refuses_nested_junction_before_copying(tmp_path, monkeyp
     assert "directory junction" in capsys.readouterr().err
 
 
-def test_sync_lock_file_is_per_user(tmp_path, monkeypatch):
+def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
+    # Not directly in a shared, sticky /tmp, where another user could
+    # pre-create the lock file and block this user's syncs for good.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 4242, raising=False)
-    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(
-        deps_cmd.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
-    )
+    cache = tmp_path / "cache"
+    me = tmp_path.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path / "shared-tmp"))
 
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
-    lock, = tmp_path.glob("neko-plugin-sync-*.lock")
-    assert lock.name.startswith("neko-plugin-sync-4242-")
+    assert real_lock_dir() == cache / "neko-plugin" / "sync-locks"
+
+
+def test_posix_lock_dir_falls_back_to_a_per_user_temp_dir(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    unusable = tmp_path / "not-a-dir"
+    unusable.write_text("x")  # e.g. a read-only or broken home cache
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    me = tmp_path.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(unusable))
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
+
+    assert real_lock_dir() == shared / f"neko-plugin-sync-{me}"
+
+
+def test_posix_lock_dir_refuses_a_fallback_owned_by_someone_else(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    unusable = tmp_path / "not-a-dir"
+    unusable.write_text("x")
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    owner = tmp_path.stat().st_uid
+    # Another user pre-created our fallback dir.
+    (shared / f"neko-plugin-sync-{owner + 1}").mkdir()
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(unusable))
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
+
+    with pytest.raises(PermissionError):
+        real_lock_dir()
 
 
 @pytest.mark.parametrize("as_dir", [False, True])
@@ -799,8 +913,10 @@ def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
     lines = _render_gitignore().splitlines()
     # Anchored to the root; no trailing "/" so the backup's marker file is
     # ignored too.
-    assert "/.vendor.staging-*" in lines
-    assert "/.vendor.backup-*" in lines
+    hex8 = "[0-9a-f]" * 8
+    assert f"/.vendor.staging-{hex8}" in lines
+    assert f"/.vendor.backup-{hex8}" in lines
+    assert f"/.vendor.backup-{hex8}.pending" in lines
     assert not any(line.startswith(".vendor.") for line in lines)
 
 

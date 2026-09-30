@@ -16,7 +16,11 @@ from tempfile import gettempdir
 
 import portalocker
 
-from ..core.build_rules import VENDOR_SYNC_BACKUP_PREFIX, VENDOR_SYNC_STAGING_PREFIX
+from ..core.build_rules import (
+    VENDOR_SYNC_BACKUP_PREFIX,
+    VENDOR_SYNC_PENDING_SUFFIX,
+    VENDOR_SYNC_STAGING_PREFIX,
+)
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
@@ -71,11 +75,7 @@ def handle_sync(args: argparse.Namespace) -> int:
     # can let waiting processes lock different inodes for the same plugin.
     identity = os.path.normcase(str(plugin_dir.resolve()))
     lock_name = hashlib.sha256(identity.encode()).hexdigest()
-    # One lock file per user: the lock is never deleted, and a file another
-    # user created in a shared /tmp may not be openable (umask,
-    # fs.protected_regular). Windows temp dirs are already per user.
-    owner = f"{os.getuid()}-" if hasattr(os, "getuid") else ""
-    lock_path = Path(gettempdir()) / f"neko-plugin-sync-{owner}{lock_name}.lock"
+    lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
     staging_dir: Path | None = None
     try:
         with portalocker.Lock(lock_path, timeout=0):
@@ -133,6 +133,14 @@ def handle_sync(args: argparse.Namespace) -> int:
                     f"[FAIL] {vendor_dir} is a symlink; sync replaces vendor/ as a "
                     "whole and cannot keep the link. Replace it with a real "
                     "directory and retry.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            if vendor_dir.exists() and not vendor_dir.is_dir():
+                print(
+                    f"[FAIL] {vendor_dir} is not a directory; sync would move it "
+                    "aside as a backup. Remove or rename it and retry.",
                     file=sys.stderr,
                 )
                 return 1
@@ -200,11 +208,8 @@ _HOST_PROVIDED = {"n-e-k-o"}
 # A backup whose swap or rollback has not finished carries a sibling marker
 # file. Keeping it beside the backup (never inside a vendor tree) means it
 # can not collide with package data or travel into vendor/.
-_PENDING_SUFFIX = ".pending"
-
-
 def _pending_marker(backup_dir: Path) -> Path:
-    return backup_dir.with_name(backup_dir.name + _PENDING_SUFFIX)
+    return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -299,6 +304,31 @@ def _parse_mountinfo_points(lines: list[str]) -> list[str]:
             # written as octal escapes.
             points.append(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4]))
     return points
+
+
+def _lock_dir() -> Path:
+    """A per-user directory for the persistent sync lock.
+
+    Windows temp dirs are already per user. On POSIX a lock left directly in
+    a shared, sticky /tmp could be pre-created by another user (unopenable,
+    and undeletable by its victim), so use a private cache dir instead, and
+    fall back to a uid-named file in the temp dir only if that is unusable.
+    """
+    if not hasattr(os, "getuid"):
+        return Path(gettempdir())
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    private = base / "neko-plugin" / "sync-locks"
+    try:
+        private.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if private.stat().st_uid == os.getuid():
+            return private
+    except OSError:
+        pass  # e.g. a read-only home in a container; use the fallback below
+    fallback = Path(gettempdir()) / f"neko-plugin-sync-{os.getuid()}"
+    fallback.mkdir(exist_ok=True, mode=0o700)
+    if fallback.stat().st_uid != os.getuid():
+        raise PermissionError(f"lock directory {fallback} is owned by another user")
+    return fallback
 
 
 def _short_token() -> str:
@@ -469,6 +499,13 @@ def _pip_install_to_vendor(
     for name, where in sorted(_pip_settings(python).items()):
         if name in _PIP_HARMLESS_SETTINGS:
             continue
+        if name == "require-virtualenv":
+            # pip refuses to install outside a venv; uv would not check.
+            if not _target_in_venv(python):
+                uncovered.append(
+                    f"{name} from {', '.join(where)} (the target Python is not a virtual environment)"
+                )
+            continue
         covers = _UV_COVERS[_PIP_SETTING_KINDS.get(name, "other")]
         if not any(_uv_env_set(uv_name) for uv_name in covers):
             fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
@@ -533,7 +570,6 @@ _PIP_HARMLESS_SETTINGS = {
     "progress-bar",
     "proxy",
     "quiet",
-    "require-virtualenv",
     "retries",
     "root-user-action",
     "timeout",
@@ -559,12 +595,16 @@ _UV_BOOLEAN_ENV = {"UV_NO_INDEX", "UV_REQUIRE_HASHES"}
 
 def _pip_settings(python: str) -> dict[str, list[str]]:
     """pip settings in effect in the environment or pip's config files,
-    mapped to where each one is set. Explicitly false values do not count."""
+    mapped to where each one is set. A boolean option set to false does not
+    count."""
     found: dict[str, list[str]] = {}
     for env_name, value in os.environ.items():
         upper = env_name.upper()
-        if upper.startswith("PIP_") and upper != "PIP_CONFIG_FILE" and value and not _pip_false(value):
-            found.setdefault(upper[4:].lower().replace("_", "-"), []).append(env_name)
+        if not upper.startswith("PIP_") or upper == "PIP_CONFIG_FILE" or not value:
+            continue
+        name = upper[4:].lower().replace("_", "-")
+        if not _explicitly_off(name, value):
+            found.setdefault(name, []).append(env_name)
     config_file = os.environ.get("PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
@@ -599,6 +639,19 @@ def _pip_config_files(python: str) -> list[Path]:
     # Site config sits in the target environment's prefix.
     files.append(_target_prefix(python) / site_name)
     return files
+
+
+def _target_in_venv(python: str) -> bool:
+    try:
+        result = subprocess.run(
+            [python, "-c", "import sys; print(sys.prefix != sys.base_prefix)"],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False  # Unknown: honor the requirement by refusing.
+    return result.returncode == 0 and (result.stdout or "").strip().endswith("True")
 
 
 def _target_prefix(python: str) -> Path:
@@ -642,7 +695,7 @@ def _config_setting_keys(path: Path) -> set[str]:
         for section in parser.sections()
         if section.lower() in {"global", "install"}
         for key, value in parser[section].items()
-        if not _pip_false(value)
+        if not _explicitly_off(key.replace("_", "-"), value)
     }
 
 
@@ -654,6 +707,28 @@ def _uv_env_set(name: str) -> bool:
         # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
     return True
+
+
+# pip options parsed as booleans. Only these can be switched off with a
+# false value; for any other option "off" or "0" is a real value (a file
+# name, a package list) and the option stays set.
+_PIP_BOOLEAN_SETTINGS = {
+    "force-reinstall",
+    "ignore-installed",
+    "isolated",
+    "no-build-isolation",
+    "no-deps",
+    "no-index",
+    "pre",
+    "prefer-binary",
+    "require-hashes",
+    "require-virtualenv",
+    "use-pep517",
+}
+
+
+def _explicitly_off(name: str, value: str) -> bool:
+    return name in _PIP_BOOLEAN_SETTINGS and _pip_false(value)
 
 
 def _pip_false(value: str) -> bool:

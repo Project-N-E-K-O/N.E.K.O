@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
-from ..core.build_rules import VENDOR_SYNC_DIR_PREFIXES
+from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
@@ -354,7 +354,13 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
     # changes (including accidentally committed sync work dirs).
     if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
         plugin_dir, "status", "--porcelain", "--", ".",
-        *(f":(top,exclude){prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES),
+        # A wildcard pathspec matches whole paths: exclude each work dir
+        # itself and everything under it.
+        *(
+            f":(top,exclude){pattern}{suffix}"
+            for pattern in VENDOR_SYNC_GLOBS
+            for suffix in ("", "/*")
+        ),
     ):
         raise RuntimeError(
             _tri(
@@ -412,7 +418,7 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
                 "--exclude",
                 # "./" anchors the sync work dirs to the plugin root, matching
                 # the build rules; a bare pattern would match at any depth.
-                ",".join(["vendor", *(f"./{prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES)]),
+                ",".join(["vendor", *(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS)]),
                 ".",
             ],
             cwd=plugin_dir,

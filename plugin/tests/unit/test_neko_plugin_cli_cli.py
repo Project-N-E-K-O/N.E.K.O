@@ -379,14 +379,19 @@ def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Pat
 
 def test_validate_plugin_dir_skips_dependency_sync_work_dirs(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
-    for name in (".vendor.backup-previous", ".vendor.staging-previous"):
+    for name in (".vendor.backup-0a1b2c3d", ".vendor.staging-0a1b2c3d"):
         work_dir = plugin_dir / name
         work_dir.mkdir()
         (work_dir / "unparsable.py").write_text("def broken(:\n", encoding="utf-8")
+    # A look-alike directory the plugin owns is still checked.
+    own = plugin_dir / ".vendor.backup-notes"
+    own.mkdir()
+    (own / "own_broken.py").write_text("def broken(:\n", encoding="utf-8")
 
     issues = validate_plugin_dir(plugin_dir)
 
     assert not any("unparsable.py" in message for _level, message in issues)
+    assert any("own_broken.py" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(

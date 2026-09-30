@@ -13,7 +13,7 @@ from plugin._types.plugin_types import (
     format_unsupported_scaffold_type,
 )
 
-from ..core.build_rules import VENDOR_SYNC_DIR_PREFIXES
+from ..core.build_rules import VENDOR_SYNC_GLOBS
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
@@ -736,7 +736,7 @@ def _render_gitignore() -> str:
     # Leading "/" anchors to the plugin root, like the build rules; a nested
     # directory with the same name is plugin source. No trailing "/": the
     # pending marker beside a backup is a file.
-    sync_dirs = "".join(f"/{prefix}*\n" for prefix in VENDOR_SYNC_DIR_PREFIXES)
+    sync_dirs = "".join(f"/{pattern}\n" for pattern in VENDOR_SYNC_GLOBS)
     return '''__pycache__/
 *.py[cod]
 .pytest_cache/

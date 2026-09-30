@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -33,9 +34,25 @@ _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
 # `neko-plugin sync` swaps vendor/ through sibling work directories at the
 # plugin root. Each one holds a full third-party tree and is never plugin
 # source, so every scan (build, pack, publish, ruff, check) must skip them.
+#
+# Only the exact generated names count (prefix + 8 hex digits, plus the
+# ".pending" marker beside a backup), so a plugin's own directory that merely
+# shares the prefix (".vendor.backup-notes") stays plugin source.
 VENDOR_SYNC_STAGING_PREFIX = ".vendor.staging-"
 VENDOR_SYNC_BACKUP_PREFIX = ".vendor.backup-"
-VENDOR_SYNC_DIR_PREFIXES = (VENDOR_SYNC_STAGING_PREFIX, VENDOR_SYNC_BACKUP_PREFIX)
+VENDOR_SYNC_PENDING_SUFFIX = ".pending"
+_VENDOR_SYNC_TOKEN_GLOB = "[0-9a-f]" * 8
+# The same names as globs; fnmatch, gitignore, git pathspecs and ruff all
+# accept "[...]" character classes.
+VENDOR_SYNC_GLOBS = (
+    f"{VENDOR_SYNC_STAGING_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}",
+    f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}",
+    f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}{VENDOR_SYNC_PENDING_SUFFIX}",
+)
+_VENDOR_SYNC_NAME_RE = re.compile(
+    rf"(?:{re.escape(VENDOR_SYNC_STAGING_PREFIX)}|{re.escape(VENDOR_SYNC_BACKUP_PREFIX)})"
+    rf"[0-9a-f]{{8}}(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
+)
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
 }
@@ -99,8 +116,8 @@ def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
 
 def is_vendor_sync_path(relative_path: Path) -> bool:
     """Whether a plugin-relative path lives in a sync staging/backup dir."""
-    return bool(relative_path.parts) and relative_path.parts[0].startswith(
-        VENDOR_SYNC_DIR_PREFIXES
+    return bool(relative_path.parts) and bool(
+        _VENDOR_SYNC_NAME_RE.fullmatch(relative_path.parts[0])
     )
 
 

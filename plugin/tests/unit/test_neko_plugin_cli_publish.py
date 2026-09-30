@@ -824,11 +824,19 @@ def test_publish_ignores_retained_dependency_recovery_backup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0a1b2c3d"
     backup.mkdir()
     (backup / "old.py").write_text("keep", encoding="utf-8")
+    (plugin_dir / ".vendor.backup-0a1b2c3d.pending").touch()
 
     publish_cmd._ensure_clean_worktree(plugin_dir)
+
+    # A plugin's own look-alike directory is plugin source and must be committed.
+    look_alike = plugin_dir / ".vendor.backup-notes"
+    look_alike.mkdir()
+    (look_alike / "notes.md").write_text("mine", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        publish_cmd._ensure_clean_worktree(plugin_dir)
 
 
 def test_release_ruff_excludes_dependency_sync_work_dirs(
@@ -839,7 +847,13 @@ def test_release_ruff_excludes_dependency_sync_work_dirs(
 
     command = release_ruff_process["calls"][0]["command"]
     excludes = command[command.index("--exclude") + 1].split(",")
-    assert excludes == ["vendor", "./.vendor.staging-*", "./.vendor.backup-*"]
+    hex8 = "[0-9a-f]" * 8
+    assert excludes == [
+        "vendor",
+        f"./.vendor.staging-{hex8}",
+        f"./.vendor.backup-{hex8}",
+        f"./.vendor.backup-{hex8}.pending",
+    ]
 
 
 def test_publish_stops_before_tag_when_ruff_fails(
