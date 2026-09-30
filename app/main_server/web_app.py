@@ -245,6 +245,10 @@ if _IS_MAIN_PROCESS:
         get_avatar_tool_store(_config_manager).initialize()
     except AvatarToolStoreError as exc:
         logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
+    except Exception:
+        # 本地道具只是可选功能：意外异常不能拖垮整个服务启动。存储根已留在
+        # 待恢复状态，首次存储操作会重试恢复。
+        logger.exception("初始化本地 Avatar Tool 存储时发生意外错误")
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：

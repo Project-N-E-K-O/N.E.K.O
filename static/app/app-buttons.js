@@ -1234,6 +1234,7 @@
     });
     var LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     var LOCAL_AVATAR_TOOL_REVISION_PATTERN = /^[0-9]+-[0-9]+$/;
+    var LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN = /^img-[a-z0-9]+(?:-[a-z0-9]+)*$/;
     // The backend sends the final ack only after prompt_ephemeral has completed
     // the visible assistant turn. Keep separate fail-safes for no reply signal
     // and a started turn whose end event is lost, then allow a short grace period
@@ -1647,6 +1648,7 @@
                 'action_id', 'actionId', 'target', 'pointer', 'timestamp',
                 'text_context', 'textContext', 'intensity', 'touch_zone', 'touchZone',
                 'change_index', 'changeIndex',
+                'image_id', 'imageId',
                 'tool_revision', 'toolRevision',
                 'special_triggered', 'specialTriggered'
             ];
@@ -1752,15 +1754,41 @@
                 console.warn('[AvatarInteraction] ignored invalid local tool revision');
                 return null;
             }
-            var rawChangeIndex = getAvatarInteractionPayloadValue(
-                payload, 'change_index', 'changeIndex', null
-            );
-            if (!Number.isSafeInteger(rawChangeIndex) || rawChangeIndex < 0) {
-                console.warn('[AvatarInteraction] ignored invalid local change index');
+            normalized.tool_revision = toolRevision;
+            if (toolRevision.indexOf('3-') === 0) {
+                var hasImageId = Object.prototype.hasOwnProperty.call(payload, 'image_id');
+                var hasCamelImageId = Object.prototype.hasOwnProperty.call(payload, 'imageId');
+                if (hasImageId === hasCamelImageId
+                        || Object.prototype.hasOwnProperty.call(payload, 'change_index')
+                        || Object.prototype.hasOwnProperty.call(payload, 'changeIndex')) {
+                    console.warn('[AvatarInteraction] ignored mixed local image facts');
+                    return null;
+                }
+                var imageId = getAvatarInteractionPayloadValue(payload, 'image_id', 'imageId', null);
+                if (typeof imageId !== 'string' || imageId.length > 80
+                        || !LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.test(imageId)) {
+                    console.warn('[AvatarInteraction] ignored invalid local image ID');
+                    return null;
+                }
+                normalized.image_id = imageId;
+            } else if (toolRevision.indexOf('2-') === 0) {
+                if (Object.prototype.hasOwnProperty.call(payload, 'image_id')
+                        || Object.prototype.hasOwnProperty.call(payload, 'imageId')) {
+                    console.warn('[AvatarInteraction] ignored mixed local image facts');
+                    return null;
+                }
+                var rawChangeIndex = getAvatarInteractionPayloadValue(
+                    payload, 'change_index', 'changeIndex', null
+                );
+                if (!Number.isSafeInteger(rawChangeIndex) || rawChangeIndex < 0) {
+                    console.warn('[AvatarInteraction] ignored invalid local change index');
+                    return null;
+                }
+                normalized.change_index = rawChangeIndex;
+            } else {
+                console.warn('[AvatarInteraction] ignored unsupported local tool revision');
                 return null;
             }
-            normalized.tool_revision = toolRevision;
-            normalized.change_index = rawChangeIndex;
         }
 
         var textContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
@@ -1775,9 +1803,17 @@
             var carriesBooleanField = Object.prototype.hasOwnProperty.call(payload, booleanField.output)
                 || Object.prototype.hasOwnProperty.call(payload, booleanField.input);
             if (carriesBooleanField) {
-                var parsedBoolean = parseAvatarInteractionBool(getAvatarInteractionPayloadValue(
+                if (localTool && normalized.image_id
+                        && Object.prototype.hasOwnProperty.call(payload, booleanField.output)
+                        && Object.prototype.hasOwnProperty.call(payload, booleanField.input)) {
+                    return null;
+                }
+                var rawBoolean = getAvatarInteractionPayloadValue(
                     payload, booleanField.output, booleanField.input, null
-                ));
+                );
+                var parsedBoolean = localTool && normalized.image_id
+                    ? (typeof rawBoolean === 'boolean' ? rawBoolean : null)
+                    : parseAvatarInteractionBool(rawBoolean);
                 if (parsedBoolean === null) {
                     console.warn('[AvatarInteraction] ignored invalid boolean field:', booleanField.output);
                     return null;

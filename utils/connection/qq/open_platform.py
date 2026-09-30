@@ -12,8 +12,19 @@ import httpx
 import websockets
 
 from ..base import ConnectionBase
+from .open_platform_media import QQOpenPlatformMediaMixin
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
+
+#: Placeholder text for an image that is not sent as media.
+_IMAGE_PLACEHOLDER = "[图片]"
+
+#: How long a replied-to id keeps its ``msg_seq`` counter after its last use: twice the
+#: platform's longest passive-reply window (60 minutes, private chat). Dropping a counter
+#: any earlier could restart it at 1 while the platform still remembers ``(msg_id, 1)``
+#: and rejects the reply as a duplicate; past the window no reply to that id is accepted
+#: at all, so restarting is harmless.
+_MSG_SEQ_TTL_SECONDS = 2 * 60 * 60
 
 # ==========================================
 # R11 identity scope: resolved
@@ -156,15 +167,26 @@ def pick_actor_id(author: Any, keys: tuple[str, ...]) -> str:
     return ""
 
 
-class QQOpenPlatformConnection(ConnectionBase):
-    #: Observed transport (see OneBotClient.CHANNEL). Never a key.
-    CHANNEL: str = "open"
-
+class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     """Official QQ Open Platform Bot API connection.
 
     WebSocket events -> internal unified message format -> upper-layer pipeline;
     HTTP API -> send messages.
+
+    Rich media (upload + ``msg_type=7`` image sends) comes from
+    ``QQOpenPlatformMediaMixin`` (see ``open_platform_media``). The media mixin comes
+    first in the bases by the same convention as ``OneBotClient(NapCatActionsMixin,
+    ConnectionBase)``, not to override anything: it defines no name that
+    ``ConnectionBase`` has, and ``send_group_image`` is implemented on this class
+    itself (it builds an ``image`` segment and goes through
+    ``send_group_message_segments``, whose upload is the mixin's ``upload_image``).
     """
+
+    #: Observed transport (see OneBotClient.CHANNEL). Never a key.
+    #:
+    #: This assignment has to sit **after** the class docstring: placed before it, the
+    #: string is just a discarded expression statement and `__doc__` is None.
+    CHANNEL: str = "open"
 
     #: Production and sandbox are **two different domains**. An unpublished bot only
     #: exists in the sandbox: connecting to the production gateway completes the
@@ -256,6 +278,12 @@ class QQOpenPlatformConnection(ConnectionBase):
         self._session_id = ""  # needed for Resume reconnect
         self._sent_message_ids: dict[str, float] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, message_queue_size))
+        #: Set by the media mixin once the legacy direct upload is known dead; cleared
+        #: on connect / successful reconnect (see ``open_platform_media``).
+        self._legacy_upload_unsupported = False
+        #: Replied-to message id -> (last ``msg_seq`` used, monotonic time of that use),
+        #: least recently used first (see ``_next_msg_seq``).
+        self._msg_seq_by_reply_id: dict[str, tuple[int, float]] = {}
 
     @property
     def needs_attention(self) -> bool:
@@ -294,6 +322,8 @@ class QQOpenPlatformConnection(ConnectionBase):
         if not self._app_id or not self._client_secret:
             raise RuntimeError("QQ 开放平台: app_id 和 client_secret 未配置")
         self._closing = False
+        # A new connection re-probes the legacy upload protocol (open_platform_media).
+        self._legacy_upload_unsupported = False
         # Sample the environment once, for this connection's lifetime. REST and the
         # gateway must agree on where they are talking to, so a settings change only
         # takes effect on the next explicit connect() -- see _API_BASE.
@@ -511,14 +541,55 @@ class QQOpenPlatformConnection(ConnectionBase):
     # message send
     # ==========================================
 
-    @staticmethod
-    def _expand_cq_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _next_msg_seq(self, reply_id: str) -> int:
+        """The next ``msg_seq`` for a reply to ``reply_id`` (1, 2, 3, ...).
+
+        The platform de-duplicates replies by ``(msg_id, msg_seq)``: a second reply to
+        the same message with the same (or the default) seq is rejected. The plugin
+        sends a multi-block answer as several messages that all reply to one id, so
+        each needs its own seq.
+        """
+        now = time.monotonic()
+        seqs = self._msg_seq_by_reply_id
+        seq = seqs.pop(reply_id, (0, now))[0] + 1
+        seqs[reply_id] = (seq, now)
+        # Pop + reinsert keeps the dict in last-use order, so stale entries sit at the
+        # front. Only age decides: a count cap would reset a counter the platform still
+        # remembers once enough other messages were replied to in between.
+        while seqs:
+            oldest_id, (_seq, used_at) = next(iter(seqs.items()))
+            if now - used_at <= _MSG_SEQ_TTL_SECONDS:
+                break
+            del seqs[oldest_id]
+        return seq
+
+    def _take_image_segment(self, image_url: str, data: dict[str, Any], content_parts: list[str]) -> str:
+        """Apply one ``image`` segment; returns the image to send (the first one wins).
+
+        A ``msg_type=7`` message carries one media item, so a second image in the same
+        message is kept as placeholder text instead of silently replacing the first.
+        """
+        candidate = str(data.get("file") or "")
+        if not image_url:
+            return candidate
+        if candidate:
+            self._media_log("warning", "一条消息只能带一张图片，多出的图片以占位文字发送")
+            content_parts.append(_IMAGE_PLACEHOLDER)
+        return image_url
+
+    def _expand_cq_segments(self, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Expand CQ codes inside a text segment into typed segments.
 
         The qq_auto_reply plugin's reply_delivery_node embeds CQ-code strings
         (e.g. ``[CQ:reply,id=...]``) in the text field; NapCat's OneBot protocol natively understands these codes, but the
         Open Platform needs real typed segments. Here the CQ codes inside a text segment
         are split out.
+
+        A CQ **image** becomes placeholder text, never an ``image`` segment: this text
+        is LLM-authored, and ``[CQ:image,file=<path>]`` would otherwise make the send
+        paths read any file the process can read and upload it. Only an ``image``
+        segment the caller passes explicitly is uploaded. Doing it here, once, keeps
+        every send path that expands CQ codes under the same rule.
         """
         expanded: list[dict[str, Any]] = []
         for seg in segments:
@@ -546,7 +617,14 @@ class QQOpenPlatformConnection(ConnectionBase):
                     if "=" in param:
                         k, v = param.split("=", 1)
                         data[k.strip()] = v.strip()
-                expanded.append({"type": cq_type, "data": data})
+                if cq_type == "image":
+                    self._media_log(
+                        "warning",
+                        "忽略 LLM 文本里的 CQ 图片（不上传本地文件）；要发图请用显式 image 段",
+                    )
+                    expanded.append({"type": "text", "data": {"text": _IMAGE_PLACEHOLDER}})
+                else:
+                    expanded.append({"type": cq_type, "data": data})
                 pos = m.end()
             if pos < len(raw):
                 expanded.append({"type": "text", "data": {"text": raw[pos:]}})
@@ -572,7 +650,8 @@ class QQOpenPlatformConnection(ConnectionBase):
             elif seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
-                image_url = str(data.get("file") or "")
+                # CQ images in the text never get here (see `_expand_cq_segments`).
+                image_url = self._take_image_segment(image_url, data, content_parts)
             elif seg_type == "face":
                 # small emoji -> text placeholder
                 content_parts.append(f"[表情{data.get('id','')}]")
@@ -587,7 +666,9 @@ class QQOpenPlatformConnection(ConnectionBase):
         body: dict[str, Any] = {}
         # Group images must be uploaded first to get file_info, then sent via msg_type=7 + media.
         if image_url:
-            file_info = await self._upload_group_image(group_id, image_url)
+            # The `_ensure_token()` above already made the token valid; the upload does
+            # not have to ask again.
+            file_info = await self._upload_group_image(group_id, image_url, token_checked=True)
             if file_info:
                 body["msg_type"] = 7
                 body["media"] = {"file_info": file_info}
@@ -596,7 +677,7 @@ class QQOpenPlatformConnection(ConnectionBase):
             else:
                 # upload failed -> degrade to text
                 if not content:
-                    content = "[图片]"
+                    content = _IMAGE_PLACEHOLDER
                 body["content"] = content
         else:
             # Auto-detect Markdown syntax (only clear format markers, avoid misjudging plain text).
@@ -611,6 +692,7 @@ class QQOpenPlatformConnection(ConnectionBase):
 
         if reply_msg_id:
             body["msg_id"] = reply_msg_id
+            body["msg_seq"] = self._next_msg_seq(reply_msg_id)
 
         if keyboard and body.get("msg_type") == 7:
             # Rich-media (image) payloads can't carry buttons: buttons only apply to
@@ -687,6 +769,7 @@ class QQOpenPlatformConnection(ConnectionBase):
         """
         content_parts: list[str] = []
         image_url = ""
+        reply_msg_id = ""
 
         for seg in self._expand_cq_segments(segments):
             seg_type = str(seg.get("type") or "").strip()
@@ -694,9 +777,13 @@ class QQOpenPlatformConnection(ConnectionBase):
             if seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
             elif seg_type == "image":
-                image_url = str(data.get("file") or "")
+                # CQ images in the text never get here (see `_expand_cq_segments`).
+                image_url = self._take_image_segment(image_url, data, content_parts)
             elif seg_type == "reply":
-                content_parts.append("[回复]")
+                # A passive reply, as on the group path and in `send_private_image`:
+                # without `msg_id` the platform treats the send as an active message,
+                # which is quota-limited.
+                reply_msg_id = str(data.get("id") or "")
             elif seg_type == "at":
                 at_qq = str(data.get("qq") or "")
                 content_parts.append(f"[@{at_qq}]" if at_qq else "[@某人]")
@@ -724,14 +811,42 @@ class QQOpenPlatformConnection(ConnectionBase):
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
-        if image_url and not content:
-            content = "[图片]"
 
         await self._ensure_token()
+        body: dict[str, Any] = {}
+        # Private images are the same two steps as group ones (upload -> msg_type=7 +
+        # media.file_info); what makes the platform accept the send is the **users**
+        # upload scope, since an upload made through one interface can only be sent
+        # through that same one. Before this, a private image was never uploaded at
+        # all: the whole segment collapsed into a "[图片]" text line, so a sticker
+        # reply arrived as three characters of text.
+        if image_url and str(user_id or "").strip():
+            # As above: the outer `_ensure_token()` already prepared the token.
+            file_info = await self.upload_image(
+                scope="users", owner_id=str(user_id), source=image_url, token_checked=True,
+            )
+            if file_info:
+                body["msg_type"] = 7
+                body["media"] = {"file_info": file_info}
+                if content:
+                    body["content"] = content
+            else:
+                # upload failed -> degrade to text, as the group path does
+                body["content"] = content or _IMAGE_PLACEHOLDER
+        else:
+            if image_url and not content:
+                # No usable private id to upload against: keep the old text fallback.
+                content = _IMAGE_PLACEHOLDER
+            body["content"] = content
+
+        if reply_msg_id:
+            body["msg_id"] = reply_msg_id
+            body["msg_seq"] = self._next_msg_seq(reply_msg_id)
+
         try:
             resp = await self._http.post(
                 f"{self._API_BASE}/v2/users/{user_id}/messages",
-                json={"content": content},
+                json=body,
                 headers=self._auth_headers(),
             )
             data = resp.json()
@@ -833,6 +948,7 @@ class QQOpenPlatformConnection(ConnectionBase):
                 self._ws = await websockets.connect(ws_url, max_size=2 ** 23)
                 self.ws = self._ws
                 await self._handshake(is_reconnect=True)
+                self._legacy_upload_unsupported = False
                 if self.logger:
                     self.logger.info("[QQOpenPlatform] 重连成功")
                 return  # back to _receive_loop
@@ -874,56 +990,23 @@ class QQOpenPlatformConnection(ConnectionBase):
         if time.time() >= self._token_expires_at:
             await self._refresh_token()
 
-    async def _upload_group_image(self, group_id: str, image_url: str) -> str:
-        """Upload a group image to the Open Platform; returns file_info or empty."""
-        import os, mimetypes
-        image_url = str(image_url or "").strip()
-        if not image_url:
-            return ""
-        # Get local file path (file:// or a raw path).
-        file_path = image_url
-        if file_path.startswith("file://"):
-            file_path = file_path[7:]
-        if not os.path.isfile(file_path):
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片文件不存在: {file_path}")
-            return ""
-        try:
-            mime_type = mimetypes.guess_type(file_path)[0] or "image/png"
-            file_size = os.path.getsize(file_path)
-            # Step 1: request upload
-            resp = await self._http.post(
-                f"{self._API_BASE}/v2/groups/{group_id}/files",
-                json={"file_type": 1, "file_name": os.path.basename(file_path),
-                      "file_size": file_size, "mime_type": mime_type},
-                headers=self._auth_headers(),
-            )
-            data = resp.json()
-            upload_url = str(data.get("upload_url") or "")
-            if not upload_url:
-                if self.logger:
-                    self.logger.warning(f"[QQOpenPlatform] 申请上传URL失败: {data}")
-                return ""
-            # Step 2: upload file
-            with open(file_path, "rb") as f:
-                upload_resp = await self._http.put(
-                    upload_url,
-                    content=f.read(),
-                    headers={"Content-Type": mime_type},
-                )
-            upload_data = upload_resp.json() if upload_resp.text else {}
-            file_info = str(upload_data.get("file_info") or data.get("file_info") or "")
-            if file_info:
-                if self.logger:
-                    self.logger.info(f"[QQOpenPlatform] 图片上传成功: {file_info}")
-                return file_info
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传失败: {upload_data}")
-            return ""
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传异常: {e}")
-            return ""
+    async def _upload_group_image(
+        self, group_id: str, image_url: str, *, token_checked: bool = False,
+    ) -> str:
+        """Upload a group image to the Open Platform; returns file_info or empty.
+
+        Kept as the group path's entry point (``send_group_message_segments`` calls
+        it) and forwarded to ``upload_image`` so both directions upload the same way:
+        the upload scope is ``groups``, and the two protocols (legacy direct upload
+        first, then the documented chunked one) are tried inside the mixin. This used
+        to be an inline copy of the legacy protocol only -- which is why the group
+        image path silently degraded to a plain text placeholder on a live run
+        (2026-09-26), while private images never uploaded at all.
+        """
+        return await self.upload_image(
+            scope="groups", owner_id=str(group_id or ""), source=str(image_url or ""),
+            token_checked=token_checked,
+        )
 
     async def _get_gateway_url(self) -> str:
         await self._ensure_token()
