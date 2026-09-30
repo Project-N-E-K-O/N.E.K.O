@@ -773,6 +773,7 @@ async def run_sync_connector(
     status_callback=None,
     user_language_provider=None,
     render_language_provider=None,
+    monitor_auth_token: str | None = None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -797,6 +798,8 @@ async def run_sync_connector(
         user_language_provider: optional callable returning the live session locale.
         render_language_provider: optional callable returning the current renderer
             locale when the session has no explicit language preference.
+        monitor_auth_token: optional Monitor bearer token. When provided it is sent
+            as an Authorization header on Monitor sync WebSocket connections.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
@@ -852,17 +855,22 @@ async def run_sync_connector(
     binary_slot: _WSSlot | None = None
     bullet_slot: _WSSlot | None = None
     if config['monitor']:
+        monitor_ws_kwargs = {'heartbeat': 10}
+        if monitor_auth_token:
+            monitor_ws_kwargs['headers'] = {
+                'Authorization': f'Bearer {monitor_auth_token}',
+            }
         sync_slot = _WSSlot(
             'sync',
             f"{sync_server_url}/sync/{lanlan_name}",
             lanlan_name,
-            ws_kwargs={'heartbeat': 10},
+            ws_kwargs=monitor_ws_kwargs,
         )
         binary_slot = _WSSlot(
             'binary',
             f"{sync_server_url}/sync_binary/{lanlan_name}",
             lanlan_name,
-            ws_kwargs={'heartbeat': 10},
+            ws_kwargs=monitor_ws_kwargs.copy(),
         )
     if config['bullet']:
         bullet_slot = _WSSlot(

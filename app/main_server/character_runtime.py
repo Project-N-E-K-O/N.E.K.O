@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config import MONITOR_SERVER_PORT, MONITOR_TOKEN, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import (
@@ -2009,6 +2009,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     render_language_provider=(
                         lambda _name=k: _get_session_render_language(_name)
                     ),
+                    monitor_auth_token=MONITOR_TOKEN or None,
                 ),
                 name=f"SyncConnector-{k}",
             )

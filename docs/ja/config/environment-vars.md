@@ -11,6 +11,17 @@ Current code が明示的に読む変数だけがサポート対象です。`NEK
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/Tool |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
 
+## Optional Monitor service
+
+| Preferred variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能） |
+| `NEKO_MONITOR_TOKEN` | empty | Monitor の HTTP/WebSocket data route 用 optional Bearer token（`MONITOR_TOKEN` も使用可能） |
+
+Token が空の場合は旧クライアント互換のため認証なしです。Token を有効にした native client は `Authorization: Bearer <token>` を送り、browser WebSocket viewer は `token` query parameter を使用できます。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。
+
+Viewer は有効な query token を HttpOnly の `monitor_token` cookie に昇格し、以降の API request と WebSocket handshake も認証します。静的モデル asset は公開のまま、token は Monitor の data と realtime route を保護します。
+
 Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTART_ALLOWED_ORIGINS`、`NEKO_BEHIND_PROXY`、`NEKO_LOG_LEVEL`、`NEKO_MERGED` を使います。Storage root は `NEKO_STORAGE_SELECTED_ROOT` と `NEKO_STORAGE_ANCHOR_ROOT` です。
 
 Local vectors は `NEKO_VECTORS_ENABLED` と `NEKO_VECTORS_QUANTIZATION`（`auto/int8/fp32`）を受け付けます。Boolean は `1/true/yes/on` と `0/false/no/off` です。利用可能 RAM の下限は現在、固定の実行時定数 `VECTORS_MIN_RAM_GB = 4.0` であり、環境変数による上書きはありません。

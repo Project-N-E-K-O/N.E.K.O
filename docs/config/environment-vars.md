@@ -13,6 +13,17 @@ Only variables explicitly read by current code are supported. A `NEKO_` prefix i
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/tool server |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
 
+## Optional Monitor service
+
+| Preferred variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor bind address (`MONITOR_HOST` is accepted for compatibility) |
+| `NEKO_MONITOR_TOKEN` | empty | Optional bearer token for Monitor HTTP/WebSocket data routes (`MONITOR_TOKEN` is also accepted) |
+
+Monitor authentication is disabled when the token is empty for backwards compatibility. When enabled, send `Authorization: Bearer <token>` from native clients; browser WebSocket viewers may use the `token` query parameter. Keep the default open listener on a trusted LAN, or set the host to `127.0.0.1` for local-only use. Never include the token in logs or source control.
+
+The viewer promotes a valid query token to an HttpOnly `monitor_token` cookie so its API requests and WebSocket handshake remain authenticated. Static model assets remain public; the token protects Monitor data and realtime routes.
+
 Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` on Windows, macOS Application Support, or `$XDG_CONFIG_HOME/N.E.K.O` on Linux. Explicit environment values win.
 
 ## Runtime identity and origins

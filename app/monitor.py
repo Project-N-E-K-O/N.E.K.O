@@ -32,9 +32,15 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
-from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
+from config import MONITOR_SERVER_PORT, MONITOR_HOST, DEFAULT_LIVE2D_MODEL_NAME
+from app.monitor_auth import (
+    extract_monitor_token,
+    install_monitor_log_redaction,
+    monitor_auth_enabled,
+    verify_monitor_token,
+)
 from utils.config_manager import get_config_manager, get_reserved
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
@@ -103,6 +109,49 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+def _token_from_request(request: Request) -> str | None:
+    return extract_monitor_token(
+        headers=request.headers,
+        query_token=request.query_params.get("token"),
+        cookie_token=request.cookies.get("monitor_token"),
+    )
+
+
+def require_monitor_auth(request: Request) -> None:
+    if not verify_monitor_token(_token_from_request(request)):
+        raise HTTPException(status_code=401, detail="Monitor authentication required")
+
+
+async def authenticate_monitor_websocket(websocket: WebSocket) -> bool:
+    """Accept, authenticate, and only then permit a WebSocket route to proceed."""
+    await websocket.accept()
+    token = extract_monitor_token(
+        headers=websocket.headers,
+        query_token=websocket.query_params.get("token"),
+        cookie_token=websocket.cookies.get("monitor_token"),
+    )
+    if verify_monitor_token(token):
+        return True
+    await websocket.close(code=1008)
+    return False
+
+
+_ALLOWED_VIEWER_PREFERENCE_KEYS = {
+    "model_path", "position", "scale", "rotation", "display", "viewport",
+    "camera_position", "parameters",
+}
+
+
+def _viewer_preferences_only(preferences):
+    if not isinstance(preferences, list):
+        return preferences
+    filtered = []
+    for entry in preferences:
+        if isinstance(entry, dict):
+            filtered.append({k: v for k, v in entry.items() if k in _ALLOWED_VIEWER_PREFERENCE_KEYS})
+    return filtered
+
 DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
 LEGACY_DEFAULT_LIVE2D_MODELS = {
     model_name for model_name in ("yui_default", "yui-default") if model_name != DEFAULT_LIVE2D_MODEL
@@ -132,12 +181,14 @@ if workshop_path and os.path.exists(workshop_path):
     logger.info(f"已挂载创意工坊目录: {workshop_path}")
 
 @app.get("/subtitle")
-async def get_subtitle():
+async def get_subtitle(request: Request):
+    require_monitor_auth(request)
     return FileResponse(get_resource_path('templates/subtitle.html'))
 
 @app.get("/api/config/page_config")
-async def get_page_config(lanlan_name: str = ""):
+async def get_page_config(request: Request, lanlan_name: str = ""):
     """Get page config (lanlan_name and model_path)"""
+    require_monitor_auth(request)
     try:
         # 获取角色数据
         _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
@@ -189,13 +240,15 @@ async def get_page_config(lanlan_name: str = ""):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/config/preferences")
-async def get_preferences():
+async def get_preferences(request: Request):
     """Get user preferences consistent with the main server package."""
+    require_monitor_auth(request)
     preferences = await aload_user_preferences()
-    return preferences
+    return _viewer_preferences_only(preferences)
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
-def get_emotion_mapping(model_name: str):
+def get_emotion_mapping(model_name: str, request: Request):
+    require_monitor_auth(request)
     """Get the emotion mapping config"""
     try:
         # 使用 find_model_directory 在 static、用户文档目录、创意工坊目录中查找模型
@@ -262,11 +315,27 @@ def get_emotion_mapping(model_name: str):
 
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
-    return templates.TemplateResponse("templates/viewer.html", {
+    require_monitor_auth(request)
+    # A browser WebSocket cannot set Authorization headers. Promote a valid
+    # query token to an HttpOnly cookie so the viewer's subsequent API fetches
+    # and WebSocket handshake remain authenticated without frontend changes.
+    response = templates.TemplateResponse("templates/viewer.html", {
         "request": request,
         **_viewer_static_assets_ctx(),
     })
+    token = extract_monitor_token(
+        headers=request.headers,
+        query_token=request.query_params.get("token"),
+        cookie_token=request.cookies.get("monitor_token"),
+    )
+    if token and request.query_params.get("token"):
+        response.set_cookie(
+            "monitor_token",
+            token,
+            httponly=True,
+            samesite="lax",
+        )
+    return response
 
 
 # 存储所有连接的客户端
@@ -291,7 +360,8 @@ async def _receive_ws_frame(websocket: WebSocket) -> dict:
 
 @app.websocket("/subtitle_ws")
 async def subtitle_websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+    if not await authenticate_monitor_websocket(websocket):
+        return
     print(f"字幕客户端已连接: {websocket.client}")
 
     # 添加到字幕客户端集合
@@ -336,7 +406,8 @@ async def clear_subtitle():
 # 主服务器连接端点
 @app.websocket("/sync/{lanlan_name}")
 async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
-    await websocket.accept()
+    if not await authenticate_monitor_websocket(websocket):
+        return
     print(f"✅ [SYNC] 主服务器已连接: {websocket.client}")
 
     try:
@@ -380,7 +451,8 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
 # 二进制数据同步端点
 @app.websocket("/sync_binary/{lanlan_name}")
 async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
-    await websocket.accept()
+    if not await authenticate_monitor_websocket(websocket):
+        return
     print(f"✅ [BINARY] 主服务器二进制连接已建立: {websocket.client}")
 
     try:
@@ -404,7 +476,8 @@ async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
 # 客户端连接端点
 @app.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
-    await websocket.accept()
+    if not await authenticate_monitor_websocket(websocket):
+        return
     print(f"✅ [CLIENT] 查看客户端已连接: {websocket.client}, 当前总数: {len(connected_clients) + 1}")
 
     # 添加到连接集合
@@ -510,4 +583,11 @@ if __name__ == "__main__":
     # The monitor server is a read-only status receiver designed to be
     # reachable by external clients. Keep binding to 0.0.0.0 to preserve
     # its intended use; hardening (e.g. token auth) should be additive.
-    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)
+    install_monitor_log_redaction()
+    logger.info(
+        "Monitor listening on %s:%s; authentication %s",
+        MONITOR_HOST,
+        MONITOR_SERVER_PORT,
+        "enabled" if monitor_auth_enabled() else "disabled",
+    )
+    uvicorn.run(app, host=MONITOR_HOST, port=MONITOR_SERVER_PORT, reload=False)

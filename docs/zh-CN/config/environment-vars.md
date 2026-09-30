@@ -13,6 +13,17 @@
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/工具服务 |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | 用户插件宿主 |
 
+## 可选 Monitor 服务
+
+| 首选变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor 监听地址（兼容 `MONITOR_HOST`） |
+| `NEKO_MONITOR_TOKEN` | 空 | Monitor HTTP/WebSocket 数据路由的可选 Bearer token（兼容 `MONITOR_TOKEN`） |
+
+token 为空时为兼容旧客户端而保持开放。启用 token 后，原生客户端使用 `Authorization: Bearer <token>`；浏览器 WebSocket viewer 可使用 `token` 查询参数。默认开放监听只应运行在可信局域网；仅本机使用时请将 host 设为 `127.0.0.1`。不要把 token 写入日志或提交到源码。
+
+Viewer 会将有效的查询 token 转换为 HttpOnly 的 `monitor_token` cookie，使后续 API 请求和 WebSocket 握手继续认证。静态模型资源保持公开；token 保护 Monitor 数据和实时路由。
+
 Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优先。
 
 ## 运行时、存储与向量

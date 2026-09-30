@@ -160,6 +160,10 @@ def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = 
 MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
 MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
 MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
+# Optional Monitor bind/auth settings.  Keep the historical LAN-facing bind as
+# the default and leave authentication opt-in for backwards compatibility.
+MONITOR_HOST = _read_str_env("MONITOR_HOST", "0.0.0.0")
+MONITOR_TOKEN = _read_str_env("MONITOR_TOKEN", "")
 COMMENTER_SERVER_PORT = _read_port_env("COMMENTER_SERVER_PORT", 48914)
 TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
