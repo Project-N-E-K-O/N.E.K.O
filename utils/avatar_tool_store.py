@@ -653,21 +653,27 @@ class AvatarToolStore:
         if probe_error is not None:
             raise _storage_total_unavailable() from probe_error
         if deleting_kind != "absent":
-            retained_delete = self._retained_unconfirmed_delete(tool_id, deleting)
-            if retained_delete is None:
+            recovery_pending = AvatarToolStoreError(
+                "tool_recovery_pending",
+                "An interrupted change of this avatar tool is still awaiting recovery",
+                status_code=409,
+            )
+            # 先做便宜的判断；只有明确删除真要丢弃副本时才遍历整棵副本，副本里
+            # 读不了的子目录不能把创建和修改该得到的 409 变成 503。
+            if not self._is_retained_unconfirmed_delete(tool_id, deleting):
                 # 不是明确删除能清掉的保留副本（比如 .deleting 被换成了普通文件）：
                 # 不能提示用户去删除，删除同样会被拦下。
-                raise AvatarToolStoreError(
-                    "tool_recovery_pending",
-                    "An interrupted change of this avatar tool is still awaiting recovery",
-                    status_code=409,
-                )
+                raise recovery_pending
             if not allow_retained_delete:
                 raise AvatarToolStoreError(
                     "tool_delete_pending",
                     "An unconfirmed deletion of this avatar tool is still pending",
                     status_code=409,
                 )
+            retained_delete = self._observe_retained_delete(deleting)
+            if retained_delete[2][0] != "dir" or retained_delete[3][0] == "absent":
+                # 判断之后、记录之前被换掉了：不再是那份保留副本。
+                raise recovery_pending
         for attempt in range(2):
             staged = False
             for suffix in ("backup", "updating"):
@@ -697,31 +703,39 @@ class AvatarToolStore:
             status_code=409,
         )
 
-    def _retained_unconfirmed_delete(self, tool_id: str, deleting: Path) -> _RetainedDelete | None:
-        """Describe the unconfirmed delete copy recovery retained for ``tool_id``, if any.
+    def _is_retained_unconfirmed_delete(self, tool_id: str, deleting: Path) -> bool:
+        """Whether ``deleting`` is the unconfirmed delete copy recovery retained for ``tool_id``.
 
         That is exactly the state recovery leaves alone: a ``.deleting`` directory whose
         authorization does not match while the published directory of the same ID exists.
         """
         marker = deleting.with_name(f"{deleting.name}.unverified")
         try:
-            # 原地改写副本里的文件不会改变目录本身的身份，所以连同其中每个条目一起记下。
-            deleting_state = _retained_copy_state(deleting)
-            deleting_kind = deleting_state[0]
-            # 授权位置可能被换成目录，同样递归记下其中每个条目。
-            marker_state = _retained_copy_state(marker)
-            marker_kind = marker_state[0]
-            final_kind, _, probe_error = _probe_entry(self.root / tool_id)
-            if probe_error is not None:
-                raise probe_error
-            if deleting_kind != "dir" or marker_kind == "absent" or final_kind != "dir":
-                return None
-            if self._delete_authorization_matches(deleting, marker):
-                # 授权对得上的副本是恢复会自己清掉的已确认删除，不属于这里。
-                return None
+            for path, retained in (
+                (deleting, lambda kind: kind == "dir"),
+                (marker, lambda kind: kind != "absent"),
+                (self.root / tool_id, lambda kind: kind == "dir"),
+            ):
+                kind, _, probe_error = _probe_entry(path)
+                if probe_error is not None:
+                    raise probe_error
+                if not retained(kind):
+                    return False
+            # 授权对得上的副本是恢复会自己清掉的已确认删除，不属于这里。
+            return not self._delete_authorization_matches(deleting, marker)
         except OSError as exc:
             raise _storage_total_unavailable() from exc
-        return deleting, marker, deleting_state, marker_state
+
+    @staticmethod
+    def _observe_retained_delete(deleting: Path) -> _RetainedDelete:
+        """Record a retained copy and its marker so discarding them can be validated."""
+        marker = deleting.with_name(f"{deleting.name}.unverified")
+        try:
+            # 原地改写副本里的文件不会改变目录本身的身份，所以连同其中每个条目一起记下；
+            # 授权位置可能被换成目录，同样递归记下。
+            return deleting, marker, _retained_copy_state(deleting), _retained_copy_state(marker)
+        except OSError as exc:
+            raise _storage_total_unavailable() from exc
 
     def _write_mismatched_marker(self, marker: Path) -> None:
         """Put back an authorization that can never match, restoring a retained copy.

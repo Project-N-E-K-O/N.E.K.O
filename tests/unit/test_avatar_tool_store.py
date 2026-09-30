@@ -1970,6 +1970,31 @@ def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(
     assert not final.exists()
 
 
+def test_an_unreadable_retained_copy_still_blocks_saves_with_delete_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    created = store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    deleting = store.root / f".{tool_id}.deleting"
+    shutil.copytree(store.root / tool_id, deleting)
+    (store.root / f".{tool_id}.deleting.unverified").write_bytes(b"{")
+
+    def unreadable(_path):
+        # 副本里有读不了的子目录。保存只需要知道「这是一份保留副本」，不该去遍历它。
+        raise PermissionError(errno.EACCES, "simulated unreadable subdirectory")
+
+    monkeypatch.setattr("utils.avatar_tool_store._retained_copy_state", unreadable)
+    with pytest.raises(AvatarToolStoreError) as blocked:
+        store.update_tool_v3(
+            tool_id,
+            base_revision=created["revision"],
+            manifest=_v3_manifest(tool_id, name="Renamed"),
+            uploads=[_png()],
+        )
+
+    assert (blocked.value.code, blocked.value.status_code) == ("tool_delete_pending", 409)
+
+
 def test_a_deleting_entry_that_deleting_cannot_clear_reports_recovery_pending(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
