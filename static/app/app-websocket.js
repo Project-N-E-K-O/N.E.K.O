@@ -1576,8 +1576,12 @@
             || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
     }
 
-    function clearLocalAsrPreparingNotice() {
+    function clearLocalAsrPreparingNotice(options) {
         S.localAsrPreparingMessage = null;
+        if (options && options.preserveVoiceToast
+                && (S.voiceStartPending === true || S._pendingSessionStartMode)) {
+            return;
+        }
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -3934,7 +3938,7 @@
                             S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
-                            clearLocalAsrPreparingNotice();
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
                             var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
@@ -3986,7 +3990,7 @@
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
-                            clearLocalAsrPreparingNotice();
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
                             if (typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',

@@ -671,6 +671,21 @@ test('a new READY retires a preparing notice left over from an earlier session',
     assert.equal(preparing, null);
 });
 
+test('READY clears local ASR state without hiding a still-pending voice start notice', () => {
+    const env = loadCapture(true);
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.S.voiceStartPending = true;
+    env.S._pendingSessionStartMode = 'audio';
+    env.window.showVoicePreparingToast('Connecting to voice session');
+    env.status('ASR_INDEPENDENT_READY', { provider: 'faster_whisper', session_epoch: 12 });
+    assert.equal(env.S.localAsrPreparingMessage, null);
+    assert.equal(preparing, 'Connecting to voice session');
+});
+
 test('the preparing notice is put away for good when the session ends', () => {
     for (const end of ['session_failed', 'session_ended_by_server', 'onclose']) {
         const env = loadCapture(true);
