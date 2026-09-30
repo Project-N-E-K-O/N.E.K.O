@@ -3807,6 +3807,13 @@
                             // BLOCKED and keep their per-code toasts below; a
                             // prefixed fatal code after BLOCKED re-shows the same
                             // fallback text, which the toast renders as one message.
+                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off') {
+                                // The transport is closed (e.g. the idle TTL expired
+                                // while a first model load was still running): no
+                                // PREPARED will follow for it. A reconnect announces
+                                // PREPARING again if the model is still not ready.
+                                clearLocalAsrPreparingNotice();
+                            }
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {

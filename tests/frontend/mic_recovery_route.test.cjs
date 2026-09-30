@@ -672,3 +672,18 @@ test('the preparing notice is put away for good when the session ends', () => {
         assert.equal(preparing, null, end);
     }
 });
+
+test('a transport put to deep sleep while preparing clears the notice', () => {
+    const env = loadCapture(true);
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = env.S.localAsrPreparingMessage || null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.status('ASR_INDEPENDENT_PREPARING', {
+        provider: 'faster_whisper', session_epoch: 12, reason: 'ASR_LOCAL_MODEL_LOADING',
+    });
+    env.status('ASR_LIFECYCLE_STATE', { state: 'deep_sleep', provider: 'faster_whisper', session_epoch: 12 });
+    assert.equal(env.S.localAsrPreparingMessage, null);
+    assert.equal(preparing, null);
+});

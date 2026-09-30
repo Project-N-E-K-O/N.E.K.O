@@ -260,7 +260,9 @@ def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
     assert "'microphone.localAsr'" in local_setting
     assert "'microphone.localAsrHint'" in local_setting
     assert "? 'faster_whisper'" in local_setting
-    assert "localAsrToggle.setDisabled(!enabled);" in source
+    assert "localAsrToggle.setDisabled(!enabled && !localAsrChosen);" in source
+    # A saved "on" choice can always be switched off.
+    assert "if (enabled && !localAsrChoiceActionable())" in local_setting
     # Hidden unless the dependency is installed or the preference is already on.
     assert "S.localAsrAvailable === true" in offer_gate
     assert "|| S.independentAsrProviderPreference === 'faster_whisper'" in offer_gate

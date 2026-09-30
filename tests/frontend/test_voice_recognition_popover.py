@@ -882,7 +882,8 @@ def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
             asrInput.checked = true;
             asrInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-            // Free Core: the effective view is off and edits are ignored.
+            // Free Core: the saved choice stays visible and can be switched
+            // off, but not back on while the Core cannot use it.
             state.independentAsrProviderPreference = 'faster_whisper';
             state.coreApiSupportsIndependentAsr = false;
             window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
@@ -896,7 +897,11 @@ def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
             const freeAfterChange = {
                 preference: state.independentAsrProviderPreference,
                 saveCalls: window.__saveCalls - saveCallsBefore,
+                disabled: localInput.disabled,
             };
+            localInput.checked = true;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const freeReenable = state.independentAsrProviderPreference;
             return {
                 initial,
                 afterEnable,
@@ -904,6 +909,7 @@ def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
                 masterOffDisabled,
                 freeView,
                 freeAfterChange,
+                freeReenable,
             };
         }"""
     )
@@ -914,11 +920,11 @@ def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
     assert result["afterEnable"]["pendingEpoch"] == 11
     assert result["afterDisable"] == "auto"
     assert result["masterOffDisabled"] is True
-    assert result["freeView"] == {"checked": False, "disabled": True}
-    assert result["freeAfterChange"] == {
-        "preference": "faster_whisper",
-        "saveCalls": 0,
-    }
+    assert result["freeView"] == {"checked": True, "disabled": False}
+    assert result["freeAfterChange"]["preference"] == "auto"
+    assert result["freeAfterChange"]["saveCalls"] >= 1
+    assert result["freeAfterChange"]["disabled"] is True
+    assert result["freeReenable"] == "auto"
 
 
 @pytest.mark.frontend

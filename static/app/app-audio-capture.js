@@ -3525,7 +3525,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 localAsrToggle = createVoiceSettingToggle(
                     S.independentAsrProviderPreference === 'faster_whisper',
                     function (enabled) {
-                        if (!localAsrChoiceActionable()) {
+                        // Turning it on needs a route that can use it; turning a
+                        // saved choice off is always allowed, or a preference the
+                        // current Core cannot use could never be cleared.
+                        if (enabled && !localAsrChoiceActionable()) {
                             updateVoiceRecognitionUi();
                             return;
                         }
@@ -3551,7 +3554,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // Disabled state is set here rather than left to the next
                 // updateVoiceRecognitionUi(), so a toggle added late never shows
                 // as operable while the master switch is off.
-                localAsrToggle.setDisabled(!localAsrChoiceActionable());
+                localAsrToggle.setDisabled(
+                    !localAsrChoiceActionable()
+                    && S.independentAsrProviderPreference !== 'faster_whisper'
+                );
                 // Keep the panel order stable when added late: after resource
                 // optimization, before the status line.
                 if (beforeNode && beforeNode.parentNode === panelBody) {
@@ -3635,11 +3641,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // Local recognition is an independent-ASR provider choice, so
                 // it follows the same Core capability gate and master switch.
                 if (localAsrToggle) {
-                    localAsrToggle.setChecked(
-                        !capabilityUnavailable
-                        && S.independentAsrProviderPreference === 'faster_whisper'
-                    );
-                    localAsrToggle.setDisabled(!enabled);
+                    // Show the saved choice as it is, even where the current
+                    // Core cannot use it, and keep an "on" choice switchable off.
+                    var localAsrChosen =
+                        S.independentAsrProviderPreference === 'faster_whisper';
+                    localAsrToggle.setChecked(localAsrChosen);
+                    localAsrToggle.setDisabled(!enabled && !localAsrChosen);
                 }
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
