@@ -15,6 +15,7 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _clean_vendor,
     _filter_external,
     _lock_dir as real_lock_dir,
+    _pip_config_files as real_pip_config_files,
     _probe_target as real_probe_target,
     _read_dependencies,
     _replace_vendor,
@@ -554,6 +555,27 @@ def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
         env={"PIP_INDEX_URL": "https://private/simple"},
         cwd=tmp_path / "launcher-dir",
     )
+
+
+def test_relative_config_bases_resolve_from_the_targets_cwd(tmp_path, monkeypatch):
+    # A launcher may cd and export a relative XDG_CONFIG_HOME / HOME; pip
+    # resolves those from its own cwd, so must the scan.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd, "_pip_config_files", real_pip_config_files)
+    launcher_dir = tmp_path / "launcher-dir"
+    if sys.platform == "win32":
+        env = {"APPDATA": "appdata", "USERPROFILE": "profile"}
+        config = launcher_dir / "appdata" / "pip" / "pip.ini"
+    else:
+        env = {"XDG_CONFIG_HOME": "xdg", "HOME": "home"}
+        config = launcher_dir / "xdg" / "pip" / "pip.conf"
+    config.parent.mkdir(parents=True)
+    config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
+    target = _target(env=env, cwd=launcher_dir)
+
+    assert config in real_pip_config_files(target)
+    assert deps_cmd._pip_settings(target) == {"index-url": [str(config)]}
 
 
 def test_relative_pip_config_file_resolves_from_the_targets_cwd(tmp_path, monkeypatch):

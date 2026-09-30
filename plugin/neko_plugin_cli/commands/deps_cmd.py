@@ -827,7 +827,9 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
         site_name = "pip.conf"
     # Site config sits in the target environment's own prefix.
     files.append(target.prefix / site_name)
-    return files
+    # pip resolves relative bases (HOME, XDG_CONFIG_HOME, XDG_CONFIG_DIRS)
+    # from its own working directory; absolute paths are unchanged by this.
+    return [target.cwd / path for path in files]
 
 
 def _config_setting_keys(path: Path) -> set[str]:
