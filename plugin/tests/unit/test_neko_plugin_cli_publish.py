@@ -838,7 +838,7 @@ def test_release_ruff_excludes_dependency_sync_work_dirs(
 
     command = release_ruff_process["calls"][0]["command"]
     excludes = command[command.index("--exclude") + 1].split(",")
-    assert excludes == ["vendor", ".vendor.staging-*", ".vendor.backup-*"]
+    assert excludes == ["vendor", "./.vendor.staging-*", "./.vendor.backup-*"]
 
 
 def test_publish_stops_before_tag_when_ruff_fails(

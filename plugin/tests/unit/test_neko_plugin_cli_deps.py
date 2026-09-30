@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -218,6 +219,50 @@ def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
     ) == 0
     assert len(calls) == 2
     assert all(kwargs.get("env") is None for kwargs in calls)
+
+
+def test_symlinked_vendor_is_refused_before_any_change(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    real_vendor = tmp_path / "other_disk_vendor"
+    real_vendor.mkdir()
+    (real_vendor / "old.py").write_text("keep")
+    link = plugin_dir / "vendor"
+    if sys.platform == "win32":
+        # Junctions need no privilege, unlike symlinks.
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real_vendor)],
+                       check=True, capture_output=True)
+    else:
+        link.symlink_to(real_vendor, target_is_directory=True)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run for a symlinked vendor"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert os.readlink(link)
+    assert (real_vendor / "old.py").read_text() == "keep"
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_sync_lock_file_is_per_user(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 4242, raising=False)
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    lock, = tmp_path.glob("neko-plugin-sync-*.lock")
+    assert lock.name.startswith("neko-plugin-sync-4242-")
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):

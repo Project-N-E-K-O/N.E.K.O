@@ -407,7 +407,9 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
                 "--select",
                 "E4,E7,E9,F,I",
                 "--exclude",
-                ",".join(["vendor", *(f"{prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES)]),
+                # "./" anchors the sync work dirs to the plugin root, matching
+                # the build rules; a bare pattern would match at any depth.
+                ",".join(["vendor", *(f"./{prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES)]),
                 ".",
             ],
             cwd=plugin_dir,

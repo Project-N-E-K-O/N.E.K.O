@@ -69,7 +69,11 @@ def handle_sync(args: argparse.Namespace) -> int:
     # can let waiting processes lock different inodes for the same plugin.
     identity = os.path.normcase(str(plugin_dir.resolve()))
     lock_name = hashlib.sha256(identity.encode()).hexdigest()
-    lock_path = Path(gettempdir()) / f"neko-plugin-sync-{lock_name}.lock"
+    # One lock file per user: the lock is never deleted, and a file another
+    # user created in a shared /tmp may not be openable (umask,
+    # fs.protected_regular). Windows temp dirs are already per user.
+    owner = f"{os.getuid()}-" if hasattr(os, "getuid") else ""
+    lock_path = Path(gettempdir()) / f"neko-plugin-sync-{owner}{lock_name}.lock"
     staging_dir: Path | None = None
     try:
         with portalocker.Lock(lock_path, timeout=0):
@@ -105,6 +109,17 @@ def handle_sync(args: argparse.Namespace) -> int:
             if not external_deps:
                 print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
                 return 0
+
+            # The swap renames vendor/ itself, which would replace a link to
+            # another disk with a real directory. Refuse before touching it.
+            if _is_link(vendor_dir):
+                print(
+                    f"[FAIL] {vendor_dir} is a symlink; sync replaces vendor/ as a "
+                    "whole and cannot keep the link. Replace it with a real "
+                    "directory and retry.",
+                    file=sys.stderr,
+                )
+                return 1
 
             # Install into a sibling staging dir so vendor/ stays untouched
             # until the install succeeds. A plain mkdir (unlike mkdtemp's 0700)
@@ -176,6 +191,17 @@ def _filter_external(deps: list[str]) -> list[str]:
         if canonical not in _HOST_PROVIDED:
             result.append(dep)
     return result
+
+
+def _is_link(path: Path) -> bool:
+    """Symlink, or a Windows junction (which is_symlink() misses on 3.11)."""
+    if path.is_symlink():
+        return True
+    try:
+        os.readlink(path)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _short_token() -> str:
