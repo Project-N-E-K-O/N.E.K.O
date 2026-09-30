@@ -8,4 +8,7 @@ RECOVERY_DIR_PREFIXES = (
     ".vendor.backup-",
     ".vendor.restore-",
 )
-RECOVERY_RUFF_EXCLUDE_PATTERNS = ("vendor", *RECOVERY_DIR_PREFIXES)
+RECOVERY_RUFF_EXCLUDE_PATTERNS = (
+    "vendor",
+    *(f"{prefix}*" for prefix in RECOVERY_DIR_PREFIXES),
+)

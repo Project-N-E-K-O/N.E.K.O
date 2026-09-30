@@ -849,6 +849,51 @@ def test_release_ruff_excludes_dependency_recovery_directories(
     assert excludes == list(RECOVERY_RUFF_EXCLUDE_PATTERNS)
 
 
+def test_release_ruff_skips_recovery_code_but_checks_plugin_source(
+    tmp_path: Path,
+    release_ruff_process: dict[str, Any],
+) -> None:
+    for name in (
+        "vendor",
+        ".vendor.backup-deadbeef",
+        ".vendor.staging-deadbeef",
+        ".vendor.restore-deadbeef",
+    ):
+        dependency_dir = tmp_path / name
+        dependency_dir.mkdir()
+        (dependency_dir / "third_party.py").write_text(
+            "print(undefined_dependency_name)\n", encoding="utf-8",
+        )
+    source = tmp_path / "plugin_source.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    publish_cmd._ensure_release_ruff_passes(tmp_path)
+    command = release_ruff_process["calls"][0]["command"]
+
+    # Bypass the mocked subprocess.run fixture to exercise the real Ruff policy.
+    def run_ruff() -> tuple[int, str]:
+        with subprocess.Popen(
+            command, cwd=tmp_path, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        ) as process:
+            try:
+                output, _ = process.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
+            return process.returncode, output
+
+    code, output = run_ruff()
+    assert code == 0, output
+
+    source.write_text("print(undefined_plugin_name)\n", encoding="utf-8")
+    code, output = run_ruff()
+    assert code == 1, output
+    assert "plugin_source.py" in output
+    assert "F821" in output
+    assert "third_party.py" not in output
+
+
 def test_publish_stops_before_tag_when_ruff_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
