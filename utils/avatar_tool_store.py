@@ -836,8 +836,11 @@ class AvatarToolStore:
                         parked_marker.unlink()
                 except OSError:
                     logger.warning("Could not remove parked avatar tool authorization %s", parked_marker)
+        marker_kind, _, marker_error = _probe_entry(marker)
         deleting_kind, _, probe_error = _probe_entry(deleting)
-        if probe_error is None and deleting_kind == "absent":
+        # 没有授权文件的 .deleting 会被恢复当成已确认删除清掉：授权回不到原位时
+        # 副本留在停放名下，不要挪回去形成一个无授权的 .deleting。
+        if marker_error is None and marker_kind != "absent" and probe_error is None and deleting_kind == "absent":
             try:
                 os.replace(parked, deleting)
             except OSError:
@@ -845,7 +848,8 @@ class AvatarToolStore:
             else:
                 _fsync_directory(self.root)
                 return
-        # 挪不回去：停放的副本按上传孤儿由恢复清掉。这次删除本来就是用户要删这个 ID。
+        # 挪不回去（或授权回不到原位）：停放的副本按上传孤儿由恢复清掉。这次删除
+        # 本来就是用户要删这个 ID。
         _RECOVERY_PENDING_ROOTS.add(self._root_key())
 
     def initialize(self) -> None:

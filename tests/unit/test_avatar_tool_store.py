@@ -1970,6 +1970,44 @@ def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(
     assert not final.exists()
 
 
+def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    real_open = Path.open
+    real_replace = os.replace
+
+    def disk_full_for_markers(self, mode="r", *args, **kwargs):
+        if "x" in mode and self.name.endswith(".deleting.unverified"):
+            raise OSError(errno.ENOSPC, "simulated disk full")
+        return real_open(self, mode, *args, **kwargs)
+
+    def marker_cannot_move_back(source, destination, *args, **kwargs):
+        # 暂存失败后，原授权改名挪回也失败，补写新授权同样写不出来。
+        if Path(source).name.startswith(".retained-") and Path(destination) == marker:
+            raise OSError(errno.EIO, "simulated I/O error")
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", disk_full_for_markers)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", marker_cannot_move_back)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
+    assert final.is_dir()
+    # 无授权的 .deleting 会被恢复当成已确认删除：宁可让副本留在停放名下。
+    assert not (deleting.exists() and not marker.exists())
+    assert not deleting.exists()
+    assert list(store.root.glob(".local-*.uploading"))
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+
 def test_an_unreadable_retained_copy_still_blocks_saves_with_delete_pending(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
