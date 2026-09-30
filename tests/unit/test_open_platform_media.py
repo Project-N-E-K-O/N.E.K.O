@@ -498,8 +498,7 @@ def test_private_image_without_a_usable_id_keeps_the_text_fallback():
 
 def test_the_connection_mixes_in_the_media_actions():
     assert issubclass(QQOpenPlatformConnection, QQOpenPlatformMediaMixin)
-    # Mixin first: ConnectionBase declares send_group_image abstract, and the media
-    # upload is what that method has to use.
+    # Mixin first, by the same convention as OneBotClient(NapCatActionsMixin, ...).
     mro = QQOpenPlatformConnection.__mro__
     assert mro.index(QQOpenPlatformMediaMixin) < mro.index(ConnectionBase)
     for name in ("upload_image", "send_private_image"):
@@ -819,4 +818,226 @@ def test_the_connection_docstring_survives_the_channel_assignment():
     (review nit)."""
     assert QQOpenPlatformConnection.CHANNEL == "open"
     doc = QQOpenPlatformConnection.__doc__ or ""
-    assert "media mixin comes first" in doc, "the class docstring is a discarded expression again"
+    assert "QQOpenPlatformMediaMixin" in doc, "the class docstring is a discarded expression again"
+
+
+# ── re-review (2026-09-30) ────────────────────────────────────────────────────
+
+
+def _b64(payload: bytes) -> str:
+    import base64
+    return "base64://" + base64.b64encode(payload).decode("ascii")
+
+
+class _ListLogger:
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def warning(self, message):
+        self.lines.append(message)
+
+    info = warning
+
+
+def test_a_base64_source_is_decoded_and_uploaded():
+    """The OneBot ``image`` segment convention (``base64://``) used to be taken for a
+    local path: ``getsize`` failed and the image degraded to text."""
+    png = bytes.fromhex("89504e470d0a1a0a") + b"p" * 8
+    connection = _make_connection(_legacy_then_nothing)
+
+    file_info = _run(connection.upload_image(scope="groups", owner_id="G1", source=_b64(png)))
+
+    assert file_info == "FI-chunked"
+    assert b"".join(body for _url, body in connection._http.puts()[-2:]) == png
+    prepare = [body for url, body in connection._http.posts() if url.endswith("/upload_prepare")]
+    assert prepare[0]["file_name"] == "image.png"
+
+
+def test_an_oversized_base64_source_is_refused_without_decoding(monkeypatch):
+    decoded: list[str] = []
+    real = media_module._decode_base64_source
+    monkeypatch.setattr(
+        media_module, "_decode_base64_source", lambda text: decoded.append(text) or real(text),
+    )
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"})
+    huge = "base64://" + "A" * (MAX_IMAGE_BYTES * 4 // 3 + 8)
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=huge)) == ""
+    assert decoded == []
+    assert connection._http.calls == []
+
+
+def test_an_undecodable_base64_source_fails_cleanly_and_is_not_logged_whole():
+    logger = _ListLogger()
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"}, logger=logger)
+    garbage = "base64://" + "!" * 5000
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=garbage)) == ""
+    assert connection._http.calls == []
+    assert logger.lines and all(len(line) < 300 for line in logger.lines), logger.lines
+
+
+def test_a_long_missing_path_is_truncated_in_the_log():
+    logger = _ListLogger()
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"}, logger=logger)
+    source = "/no/such/" + "x" * 4000 + ".png"
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=source)) == ""
+    assert logger.lines and all(len(line) < 300 for line in logger.lines), logger.lines
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [["not-a-dict"], [{"index": "1.0", "presigned_url": "https://cos.example/p"}]],
+)
+def test_odd_part_lists_fail_cleanly_or_work(tmp_path, parts):
+    """A part list without dicts is refused (not an ``IndexError``), and an index like
+    ``"1.0"`` sorts with the same parser the loop uses (not a ``ValueError``)."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 8)
+
+    def responder(method, url, body):
+        if url.endswith("/upload_prepare"):
+            return {"upload_id": "u", "block_size": "8", "parts": parts}
+        if url.endswith("/files") and body.get("upload_id"):
+            return {"file_info": "FI-chunked"}
+        return {}
+
+    connection = _make_connection(responder)
+    connection._legacy_upload_unsupported = True
+
+    file_info = _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker)))
+
+    expected = "FI-chunked" if isinstance(parts[0], dict) else ""
+    assert file_info == expected
+    if not expected:
+        assert not any("upload_part_finish" in url for url, _ in connection._http.posts())
+
+
+def _legacy_rejected_with(status):
+    def responder(method, url, body):
+        if url.endswith("/files") and "file_size" in body:
+            return _Response({"message": "bad request"}, status_code=status)
+        return _legacy_then_nothing(method, url, body)
+    return responder
+
+
+def test_a_legacy_protocol_rejected_with_a_4xx_is_not_retried(tmp_path):
+    """``_media_post`` raises on non-2xx, so a 400 used to skip the flag and every local
+    image paid for the same failing request again."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+    connection = _make_connection(_legacy_rejected_with(400))
+
+    for _ in range(2):
+        assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
+
+    legacy = [url for url, body in connection._http.posts() if url.endswith("/files") and "file_size" in body]
+    assert len(legacy) == 1, f"the legacy protocol was retried {len(legacy)} times"
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_an_auth_rate_or_server_error_does_not_switch_legacy_off(tmp_path, status):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+    connection = _make_connection(_legacy_rejected_with(status))
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
+    assert connection._legacy_upload_unsupported is False
+
+
+def test_connect_clears_the_legacy_flag():
+    """The flag is per connection: a fresh ``connect()`` probes the legacy protocol again."""
+    connection = QQOpenPlatformConnection(app_id="a", client_secret="b")
+    connection._legacy_upload_unsupported = True
+
+    async def _stop():
+        raise RuntimeError("stop after the reset")
+
+    connection._refresh_token = _stop
+
+    async def scenario():
+        try:
+            await connection.connect()
+        finally:
+            await connection._http.aclose()
+
+    with pytest.raises(RuntimeError):
+        _run(scenario())
+    assert connection._legacy_upload_unsupported is False
+
+
+def test_a_private_reply_is_a_passive_reply_with_distinct_seqs():
+    """The reply segment used to become a literal "reply" placeholder with no ``msg_id``:
+    an active message (quota-limited). Replies to the same id need distinct ``msg_seq``s."""
+    connection = _make_connection(lambda method, url, body: {"id": "MID"})
+
+    for text in ("第一句", "第二句"):
+        _run(connection.send_private_message_segments(
+            "U1", [{"type": "text", "data": {"text": f"[CQ:reply,id=IN-1]{text}"}}],
+        ))
+
+    sent = [body for url, body in connection._http.posts() if url.endswith("/messages")]
+    assert sent == [
+        {"content": "第一句", "msg_id": "IN-1", "msg_seq": 1},
+        {"content": "第二句", "msg_id": "IN-1", "msg_seq": 2},
+    ], sent
+
+
+def test_group_replies_to_one_message_get_distinct_seqs():
+    connection = _make_connection(lambda method, url, body: {"id": "MID"})
+
+    for text in ("a", "b"):
+        _run(connection.send_group_message_segments(
+            "G1",
+            [{"type": "reply", "data": {"id": "IN-9"}}, {"type": "text", "data": {"text": text}}],
+            record_sent=False,
+        ))
+
+    seqs = [body.get("msg_seq") for url, body in connection._http.posts() if url.endswith("/messages")]
+    assert seqs == [1, 2]
+
+
+def test_send_private_image_reply_gets_a_seq_too():
+    def responder(method, url, body):
+        return {"id": "MID"} if url.endswith("/messages") else {"file_info": "FI"}
+
+    connection = _make_connection(responder)
+    _run(connection.send_private_image("U1", "https://cdn.example/a.png", reply_message_id="IN-3"))
+
+    sent = [body for url, body in connection._http.posts() if url.endswith("/messages")]
+    assert sent[0]["msg_id"] == "IN-3" and sent[0]["msg_seq"] == 1
+
+
+@pytest.mark.parametrize("send", ["group", "private"])
+def test_a_second_image_in_one_message_becomes_a_placeholder(send):
+    """One ``msg_type=7`` message carries one media item: the first image is sent, the
+    others stay visible as text instead of silently replacing it."""
+    def responder(method, url, body):
+        return {"id": "MID"} if url.endswith("/messages") else {"file_info": "FI"}
+
+    connection = _make_connection(responder)
+    segments = [
+        {"type": "image", "data": {"file": "https://cdn.example/first.png"}},
+        {"type": "image", "data": {"file": "https://cdn.example/second.png"}},
+    ]
+    if send == "group":
+        _run(connection.send_group_message_segments("G1", segments, record_sent=False))
+    else:
+        _run(connection.send_private_message_segments("U1", segments, record_sent=False))
+
+    uploads = [body.get("url") for url, body in connection._http.posts() if url.endswith("/files")]
+    assert uploads == ["https://cdn.example/first.png"]
+    sent = [body for url, body in connection._http.posts() if url.endswith("/messages")]
+    assert sent == [{"msg_type": 7, "media": {"file_info": "FI"}, "content": "[图片]"}], sent
+
+
+def test_cq_images_are_turned_into_text_by_the_expansion_itself():
+    """The security rule sits in ``_expand_cq_segments``, so a future send path that
+    expands CQ codes cannot forget it."""
+    connection = _make_connection(lambda method, url, body: {})
+    expanded = connection._expand_cq_segments(
+        [{"type": "text", "data": {"text": "a[CQ:image,file=/etc/passwd]b"}}],
+    )
+    assert [seg["type"] for seg in expanded] == ["text", "text", "text"]
+    assert "".join(seg["data"]["text"] for seg in expanded) == "a[图片]b"

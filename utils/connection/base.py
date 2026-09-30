@@ -46,10 +46,18 @@ class InboundMessage(TypedDict, total=False):
     mentions_all: bool
     raw: dict[str, Any]
     attachments: list[dict[str, Any]]
-    #: Notice messages only (OneBotClient poke notices: "poke").
+    #: Notice messages only: ``"poke"`` or ``"group_ban"`` (OneBotClient). Consumers
+    #: must branch on this, not on ``message_type == "notice"`` alone.
     notice_type: str
-    #: Notice messages only.
+    #: Notice messages only (poke: the poked user).
     target_id: str
+    #: Notice messages only: the raw event's sub_type (poke: ``"poke"``; group_ban:
+    #: ``"ban"`` / ``"lift_ban"``).
+    sub_type: str
+    #: Notice messages only (group_ban: who issued it; "" when absent).
+    operator_id: str
+    #: Notice messages only (group_ban: seconds, 0 on lift_ban or when unparsable).
+    duration: int
 
 
 class ConnectionBase(ABC):
@@ -59,8 +67,13 @@ class ConnectionBase(ABC):
     output a unified internal message format to the consuming plugin.
 
     ``receive_message()`` returns an :class:`InboundMessage`. OneBotClient also
-    yields poke notices as ``{"message_type": "notice", "notice_type": "poke",
-    "user_id", "group_id", "target_id", "timestamp", "raw", "channel"}``.
+    yields notices as ``{"message_type": "notice", "notice_type", "sub_type",
+    "user_id", "operator_id", "duration", "group_id", "target_id", "content": "",
+    "timestamp", "raw", "channel"}``, where ``notice_type`` is ``"poke"`` or
+    ``"group_ban"`` (a ban / lift-ban aimed at a **third party**; the bot's own and
+    whole-group mutes are only tracked internally). Notices carry no ``sender`` or
+    ``message_id``, and they reach the inbound sink like every other message, so a
+    consumer must branch on ``notice_type`` and ignore the kinds it does not handle.
     """
 
     @abstractmethod

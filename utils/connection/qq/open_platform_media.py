@@ -26,11 +26,19 @@ working deployment working, and whichever succeeds is named in the log, which is
 ``file_info`` and the chunked upload then succeeding, so the chunked path is the live
 one.
 
-A legacy attempt that comes back without ``file_info`` is remembered for the rest of the
-process (``_legacy_upload_unsupported``): on 2026-09-27 the platform answered the legacy
-request with nothing at all, so retrying it for every image only buys a guaranteed-failing
-request per send. The per-protocol log line still fires the first time, and a reconnect
-starts a fresh connection with the flag clear.
+A legacy attempt that comes back without ``file_info`` -- or whose request the platform
+rejects with a 4xx that is not about auth or rate limits -- is remembered for the rest of
+the connection (``_legacy_upload_unsupported``): on 2026-09-27 the platform answered the
+legacy request with nothing at all, so retrying it for every image only buys a
+guaranteed-failing request per send. The per-protocol log line still fires the first time,
+and ``connect()`` / a successful reconnect clear the flag, so a platform that brings the old
+flow back is picked up again.
+
+Sources
+-------
+
+``upload_image`` takes an http(s) URL (URL upload), a ``base64://`` payload (the OneBot
+``image`` segment convention), or a local path / ``file://`` URI (chunked upload).
 
 Shape
 -----
@@ -55,6 +63,8 @@ Connection members only: ``_http``, ``_API_BASE``, ``_ensure_token()``,
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import mimetypes
 import os
@@ -71,6 +81,30 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 #: ``upload_prepare`` wants ``md5_10m``: the MD5 of the first 10002432 bytes.
 _MD5_10M_BYTES = 10_002_432
+
+_BASE64_PREFIX = "base64://"
+
+#: How much of an image source a log line shows. A ``base64://`` source can be megabytes.
+_LOG_SOURCE_CHARS = 80
+
+#: 4xx answers that say nothing about whether the legacy upload protocol still exists:
+#: a bad token, a missing permission, a timeout or a rate limit can hit any request.
+_TRANSIENT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
+
+#: Magic numbers -> extension, for naming decoded ``base64://`` bytes.
+_IMAGE_MAGIC = (
+    (bytes.fromhex("89504e47"), "png"),
+    (bytes.fromhex("ffd8ff"), "jpg"),
+    (b"GIF8", "gif"),
+)
+
+
+def _brief(source: str) -> str:
+    """``source`` cut down for a log line."""
+    text = str(source or "")
+    if len(text) <= _LOG_SOURCE_CHARS:
+        return text
+    return f"{text[:_LOG_SOURCE_CHARS]}...({len(text)} chars)"
 
 
 def _local_path(source: str) -> str:
@@ -131,6 +165,31 @@ def _read_source(source: str) -> SourceFile:
     return SourceFile(payload, os.path.basename(path), _digests(payload))
 
 
+def _image_file_name(payload: bytes) -> str:
+    """A file name for decoded bytes, with the extension their magic number says."""
+    for magic, extension in _IMAGE_MAGIC:
+        if payload.startswith(magic):
+            return f"image.{extension}"
+    if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return "image.webp"
+    return "image.png"
+
+
+def _decode_base64_source(encoded: str) -> SourceFile:
+    """Decode a ``base64://`` payload -> ``SourceFile``; undecodable is an empty payload.
+
+    Blocking for the same reason as ``_read_source`` (decoding and hashing megabytes), so
+    callers run it off the event loop.
+    """
+    try:
+        payload = base64.b64decode("".join(encoded.split()), validate=True)
+    except (binascii.Error, ValueError):
+        return SourceFile(b"", "", {})
+    if not payload:
+        return SourceFile(b"", "", {})
+    return SourceFile(payload, _image_file_name(payload), _digests(payload))
+
+
 def _digests(payload: bytes) -> dict[str, str]:
     """The three digests ``upload_prepare`` asks for, from one pass over the bytes."""
     return {
@@ -151,6 +210,15 @@ def _positive_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return number if number > 0 else 0
+
+
+def _is_protocol_rejection(exc: BaseException) -> bool:
+    """Whether ``exc`` is a 4xx that says the request shape itself is not accepted."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", 0)
+    if not isinstance(status, int):
+        return False
+    return 400 <= status < 500 and status not in _TRANSIENT_CLIENT_ERRORS
 
 
 def _media_error(data: dict[str, Any]) -> str:
@@ -249,10 +317,15 @@ class QQOpenPlatformMediaMixin:
             return ""
 
         mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
+        # Sorted with the same parser the loop uses: `int(p.get("index"))` would raise on
+        # `"1.0"` and turn a clean refusal into an opaque "upload failed" exception.
         ordered = sorted(
             (p for p in parts if isinstance(p, dict)),
-            key=lambda p: int(p.get("index") or 0),
+            key=lambda p: _positive_int(p.get("index")),
         )
+        if not ordered:
+            self._media_log("warning", "分片上传: upload_prepare 返回的 parts 里没有可用分片，放弃上传")
+            return ""
         # The part size may only be stated **once, at the top level** of the prepare
         # answer. Falling back to 0 there is not a harmless default: the first part would
         # then slice `payload[0:]` (the whole file), and the second part would slice an
@@ -332,17 +405,30 @@ class QQOpenPlatformMediaMixin:
     async def _media_upload_legacy(
         self, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
     ) -> str:
-        """Legacy direct upload: apply for an ``upload_url``, then PUT."""
+        """Legacy direct upload: apply for an ``upload_url``, then PUT.
+
+        A 4xx on the *apply* request that is not about auth or rate limits returns ``""``
+        instead of raising: it means the platform no longer accepts this request shape,
+        which is the same protocol-level answer as a reply without ``upload_url`` and has
+        to switch the protocol off the same way (``upload_image``). A failing PUT still
+        raises -- that is about this file, not about the protocol.
+        """
         mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
-        data = await self._media_post(
-            f"/v2/{scope}/{owner_id}/files",
-            {
-                "file_type": file_type,
-                "file_name": file_name,
-                "file_size": len(payload),
-                "mime_type": mime_type,
-            },
-        )
+        try:
+            data = await self._media_post(
+                f"/v2/{scope}/{owner_id}/files",
+                {
+                    "file_type": file_type,
+                    "file_name": file_name,
+                    "file_size": len(payload),
+                    "mime_type": mime_type,
+                },
+            )
+        except Exception as exc:
+            if not _is_protocol_rejection(exc):
+                raise
+            self._media_log("warning", f"图片直传申请被平台拒绝: {exc}")
+            return ""
         upload_url = str(data.get("upload_url") or "")
         if not upload_url:
             return ""
@@ -390,32 +476,49 @@ class QQOpenPlatformMediaMixin:
                 self._media_log("warning", "图片 URL 上传失败")
             return file_info
 
-        # Size first, bytes later: the soft limit has to be able to reject a file
-        # *without* pulling it into memory, and the read itself must not run on the
-        # event loop (a local image can be arbitrarily large or on a slow volume).
-        path = _local_path(url)
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            size = 0
-        if size <= 0:
-            self._media_log("warning", f"图片文件不存在或为空: {path}")
-            return ""
-        if size > MAX_IMAGE_BYTES:
-            self._media_log(
-                "warning",
-                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {size} 字节",
-            )
-            return ""
+        if url.startswith(_BASE64_PREFIX):
+            # The OneBot `image` segment convention: the bytes travel inline. Decoded
+            # size is estimated from the text length first, so an oversized payload is
+            # refused without being decoded.
+            encoded = url[len(_BASE64_PREFIX):]
+            shown = "base64 图片"
+            if len(encoded) * 3 // 4 > MAX_IMAGE_BYTES:
+                self._media_log(
+                    "warning",
+                    f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: "
+                    f"base64 {len(encoded)} 字符",
+                )
+                return ""
+            reader, reader_arg = _decode_base64_source, encoded
+        else:
+            # Size first, bytes later: the soft limit has to be able to reject a file
+            # *without* pulling it into memory, and the read itself must not run on the
+            # event loop (a local image can be arbitrarily large or on a slow volume).
+            path = _local_path(url)
+            shown = _brief(path)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            if size <= 0:
+                self._media_log("warning", f"图片文件不存在或为空: {shown}")
+                return ""
+            if size > MAX_IMAGE_BYTES:
+                self._media_log(
+                    "warning",
+                    f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {size} 字节",
+                )
+                return ""
+            reader, reader_arg = _read_source, url
 
         try:
-            source_file = await asyncio.to_thread(_read_source, url)
+            source_file = await asyncio.to_thread(reader, reader_arg)
         except Exception as exc:
             self._media_log("warning", f"图片读取失败: {exc}")
             return ""
         payload, file_name, digests = source_file
         if not payload:
-            self._media_log("warning", f"图片文件不存在或为空: {path}")
+            self._media_log("warning", f"图片文件不存在、为空或无法解码: {shown}")
             return ""
         if len(payload) > MAX_IMAGE_BYTES:
             # Second line of defence: the file can grow (or be swapped) between the stat
@@ -462,10 +565,11 @@ class QQOpenPlatformMediaMixin:
             self._media_log("warning", f"图片{label}上传未拿到 file_info")
             if label == "直传":
                 # Protocol-level failure, not a per-file one: the answer carried no
-                # `upload_url` at all (09-27 live log). Remember it so the next image
-                # does not pay for the same guaranteed-failing request; a fresh
-                # connection starts with the flag clear, so a platform that brings the
-                # old flow back is picked up on the next reconnect.
+                # `upload_url` at all (09-27 live log), or the apply request was refused
+                # outright (see `_media_upload_legacy`). Remember it so the next image
+                # does not pay for the same guaranteed-failing request; `connect()` and
+                # a successful reconnect clear the flag, so a platform that brings the
+                # old flow back is picked up again.
                 self._legacy_upload_unsupported = True
                 self._media_log("info", "直传协议已不再返回 file_info，本连接后续只用分片上传")
         return ""
@@ -499,6 +603,11 @@ class QQOpenPlatformMediaMixin:
         reply_id = str(reply_message_id or "").strip()
         if reply_id:
             body["msg_id"] = reply_id
+            # Replies to the same message need distinct `msg_seq`s, or the platform
+            # rejects the later ones as duplicates.
+            next_seq = getattr(self, "_next_msg_seq", None)
+            if callable(next_seq):
+                body["msg_seq"] = next_seq(reply_id)
         try:
             data = await self._media_post(f"/v2/users/{target}/messages", body)
         except Exception as exc:

@@ -241,3 +241,36 @@ def test_a_poke_notice_reaches_the_sink_too():
     seen = asyncio.run(scenario())
 
     assert [item["notice_type"] for item in seen] == ["poke"]
+
+
+# ---- an unparsable duration never escapes receive_message() ------------------
+
+
+def test_an_unparsable_duration_does_not_raise_out_of_the_receive_loop():
+    """``receive_message()`` only catches the queue timeout, so a ``ValueError`` from
+    ``int("600s")`` would escape into the consumer's receive loop."""
+    client = _client()
+    for raw, expected in (("600s", 600), ("1.5", 1), ("abc", 0), (None, 0)):
+        payload = _ban(user_id=ALICE)
+        payload["duration"] = raw
+        _feed(client, payload)
+        notice = _take(client)
+        assert notice["duration"] == expected, (raw, notice["duration"])
+
+
+def test_an_unparsable_duration_on_her_own_ban_still_mutes_her():
+    client = _client()
+    payload = _ban(user_id=BOT)
+    payload["duration"] = "not-a-number"
+    _feed(client, payload)
+
+    assert client._message_queue.qsize() == 0
+    assert client.is_group_muted(GROUP) is True
+
+
+def test_a_notice_carries_an_empty_content():
+    """Sink consumers read ``content`` off every inbound dict; a notice has none."""
+    client = _client()
+    _feed(client, _ban(user_id=ALICE))
+
+    assert _take(client)["content"] == ""

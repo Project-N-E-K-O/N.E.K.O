@@ -54,6 +54,21 @@ from websockets.exceptions import ConnectionClosed
 from ..base import ConnectionBase
 from .napcat_actions import NapCatActionsMixin
 
+_LEADING_NUMBER_RE = re.compile(r"\s*(\d+(?:\.\d+)?)")
+
+
+def _notice_seconds(value: Any) -> int:
+    """A notice's ``duration`` as whole seconds; unparsable is 0, never an exception.
+
+    Implementations disagree on the type (int, ``"600"``, ``"1.5"``, even ``"600s"``), and
+    this runs inside ``receive_message()``, which only catches the queue timeout -- a
+    ``ValueError`` here would escape into the consumer's receive loop.
+    """
+    match = _LEADING_NUMBER_RE.match(str(value if value is not None else ""))
+    if not match:
+        return 0
+    return max(int(float(match.group(1))), 0)
+
 
 class OneBotClient(NapCatActionsMixin, ConnectionBase):
     #: Observed transport for this connection. Stamped at INGEST, never read
@@ -175,7 +190,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             return False
         sub_type = str(notice.get("sub_type") or "").strip()  # "ban" / "lift_ban"
         user_id = str(notice.get("user_id") or "").strip()
-        duration = int(notice.get("duration") or 0)  # seconds, only valid on ban
+        duration = _notice_seconds(notice.get("duration"))  # seconds, only valid on ban
 
         # Whole-group mute (user_id=0) or self being muted.
         #
@@ -731,18 +746,22 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             if raw_msg.get("post_type") == "notice":
                 raw_notice = str(raw_msg.get("notice_type") or "").strip()
                 sub_type = str(raw_msg.get("sub_type") or "").strip()
-                # poke 的形状是 `notice_type=notify, sub_type=poke`，那一类要拿 sub_type
-                # 当事件名；group_ban 的 sub_type 是 ban/lift_ban（那是"哪一种禁言"，
-                # 不是"哪一类事件"），必须单独取名，否则上游认不出这是什么通知。
+                # A poke is `notice_type=notify, sub_type=poke`, so its event name is the
+                # sub_type. A group_ban's sub_type is ban/lift_ban -- *which kind* of ban,
+                # not *which event* -- so it needs its own name, or upstream cannot tell
+                # what the notice is.
                 notice_kind = "group_ban" if raw_notice == "group_ban" else sub_type
                 notice = {
                     "message_type": "notice",
                     "channel": self.CHANNEL,
+                    # Notices have no text; the key is present so a sink consumer that
+                    # reads `content` off every inbound dict does not trip on them.
+                    "content": "",
                     "notice_type": notice_kind,
                     "sub_type": sub_type,
                     "user_id": str(raw_msg.get("user_id") or ""),
                     "operator_id": str(raw_msg.get("operator_id") or ""),
-                    "duration": int(raw_msg.get("duration") or 0),
+                    "duration": _notice_seconds(raw_msg.get("duration")),
                     "group_id": str(raw_msg.get("group_id") or ""),
                     "target_id": str(raw_msg.get("target_id") or ""),
                     "timestamp": raw_msg.get("time"),
