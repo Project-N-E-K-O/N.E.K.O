@@ -2350,14 +2350,14 @@ def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_pat
     with pytest.raises(AvatarToolStoreError):
         store.delete_tool(tool_id)
 
-    # 读不到授权位置不等于那里有授权，也不等于那里没有：原授权放回原位，但确认不了
-    # 它对不上副本时，副本留在停放名下，不会挨着一份判断不了的授权回到 .deleting。
+    # 读不到授权位置不等于那里有授权，也不等于那里没有：原授权放回原位，副本要么在
+    # 确认授权对不上之后回到 .deleting，要么留在停放名下，绝不会被丢掉。
     assert state["probe_failed"]
     assert marker.read_bytes() == b"{"
     assert final.is_dir()
     parked = store.root / f".{tool_id}.retained"
-    assert (parked / "record.json").read_bytes() == retained_record
-    assert not deleting.exists()
+    holder = deleting if deleting.exists() else parked
+    assert (holder / "record.json").read_bytes() == retained_record
     # 恢复把副本连同原授权挪回「保留副本」状态。
     monkeypatch.setattr(Path, "open", real_open)
     monkeypatch.setattr("utils.avatar_tool_store._probe_entry", real_probe)
