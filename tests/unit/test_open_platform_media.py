@@ -982,6 +982,24 @@ def test_an_error_status_does_not_switch_legacy_off(tmp_path, status):
     assert connection._legacy_upload_unsupported is False
 
 
+@pytest.mark.parametrize("answer", [None, ["not", "an", "object"], "<html>busy</html>"])
+def test_a_malformed_legacy_answer_does_not_switch_legacy_off(tmp_path, answer):
+    """A 200 whose body is not a JSON object (HTML, ``null``, an array) says nothing
+    about the protocol; only a well-formed object without ``upload_url`` does."""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+
+    def responder(method, url, body):
+        if url.endswith("/files") and "file_size" in body:
+            return _Response(answer)
+        return _legacy_then_nothing(method, url, body)
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
+    assert connection._legacy_upload_unsupported is False
+
+
 def test_an_error_code_does_not_switch_legacy_off(tmp_path):
     sticker = tmp_path / "a.png"
     sticker.write_bytes(b"z" * 16)

@@ -27,7 +27,7 @@ working deployment working, and whichever succeeds is named in the log, which is
 one.
 
 A legacy apply request that the platform answers with **nothing** -- a success status,
-no error code, no ``upload_url`` -- is remembered for the rest of the connection
+a JSON object with no error code and no ``upload_url`` -- is remembered for the rest of the connection
 (``_legacy_upload_unsupported``): that is what the 2026-09-27 live run got, and retrying
 it for every image only buys a guaranteed-failing request per send. Every other failure
 (a 4xx such as a too-large file or an unreachable target, an error code, a failing PUT)
@@ -285,8 +285,16 @@ class QQOpenPlatformMediaMixin:
     def _media_api_base(self) -> str:
         return str(getattr(self, "_API_BASE", "") or "").rstrip("/")
 
-    async def _media_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _media_post(
+        self, path: str, body: dict[str, Any], *, require_object: bool = False,
+    ) -> dict[str, Any]:
         """Authenticated POST returning parsed JSON; a non-dict answer is ``{}``.
+
+        ``require_object=True`` raises ``ValueError`` instead when the body is not a JSON
+        object (HTML, ``null``, an array, nothing). Only a caller that *interprets* an
+        empty answer needs it: the legacy apply request reads "no ``upload_url``" as
+        "protocol gone", and a garbled body must not be mistaken for that. Steps whose
+        success answer may legitimately be empty keep the lenient default.
 
         A non-2xx answer **raises** (``httpx.HTTPStatusError``) rather than looking like an
         empty result. For an upload step that difference is the whole ballgame: "the part
@@ -302,8 +310,14 @@ class QQOpenPlatformMediaMixin:
         try:
             data = response.json()
         except Exception:
+            if require_object:
+                raise ValueError(f"{path} 响应不是 JSON")
             return {}
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+        if require_object:
+            raise ValueError(f"{path} 响应不是 JSON 对象: {type(data).__name__}")
+        return {}
 
     # ── upload protocols ───────────────────────────────────────────────
 
@@ -434,9 +448,10 @@ class QQOpenPlatformMediaMixin:
         """Legacy direct upload: apply for an ``upload_url``, then PUT.
 
         Raises ``_LegacyProtocolGone`` only for the one answer that says nothing about
-        this image: a success status with no error code and no ``upload_url``. A non-2xx
-        answer, an error code or a failing PUT can be about this file or this target
-        (too large, target unreachable), so those fail only this attempt.
+        this image: a success status with a well-formed JSON object carrying no error code
+        and no ``upload_url``. A non-2xx answer, a body that is not a JSON object, an
+        error code or a failing PUT can be about this request, file or target, so those
+        fail only this attempt.
         """
         mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
         data = await self._media_post(
@@ -447,6 +462,7 @@ class QQOpenPlatformMediaMixin:
                 "file_size": len(payload),
                 "mime_type": mime_type,
             },
+            require_object=True,
         )
         problem = _media_error(data)
         if problem:
