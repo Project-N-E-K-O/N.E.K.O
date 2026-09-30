@@ -1121,9 +1121,14 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"PIP_PROXY": "http://corp-proxy:3128", "ALL_PROXY": "http://corp-proxy:3128"}, True),
         # Indexes are HTTPS: HTTP_PROXY alone leaves them direct.
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTP_PROXY": "http://corp-proxy:3128"}, False),
-        # NO_PROXY=* bypasses the proxy for every host.
+        # pip's explicit proxy ignores NO_PROXY; uv would bypass the proxy for
+        # the listed hosts, and which hosts uv contacts can not be listed.
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
           "NO_PROXY": "*"}, False),
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
+          "NO_PROXY": "localhost"}, False),
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
+          "NO_PROXY": " "}, True),
         # pip's cert replaces the default CA bundle; uv would otherwise trust
         # its bundled roots, and ignores an SSL_CERT_FILE that does not exist.
         ({"PIP_CERT": "/corp/ca.pem"}, False),

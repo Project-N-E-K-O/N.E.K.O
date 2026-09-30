@@ -570,9 +570,11 @@ def _pip_install_to_vendor(
                 )
             continue
         covers = _UV_COVERS[kind]
-        # NO_PROXY=* sends every request around the proxy.
+        # pip's explicit proxy ignores NO_PROXY; uv honors it per host. Which
+        # hosts uv will contact (indexes, redirected downloads) can not be
+        # listed up front, so any bypass list at all fails closed.
         bypass_all = kind == "proxy" and any(
-            (os.environ.get(name) or "").strip() == "*" for name in ("NO_PROXY", "no_proxy")
+            (os.environ.get(name) or "").strip() for name in ("NO_PROXY", "no_proxy")
         )
         if bypass_all or not any(_uv_env_set(uv_name) for uv_name in covers):
             fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
