@@ -198,6 +198,21 @@ async def test_endpoint_cancelling_timer_during_getter_join_keeps_sender_alive(m
 @pytest.mark.parametrize("acknowledge", [True, False])
 async def test_audio_arriving_after_finish_stays_bounded_and_reaches_new_connection(monkeypatch, acknowledge):
     finish_sent = asyncio.Event()
+    first_finish_waiting = asyncio.Event()
+    original_state = qwen._QwenConnectionState
+
+    class ObservedFinishEvent(asyncio.Event):
+        async def wait(self):
+            first_finish_waiting.set()
+            return await super().wait()
+
+    def create_state(**kwargs):
+        state = original_state(**kwargs)
+        if kwargs["emit_ready"]:
+            state.finish_received = ObservedFinishEvent()
+        return state
+
+    monkeypatch.setattr(qwen, "_QwenConnectionState", create_state)
 
     async def on_send(ws, payload):
         message = json.loads(payload)
@@ -228,6 +243,7 @@ async def test_audio_arriving_after_finish_stays_bounded_and_reaches_new_connect
         chunks = [b"\x01\x02" * 160, b"\x03\x04" * 160]
         for chunk in chunks:
             await requests.put(_AsrWorkerRequest("audio", 0, utterance_id=1, audio=chunk))
+        await asyncio.wait_for(first_finish_waiting.wait(), 1)
         assert requests.waiting_audio_bytes == sum(map(len, chunks))
         assert not any(json.loads(p)["type"] == "input_audio_buffer.append" for p in first.sent)
         if acknowledge:
