@@ -656,6 +656,14 @@ class AvatarToolStore:
         if probe_error is not None:
             raise _storage_total_unavailable() from probe_error
         if parked_kind != "absent":
+            # 上次恢复时判断不了的停放副本，周围的状态之后可能变了（比如占着正式
+            # 路径的东西被同步客户端移走）：先重跑一轮恢复，还在才拦这个 ID。
+            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+            self._require_recovery_complete_for_mutation()
+            parked_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.retained")
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+        if parked_kind != "absent":
             # 恢复判断不了的停放副本：既不能丢也挪不回，只拦这一个 ID。
             raise AvatarToolStoreError(
                 "tool_recovery_pending",
@@ -826,7 +834,11 @@ class AvatarToolStore:
         try:
             claimed = _claimed_copy_state(_retained_copy_state(parked)) == _claimed_copy_state(deleting_state)
             if claimed:
-                # 授权移进停放的副本里：撤授权和停放一起落盘，崩溃后随副本一起被恢复清掉。
+                # 先让「副本已停放」落盘，再动授权：崩溃后只留下授权那一步的话，
+                # 副本会回到 .deleting 且旁边没有授权，恢复会当成已确认删除清掉。
+                # 停放落盘、授权还在原位的中间状态由恢复挪回。
+                _fsync_directory(self.root, strict=True)
+                # 授权移进停放的副本里：撤授权和停放一起落盘，崩溃后随副本一起被恢复处理。
                 os.replace(marker, parked_marker)
                 claimed = _claimed_copy_state(_retained_copy_state(parked_marker)) == _claimed_copy_state(
                     marker_state
@@ -865,21 +877,31 @@ class AvatarToolStore:
         # 副本当成已确认删除清掉。它在停放的副本里面，要在副本挪回之前拿出来。
         try:
             os.replace(parked_marker, marker)
-            restored = True
         except OSError:
             logger.warning("Could not restore retained avatar tool authorization %s", marker, exc_info=True)
             # 原位还空着的话补写一份对不上的授权；已有授权时独占创建什么都不改。
             self._write_mismatched_marker(marker)
-            restored = False
-        if not restored:
-            # 没有授权、或授权能授权这份副本的 .deleting 会被恢复清掉：确认原位的
-            # 授权对不上副本才挪回去，否则副本留在停放名下。
-            marker_kind, _, marker_error = _probe_entry(marker)
-            restored = (
-                marker_error is None
-                and marker_kind != "absent"
-                and self._marker_authorizes_copy(parked, marker) is False
-            )
+        # 没有授权、或授权能授权这份副本的 .deleting 会被恢复清掉：确认原位的授权
+        # 对不上副本才挪回去，否则副本留在停放名下，由恢复处理。挪回来的原授权也要
+        # 核对：停放期间它可能被同步客户端改写。
+        if self._marker_authorizes_copy(parked, marker) is True:
+            # 原位的授权恰好能授权这份副本：这次删除没有发生，换成一份对不上的授权。
+            # 先写在停放的副本里再改名过去，崩溃后它随副本一起被恢复处理。
+            replacement = parked / f".retained-{uuid.uuid4()}.unverified"
+            try:
+                with replacement.open("x", encoding="utf-8") as stream:
+                    stream.write("{}")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(replacement, marker)
+            except OSError:
+                logger.warning("Could not replace avatar tool authorization %s", marker, exc_info=True)
+        marker_kind, _, marker_error = _probe_entry(marker)
+        restored = (
+            marker_error is None
+            and marker_kind != "absent"
+            and self._marker_authorizes_copy(parked, marker) is False
+        )
         if restored:
             try:
                 # 授权回到原位这一步先落盘，再挪回副本：崩溃后只留下后一步的话，
