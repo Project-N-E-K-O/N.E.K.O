@@ -78,6 +78,12 @@ def _missing_pip_then_uv(calls):
         ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "True"}, None, True),
         # An explicitly disabled no-index is not a restriction.
         ({"PIP_NO_INDEX": "false"}, None, True),
+        # pip's hash-checking policy must carry over, or uv installs unhashed.
+        ({"PIP_REQUIRE_HASHES": "1"}, None, False),
+        ({}, "[install]\nrequire-hashes = true\n", False),
+        ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "0"}, None, False),
+        ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "true"}, None, True),
+        ({"PIP_REQUIRE_HASHES": "off"}, None, True),
         ({}, "[global]\nno-index = off\n", True),
         ({"UV_DEFAULT_INDEX": "https://private/simple"},
          "[global]\nno-index = 0\nindex-url = https://private/simple\n", True),
@@ -233,7 +239,7 @@ def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
     monkeypatch.setattr(deps_cmd.subprocess, "run",
@@ -248,7 +254,7 @@ def test_non_clean_retry_refuses_orphaned_backup(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
     monkeypatch.setattr(
@@ -442,7 +448,7 @@ def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
     # The sync lock is per user, so another user's staging may be live.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    stale = tmp_path / ".vendor.staging-other"
+    stale = tmp_path / ".vendor.staging-0000dddd"
     stale.mkdir()
     owner = stale.stat().st_uid
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
@@ -480,7 +486,7 @@ def test_mountinfo_does_not_flag_vendor_itself_or_outside_mounts(tmp_path, monke
 def test_stale_staging_that_vanishes_is_skipped(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    gone = tmp_path / ".vendor.staging-gone"
+    gone = tmp_path / ".vendor.staging-0000eeee"
     gone.mkdir()
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 0, raising=False)
     real_stat = Path.stat
@@ -545,7 +551,7 @@ def test_leftover_work_dir_with_mount_is_not_deleted(
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
-    leftover = plugin_dir / f".vendor.{kind}-old"
+    leftover = plugin_dir / f".vendor.{kind}-0000cccc"
     mount = leftover / "pkg" / "mnt" if where == "nested" else leftover
     mount.mkdir(parents=True)
     (mount / "external.dat").write_text("keep")
@@ -567,10 +573,38 @@ def test_leftover_work_dir_with_mount_is_not_deleted(
     assert "is a mount point" in capsys.readouterr().err
 
 
+def test_plugin_dirs_that_only_share_the_prefix_are_never_touched(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    own = [plugin_dir / ".vendor.staging-assets", plugin_dir / ".vendor.backup-notes"]
+    for path in own:
+        path.mkdir()
+        (path / "data.txt").write_text("user data")
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    # A look-alike backup must neither block the sync nor be cleaned up.
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert all((path / "data.txt").read_text() == "user data" for path in own)
+
+
+def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
+    from plugin.neko_plugin_cli.templates.generator import _render_gitignore
+
+    lines = _render_gitignore().splitlines()
+    assert "/.vendor.staging-*/" in lines
+    assert "/.vendor.backup-*/" in lines
+    assert ".vendor.backup-*/" not in lines
+
+
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    stale = tmp_path / ".vendor.staging-killed"
+    stale = tmp_path / ".vendor.staging-0000bbbb"
     stale.mkdir()
 
     def fail(path, *args, **kwargs):
@@ -590,7 +624,7 @@ def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(
     vendor = plugin_dir / "vendor"
     vendor.mkdir()
     (vendor / "partial.py").write_text("partial")
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
     (backup / ".recovery-pending").touch()
@@ -613,7 +647,7 @@ def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monk
     vendor = plugin_dir / "vendor"
     vendor.mkdir()
     (vendor / "old.py").write_text("old")
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
     real_rmtree = deps_cmd.shutil.rmtree
@@ -804,7 +838,7 @@ def test_sync_no_deps_refuses_unreconciled_backup(tmp_path, clean, capsys):
     vendor = plugin_dir / "vendor"
     vendor.mkdir()
     (vendor / "partial.py").write_text("partial")
-    backup = plugin_dir / ".vendor.backup-previous"
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
     backup.mkdir()
     (backup / "old.py").write_text("backup")
     (backup / ".recovery-pending").touch()
@@ -1120,7 +1154,7 @@ class TestTransactionalDependencyInstall:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-        stale = plugin_dir / ".vendor.staging-killed"
+        stale = plugin_dir / ".vendor.staging-0000bbbb"
         stale.mkdir()
         (stale / "big_dependency.py").write_text("x", encoding="utf-8")
         monkeypatch.setattr(

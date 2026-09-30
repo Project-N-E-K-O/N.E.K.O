@@ -282,6 +282,21 @@ def _short_token() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _sync_work_dirs(plugin_dir: Path, prefix: str) -> list[Path]:
+    """Work dirs this command created: exactly the prefix plus a token.
+
+    A plugin may have its own directory that merely shares the prefix
+    (".vendor.staging-assets"); only exact generated names are ever deleted
+    or treated as dependency backups.
+    """
+    pattern = re.compile(re.escape(prefix) + r"[0-9a-f]{8}")
+    return [
+        path
+        for path in plugin_dir.glob(f"{prefix}*")
+        if pattern.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+    ]
+
+
 def _is_mount_point(path: Path) -> bool:
     # On Windows, rmtree refuses a junction or mounted folder itself.
     if sys.platform == "win32":
@@ -310,27 +325,22 @@ def _remove_stale_staging(plugin_dir: Path) -> None:
     # The sync lock is per user, so holding it only rules out this user's
     # own runs; another user's staging dir may belong to a live install.
     uid = os.getuid() if hasattr(os, "getuid") else None
-    for path in plugin_dir.glob(f"{VENDOR_SYNC_STAGING_PREFIX}*"):
-        if path.is_dir() and not path.is_symlink():
-            try:
-                if uid is not None and path.stat().st_uid != uid:
-                    continue
-                if _mounted_inside(path):
-                    continue
-                shutil.rmtree(path)
-            except FileNotFoundError:
-                # Another user's sync moved it away between glob and here.
+    for path in _sync_work_dirs(plugin_dir, VENDOR_SYNC_STAGING_PREFIX):
+        try:
+            if uid is not None and path.stat().st_uid != uid:
                 continue
-            except OSError as exc:
-                print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
+            if _mounted_inside(path):
+                continue
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            # Another user's sync moved it away between glob and here.
+            continue
+        except OSError as exc:
+            print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
 
 
 def _retained_backups(plugin_dir: Path) -> list[Path]:
-    return [
-        path
-        for path in plugin_dir.glob(f"{VENDOR_SYNC_BACKUP_PREFIX}*")
-        if path.is_dir() and not path.is_symlink()
-    ]
+    return _sync_work_dirs(plugin_dir, VENDOR_SYNC_BACKUP_PREFIX)
 
 
 def _unreconciled_backups(plugin_dir: Path, vendor_dir: Path) -> list[Path]:
@@ -417,8 +427,8 @@ def _pip_install_to_vendor(
         )
         print(
             "[FAIL] The target Python has no pip, and pip is configured with "
-            f"package sources ({', '.join(sources)}) that uv does not read. "
-            "Installing with uv would resolve from its default index instead. "
+            f"package source or hash settings ({', '.join(sources)}) that uv "
+            "does not read. Installing with uv would ignore them. "
             f"Configure uv the same way ({needed}), or run "
             "python -m ensurepip --upgrade.",
             file=sys.stderr,
@@ -444,20 +454,25 @@ def _pip_install_to_vendor(
     return 0
 
 
-# pip package-source settings, by kind, as env vars and config file keys.
+# pip package-source settings (and the require-hashes install policy), by
+# kind, as env vars and config file keys.
 _PIP_ENV_KINDS = {
     "PIP_INDEX_URL": "index",
     "PIP_EXTRA_INDEX_URL": "extra-index",
     "PIP_NO_INDEX": "no-index",
     "PIP_FIND_LINKS": "find-links",
+    "PIP_REQUIRE_HASHES": "require-hashes",
 }
 _PIP_KEY_KINDS = {
     "index-url": "index",
     "extra-index-url": "extra-index",
     "no-index": "no-index",
     "find-links": "find-links",
+    "require-hashes": "require-hashes",
 }
 _PIP_INDEX_KEYS = set(_PIP_KEY_KINDS)
+# Kinds set by a boolean; an explicit false value is no setting at all.
+_BOOLEAN_KINDS = {"no-index", "require-hashes"}
 # uv settings that keep each kind of pip source from falling through to
 # PyPI. pip's index-url replaces PyPI, so only a replaced uv default index
 # (or UV_NO_INDEX) covers it; UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS
@@ -467,7 +482,10 @@ _UV_COVERS = {
     "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
     "find-links": ("UV_FIND_LINKS", "UV_NO_INDEX"),
     "no-index": ("UV_NO_INDEX",),
+    # uv only reads its own variable; without it uv installs unhashed.
+    "require-hashes": ("UV_REQUIRE_HASHES",),
 }
+_UV_BOOLEAN_ENV = {"UV_NO_INDEX", "UV_REQUIRE_HASHES"}
 
 
 def _pip_package_sources(python: str) -> tuple[list[str], set[str]]:
@@ -476,7 +494,7 @@ def _pip_package_sources(python: str) -> tuple[list[str], set[str]]:
     kinds: set[str] = set()
     for name, kind in _PIP_ENV_KINDS.items():
         value = os.environ.get(name)
-        if value and not (kind == "no-index" and _pip_false(value)):
+        if value and not (kind in _BOOLEAN_KINDS and _pip_false(value)):
             sources.append(name)
             kinds.add(kind)
     config_file = os.environ.get("PIP_CONFIG_FILE")
@@ -536,7 +554,7 @@ def _config_source_keys(path: Path) -> set[str]:
         key.replace("_", "-")
         for section in parser.sections()
         for key, value in parser[section].items()
-        if not (key.replace("_", "-") == "no-index" and _pip_false(value))
+        if not (_PIP_KEY_KINDS.get(key.replace("_", "-")) in _BOOLEAN_KINDS and _pip_false(value))
     } & _PIP_INDEX_KEYS
 
 
@@ -544,8 +562,8 @@ def _uv_env_set(name: str) -> bool:
     value = os.environ.get(name)
     if not value:
         return False
-    if name == "UV_NO_INDEX":
-        # uv parses this as a boolean: "0" / "false" leave PyPI enabled.
+    if name in _UV_BOOLEAN_ENV:
+        # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
     return True
 
