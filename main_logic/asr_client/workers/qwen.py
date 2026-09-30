@@ -45,7 +45,7 @@ _QWEN_INTL_URL = (
 )
 _QWEN_FINISH_TIMEOUT_SECONDS = 3.0
 # Local pause candidates do not take endpoint authority away from Qwen.  They
-# only start this grace period; incoming audio or a provider endpoint cancels
+# only start this grace period; resumed speech or a provider endpoint cancels
 # it.  If the provider remains silent, session.finish asks it to settle the
 # current buffer and then the worker reconnects a fresh session.
 _QWEN_LOCAL_FINISH_GRACE_SECONDS = 1.5
@@ -114,6 +114,9 @@ class _QwenConnectionState:
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
     closed_sent: asyncio.Event = field(default_factory=asyncio.Event)
     last_utterance_id: int | None = None
+    # Provider VAD allocates its own utterance ids from speech_started.  Audio
+    # requests carry the runtime's local id and must not overwrite this one.
+    current_provider_utterance_id: int | None = None
     # Legacy DashScope domains can omit the documented ``item_id`` fields.
     # Their manual stream is ordered, so retain the head commit until final.
     legacy_manual_key: _ItemKey | None = None
@@ -211,6 +214,14 @@ def _qwen_cancel_provider_fallback(state: _QwenConnectionState) -> None:
         timer.cancel()
 
 
+def _qwen_retire_provider_key(state: _QwenConnectionState, key: _ItemKey) -> None:
+    state.provider_endpoint_utterance_ids.discard(key[2])
+    if state.current_provider_utterance_id == key[2]:
+        state.current_provider_utterance_id = None
+    if state.fallback_key == key:
+        _qwen_cancel_provider_fallback(state)
+
+
 def _qwen_arm_provider_fallback(
     state: _QwenConnectionState,
     key: _ItemKey,
@@ -241,6 +252,7 @@ async def _qwen_emit_empty_finals_for_pending_items(
     state.item_keys.clear()
     state.item_deadlines.clear()
     for _item_id, key in pending:
+        _qwen_retire_provider_key(state, key)
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="final",
@@ -254,8 +266,10 @@ async def _qwen_emit_empty_finals_for_pending_items(
 
 async def _qwen_finish_and_reconnect(
     ws: Any,
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     state: _QwenConnectionState,
+    deferred_requests: deque[_AsrWorkerRequest],
 ) -> tuple[str, _AsrWorkerRequest | None]:
     state.reconnect_after_finish = True
     state.finish_received.clear()
@@ -267,17 +281,39 @@ async def _qwen_finish_and_reconnect(
             }
         )
     )
+    # session.finish is one-way.  Requests arriving while the provider flushes
+    # belong to the successor session and must stay in FIFO order.
+    finish_task = asyncio.create_task(state.finish_received.wait())
+    queue_task = asyncio.create_task(request_queue.get())
+    deadline = asyncio.get_running_loop().time() + _QWEN_FINISH_TIMEOUT_SECONDS
     try:
-        await asyncio.wait_for(
-            state.finish_received.wait(), timeout=_QWEN_FINISH_TIMEOUT_SECONDS
-        )
-    except asyncio.TimeoutError:
-        await _qwen_emit_empty_finals_for_pending_items(response_queue, state)
-    else:
-        # A protocol-compliant finish carries a final before session.finished,
-        # but keep the upstream lifecycle bounded if the provider acknowledges
-        # the session without returning one for an outstanding item.
-        await _qwen_emit_empty_finals_for_pending_items(response_queue, state)
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            done, _ = await asyncio.wait(
+                {finish_task, queue_task},
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if queue_task in done:
+                deferred_requests.append(queue_task.result())
+                queue_task = asyncio.create_task(request_queue.get())
+                if finish_task in done:
+                    break
+                continue
+            if finish_task in done:
+                break
+            break
+    finally:
+        for task in (finish_task, queue_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(finish_task, queue_task, return_exceptions=True)
+
+    # A provider may acknowledge the session without returning a final for an
+    # outstanding item.  Keep the upstream lifecycle bounded in that case.
+    await _qwen_emit_empty_finals_for_pending_items(response_queue, state)
     state.intentional_close.set()
     try:
         await ws.close()
@@ -304,6 +340,7 @@ async def _qwen_expire_stalled_items(
         if key is None:
             continue
         state.item_deadlines.pop(item_id, None)
+        _qwen_retire_provider_key(state, key)
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="final",
@@ -338,55 +375,79 @@ async def _qwen_watch_stalled_items(
         await _qwen_expire_stalled_items(response_queue, state)
 
 
+async def _qwen_get_request(
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
+    deferred_requests: deque[_AsrWorkerRequest],
+) -> _AsrWorkerRequest:
+    if deferred_requests:
+        return deferred_requests.popleft()
+    return await request_queue.get()
+
+
 async def _qwen_sender(
     ws: Any,
     request_queue: asyncio.Queue[_AsrWorkerRequest],
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     config: AsrSessionConfig,
     state: _QwenConnectionState,
+    deferred_requests: deque[_AsrWorkerRequest] | None = None,
 ) -> tuple[str, _AsrWorkerRequest | None]:
     delivery_evidence(request_queue)
     await state.configured.wait()
+    if deferred_requests is None:
+        deferred_requests = deque()
     try:
         while True:
-            queue_task = asyncio.create_task(request_queue.get())
+            queue_task = asyncio.create_task(
+                _qwen_get_request(request_queue, deferred_requests)
+            )
             fallback_task = (
                 asyncio.create_task(state.fallback_due.wait())
                 if state.fallback_key is not None
                 else None
             )
-            done, pending = await asyncio.wait(
-                {queue_task, *({fallback_task} if fallback_task is not None else set())},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+            tasks = {queue_task}
+            if fallback_task is not None:
+                tasks.add(fallback_task)
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Ownership follows the actual task state after cancellation,
+                # not wait()'s earlier snapshot: a getter may finish meanwhile.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
             request: _AsrWorkerRequest | None = None
-            if fallback_task is not None and fallback_task in done:
-                # Prefer already-buffered commands over a timer that became
-                # ready at the same instant; resumed speech cancels fallback.
-                if queue_task in done:
-                    request = queue_task.result()
-                else:
-                    try:
-                        request = request_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        key = state.fallback_key
-                        state.fallback_due.clear()
-                        state.fallback_key = None
-                        state.fallback_timer_task = None
-                        if key is not None:
-                            return await _qwen_finish_and_reconnect(
-                                ws, response_queue, state
-                            )
-            if request is None:
+            if not queue_task.cancelled():
                 request = queue_task.result()
+            else:
+                try:
+                    request = request_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            if request is None:
+                # Endpoint/final processing may have cancelled fallback while
+                # we joined the getter.  Never read a cancelled getter result.
+                key = state.fallback_key
+                if (
+                    key is not None
+                    and state.fallback_due.is_set()
+                    and key[2] == state.current_provider_utterance_id
+                    and key[2] not in state.provider_endpoint_utterance_ids
+                ):
+                    _qwen_cancel_provider_fallback(state)
+                    return await _qwen_finish_and_reconnect(
+                        ws,
+                        request_queue,
+                        response_queue,
+                        state,
+                        deferred_requests,
+                    )
+                continue
             try:
                 if request.kind == "audio":
-                    _qwen_cancel_provider_fallback(state)
                     state.last_utterance_id = request.utterance_id
                     delivery = begin_transport_write(request_queue)
                     state.delivery = delivery
@@ -411,11 +472,11 @@ async def _qwen_sender(
                     if config.endpointing_mode == "provider":
                         if request.speech_active:
                             _qwen_cancel_provider_fallback(state)
-                        elif state.last_utterance_id is not None:
+                        elif state.current_provider_utterance_id is not None:
                             key = (
                                 request.generation,
                                 request.buffer_epoch,
-                                state.last_utterance_id,
+                                state.current_provider_utterance_id,
                             )
                             if key[2] not in state.provider_endpoint_utterance_ids:
                                 _qwen_arm_provider_fallback(state, key)
@@ -525,6 +586,8 @@ async def _qwen_sender(
             "Qwen ASR sender failed",
         )
         return "error", None
+    finally:
+        _qwen_cancel_provider_fallback(state)
 
 
 async def _qwen_receiver(
@@ -621,6 +684,8 @@ async def _qwen_receiver(
                 )
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
+                _qwen_cancel_provider_fallback(state)
+                state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
                 await response_queue.put(
                     _AsrWorkerEvent(
@@ -639,7 +704,8 @@ async def _qwen_receiver(
                 key = state.item_keys.get(item_id)
                 if key is not None:
                     state.provider_endpoint_utterance_ids.add(key[2])
-                    _qwen_cancel_provider_fallback(state)
+                    if state.fallback_key == key:
+                        _qwen_cancel_provider_fallback(state)
                 # Server VAD sealed the turn; the transcription final is
                 # still outstanding. Arm the stalled-item deadline so a
                 # delayed or missing completed event cannot leave the
@@ -655,7 +721,8 @@ async def _qwen_receiver(
                     key = state.item_keys.get(item_id)
                     if key is not None:
                         state.provider_endpoint_utterance_ids.add(key[2])
-                        _qwen_cancel_provider_fallback(state)
+                        if state.fallback_key == key:
+                            _qwen_cancel_provider_fallback(state)
                     _qwen_arm_stalled_item_deadline(state, item_id)
                     continue
                 if (
@@ -707,7 +774,7 @@ async def _qwen_receiver(
                     else state.legacy_manual_key
                 )
                 if key is not None:
-                    state.provider_endpoint_utterance_ids.discard(key[2])
+                    _qwen_retire_provider_key(state, key)
                     await response_queue.put(
                         _AsrWorkerEvent(
                             kind="final",
@@ -796,6 +863,7 @@ async def qwen_asr_worker(
     buffer_epoch = 0
     next_utterance_id = 1
     first_connection = True
+    deferred_requests: deque[_AsrWorkerRequest] = deque()
     closed_sent = False
     active_state: _QwenConnectionState | None = None
 
@@ -842,6 +910,7 @@ async def qwen_asr_worker(
                         response_queue,
                         config,
                         state,
+                        deferred_requests,
                     ),
                     name="qwen-asr-sender",
                 )
