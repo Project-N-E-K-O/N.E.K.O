@@ -75,9 +75,10 @@ def handle_sync(args: argparse.Namespace) -> int:
     # can let waiting processes lock different inodes for the same plugin.
     identity = os.path.normcase(str(plugin_dir.resolve()))
     lock_name = hashlib.sha256(identity.encode()).hexdigest()
-    lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
     staging_dir: Path | None = None
     try:
+        # Inside the try: an unusable lock dir reports like any other OSError.
+        lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
         with portalocker.Lock(lock_path, timeout=0):
             # Holding the lock means no other sync of this plugin by this user
             # is running, so this user's staging dirs were left by killed runs.
@@ -709,21 +710,40 @@ def _uv_env_set(name: str) -> bool:
     return True
 
 
-# pip options parsed as booleans. Only these can be switched off with a
-# false value; for any other option "off" or "0" is a real value (a file
-# name, a package list) and the option stays set.
+# pip's boolean flags (store_true options of `pip install` and the general
+# options, per pip 25 --help). Only these can be switched off with a false
+# value; for any other option "off" or "0" is a real value (a file name, a
+# package list) and the option stays set.
 _PIP_BOOLEAN_SETTINGS = {
+    "break-system-packages",
+    "check-build-dependencies",
+    "compile",
+    "debug",
+    "disable-pip-version-check",
+    "dry-run",
     "force-reinstall",
     "ignore-installed",
+    "ignore-requires-python",
     "isolated",
     "no-build-isolation",
+    "no-cache-dir",
+    "no-clean",
+    "no-color",
+    "no-compile",
     "no-deps",
     "no-index",
+    "no-input",
+    "no-proxy-env",
+    "no-require-hashes",
+    "no-warn-conflicts",
+    "no-warn-script-location",
     "pre",
     "prefer-binary",
     "require-hashes",
     "require-virtualenv",
+    "upgrade",
     "use-pep517",
+    "user",
 }
 
 

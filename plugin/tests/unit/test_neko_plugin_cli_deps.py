@@ -416,6 +416,7 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
         ({"PIP_NO_DEPS": "false"}, False),
         ({"PIP_PRE": "0"}, False),
         ({"PIP_NO_DEPS": "1"}, True),
+        ({"PIP_NO_CLEAN": "false", "PIP_NO_COMPILE": "0", "PIP_UPGRADE": "off"}, False),
     ],
 )
 def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch, env, blocked):
@@ -687,6 +688,19 @@ def test_non_clean_sync_refuses_nested_junction_before_copying(tmp_path, monkeyp
     assert os.readlink(junction)
     assert not list(plugin_dir.glob(".vendor.*"))
     assert "directory junction" in capsys.readouterr().err
+
+
+def test_unusable_lock_dir_fails_with_a_message_not_a_traceback(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+
+    def taken():
+        raise PermissionError("lock directory is owned by another user")
+
+    monkeypatch.setattr(deps_cmd, "_lock_dir", taken)
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert "[FAIL] Could not sync dependencies" in capsys.readouterr().err
 
 
 def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
