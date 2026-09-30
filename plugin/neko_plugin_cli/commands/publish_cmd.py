@@ -261,6 +261,9 @@ def _publish_github(
         plugin=str(plugin_dir),
         python=sys.executable,
         clean=True,
+        # A clean rebuild by default must not silently drop an unreconciled
+        # backup of vendor/; only an explicit `sync --clean` may.
+        discard_backups=False,
     )
     if deps_cmd.handle_sync(sync_args) != 0:
         raise RuntimeError(

@@ -90,13 +90,16 @@ def handle_sync(args: argparse.Namespace) -> int:
                 else []
             )
 
-            # --clean may discard an unreconciled backup, but only when an
-            # install rebuilds vendor/; the no-dependency path has nothing to
-            # reconcile it with.
+            # A user's explicit `sync --clean` may discard an unreconciled
+            # backup, but only when an install rebuilds vendor/; the
+            # no-dependency path has nothing to reconcile it with. Callers
+            # that clean by default (publish) pass discard_backups=False, so
+            # the only full copy of the old vendor/ is never dropped silently.
+            discard_backups = getattr(args, "discard_backups", args.clean)
             unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
-            if unreconciled and (not args.clean or not external_deps):
+            if unreconciled and (not discard_backups or not external_deps):
                 hint = (
-                    "recover it or use explicit --clean"
+                    "recover it or run `neko-plugin sync --clean` explicitly"
                     if external_deps
                     else "recover it before retrying"
                 )

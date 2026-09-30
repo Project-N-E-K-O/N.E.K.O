@@ -247,6 +247,32 @@ def test_recovery_marker_write_failure_rolls_back_before_swap(tmp_path, monkeypa
     assert not list(tmp_path.glob(".vendor.backup-*"))
 
 
+@pytest.mark.parametrize("discard_backups", [False, True])
+def test_default_clean_never_discards_a_pending_backup(tmp_path, monkeypatch, capsys, discard_backups):
+    # publish always syncs with clean=True; only an explicit `sync --clean`
+    # (discard_backups) may drop the only complete copy of the old vendor/.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "vendor").mkdir()
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
+    backup.mkdir()
+    (backup / "old.py").write_text("only copy")
+    backup.with_name(backup.name + ".pending").touch()
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+    args = TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)
+    args.discard_backups = discard_backups
+
+    assert handle_sync(args) == (0 if discard_backups else 1)
+    assert backup.exists() is (not discard_backups)
+    if not discard_backups:
+        assert "unreconciled dependency backup" in capsys.readouterr().err
+
+
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -277,7 +303,7 @@ def test_non_clean_retry_refuses_orphaned_backup(tmp_path, monkeypatch, capsys):
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
     assert backup.exists()
-    assert "recover it or use explicit --clean" in capsys.readouterr().err
+    assert "run `neko-plugin sync --clean` explicitly" in capsys.readouterr().err
 
 
 def test_rollback_never_deletes_a_vendor_that_reappeared(tmp_path, monkeypatch, capsys):

@@ -796,6 +796,7 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
         assert getattr(args, "plugin") == str(plugin_dir)
         assert getattr(args, "clean") is True
         assert getattr(args, "python") == sys.executable
+        assert getattr(args, "discard_backups") is False
         calls.append("sync")
         return 1
 
