@@ -345,9 +345,13 @@ def _make_private(directory: Path) -> None:
 
 
 def _absolute_if_path(program: str) -> str:
+    """Pin an interpreter to what it means in this process's cwd: a path is
+    made absolute, and a bare name is resolved through PATH here (a relative
+    PATH entry would change meaning in another cwd)."""
     if any(sep and sep in program for sep in (os.sep, os.altsep)):
         return os.path.abspath(program)
-    return program
+    found = shutil.which(program)
+    return os.path.abspath(found) if found else program
 
 
 def _short_token() -> str:
@@ -579,8 +583,8 @@ def _pip_install_to_vendor(
     result = _run_installer(
         [
             uv, "pip", "install",
-            # uv runs in target.cwd, so pin paths given relative to this
-            # process's cwd (a bare name like "python3" stays a PATH lookup).
+            # uv runs in target.cwd, so pin the interpreter to what it means
+            # here, where the pip attempt resolved it.
             "--python", _absolute_if_path(python),
             "--target", str(vendor_dir.absolute()),
             "--upgrade",
@@ -610,16 +614,16 @@ _PIP_SETTING_KINDS = {
     "find-links": "find-links",
     "require-hashes": "require-hashes",
     "proxy": "proxy",
+    "cert": "cert",
 }
 # Settings that cannot make uv install different packages when dropped:
-# output, caching, retries, certificates (a missing one only makes uv fail),
+# output, caching, retries, a client certificate (without it uv only fails),
 # and options both installers are given explicitly anyway. Every other pip setting (only-binary,
 # constraint, pre, ...) has no checked uv counterpart here and blocks the
 # fallback, since uv would silently ignore it.
 _PIP_HARMLESS_SETTINGS = {
     "break-system-packages",
     "cache-dir",
-    "cert",
     "client-cert",
     "default-timeout",
     "disable-pip-version-check",
@@ -659,6 +663,10 @@ _UV_COVERS = {
     # without one, uv would bypass a filtering proxy and connect directly.
     # Package indexes are HTTPS, which HTTP_PROXY does not cover.
     "proxy": ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
+    # pip's cert replaces the default CA bundle (possibly a restrictive one);
+    # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE /
+    # SSL_CERT_DIR but silently ignores a path that does not exist.
+    "cert": ("SSL_CERT_FILE", "SSL_CERT_DIR"),
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
@@ -804,6 +812,10 @@ def _uv_env_set(name: str) -> bool:
     value = os.environ.get(name)
     if not value:
         return False
+    if name == "SSL_CERT_FILE":
+        return Path(value).is_file()
+    if name == "SSL_CERT_DIR":
+        return Path(value).is_dir()
     if name in _UV_BOOLEAN_ENV:
         # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}

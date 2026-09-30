@@ -140,7 +140,7 @@ def test_uv_fallback_refuses_when_pip_has_an_index_uv_cannot_see(
         config = tmp_path / "pip.ini"
         config.write_text(config_text, encoding="utf-8")
         monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [config])
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
 
@@ -164,7 +164,7 @@ def test_pip_no_index_is_passed_to_uv_as_the_flag(tmp_path, monkeypatch, pip_no_
 
     if pip_no_index:
         monkeypatch.setenv("PIP_NO_INDEX", "1")
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
 
@@ -191,7 +191,7 @@ def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, 
     # pip ran and failed; a build step merely printed the same words.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(has_pip=True))
     calls = []
 
@@ -216,7 +216,7 @@ def test_installer_start_failure_is_not_missing_pip(
 ):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
 
     def run(command, **kwargs):
         if command[0] == "uv" or failing_installer == "pip":
@@ -457,7 +457,7 @@ def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch,
 
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
 
@@ -473,7 +473,7 @@ def test_require_virtualenv_is_honored_like_pip(tmp_path, monkeypatch, capsys, i
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.setenv("PIP_REQUIRE_VIRTUALENV", "true")
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(in_venv=in_venv))
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
@@ -588,7 +588,7 @@ def test_probe_that_cannot_answer_returns_none(tmp_path, monkeypatch, outcome):
 def test_unknown_pip_availability_does_not_fall_back(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
@@ -605,7 +605,7 @@ def test_pip_settings_come_from_the_targets_environment(tmp_path, monkeypatch, c
     # private index that uv (run from the CLI's environment) would miss.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(
         deps_cmd,
         "_probe_target",
@@ -742,7 +742,7 @@ def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
     # pip's mirror would silently override a user's configured uv index.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setenv("PIP_INDEX_URL", "https://mirror/simple")
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv/simple")
     calls = []
@@ -1085,7 +1085,7 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     launcher_dir = tmp_path / "launcher-dir"
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(cwd=launcher_dir))
     seen = []
 
@@ -1115,6 +1115,13 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         # NO_PROXY=* bypasses the proxy for every host.
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
           "NO_PROXY": "*"}, False),
+        # pip's cert replaces the default CA bundle; uv would otherwise trust
+        # its bundled roots, and ignores an SSL_CERT_FILE that does not exist.
+        ({"PIP_CERT": "/corp/ca.pem"}, False),
+        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<existing>"}, True),
+        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "/missing/ca.pem"}, False),
+        # Without a client certificate uv can only fail.
+        ({"PIP_CLIENT_CERT": "/corp/client.pem"}, True),
         # Both installers are given --target/--upgrade explicitly.
         ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
     ],
@@ -1123,11 +1130,13 @@ def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
-                 "NO_PROXY", "no_proxy"):
+                 "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"):
         monkeypatch.delenv(name, raising=False)
+    existing = tmp_path / "ca.pem"
+    existing.write_text("pem")
     for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+        monkeypatch.setenv(name, str(existing) if value == "<existing>" else value)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
 
@@ -1142,7 +1151,7 @@ def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     monkeypatch.setattr(
         deps_cmd, "_probe_target", lambda python: _target(cwd=tmp_path / "launcher-dir")
     )
@@ -1158,10 +1167,17 @@ def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
     assert uv_command[uv_command.index("--target") + 1] == str(tmp_path / "staging")
 
 
-def test_bare_python_name_stays_a_path_lookup():
-    from plugin.neko_plugin_cli.commands.deps_cmd import _absolute_if_path
+def test_bare_python_name_is_resolved_through_path_here(tmp_path, monkeypatch):
+    # A relative PATH entry would mean something else in target.cwd, so the
+    # bare name is resolved in this process before uv changes directory.
+    from plugin.neko_plugin_cli.commands import deps_cmd
 
-    assert _absolute_if_path("python3") == "python3"
+    monkeypatch.chdir(tmp_path)
+    found = os.path.join("bin", "python3")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: found if name == "python3" else None)
+    assert deps_cmd._absolute_if_path("python3") == str(tmp_path / found)
+    # Not found here: leave it to uv's own lookup.
+    assert deps_cmd._absolute_if_path("python9") == "python9"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink and permission bits")
@@ -1544,7 +1560,7 @@ class TestTransactionalDependencyInstall:
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv.exe",
+            lambda name: "uv.exe" if name == "uv" else None,
         )
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -1570,7 +1586,7 @@ class TestTransactionalDependencyInstall:
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv.exe",
+            lambda name: "uv.exe" if name == "uv" else None,
         )
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd._probe_target",
@@ -1598,7 +1614,7 @@ class TestTransactionalDependencyInstall:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv.exe",
+            lambda name: "uv.exe" if name == "uv" else None,
         )
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -1658,7 +1674,7 @@ class TestTransactionalDependencyInstall:
         marker.write_text("keep", encoding="utf-8")
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv",
+            lambda name: "uv" if name == "uv" else None,
         )
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
@@ -1679,7 +1695,7 @@ class TestTransactionalDependencyInstall:
         (vendor / "stale.py").write_text("stale", encoding="utf-8")
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv",
+            lambda name: "uv" if name == "uv" else None,
         )
 
         def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -1700,7 +1716,7 @@ class TestTransactionalDependencyInstall:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: "uv",
+            lambda name: "uv" if name == "uv" else None,
         )
 
         def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -1733,7 +1749,7 @@ class TestTransactionalDependencyInstall:
         vendor.mkdir()
         (vendor / "extra.py").write_text("keep", encoding="utf-8")
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which", lambda _: "uv"
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which", lambda name: "uv" if name == "uv" else None
         )
 
         def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
