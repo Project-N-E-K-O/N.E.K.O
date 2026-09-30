@@ -602,7 +602,14 @@ class IndependentAsrRuntime:
     def pending_transcript_turn_tokens(self) -> frozenset[VoiceTurnToken]:
         """Return turns whose accepted final is still owed to Core."""
 
-        return self._asr_transcript_dispatcher.pending_turn_tokens()
+        tokens = set(self._asr_transcript_dispatcher.pending_turn_tokens())
+        # A provider endpoint seals the current turn before its final arrives.
+        # During DRAINING that final is still owed to Core even though the
+        # dispatcher has not reserved its transcript slot yet.
+        sealed_turn = self._asr_sealed_turn_token
+        if sealed_turn is not None:
+            tokens.add(sealed_turn.turn)
+        return frozenset(tokens)
 
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None

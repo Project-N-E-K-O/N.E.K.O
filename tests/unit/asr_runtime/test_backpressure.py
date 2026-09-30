@@ -232,6 +232,30 @@ async def test_provider_overflow_lock_then_final_preserves_accepted_final() -> N
     assert runtime._asr_accepted_final_keys
 
 
+async def test_draining_turn_survives_core_backpressure() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    assert sealed.turn in runtime._asr_runtime.pending_transcript_turn_tokens()
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    await runtime._handle_independent_asr_final("first", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    assert runtime.session.create_response.await_args_list == [call("first")]
+
+
 @pytest.mark.parametrize("replacement", ["epoch", "lifecycle", "detector"])
 async def test_provider_overflow_waiting_on_final_lock_is_identity_fenced(
     replacement: str,
