@@ -155,6 +155,7 @@ function createHarness({
     segmentInProgressOnce = null,
     cancelCsrfFailureOnce = false,
     startGates = {},
+    runtimeMode = 'enforce',
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -221,7 +222,7 @@ function createHarness({
             ? { enrollment_id: enrollmentId, expires_at: 123.5, remaining_seconds: remainingSeconds, next_segment_index: serverNextSegment }
             : null,
         profile_generation: serverProfileGeneration,
-        runtime_mode: 'enforce',
+        runtime_mode: runtimeMode,
     });
 
     async function defaultRoute(call) {
@@ -465,6 +466,7 @@ function createHarness({
                 'voiceIdentity.profileSavedDisabled': 'Owner voice profile is saved; filtering is off',
                 'voiceIdentity.reasonRuntimeDegraded': 'Voice filtering is unavailable',
                 'voiceIdentity.reasonSecureStorageUnavailable': 'Secure storage is unavailable',
+                'voiceIdentity.featureDisabled': 'Voice identity is turned off',
                 'voiceIdentity.recording': 'Recording...',
                 'voiceIdentity.voiceWaiting': 'Waiting for speech',
                 'voiceIdentity.voiceDetected': 'Speech detected',
@@ -1631,6 +1633,32 @@ test('a late response cannot roll back an already applied passive refresh', asyn
     await flush(3);
 
     assert.equal(harness.elements.get('voice-identity-filter').checked, false);
+});
+
+test('disabled runtime blocks enrollment without a stored profile', async () => {
+    const harness = createHarness({ runtimeMode: 'off' });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-profile-status').textContent, 'Voice identity is turned off');
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+});
+
+test('disabled runtime keeps delete but blocks re-enrollment and filter enable', async () => {
+    const harness = createHarness({ runtimeMode: 'off', initialProfile: true });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-profile-status').textContent, 'Voice identity is turned off');
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
+});
+
+test('disabled runtime still lets a previously enabled filter be turned off', async () => {
+    const harness = createHarness({ runtimeMode: 'off', initialProfile: true, initialRequested: true });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-filter').checked, true);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, false);
 });
 
 test('a short remaining lease is rejected before starting a futile recording', async () => {

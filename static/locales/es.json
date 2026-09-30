@@ -3026,7 +3026,7 @@
         "reasonEnrollmentActive": "Se está registrando un nuevo perfil. La activación no comenzará y el audio en espera no se subirá hasta terminar.",
         "reasonRuntimeDegraded": "La activación por voz no está disponible temporalmente; el audio en espera no se subirá.",
         "reasonUnsupportedAsrRoute": "La ruta de voz actual aún no admite la activación; el audio en espera no se subirá mientras esté encendida.",
-        "reasonShadowMode": "La activación solo está observando y aún no ha autorizado la subida del audio en espera.",
+        "featureDisabled": "La identidad de voz está desactivada, así que no se puede registrar la voz ni encender la activación por voz. El perfil de voz guardado aún se puede eliminar.",
         "sessionWaiting": "Esperando a que hables para activar el chat de voz",
         "sessionActive": "El chat de voz está activo",
         "sessionUnavailable": "La activación por voz no está disponible temporalmente; el audio en espera no se subirá",

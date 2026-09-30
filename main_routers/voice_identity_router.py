@@ -58,6 +58,7 @@ def _service_error(exc: VoiceIdentityServiceError) -> JSONResponse:
     }:
         status_code = 400
     elif exc.code in {
+        "feature_disabled",
         "stale_enrollment",
         "segment_out_of_order",
         "segment_in_progress",
