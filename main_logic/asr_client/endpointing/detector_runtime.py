@@ -890,7 +890,16 @@ class _VoiceTurnAdapter:
                     asyncio.get_running_loop().time()
                     + self._max_endpoint_wait_seconds
                 )
-            if item.reason != "periodic_no_vad" or self._smart_turn_required:
+            if item.reason != "periodic_no_vad" or (
+                self._smart_turn_required
+                and (
+                    self._fallback_task is None
+                    or self._fallback_task.done()
+                )
+            ):
+                # A periodic tick must not restart an already pending strict
+                # wait; otherwise continuous no-VAD audio can postpone the
+                # retry past the semantic endpoint deadline.
                 self._schedule_fallback(item.identity, "semantic_incomplete")
             if reevaluate and reevaluation_reason != "periodic_no_vad":
                 self._request_evaluation(

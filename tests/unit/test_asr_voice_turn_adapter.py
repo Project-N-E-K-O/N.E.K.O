@@ -1463,6 +1463,47 @@ async def test_periodic_no_vad_incomplete_starts_strict_endpoint_wait() -> None:
     await adapter.close()
 
 
+async def test_periodic_no_vad_does_not_restart_strict_wait() -> None:
+    committed = asyncio.Event()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.08,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.08,
+    )
+    await adapter.start()
+    identity = (37, 38, 39)
+    adapter._identity = identity
+    adapter._coordinator.state = CoordinatorState.WAIT_CONTINUATION
+    item = _EvaluationResultItem(
+        identity=identity,
+        coordinator_generation=0,
+        activity_seq=0,
+        reason="periodic_no_vad",
+        result=_incomplete(),
+    )
+
+    await adapter._process_evaluation_result(item)
+    first_fallback = adapter._fallback_task
+    assert first_fallback is not None
+    await asyncio.sleep(0.03)
+    await adapter._process_evaluation_result(item)
+
+    # A later periodic result keeps the original strict wait and its deadline.
+    assert adapter._fallback_task is first_fallback
+    await asyncio.wait_for(committed.wait(), 0.2)
+    assert adapter._failed is False
+    await adapter.close()
+
+
 async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -> None:
     commits: list[tuple[int, int, int]] = []
 
