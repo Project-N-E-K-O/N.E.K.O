@@ -1555,10 +1555,13 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert (deleting / "record.json").read_bytes() == retained_record
 
+    # 授权位置是目录时，明确删除也不能丢弃它里面的东西，界面不提示去删除。
+    pending_code = "tool_recovery_pending" if flavour == "directory-marker" else "tool_delete_pending"
+
     def assert_pending(operation):
         with pytest.raises(AvatarToolStoreError) as raised:
             operation()
-        assert (raised.value.code, raised.value.status_code) == ("tool_delete_pending", 409)
+        assert (raised.value.code, raised.value.status_code) == (pending_code, 409)
 
     assert_pending(lambda: restarted.create_tool_v3(
         manifest=_v3_manifest(blocked_id), uploads=[_png()]
@@ -1582,6 +1585,11 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert restarted.delete_tool(other_id) == other_id
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
+    if flavour == "directory-marker":
+        assert_pending(lambda: restarted.delete_tool(blocked_id, base_revision=republished["revision"]))
+        assert (deleting / "record.json").read_bytes() == retained_record
+        assert (marker / "stray").read_bytes() == b"x"
+        return
 
     # 拿着过期 revision 的删除被拒绝时，副本不能先被丢掉。
     with pytest.raises(AvatarToolStoreError) as conflict:
@@ -1756,7 +1764,7 @@ def test_discarding_a_retained_deletion_works_where_directories_cannot_be_synced
 
 @pytest.mark.parametrize(
     "replaced",
-    ("copy", "record-in-place", "resource-in-place", "nested-in-place", "marker", "marker-dir-in-place"),
+    ("copy", "record-in-place", "resource-in-place", "nested-in-place", "marker"),
 )
 def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_path, monkeypatch, replaced):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
@@ -1771,12 +1779,7 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         # 合法道具目录是平的，但保留副本本来就是异常残留，可能带子目录。
         (deleting / "nested").mkdir()
         (deleting / "nested" / "stray.bin").write_bytes(b"old")
-    if replaced == "marker-dir-in-place":
-        # 授权位置被同步客户端换成了目录。
-        marker.mkdir()
-        (marker / "stray.bin").write_bytes(b"old")
-    else:
-        marker.write_bytes(b"{")
+    marker.write_bytes(b"{")
     synced_record = b'{"synced": "newer version"}'
 
     def sync_during_fence(*_args, **kwargs):
@@ -1790,9 +1793,6 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         elif replaced == "record-in-place":
             # 原地改写同一个文件：目录本身的身份不变，只有 record.json 的变了。
             (deleting / "record.json").write_bytes(synced_record)
-        elif replaced == "marker-dir-in-place":
-            # 原地改写授权目录里的文件：授权目录本身的身份不变。
-            (marker / "stray.bin").write_bytes(b"synced newer")
         elif replaced == "nested-in-place":
             # 原地改写子目录里的文件：副本目录和子目录本身的身份都不变。
             (deleting / "nested" / "stray.bin").write_bytes(b"synced newer")
@@ -1811,7 +1811,7 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
     # 换进来的可能是更新的版本：整个删除拒绝，副本、授权和正式目录都不动。
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 409)
     assert deleting.is_dir()
-    assert marker.is_dir() if replaced == "marker-dir-in-place" else marker.is_file()
+    assert marker.is_file()
     assert final.is_dir()
     if replaced in ("copy", "record-in-place"):
         assert (deleting / "record.json").read_bytes() == synced_record
@@ -1819,8 +1819,6 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         assert any(path.read_bytes().endswith(b"synced") for path in deleting.glob("*.png"))
     if replaced == "nested-in-place":
         assert (deleting / "nested" / "stray.bin").read_bytes() == b"synced newer"
-    if replaced == "marker-dir-in-place":
-        assert (marker / "stray.bin").read_bytes() == b"synced newer"
 
 
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
@@ -1910,7 +1908,7 @@ def test_recovery_keeps_a_parked_copy_it_cannot_place_and_blocks_only_its_id(tmp
     parked = store.root / f".{tool_id}.retained"
     # 崩溃前停放的副本（原授权在里面）。
     shutil.copytree(final, parked)
-    (parked / f".retained-{uuid.uuid4()}.unverified").write_bytes(b"{")
+    (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
     parked_record = (parked / "record.json").read_bytes()
     if state == "unresolved-deleting":
         # 暂存把一个同步换进来的目录挪去了 .deleting，核对不上，正式路径又被
@@ -1961,9 +1959,12 @@ def test_a_crash_while_parking_beside_a_directory_marker_recovers(tmp_path, monk
     assert (deleting / "record.json").read_bytes() == parked_record
     assert (marker / "stray.bin").read_bytes() == b"synced"
     assert not parked.exists()
-    assert restarted.delete_tool(tool_id) == tool_id
-    assert not deleting.exists()
-    assert not final.exists()
+    # 明确删除也不丢弃目录授权里的东西：只拦这一个 ID。
+    with pytest.raises(AvatarToolStoreError) as blocked:
+        restarted.delete_tool(tool_id)
+    assert blocked.value.code == "tool_recovery_pending"
+    assert (marker / "stray.bin").read_bytes() == b"synced"
+    assert (deleting / "record.json").read_bytes() == parked_record
 
 
 def test_recovery_never_recursively_deletes_a_directory_at_an_orphan_marker_path(tmp_path, monkeypatch):
@@ -2076,6 +2077,13 @@ def test_parking_is_durable_before_the_marker_moves(tmp_path, monkeypatch):
     assert park < move_marker
     if os.name != "nt":
         assert ("dir-fsync",) in events[park + 1:move_marker]
+    # 授权停在存储根里、副本旁边（同一个目录内改名），由存储根的严格持久化覆盖之后
+    # 才暂存正式目录。
+    assert events[move_marker][2] == f".{tool_id}.retained.unverified"
+    stage = events.index(("replace", final.name, deleting.name))
+    assert move_marker < stage
+    if os.name != "nt":
+        assert ("dir-fsync",) in events[move_marker + 1:stage]
 
 
 def test_a_rolled_back_marker_that_authorizes_the_copy_is_replaced(tmp_path, monkeypatch):
@@ -2097,7 +2105,7 @@ def test_a_rolled_back_marker_that_authorizes_the_copy_is_replaced(tmp_path, mon
         if Path(source) == final and Path(destination) == deleting:
             raise OSError(errno.ENOSPC, "simulated disk full")
         result = real_replace(source, destination, *args, **kwargs)
-        if not rewritten and Path(source).name.startswith(".retained-") and Path(destination) == marker:
+        if not rewritten and Path(source).name.endswith(".retained.unverified") and Path(destination) == marker:
             # 停放期间同步客户端改写了原授权：挪回原位的这份恰好能授权副本。
             rewritten.append(True)
             _, _, directory_identity, _ = avatar_tool_store._probe_entry_state(parked)
@@ -2134,7 +2142,7 @@ def test_a_parked_copy_becomes_resolvable_without_a_restart(tmp_path, monkeypatc
     deleting = store.root / f".{tool_id}.deleting"
     parked = store.root / f".{tool_id}.retained"
     shutil.copytree(final, parked)
-    (parked / f".retained-{uuid.uuid4()}.unverified").write_bytes(b"{")
+    (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
     published = tmp_path / "published"
     shutil.move(str(final), str(published))
     # 正式路径被同步成了普通文件：启动恢复判断不了，保留停放的副本、只拦这个 ID。
@@ -2179,7 +2187,7 @@ def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_
     marker = store.root / f".{tool_id}.deleting.unverified"
     parked = store.root / f".{tool_id}.retained"
     shutil.copytree(final, parked)
-    (parked / f".retained-{uuid.uuid4()}.unverified").write_bytes(b"{")
+    (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
     # 另有一份授权对不上的 .deleting，正式目录也在：启动恢复两边都判断不了。
     shutil.copytree(final, deleting)
     marker.write_bytes(b"{")
@@ -2211,46 +2219,67 @@ def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_
     assert not final.exists()
 
 
-def test_recovery_keeps_a_parked_copy_whose_authorization_is_ambiguous(tmp_path, monkeypatch):
+@pytest.mark.parametrize("marker_beside_copy", (True, False))
+def test_recovery_never_takes_an_entry_of_the_parked_copy_for_its_authorization(
+    tmp_path, monkeypatch, marker_beside_copy
+):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     tool_id = f"local-{uuid.uuid4()}"
     store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
     final = store.root / tool_id
     deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
     parked = store.root / f".{tool_id}.retained"
+    parked_marker = store.root / f".{tool_id}.retained.unverified"
     shutil.copytree(final, parked)
-    # 停放时只移进去一份授权；另一份同名模式的条目是同步客户端放进副本里的。
-    entries = {
-        parked / f".retained-{uuid.uuid4()}.unverified": b"{",
-        parked / f".retained-{uuid.uuid4()}.unverified": b"synced user data",
-    }
-    for path, content in entries.items():
-        path.write_bytes(content)
+    # 副本里有一个名字像授权的条目（同步客户端放进来的）；真正的授权要么停在副本
+    # 旁边，要么在崩溃中已经没了。
+    lookalike = parked / f".retained-{uuid.uuid4()}.unverified"
+    lookalike.write_bytes(b"synced user data")
+    if marker_beside_copy:
+        parked_marker.write_bytes(b"{")
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 认不出哪份是原授权：两份都不挪，副本留在停放名下，只拦这一个 ID。
-    assert parked.is_dir()
+    # 副本原样回到「保留副本」状态，里面的条目一个不少；旁边是一份对不上它的授权。
+    assert not parked.exists()
+    assert not parked_marker.exists()
+    assert (deleting / lookalike.name).read_bytes() == b"synced user data"
+    assert marker.is_file()
+    assert not restarted._delete_authorization_matches(deleting, marker)
+    if marker_beside_copy:
+        assert marker.read_bytes() == b"{"
+    assert restarted.delete_tool(tool_id) == tool_id
     assert not deleting.exists()
-    for path, content in entries.items():
-        assert path.read_bytes() == content
-    recovery_runs = []
-    real_recover = AvatarToolStore._recover_interrupted_mutations
+    assert not marker.exists()
+    assert not parked_marker.exists()
 
-    def counting_recover(self):
-        recovery_runs.append(True)
-        return real_recover(self)
 
-    monkeypatch.setattr(AvatarToolStore, "_recover_interrupted_mutations", counting_recover)
-    for _ in range(3):
-        with pytest.raises(AvatarToolStoreError) as blocked:
-            restarted.delete_tool(tool_id)
-        assert blocked.value.code == "tool_recovery_pending"
-    assert recovery_runs == []
-    for path, content in entries.items():
-        assert path.read_bytes() == content
+@pytest.mark.parametrize("kind", ("file", "dir"))
+def test_recovery_clears_the_marker_of_a_parked_copy_that_is_gone(tmp_path, monkeypatch, kind):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    parked_marker = store.root / f".{tool_id}.retained.unverified"
+    store.initialize()
+    # 删除已经完成、停放的副本已经删掉，只是崩溃在清掉它旁边的授权之前。
+    if kind == "file":
+        parked_marker.write_bytes(b"{")
+    else:
+        parked_marker.mkdir()
+        (parked_marker / "stray.bin").write_bytes(b"synced")
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    if kind == "file":
+        assert not parked_marker.exists()
+    else:
+        # 目录不是本模块放的，不递归删除。
+        assert (parked_marker / "stray.bin").read_bytes() == b"synced"
 
 
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
@@ -2387,7 +2416,7 @@ def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypat
 
     def marker_cannot_move_back(source, destination, *args, **kwargs):
         # 暂存失败后，原授权改名挪回也失败，补写新授权同样写不出来。
-        if Path(source).name.startswith(".retained-") and Path(destination) == marker:
+        if Path(source).name.endswith(".retained.unverified") and Path(destination) == marker:
             raise OSError(errno.EIO, "simulated I/O error")
         return real_replace(source, destination, *args, **kwargs)
 
@@ -2482,7 +2511,7 @@ def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path
 
     def sync_marker_after_parking(source, destination, *args, **kwargs):
         result = real_replace(source, destination, *args, **kwargs)
-        if not synced and Path(destination).name.startswith(".retained-"):
+        if not synced and Path(destination).name.endswith(".retained.unverified"):
             # 原授权刚被停放：同步客户端恰好在原位放回一份授权（内容由它决定，
             # 可能恰好能授权这份副本），这次删除自己的授权于是写不进去。
             synced.append(True)

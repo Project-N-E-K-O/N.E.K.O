@@ -20,7 +20,6 @@ import re
 import shutil
 import stat
 import threading
-import uuid
 import unicodedata
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -679,12 +678,6 @@ class AvatarToolStore:
                     resolvable = marker_kind == "absent" or self._delete_authorization_matches(deleting, marker)
                 except OSError as exc:
                     raise _storage_total_unavailable() from exc
-            if resolvable and final_kind == "dir":
-                # 停放的副本里认不出唯一一份原授权时，恢复同样保留现场。
-                try:
-                    resolvable = len(self._parked_markers(self.root / f".{tool_id}.retained")) <= 1
-                except OSError as exc:
-                    raise _storage_total_unavailable() from exc
             if resolvable:
                 _RECOVERY_PENDING_ROOTS.add(self._root_key())
                 self._require_recovery_complete_for_mutation()
@@ -733,7 +726,7 @@ class AvatarToolStore:
                     status_code=409,
                 )
             retained_delete = self._observe_retained_delete(deleting)
-            if retained_delete[2][0] != "dir" or retained_delete[3][0] == "absent":
+            if retained_delete[2][0] != "dir" or retained_delete[3][0] in ("absent", "dir"):
                 # 判断之后、记录之前被换掉了：不再是那份保留副本。
                 raise recovery_pending
         for attempt in range(2):
@@ -770,12 +763,14 @@ class AvatarToolStore:
 
         That is exactly the state recovery leaves alone: a ``.deleting`` directory whose
         authorization does not match while the published directory of the same ID exists.
+        A directory at the authorization path does not qualify: it was put there by a
+        sync client or by hand, and an explicit delete must not discard what it holds.
         """
         marker = deleting.with_name(f"{deleting.name}.unverified")
         try:
             for path, retained in (
                 (deleting, lambda kind: kind == "dir"),
-                (marker, lambda kind: kind != "absent"),
+                (marker, lambda kind: kind not in ("absent", "dir")),
                 (self.root / tool_id, lambda kind: kind == "dir"),
             ):
                 kind, _, probe_error = _probe_entry(path)
@@ -828,19 +823,26 @@ class AvatarToolStore:
     ) -> tuple[Path, Path]:
         """Move a retained unconfirmed delete copy aside for an explicit delete of its ID.
 
-        The copy goes to ``.<id>.retained`` and its marker moves inside it, so the
-        caller deletes both only once the published directory has been staged; until
-        then recovery puts them back after a crash. Each entry is claimed by the rename first and
+        The copy goes to ``.<id>.retained`` and its marker to ``.<id>.retained.unverified``
+        beside it, so the caller deletes both only once the published directory has been
+        staged; until then recovery puts them back after a crash. Both renames stay in
+        the storage root, so one strict sync of the root makes them durable, and no entry
+        of the copy can be mistaken for the marker. Each entry is claimed by the rename first and
         validated afterwards: a check followed by a rename would leave a window in
         which a newer copy synced into place gets parked and deleted. Every rollback
         is a rename back, so it needs no free space.
         """
         parked = deleting.with_name(deleting.name.removesuffix(".deleting") + ".retained")
-        parked_marker = parked / f".retained-{uuid.uuid4()}.unverified"
+        parked_marker = self._parked_marker(parked)
         parked_kind, _, probe_error = _probe_entry(parked)
         if probe_error is not None:
             raise _storage_total_unavailable() from probe_error
-        if parked_kind != "absent":
+        parked_marker_kind, _, probe_error = _probe_entry(parked_marker)
+        if probe_error is not None:
+            raise _storage_total_unavailable() from probe_error
+        # 停放授权的位置上残留的普通文件只可能是上次删除没清掉的授权，改名时直接
+        # 覆盖；目录是同步客户端或手工操作放进来的，不能顶掉。
+        if parked_kind != "absent" or parked_marker_kind == "dir":
             # 上一次停放的副本还没被恢复处理：POSIX rename 会静默顶掉一个空目录，
             # 不能拿这次的副本去覆盖它。
             raise AvatarToolStoreError(
@@ -866,7 +868,8 @@ class AvatarToolStore:
                 # 副本会回到 .deleting 且旁边没有授权，恢复会当成已确认删除清掉。
                 # 停放落盘、授权还在原位的中间状态由恢复挪回。
                 _fsync_directory(self.root, strict=True)
-                # 授权移进停放的副本里：撤授权和停放一起落盘，崩溃后随副本一起被恢复处理。
+                # 授权改名到停放的副本旁边：撤授权和停放一起落盘，崩溃后随副本一起被
+                # 恢复处理。不放进副本里：副本里恰好同名的条目会被当成授权挪走。
                 os.replace(marker, parked_marker)
                 claimed = _claimed_copy_state(_retained_copy_state(parked_marker)) == _claimed_copy_state(
                     marker_state
@@ -874,7 +877,6 @@ class AvatarToolStore:
             if claimed:
                 # 撤授权没落盘就暂存正式目录，崩溃后旧授权可能重新出现在 .deleting 旁边。
                 _fsync_directory(self.root, strict=True)
-                _fsync_directory(parked)
         except OSError as exc:
             self._unpark_retained_delete(parked, parked_marker, deleting, marker)
             raise AvatarToolStoreError(
@@ -902,7 +904,7 @@ class AvatarToolStore:
             return
         # 原授权一律改名放回原位，覆盖这次删除写下的授权或期间出现在那里的任何
         # 文件：原授权已知对不上副本，外来的那份却可能恰好能授权它，恢复就会把
-        # 副本当成已确认删除清掉。它在停放的副本里面，要在副本挪回之前拿出来。
+        # 副本当成已确认删除清掉。
         try:
             os.replace(parked_marker, marker)
         except OSError:
@@ -914,8 +916,9 @@ class AvatarToolStore:
         # 核对：停放期间它可能被同步客户端改写。
         if self._marker_authorizes_copy(parked, marker) is True:
             # 原位的授权恰好能授权这份副本：这次删除没有发生，换成一份对不上的授权。
-            # 先写在停放的副本里再改名过去，崩溃后它随副本一起被恢复处理。
-            replacement = parked / f".retained-{uuid.uuid4()}.unverified"
+            # 先写在停放授权的位置上再改名过去，崩溃后它随副本一起被恢复处理。原授权
+            # 没能挪走时那个位置还占着，独占创建失败，副本留在停放名下。
+            replacement = parked_marker
             try:
                 with replacement.open("x", encoding="utf-8") as stream:
                     stream.write("{}")
@@ -950,13 +953,27 @@ class AvatarToolStore:
         _RECOVERY_PENDING_ROOTS.add(self._root_key())
 
     @staticmethod
-    def _parked_markers(parked: Path) -> list[Path]:
-        """Entries inside a parked copy that look like its moved-in authorization."""
-        return [
-            entry
-            for entry in parked.iterdir()
-            if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
-        ]
+    def _parked_marker(parked: Path) -> Path:
+        """Where the marker of a parked retained copy waits beside it."""
+        return parked.with_name(f"{parked.name}.unverified")
+
+    @staticmethod
+    def _discard_parked_marker(parked_marker: Path) -> bool:
+        """Remove the marker of a parked copy that is gone; False when it must wait."""
+        marker_kind, _, probe_error = _probe_entry(parked_marker)
+        if probe_error is not None:
+            return False
+        if marker_kind == "dir":
+            # 本模块只会在这里放文件；目录是同步客户端或手工操作放进来的，不能递归删掉。
+            # 它不授权任何东西，保留现场；这个 ID 以后要停放保留副本时按待恢复拒绝。
+            logger.warning("Preserving directory at avatar tool authorization path %s", parked_marker)
+            return True
+        try:
+            parked_marker.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Deferring parked avatar tool authorization %s: %s", parked_marker.name, exc)
+            return False
+        return True
 
     def _marker_authorizes_copy(self, copy: Path, marker: Path) -> bool | None:
         """Whether ``marker`` would let recovery delete ``copy``; None when unknown."""
@@ -1221,6 +1238,19 @@ class AvatarToolStore:
             remove_owned_directory(backup)
 
         for candidate in self.root.iterdir():
+            if candidate.name.endswith(".unverified") and LOCAL_AVATAR_TOOL_RETAINED_PATTERN.fullmatch(
+                candidate.name.removesuffix(".unverified")
+            ):
+                # 停放副本旁边的授权：副本还在时交给下面停放副本的处理；副本已经不在
+                # （删除完成后没来得及清掉授权），它就不再授权任何东西。
+                parked_kind, _, probe_error = _probe_entry(
+                    candidate.with_name(candidate.name.removesuffix(".unverified"))
+                )
+                if probe_error is not None:
+                    complete = False
+                elif parked_kind == "absent" and not self._discard_parked_marker(candidate):
+                    complete = False
+                continue
             if (
                 candidate.name.endswith(".unverified")
                 and LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(
@@ -1326,10 +1356,13 @@ class AvatarToolStore:
             candidate_kind, deleting_kind, final_kind = (kind for kind, _, _ in probes)
             if candidate_kind != "dir":
                 continue
+            parked_marker = self._parked_marker(candidate)
             if deleting_kind == "absent" and final_kind == "absent":
                 # 正式目录的删除已经完成：用户要删的就是这个 ID，停放的副本和原授权
                 # 随之丢弃。
                 shutil.rmtree(candidate)
+                if not self._discard_parked_marker(parked_marker):
+                    complete = False
                 continue
             if deleting_kind != "absent" or final_kind != "dir":
                 # .deleting 还在（证实不了、又挪不回的删除），或者正式路径被别的东西
@@ -1339,19 +1372,7 @@ class AvatarToolStore:
                 continue
             # 正式目录还在、删除没有暂存就中断了：这次删除没有发生，副本连同原授权
             # 回到「保留副本」状态。
-            parked_markers = self._parked_markers(candidate)
-            if len(parked_markers) > 1:
-                # 停放时只移进去一份授权；多出来的是同步客户端或手工操作放进来的，
-                # 认不出哪份是原授权，随便挪一份出去可能拿走副本里的东西。保留现场，
-                # 由 _require_no_pending_recovery 只拦这一个 ID。
-                logger.warning("Preserving retained avatar tool copy with ambiguous authorization %s", candidate)
-                continue
-            self._unpark_retained_delete(
-                candidate,
-                parked_markers[0] if parked_markers else candidate / ".retained-missing.unverified",
-                deleting,
-                marker,
-            )
+            self._unpark_retained_delete(candidate, parked_marker, deleting, marker)
             if _probe_entry(candidate)[0] != "absent":
                 complete = False
         return complete
@@ -2488,8 +2509,9 @@ class AvatarToolStore:
             if parked is not None:
                 try:
                     shutil.rmtree(parked)
+                    parked_marker.unlink(missing_ok=True)
                 except OSError:
-                    # 正式目录已经暂存删除，恢复会清掉停放的副本。
+                    # 正式目录已经暂存删除，恢复会清掉停放的副本和它旁边的授权。
                     _RECOVERY_PENDING_ROOTS.add(self._root_key())
                     logger.warning("Could not clean retained avatar tool copy %s", parked)
             try:
