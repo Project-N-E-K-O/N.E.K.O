@@ -266,6 +266,8 @@ def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
     # Only exact generated names at the plugin root: a plugin's own
     # look-alike directory, or one nested deeper, is plugin source.
     for kept in (
+        # Only a backup has a pending marker; this name is never generated.
+        Path(".vendor.staging-0a1b2c3d.pending"),
         Path(".vendor.backup-notes", "data.txt"),
         Path(".vendor.staging-assets", "data.txt"),
         Path("assets", ".vendor.backup-0a1b2c3d", "data.txt"),

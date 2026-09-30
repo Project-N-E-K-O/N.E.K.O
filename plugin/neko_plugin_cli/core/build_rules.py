@@ -49,9 +49,11 @@ VENDOR_SYNC_GLOBS = (
     f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}",
     f"{VENDOR_SYNC_BACKUP_PREFIX}{_VENDOR_SYNC_TOKEN_GLOB}{VENDOR_SYNC_PENDING_SUFFIX}",
 )
+# Only a backup has a pending marker; staging never does.
 _VENDOR_SYNC_NAME_RE = re.compile(
-    rf"(?:{re.escape(VENDOR_SYNC_STAGING_PREFIX)}|{re.escape(VENDOR_SYNC_BACKUP_PREFIX)})"
-    rf"[0-9a-f]{{8}}(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
+    rf"{re.escape(VENDOR_SYNC_STAGING_PREFIX)}[0-9a-f]{{8}}"
+    rf"|{re.escape(VENDOR_SYNC_BACKUP_PREFIX)}[0-9a-f]{{8}}"
+    rf"(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
 )
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",

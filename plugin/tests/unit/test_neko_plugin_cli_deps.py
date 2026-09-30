@@ -15,6 +15,7 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _clean_vendor,
     _filter_external,
     _lock_dir as real_lock_dir,
+    _probe_target as real_probe_target,
     _read_dependencies,
     _replace_vendor,
     handle_sync,
@@ -39,7 +40,20 @@ def _no_host_package_index_config(monkeypatch):
     for name in list(os.environ):
         if name.upper().startswith(("PIP_", "UV_")):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [])
+    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [])
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
+
+
+def _target(*, has_pip=False, in_venv=True, env=None):
+    """What a pip-less venv target reports, seeing the test's environment."""
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    return deps_cmd._TargetPython(
+        has_pip=has_pip,
+        prefix=Path("/target-env"),
+        in_venv=in_venv,
+        env=dict(os.environ) if env is None else env,
+    )
 
 
 def _missing_pip_then_uv(calls):
@@ -127,7 +141,7 @@ def test_uv_fallback_refuses_when_pip_has_an_index_uv_cannot_see(
     if config_text is not None:
         config = tmp_path / "pip.ini"
         config.write_text(config_text, encoding="utf-8")
-        monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
+        monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [config])
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
@@ -149,10 +163,10 @@ def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
 
     config = tmp_path / "pip.ini"
     config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
-    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
-    assert deps_cmd._pip_settings("python") == {"index-url": [str(config)]}
+    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [config])
+    assert deps_cmd._pip_settings(_target()) == {"index-url": [str(config)]}
     monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
-    assert deps_cmd._pip_settings("python") == {}
+    assert deps_cmd._pip_settings(_target()) == {}
 
 
 def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, monkeypatch):
@@ -160,6 +174,7 @@ def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, 
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(has_pip=True))
     calls = []
 
     def run(command, **kwargs):
@@ -441,17 +456,9 @@ def test_require_virtualenv_is_honored_like_pip(tmp_path, monkeypatch, capsys, i
 
     monkeypatch.setenv("PIP_REQUIRE_VIRTUALENV", "true")
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(in_venv=in_venv))
     calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        if command[:2] == ["target-python", "-c"]:
-            return subprocess.CompletedProcess(command, 0, stdout=f"{in_venv}\n")
-        if command[0] == "uv":
-            return subprocess.CompletedProcess(command, 0, stdout="ok")
-        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
-
-    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
     result = deps_cmd._pip_install_to_vendor(
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     )
@@ -494,27 +501,106 @@ def test_another_users_pending_backup_blocks_with_a_usable_hint(tmp_path, monkey
     assert "sync --clean" not in error
 
 
-def test_target_prefix_asks_the_interpreter(tmp_path, monkeypatch):
-    # A pyenv/asdf shim does not live in the environment it launches.
+def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
+    # A pyenv/asdf shim or wrapper does not live in the environment it runs,
+    # and may export PIP_* before exec'ing the real interpreter.
+    import json
+
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    real_prefix = tmp_path / "real-env"
-    seen = []
+    report = {
+        "has_pip": False,
+        "prefix": str(tmp_path / "real-env"),
+        "in_venv": True,
+        "env": {"PIP_INDEX_URL": "https://private/simple"},
+    }
 
     def run(command, **kwargs):
-        seen.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout=f"{real_prefix}\n")
+        assert command[1] == "-c"
+        # A sitecustomize banner may precede the JSON line.
+        return subprocess.CompletedProcess(command, 0, stdout="hello from sitecustomize\n" + json.dumps(report) + "\n")
 
     monkeypatch.setattr(deps_cmd.subprocess, "run", run)
-    assert deps_cmd._target_prefix(str(tmp_path / "shims" / "python")) == real_prefix
-    assert seen[0][1:] == ["-c", "import sys; print(sys.prefix)"]
+    target = real_probe_target(str(tmp_path / "shims" / "python"))
+    assert target == deps_cmd._TargetPython(
+        has_pip=False,
+        prefix=tmp_path / "real-env",
+        in_venv=True,
+        env={"PIP_INDEX_URL": "https://private/simple"},
+    )
 
-    def fail(command, **kwargs):
-        raise FileNotFoundError("no interpreter")
 
-    monkeypatch.setattr(deps_cmd.subprocess, "run", fail)
-    fallback = deps_cmd._target_prefix(str(tmp_path / "venv" / "Scripts" / "python.exe"))
-    assert fallback == tmp_path / "venv"
+@pytest.mark.parametrize(
+    "outcome",
+    ["start-failure", "exit-1", "no-json"],
+)
+def test_probe_that_cannot_answer_returns_none(tmp_path, monkeypatch, outcome):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    def run(command, **kwargs):
+        if outcome == "start-failure":
+            raise FileNotFoundError("no interpreter")
+        if outcome == "exit-1":
+            return subprocess.CompletedProcess(command, 1, stdout="")
+        return subprocess.CompletedProcess(command, 0, stdout="just a banner\n")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert real_probe_target("python") is None
+
+
+def test_unknown_pip_availability_does_not_fall_back(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: None)
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 1
+    assert [command[0] for command in calls] == ["target-python"]
+    assert "pip install failed" in capsys.readouterr().err
+
+
+def test_pip_settings_come_from_the_targets_environment(tmp_path, monkeypatch, capsys):
+    # The CLI's own environment is clean; the target's launcher sets a
+    # private index that uv (run from the CLI's environment) would miss.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(
+        deps_cmd,
+        "_probe_target",
+        lambda python: _target(env={"PIP_INDEX_URL": "https://private/simple"}),
+    )
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 1
+    assert [command[0] for command in calls] == ["target-python"]
+    assert "index-url from PIP_INDEX_URL" in capsys.readouterr().err
+
+
+def test_swapped_backup_with_a_new_mount_is_not_deleted(tmp_path, monkeypatch):
+    # vendor/ is checked for mounts before the install, but one can be added
+    # before the swap; recheck right before deleting the swapped backup.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    staging = tmp_path / ".vendor.staging-0000abcd"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    staging.mkdir()
+    monkeypatch.setattr(
+        deps_cmd, "_mounted_inside", lambda path: path.name.startswith(".vendor.backup-")
+    )
+
+    assert _replace_vendor(vendor, staging) is True
+    backup, = [p for p in tmp_path.glob(".vendor.backup-*") if p.is_dir()]
+    assert (backup / "old.py").read_text() == "old"
 
 
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
@@ -1272,6 +1358,10 @@ class TestTransactionalDependencyInstall:
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
             lambda _: "uv.exe",
+        )
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd._probe_target",
+            lambda python: _target(has_pip=True),
         )
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:

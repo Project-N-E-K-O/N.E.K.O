@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import configparser
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -444,7 +446,8 @@ def _pip_install_to_vendor(
 ) -> int:
     """Install packages into vendor/ with the target Python's pip.
 
-    Interpreters created by uv ship without pip; only then fall back to
+    Interpreters created by uv ship without pip; only then (as the target
+    itself reports) fall back to
     ``uv pip install``. Trying pip first keeps pip's own configuration
     (pip.conf, PIP_INDEX_URL mirrors) in effect for everyone who has pip, and
     a uv failure can never block an install pip would have completed.
@@ -477,12 +480,12 @@ def _pip_install_to_vendor(
         return 1
     if result.returncode == 0:
         return 0
-    # Only the interpreter's own launch failure means pip is absent; the same
-    # words anywhere in a real install log (a build step, a child process)
-    # must not reroute a genuine pip failure to uv.
-    output_lines = (result.stdout or "").strip().splitlines()
-    pip_missing = len(output_lines) == 1 and output_lines[0].endswith("No module named pip")
-    if not pip_missing:
+    # Ask the target whether it has pip at all, rather than reading the
+    # install log: a startup banner can surround the launch error, and a real
+    # install log can mention "No module named pip" too. If the target can
+    # not be asked, do not fall back.
+    target = _probe_target(python)
+    if target is None or target.has_pip:
         print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         return 1
@@ -497,12 +500,12 @@ def _pip_install_to_vendor(
         )
         return 1
     uncovered: list[str] = []
-    for name, where in sorted(_pip_settings(python).items()):
+    for name, where in sorted(_pip_settings(target).items()):
         if name in _PIP_HARMLESS_SETTINGS:
             continue
         if name == "require-virtualenv":
             # pip refuses to install outside a venv; uv would not check.
-            if not _target_in_venv(python):
+            if not target.in_venv:
                 uncovered.append(
                     f"{name} from {', '.join(where)} (the target Python is not a virtual environment)"
                 )
@@ -594,89 +597,114 @@ _UV_COVERS = {
 _UV_BOOLEAN_ENV = {"UV_NO_INDEX", "UV_REQUIRE_HASHES"}
 
 
-def _pip_settings(python: str) -> dict[str, list[str]]:
-    """pip settings in effect in the environment or pip's config files,
-    mapped to where each one is set. A boolean option set to false does not
-    count."""
+@dataclass(frozen=True)
+class _TargetPython:
+    """What the target interpreter reports about itself."""
+
+    has_pip: bool
+    prefix: Path
+    in_venv: bool
+    # The environment the target actually runs with: a launcher or shim
+    # (pyenv, asdf, a wrapper script) may export PIP_* before exec'ing it.
+    env: dict[str, str]
+
+
+_TARGET_PROBE = (
+    "import importlib.util, json, os, sys; "
+    "print(json.dumps({"
+    "'has_pip': importlib.util.find_spec('pip') is not None, "
+    "'prefix': sys.prefix, "
+    "'in_venv': sys.prefix != sys.base_prefix, "
+    "'env': dict(os.environ)}))"
+)
+
+
+def _probe_target(python: str) -> _TargetPython | None:
+    """Ask the target interpreter about itself; None if it can not answer."""
+    try:
+        result = subprocess.run(
+            [python, "-c", _TARGET_PROBE],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    # Startup output (a sitecustomize banner) may precede the JSON line.
+    for line in reversed((result.stdout or "").splitlines()):
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env"} <= data.keys():
+            return _TargetPython(
+                has_pip=bool(data["has_pip"]),
+                prefix=Path(data["prefix"]),
+                in_venv=bool(data["in_venv"]),
+                env={str(k): str(v) for k, v in dict(data["env"]).items()},
+            )
+    return None
+
+
+def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
+    """pip settings in effect for the target (its environment and pip's
+    config files), mapped to where each one is set. A boolean option set to
+    false does not count."""
+    env = target.env
     found: dict[str, list[str]] = {}
-    for env_name, value in os.environ.items():
+    for env_name, value in env.items():
         upper = env_name.upper()
         if not upper.startswith("PIP_") or upper == "PIP_CONFIG_FILE" or not value:
             continue
         name = upper[4:].lower().replace("_", "-")
         if not _explicitly_off(name, value):
             found.setdefault(name, []).append(env_name)
-    config_file = os.environ.get("PIP_CONFIG_FILE")
+    config_file = _env_get(env, "PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
         return found
     candidates = [Path(config_file)] if config_file else []
-    for path in [*candidates, *_pip_config_files(python)]:
+    for path in [*candidates, *_pip_config_files(target)]:
         for key in _config_setting_keys(path):
             found.setdefault(key, []).append(str(path))
     return found
 
 
-def _pip_config_files(python: str) -> list[Path]:
-    """pip's documented global, user and site config file locations."""
-    home = Path.home()
+def _env_get(env: dict[str, str], name: str) -> str | None:
+    # Windows environment names are case-insensitive.
+    if sys.platform == "win32":
+        return next((v for k, v in env.items() if k.upper() == name), None)
+    return env.get(name)
+
+
+def _pip_config_files(target: _TargetPython) -> list[Path]:
+    """pip's documented global, user and site config file locations, as the
+    target's environment resolves them."""
+    env = target.env
     files: list[Path] = []
     if sys.platform == "win32":
-        for base in (os.environ.get("PROGRAMDATA"), os.environ.get("APPDATA")):
+        home = Path(_env_get(env, "USERPROFILE") or Path.home())
+        for base in (_env_get(env, "PROGRAMDATA"), _env_get(env, "APPDATA")):
             if base:
                 files.append(Path(base, "pip", "pip.ini"))
         files.append(home / "pip" / "pip.ini")
         site_name = "pip.ini"
     else:
-        xdg_dirs = os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+        home = Path(env.get("HOME") or Path.home())
+        xdg_dirs = env.get("XDG_CONFIG_DIRS") or "/etc/xdg"
         files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep) if d)
         files.append(Path("/etc/pip.conf"))
         if sys.platform == "darwin":
             files.append(Path("/Library/Application Support/pip/pip.conf"))
             files.append(home / "Library" / "Application Support" / "pip" / "pip.conf")
-        files.append(Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config", "pip", "pip.conf"))
+        files.append(Path(env.get("XDG_CONFIG_HOME") or home / ".config", "pip", "pip.conf"))
         files.append(home / ".pip" / "pip.conf")
         site_name = "pip.conf"
-    # Site config sits in the target environment's prefix.
-    files.append(_target_prefix(python) / site_name)
+    # Site config sits in the target environment's own prefix.
+    files.append(target.prefix / site_name)
     return files
-
-
-def _target_in_venv(python: str) -> bool:
-    try:
-        result = subprocess.run(
-            [python, "-c", "import sys; print(sys.prefix != sys.base_prefix)"],
-            text=True,
-            capture_output=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False  # Unknown: honor the requirement by refusing.
-    return result.returncode == 0 and (result.stdout or "").strip().endswith("True")
-
-
-def _target_prefix(python: str) -> Path:
-    """The target interpreter's sys.prefix. Ask it directly: a launcher or
-    shim (pyenv, asdf) does not live inside the environment it runs."""
-    try:
-        result = subprocess.run(
-            [python, "-c", "import sys; print(sys.prefix)"],
-            text=True,
-            capture_output=True,
-            timeout=30,
-        )
-        lines = (result.stdout or "").strip().splitlines()
-        if result.returncode == 0 and lines:
-            return Path(lines[-1])
-    except (OSError, subprocess.SubprocessError):
-        # The interpreter could not be asked (missing, hung); the layout
-        # guess below still finds the site config of an ordinary venv.
-        pass
-    # Fall back to the usual venv layout: <prefix>/bin or <prefix>\Scripts.
-    prefix = Path(shutil.which(python) or python).parent
-    if sys.platform != "win32" or prefix.name.lower() == "scripts":
-        prefix = prefix.parent
-    return prefix
 
 
 def _config_setting_keys(path: Path) -> set[str]:
@@ -806,7 +834,10 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
             _pending_marker(backup_dir).unlink(missing_ok=True)
         except OSError as exc:
             print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        # vendor/ was checked for mounts before the install, but one may have
+        # been added since; check again right before deleting.
+        if not _mounted_inside(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
     return True
 
 
