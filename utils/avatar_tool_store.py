@@ -815,35 +815,35 @@ class AvatarToolStore:
         return parked, parked_marker
 
     def _unpark_retained_delete(self, parked: Path, parked_marker: Path, deleting: Path, marker: Path) -> None:
-        """Put a parked retained copy and its marker back after the explicit delete failed."""
-        # 授权先挪出来：它在停放的副本里面，副本挪回去之后路径就变了。
-        parked_marker_kind, _, probe_error = _probe_entry(parked_marker)
-        if probe_error is None and parked_marker_kind != "absent":
-            marker_kind, _, marker_error = _probe_entry(marker)
-            if marker_error is None and marker_kind == "absent":
-                try:
-                    os.replace(parked_marker, marker)
-                except OSError:
-                    logger.warning("Could not restore retained avatar tool authorization %s", marker, exc_info=True)
-            elif marker_error is None:
-                # 这次删除已经写下了自己的授权，它同样对不上副本；原授权不再需要，
-                # 尽力从副本里拿掉，恢复原样。探测失败时不知道原位有没有授权，
-                # 原授权留着不动。
-                try:
-                    if parked_marker_kind == "dir":
-                        shutil.rmtree(parked_marker)
-                    else:
-                        parked_marker.unlink()
-                except OSError:
-                    logger.warning("Could not remove parked avatar tool authorization %s", parked_marker)
-        # 原授权没能挪回（改名失败，或者它在停放的副本里探测不到）时补写一份对不上的
-        # 授权；原位已经有授权时独占创建什么都不改。
-        self._write_mismatched_marker(marker)
-        marker_kind, _, marker_error = _probe_entry(marker)
+        """Put a parked retained copy and its original marker back after the explicit delete failed."""
         deleting_kind, _, probe_error = _probe_entry(deleting)
-        # 没有授权文件的 .deleting 会被恢复当成已确认删除清掉：授权回不到原位时
-        # 副本留在停放名下，不要挪回去形成一个无授权的 .deleting。
-        if marker_error is None and marker_kind != "absent" and probe_error is None and deleting_kind == "absent":
+        if probe_error is not None or deleting_kind != "absent":
+            # .deleting 被别的东西占着（比如正式目录已经挪进去、核对失败又挪不回），
+            # 原位的授权属于它，不能动。副本按上传孤儿由恢复清掉，这次删除本来就是
+            # 用户要删这个 ID。
+            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+            return
+        # 原授权一律改名放回原位，覆盖这次删除写下的授权或期间出现在那里的任何
+        # 文件：原授权已知对不上副本，外来的那份却可能恰好能授权它，恢复就会把
+        # 副本当成已确认删除清掉。它在停放的副本里面，要在副本挪回之前拿出来。
+        try:
+            os.replace(parked_marker, marker)
+            restored = True
+        except OSError:
+            logger.warning("Could not restore retained avatar tool authorization %s", marker, exc_info=True)
+            # 原位还空着的话补写一份对不上的授权；已有授权时独占创建什么都不改。
+            self._write_mismatched_marker(marker)
+            restored = False
+        if not restored:
+            # 没有授权、或授权能授权这份副本的 .deleting 会被恢复清掉：确认原位的
+            # 授权对不上副本才挪回去，否则副本留在停放名下。
+            marker_kind, _, marker_error = _probe_entry(marker)
+            restored = (
+                marker_error is None
+                and marker_kind != "absent"
+                and self._marker_authorizes_copy(parked, marker) is False
+            )
+        if restored:
             try:
                 os.replace(parked, deleting)
             except OSError:
@@ -851,9 +851,14 @@ class AvatarToolStore:
             else:
                 _fsync_directory(self.root)
                 return
-        # 挪不回去（或授权回不到原位）：停放的副本按上传孤儿由恢复清掉。这次删除
-        # 本来就是用户要删这个 ID。
         _RECOVERY_PENDING_ROOTS.add(self._root_key())
+
+    def _marker_authorizes_copy(self, copy: Path, marker: Path) -> bool | None:
+        """Whether ``marker`` would let recovery delete ``copy``; None when unknown."""
+        try:
+            return self._delete_authorization_matches(copy, marker)
+        except OSError:
+            return None
 
     def initialize(self) -> None:
         """Prepare the store once and recover interrupted mutations."""

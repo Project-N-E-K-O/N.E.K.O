@@ -2041,12 +2041,52 @@ def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_pat
     with pytest.raises(AvatarToolStoreError):
         store.delete_tool(tool_id)
 
-    assert state["probe_failed"]
     # 读不到授权位置不等于那里有授权：原授权不能被当成多余的删掉，副本要带着授权回到原位。
+    # 原授权直接改名放回原位，回滚不再依赖探测授权位置。
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
     assert final.is_dir()
     assert not list(store.root.glob(".local-*.uploading"))
+
+
+def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+    real_replace = os.replace
+    synced = []
+
+    def sync_marker_after_parking(source, destination, *args, **kwargs):
+        result = real_replace(source, destination, *args, **kwargs)
+        if not synced and Path(destination).name.startswith(".retained-"):
+            # 原授权刚被停放：同步客户端恰好在原位放回一份授权（内容由它决定，
+            # 可能恰好能授权这份副本），这次删除自己的授权于是写不进去。
+            synced.append(True)
+            marker.write_bytes(b'{"synced": true}')
+        return result
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", sync_marker_after_parking)
+    with pytest.raises(AvatarToolStoreError):
+        store.delete_tool(tool_id)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+
+    assert synced
+    assert final.is_dir()
+    # 副本带着已知对不上的原授权回到原位，外来的授权不能留在它旁边。
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.read_bytes() == b"{"
+    assert not list(store.root.glob(".local-*.uploading"))
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert (deleting / "record.json").read_bytes() == retained_record
 
 
 def test_an_unreadable_retained_copy_still_blocks_saves_with_delete_pending(tmp_path, monkeypatch):
