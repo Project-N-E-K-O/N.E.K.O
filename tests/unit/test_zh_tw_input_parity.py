@@ -572,28 +572,40 @@ def test_peeling_is_bounded_for_pathological_input():
     grows with the run of trailing particles and each one costs a slice — a 20k
     character tail used to stall the event loop for seconds.
     """  # noqa: DOCSTRING_CJK
-    import time
-
     from brain.openclaw_adapter import OpenClawAdapter
+    from tests.wall_clock import fastest_run
 
-    start = time.perf_counter()
-    # 走 _clause_hits 的剥词
+    # ⚠️ 两处界都先按**行为**断言，而且放在病态长输入之前：它们的可观察后果是
+    # 确定的，不依赖机器快慢；界丢了的时候这里立刻红，不用先跑完那几条长输入
+    # （_command_clause 无界时 60k 那条是分钟级）。
+    # _clause_hits 的界：无界时 2000 个 ``吧`` 以上就能一路剥回表内的 ``去执行`` /
+    # ``停下来``，返回 /daemon approve、/stop（变异验证过）。
     assert OpenClawAdapter.rule_magic_command("去执行" + "吧" * 20000) is None
     assert OpenClawAdapter.rule_magic_command("停下来" + "啊呀" * 10000) is None
-    # ⚠️ 也要走 _command_clause 的剥词：空格把语气词切成独立末子句之后，往回跳过
-    # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
-    OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 60000)
-    OpenClawAdapter.rule_magic_command("随便说说 " + "啊" * 60000)
-    # ⚠️ _command_clause 里那段剥词的界按**行为**断言而不是按耗时。
-    # 耗时断言在这里不可靠：阈值要写多大取决于机器，而它的可观察后果是确定的——
-    # 超长尾巴剥不完 → 不跳过它 → 返回 None。
+    # _command_clause 的界：超长尾巴剥不完 → 不跳过它 → 返回 None。
     # （早先我按耗时写过一版并据此宣称「无界版也不慢」，那是拿**改剥词逻辑之前**的
     # 数字说话。现在每步都多一次整串正则，无界版实测连 120k 那一档都跑不完，
     # 界是必需的。）
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 5) == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 200) is None
-    elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"病态输入耗时 {elapsed:.2f}s，剥词的界没生效"
+
+    # 耗时只做兜底：每条病态消息单独一秒，取多次里最快的一次。
+    # ⚠️ 原先是四条长输入**合计**单次采样对一秒，而本机不加负载就要 0.4–0.9 秒
+    #（``随便说说 `` 那条自己在 0.2–0.6 秒之间抖），xdist 下一次调度抢占就误红。
+    # 要守的是「单条消息不卡住事件循环」，按条计时才对得上；界丢了的时候 20k 那两条
+    # 本机要 5–11 秒，一秒的线照样拦得住。
+    for text in (
+        "去执行" + "吧" * 20000,  # 走 _clause_hits 的剥词
+        "停下来" + "啊呀" * 10000,
+        # ⚠️ 也要走 _command_clause 的剥词：空格把语气词切成独立末子句之后，往回跳过
+        # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
+        "停下来 " + "吧" * 60000,
+        "随便说说 " + "啊" * 60000,
+    ):
+        elapsed = fastest_run(
+            lambda: OpenClawAdapter.rule_magic_command(text), repeat=3, stop_below=1.0
+        )
+        assert elapsed < 1.0, f"{text[:8]!r}… 最快也要 {elapsed:.2f}s，剥词的界没生效"
 
 
 @pytest.mark.parametrize(

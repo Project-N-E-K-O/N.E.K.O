@@ -2552,15 +2552,14 @@ def test_a_whitespace_only_message_does_not_blow_up():
     ⚠️ 用**增长倍率**而不是绝对秒数：这个形状本身在 parent 上就是三次方（60/120/240
     实测 0.006/0.05/0.43），本 PR 要守的是「不比 parent 更差」，不是把它变成线性。
     """  # noqa: DOCSTRING_CJK
-    import time
+    from tests.wall_clock import fastest_run
 
     # 预热：别把首次正则编译算进 timings[30]，那会让倍率虚低、判据失灵（CodeRabbit）
     extract_directives(" ")
-    timings = {}
-    for n in (30, 60):
-        started = time.perf_counter()
-        extract_directives(" " * n)
-        timings[n] = time.perf_counter() - started
+    # ⚠️ 每档取多次里**最快**的一次：单次采样一旦被调度抢占，60 那档会凭空多出
+    # 零点几秒，倍率判据就误红（模板 4 那条同款判据在 Windows CI 和 xdist 下都红过）。
+    # 真爆炸每次都慢，取最小值拦得住。
+    timings = {n: fastest_run(lambda n=n: extract_directives(" " * n)) for n in (30, 60)}
     # ⚠️ 主判据是**倍率**。绝对秒数只当一道很松的天花板——共享 CI runner 上负载不可控，
     # 卡得紧会偶发变红（CodeRabbit）。组合爆炸时这里是 0.4 秒往上。
     assert timings[60] < 0.5, timings
@@ -2813,21 +2812,41 @@ def test_every_address_verb_has_evidence_coverage():
 
 
 def test_the_guanyu_template_spacing_is_atomic_too():
-    """⚠️ 上一轮只原子化了模板 2、漏了模板 4，``"关于" + " " * 80`` 要 3 秒。"""  # noqa: DOCSTRING_CJK
-    import time
+    """Template 4 needs every whitespace run before its verb atomic, like template 2.
 
+    An earlier round atomized only template 2 and missed this one, and
+    ``"关于" + " " * 80`` then took 3 seconds on the per-message path.
+    """  # noqa: DOCSTRING_CJK
+    from tests.wall_clock import fastest_run
+
+    # ── 结构面（确定性的主判据），同 test_the_preposed_template_spacing_is_atomic ──
     raw = _zh_pattern_sources()[3]
-    head = raw.split("(?:说|說|提|聊|讲|講)")[0]
-    assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
+    # ⚠️ 切分锚点必须**断言存在**。这里原先写死 ``(?:说|說|提|聊|讲|講)``，触发词表改成
+    # 同源的 _ZH_PREPOSED_SAY_VERBS 之后它就不在模板里了：split 切不开，head 变成整条，
+    # 而模板早已改用横向空白类、不含 ``\s*``，于是下面那条断言恒真，结构面空转。
+    verbs = "(?:" + "|".join(D._ZH_PREPOSED_SAY_VERBS) + ")"
+    assert raw.count(verbs) == 1, "模板 4 里找不到触发词组，结构判据会空转"
+    head = raw.split(verbs)[0]
+    # 零宽 temper 里的空白是判据的一部分，不参与瓜分，先摘掉
+    rest = head.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
+    for unit in (r"(?>\s*)", f"(?>{D._ZH_HSPACE})"):
+        rest = rest.replace(unit, "")
+    assert r"\s*" not in rest, rest
+    assert D._ZH_HSPACE not in rest, rest
 
-    extract_directives(" ")  # 预热
-    timings = {}
-    for n in (40, 80):
-        started = time.perf_counter()
-        extract_directives("关于" + " " * n)
-        timings[n] = time.perf_counter() - started
-    assert timings[80] < 0.5, timings
-    assert timings[80] < timings[40] * 25 + 0.02, timings
+    # ── 行为面：只计时模板 4 自己 ──
+    # ⚠️ 不能计时整个 extract_directives：韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…``
+    # 在纯空白上本身就是三次方，"关于" + 80 个空格的耗时几乎全是它（本机约 20ms，
+    # 模板 4 自己约 2µs），拿它的倍率当判据测的是韩语模板加机器负载——CI 和 xdist
+    # 下单次采样被调度抢占就是 {40: 0.003, 80: 0.236} 这种误红。
+    # 模板 4 前置空白全部去原子化时，本机 80 个空格要 1 秒量级（n^5：20→40 涨 24 倍）；
+    # 原子化版本是微秒级。0.1 秒的线两边都差四个数量级以上，取多次里最快的一次
+    # 再把调度噪声滤掉。
+    pat = [p for locale, _kind, p in D.DIRECTIVE_PATTERNS if locale == "zh"][3]
+    assert pat.pattern == raw
+    text = "关于" + " " * 80
+    elapsed = fastest_run(lambda: list(pat.finditer(text)), stop_below=0.1)
+    assert elapsed < 0.1, f"模板 4 在 {text!r} 上最快也要 {elapsed:.3f}s，空白瓜分回溯又回来了"
 
 
 # ── 33. 括号段本身也要认一层同种嵌套 ─────────────────────────
