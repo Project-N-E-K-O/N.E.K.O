@@ -678,19 +678,28 @@ def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess
 def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
     """Swap the staging dir into vendor/; on failure rename the old one back."""
     backup_dir = vendor_dir.parent / f"{VENDOR_SYNC_BACKUP_PREFIX}{_short_token()}"
+    marker = _pending_marker(backup_dir)
     had_vendor = vendor_dir.exists()
     try:
         if had_vendor:
-            vendor_dir.replace(backup_dir)
+            # Mark before the rename, so the backup never exists unmarked while
+            # its swap is live: a crash or failed rollback leaves a backup that
+            # blocks plain retries, and another user's sync can not take it for
+            # a finished leftover and delete it.
+            marker.touch()
+            try:
+                vendor_dir.replace(backup_dir)
+            except OSError:
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass  # A marker without its backup dir blocks nothing.
+                raise
     except OSError as exc:
         # vendor/ was not moved, so there is nothing to roll back.
         _report_replace_failure(vendor_dir, exc)
         return False
     try:
-        if had_vendor:
-            # Persist the uncertain state before the second rename, so a crash
-            # or a failed rollback leaves a backup that blocks plain retries.
-            _pending_marker(backup_dir).touch()
         staging_dir.replace(vendor_dir)
     except OSError as exc:
         _report_replace_failure(vendor_dir, exc)

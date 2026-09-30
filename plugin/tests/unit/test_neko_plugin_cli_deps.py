@@ -336,6 +336,46 @@ def test_own_interrupted_swap_on_another_users_vendor_is_not_foreign(tmp_path, m
     assert not backup.exists()
 
 
+def test_backup_is_marked_before_vendor_is_renamed(tmp_path, monkeypatch):
+    # Otherwise another user's sync could see an unmarked live backup in the
+    # window after the rename and delete it as a finished leftover.
+    vendor = tmp_path / "vendor"
+    staging = tmp_path / ".vendor.staging-0000abcd"
+    vendor.mkdir()
+    staging.mkdir()
+    real_replace = Path.replace
+    marked_at_rename = []
+
+    def watch(source, target):
+        if source == vendor:
+            marked_at_rename.append(Path(str(target) + ".pending").is_file())
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", watch)
+    assert _replace_vendor(vendor, staging) is True
+    assert marked_at_rename == [True]
+    assert not list(tmp_path.glob("*.pending"))
+
+
+def test_failed_first_rename_leaves_no_marker(tmp_path, monkeypatch):
+    vendor = tmp_path / "vendor"
+    staging = tmp_path / ".vendor.staging-0000abcd"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("keep")
+    staging.mkdir()
+    real_replace = Path.replace
+
+    def fail_vendor_rename(source, target):
+        if source == vendor:
+            raise PermissionError("vendor in use")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_vendor_rename)
+    assert _replace_vendor(vendor, staging) is False
+    assert (vendor / "old.py").read_text() == "keep"
+    assert not list(tmp_path.glob(".vendor.backup-*"))
+
+
 def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
