@@ -1683,7 +1683,8 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
 
 
 @pytest.mark.parametrize(
-    "replaced", ("copy", "record-in-place", "resource-in-place", "nested-in-place", "marker")
+    "replaced",
+    ("copy", "record-in-place", "resource-in-place", "nested-in-place", "marker", "marker-dir-in-place"),
 )
 def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_path, monkeypatch, replaced):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
@@ -1698,7 +1699,12 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         # 合法道具目录是平的，但保留副本本来就是异常残留，可能带子目录。
         (deleting / "nested").mkdir()
         (deleting / "nested" / "stray.bin").write_bytes(b"old")
-    marker.write_bytes(b"{")
+    if replaced == "marker-dir-in-place":
+        # 授权位置被同步客户端换成了目录。
+        marker.mkdir()
+        (marker / "stray.bin").write_bytes(b"old")
+    else:
+        marker.write_bytes(b"{")
     synced_record = b'{"synced": "newer version"}'
 
     def sync_during_fence(*_args, **kwargs):
@@ -1712,6 +1718,9 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         elif replaced == "record-in-place":
             # 原地改写同一个文件：目录本身的身份不变，只有 record.json 的变了。
             (deleting / "record.json").write_bytes(synced_record)
+        elif replaced == "marker-dir-in-place":
+            # 原地改写授权目录里的文件：授权目录本身的身份不变。
+            (marker / "stray.bin").write_bytes(b"synced newer")
         elif replaced == "nested-in-place":
             # 原地改写子目录里的文件：副本目录和子目录本身的身份都不变。
             (deleting / "nested" / "stray.bin").write_bytes(b"synced newer")
@@ -1730,7 +1739,7 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
     # 换进来的可能是更新的版本：整个删除拒绝，副本、授权和正式目录都不动。
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 409)
     assert deleting.is_dir()
-    assert marker.is_file()
+    assert marker.is_dir() if replaced == "marker-dir-in-place" else marker.is_file()
     assert final.is_dir()
     if replaced in ("copy", "record-in-place"):
         assert (deleting / "record.json").read_bytes() == synced_record
@@ -1738,6 +1747,8 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         assert any(path.read_bytes().endswith(b"synced") for path in deleting.glob("*.png"))
     if replaced == "nested-in-place":
         assert (deleting / "nested" / "stray.bin").read_bytes() == b"synced newer"
+    if replaced == "marker-dir-in-place":
+        assert (marker / "stray.bin").read_bytes() == b"synced newer"
 
 
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
@@ -1756,7 +1767,8 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         pass
 
     def crash_on_discard(path, *args, **kwargs):
-        if Path(path) == deleting:
+        # 副本被挪到上传孤儿名下，正式目录暂存成功后才真正删掉它；在这一步崩溃。
+        if Path(path).name.endswith(".uploading"):
             raise SimulatedCrash()
         return real_rmtree(path, *args, **kwargs)
 
@@ -1765,14 +1777,51 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         store.delete_tool(tool_id)
     monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
 
-    # 授权已经撤掉：剩下的 .deleting 是已确认的删除，恢复直接清掉，不会挪回或拦住 ID。
+    # 授权已经撤掉：剩下的都是已确认删除（停放的副本按上传孤儿），恢复直接清掉。
     assert not marker.exists()
-    assert final.is_dir()
+    assert not final.exists()
+    assert list(store.root.glob(".local-*.uploading"))
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
     assert not deleting.exists()
-    assert restarted.delete_tool(tool_id) == tool_id
+    assert not list(store.root.glob(".local-*.uploading"))
+    restarted.create_tool_v3(manifest=_v3_manifest(tool_id, name="Reborn"), uploads=[_png()])
+
+
+def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+    real_replace = os.replace
+
+    def fail_staging(source, destination, *args, **kwargs):
+        # 正式目录挪去 .deleting 这一步失败（比如磁盘满）。
+        if Path(source) == final and Path(destination) == deleting:
+            raise OSError(errno.ENOSPC, "simulated disk full")
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", fail_staging)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+
+    # 删除失败就等于没发生：副本挪回原位、授权对不上，正式目录也还在。
+    assert raised.value.code == "tool_delete_failed"
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.exists()
+    assert final.is_dir()
+    assert not list(store.root.glob(".local-*.uploading"))
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    assert store.delete_tool(tool_id) == tool_id
+    assert not deleting.exists()
     assert not final.exists()
 
 
