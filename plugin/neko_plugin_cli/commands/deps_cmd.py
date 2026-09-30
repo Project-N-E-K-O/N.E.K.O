@@ -83,6 +83,19 @@ def handle_sync(args: argparse.Namespace) -> int:
     staging_dir: Path | None = None
     try:
         with portalocker.Lock(lock_path, timeout=0):
+            retained_backups = [
+                path
+                for path in plugin_dir.glob(".vendor.backup-*")
+                if path.is_dir() and not path.is_symlink()
+            ]
+            if not args.clean and not vendor_dir.exists() and retained_backups:
+                locations = ", ".join(str(path) for path in retained_backups)
+                print(
+                    f"[FAIL] Cannot sync without a live vendor; retained dependency "
+                    f"backup requires recovery or explicit --clean: {locations}",
+                    file=sys.stderr,
+                )
+                return 1
             staging_dir = Path(mkdtemp(prefix=".vendor.staging-", dir=plugin_dir))
             if not args.clean and vendor_dir.is_dir():
                 shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True, symlinks=True)
@@ -250,7 +263,22 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
         except OSError as exc:
             print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
             if vendor_dir.exists():
-                shutil.rmtree(vendor_dir, ignore_errors=True)
+                try:
+                    shutil.rmtree(vendor_dir)
+                except OSError as cleanup_exc:
+                    print(
+                        f"[FAIL] Could not clear failed vendor; backup retained at "
+                        f"{backup_dir}: {cleanup_exc}",
+                        file=sys.stderr,
+                    )
+                    return False
+                if vendor_dir.exists():
+                    print(
+                        f"[FAIL] Could not clear failed vendor; backup retained at "
+                        f"{backup_dir}: removal was incomplete",
+                        file=sys.stderr,
+                    )
+                    return False
             if backup_dir.exists():
                 try:
                     backup_dir.replace(vendor_dir)

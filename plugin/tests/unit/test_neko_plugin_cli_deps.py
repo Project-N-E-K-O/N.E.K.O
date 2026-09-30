@@ -110,8 +110,64 @@ def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     (backup / "old.py").write_text("backup")
     monkeypatch.setattr(deps_cmd.subprocess, "run",
                         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"))
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert handle_sync(
+        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)
+    ) == 0
     assert not backup.exists()
+
+
+def test_non_clean_retry_refuses_orphaned_backup(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    backup = plugin_dir / ".vendor.backup-previous"
+    backup.mkdir()
+    (backup / "old.py").write_text("backup")
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run before recovery"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert backup.exists()
+    assert "requires recovery or explicit --clean" in capsys.readouterr().err
+
+
+def test_replace_failure_keeps_backup_when_vendor_cleanup_fails(
+    tmp_path, monkeypatch, capsys
+):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    staging = tmp_path / ".vendor.staging-test"
+    vendor.mkdir()
+    staging.mkdir()
+    (vendor / "old.py").write_text("keep")
+
+    real_replace = Path.replace
+    real_rmtree = deps_cmd.shutil.rmtree
+
+    def fail_staging_replace(source, target):
+        if source == staging:
+            target.mkdir(exist_ok=True)
+            (target / "partial.py").write_text("partial")
+            raise OSError("rename failed")
+        return real_replace(source, target)
+
+    def fail_vendor_cleanup(path, *args, **kwargs):
+        if Path(path) == vendor:
+            raise PermissionError("vendor is locked")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", fail_staging_replace)
+    monkeypatch.setattr(deps_cmd.shutil, "rmtree", fail_vendor_cleanup)
+
+    assert _replace_vendor(vendor, staging) is False
+    backup, = tmp_path.glob(".vendor.backup-*")
+    assert (backup / "old.py").read_text() == "keep"
+    assert (vendor / "partial.py").read_text() == "partial"
+    assert "Could not clear failed vendor" in capsys.readouterr().err
 
 
 def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monkeypatch, capsys):
@@ -135,7 +191,9 @@ def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monk
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
     )
 
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert handle_sync(
+        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)
+    ) == 0
     assert backup.exists()
     assert "Could not remove old dependency backup" in capsys.readouterr().err
 
