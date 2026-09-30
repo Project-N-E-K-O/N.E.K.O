@@ -89,6 +89,8 @@ _TIMING_INPUTS = {
     "zh-reluctance-spaces-x": ("我不想聊" + " " * 12000 + "x", 0.06),
     "zh-negation-spaces-x": ("别提" + " " * 16000 + "x", 0.06),
 }
+# 第一次采样超过这么多秒就不重试：调度噪声到不了，真回退（0.3 秒到两分钟）里慢的那些省掉重试
+_NO_RETRY_ABOVE = 5.0
 
 
 @pytest.mark.parametrize("label,raw,pat", _ALL, ids=_ids(_ALL))
@@ -96,11 +98,13 @@ _TIMING_INPUTS = {
 def test_no_template_backtracks_over_long_whitespace(input_name, label, raw, pat):
     """Each template alone stays well below its input's limit on long whitespace runs."""
     text, limit = _TIMING_INPUTS[input_name]
-    # 取多次里最快的一次滤掉调度噪声。⚠️ 第一次就超过阈值 10 倍时不再重试：调度噪声造不出
-    # 10 倍，而有些回退单次就要两分钟（ko 模板 3 去原子化后在触发词输入上 130 秒），重试
-    # 三次只会把一个明确的失败拖成 CI 超时。
+    # 取多次里最快的一次滤掉调度噪声。⚠️ 第一次超过 _NO_RETRY_ABOVE 才不再重试：有些回退
+    # 单次就要两分钟（ko 模板 3 去原子化后在触发词输入上 130 秒），重试三次只会把一个明确的
+    # 失败拖成 CI 超时。这条线必须是**绝对秒数**、远高于调度噪声——按阈值的倍数算的话，
+    # 15ms 的 10 倍只有 150ms，共享 runner 上一次抢占就够得着（tests/wall_clock.py 的说明里
+    # 记的是几百毫秒），修好的正则也会被单个坏样本判红（greptile P1）。
     elapsed = fastest_run(lambda: list(pat.finditer(text)), repeat=1)
-    if limit <= elapsed < limit * 10:
+    if limit <= elapsed < _NO_RETRY_ABOVE:
         elapsed = min(elapsed, fastest_run(lambda: list(pat.finditer(text)), repeat=2, stop_below=limit))
     assert elapsed < limit, f"{label} 在 {input_name} 上最快也要 {elapsed:.3f}s（线 {limit}s），空白回溯又回来了"
 
