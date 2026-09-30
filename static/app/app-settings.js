@@ -1188,9 +1188,14 @@
             console.warn('[app-settings] 停止语音主动视觉失败:', error);
         }
 
+        // 隐私模式不关手动分享：进行中的手动启动（授权对话框还开着、按钮还
+        // 不是 active）也算手动分享，不能在这里把它的流停掉。
         if (isManualScreenShareActive()) return;
+        if (typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending()) return;
 
         try {
+            // 这里停的是主动视觉的发送，不是收尾，不取消任何分享启动。
             if (typeof window.stopScreening === 'function') {
                 window.stopScreening();
             }

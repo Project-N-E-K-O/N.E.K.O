@@ -237,6 +237,7 @@ class GlobalState:
         self._plugin_response_map_manager: Optional[Any] = None
         self._plugin_response_event_map: Optional[Any] = None
         self._plugin_response_notify_event: Optional[Any] = None
+        self._is_plugin_child_process = False
         self._plugin_comm_lock = threading.Lock()
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
@@ -291,6 +292,9 @@ class GlobalState:
             "handlers": {"data": None, "timestamp": 0.0},
         }
         self._snapshot_cache_ttl: float = 0.5  # 500ms缓存TTL
+        # 每次 invalidate 递增；读者在取快照前记录代数，写回缓存时代数已变
+        # 说明取快照期间有写入失效了缓存，旧快照不得覆盖并标记为新鲜。
+        self._snapshot_cache_gen: Dict[str, int] = {key: 0 for key in self._snapshot_cache}
 
     # RWLock 写锁上下文管理器（用于修改操作）
     @contextmanager
@@ -390,6 +394,52 @@ class GlobalState:
         finally:
             self._event_handlers_rwlock.release_read()
     
+    def _snapshot_cache_generation(self, cache_type: str) -> int:
+        with self._snapshot_cache_lock:
+            return self._snapshot_cache_gen[cache_type]
+
+    def get_event_handlers_revision(self) -> int:
+        """entry 注册/注销（含动态 entry 启停）时递增；执行 entry 不变。
+
+        只拿短的快照缓存锁、不碰 handlers 读写锁，可在事件循环上同步调用。
+        """
+        return self._snapshot_cache_generation("handlers")
+
+    def _store_snapshot_cache(self, cache_type: str, snapshot: Dict[str, Any], now: float, generation: int) -> None:
+        """仅当取快照期间缓存未被失效时写回缓存。"""
+        with self._snapshot_cache_lock:
+            if self._snapshot_cache_gen[cache_type] != generation:
+                return
+            self._snapshot_cache[cache_type]["data"] = snapshot
+            self._snapshot_cache[cache_type]["timestamp"] = now
+
+    def _get_snapshot_nowait(self, cache_type: str, rwlock: "RWLock", source: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """带缓存的快照，绝不等待读写锁（可在事件循环线程上调用）。
+
+        缓存新鲜时直接返回缓存；否则只尝试一次非阻塞读锁，成功则刷新缓存。
+        拿不到读锁（写者持有/排队）时返回上一次缓存的快照（可能过期），
+        从未缓存过则返回 None。锁竞争不会把空字典写入共享缓存。
+        """
+        now = time.time()
+        with self._snapshot_cache_lock:
+            cache = self._snapshot_cache[cache_type]
+            cached = cache["data"]
+            if cached is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
+                return dict(cached)
+            generation = self._snapshot_cache_gen[cache_type]
+        if not rwlock.acquire_read(timeout=0):
+            return dict(cached) if cached is not None else None
+        try:
+            snapshot = dict(source)
+        finally:
+            rwlock.release_read()
+        self._store_snapshot_cache(cache_type, snapshot, now, generation)
+        return dict(snapshot)
+
+    def get_plugins_snapshot_nowait(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """plugins 快照，绝不等待读写锁；语义见 _get_snapshot_nowait。"""
+        return self._get_snapshot_nowait("plugins", self._plugins_rwlock, self.plugins)
+
     def get_plugins_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Dict[str, Any]]:
         """获取 plugins 的快照（带缓存，减少锁竞争）
         
@@ -411,12 +461,11 @@ class GlobalState:
                     return dict(cache["data"])
         
         # 缓存失效或强制刷新，获取新快照
+        generation = self._snapshot_cache_generation("plugins")
         snapshot = self.get_plugins_snapshot(timeout=timeout)
         
-        # 更新缓存
-        with self._snapshot_cache_lock:
-            self._snapshot_cache["plugins"]["data"] = snapshot
-            self._snapshot_cache["plugins"]["timestamp"] = now
+        # 更新缓存（取快照期间被失效则不写回）
+        self._store_snapshot_cache("plugins", snapshot, now, generation)
         
         return snapshot
     
@@ -441,15 +490,18 @@ class GlobalState:
                     return dict(cache["data"])
         
         # 缓存失效或强制刷新，获取新快照
+        generation = self._snapshot_cache_generation("hosts")
         snapshot = self.get_plugin_hosts_snapshot(timeout=timeout)
         
-        # 更新缓存
-        with self._snapshot_cache_lock:
-            self._snapshot_cache["hosts"]["data"] = snapshot
-            self._snapshot_cache["hosts"]["timestamp"] = now
+        # 更新缓存（取快照期间被失效则不写回）
+        self._store_snapshot_cache("hosts", snapshot, now, generation)
         
         return snapshot
     
+    def get_plugin_hosts_snapshot_nowait(self) -> Optional[Dict[str, Any]]:
+        """plugin_hosts 快照，绝不等待读写锁；语义见 _get_snapshot_nowait。"""
+        return self._get_snapshot_nowait("hosts", self._plugin_hosts_rwlock, self.plugin_hosts)
+
     def get_event_handlers_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, EventHandler]:
         """获取 event_handlers 的快照（带缓存，减少锁竞争）
         
@@ -491,9 +543,11 @@ class GlobalState:
                 # 全部失效
                 for key in self._snapshot_cache:
                     self._snapshot_cache[key]["timestamp"] = 0.0
+                    self._snapshot_cache_gen[key] += 1
             elif cache_type in self._snapshot_cache:
                 # 指定类型失效
                 self._snapshot_cache[cache_type]["timestamp"] = 0.0
+                self._snapshot_cache_gen[cache_type] += 1
 
     def register_event_handler(self, plugin_id: str, handler: EventHandler) -> None:
         meta = getattr(handler, "meta", None)
@@ -645,6 +699,13 @@ class GlobalState:
         """插件响应映射（跨进程共享字典）"""
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
+                if self._plugin_response_map is None and self._is_plugin_child_process:
+                    # Plugin child without inherited proxies (spawn): only the host
+                    # writes this map, so a child-local Manager would never be fed.
+                    # Replies reach the child over ZMQ instead.
+                    self._plugin_response_map = {}
+                    if self._plugin_response_event_map is None:
+                        self._plugin_response_event_map = {}
                 if self._plugin_response_map is None:
                     # 使用 Manager 创建跨进程共享的字典
                     if self._plugin_response_map_manager is None:
@@ -655,6 +716,10 @@ class GlobalState:
                     if self._plugin_response_event_map is None:
                         self._plugin_response_event_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
+
+    def mark_plugin_child_process(self) -> None:
+        """Mark this process as a plugin child so it never starts its own Manager."""
+        self._is_plugin_child_process = True
 
     @property
     def plugin_response_event_map(self) -> Any:

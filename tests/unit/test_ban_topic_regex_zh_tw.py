@@ -68,8 +68,9 @@ def _class_is_whitespace_only(items) -> bool:
     )
 
 
-def _matches_only_whitespace(seq) -> bool:
-    consumed = False
+def _never_consumes_non_whitespace(seq) -> bool:
+    # ⚠️ 空序列算 True：``(?:\s|)*`` 的空分支什么都不吃，整体仍等价于 ``\s*``（codex P2）。
+    # 「至少能吃掉一个字」由 _consumes_something 单独判。
     for op, av in seq:
         if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
             continue
@@ -78,19 +79,41 @@ def _matches_only_whitespace(seq) -> bool:
         elif op is _sre.IN:
             ok = _class_is_whitespace_only(av)
         elif op is _sre.SUBPATTERN:
-            ok = _matches_only_whitespace(av[3])
+            ok = _never_consumes_non_whitespace(av[3])
         elif op is _sre.ATOMIC_GROUP:
-            ok = _matches_only_whitespace(av)
+            ok = _never_consumes_non_whitespace(av)
         elif op is _sre.BRANCH:
-            ok = all(_matches_only_whitespace(branch) for branch in av[1])
+            ok = all(_never_consumes_non_whitespace(branch) for branch in av[1])
         elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
-            ok = _matches_only_whitespace(av[2])
+            ok = _never_consumes_non_whitespace(av[2])
         else:
             ok = False
         if not ok:
             return False
-        consumed = True
-    return consumed
+    return True
+
+
+def _consumes_something(seq) -> bool:
+    for op, av in seq:
+        if op in (_sre.LITERAL, _sre.NOT_LITERAL, _sre.IN, _sre.ANY):
+            return True
+        if op is _sre.SUBPATTERN:
+            sub = [av[3]]
+        elif op is _sre.ATOMIC_GROUP:
+            sub = [av]
+        elif op is _sre.BRANCH:
+            sub = av[1]
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            sub = [av[2]] if av[1] else []
+        else:
+            sub = []  # lookarounds / anchors are zero-width
+        if any(_consumes_something(s) for s in sub):
+            return True
+    return False
+
+
+def _matches_only_whitespace(seq) -> bool:
+    return _never_consumes_non_whitespace(seq) and _consumes_something(seq)
 
 
 def _collect_whitespace_runs(seq, out: list[str]) -> list[str]:
@@ -2973,11 +2996,14 @@ def test_nesting_does_not_regress_the_bounded_scan():
     from tests.wall_clock import fastest_run
 
     extract_directives(" ")  # 预热
-    # 取多次里最快的一次：``"《" * 8000`` 在 Windows CI 上被 runner 卡顿量到过 7.37 秒
-    #（见 test_no_bracket_pair_scans_to_the_end），单次采样对 1 秒的线会误红。
-    unmatched = fastest_run(lambda: extract_directives("《" * 8000), stop_below=1.0)
+    # ⚠️ ``"《" * 8000`` 的线和 test_no_bracket_pair_scans_to_the_end 同一个输入、同一道
+    # 10 秒：它在 Windows CI 上量到过 7.37 秒，取最快一次只滤得掉偶发抢占，滤不掉整台
+    # runner 持续偏慢，1 秒的线在那里会误红（codex P2）。这条只是兜底——括号体无界的
+    # 精确判据在 test_bracket_bodies_are_bounded（结构面）和
+    # test_unmatched_openers_stay_linear（倍率）。本条独有的判据是下面嵌套那一行。
+    unmatched = fastest_run(lambda: extract_directives("《" * 8000), repeat=3, stop_below=10.0)
     nested = fastest_run(lambda: extract_directives("别提" + "《《a》" * 40), stop_below=0.2)
-    assert unmatched < 1.0, unmatched
+    assert unmatched < 10.0, unmatched
     assert nested < 0.2, nested
 
 

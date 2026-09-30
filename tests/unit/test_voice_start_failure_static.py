@@ -453,6 +453,7 @@ function discardCancelledScreenSharingStart(attempt) {{
   discardCalls += 1;
   return attempt.cancelled;
 }}
+function releaseReusedStreamUnderPrivacy() {{}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
@@ -484,6 +485,8 @@ async function run() {{
   assert.strictEqual(cancelPendingScreenSharingStart(), true);
   assert.strictEqual(discardCalls, 1, 'cancellation must immediately clean any already-acquired stream');
   assert.strictEqual(isScreenSharingStartPending(), false, 'a cancelled chooser must stop blocking retries immediately');
+  // The chooser is still open (never released here): the caller must not hang on it.
+  assert.strictEqual(await cancelledStart, undefined, 'a cancelled start must release its caller at once');
 
   let releaseReplacement;
   startScreenSharingOnce = async function (attempt) {{
@@ -497,14 +500,23 @@ async function run() {{
   assert.strictEqual(isScreenSharingStartPending(), true);
 
   releaseCancelled();
-  assert.strictEqual(await cancelledStart, 'cancelled');
-  assert.strictEqual(isScreenSharingStartPending(), true, 'the old finally must not clear the replacement attempt');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(isScreenSharingStartPending(), true, 'the late chooser result must not clear the replacement attempt');
 
   releaseReplacement();
   assert.strictEqual(await replacement, 'restarted');
   assert.strictEqual(isScreenSharingStartPending(), false);
+  completed = true;
 }}
 
+// Node exits with 0 when run() hangs on a promise that never settles.
+let completed = false;
+process.on('exit', () => {{
+  if (!completed) {{
+    console.error('run() never finished: a start is still awaiting its chooser');
+    process.exitCode = 1;
+  }}
+}});
 run().catch((error) => {{
   console.error(error);
   process.exitCode = 1;
@@ -700,10 +712,14 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     audio_capture_source = _read(APP_AUDIO_CAPTURE_PATH)
 
     stop = _js_function_block(screen_source, "stopScreenSharing")
+    stop_body = _js_function_block(screen_source, "releaseScreenSharing")
     switch = screen_source.split(
         "window.switchScreenSharing = async function () {", 1
     )[1].split("\n    };", 1)[0]
-    assert "cancelPendingScreenSharingStart();" in stop
+    # Every stop also drops a source-switch restart that has not started yet.
+    assert "sourceSwitchRestart = null;" in stop
+    assert "releaseScreenSharing(forceRelease, false);" in stop
+    assert "cancelPendingScreenSharingStart();" in stop_body
     assert "if (isScreenSharingStartPending())" in switch
 
     toggle = common_ui_source.split(

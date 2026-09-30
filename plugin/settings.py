@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from utils.config_manager import get_plugins_directory
+from utils.social_base import validate_http_url as _validate_http_url
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -34,18 +35,6 @@ def _get_float_env(name: str, default: float) -> float:
         return float(value)
     except Exception:
         return default
-
-
-def _validate_http_url(value: str, *, name: str, allow_empty: bool = False) -> str:
-    value = value.strip()
-    if allow_empty and not value:
-        return value
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"{name} must be a valid http(s) URL")
-    if parsed.username or parsed.password:
-        raise ValueError(f"{name} must not include credentials")
-    return value
 
 
 def _validate_market_origin(origin: str) -> str:

@@ -20,7 +20,12 @@ export type AvatarToolVariantId = CatalogAvatarToolVariantId;
 
 export type { AvatarToolItem } from './avatar-tools/registry';
 
-export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = 'neko.reactChatWindow.activeAvatarTools';
+export type AvatarToolSurface = 'compact' | 'full';
+export const ACTIVE_AVATAR_TOOLS_STORAGE_KEYS: Record<AvatarToolSurface, string> = {
+  compact: 'neko.reactChatWindow.activeAvatarTools',
+  full: 'neko.reactChatWindow.fullChat.activeAvatarTools',
+};
+export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact;
 export const MAX_ACTIVE_AVATAR_TOOLS = 3;
 export const DEFAULT_ACTIVE_AVATAR_TOOL_IDS: AvatarToolId[] = ['lollipop', 'fist', 'hammer'];
 
@@ -76,17 +81,28 @@ export function sanitizeAvatarToolIds(
   return sanitizeAvatarToolSlots(value).filter(toolId => validIds.has(toolId));
 }
 
-export function readPersistedActiveAvatarToolIds(): AvatarToolId[] {
+export function readPersistedActiveAvatarToolIds(surface: AvatarToolSurface = 'compact'): AvatarToolId[] {
   if (typeof window === 'undefined') {
     return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   }
 
   try {
-    const rawValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY);
-    if (rawValue === null || typeof rawValue === 'undefined') {
-      return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
+    const rawValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[surface]);
+    if (rawValue !== null && typeof rawValue !== 'undefined') {
+      return sanitizeAvatarToolSlots(JSON.parse(rawValue));
     }
-    return sanitizeAvatarToolSlots(JSON.parse(rawValue));
+    // v0.9.0 及更早版本 Full 和 Compact 共用 compact 这把 key。Full 第一次读不到
+    // 自己的 key 时继承旧值，并当场落盘成 Full 自己的一份：之后 Compact 再怎么
+    // 保存都不会渗进 Full。两边都没有就给默认值，不写盘。
+    if (surface === 'full') {
+      const legacyValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.compact);
+      if (legacyValue !== null && typeof legacyValue !== 'undefined') {
+        const legacySlots = sanitizeAvatarToolSlots(JSON.parse(legacyValue));
+        window.localStorage?.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify(legacySlots));
+        return legacySlots;
+      }
+    }
+    return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   } catch {
     return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   }
@@ -95,26 +111,27 @@ export function readPersistedActiveAvatarToolIds(): AvatarToolId[] {
 // 删除是确定性的「这个道具不存在了」，和 list_items 那种尽力而为的缺席不同，
 // 所以要落盘。但只摘掉这一个 id：其余槽位可能只是本轮列表没带上，不能顺手
 // 一起 sanitize 掉。
-export function forgetPersistedAvatarToolId(toolId: AvatarToolId) {
+export function forgetPersistedAvatarToolId(toolId: AvatarToolId, surface: AvatarToolSurface = 'compact') {
   if (typeof window === 'undefined') return;
   try {
-    const rawValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY);
+    const storageKey = ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[surface];
+    const rawValue = window.localStorage?.getItem(storageKey);
     if (!rawValue) return;
     const parsed = JSON.parse(rawValue);
     if (!Array.isArray(parsed)) return;
     const next = parsed.filter(candidate => candidate !== toolId);
     if (next.length === parsed.length) return;
-    window.localStorage?.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify(next));
+    window.localStorage?.setItem(storageKey, JSON.stringify(next));
   } catch {
     // Keep in-memory state when localStorage is unavailable.
   }
 }
 
-export function persistActiveAvatarToolIds(ids: AvatarToolId[]) {
+export function persistActiveAvatarToolIds(ids: AvatarToolId[], surface: AvatarToolSurface = 'compact') {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage?.setItem(
-      ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+      ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[surface],
       JSON.stringify(sanitizeAvatarToolSlots(ids)),
     );
   } catch {

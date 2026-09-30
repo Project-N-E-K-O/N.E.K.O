@@ -18,12 +18,12 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
-import os
 from typing import Any
 
 from fastapi import Request
 from fastapi.responses import Response
 from main_logic import client_registration
+from utils import social_base
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
 
 from ._shared import (
@@ -122,6 +122,9 @@ async def get_system_social_config(response: Response):
     return {
         "ok": True,
         "social_base_url": base_url,
+        # 桌面登出时要清掉 IdP 的 SSO cookie，而那个 cookie 在 auth 域上，不是社区域。
+        # 主进程没有别的途径知道这个源，所以随社区配置一起给出。
+        "auth_public_url": social_base.auth_public_url(),
         "enabled": True,
     }
 

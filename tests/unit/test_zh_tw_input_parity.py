@@ -598,16 +598,24 @@ def test_peeling_is_bounded_for_pathological_input():
     # 挡住「每条都退到 0.9 秒」这种单条线拦不住的部分回退（合计 3.6 秒）。之和本机约
     # 0.4 秒；原来那道「合计单次采样 < 1 秒」在 CI（含 Windows）上平时是过的，
     # 取最快值再放到 2 秒，余量不止两倍。界整个丢了的时候 20k 那两条本机要 5–11 秒。
-    total = 0.0
-    for text in (
+    texts = (
         "去执行" + "吧" * 20000,  # 走 _clause_hits 的剥词
         "停下来" + "啊呀" * 10000,
         # ⚠️ 也要走 _command_clause 的剥词：空格把语气词切成独立末子句之后，往回跳过
         # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
         "停下来 " + "吧" * 60000,
         "随便说说 " + "啊" * 60000,
-    ):
-        elapsed = fastest_run(lambda text=text: _peel(text), repeat=3, stop_below=1.0)
+    )
+    # ⚠️ 提前结束的线是**合计预算的均摊份额**（2 秒 / 4 条 = 0.5 秒），不是单条的 1 秒：
+    # 用 1 秒的话，一次被抢占到 0.9 秒的采样就会被当成「最快值」记下，四条这样的
+    # 偏高值一加就超过 2 秒，合计线在没有回退时误红（Greptile P1）。按份额停，只要
+    # 四条都提前结束，之和必然 < 2 秒；落在 0.5–1 秒的那条会继续重试拿更快的样本。
+    # 本机单条 0.05–0.35 秒，不加负载时仍然一次就停。
+    total = 0.0
+    for text in texts:
+        elapsed = fastest_run(
+            lambda text=text: _peel(text), repeat=5, stop_below=2.0 / len(texts)
+        )
         assert elapsed < 1.0, f"{text[:8]!r}… 最快也要 {elapsed:.2f}s，剥词的界没生效"
         total += elapsed
     assert total < 2.0, f"四条病态输入最快值之和 {total:.2f}s，剥词整体变慢了"
