@@ -645,7 +645,15 @@ class AvatarToolStore:
         # 先撤授权并持久化：之后任何一步失败或崩溃，剩下的 .deleting 都是没有授权
         # 文件的已确认删除，恢复会把它清掉，不会再挪回或拦住这个 ID。
         try:
-            marker.unlink(missing_ok=True)
+            # 同步客户端或文件系统损坏可能把授权位置变成目录；恢复把它当作无效授权
+            # 保留了副本，这里也要能清掉，否则这个 ID 的删除会一直失败。
+            marker_kind, _, probe_error = _probe_entry(marker)
+            if probe_error is not None:
+                raise probe_error
+            if marker_kind == "dir":
+                shutil.rmtree(marker)
+            else:
+                marker.unlink(missing_ok=True)
             _fsync_directory(marker.parent)
         except OSError as exc:
             raise AvatarToolStoreError(
@@ -1070,7 +1078,9 @@ class AvatarToolStore:
                 status_code=404,
                 transient=True,
             ) from exc
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        # UnicodeDecodeError、JSONDecodeError 以及超过解释器位数上限的整数字面量
+        # （普通 ValueError）都只让这一条记录失效，不能让整个列表抛出。
+        except (ValueError, RecursionError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
         try:
             return self._validate_record(

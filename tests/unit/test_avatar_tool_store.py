@@ -1501,7 +1501,10 @@ def test_delete_keeps_an_unauthorized_move_for_recovery_when_it_cannot_be_restor
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
 
-@pytest.mark.parametrize("flavour", ("identity-mismatch", "corrupt-marker", "deeply-nested-marker"))
+@pytest.mark.parametrize(
+    "flavour",
+    ("identity-mismatch", "corrupt-marker", "deeply-nested-marker", "directory-marker"),
+)
 def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, monkeypatch, flavour):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -1534,6 +1537,11 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
         record_path.write_bytes(record_path.read_bytes())
     elif flavour == "corrupt-marker":
         marker.write_bytes(b"{")
+    elif flavour == "directory-marker":
+        # 同步客户端或文件系统损坏把授权位置变成了目录。
+        marker.unlink()
+        marker.mkdir()
+        (marker / "stray").write_bytes(b"x")
     else:
         # 4 KiB 以内就能嵌套到让 json.loads 抛 RecursionError；它必须按
         # 「授权不匹配」处理，而不是炸穿整轮恢复。
@@ -1669,14 +1677,17 @@ def _replace_probabilities(value, replacement):
     return value
 
 
+@pytest.mark.parametrize("digits", (400, 5000))
 @pytest.mark.parametrize("record_version", (2, 3))
 def test_an_overflowing_special_probability_is_invalid_not_a_server_error(
-    tmp_path, monkeypatch, record_version
+    tmp_path, monkeypatch, record_version, digits
 ):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     # JSON 整数字面量没有长度上限，float() 转不下会抛 OverflowError。
-    huge = int("1" + "0" * 400)
+    # 400 位时 float() 抛 OverflowError；5000 位超过解释器的整数位数上限，
+    # json.loads 在校验之前就抛普通 ValueError。
+    huge = 10 ** digits
     special_uploads = [_png(), _png(size=(12, 10))]
 
     def special_manifest(tool_id, probability):
@@ -1714,9 +1725,12 @@ def test_an_overflowing_special_probability_is_invalid_not_a_server_error(
     store.create_tool_v3(manifest=_v3_manifest(other_id, name="Other"), uploads=[_png()])
     record_path = store.root / tool_id / "record.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    tampered = _replace_probabilities(record, huge)
+    tampered = _replace_probabilities(record, "__HUGE__")
     assert tampered != record
-    record_path.write_text(json.dumps(tampered), encoding="utf-8")
+    # json.dumps 也写不出超过位数上限的整数，直接拼进文本。
+    record_path.write_text(
+        json.dumps(tampered).replace('"__HUGE__"', "1" + "0" * digits), encoding="utf-8"
+    )
 
     # 磁盘上一条被改坏的记录只让它自己失效，不能让整个列表抛出。
     listed = {item["id"] for item in store.list_items()}
