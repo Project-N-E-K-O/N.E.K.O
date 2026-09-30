@@ -75,6 +75,30 @@ def test_subtitle_requires_auth_before_current_subtitle(client):
         assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
 
 
+def test_cookie_authenticated_websocket_rejects_cross_origin(client):
+    with client.websocket_connect(
+        "/ws/neko",
+        headers={
+            "Origin": "http://evil.example:48911",
+            "Cookie": "monitor_token=route-secret",
+        },
+    ) as websocket:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+        assert closed.value.code == 1008
+
+
+def test_cookie_authenticated_websocket_accepts_same_origin(client):
+    with client.websocket_connect(
+        "/ws/neko",
+        headers={
+            "Origin": "http://testserver",
+            "Cookie": "monitor_token=route-secret",
+        },
+    ) as websocket:
+        assert websocket is not None
+
+
 @pytest.mark.parametrize("path", ["/subtitle_ws", "/ws/neko", "/sync/neko", "/sync_binary/neko"])
 def test_unconfigured_token_keeps_websocket_compatibility(client, monkeypatch, path):
     monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "")

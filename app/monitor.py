@@ -31,6 +31,7 @@ import asyncio
 import json
 import os
 import logging
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from config import MONITOR_SERVER_PORT, MONITOR_HOST, DEFAULT_LIVE2D_MODEL_NAME
 from app.monitor_auth import (
@@ -126,10 +127,20 @@ def require_monitor_auth(request: Request) -> None:
 async def authenticate_monitor_websocket(websocket: WebSocket) -> bool:
     """Accept, authenticate, and only then permit a WebSocket route to proceed."""
     await websocket.accept()
+    cookie_token = websocket.cookies.get("monitor_token")
+    origin = websocket.headers.get("origin")
+    if cookie_token and origin:
+        expected_scheme = "https" if websocket.url.scheme == "wss" else "http"
+        expected_origin = f"{expected_scheme}://{websocket.headers.get('host', '')}"
+        parsed_origin = urlsplit(origin)
+        normalized_origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
+        if normalized_origin.rstrip("/") != expected_origin.rstrip("/"):
+            await websocket.close(code=1008)
+            return False
     token = extract_monitor_token(
         headers=websocket.headers,
         query_token=websocket.query_params.get("token"),
-        cookie_token=websocket.cookies.get("monitor_token"),
+        cookie_token=cookie_token,
     )
     if verify_monitor_token(token):
         return True
