@@ -116,8 +116,10 @@ def test_every_topic_capture_refuses_to_start_on_whitespace(label, raw, pat):
 
 
 def test_the_zh_topic_captures_refuse_to_start_on_whitespace_too():
-    """Structural, zh: template 2 guards its capture; template 3 only allows space after 我
-    and guards its topic ahead of the objectless lookahead, which rescans the run."""  # noqa: DOCSTRING_CJK
+    """Structural, zh: template 2 guards its capture; template 3 only allows space after 我.
+
+    The objectless-lookahead guards (templates 1 and 3) are discovered by the test below.
+    """  # noqa: DOCSTRING_CJK
     zh = [raw for label, raw, _pat in _ALL if label.startswith("zh")]
     assert r"((?!\s)" in zh[1]
     assert zh[2].startswith("(?:我" + D._ZH_HSPACE + ")?"), zh[2][:80]
@@ -125,7 +127,7 @@ def test_the_zh_topic_captures_refuse_to_start_on_whitespace_too():
 
 @pytest.mark.parametrize("label,raw,pat", [t for t in _ALL if t[0].startswith("zh")], ids=_ids([t for t in _ALL if t[0].startswith("zh")]))
 def test_every_zh_objectless_lookahead_is_guarded(label, raw, pat):
-    """Structural, auto-discovered: each ``_ZH_OBJECTLESS_AHEAD`` is preceded by ``(?!\s)``.
+    """Structural, auto-discovered: each ``_ZH_OBJECTLESS_AHEAD`` is preceded by ``(?!\\s)``.
 
     The lookahead rescans the whole run of spaces at every position the verb's
     whitespace gives back; zh template 1 had the same shape as template 3 and
