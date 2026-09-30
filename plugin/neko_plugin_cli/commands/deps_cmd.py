@@ -597,6 +597,8 @@ def _target_prefix(python: str) -> Path:
         if result.returncode == 0 and lines:
             return Path(lines[-1])
     except (OSError, subprocess.SubprocessError):
+        # The interpreter could not be asked (missing, hung); the layout
+        # guess below still finds the site config of an ordinary venv.
         pass
     # Fall back to the usual venv layout: <prefix>/bin or <prefix>\Scripts.
     prefix = Path(shutil.which(python) or python).parent
