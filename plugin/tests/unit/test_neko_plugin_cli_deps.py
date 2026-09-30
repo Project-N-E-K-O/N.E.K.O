@@ -56,6 +56,14 @@ def _missing_pip_then_uv(calls):
         ({"PIP_NO_INDEX": "1", "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
         ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, True),
         ({"UV_FIND_LINKS": "/wheels"}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
+        # Each pip source kind needs a uv setting of the matching kind.
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, False),
+        ({"PIP_FIND_LINKS": "/wheels", "UV_DEFAULT_INDEX": "https://private/simple"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "1"}, None, True),
+        ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
+          "UV_INDEX": "https://private/simple"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
+          "UV_INDEX": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, True),
         # An explicitly disabled no-index is not a restriction.
         ({"PIP_NO_INDEX": "false"}, None, True),
         ({}, "[global]\nno-index = off\n", True),
@@ -101,9 +109,9 @@ def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
     config = tmp_path / "pip.ini"
     config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
-    assert deps_cmd._pip_package_sources("python") == ([str(config)], False)
+    assert deps_cmd._pip_package_sources("python") == ([str(config)], {"index"})
     monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
-    assert deps_cmd._pip_package_sources("python") == ([], False)
+    assert deps_cmd._pip_package_sources("python") == ([], set())
 
 
 @pytest.mark.parametrize("failing_installer", ["pip", "uv"])

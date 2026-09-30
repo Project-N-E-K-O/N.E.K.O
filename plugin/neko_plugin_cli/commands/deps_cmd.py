@@ -280,8 +280,8 @@ def _pip_install_to_vendor(
     The uv fallback runs with uv's own configuration untouched. Mapping pip's
     index variables into UV_* would override uv.toml / [tool.uv] indexes,
     because uv ranks environment variables above its config files. But when
-    pip is configured with an index and uv's index variables are unset, uv
-    would resolve from public PyPI instead, letting a same-name public package
+    pip has a package source that no matching uv variable covers, uv would
+    resolve from public PyPI instead, letting a same-name public package
     stand in for a private one; that case fails closed.
     """
     if not packages:
@@ -317,19 +317,14 @@ def _pip_install_to_vendor(
             file=sys.stderr,
         )
         return 1
-    sources, pip_no_index = _pip_package_sources(python)
-    # Only UV_NO_INDEX turns off uv's default index; extra indexes and
-    # find-links are merely added next to PyPI.
-    uv_configured = (
-        bool(os.environ.get("UV_NO_INDEX"))
-        if pip_no_index
-        else any(os.environ.get(name) for name in _UV_INDEX_ENV)
-    )
-    if sources and not uv_configured:
-        needed = (
-            "UV_NO_INDEX with UV_FIND_LINKS"
-            if pip_no_index
-            else "UV_DEFAULT_INDEX / UV_INDEX / UV_FIND_LINKS"
+    sources, kinds = _pip_package_sources(python)
+    uncovered = [
+        kind for kind in sorted(kinds)
+        if not any(os.environ.get(name) for name in _UV_COVERS[kind])
+    ]
+    if uncovered:
+        needed = "; ".join(
+            f"{kind}: {' or '.join(_UV_COVERS[kind])}" for kind in uncovered
         )
         print(
             "[FAIL] The target Python has no pip, and pip is configured with "
@@ -360,37 +355,52 @@ def _pip_install_to_vendor(
     return 0
 
 
-# Package-source settings: custom indexes, and no-index + find-links, which
-# restricts pip to local sources while uv would still query PyPI.
-_UV_INDEX_ENV = (
-    "UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL",
-    "UV_NO_INDEX", "UV_FIND_LINKS",
-)
-_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_NO_INDEX", "PIP_FIND_LINKS")
-_PIP_INDEX_KEYS = {"index-url", "extra-index-url", "no-index", "find-links"}
+# pip package-source settings, by kind, as env vars and config file keys.
+_PIP_ENV_KINDS = {
+    "PIP_INDEX_URL": "index",
+    "PIP_EXTRA_INDEX_URL": "index",
+    "PIP_NO_INDEX": "no-index",
+    "PIP_FIND_LINKS": "find-links",
+}
+_PIP_KEY_KINDS = {
+    "index-url": "index",
+    "extra-index-url": "index",
+    "no-index": "no-index",
+    "find-links": "find-links",
+}
+_PIP_INDEX_ENV = tuple(_PIP_ENV_KINDS)
+_PIP_INDEX_KEYS = set(_PIP_KEY_KINDS)
+# uv settings that keep each kind of pip source from falling through to
+# PyPI. Only UV_NO_INDEX turns off uv's default index; extra indexes and
+# find-links are merely added next to it, so each covers only its own kind.
+_UV_COVERS = {
+    "index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX"),
+    "find-links": ("UV_FIND_LINKS", "UV_NO_INDEX"),
+    "no-index": ("UV_NO_INDEX",),
+}
+_UV_INDEX_ENV = tuple(dict.fromkeys(name for names in _UV_COVERS.values() for name in names))
 
 
-def _pip_package_sources(python: str) -> tuple[list[str], bool]:
-    """Where pip takes non-default package sources from, and whether it
-    disables package indexes altogether (no-index)."""
+def _pip_package_sources(python: str) -> tuple[list[str], set[str]]:
+    """Where pip takes non-default package sources from, and their kinds."""
     sources: list[str] = []
-    no_index = False
-    for name in _PIP_INDEX_ENV:
+    kinds: set[str] = set()
+    for name, kind in _PIP_ENV_KINDS.items():
         value = os.environ.get(name)
-        if value and not (name == "PIP_NO_INDEX" and _pip_false(value)):
+        if value and not (kind == "no-index" and _pip_false(value)):
             sources.append(name)
-            no_index = no_index or name == "PIP_NO_INDEX"
+            kinds.add(kind)
     config_file = os.environ.get("PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
-        return sources, no_index
+        return sources, kinds
     candidates = [Path(config_file)] if config_file else []
     for path in [*candidates, *_pip_config_files(python)]:
         keys = _config_source_keys(path)
         if keys:
             sources.append(str(path))
-            no_index = no_index or "no-index" in keys
-    return sources, no_index
+            kinds.update(_PIP_KEY_KINDS[key] for key in keys)
+    return sources, kinds
 
 
 def _pip_config_files(python: str) -> list[Path]:
