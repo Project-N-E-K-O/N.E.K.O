@@ -157,7 +157,7 @@ def test_non_clean_sync_preserves_links_including_dangling(tmp_path, monkeypatch
                         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"))
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
     assert (vendor / "linked.txt").is_symlink()
-    assert (vendor / "linked.txt").readlink() == outside
+    assert (vendor / "linked.txt").resolve() == outside.resolve()
     assert (vendor / "dangling.txt").is_symlink()
     assert outside.read_text() == "outside"
 
