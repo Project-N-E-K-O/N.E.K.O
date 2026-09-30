@@ -30,11 +30,12 @@ _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
     "dist",
     "build",
 }
-_DEFAULT_RECOVERY_DIR_PREFIXES = (
-    ".vendor.staging-",
-    ".vendor.backup-",
-    ".vendor.restore-",
-)
+# `neko-plugin sync` swaps vendor/ through sibling work directories at the
+# plugin root. Each one holds a full third-party tree and is never plugin
+# source, so every scan (build, pack, publish, ruff, check) must skip them.
+VENDOR_SYNC_STAGING_PREFIX = ".vendor.staging-"
+VENDOR_SYNC_BACKUP_PREFIX = ".vendor.backup-"
+VENDOR_SYNC_DIR_PREFIXES = (VENDOR_SYNC_STAGING_PREFIX, VENDOR_SYNC_BACKUP_PREFIX)
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
 }
@@ -96,6 +97,13 @@ def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
     return BuildRuleSet.model_validate(build_table)
 
 
+def is_vendor_sync_path(relative_path: Path) -> bool:
+    """Whether a plugin-relative path lives in a sync staging/backup dir."""
+    return bool(relative_path.parts) and relative_path.parts[0].startswith(
+        VENDOR_SYNC_DIR_PREFIXES
+    )
+
+
 def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) -> bool:
     # Matching always works on normalized archive-style relative paths so the
     # same rule semantics apply across platforms.
@@ -105,7 +113,7 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     dir_parts = relative_path.parts if is_dir else relative_path.parts[:-1]
     if dir_parts and dir_parts[0] in _DEFAULT_ROOT_EXCLUDE_DIR_NAMES:
         return True
-    if dir_parts and dir_parts[0].startswith(_DEFAULT_RECOVERY_DIR_PREFIXES):
+    if is_vendor_sync_path(relative_path):
         return True
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in dir_parts):
         return True

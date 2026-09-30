@@ -18,25 +18,28 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
 )
 
 
-@pytest.mark.parametrize("uv", [None, "uv"])
+@pytest.mark.parametrize("failing_installer", ["pip", "uv"])
 @pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
 def test_installer_start_failure_is_not_missing_pip(
-    tmp_path, monkeypatch, capsys, uv, error_type,
+    tmp_path, monkeypatch, capsys, failing_installer, error_type,
 ):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: uv)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
 
-    def fail(*args, **kwargs):
-        raise error_type("interpreter cannot execute")
+    def run(command, **kwargs):
+        if command[0] == "uv" or failing_installer == "pip":
+            raise error_type("installer cannot execute")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
 
-    monkeypatch.setattr(deps_cmd.subprocess, "run", fail)
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
     assert deps_cmd._pip_install_to_vendor(
         ["httpx"], vendor_dir=tmp_path / "vendor", python="missing-python",
     ) == 1
     error = capsys.readouterr().err
-    assert "could not start" in error
-    assert "interpreter cannot execute" in error
+    label = "target Python 'missing-python'" if failing_installer == "pip" else "uv pip install"
+    assert f"{label} could not start" in error
+    assert "installer cannot execute" in error
     assert "ensurepip" not in error
 
 
@@ -72,42 +75,9 @@ sys.exit(handle_sync(argparse.Namespace(plugin=str(p), python=sys.executable,
     assert (plugin_dir / "vendor" / "fresh.py").read_text() == "complete"
 
 
-def test_failed_recovery_copy_never_exposes_partial_vendor(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
-
+def test_recovery_marker_write_failure_rolls_back_before_swap(tmp_path, monkeypatch):
     vendor = tmp_path / "vendor"
     staging = tmp_path / ".vendor.staging-test"
-    vendor.mkdir()
-    staging.mkdir()
-    (vendor / "old.py").write_text("keep")
-    real_replace = Path.replace
-
-    def fail_replace(source, target):
-        if source == staging:
-            raise PermissionError("locked")
-        return real_replace(source, target)
-
-    def fail_copy(source, target, **kwargs):
-        Path(target).mkdir(exist_ok=True)
-        (Path(target) / "partial.py").write_text("partial")
-        raise OSError("recovery copy interrupted")
-
-    monkeypatch.setattr(Path, "replace", fail_replace)
-    monkeypatch.setattr(deps_cmd.shutil, "copytree", fail_copy)
-    assert _replace_vendor(vendor, staging) is False
-    assert not vendor.exists()
-    assert not list(tmp_path.glob(".vendor.restore-*"))
-    backup, = tmp_path.glob(".vendor.backup-*")
-    assert (backup / "old.py").read_text() == "keep"
-    assert (backup / ".recovery-pending").is_file()
-
-
-def test_recovery_marker_write_failure_still_blocks_retry(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
-
-    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    vendor = plugin_dir / "vendor"
-    staging = plugin_dir / ".vendor.staging-test"
     vendor.mkdir()
     staging.mkdir()
     (vendor / "old.py").write_text("keep")
@@ -123,16 +93,9 @@ def test_recovery_marker_write_failure_still_blocks_retry(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "touch", fail_marker)
     assert _replace_vendor(vendor, staging) is False
 
-    backup, = plugin_dir.glob(".vendor.backup-*")
-    assert not vendor.exists()
-    assert (backup / "old.py").read_text() == "keep"
-    assert not (backup / ".recovery-pending").exists()
-    monkeypatch.setattr(
-        deps_cmd.subprocess,
-        "run",
-        lambda *args, **kwargs: pytest.fail("installer must not run before recovery"),
-    )
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert (vendor / "old.py").read_text() == "keep"
+    assert not (vendor / "fresh.py").exists()
+    assert not list(tmp_path.glob(".vendor.backup-*"))
 
 
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
@@ -168,11 +131,7 @@ def test_non_clean_retry_refuses_orphaned_backup(tmp_path, monkeypatch, capsys):
     assert "recover it or use explicit --clean" in capsys.readouterr().err
 
 
-def test_replace_failure_keeps_backup_when_vendor_cleanup_fails(
-    tmp_path, monkeypatch, capsys
-):
-    from plugin.neko_plugin_cli.commands import deps_cmd
-
+def test_rollback_never_deletes_a_vendor_that_reappeared(tmp_path, monkeypatch, capsys):
     vendor = tmp_path / "vendor"
     staging = tmp_path / ".vendor.staging-test"
     vendor.mkdir()
@@ -180,7 +139,6 @@ def test_replace_failure_keeps_backup_when_vendor_cleanup_fails(
     (vendor / "old.py").write_text("keep")
 
     real_replace = Path.replace
-    real_rmtree = deps_cmd.shutil.rmtree
 
     def fail_staging_replace(source, target):
         if source == staging:
@@ -189,20 +147,48 @@ def test_replace_failure_keeps_backup_when_vendor_cleanup_fails(
             raise OSError("rename failed")
         return real_replace(source, target)
 
-    def fail_vendor_cleanup(path, *args, **kwargs):
-        if Path(path) == vendor:
-            raise PermissionError("vendor is locked")
-        return real_rmtree(path, *args, **kwargs)
-
     monkeypatch.setattr(Path, "replace", fail_staging_replace)
-    monkeypatch.setattr(deps_cmd.shutil, "rmtree", fail_vendor_cleanup)
 
     assert _replace_vendor(vendor, staging) is False
     backup, = tmp_path.glob(".vendor.backup-*")
     assert (backup / "old.py").read_text() == "keep"
     assert (vendor / "partial.py").read_text() == "partial"
     assert (backup / ".recovery-pending").is_file()
-    assert "Could not clear failed vendor" in capsys.readouterr().err
+    assert "reappeared after the failed swap" in capsys.readouterr().err
+
+
+def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    staging = plugin_dir / ".vendor.staging-test"
+    vendor.mkdir()
+    staging.mkdir()
+    (vendor / "old.py").write_text("keep")
+
+    real_replace = Path.replace
+
+    def fail_after_backup(source, target):
+        if source == staging or source.name.startswith(".vendor.backup-"):
+            raise PermissionError("locked")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_after_backup)
+    assert _replace_vendor(vendor, staging) is False
+    monkeypatch.setattr(Path, "replace", real_replace)
+
+    backup, = plugin_dir.glob(".vendor.backup-*")
+    assert not vendor.exists()
+    assert (backup / "old.py").read_text() == "keep"
+    assert "Could not roll back vendor" in capsys.readouterr().err
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run before recovery"),
+    )
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert backup.exists()
 
 
 def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(
@@ -476,39 +462,99 @@ class TestTransactionalDependencyInstall:
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             calls.append(command)
-            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+            if command[0] == "target-python":
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="target-python: No module named pip\n"
+                )
+            return subprocess.CompletedProcess(command, 0, stdout="ok\n")
 
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
         )
 
         assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
-        assert calls
-        assert calls[0][:4] == ["uv.exe", "pip", "install", "--python"]
-        assert "target-python" in calls[0]
-        assert "--target" in calls[0]
+        assert len(calls) == 2
+        assert calls[0][:3] == ["target-python", "-m", "pip"]
+        assert calls[1][:4] == ["uv.exe", "pip", "install", "--python"]
+        assert "target-python" in calls[1]
+        assert "--target" in calls[1]
 
-    def test_falls_back_to_target_python_pip(
+    def test_prefers_target_python_pip_even_when_uv_exists(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # uv ignores pip.conf / PIP_INDEX_URL, so pip stays first whenever the
+        # target interpreter has it.
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv.exe",
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="ok\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
+        assert len(calls) == 1
+        assert calls[0][:3] == ["target-python", "-m", "pip"]
+        assert "--no-user" in calls[0]
+
+    def test_pip_failure_other_than_missing_pip_does_not_try_uv(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
-            lambda _: None,
+            lambda _: "uv.exe",
         )
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             calls.append(command)
-            return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
+            return subprocess.CompletedProcess(command, 1, stdout="No matching distribution\n")
 
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
         )
 
-        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
-        assert calls[0][:3] == ["target-python", "-m", "pip"]
-        assert "--no-user" in calls[0]
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 1
+        assert len(calls) == 1
+        assert "pip install failed (exit 1)" in capsys.readouterr().err
+
+    def test_reports_uv_failure_after_missing_pip(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            lambda _: "uv.exe",
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if command[0] == "target-python":
+                return subprocess.CompletedProcess(command, 1, stdout="No module named pip\n")
+            return subprocess.CompletedProcess(command, 2, stdout="uv resolver error\n")
+
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 1
+        error = capsys.readouterr().err
+        assert "uv pip install failed (exit 2)" in error
+        assert "uv resolver error" in error
+        assert not (plugin_dir / "vendor").exists()
 
     def test_reports_missing_uv_and_pip_clearly(
         self,
@@ -671,13 +717,46 @@ class TestTransactionalDependencyInstall:
         assert _replace_vendor(vendor, staging) is False
         assert (vendor / "old.py").read_text(encoding="utf-8") == "keep"
         assert not (vendor / "fresh.py").exists()
-        backups = list(tmp_path.glob(".vendor.backup-*"))
+        # Both failures roll back by renaming the backup, never by copying it.
+        assert not list(tmp_path.glob(".vendor.backup-*"))
+        assert not (vendor / ".recovery-pending").exists()
         error = capsys.readouterr().err
         if permission_error:
-            assert len(backups) == 1
-            assert (backups[0] / "old.py").read_text(encoding="utf-8") == "keep"
-            assert not (backups[0] / ".recovery-pending").exists()
             assert "files are in use" in error
         else:
-            assert backups == []
             assert "rename failed" in error
+
+    def test_sync_removes_staging_left_by_killed_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        stale = plugin_dir / ".vendor.staging-killed"
+        stale.mkdir()
+        (stale / "big_dependency.py").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+        )
+
+        assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
+        assert not list(plugin_dir.glob(".vendor.staging-*"))
+        assert (plugin_dir / "vendor").is_dir()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    @pytest.mark.parametrize("clean", [False, True])
+    def test_new_vendor_follows_umask_not_private_tempdir_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean: bool
+    ) -> None:
+        import os
+
+        plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+        monkeypatch.setattr(
+            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+        )
+        old_umask = os.umask(0o022)
+        try:
+            assert handle_sync(self._args(plugin_dir, tmp_path, clean=clean)) == 0
+        finally:
+            os.umask(old_umask)
+        assert (plugin_dir / "vendor").stat().st_mode & 0o777 == 0o755

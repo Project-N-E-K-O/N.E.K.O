@@ -13,6 +13,8 @@ from plugin._types.plugin_types import (
     format_unsupported_scaffold_type,
 )
 
+from ..core.build_rules import VENDOR_SYNC_DIR_PREFIXES
+
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _PLUGIN_RUFF_VERSION = "0.12.4"
@@ -76,12 +78,11 @@ class PluginDevelopmentLayout:
     is_default_source: bool
     repo_root_from_workspace: str
 
-    def readme_cli_prefix(self, *, with_pip: bool = False) -> str:
-        command = "uv run --with pip" if with_pip else "uv run"
+    def readme_cli_prefix(self) -> str:
         if self.is_default_source:
-            return f"{command} neko-plugin"
+            return "uv run neko-plugin"
         return (
-            f'{command} --project "{self.repo_root_from_workspace}" '
+            f'uv run --project "{self.repo_root_from_workspace}" '
             "neko-plugin"
         )
 
@@ -90,11 +91,10 @@ class PluginDevelopmentLayout:
         command: str,
         *,
         suffix: str = "",
-        with_pip: bool = False,
     ) -> str:
         plugin_target = self.plugin_id if self.is_default_source else "."
         return (
-            f"{self.readme_cli_prefix(with_pip=with_pip)} "
+            f"{self.readme_cli_prefix()} "
             f"{command} {plugin_target}{suffix}"
         )
 
@@ -106,15 +106,13 @@ class PluginDevelopmentLayout:
         command: str,
         *,
         suffix: str = "",
-        with_pip: bool = False,
     ) -> str:
         plugin_target = (
             self.plugin_id
             if self.is_default_source
             else '\\"${workspaceFolder}\\"'
         )
-        prefix = "uv run --with pip" if with_pip else "uv run"
-        return f"{prefix} neko-plugin {command} {plugin_target}{suffix}"
+        return f"uv run neko-plugin {command} {plugin_target}{suffix}"
 
     @classmethod
     def resolve(
@@ -735,6 +733,7 @@ def test_plugin_manifest_exists() -> None:
 
 
 def _render_gitignore() -> str:
+    sync_dirs = "".join(f"{prefix}*/\n" for prefix in VENDOR_SYNC_DIR_PREFIXES)
     return '''__pycache__/
 *.py[cod]
 .pytest_cache/
@@ -743,10 +742,7 @@ def _render_gitignore() -> str:
 .venv/
 venv/
 vendor/
-.vendor.staging-*/
-.vendor.backup-*/
-.vendor.restore-*/
-dist/
+''' + sync_dirs + '''dist/
 build/
 *.egg-info/
 store.db

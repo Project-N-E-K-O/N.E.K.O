@@ -252,15 +252,18 @@ def test_build_rules_keep_vendored_packages_named_build_or_dist() -> None:
     assert should_skip_path(Path("vendor/dist/__init__.py"), is_dir=False, rules=rules) is False
 
 
-def test_build_and_pack_rules_skip_dependency_sync_recovery_dirs() -> None:
+def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
     build_rules = BuildRuleSet()
     pack_rules = PackRuleSet()
 
-    for name in (".vendor.staging-run", ".vendor.backup-run", ".vendor.restore-run"):
-        assert should_skip_path(Path(name), is_dir=True, rules=build_rules) is True
-        assert should_skip_path(Path(name, "old.py"), is_dir=False, rules=build_rules) is True
-        assert should_skip_pack_path(Path(name), is_dir=True, rules=pack_rules) is True
-        assert should_skip_pack_path(Path(name, "old.py"), is_dir=False, rules=pack_rules) is True
+    for name in (".vendor.staging-run", ".vendor.backup-run"):
+        for path, is_dir in ((Path(name), True), (Path(name, "old.py"), False), (Path(name), False)):
+            assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+            assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
+    # Only the plugin root holds sync work dirs.
+    nested = Path("assets", ".vendor.backup-run", "data.txt")
+    assert should_skip_path(nested, is_dir=False, rules=build_rules) is False
+    assert should_skip_pack_path(nested, is_dir=False, rules=pack_rules) is False
 
 
 def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:

@@ -830,6 +830,17 @@ def test_publish_ignores_retained_dependency_recovery_backup(
     publish_cmd._ensure_clean_worktree(plugin_dir)
 
 
+def test_release_ruff_excludes_dependency_sync_work_dirs(
+    tmp_path: Path,
+    release_ruff_process: dict[str, Any],
+) -> None:
+    publish_cmd._ensure_release_ruff_passes(tmp_path)
+
+    command = release_ruff_process["calls"][0]["command"]
+    excludes = command[command.index("--exclude") + 1].split(",")
+    assert excludes == ["vendor", ".vendor.staging-*", ".vendor.backup-*"]
+
+
 def test_publish_stops_before_tag_when_ruff_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

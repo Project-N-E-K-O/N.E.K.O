@@ -10,10 +10,11 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from tempfile import gettempdir, mkdtemp
+from tempfile import gettempdir
 
 import portalocker
 
+from ..core.build_rules import VENDOR_SYNC_BACKUP_PREFIX, VENDOR_SYNC_STAGING_PREFIX
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
@@ -37,7 +38,10 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     sync_parser.add_argument(
         "--python",
         default=sys.executable,
-        help="Python interpreter to use for pip install",
+        help=(
+            "Target Python interpreter; its pip installs the dependencies, "
+            "or uv does when that interpreter has no pip"
+        ),
     )
     sync_parser.add_argument(
         "--clean",
@@ -69,65 +73,47 @@ def handle_sync(args: argparse.Namespace) -> int:
     staging_dir: Path | None = None
     try:
         with portalocker.Lock(lock_path, timeout=0):
-            retained_backups = [
-                path
-                for path in plugin_dir.glob(".vendor.backup-*")
-                if path.is_dir() and not path.is_symlink()
-            ]
-            pending_backups = [
-                path
-                for path in retained_backups
-                if (path / ".recovery-pending").is_file()
-            ]
-            if not args.clean and (
-                (not vendor_dir.exists() and retained_backups) or pending_backups
-            ):
-                blocked_backups = pending_backups or retained_backups
-                locations = ", ".join(str(path) for path in blocked_backups)
+            # Holding the lock means no other sync of this plugin is running,
+            # so any staging dir still here was left by a killed run.
+            _remove_stale_staging(plugin_dir)
+
+            pyproject_path = plugin_dir / "pyproject.toml"
+            external_deps = (
+                _filter_external(_read_dependencies(pyproject_path))
+                if pyproject_path.is_file()
+                else []
+            )
+
+            # --clean may discard an unreconciled backup, but only when an
+            # install rebuilds vendor/; the no-dependency path has nothing to
+            # reconcile it with.
+            unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
+            if unreconciled and (not args.clean or not external_deps):
+                hint = (
+                    "recover it or use explicit --clean"
+                    if external_deps
+                    else "recover it before retrying"
+                )
+                locations = ", ".join(str(path) for path in unreconciled)
                 print(
                     f"[FAIL] Cannot sync with an unreconciled dependency backup; "
-                    f"recover it or use explicit --clean: {locations}",
+                    f"{hint}: {locations}",
                     file=sys.stderr,
                 )
                 return 1
 
-            pyproject_path = plugin_dir / "pyproject.toml"
-            if not pyproject_path.is_file():
-                if pending_backups or (not vendor_dir.exists() and retained_backups):
-                    blocked_backups = pending_backups or retained_backups
-                    locations = ", ".join(str(path) for path in blocked_backups)
-                    print(
-                        f"[FAIL] Cannot sync with an unreconciled dependency backup; "
-                        f"recover it before retrying: {locations}",
-                        file=sys.stderr,
-                    )
-                    return 1
-                print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
-                return 0
-
-            # 1. Read declared dependencies
-            all_deps = _read_dependencies(pyproject_path)
-            external_deps = _filter_external(all_deps)
             if not external_deps:
-                # There is no installer step that can reconcile a pending
-                # backup in this no-op path, so fail closed even for --clean.
-                if pending_backups or (not vendor_dir.exists() and retained_backups):
-                    blocked_backups = pending_backups or retained_backups
-                    locations = ", ".join(str(path) for path in blocked_backups)
-                    print(
-                        f"[FAIL] Cannot sync with an unreconciled dependency backup; "
-                        f"recover it before retrying: {locations}",
-                        file=sys.stderr,
-                    )
-                    return 1
                 print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
                 return 0
 
-            # 2. Install into a sibling staging directory.  Keeping the current
-            # vendor untouched until installation succeeds makes sync transactional.
-            staging_dir = Path(mkdtemp(prefix=".vendor.staging-", dir=plugin_dir))
+            # Install into a sibling staging dir so vendor/ stays untouched
+            # until the install succeeds. A plain mkdir (unlike mkdtemp's 0700)
+            # keeps the new vendor/ readable by other users per the umask.
+            staging_dir = plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
             if not args.clean and vendor_dir.is_dir():
-                shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True, symlinks=True)
+                shutil.copytree(vendor_dir, staging_dir, symlinks=True)
+            else:
+                staging_dir.mkdir()
 
             exit_code = _pip_install_to_vendor(
                 external_deps, vendor_dir=staging_dir, python=args.python,
@@ -137,13 +123,12 @@ def handle_sync(args: argparse.Namespace) -> int:
             _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
-            # A complete successful sync supersedes retained recovery backups.
-            for backup in plugin_dir.glob(".vendor.backup-*"):
-                if backup.is_dir() and not backup.is_symlink():
-                    try:
-                        shutil.rmtree(backup)
-                    except OSError as exc:
-                        print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
+            # A complete successful sync supersedes retained backups.
+            for backup in _retained_backups(plugin_dir):
+                try:
+                    shutil.rmtree(backup)
+                except OSError as exc:
+                    print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
     except portalocker.exceptions.LockException:
         print(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
         return 1
@@ -193,173 +178,183 @@ def _filter_external(deps: list[str]) -> list[str]:
     return result
 
 
+def _short_token() -> str:
+    # Installers write deep package paths under the work dir, so keep its
+    # name short: Windows without long-path support caps paths at 260 chars.
+    return uuid.uuid4().hex[:8]
+
+
+def _remove_stale_staging(plugin_dir: Path) -> None:
+    for path in plugin_dir.glob(f"{VENDOR_SYNC_STAGING_PREFIX}*"):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _retained_backups(plugin_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in plugin_dir.glob(f"{VENDOR_SYNC_BACKUP_PREFIX}*")
+        if path.is_dir() and not path.is_symlink()
+    ]
+
+
+def _unreconciled_backups(plugin_dir: Path, vendor_dir: Path) -> list[Path]:
+    """Backups that may hold the only complete copy of the old vendor/.
+
+    A backup still marked pending never finished its swap or rollback. With
+    no live vendor/, every backup is the only copy of the old tree. A backup
+    next to a live vendor/ without the marker is only a leftover from a sync
+    whose cleanup failed, and does not block.
+    """
+    backups = _retained_backups(plugin_dir)
+    pending = [path for path in backups if (path / _RECOVERY_MARKER).is_file()]
+    if pending:
+        return pending
+    return [] if vendor_dir.exists() else backups
+
+
 def _pip_install_to_vendor(
     packages: list[str],
     *,
     vendor_dir: Path,
     python: str,
 ) -> int:
-    """Install packages into vendor/ using uv, then fall back to pip."""
+    """Install packages into vendor/ with the target Python's pip.
+
+    Interpreters created by uv ship without pip; only then fall back to
+    ``uv pip install``. Trying pip first keeps pip's own configuration
+    (pip.conf, PIP_INDEX_URL mirrors) in effect for everyone who has pip, and
+    a uv failure can never block an install pip would have completed.
+    """
     if not packages:
         return 0
 
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
-    uv = shutil.which("uv")
-    if uv:
-        cmd = [
-            uv, "pip", "install",
-            "--python", python,
-            "--target", str(vendor_dir),
-            "--upgrade",
-            *packages,
-        ]
-    else:
-        cmd = [
+    result = _run_installer(
+        [
             python, "-m", "pip", "install",
             "--target", str(vendor_dir),
             "--upgrade",
             "--no-user",
             *packages,
-        ]
+        ],
+        label=f"target Python {python!r}",
+    )
+    if result is None:
+        return 1
+    if result.returncode == 0:
+        return 0
+    if "No module named pip" not in (result.stdout or ""):
+        print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
+        print(result.stdout, file=sys.stderr)
+        return 1
 
+    uv = shutil.which("uv")
+    if not uv:
+        print(
+            "[FAIL] Unable to install plugin dependencies: the target Python "
+            "has no pip and uv was not found. Install uv, or run "
+            "python -m ensurepip --upgrade.",
+            file=sys.stderr,
+        )
+        return 1
+    print("  target Python has no pip; installing with uv instead")
+    result = _run_installer(
+        [
+            uv, "pip", "install",
+            "--python", python,
+            "--target", str(vendor_dir),
+            "--upgrade",
+            *packages,
+        ],
+        label="uv pip install",
+    )
+    if result is None:
+        return 1
+    if result.returncode != 0:
+        print(f"[FAIL] uv pip install failed (exit {result.returncode}):", file=sys.stderr)
+        print(result.stdout, file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
-        result = subprocess.run(
+        return subprocess.run(
             cmd,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
     except OSError as exc:
-        installer = "uv pip install" if uv else f"target Python {python!r}"
-        print(f"[FAIL] {installer} could not start: {exc}", file=sys.stderr)
-        return 1
-    if result.returncode != 0:
-        output = result.stdout or ""
-        if not uv and "No module named pip" in output:
-            print(
-                "[FAIL] Unable to install plugin dependencies: uv was not found "
-                "and the target Python has no pip. Install uv, or run "
-                "python -m ensurepip --upgrade.",
-                file=sys.stderr,
-            )
-        else:
-            installer = "uv pip" if uv else "pip"
-            print(f"[FAIL] {installer} install failed (exit {result.returncode}):", file=sys.stderr)
-        print(result.stdout, file=sys.stderr)
-        return 1
-    return 0
+        print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)
+        return None
 
 
 def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
-    """Replace vendor/ and roll back if the second rename fails."""
-    backup_dir = vendor_dir.parent / f".{vendor_dir.name}.backup-{uuid.uuid4().hex}"
+    """Swap the staging dir into vendor/; on failure rename the old one back."""
+    backup_dir = vendor_dir.parent / f"{VENDOR_SYNC_BACKUP_PREFIX}{_short_token()}"
     had_vendor = vendor_dir.exists()
     try:
         if had_vendor:
             vendor_dir.replace(backup_dir)
-            # Persist the uncertain recovery state before any operation that
-            # may leave a partial live vendor behind.
-            (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
+    except OSError as exc:
+        # vendor/ was not moved, so there is nothing to roll back.
+        _report_replace_failure(vendor_dir, exc)
+        return False
+    try:
+        if had_vendor:
+            # Persist the uncertain state before the second rename, so a crash
+            # or a failed rollback leaves a backup that blocks plain retries.
+            (backup_dir / _RECOVERY_MARKER).touch()
+        staging_dir.replace(vendor_dir)
+    except OSError as exc:
+        _report_replace_failure(vendor_dir, exc)
+        if had_vendor:
+            _roll_back_vendor(vendor_dir, backup_dir)
+        return False
+    if had_vendor:
         try:
-            staging_dir.replace(vendor_dir)
-        except PermissionError:
-            print(
-                f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
-                "Close processes using the plugin and retry.",
-                file=sys.stderr,
-            )
-            if vendor_dir.exists():
-                shutil.rmtree(vendor_dir, ignore_errors=True)
-            if backup_dir.exists():
-                restore_dir = vendor_dir.parent / (
-                    f".{vendor_dir.name}.restore-{uuid.uuid4().hex}"
-                )
-                try:
-                    # Copy to a sibling restore directory before publishing it,
-                    # so a failed copy can never expose a partial vendor tree.
-                    shutil.copytree(backup_dir, restore_dir, symlinks=True)
-                    (restore_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-                    restore_dir.replace(vendor_dir)
-                    try:
-                        (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-                    except OSError as marker_exc:
-                        print(
-                            f"[WARN] Could not clear recovery marker {backup_dir}: "
-                            f"{marker_exc}",
-                            file=sys.stderr,
-                        )
-                except OSError as exc:
-                    # Do not leave a partially restored live directory.
-                    if restore_dir.exists():
-                        shutil.rmtree(restore_dir, ignore_errors=True)
-                    if vendor_dir.exists():
-                        shutil.rmtree(vendor_dir, ignore_errors=True)
-                    print(
-                        f"[FAIL] Could not restore vendor; backup retained at "
-                        f"{backup_dir}: {exc}",
-                        file=sys.stderr,
-                    )
-                    if backup_dir.exists():
-                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
-            return False
+            (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
         except OSError as exc:
-            print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
-            if vendor_dir.exists():
-                try:
-                    shutil.rmtree(vendor_dir)
-                except OSError as cleanup_exc:
-                    print(
-                        f"[FAIL] Could not clear failed vendor; backup retained at "
-                        f"{backup_dir}: {cleanup_exc}",
-                        file=sys.stderr,
-                    )
-                    if backup_dir.exists():
-                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
-                    return False
-                if vendor_dir.exists():
-                    print(
-                        f"[FAIL] Could not clear failed vendor; backup retained at "
-                        f"{backup_dir}: removal was incomplete",
-                        file=sys.stderr,
-                    )
-                    if backup_dir.exists():
-                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
-                    return False
-            if backup_dir.exists():
-                try:
-                    (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-                    backup_dir.replace(vendor_dir)
-                except OSError as rollback_exc:
-                    print(
-                        f"[FAIL] Could not roll back vendor; backup retained at "
-                        f"{backup_dir}: {rollback_exc}",
-                        file=sys.stderr,
-                    )
-            return False
-        if backup_dir.exists():
-            try:
-                (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
-            except OSError as marker_exc:
-                print(
-                    f"[WARN] Could not clear recovery marker {backup_dir}: {marker_exc}",
-                    file=sys.stderr,
-                )
-            shutil.rmtree(backup_dir, ignore_errors=True)
-        return True
-    except PermissionError:
-        location = f" Backup retained at {backup_dir}." if backup_dir.exists() else ""
+            print(f"[WARN] Could not clear recovery marker in {backup_dir}: {exc}", file=sys.stderr)
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    return True
+
+
+def _roll_back_vendor(vendor_dir: Path, backup_dir: Path) -> None:
+    if vendor_dir.exists() or vendor_dir.is_symlink():
+        # Whatever now occupies vendor/ is neither tree we manage; never
+        # delete it. The marked backup blocks plain retries until recovered.
         print(
-            f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
-            f"Close processes using the plugin and retry.{location}",
+            f"[FAIL] Could not roll back: {vendor_dir} reappeared after the failed swap; "
+            f"backup retained at {backup_dir}",
             file=sys.stderr,
         )
-        return False
+        return
+    try:
+        # A failed rename leaves vendor/ missing, which still blocks retries.
+        (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+        backup_dir.replace(vendor_dir)
     except OSError as exc:
-        location = f" Backup retained at {backup_dir}." if backup_dir.exists() else ""
-        print(f"[FAIL] Failed to replace {vendor_dir}: {exc}.{location}", file=sys.stderr)
-        return False
+        print(
+            f"[FAIL] Could not roll back vendor; backup retained at {backup_dir}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
+    if isinstance(exc, PermissionError):
+        print(
+            f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
+            f"Close processes using the plugin and retry. ({exc})",
+            file=sys.stderr,
+        )
+    else:
+        print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
+
 
 def _clean_vendor(vendor_dir: Path) -> None:
     """Remove common unwanted artifacts from vendor/."""

@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..core.build_rules import VENDOR_SYNC_DIR_PREFIXES
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
@@ -346,13 +347,11 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
                 "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
-    # Retained sync recovery artifacts are not plugin source. Keep checking
-    # tracked changes (including accidentally committed recovery artifacts).
+    # Untracked sync work dirs are not plugin source. Keep checking tracked
+    # changes (including accidentally committed sync work dirs).
     if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
         plugin_dir, "status", "--porcelain", "--", ".",
-        ":(top,exclude).vendor.backup-*",
-        ":(top,exclude).vendor.staging-*",
-        ":(top,exclude).vendor.restore-*",
+        *(f":(top,exclude){prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES),
     ):
         raise RuntimeError(
             _tri(
@@ -408,7 +407,7 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
                 "--select",
                 "E4,E7,E9,F,I",
                 "--exclude",
-                "vendor",
+                ",".join(["vendor", *(f"{prefix}*" for prefix in VENDOR_SYNC_DIR_PREFIXES)]),
                 ".",
             ],
             cwd=plugin_dir,

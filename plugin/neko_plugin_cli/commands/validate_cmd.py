@@ -26,6 +26,7 @@ from plugin.sdk.shared.core.push_message_schema import (
     format_push_message_v1_static_diagnostic,
 )
 
+from ..core.build_rules import is_vendor_sync_path
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -820,7 +821,9 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
     seen_ids: dict[str, str] = {}
     for path in sorted(plugin_dir.rglob("*.py")):
         relative = path.relative_to(plugin_dir)
-        if any(part in {"__pycache__", ".venv", "venv", "vendor"} for part in relative.parts):
+        if is_vendor_sync_path(relative) or any(
+            part in {"__pycache__", ".venv", "venv", "vendor"} for part in relative.parts
+        ):
             continue
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:
