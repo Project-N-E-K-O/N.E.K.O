@@ -366,6 +366,31 @@ async function deviceSwitchDuringPermissionCase() {
          'the mic-A stream granted after the switch is released, mic-B runs');
 }
 
+async function deviceSwitchDuringFailedFallbackCase() {
+  // The fallback to the default device fails too, but the user picked mic-B
+  // while it was pending: retry on mic-B instead of reporting failure.
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'mic-A';
+  const releaseSelected = env.parkGetUserMedia();
+  const pending = env.win.startSettingsMicVolumeTest();
+  await settle();
+  const releaseFallback = env.parkGetUserMedia();
+  env.failNextGetUserMedia(mediaError('NotFoundError'));
+  releaseSelected();
+  await settle();
+  assert(env.getUserMediaCalls.length === 2, 'the start is parked in its fallback');
+
+  await env.win.selectMicrophone('mic-B');
+  env.failNextGetUserMedia(mediaError('NotReadableError'));
+  releaseFallback();
+  const result = await pending;
+
+  assert(result.ok === true && result.mode === 'probe', 'the start retries on mic-B and succeeds');
+  assert(env.getUserMediaCalls.length === 3 && env.getUserMediaCalls[2].audio.deviceId.exact === 'mic-B',
+         'exactly one retry, targeting mic-B');
+  assert(env.streams.length === 1 && isLive(env.streams[0]), 'the mic-B probe runs');
+}
+
 async function directTeardownResumesProbeCase() {
   // WebSocket 断线等路径直接把 isRecording 置 false，不经过 stopRecording。
   // 采样本身仍不开设备，但会排一次恢复：重复轮询只重建一个 probe。
@@ -527,6 +552,7 @@ async function liveDeviceSwitchKeepsProbeOffCase() {
   await rebuildFailureIsTerminalCase();
   await deviceSwitchReopensProbeCase();
   await deviceSwitchDuringPermissionCase();
+  await deviceSwitchDuringFailedFallbackCase();
   await directTeardownResumesProbeCase();
   await probeYieldsWhenLiveStartClaimsDeviceCase();
   await fallbackUpdatesSelectionCase();

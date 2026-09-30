@@ -2845,7 +2845,14 @@
                 if (!isCurrent()) return { ok: false };
                 if (selectionGeneration !== microphoneSelectionGeneration) continue;
                 if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
-                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                // 回退也可能失败：和首次请求同样先看是否过期、选择是否已变，变了就按新设备重试。
+                try {
+                    stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                } catch (fallbackError) {
+                    if (!isCurrent()) return { ok: false };
+                    if (selectionGeneration !== microphoneSelectionGeneration) continue;
+                    throw fallbackError;
+                }
                 fellBack = true;
             }
             // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
