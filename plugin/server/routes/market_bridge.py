@@ -77,6 +77,7 @@ _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
+_MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
@@ -3168,6 +3169,70 @@ async def _report_market_install_best_effort(
         )
 
 
+async def _bind_market_package_hash(payload: MarketInstallRequest) -> MarketInstallRequest:
+    """Bind install bytes to a public, non-yanked Market release.
+
+    Download URLs (including user-selected proxies) remain unchanged. Only
+    the catalogue supplies the hash used to authorize the installed bytes.
+    This runs before download and before taking any plugin operation lock.
+    """
+    market_id = str(payload.plugin_id or "").strip()
+    version = str(payload.version or "").strip()
+    channel = str(payload.channel or "stable").strip() or "stable"
+    if (
+        not market_id
+        or not version
+        or channel not in ("stable", "beta")
+    ):
+        raise _TaskError(
+            code="market_release_mismatch",
+            message="Market 安装需要有效的市场插件 ID、版本和发布通道",
+        )
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        raise _TaskError(code="market_catalog_not_configured", message="未配置插件市场")
+    try:
+        # HTTPX phase timeouts alone do not bound total response time.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_MARKET_RELEASE_CHECK_TIMEOUT, connect=3.0),
+                follow_redirects=False,
+            ) as client:
+                response = await client.get(
+                    f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions",
+                    params={"channel": channel, "include_yanked": "false"},
+                )
+                if response.status_code == 404:
+                    raise _TaskError(code="market_release_mismatch", message="插件未被市场公开收录")
+                response.raise_for_status()
+                releases = response.json()
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+        raise _TaskError(
+            code="market_catalog_unavailable",
+            message="暂时无法核对市场发布信息，请稍后重试",
+        ) from exc
+    if not isinstance(releases, list):
+        raise _TaskError(code="market_catalog_unavailable", message="市场发布信息格式无效")
+    release = next(
+        (
+            item for item in releases
+            if isinstance(item, dict)
+            and item.get("version") == version
+            and item.get("channel") == channel
+            and item.get("yanked_at") is None
+        ),
+        None,
+    )
+    try:
+        raw_hash = release.get("package_sha256") if release is not None else None
+        authoritative_hash = _normalize_required_sha256(raw_hash if isinstance(raw_hash, str) else None)
+    except ValueError as exc:
+        raise _TaskError(code="market_release_mismatch", message="市场中没有有效的对应发布版本") from exc
+    if authoritative_hash != payload.package_sha256:
+        raise _TaskError(code="market_release_mismatch", message="插件包 SHA256 与市场发布记录不一致")
+    return payload.model_copy(update={"package_sha256": authoritative_hash})
+
+
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
 
@@ -3188,6 +3253,16 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     }
 
     try:
+        _raise_if_task_cancel_requested(task)
+        _set_task_stage(
+            task, status="pending", stage="pending", progress=0.0,
+            message="正在核对市场发布信息...",
+        )
+        try:
+            payload = await _bind_market_package_hash(payload)
+        except _TaskError:
+            _raise_if_task_cancel_requested(task)
+            raise
         _raise_if_task_cancel_requested(task)
         if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)

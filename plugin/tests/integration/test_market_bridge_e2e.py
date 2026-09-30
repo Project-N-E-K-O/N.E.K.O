@@ -12,7 +12,7 @@ app, polls the resulting task to completion, then verifies:
 This is the hard-evidence test for "下载链路真的通了". It exercises the
 full chain — HTTP download → sha256 check → unpack → ISM record →
 lock atomic write → ``/market/installed`` projection — without any
-mocks beyond redirecting filesystem roots into ``tmp_path``.
+network mocks except a Market catalogue populated from the served packages.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import socket
 import shutil
 import threading
 import time
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +55,10 @@ from plugin.neko_plugin_cli.public import build_plugin
 FIXTURE_PLUGINS_ROOT = (
     Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
 )
+
+# Published release facts supplied by the test Market, independently of the
+# install request. The lifecycle tests retain their existing local ID aliases.
+_catalog_releases: list[dict[str, Any]] = []
 
 
 # ─── Fixture: build a minimal valid .neko-plugin package ──────────────
@@ -133,13 +138,28 @@ def _build_neko_plugin_zip(
 
 
 @contextlib.contextmanager
-def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
+def _serve_bytes(
+    *, filename: str, content: bytes, extra_release: dict[str, Any] | None = None,
+    catalog_sha256: str | None = None,
+) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
     Yields the absolute URL of the served file; tears the server down
     on exit. Bound to an OS-assigned port so concurrent test runs don't
     collide.
     """
+
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+    published = [
+        {"version": manifest["version"], "channel": channel,
+         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
+         "yanked_at": None}
+        for channel in ("stable", "beta")
+    ]
+    if extra_release is not None:
+        published.append(extra_release)
+    _catalog_releases.extend(published)
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server convention
@@ -163,6 +183,8 @@ def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
     try:
         yield f"http://127.0.0.1:{port}/{filename}"
     finally:
+        for release in published:
+            _catalog_releases.remove(release)
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
@@ -234,6 +256,20 @@ def bridge_e2e_env(
     )
     mgr.load()  # First_Startup seed
     set_global_manager(mgr)
+
+    original_get = httpx.AsyncClient.get
+
+    async def catalogue_get(self, url, **kwargs):
+        catalogue_prefix = market_bridge_module.MARKET_API_URL.rstrip("/") + "/api/v1/plugins/"
+        if str(url).startswith(catalogue_prefix) and str(url).endswith("/versions"):
+            channel = kwargs.get("params", {}).get("channel", "stable")
+            return httpx.Response(
+                200, json=[r for r in _catalog_releases if r["channel"] == channel],
+                request=httpx.Request("GET", url),
+            )
+        return await original_get(self, url, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", catalogue_get)
 
     # Mount only the bridge router on a fresh FastAPI app.
     app = FastAPI(title="market-bridge-e2e")
@@ -912,6 +948,9 @@ async def test_authenticated_market_install_reports_usage(
 
         def stream(self, *args: Any, **kwargs: Any) -> Any:
             return self._delegate.stream(*args, **kwargs)
+
+        async def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
+            return await self._delegate.get(*args, **kwargs)
 
         async def post(
             self,
@@ -4183,22 +4222,33 @@ async def test_oauth_logout_prevents_in_flight_refresh_from_restoring_token(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch_stage", ["catalog", "download"])
 async def test_install_rejects_sha256_mismatch(
     bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch_stage: str,
 ) -> None:
-    """SHA256 mismatch fails the task without writing a lock entry.
+    """Reject both unlisted hashes and altered downloads without installation."""
+    from plugin.server.routes import market_bridge as market_bridge_module
 
-    Note: ``"0" * 64`` is treated as "Market did not provide a hash"
-    (R3.5) and gracefully skips verification; only a real-shaped but
-    non-matching hex triggers a hard mismatch failure. We only test the
-    latter — the skip-hash branch is covered by ``_verify_sha256``'s
-    structured-log path.
-    """
-
-    fake_sha = "f" * 64
     plugin_id = "e2e_bad_hash"
     version = "0.0.1"
     zip_bytes, _ = _build_neko_plugin_zip(plugin_id=plugin_id, version=version)
+    published_bytes, _ = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version=version, include_profile=True,
+    )
+    expected_sha = hashlib.sha256(published_bytes).hexdigest()
+    assert expected_sha != hashlib.sha256(zip_bytes).hexdigest()
+
+    downloaded_paths: list[Path] = []
+    original_download = market_bridge_module._download_package_once
+
+    async def record_download(*args: Any, **kwargs: Any) -> Path:
+        path = await original_download(*args, **kwargs)
+        downloaded_paths.append(path)
+        return path
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", record_download)
 
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
@@ -4207,12 +4257,13 @@ async def test_install_rejects_sha256_mismatch(
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
+        catalog_sha256=expected_sha if mismatch_stage == "download" else None,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": fake_sha,
+                "package_sha256": expected_sha,
                 "plugin_id": plugin_id,
                 "version": version,
                 "channel": "stable",
@@ -4232,6 +4283,12 @@ async def test_install_rejects_sha256_mismatch(
             await asyncio.sleep(0.05)
         assert final_status is not None
         assert final_status["status"] == "failed", final_status
+        expected_code = (
+            "package_hash_mismatch" if mismatch_stage == "download" else "market_release_mismatch"
+        )
+        assert final_status["error_code"] == expected_code, final_status
+        assert len(downloaded_paths) == (1 if mismatch_stage == "download" else 0)
+        assert all(not path.exists() for path in downloaded_paths)
         message_blob = (final_status.get("error") or "") + \
                        (final_status.get("message") or "")
         assert "SHA256" in message_blob, message_blob
@@ -5117,6 +5174,8 @@ async def test_upgrade_rollback_on_download_failure(
     # different filename to force the failure.
     with _serve_bytes(
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+        extra_release={"version": "2.0.0", "channel": "stable",
+                       "package_sha256": "f" * 64, "yanked_at": None},
     ) as package_url:
         broken_url = package_url.rsplit("/", 1)[0] + "/does_not_exist.neko-plugin"
 
