@@ -1682,6 +1682,50 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     assert not final.exists()
 
 
+@pytest.mark.parametrize("failing_step", ("fsync", "open"))
+@pytest.mark.parametrize("code", ("EINVAL", "EBADF", "ENOTSUP", "EOPNOTSUPP"))
+def test_discarding_a_retained_deletion_works_where_directories_cannot_be_synced(
+    tmp_path, monkeypatch, failing_step, code
+):
+    # 部分 CIFS/SMB、FUSE 挂载对目录 fsync 恒定返回这些 errno：这是「不支持」，
+    # 不是「这次没落盘」。当成失败的话，保留副本会让这个 ID 永远删不掉。
+    if not hasattr(errno, code):
+        pytest.skip(f"errno.{code} is not defined on this platform")
+    unsupported = getattr(errno, code)
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+
+    real_fsync = os.fsync
+    real_open = os.open
+
+    def unsupported_directory_fsync(fd):
+        if stat_module.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(unsupported, "directory sync unsupported")
+        return real_fsync(fd)
+
+    def unsupported_directory_open(path, *args, **kwargs):
+        if Path(path) == store.root:
+            raise OSError(unsupported, "directory open unsupported")
+        return real_open(path, *args, **kwargs)
+
+    if failing_step == "fsync":
+        monkeypatch.setattr("utils.avatar_tool_store.os.fsync", unsupported_directory_fsync)
+    else:
+        monkeypatch.setattr("utils.avatar_tool_store.os.open", unsupported_directory_open)
+
+    assert store.delete_tool(tool_id) == tool_id
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert not final.exists()
+
+
 @pytest.mark.parametrize(
     "replaced",
     ("copy", "record-in-place", "resource-in-place", "nested-in-place", "marker", "marker-dir-in-place"),

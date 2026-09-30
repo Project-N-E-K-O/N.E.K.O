@@ -9,6 +9,7 @@ when handling a validated interaction.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -108,23 +109,38 @@ _QUARANTINED_TOOL_IDS: dict[str, set[str]] = {}
 logger = logging.getLogger(__name__)
 
 
+# errno values that mean the filesystem cannot sync directories at all (some
+# CIFS/SMB and FUSE mounts), not that this particular entry change was lost.
+_DIRECTORY_SYNC_UNSUPPORTED_ERRNOS = frozenset(
+    code
+    for code in (
+        errno.EINVAL,
+        errno.EBADF,
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+    )
+    if code is not None
+)
+
+
 def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
     """Best-effort persistence for a directory entry on supported platforms.
 
-    Platforms that cannot open a directory (Windows) are always tolerated. With
+    Platforms or filesystems that cannot sync a directory (Windows, or an
+    errno in ``_DIRECTORY_SYNC_UNSUPPORTED_ERRNOS``) are always tolerated. With
     ``strict``, any other failure to open or ``fsync`` the directory propagates,
     for callers that must not continue unless the entry change is durable.
     """
     try:
         handle = os.open(str(path), os.O_RDONLY)
-    except OSError:
-        if strict and os.name != "nt":
+    except OSError as exc:
+        if strict and os.name != "nt" and exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED_ERRNOS:
             raise
         return
     try:
         os.fsync(handle)
-    except OSError:
-        if strict:
+    except OSError as exc:
+        if strict and exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED_ERRNOS:
             raise
     finally:
         os.close(handle)
