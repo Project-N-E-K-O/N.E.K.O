@@ -328,7 +328,8 @@ def _lock_dir() -> Path:
 
 
 def _make_private(directory: Path) -> None:
-    """Require the lock dir to be ours, and closed to group and others.
+    """Require the lock dir to be ours, writable, and closed to group and
+    others.
 
     mkdir(mode=0o700) does not touch an existing directory, which may have
     been created (or later opened up) with group/world write access.
@@ -342,6 +343,10 @@ def _make_private(directory: Path) -> None:
         raise PermissionError(f"lock directory {directory} is owned by another user")
     if info.st_mode & 0o077:
         os.chmod(directory, 0o700)
+    # An existing dir may be read-only (mode 0500, a read-only mount): fail
+    # here so the private dir falls back instead of every lock open failing.
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise PermissionError(f"lock directory {directory} is not writable")
 
 
 def _absolute_if_path(program: str) -> str:
@@ -535,6 +540,8 @@ def _pip_install_to_vendor(
         return 1
 
     uv = shutil.which("uv")
+    # uv runs in target.cwd; a relative PATH entry may have found it here.
+    uv = os.path.abspath(uv) if uv else None
     if not uv:
         print(
             "[FAIL] Unable to install plugin dependencies: the target Python "
@@ -595,6 +602,7 @@ def _pip_install_to_vendor(
         # The pip attempt ran (through any launcher) in target.cwd, so
         # relative requirements such as "pkg @ file:./pkg" resolve the same.
         cwd=target.cwd,
+        env=_uv_env(),
     )
     if result is None:
         return 1
@@ -664,9 +672,10 @@ _UV_COVERS = {
     # Package indexes are HTTPS, which HTTP_PROXY does not cover.
     "proxy": ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
     # pip's cert replaces the default CA bundle (possibly a restrictive one);
-    # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE /
-    # SSL_CERT_DIR but silently ignores a path that does not exist.
-    "cert": ("SSL_CERT_FILE", "SSL_CERT_DIR"),
+    # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE but
+    # silently ignores a path that does not exist; its default TLS backend
+    # does not read SSL_CERT_DIR at all.
+    "cert": ("SSL_CERT_FILE",),
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
@@ -734,7 +743,9 @@ def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
     env = target.env
     found: dict[str, list[str]] = {}
     for env_name, value in env.items():
-        upper = env_name.upper()
+        # Environment names are case-insensitive only on Windows; elsewhere
+        # pip ignores e.g. "pip_constraint".
+        upper = env_name.upper() if sys.platform == "win32" else env_name
         if not upper.startswith("PIP_") or upper == "PIP_CONFIG_FILE" or not value:
             continue
         name = upper[4:].lower().replace("_", "-")
@@ -814,8 +825,6 @@ def _uv_env_set(name: str) -> bool:
         return False
     if name == "SSL_CERT_FILE":
         return Path(value).is_file()
-    if name == "SSL_CERT_DIR":
-        return Path(value).is_dir()
     if name in _UV_BOOLEAN_ENV:
         # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
@@ -868,11 +877,23 @@ def _pip_false(value: str) -> bool:
     return value.strip().lower() in {"n", "no", "f", "false", "off", "0"}
 
 
+def _uv_env() -> dict[str, str]:
+    """This process's environment for uv, with a relative SSL_CERT_FILE
+    pinned: uv runs in another cwd, where the checked file may not exist and
+    uv would silently fall back to its bundled roots."""
+    env = dict(os.environ)
+    cert = env.get("SSL_CERT_FILE")
+    if cert:
+        env["SSL_CERT_FILE"] = os.path.abspath(cert)
+    return env
+
+
 def _run_installer(
     cmd: list[str],
     *,
     label: str,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
@@ -882,6 +903,7 @@ def _run_installer(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
+            env=env,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

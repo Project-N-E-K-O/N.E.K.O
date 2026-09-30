@@ -57,10 +57,16 @@ def _target(*, has_pip=False, in_venv=True, env=None, cwd=None):
     )
 
 
+def _cmd_name(command):
+    """The program a command runs, without directory or .exe (uv is pinned
+    to an absolute path before it runs)."""
+    return Path(command[0]).stem
+
+
 def _missing_pip_then_uv(calls):
     def run(command, **kwargs):
         calls.append(command)
-        if command[0] == "uv":
+        if _cmd_name(command) == "uv":
             return subprocess.CompletedProcess(command, 0, stdout="ok")
         return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
     return run
@@ -149,7 +155,7 @@ def test_uv_fallback_refuses_when_pip_has_an_index_uv_cannot_see(
     )
 
     assert result == (0 if uses_uv else 1)
-    assert [command[0] for command in calls] == (
+    assert [_cmd_name(command) for command in calls] == (
         ["target-python", "uv"] if uses_uv else ["target-python"]
     )
     if not uses_uv:
@@ -172,7 +178,7 @@ def test_pip_no_index_is_passed_to_uv_as_the_flag(tmp_path, monkeypatch, pip_no_
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 0
     uv_command = calls[-1]
-    assert uv_command[0] == "uv"
+    assert _cmd_name(uv_command) == "uv"
     assert ("--no-index" in uv_command) is pip_no_index
 
 
@@ -206,7 +212,7 @@ def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, 
     assert deps_cmd._pip_install_to_vendor(
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 1
-    assert [command[0] for command in calls] == ["target-python"]
+    assert [_cmd_name(command) for command in calls] == ["target-python"]
 
 
 @pytest.mark.parametrize("failing_installer", ["pip", "uv"])
@@ -219,7 +225,7 @@ def test_installer_start_failure_is_not_missing_pip(
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
 
     def run(command, **kwargs):
-        if command[0] == "uv" or failing_installer == "pip":
+        if _cmd_name(command) == "uv" or failing_installer == "pip":
             raise error_type("installer cannot execute")
         return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
 
@@ -483,7 +489,7 @@ def test_require_virtualenv_is_honored_like_pip(tmp_path, monkeypatch, capsys, i
     assert result == (0 if in_venv else 1)
     if not in_venv:
         assert "not a virtual environment" in capsys.readouterr().err
-        assert all(command[0] != "uv" for command in calls)
+        assert all(_cmd_name(command) != "uv" for command in calls)
 
 
 def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch):
@@ -596,7 +602,7 @@ def test_unknown_pip_availability_does_not_fall_back(tmp_path, monkeypatch, caps
     assert deps_cmd._pip_install_to_vendor(
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 1
-    assert [command[0] for command in calls] == ["target-python"]
+    assert [_cmd_name(command) for command in calls] == ["target-python"]
     assert "pip install failed" in capsys.readouterr().err
 
 
@@ -617,7 +623,7 @@ def test_pip_settings_come_from_the_targets_environment(tmp_path, monkeypatch, c
     assert deps_cmd._pip_install_to_vendor(
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 1
-    assert [command[0] for command in calls] == ["target-python"]
+    assert [_cmd_name(command) for command in calls] == ["target-python"]
     assert "index-url from PIP_INDEX_URL" in capsys.readouterr().err
 
 
@@ -749,7 +755,7 @@ def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
 
     def run(command, **kwargs):
         calls.append(kwargs)
-        if command[0] == "uv":
+        if _cmd_name(command) == "uv":
             return subprocess.CompletedProcess(command, 0, stdout="ok")
         return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
 
@@ -758,7 +764,10 @@ def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
         ["httpx"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 0
     assert len(calls) == 2
-    assert all(kwargs.get("env") is None for kwargs in calls)
+    # pip runs with the inherited environment; uv gets it unchanged apart
+    # from pinning SSL_CERT_FILE -- no UV_* index variables injected.
+    assert calls[0].get("env") is None
+    assert calls[1]["env"] == dict(os.environ)
 
 
 def test_symlinked_vendor_is_refused_before_any_change(tmp_path, monkeypatch, capsys):
@@ -1090,8 +1099,8 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
     seen = []
 
     def run(command, **kwargs):
-        seen.append((command[0], kwargs.get("cwd")))
-        if command[0] == "uv":
+        seen.append((_cmd_name(command), kwargs.get("cwd")))
+        if _cmd_name(command) == "uv":
             return subprocess.CompletedProcess(command, 0, stdout="ok")
         return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
 
@@ -1165,6 +1174,85 @@ def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
     uv_command = calls[-1]
     assert uv_command[uv_command.index("--python") + 1] == str(tmp_path / relative_python)
     assert uv_command[uv_command.index("--target") + 1] == str(tmp_path / "staging")
+
+
+def test_ssl_cert_dir_does_not_cover_pips_cert(tmp_path, monkeypatch):
+    # uv's default TLS backend does not read SSL_CERT_DIR.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.setenv("PIP_CERT", "/corp/ca.pem")
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 1
+
+
+def test_uv_gets_an_absolute_ca_file_and_an_absolute_uv(tmp_path, monkeypatch):
+    # uv runs in target.cwd: a relative SSL_CERT_FILE (checked here) would
+    # not exist there and uv would silently use its bundled roots; a uv found
+    # through a relative PATH entry would be another program there.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ca.pem").write_text("pem")
+    monkeypatch.setenv("PIP_CERT", "/corp/ca.pem")
+    monkeypatch.setenv("SSL_CERT_FILE", "ca.pem")
+    relative_uv = os.path.join("bin", "uv")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: relative_uv if name == "uv" else None)
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(cwd=tmp_path / "elsewhere"))
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs))
+        if _cmd_name(command) == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    uv_command, uv_kwargs = seen[-1]
+    assert uv_command[0] == str(tmp_path / relative_uv)
+    assert uv_kwargs["env"]["SSL_CERT_FILE"] == str(tmp_path / "ca.pem")
+
+
+def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):
+    # An existing read-only dir (mode 0500, a read-only mount) must not be
+    # returned: every lock open would fail.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    cache = tmp_path / "cache"
+    private = cache / "neko-plugin" / "sync-locks"
+    private.mkdir(parents=True)
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    me = tmp_path.stat().st_uid
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
+    real_access = os.access
+    monkeypatch.setattr(
+        deps_cmd.os, "access", lambda path, mode: Path(path) != private and real_access(path, mode)
+    )
+
+    assert real_lock_dir() == shared / f"neko-plugin-sync-{me}"
+
+
+def test_posix_pip_environment_names_are_case_sensitive(monkeypatch):
+    # pip ignores "pip_constraint" on POSIX; Windows names are case-insensitive.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    target = _target(env={"pip_constraint": "notes"})
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    assert deps_cmd._pip_settings(target) == {}
+    monkeypatch.setattr(deps_cmd.sys, "platform", "win32")
+    assert deps_cmd._pip_settings(target) == {"constraint": ["pip_constraint"]}
 
 
 def test_bare_python_name_is_resolved_through_path_here(tmp_path, monkeypatch):
@@ -1547,7 +1635,7 @@ class TestTransactionalDependencyInstall:
         assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
         assert len(calls) == 2
         assert calls[0][:3] == ["target-python", "-m", "pip"]
-        assert calls[1][:4] == ["uv.exe", "pip", "install", "--python"]
+        assert [_cmd_name(calls[1]), *calls[1][1:4]] == ["uv", "pip", "install", "--python"]
         assert "target-python" in calls[1]
         assert "--target" in calls[1]
 
