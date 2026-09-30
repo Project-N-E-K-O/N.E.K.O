@@ -110,13 +110,15 @@ logger = logging.getLogger(__name__)
 def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
     """Best-effort persistence for a directory entry on supported platforms.
 
-    Platforms that cannot open a directory are always tolerated. With ``strict``,
-    an ``fsync`` failure on an opened directory propagates, for callers that must
-    not continue unless the entry change is durable.
+    Platforms that cannot open a directory (Windows) are always tolerated. With
+    ``strict``, any other failure to open or ``fsync`` the directory propagates,
+    for callers that must not continue unless the entry change is durable.
     """
     try:
         handle = os.open(str(path), os.O_RDONLY)
     except OSError:
+        if strict and os.name != "nt":
+            raise
         return
     try:
         os.fsync(handle)

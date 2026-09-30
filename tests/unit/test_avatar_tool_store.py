@@ -1630,7 +1630,10 @@ def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_p
     assert final.is_dir()
 
 
-def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failing_step", ("fsync", "open"))
+def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
+    tmp_path, monkeypatch, failing_step
+):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     tool_id = f"local-{uuid.uuid4()}"
@@ -1643,11 +1646,21 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tm
     retained_record = (deleting / "record.json").read_bytes()
 
     real_fsync = os.fsync
+    real_open = os.open
 
     def failing_fsync(_fd):
         raise OSError("simulated I/O error")
 
-    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", failing_fsync)
+    def failing_directory_open(path, *args, **kwargs):
+        # POSIX 上打开目录本来是支持的：EMFILE、EIO 这类失败不能当成「平台不支持」吞掉。
+        if Path(path) == store.root:
+            raise OSError(errno.EMFILE, "simulated descriptor exhaustion")
+        return real_open(path, *args, **kwargs)
+
+    if failing_step == "fsync":
+        monkeypatch.setattr("utils.avatar_tool_store.os.fsync", failing_fsync)
+    else:
+        monkeypatch.setattr("utils.avatar_tool_store.os.open", failing_directory_open)
     with pytest.raises(AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
@@ -1659,6 +1672,7 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tm
     # 不会卡在 tool_delete_pending 直到重启。
     assert marker.is_file()
     monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
+    monkeypatch.setattr("utils.avatar_tool_store.os.open", real_open)
     assert store.delete_tool(tool_id) == tool_id
     assert not deleting.exists()
     assert not marker.exists()
