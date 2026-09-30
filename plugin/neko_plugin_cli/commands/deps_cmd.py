@@ -577,9 +577,11 @@ def _config_setting_keys(path: Path) -> set[str]:
     # Any file enabling a setting counts, even if another file might override
     # it: emulating pip's full config precedence is not worth the risk here,
     # and the error in that case only asks for a uv setting or pip itself.
+    # `pip install` reads only [global] and its own [install] section.
     return {
         key.replace("_", "-")
         for section in parser.sections()
+        if section.lower() in {"global", "install"}
         for key, value in parser[section].items()
         if not _pip_false(value)
     }

@@ -93,6 +93,9 @@ def _missing_pip_then_uv(calls):
         ({"PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_CACHE_DIR": "1",
           "PIP_DEFAULT_TIMEOUT": "60", "PIP_TRUSTED_HOST": "mirror"}, None, True),
         ({}, "[global]\nprogress-bar = off\nretries = 5\n", True),
+        # Sections for other pip commands do not affect `pip install`.
+        ({}, "[list]\nformat = columns\n[freeze]\nexclude = pip\n", True),
+        ({}, "[list]\nformat = columns\n[install]\nonly-binary = :all:\n", False),
         ({}, "[global]\nno-index = off\n", True),
         ({"UV_DEFAULT_INDEX": "https://private/simple"},
          "[global]\nno-index = 0\nindex-url = https://private/simple\n", True),
