@@ -895,6 +895,26 @@ def test_the_base64_size_counts_only_data():
         assert media_module._base64_decoded_size(" " + text[:2] + "\r\n" + text[2:] + "\n") == size
 
 
+def test_the_size_check_and_the_decoder_agree_on_whitespace(monkeypatch):
+    """The decoder drops exactly the whitespace the size check discounts (ASCII), so a
+    text cannot pass one and fail the other; Unicode whitespace is simply invalid."""
+    import base64
+
+    payload = bytes.fromhex("89504e47") + b"q" * 12
+    encoded = base64.b64encode(payload).decode("ascii")
+
+    ascii_wrapped = media_module._decode_base64_source(encoded[:8] + "\r\n\t " + encoded[8:])
+    assert ascii_wrapped.payload == payload
+
+    ideographic = encoded[:8] + "\u3000" + encoded[8:]
+    assert media_module._decode_base64_source(ideographic).payload == b""
+    connection = _make_connection(lambda method, url, body: {"file_info": "FI"})
+    assert _run(connection.upload_image(
+        scope="groups", owner_id="G1", source="base64://" + ideographic,
+    )) == ""
+    assert connection._http.calls == []
+
+
 def test_an_undecodable_base64_source_fails_cleanly_and_is_not_logged_whole():
     logger = _ListLogger()
     connection = _make_connection(lambda method, url, body: {"file_info": "FI"}, logger=logger)

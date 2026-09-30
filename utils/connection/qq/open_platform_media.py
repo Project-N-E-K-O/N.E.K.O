@@ -176,12 +176,17 @@ def _image_file_name(payload: bytes) -> str:
     return "image.png"
 
 
+#: ``str.translate`` table deleting ASCII whitespace -- the only whitespace a base64
+#: text may carry. The size check and the decoder both use this one definition.
+_ASCII_WHITESPACE_TABLE = dict.fromkeys(map(ord, string.whitespace))
+
+
 def _base64_decoded_size(encoded: str) -> int:
     """How many bytes ``encoded`` decodes to, without decoding or copying it.
 
-    Whitespace is not data (``_decode_base64_source`` drops it) and trailing ``=``
-    padding stands for no bytes, so neither may count against the size limit: an image
-    of exactly ``MAX_IMAGE_BYTES`` would otherwise be refused.
+    ASCII whitespace is not data (``_decode_base64_source`` drops exactly that set) and
+    trailing ``=`` padding stands for no bytes, so neither may count against the size
+    limit: an image of exactly ``MAX_IMAGE_BYTES`` would otherwise be refused.
     """
     end = len(encoded)
     while end and encoded[end - 1] in string.whitespace:
@@ -199,9 +204,14 @@ def _decode_base64_source(encoded: str) -> SourceFile:
 
     Blocking for the same reason as ``_read_source`` (decoding and hashing megabytes), so
     callers run it off the event loop.
+
+    Only ASCII whitespace is dropped, the same set ``_base64_decoded_size`` discounts:
+    ``str.split()`` would also drop Unicode whitespace, and then a text the size check
+    counted as too big could still decode fine (or the other way round). Any other
+    character, Unicode whitespace included, makes the text undecodable.
     """
     try:
-        payload = base64.b64decode("".join(encoded.split()), validate=True)
+        payload = base64.b64decode(encoded.translate(_ASCII_WHITESPACE_TABLE), validate=True)
     except (binascii.Error, ValueError):
         return SourceFile(b"", "", {})
     if not payload:
