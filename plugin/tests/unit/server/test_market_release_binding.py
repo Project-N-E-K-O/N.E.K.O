@@ -10,14 +10,21 @@ from plugin.server.routes import market_bridge
 pytestmark = pytest.mark.plugin_unit
 
 
-def payload(mode="install"):
-    return market_bridge.MarketInstallRequest(
+CANONICAL_URL = "https://github.com/example/plugin/releases/download/v1/package.neko-plugin"
+CATALOG_PAYLOAD_HASH = "c" * 64
+CATALOG_CREATED_AT = "2026-09-01T00:00:00Z"
+
+
+def payload(mode="install", **changes):
+    fields = dict(
         plugin_id="42", version="1.0.0", channel="stable", mode=mode,
         package_url="https://proxy.example/package.neko-plugin",
-        canonical_package_url="https://github.com/example/plugin/releases/download/v1/package.neko-plugin",
+        canonical_package_url=CANONICAL_URL,
         package_sha256="a" * 64,
-        published_at="old client timestamp", payload_hash="old client metadata",
+        published_at="stale client timestamp", payload_hash=CATALOG_PAYLOAD_HASH.upper(),
     )
+    fields.update(changes)
+    return market_bridge.MarketInstallRequest(**fields)
 
 
 def catalog(monkeypatch, releases, status=200):
@@ -39,6 +46,8 @@ def catalog(monkeypatch, releases, status=200):
 def release():
     return dict(
         version="1.0.0", channel="stable", package_sha256="A" * 64,
+        package_url=CANONICAL_URL, payload_hash=CATALOG_PAYLOAD_HASH,
+        created_at=CATALOG_CREATED_AT,
         yanked_at=None, verification_status="unverified",
     )
 
@@ -50,10 +59,77 @@ async def test_catalog_hash_authorizes_proxy_and_legacy_release(monkeypatch):
     bound = await market_bridge._bind_market_package_hash(request)
     assert bound.package_sha256 == "a" * 64
     assert bound.package_url == request.package_url
-    assert bound.canonical_package_url == request.canonical_package_url
+    assert bound.canonical_package_url == CANONICAL_URL
+    assert bound.payload_hash == CATALOG_PAYLOAD_HASH
+    assert bound.published_at == CATALOG_CREATED_AT
     assert len(requests) == 1
     assert requests[0].url.path == "/api/v1/plugins/42/versions"
     assert requests[0].url.params["include_yanked"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_catalog_fills_provenance_the_caller_omitted(monkeypatch):
+    catalog(monkeypatch, [release()])
+    bound = await market_bridge._bind_market_package_hash(payload(
+        channel=None, canonical_package_url=None, payload_hash=None, published_at=None,
+    ))
+    assert bound.channel == "stable"
+    assert bound.canonical_package_url == CANONICAL_URL
+    assert bound.payload_hash == CATALOG_PAYLOAD_HASH
+    assert bound.published_at == CATALOG_CREATED_AT
+
+
+@pytest.mark.parametrize("changes", [
+    {"payload_hash": "d" * 64},
+    {"canonical_package_url": "https://github.com/attacker/plugin/releases/download/v1/package.neko-plugin"},
+])
+@pytest.mark.asyncio
+async def test_caller_provenance_must_match_catalog(monkeypatch, changes):
+    catalog(monkeypatch, [release()])
+    with pytest.raises(market_bridge._TaskError, match="market_release_mismatch"):
+        await market_bridge._bind_market_package_hash(payload(**changes))
+
+
+@pytest.mark.asyncio
+async def test_caller_payload_hash_without_catalog_value_rejected(monkeypatch):
+    entry = release()
+    entry["payload_hash"] = None
+    catalog(monkeypatch, [entry])
+    with pytest.raises(market_bridge._TaskError, match="market_release_mismatch"):
+        await market_bridge._bind_market_package_hash(payload())
+
+
+def _override_payload(**changes):
+    fields = dict(published_at=CATALOG_CREATED_AT, payload_hash=CATALOG_PAYLOAD_HASH)
+    fields.update(changes)
+    return payload("override_builtin", **fields)
+
+
+@pytest.mark.parametrize("changes,accepted", [
+    ({}, True),
+    ({"channel": None}, True),
+    ({"version": " 1.0.0 ", "channel": " stable "}, True),
+    ({"yanked_at": "2026-09-30T00:00:00Z"}, False),
+])
+@pytest.mark.asyncio
+async def test_override_preflight_and_task_select_the_same_row(monkeypatch, changes, accepted):
+    entry = release()
+    entry.update(changes)
+    catalog(monkeypatch, [entry])
+    request = _override_payload()
+    if accepted:
+        await market_bridge._fetch_authoritative_market_override_release(request)
+        bound = await market_bridge._bind_market_package_hash(request)
+        assert bound.version == "1.0.0"
+        assert bound.channel == "stable"
+        # The task-side upgrade path re-runs the preflight with the bound payload.
+        await market_bridge._fetch_authoritative_market_override_release(bound)
+    else:
+        with pytest.raises(market_bridge.HTTPException) as exc_info:
+            await market_bridge._fetch_authoritative_market_override_release(request)
+        assert exc_info.value.detail["code"] == "market_release_mismatch"
+        with pytest.raises(market_bridge._TaskError, match="market_release_mismatch"):
+            await market_bridge._bind_market_package_hash(request)
 
 
 @pytest.mark.parametrize("changes", [

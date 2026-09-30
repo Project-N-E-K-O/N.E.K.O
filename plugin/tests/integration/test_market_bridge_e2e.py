@@ -143,6 +143,7 @@ def _serve_bytes(
     *, filename: str, content: bytes, extra_release: dict[str, Any] | None = None,
     catalog_sha256: str | None = None,
     market_id: str | None = None,
+    published_at: str | None = None,
 ) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
@@ -153,16 +154,15 @@ def _serve_bytes(
 
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+        try:
+            metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+        except KeyError:
+            metadata = {}
     catalog_id = market_id if market_id is not None else str(manifest["id"])
-    published = [
-        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
-         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
-         "yanked_at": None}
-        for channel in ("stable", "beta")
-    ]
-    if extra_release is not None:
-        published.append({**extra_release, "plugin_id": catalog_id})
-    _catalog_releases.extend(published)
+    payload_table = metadata.get("payload")
+    catalog_payload_hash = (
+        payload_table.get("hash") if isinstance(payload_table, dict) else None
+    )
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server convention
@@ -181,10 +181,22 @@ def _serve_bytes(
 
     server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}/{filename}"
+    published = [
+        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
+         "package_url": url,
+         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
+         "payload_hash": catalog_payload_hash, "created_at": published_at,
+         "yanked_at": None}
+        for channel in ("stable", "beta")
+    ]
+    if extra_release is not None:
+        published.append({**extra_release, "plugin_id": catalog_id})
+    _catalog_releases.extend(published)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{port}/{filename}"
+        yield url
     finally:
         for release in published:
             _catalog_releases.remove(release)
@@ -762,6 +774,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
 
     with _serve_bytes(
         filename="e2e_calendar-1.2.3.neko-plugin", content=zip_bytes,
+        published_at="2026-05-16T08:00:00.000000Z",
     ) as package_url:
         # Trigger the install task.
         resp = await client.post(
@@ -773,7 +786,8 @@ async def test_install_happy_path_writes_v2_lock_entry(
                 "plugin_id": plugin_id,
                 "version": version,
                 "channel": "stable",
-                "published_at": "2026-05-16T08:00:00.000000Z",
+                # Stale client value; the lock must record the catalogue's.
+                "published_at": "2026-05-01T00:00:00.000000Z",
                 "mode": "install",
                 "on_conflict": "fail",
             },
@@ -810,7 +824,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
 
     # All four v2 fields must be populated by the bytes that actually
     # landed on disk — sha256 from re-hashing, payload_hash from unpack
-    # output, channel + published_at from the request payload.
+    # output, channel + published_at from the Market catalogue row.
     assert detail["plugin_market_id"] == plugin_id
     assert detail["version"] == version
     assert detail["package_url"] == f"http://127.0.0.1:{package_url.split(':')[-1].split('/')[0]}/e2e_calendar-1.2.3.neko-plugin" or detail["package_url"].endswith("e2e_calendar-1.2.3.neko-plugin")
@@ -846,6 +860,7 @@ async def test_installed_endpoint_projects_latest_install_source(
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
+        published_at="2026-05-16T09:00:00.000000Z",
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",

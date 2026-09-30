@@ -824,6 +824,31 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
+def _select_market_release(
+    releases: list[Any],
+    *,
+    version: str,
+    channel: str,
+) -> dict[str, Any] | None:
+    """Pick the public, non-yanked catalog row for ``version`` / ``channel``.
+
+    Shared by the builtin override preflight and the install task binding,
+    so a row accepted before confirmation is also accepted by the task.
+    """
+
+    return next(
+        (
+            item
+            for item in releases
+            if isinstance(item, dict)
+            and str(item.get("version") or "").strip() == version
+            and str(item.get("channel") or "stable").strip() == channel
+            and not item.get("yanked_at")
+        ),
+        None,
+    )
+
+
 async def _fetch_authoritative_market_override_release(
     payload: MarketInstallRequest,
 ) -> dict[str, object]:
@@ -866,15 +891,8 @@ async def _fetch_authoritative_market_override_release(
     if not isinstance(releases, list):
         releases = []
     requested_version = str(payload.version or "").strip()
-    release = next(
-        (
-            item
-            for item in releases
-            if isinstance(item, dict)
-            and str(item.get("version") or "").strip() == requested_version
-            and str(item.get("channel") or "stable").strip() == channel
-        ),
-        None,
+    release = _select_market_release(
+        releases, version=requested_version, channel=channel,
     )
     canonical_package_url = str(
         payload.canonical_package_url or payload.package_url or ""
@@ -3172,9 +3190,10 @@ async def _report_market_install_best_effort(
 async def _bind_market_package_hash(payload: MarketInstallRequest) -> MarketInstallRequest:
     """Bind install bytes to a public, non-yanked Market release.
 
-    Download URLs (including user-selected proxies) remain unchanged. Only
-    the catalogue supplies the hash used to authorize the installed bytes.
-    This runs before download and before taking any plugin operation lock.
+    Download URLs (including user-selected proxies) remain unchanged. The
+    catalogue supplies the hash used to authorize the installed bytes and
+    the release metadata recorded for them. This runs before download and
+    before taking any plugin operation lock.
     """
     market_id = str(payload.plugin_id or "").strip()
     version = str(payload.version or "").strip()
@@ -3213,24 +3232,39 @@ async def _bind_market_package_hash(payload: MarketInstallRequest) -> MarketInst
         ) from exc
     if not isinstance(releases, list):
         raise _TaskError(code="market_catalog_unavailable", message="市场发布信息格式无效")
-    release = next(
-        (
-            item for item in releases
-            if isinstance(item, dict)
-            and item.get("version") == version
-            and item.get("channel") == channel
-            and item.get("yanked_at") is None
-        ),
-        None,
-    )
+    release = _select_market_release(releases, version=version, channel=channel)
     try:
         raw_hash = release.get("package_sha256") if release is not None else None
         authoritative_hash = _normalize_required_sha256(raw_hash if isinstance(raw_hash, str) else None)
     except ValueError as exc:
         raise _TaskError(code="market_release_mismatch", message="市场中没有有效的对应发布版本") from exc
+    assert release is not None
     if authoritative_hash != payload.package_sha256:
         raise _TaskError(code="market_release_mismatch", message="插件包 SHA256 与市场发布记录不一致")
-    return payload.model_copy(update={"package_sha256": authoritative_hash})
+
+    # Provenance written to the lock and reported to /me/installs comes from
+    # the catalogue row, never from the caller. Caller values that disagree
+    # with the row are rejected; published_at is only replaced, since some
+    # callers pair it with a different release row of the same plugin.
+    catalog_payload_hash = str(release.get("payload_hash") or "").strip() or None
+    requested_payload_hash = str(payload.payload_hash or "").strip()
+    if requested_payload_hash and requested_payload_hash.lower() != (catalog_payload_hash or "").lower():
+        raise _TaskError(code="market_release_mismatch", message="插件 payload hash 与市场发布记录不一致")
+    catalog_package_url = str(release.get("package_url") or "").strip() or None
+    requested_canonical_url = str(payload.canonical_package_url or "").strip()
+    if requested_canonical_url and requested_canonical_url != catalog_package_url:
+        raise _TaskError(code="market_release_mismatch", message="插件包来源地址与市场发布记录不一致")
+    catalog_published_at = (
+        str(release.get("created_at") or release.get("published_at") or "").strip() or None
+    )
+    return payload.model_copy(update={
+        "version": version,
+        "channel": channel,
+        "package_sha256": authoritative_hash,
+        "payload_hash": catalog_payload_hash,
+        "canonical_package_url": catalog_package_url,
+        "published_at": catalog_published_at,
+    })
 
 
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
