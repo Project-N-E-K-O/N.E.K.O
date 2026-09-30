@@ -387,6 +387,23 @@ describe('hosted panel error suppression', () => {
 })
 
 describe('mutation CSRF guard', () => {
+  it('does not bootstrap the lifecycle token for unrelated mutations', async () => {
+    const tokenBootstrap = vi.spyOn(axios, 'get')
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
+      data: { ok: true },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+      request: {},
+    }))
+
+    await expect(request.post('/api/model-config/slots', {}, { adapter })).resolves.toEqual({ ok: true })
+    expect(tokenBootstrap).not.toHaveBeenCalled()
+    expect(adapter).toHaveBeenCalledTimes(1)
+    tokenBootstrap.mockRestore()
+  })
+
   it('bootstraps the token, attaches it, and retries one rejected mutation', async () => {
     const tokenBootstrap = vi.spyOn(axios, 'get').mockResolvedValue({
       data: { csrf_token: 'csrf-test-token' },

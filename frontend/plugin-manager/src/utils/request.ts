@@ -157,6 +157,25 @@ function isMutationMethod(method: unknown): boolean {
   return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
 }
 
+function requestPath(url: unknown): string {
+  if (typeof url !== 'string') return ''
+  try {
+    return new URL(url, API_BASE_URL || 'http://localhost').pathname
+  } catch {
+    return url.split(/[?#]/, 1)[0] ?? ''
+  }
+}
+
+/** Only the plugin lifecycle routes are protected by this PR's CSRF contract. */
+function isPluginLifecycleMutation(config: InternalAxiosRequestConfig): boolean {
+  if (!isMutationMethod(config.method)) return false
+  const path = requestPath(config.url)
+  const method = config.method?.toLowerCase()
+  if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path)
+  return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
+    || /^\/plugins\/(?:refresh|reload)$/.test(path)
+}
+
 /** Fetch the per-process mutation token once, sharing concurrent callers. */
 function loadCsrfToken(): Promise<string> {
   if (csrfToken) return Promise.resolve(csrfToken)
@@ -235,9 +254,10 @@ const service: AxiosInstance = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    if (isMutationMethod(config.method)) {
-      // All mutation calls carry the same instance token. Bootstrap failure is
-      // fail-closed: the original state-changing request is never sent.
+    if (isPluginLifecycleMutation(config)) {
+      // Lifecycle calls are fail-closed: bootstrap failure means the original
+      // state-changing request is never sent. Other mutation APIs are outside
+      // this PR's contract and must not depend on the lifecycle token service.
       const token = await loadCsrfToken()
       if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
       writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
