@@ -187,7 +187,8 @@ def handle_sync(args: argparse.Namespace) -> int:
         print(f"[FAIL] Could not sync dependencies for {plugin_dir}: {exc}", file=sys.stderr)
         return 1
     finally:
-        if staging_dir is not None and staging_dir.exists():
+        # The install ran inside staging; rule out a mount there before rmtree.
+        if staging_dir is not None and staging_dir.exists() and not _mounted_inside(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
 
     print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
@@ -315,15 +316,27 @@ def _lock_dir() -> Path:
     private = base / "neko-plugin" / "sync-locks"
     try:
         private.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if private.stat().st_uid == os.getuid():
-            return private
+        _make_private(private)
+        return private
     except OSError:
         pass  # e.g. a read-only home in a container; use the fallback below
     fallback = Path(gettempdir()) / f"neko-plugin-sync-{os.getuid()}"
     fallback.mkdir(exist_ok=True, mode=0o700)
-    if fallback.stat().st_uid != os.getuid():
-        raise PermissionError(f"lock directory {fallback} is owned by another user")
+    _make_private(fallback)
     return fallback
+
+
+def _make_private(directory: Path) -> None:
+    """Require the lock dir to be ours, and closed to group and others.
+
+    mkdir(mode=0o700) does not touch an existing directory, which may have
+    been created (or later opened up) with group/world write access.
+    """
+    info = directory.stat()
+    if info.st_uid != os.getuid():
+        raise PermissionError(f"lock directory {directory} is owned by another user")
+    if info.st_mode & 0o077:
+        os.chmod(directory, 0o700)
 
 
 def _short_token() -> str:
@@ -558,6 +571,9 @@ def _pip_install_to_vendor(
             *packages,
         ],
         label="uv pip install",
+        # The pip attempt ran (through any launcher) in target.cwd, so
+        # relative requirements such as "pkg @ file:./pkg" resolve the same.
+        cwd=target.cwd,
     )
     if result is None:
         return 1
@@ -576,10 +592,11 @@ _PIP_SETTING_KINDS = {
     "no-index": "no-index",
     "find-links": "find-links",
     "require-hashes": "require-hashes",
+    "proxy": "proxy",
 }
 # Settings that cannot make uv install different packages when dropped:
-# output, caching, retries and connection details (a missing certificate or
-# proxy only makes uv fail). Every other pip setting (only-binary,
+# output, caching, retries, certificates (a missing one only makes uv fail),
+# and options both installers are given explicitly anyway. Every other pip setting (only-binary,
 # constraint, pre, ...) has no checked uv counterpart here and blocks the
 # fallback, since uv would silently ignore it.
 _PIP_HARMLESS_SETTINGS = {
@@ -597,10 +614,12 @@ _PIP_HARMLESS_SETTINGS = {
     "no-python-version-warning",
     "no-warn-script-location",
     "progress-bar",
-    "proxy",
     "quiet",
     "retries",
     "root-user-action",
+    # Overridden by the explicit --target/--upgrade of both installers.
+    "target",
+    "upgrade",
     "timeout",
     "trusted-host",
     "user",
@@ -619,6 +638,9 @@ _UV_COVERS = {
     "find-links": ("UV_FIND_LINKS",),
     # uv only reads its own variable; without it uv installs unhashed.
     "require-hashes": ("UV_REQUIRE_HASHES",),
+    # uv has no proxy option but honors the standard proxy variables;
+    # without one, uv would bypass a filtering proxy and connect directly.
+    "proxy": ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"),
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
@@ -816,7 +838,12 @@ def _pip_false(value: str) -> bool:
     return value.strip().lower() in {"n", "no", "f", "false", "off", "0"}
 
 
-def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
+def _run_installer(
+    cmd: list[str],
+    *,
+    label: str,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -824,6 +851,7 @@ def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            cwd=cwd,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

@@ -1059,6 +1059,91 @@ def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
     assert not any(line.startswith(".vendor.") for line in lines)
 
 
+def test_failed_install_keeps_staging_with_a_mount_inside(tmp_path, monkeypatch):
+    # The install ran inside staging; a mount there must not be emptied by
+    # the cleanup of a failed sync.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    monkeypatch.setattr(
+        deps_cmd, "_mounted_inside", lambda path: path.name.startswith(".vendor.staging-")
+    )
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="build failed"),
+    )
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(has_pip=True))
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert [p for p in plugin_dir.glob(".vendor.staging-*") if p.is_dir()]
+
+
+def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
+    # The pip attempt ran through the launcher in its cwd; relative
+    # requirements ("pkg @ file:./pkg") must resolve the same under uv.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    launcher_dir = tmp_path / "launcher-dir"
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(cwd=launcher_dir))
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command[0], kwargs.get("cwd")))
+        if command[0] == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg @ file:./pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    assert ("uv", launcher_dir) in seen
+
+
+@pytest.mark.parametrize(
+    ("env", "uses_uv"),
+    [
+        # pip's proxy is a policy (e.g. a filtering proxy); uv honors only the
+        # standard proxy variables, so one of those must be set.
+        ({"PIP_PROXY": "http://corp-proxy:3128"}, False),
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128"}, True),
+        # Both installers are given --target/--upgrade explicitly.
+        ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
+    ],
+)
+def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == (0 if uses_uv else 1)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_lock_dir_that_is_open_to_others_is_closed(tmp_path, monkeypatch):
+    # mkdir(mode=0o700) leaves an existing, world-writable dir as it is.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    cache = tmp_path / "cache"
+    locks = cache / "neko-plugin" / "sync-locks"
+    locks.mkdir(parents=True)
+    os.chmod(locks, 0o777)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+
+    assert real_lock_dir() == locks
+    assert locks.stat().st_mode & 0o777 == 0o700
+
+
 def test_linux_without_mount_table_keeps_leftovers(tmp_path, monkeypatch, capsys):
     # ismount() misses same-filesystem bind mounts, so without
     # /proc/self/mountinfo nothing can be ruled out: keep, do not rmtree.
