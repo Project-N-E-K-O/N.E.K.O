@@ -97,9 +97,12 @@ def handle_sync(args: argparse.Namespace) -> int:
             # the only full copy of the old vendor/ is never dropped silently.
             discard_backups = getattr(args, "discard_backups", args.clean)
             unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
-            # Another user's backup is never removed here (their swap may be
-            # live), so --clean cannot clear it; say how to instead.
-            foreign = [path for path in unreconciled if _owned_by_other_user(path)]
+            # A backup another user is mid-swap on is never removed here, so
+            # --clean cannot clear it; say how to instead.
+            foreign = [path for path in unreconciled if _swapped_by_other_user(path)]
+            # Another user's sync may have finished it meanwhile.
+            unreconciled = [path for path in unreconciled if path.exists()]
+            foreign = [path for path in foreign if path.exists()]
             if unreconciled and (not discard_backups or not external_deps or foreign):
                 if foreign:
                     hint = (
@@ -162,12 +165,11 @@ def handle_sync(args: argparse.Namespace) -> int:
             _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
-            # A complete successful sync supersedes this user's retained
-            # backups. Another user's may belong to their live swap (the lock
-            # is per user), so leave those alone.
+            # A complete successful sync supersedes retained backups, except
+            # one another user is mid-swap on (the lock is per user).
             for backup in _retained_backups(plugin_dir):
                 try:
-                    if _owned_by_other_user(backup):
+                    if _swapped_by_other_user(backup):
                         continue
                     if _mounted_inside(backup):
                         continue
@@ -349,6 +351,22 @@ def _owned_by_other_user(path: Path) -> bool:
     if not hasattr(os, "getuid"):
         return False
     return path.stat().st_uid != os.getuid()
+
+
+def _swapped_by_other_user(backup: Path) -> bool:
+    """Whether another user's sync is (or was) mid-swap on this backup.
+
+    The backup dir keeps the owner of the vendor/ it was renamed from, so it
+    says nothing about who is swapping. Its pending marker is created by the
+    syncing user right after the rename; a backup without one has finished
+    its swap and belongs to nobody's live work.
+    """
+    if not hasattr(os, "getuid"):
+        return False
+    try:
+        return _pending_marker(backup).stat().st_uid != os.getuid()
+    except FileNotFoundError:
+        return False
 
 
 def _remove_stale_staging(plugin_dir: Path) -> None:

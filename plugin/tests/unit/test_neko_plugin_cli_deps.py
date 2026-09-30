@@ -273,24 +273,74 @@ def test_default_clean_never_discards_a_pending_backup(tmp_path, monkeypatch, ca
         assert "unreconciled dependency backup" in capsys.readouterr().err
 
 
-def test_success_leaves_another_users_backup_alone(tmp_path, monkeypatch):
-    # The lock is per user; another user's backup may be mid-swap.
+@pytest.mark.parametrize("mid_swap", [False, True])
+def test_success_cleanup_skips_only_another_users_live_swap(tmp_path, monkeypatch, mid_swap):
+    # The lock is per user. A backup another user is mid-swap on (their
+    # pending marker) is left alone; a finished leftover is cleaned whoever
+    # owns it.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
     theirs = plugin_dir / ".vendor.backup-0000ffff"
     theirs.mkdir()
+    marker = theirs.with_name(theirs.name + ".pending")
     owner = theirs.stat().st_uid
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
+    # Their swap starts only after this sync's preflight.
+    monkeypatch.setattr(deps_cmd, "_unreconciled_backups", lambda *a: [])
+
+    def install(command, **kwargs):
+        if mid_swap:
+            marker.touch()
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert theirs.exists() is mid_swap
+
+
+def test_own_interrupted_swap_on_another_users_vendor_is_not_foreign(tmp_path, monkeypatch):
+    # Renaming vendor/ keeps its owner (user A) on the backup; the syncing
+    # user (B) is identified by the pending marker they created.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    backup = plugin_dir / ".vendor.backup-0000aaaa"
+    backup.mkdir()
+    (backup / "old.py").write_text("old")
+    marker = backup.with_name(backup.name + ".pending")
+    marker.touch()
+    me = marker.stat().st_uid
+    real_stat = Path.stat
+
+    def stat_with_other_owner_for_backup(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self == backup:
+            fields = list(st[:10])
+            fields[4] = me + 1  # st_uid
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(Path, "stat", stat_with_other_owner_for_backup)
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
     monkeypatch.setattr(
         deps_cmd.subprocess,
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
     )
 
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
-    assert theirs.exists()
+    # B's own explicit --clean may discard B's interrupted swap.
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 0
+    assert not backup.exists()
+
+
+def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 12345, raising=False)
+    assert deps_cmd._swapped_by_other_user(tmp_path / ".vendor.backup-0000abcd") is False
 
 
 @pytest.mark.parametrize("clean", [False, True])
