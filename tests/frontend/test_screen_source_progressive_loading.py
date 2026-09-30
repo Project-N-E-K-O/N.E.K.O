@@ -1848,17 +1848,17 @@ def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
         gesture,
     )
 
+    screen_disabled_after = result.pop("screenDisabledAfter")
+    screen_disabled_before = result.pop("screenDisabledBefore")
+    proactive_resumes = result.pop("proactiveResumes")
     if gesture == "session_end":
         # The session's own teardown owns the buttons; ours must not re-enable
         # the screen button.
-        assert result.pop("screenDisabledAfter") is result["screenDisabledBefore"]
-    else:
-        result.pop("screenDisabledAfter")
-    result.pop("screenDisabledBefore")
+        assert screen_disabled_after is screen_disabled_before
     # Proactive vision is re-armed once when a share really stops while the
     # session goes on, never twice (stop and the waking restart), and not at
     # all on a teardown or when sharing resumes.
-    assert result.pop("proactiveResumes") == (
+    assert proactive_resumes == (
         1 if gesture in ("stop", "toggle", "external_start_rejected", "external_start_rejected_late")
         else 0
     )
@@ -1928,7 +1928,7 @@ def test_gestures_while_source_switch_restart_awaits_capture(
 
     if gesture == "teardown":
         # The session's own teardown owns the Stop button once isRecording is off.
-        result.pop("stopEnabled")
+        del result["stopEnabled"]
     expected = {
         "whileWaiting": {"active": True, "stopEnabled": True, "pending": True},
         "pickSettled": True,
@@ -2076,6 +2076,136 @@ def test_cancelled_mobile_camera_start_stays_quiet(page: Page) -> None:
     # The first camera failed after the cancel: no other camera is tried and
     # nothing is reported.
     assert result == {"cameraAttempts": 1, "errorToasts": 0}
+
+
+def _install_native_session(page: Page) -> None:
+    # A native-frame shell: each first frame of the ids in __native.holds
+    # waits until released.
+    _install_share_session(page)
+    page.evaluate(
+        """() => {
+            const native = { calls: [], holds: new Set(), pending: [], sent: 0 };
+            native.releaseAll = () => native.pending.splice(0).forEach((release) => release());
+            window.__native = native;
+            const provider = window.__desktopProvider;
+            provider.nativeFrameCapture = true;
+            provider.getSources = async () => [
+                { id: 'window:2', name: 'Editor', display_id: '' },
+                { id: 'window:7', name: 'Terminal', display_id: '' },
+            ];
+            provider.captureSourceAsDataUrl = (sourceId) => {
+                native.calls.push(sourceId);
+                const frame = { success: true, dataUrl: 'data:image/jpeg;base64,AA==' };
+                if (native.holds.has(sourceId)) {
+                    native.holds.delete(sourceId);
+                    return new Promise((resolve) => {
+                        native.pending.push(() => resolve(frame));
+                    });
+                }
+                return Promise.resolve(frame);
+            };
+            window.appState.socket = {
+                readyState: WebSocket.OPEN,
+                send() { native.sent += 1; },
+            };
+        }"""
+    )
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("then", ["wait", "toggle", "stale_frame"])
+def test_native_pick_while_first_frame_pending_restarts_without_pause(
+    page: Page, then: str,
+) -> None:
+    # A native start that is still waiting for its first frame has already
+    # claimed its source but is not sharing yet. Picking another source is a
+    # pick during a pending start: it stays "starting" (a toggle cancels) and
+    # otherwise ends up sharing the new source.
+    # stale_frame: the old source's first frame lands right after the pick,
+    #   before the replacement reaches native streaming; it must not be sent.
+    _install_screen_source_harness(page)
+    _install_native_session(page)
+
+    result = page.evaluate(
+        """async (then) => {
+            const share = window.__share;
+            const native = window.__native;
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            native.holds.add('window:2');
+            native.holds.add('window:7');
+            const start = window.startScreenSharing();
+            await share.waitFor(() => native.pending.length > 0);
+            const pick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            let staleSent = 0;
+            if (then === 'stale_frame') {
+                native.releaseAll();  // only the old source's frame is pending yet
+                await share.waitFor(() => native.calls.includes('window:7'), 1000);
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                staleSent = native.sent;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const pendingAfterPick = window.isScreenSharingStartPending();
+            if (then === 'toggle') {
+                await Promise.race([
+                    window.switchScreenSharing(),
+                    new Promise((resolve) => setTimeout(resolve, 1000)),
+                ]);
+            }
+            await share.waitFor(() => native.pending.length > 0 || then === 'toggle', 1000);
+            native.releaseAll();
+            await start;
+            await Promise.race([pick, new Promise((resolve) => setTimeout(resolve, 2000))]);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const state = {
+                pendingAfterPick,
+                staleSent,
+                firstCalls: native.calls.slice(0, 2),
+                ...share.state(),
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }""",
+        then,
+    )
+
+    sharing = then != "toggle"
+    assert result == {
+        "pendingAfterPick": True,
+        "staleSent": 0,
+        # The replacement asks for the new source's first frame right away.
+        "firstCalls": ["window:2", "window:7"],
+        "active": sharing,
+        "stopEnabled": sharing,
+    }
+
+
+@pytest.mark.frontend
+def test_native_first_frame_survives_a_microphone_switch_pause(page: Page) -> None:
+    # Switching microphones only pauses the frame sender (window.stopScreening)
+    # and restores sharing only if a sender was running. A native start still
+    # waiting for its first frame must survive that pause and start sharing.
+    _install_screen_source_harness(page)
+    _install_native_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            const native = window.__native;
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            native.holds.add('window:2');
+            const start = window.startScreenSharing();
+            await share.waitFor(() => native.pending.length > 0);
+            window.stopScreening();
+            native.releaseAll();
+            await start;
+            await share.waitFor(() => share.state().stopEnabled, 2000);
+            const state = share.state();
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {"active": True, "stopEnabled": True}
 
 
 @pytest.mark.frontend

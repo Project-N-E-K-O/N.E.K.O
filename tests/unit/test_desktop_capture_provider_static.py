@@ -301,7 +301,10 @@ def test_screening_callers_pick_pause_or_teardown_explicitly() -> None:
     settings = read_text("static/app/app-settings.js")
     buttons = read_text("static/app/app-buttons.js")
     websocket = read_text("static/app/app-websocket.js")
-    assert "window.stopScreening = stopScreening;" in screen
+    assert "window.stopScreening = pauseScreenFrameSender;" in screen
+    pause = screen.split("function pauseScreenFrameSender()", 1)[1][:600]
+    # A start still in flight (native first frame) must survive the pause.
+    assert "if (isScreenSharingStartPending()) {" in pause
     assert "window.teardownScreenSharing = teardownScreenSharing;" in screen
     teardown = screen.split("function teardownScreenSharing()", 1)[1][:1200]
     assert "cancelPendingScreenSharingStart();" in teardown

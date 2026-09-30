@@ -1972,6 +1972,21 @@
         if (cancelledStart) clearScreenSharingIndicators();
     }
 
+    // 外部的 stopScreening：只停发送。启动还在进行时（例如原生捕获在等首帧）
+    // 不能推进原生代次，否则那次启动会被当成过期丢掉，而切换麦克风这类调用方
+    // 看不到它、之后也不会恢复分享；这时只停掉可能已有的发送定时器。
+    function pauseScreenFrameSender() {
+        if (isScreenSharingStartPending()) {
+            if (S.videoSenderInterval) {
+                clearInterval(S.videoSenderInterval);
+                clearTimeout(S.videoSenderInterval);
+                S.videoSenderInterval = null;
+            }
+            return;
+        }
+        stopScreening();
+    }
+
     function clearScreenSharingIndicators() {
         manualScreenShareRunning = false;
         var screen = screenButton();
@@ -2768,7 +2783,11 @@
     // 捕获和进行中的换源重启。
     function isScreenShareRunning() {
         var stop = stopButton();
-        return activeNativeCaptureSourceId !== null
+        // 原生捕获在等首帧时已经占了来源，但那次启动还没结束：算「启动中」，
+        // 不算在跑，换来源走「取消并用新来源重新启动」，不走停顿。
+        var nativeRunning = activeNativeCaptureSourceId !== null
+            && !isScreenSharingStartPending();
+        return nativeRunning
             || !!(stop && !stop.disabled)
             || sourceSwitchRestart !== null;
     }
@@ -2936,6 +2955,9 @@
             // 直接取消这次启动、用新来源重新启动。期间一直处于「启动中」，
             // 开关照旧按取消处理，不会出现一段既不在启动也不显示共享的空档。
             console.log('[屏幕源] 启动进行中换来源，改用新来源重新启动');
+            // 先让原生捕获等待中的首帧作废（推进原生代次），它不会再被当成
+            // 新来源的画面发出去。
+            stopScreening();
             // 原调用方跟着新启动结束，拿到的是新来源的结果。
             await cancelPendingScreenSharingStart(startScreenSharing);
             return;
@@ -3815,7 +3837,7 @@
     // ======================== Backward-compat window exports ========================
     // window 与 mod 上的同名导出是同一个函数（换源重启相关的包装）。
     mod.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
-    mod.stopScreening = stopScreening;
+    mod.stopScreening = pauseScreenFrameSender;
     mod.teardownScreenSharing = teardownScreenSharing;
     window.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
     window.stopScreenSharing = stopScreenSharing;
@@ -3833,7 +3855,7 @@
     // stopScreening 只停发送（切换麦克风、隐私模式临时停用）；会话结束、
     // 报错等真正的收尾用 teardownScreenSharing，它还会取消换源重启和
     // 进行中的启动。
-    window.stopScreening = stopScreening;
+    window.stopScreening = pauseScreenFrameSender;
     window.teardownScreenSharing = teardownScreenSharing;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
