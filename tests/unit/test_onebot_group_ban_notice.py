@@ -34,11 +34,16 @@ ADMIN = "10001"
 BOT = "3281414178"
 
 
-def _client(*, self_id: str = BOT) -> OneBotClient:
-    """A client with no sockets: only the queue + mute bookkeeping matter here."""
+def _client(*, self_id: str = BOT, forward: bool = True) -> OneBotClient:
+    """A client with no sockets: only the queue + mute bookkeeping matter here.
+
+    ``forward`` is the consumer's opt-in (``forward_group_ban_notices``); the plugin
+    that reacts to bans turns it on, so the tests default to that.
+    """
     client = OneBotClient(onebot_url="ws://127.0.0.1:3001", direction="forward")
     client._message_queue = asyncio.Queue()
     client._self_id = self_id
+    client.forward_group_ban_notices = forward
     return client
 
 
@@ -198,7 +203,7 @@ def test_the_normalized_notice_reaches_the_registered_sink():
         seen.append(message)
 
     client = _client()
-    client.set_inbound_sink(sink)
+    client.set_inbound_sink(sink, include_notices=True)
     # Feeds **before** the loop starts: `_feed` calls ``asyncio.run`` itself, and this
     # repo's ``tests/conftest.py`` patches that call to allow nesting (for the Playwright
     # greenlet) while a plain suite -- the plugin's, for one -- does not. Keeping the two
@@ -227,7 +232,7 @@ def test_a_poke_notice_reaches_the_sink_too():
         seen.append(message)
 
     client = _client()
-    client.set_inbound_sink(sink)
+    client.set_inbound_sink(sink, include_notices=True)
     _feed(client, {
         "post_type": "notice", "notice_type": "notify", "sub_type": "poke",
         "group_id": GROUP, "user_id": ALICE, "target_id": BOT, "time": 1_790_000_000,
@@ -291,3 +296,69 @@ def test_a_notice_carries_an_empty_content():
     _feed(client, _ban(user_id=ALICE))
 
     assert _take(client)["content"] == ""
+
+
+# ---- opt-ins, the bot's own action, a full queue (review 2026-09-30) ----------
+
+
+def test_third_party_bans_are_not_forwarded_without_the_opt_in():
+    """A consumer that predates ban forwarding keeps getting pokes only."""
+    client = _client(forward=False)
+    _feed(client, _ban(user_id=ALICE))
+
+    assert client._message_queue.qsize() == 0
+
+    _feed(client, _ban(user_id=BOT))
+    assert client.is_group_muted(GROUP) is True, "her own mute is tracked either way"
+
+
+def test_the_opt_in_is_off_by_default():
+    assert OneBotClient(onebot_url="ws://127.0.0.1:3001").forward_group_ban_notices is False
+
+
+def test_a_sink_registered_without_the_opt_in_gets_no_notices():
+    """Notices carry no sender, id or text; a sink that treats every delivery as a chat
+    message must not be handed one unless it asked."""
+    seen: list[dict] = []
+
+    async def sink(message):
+        seen.append(message)
+
+    client = _client()
+    client.set_inbound_sink(sink)
+    _feed(client, _ban(user_id=ALICE))
+
+    async def scenario():
+        notice = await client.receive_message(timeout=0.05)
+        await asyncio.sleep(0.05)
+        return notice
+
+    notice = asyncio.run(scenario())
+
+    assert notice["notice_type"] == "group_ban", "receive_message() still returns it"
+    assert seen == [], "the notice reached a sink that did not opt in"
+
+
+def test_a_ban_the_bot_issued_itself_is_not_forwarded():
+    client = _client()
+    payload = _ban(user_id=ALICE)
+    payload["operator_id"] = BOT
+    _feed(client, payload)
+
+    assert client._message_queue.qsize() == 0
+    assert client.is_group_muted(GROUP) is False
+
+
+def test_a_full_queue_drops_the_oldest_entry_not_the_notice():
+    """Chat messages already make room by dropping the oldest entry; a notice used to be
+    dropped itself while the log still said "Queued"."""
+    client = _client()
+    client._message_queue = asyncio.Queue(maxsize=1)
+    _feed(client, {
+        "post_type": "notice", "notice_type": "notify", "sub_type": "poke",
+        "group_id": GROUP, "user_id": ALICE, "target_id": BOT, "time": 1_790_000_000,
+    })
+    _feed(client, _ban(user_id=ALICE))
+
+    assert client._message_queue.qsize() == 1
+    assert _take(client)["notice_type"] == "group_ban"

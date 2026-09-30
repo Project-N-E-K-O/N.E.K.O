@@ -31,7 +31,8 @@ OneBot v11 scope (what this client assumes of the implementation):
   extracted (``raw_message`` still fills ``content``).
 - Only ``message`` (private/group) and the ``notify/poke`` and ``group_ban``
   notices are handled; every other event (other notices, ``request``,
-  ``meta_event``) is dropped.
+  ``meta_event``) is dropped. A third party's ``group_ban`` is forwarded only when
+  the consumer opts in (``forward_group_ban_notices``).
 - This class wraps the v11 public API. NapCat / go-cqhttp extension actions
   (``get_file``, ``set_msg_emoji_like``, ``nc_*``, ...) come from
   :class:`~utils.connection.onebot.napcat_actions.NapCatActionsMixin`; the one
@@ -135,6 +136,11 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         self._group_muted: Dict[str, float] = {}    # group_id → muted_until (0=not muted, >0=muted until this timestamp)
         self._self_id: str = ""
         self._self_nickname: str = ""
+        #: Opt-in: forward a **third party's** ban / lift-ban out of
+        #: ``receive_message()`` as a ``notice_type="group_ban"`` notice. Off by
+        #: default so a consumer that predates it keeps seeing exactly the notices it
+        #: always did (pokes only); the bot's own mute state is tracked either way.
+        self.forward_group_ban_notices: bool = False
 
     @property
     def onebot_url(self) -> str:
@@ -209,6 +215,18 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             self._self_id = notice_self_id
         is_whole_group = (user_id == "0")
         is_self = bool(self._self_id and user_id == str(self._self_id))
+
+        operator_id = str(notice.get("operator_id") or "").strip()
+        if not is_whole_group and not is_self and self._self_id and operator_id == str(self._self_id):
+            # The bot issued this ban itself (as a group admin, via `set_group_ban`):
+            # it already knows, and forwarding it would have the plugin react to its
+            # own action as if someone else had muted the person she is talking with.
+            self._emit_log(
+                "INFO",
+                f"[Mute] 自己执行的{'解除禁言' if sub_type == 'lift_ban' else '禁言'}，不转发: "
+                f"group={gid} user={user_id}",
+            )
+            return False
 
         if not is_whole_group and not is_self:
             # Someone else was banned/unbanned: nothing to track here (`_group_muted`
@@ -708,31 +726,44 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                         self.logger.info(f"Queued group message from group {message.get('group_id')}, user {message.get('user_id')}")
         elif message.get("post_type") == "notice" and message.get("notice_type") == "notify" and message.get("sub_type") == "poke":
             # Poke event: enqueue so the bot can auto-poke back
-            if not self._message_queue:
-                return
-            try:
-                self._message_queue.put_nowait(message)
-            except asyncio.QueueFull:
-                pass
-            if self.logger:
+            if self._enqueue_notice(message) and self.logger:
                 self.logger.info(f"Queued poke notice: group {message.get('group_id')}, target {message.get('target_id')}, user {message.get('user_id')}")
         elif message.get("post_type") == "notice" and message.get("notice_type") == "group_ban":
             # Group ban notice. Self / whole-group mute only updates local bookkeeping;
-            # a third party's ban/unban is enqueued so the plugin can decide whether to
-            # say something about it (it is the only side that knows who she is chatting
-            # with). See `_handle_group_ban_notice` for the return value.
-            if self._handle_group_ban_notice(message):
-                if not self._message_queue:
-                    return
-                try:
-                    self._message_queue.put_nowait(message)
-                except asyncio.QueueFull:
-                    pass
-                if self.logger:
-                    self.logger.info(
-                        f"Queued group_ban notice: group {message.get('group_id')}, "
-                        f"user {message.get('user_id')}, sub_type {message.get('sub_type')}"
-                    )
+            # a third party's ban/unban is enqueued -- when the consumer opted in -- so
+            # the plugin can decide whether to say something about it (it is the only
+            # side that knows who she is chatting with). See `_handle_group_ban_notice`
+            # for the return value.
+            if (
+                self._handle_group_ban_notice(message)
+                and self.forward_group_ban_notices
+                and self._enqueue_notice(message)
+                and self.logger
+            ):
+                self.logger.info(
+                    f"Queued group_ban notice: group {message.get('group_id')}, "
+                    f"user {message.get('user_id')}, sub_type {message.get('sub_type')}"
+                )
+
+    def _enqueue_notice(self, message: Dict[str, Any]) -> bool:
+        """Enqueue a notice the way chat messages are enqueued; True when it went in.
+
+        A full queue drops its **oldest** entry to make room, as the message path does,
+        instead of silently dropping the newest notice.
+        """
+        if not self._message_queue:
+            return False
+        try:
+            self._message_queue.put_nowait(message)
+        except asyncio.QueueFull:
+            if self.logger:
+                self.logger.warning("Message queue full; dropping oldest message")
+            try:
+                _ = self._message_queue.get_nowait()
+                self._message_queue.put_nowait(message)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                return False
+        return True
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
         """Receive one message and return the normalized form."""
@@ -771,11 +802,9 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                     "timestamp": raw_msg.get("time"),
                     "raw": raw_msg,
                 }
-                # Notices go to the registered inbound sink as well (the message path
-                # below dispatches every normalized message): a sink-only consumer --
-                # `set_inbound_sink` exists exactly for those -- would otherwise never
-                # see a poke or a ban notice, and the ban notice is the one this change
-                # newly forwards.
+                # Offered to the inbound sink as well; `_dispatch_inbound` only delivers
+                # it to a sink registered with `include_notices=True`, so a sink that
+                # expects chat messages only is not handed an empty "message".
                 await self._dispatch_inbound(notice)
                 return notice
 

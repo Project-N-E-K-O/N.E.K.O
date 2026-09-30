@@ -970,28 +970,43 @@ def _legacy_rejected_with(status):
     return responder
 
 
-def test_a_legacy_protocol_rejected_with_a_4xx_is_not_retried(tmp_path):
-    """``_media_post`` raises on non-2xx, so a 400 used to skip the flag and every local
-    image paid for the same failing request again."""
-    sticker = tmp_path / "a.png"
-    sticker.write_bytes(b"z" * 16)
-    connection = _make_connection(_legacy_rejected_with(400))
-
-    for _ in range(2):
-        assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
-
-    legacy = [url for url, body in connection._http.posts() if url.endswith("/files") and "file_size" in body]
-    assert len(legacy) == 1, f"the legacy protocol was retried {len(legacy)} times"
-
-
-@pytest.mark.parametrize("status", [401, 429, 500])
-def test_an_auth_rate_or_server_error_does_not_switch_legacy_off(tmp_path, status):
+@pytest.mark.parametrize("status", [400, 401, 404, 429, 500])
+def test_an_error_status_does_not_switch_legacy_off(tmp_path, status):
+    """A 400 (file too large) or 404 (target unreachable) can be about this one image or
+    target: it sends only this image down the chunked path."""
     sticker = tmp_path / "a.png"
     sticker.write_bytes(b"z" * 16)
     connection = _make_connection(_legacy_rejected_with(status))
 
     assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
     assert connection._legacy_upload_unsupported is False
+
+
+def test_an_error_code_does_not_switch_legacy_off(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"z" * 16)
+
+    def responder(method, url, body):
+        if url.endswith("/files") and "file_size" in body:
+            return {"code": 40034, "message": "file too large"}
+        return _legacy_then_nothing(method, url, body)
+
+    connection = _make_connection(responder)
+
+    assert _run(connection.upload_image(scope="groups", owner_id="G1", source=str(sticker))) == "FI-chunked"
+    assert connection._legacy_upload_unsupported is False
+
+
+def test_unpadded_base64_is_decoded():
+    """``_base64_decoded_size`` accepts unpadded text; the decoder has to as well."""
+    import base64
+
+    payload = bytes.fromhex("89504e47") + b"q" * 3           # 7 bytes -> one "=" normally
+    unpadded = base64.b64encode(payload).decode("ascii").rstrip("=")
+    assert len(unpadded) % 4, "the fixture must really be unpadded"
+
+    assert media_module._decode_base64_source(unpadded).payload == payload
+    assert media_module._base64_decoded_size(unpadded) == len(payload)
 
 
 def test_connect_clears_the_legacy_flag():

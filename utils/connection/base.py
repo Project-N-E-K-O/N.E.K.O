@@ -69,11 +69,13 @@ class ConnectionBase(ABC):
     ``receive_message()`` returns an :class:`InboundMessage`. OneBotClient also
     yields notices as ``{"message_type": "notice", "notice_type", "sub_type",
     "user_id", "operator_id", "duration", "group_id", "target_id", "content": "",
-    "timestamp", "raw", "channel"}``, where ``notice_type`` is ``"poke"`` or
-    ``"group_ban"`` (a ban / lift-ban aimed at a **third party**; the bot's own and
-    whole-group mutes are only tracked internally). Notices carry no ``sender`` or
-    ``message_id``, and they reach the inbound sink like every other message, so a
-    consumer must branch on ``notice_type`` and ignore the kinds it does not handle.
+    "timestamp", "raw", "channel"}``, where ``notice_type`` is ``"poke"`` or --
+    only after the consumer sets ``forward_group_ban_notices = True`` on the client --
+    ``"group_ban"`` (a ban / lift-ban aimed at a **third party** by someone other than
+    the bot; the bot's own and whole-group mutes are only tracked internally). Notices
+    carry no ``sender`` or ``message_id``, so a consumer must branch on
+    ``notice_type``, not on ``message_type == "notice"`` alone. The inbound sink gets
+    notices only when it was registered with ``include_notices=True``.
     """
 
     @abstractmethod
@@ -201,6 +203,7 @@ class ConnectionBase(ABC):
     # its queue on its own, so the owner must keep calling ``receive_message()``
     # (the queue holds 100 messages and drops the oldest when full).
     _INBOUND_SINK_ATTR = "_inbound_sink"
+    _INBOUND_SINK_NOTICES_ATTR = "_inbound_sink_notices"
     #: Cap on the inbound-sink task set; when full, cancel and drop the oldest.
     #: Same drop-oldest semantics as the SSE channel -- otherwise a slow or never-finishing sink grows the unfinished-task set with the message rate and takes the connector process down.
     _INBOUND_SINK_MAX_BACKLOG = 100
@@ -210,17 +213,24 @@ class ConnectionBase(ABC):
         """The registered inbound sink (None = not registered)."""
         return getattr(self, self._INBOUND_SINK_ATTR, None)
 
-    def set_inbound_sink(self, sink: Any | None) -> None:
+    def set_inbound_sink(self, sink: Any | None, *, include_notices: bool = False) -> None:
         """Register an inbound sink ``async sink(message: dict) -> None``.
 
         After each ``receive_message()`` yields a normalized message, the connection
         layer calls it and swallows every exception (the broadcast is best-effort and
         must never stall the pipeline). Pass ``None`` to unregister.
 
+        Notices (``message_type == "notice"``: pokes, third-party bans) are delivered
+        only with ``include_notices=True``. A sink registered the old way keeps
+        receiving chat messages only: notices carry no sender, message id or text, and
+        a subscriber that treats every delivery as a chat message would record them as
+        empty messages.
+
         Registering a sink does not start delivery by itself: it only fires while
         someone keeps calling ``receive_message()``.
         """
         setattr(self, self._INBOUND_SINK_ATTR, sink)
+        setattr(self, self._INBOUND_SINK_NOTICES_ATTR, bool(include_notices) and sink is not None)
 
     async def _dispatch_inbound(self, message: dict[str, Any]) -> None:
         """Internal: hand one inbound message to the registered sink.
@@ -231,6 +241,10 @@ class ConnectionBase(ABC):
         """
         sink = self.inbound_sink
         if sink is None:
+            return
+        if message.get("message_type") == "notice" and not getattr(
+            self, self._INBOUND_SINK_NOTICES_ATTR, False,
+        ):
             return
         try:
             self._spawn_inbound_sink(sink, message)
@@ -370,4 +384,4 @@ class ChatConnector(Protocol):
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any]
     ) -> bool: ...
-    def set_inbound_sink(self, sink: Any | None) -> None: ...
+    def set_inbound_sink(self, sink: Any | None, *, include_notices: bool = False) -> None: ...

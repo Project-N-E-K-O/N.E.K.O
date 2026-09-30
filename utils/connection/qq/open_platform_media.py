@@ -26,11 +26,13 @@ working deployment working, and whichever succeeds is named in the log, which is
 ``file_info`` and the chunked upload then succeeding, so the chunked path is the live
 one.
 
-A legacy attempt that comes back without ``file_info`` -- or whose request the platform
-rejects with a 4xx that is not about auth or rate limits -- is remembered for the rest of
-the connection (``_legacy_upload_unsupported``): on 2026-09-27 the platform answered the
-legacy request with nothing at all, so retrying it for every image only buys a
-guaranteed-failing request per send. The per-protocol log line still fires the first time,
+A legacy apply request that the platform answers with **nothing** -- a success status,
+no error code, no ``upload_url`` -- is remembered for the rest of the connection
+(``_legacy_upload_unsupported``): that is what the 2026-09-27 live run got, and retrying
+it for every image only buys a guaranteed-failing request per send. Every other failure
+(a 4xx such as a too-large file or an unreachable target, an error code, a failing PUT)
+can be about this one image or target, so it only sends that image down the chunked
+path. The per-protocol log line still fires the first time,
 and ``connect()`` / a successful reconnect clear the flag, so a platform that brings the old
 flow back is picked up again.
 
@@ -87,10 +89,6 @@ _BASE64_PREFIX = "base64://"
 
 #: How much of an image source a log line shows. A ``base64://`` source can be megabytes.
 _LOG_SOURCE_CHARS = 80
-
-#: 4xx answers that say nothing about whether the legacy upload protocol still exists:
-#: a bad token, a missing permission, a timeout or a rate limit can hit any request.
-_TRANSIENT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
 
 #: Magic numbers -> extension, for naming decoded ``base64://`` bytes.
 _IMAGE_MAGIC = (
@@ -210,8 +208,12 @@ def _decode_base64_source(encoded: str) -> SourceFile:
     counted as too big could still decode fine (or the other way round). Any other
     character, Unicode whitespace included, makes the text undecodable.
     """
+    compact = encoded.translate(_ASCII_WHITESPACE_TABLE)
+    # Unpadded base64 is common and `_base64_decoded_size` counts it correctly, but
+    # `b64decode(validate=True)` rejects it ("Incorrect padding"): restore the padding.
+    compact += "=" * (-len(compact) % 4)
     try:
-        payload = base64.b64decode(encoded.translate(_ASCII_WHITESPACE_TABLE), validate=True)
+        payload = base64.b64decode(compact, validate=True)
     except (binascii.Error, ValueError):
         return SourceFile(b"", "", {})
     if not payload:
@@ -241,13 +243,8 @@ def _positive_int(value: Any) -> int:
     return number if number > 0 else 0
 
 
-def _is_protocol_rejection(exc: BaseException) -> bool:
-    """Whether ``exc`` is a 4xx that says the request shape itself is not accepted."""
-    response = getattr(exc, "response", None)
-    status = getattr(response, "status_code", 0)
-    if not isinstance(status, int):
-        return False
-    return 400 <= status < 500 and status not in _TRANSIENT_CLIENT_ERRORS
+class _LegacyProtocolGone(Exception):
+    """The legacy apply request got an empty success answer: the protocol is gone."""
 
 
 def _media_error(data: dict[str, Any]) -> str:
@@ -436,31 +433,28 @@ class QQOpenPlatformMediaMixin:
     ) -> str:
         """Legacy direct upload: apply for an ``upload_url``, then PUT.
 
-        A 4xx on the *apply* request that is not about auth or rate limits returns ``""``
-        instead of raising: it means the platform no longer accepts this request shape,
-        which is the same protocol-level answer as a reply without ``upload_url`` and has
-        to switch the protocol off the same way (``upload_image``). A failing PUT still
-        raises -- that is about this file, not about the protocol.
+        Raises ``_LegacyProtocolGone`` only for the one answer that says nothing about
+        this image: a success status with no error code and no ``upload_url``. A non-2xx
+        answer, an error code or a failing PUT can be about this file or this target
+        (too large, target unreachable), so those fail only this attempt.
         """
         mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
-        try:
-            data = await self._media_post(
-                f"/v2/{scope}/{owner_id}/files",
-                {
-                    "file_type": file_type,
-                    "file_name": file_name,
-                    "file_size": len(payload),
-                    "mime_type": mime_type,
-                },
-            )
-        except Exception as exc:
-            if not _is_protocol_rejection(exc):
-                raise
-            self._media_log("warning", f"图片直传申请被平台拒绝: {exc}")
+        data = await self._media_post(
+            f"/v2/{scope}/{owner_id}/files",
+            {
+                "file_type": file_type,
+                "file_name": file_name,
+                "file_size": len(payload),
+                "mime_type": mime_type,
+            },
+        )
+        problem = _media_error(data)
+        if problem:
+            self._media_log("warning", f"图片直传申请被拒绝: {problem}")
             return ""
         upload_url = str(data.get("upload_url") or "")
         if not upload_url:
-            return ""
+            raise _LegacyProtocolGone()
         response = await self._http.put(
             upload_url, content=payload, headers={"Content-Type": mime_type},
         )
@@ -570,9 +564,9 @@ class QQOpenPlatformMediaMixin:
                 return ""
 
         # Both protocols, legacy first: never worse than the behaviour that shipped,
-        # and the log says which one worked. A legacy attempt that answered without
-        # `file_info` is remembered (see `_legacy_upload_unsupported`): retrying a
-        # protocol the platform already stopped answering only spends a request per image.
+        # and the log says which one worked. A legacy protocol the platform answers
+        # with nothing is remembered (see `_legacy_upload_unsupported`): retrying it only
+        # spends a request per image.
         #
         # Only the chunked protocol takes `digests` -- it is the one that puts them in
         # `upload_prepare`. The legacy request has its own field set and rejects unknown
@@ -589,6 +583,15 @@ class QQOpenPlatformMediaMixin:
                     payload=payload, file_name=file_name, file_type=FILE_TYPE_IMAGE,
                     **extra,
                 )
+            except _LegacyProtocolGone:
+                # Protocol-level, not about this image: the apply request came back
+                # empty (09-27 live log). Remember it so the next image does not pay for
+                # the same guaranteed-failing request; `connect()` and a successful
+                # reconnect clear the flag, so a platform that brings the old flow back
+                # is picked up again.
+                self._legacy_upload_unsupported = True
+                self._media_log("info", "直传协议已不再返回 upload_url，本连接后续只用分片上传")
+                continue
             except Exception as exc:
                 self._media_log("warning", f"图片{label}上传异常: {exc}")
                 continue
@@ -596,15 +599,6 @@ class QQOpenPlatformMediaMixin:
                 self._media_log("info", f"图片上传成功({label}): {file_info[:24]}")
                 return file_info
             self._media_log("warning", f"图片{label}上传未拿到 file_info")
-            if label == "直传":
-                # Protocol-level failure, not a per-file one: the answer carried no
-                # `upload_url` at all (09-27 live log), or the apply request was refused
-                # outright (see `_media_upload_legacy`). Remember it so the next image
-                # does not pay for the same guaranteed-failing request; `connect()` and
-                # a successful reconnect clear the flag, so a platform that brings the
-                # old flow back is picked up again.
-                self._legacy_upload_unsupported = True
-                self._media_log("info", "直传协议已不再返回 file_info，本连接后续只用分片上传")
         return ""
 
     async def send_private_image(
