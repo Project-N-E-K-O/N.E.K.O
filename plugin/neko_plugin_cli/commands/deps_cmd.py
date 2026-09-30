@@ -320,7 +320,7 @@ def _pip_install_to_vendor(
     sources, kinds = _pip_package_sources(python)
     uncovered = [
         kind for kind in sorted(kinds)
-        if not any(os.environ.get(name) for name in _UV_COVERS[kind])
+        if not any(_uv_env_set(name) for name in _UV_COVERS[kind])
     ]
     if uncovered:
         needed = "; ".join(
@@ -449,6 +449,16 @@ def _config_source_keys(path: Path) -> set[str]:
         for key, value in parser[section].items()
         if not (key.replace("_", "-") == "no-index" and _pip_false(value))
     } & _PIP_INDEX_KEYS
+
+
+def _uv_env_set(name: str) -> bool:
+    value = os.environ.get(name)
+    if not value:
+        return False
+    if name == "UV_NO_INDEX":
+        # uv parses this as a boolean: "0" / "false" leave PyPI enabled.
+        return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
+    return True
 
 
 def _pip_false(value: str) -> bool:

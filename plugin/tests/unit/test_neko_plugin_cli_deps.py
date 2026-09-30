@@ -64,6 +64,10 @@ def _missing_pip_then_uv(calls):
           "UV_INDEX": "https://private/simple"}, None, False),
         ({"PIP_INDEX_URL": "https://private/simple", "PIP_FIND_LINKS": "/wheels",
           "UV_INDEX": "https://private/simple", "UV_FIND_LINKS": "/wheels"}, None, True),
+        # A false UV_NO_INDEX leaves uv's PyPI enabled.
+        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "0"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_NO_INDEX": "false"}, None, False),
+        ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "True"}, None, True),
         # An explicitly disabled no-index is not a restriction.
         ({"PIP_NO_INDEX": "false"}, None, True),
         ({}, "[global]\nno-index = off\n", True),
