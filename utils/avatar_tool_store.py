@@ -663,6 +663,17 @@ class AvatarToolStore:
             # 撤授权没落盘就清副本，崩溃后授权可能重新出现在半删的副本旁边。
             _fsync_directory(marker.parent, strict=True)
         except OSError as exc:
+            # 副本还在，但授权在本进程里可能已经没了：不补回去的话，同 ID 的删除
+            # 重试会把它当成授权缺失的删除残留，一直返回 tool_delete_pending。补一份
+            # 对不上的授权，回到「保留副本」状态，重试会重新走这条丢弃路径。
+            try:
+                with marker.open("x", encoding="utf-8") as stream:
+                    stream.write("{}")
+            except FileExistsError:
+                pass
+            except OSError:
+                # 连授权都补不回去：交给恢复，没有授权文件的 .deleting 按已确认删除清理。
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
             raise AvatarToolStoreError(
                 "tool_delete_failed",
                 "Avatar tool could not be deleted",

@@ -1642,6 +1642,8 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tm
     marker.write_bytes(b"{")
     retained_record = (deleting / "record.json").read_bytes()
 
+    real_fsync = os.fsync
+
     def failing_fsync(_fd):
         raise OSError("simulated I/O error")
 
@@ -1653,6 +1655,14 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(tm
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
     assert (deleting / "record.json").read_bytes() == retained_record
     assert final.is_dir()
+    # 回到「保留副本」状态：授权还在（对不上），同一进程里重试删除就能成功，
+    # 不会卡在 tool_delete_pending 直到重启。
+    assert marker.is_file()
+    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
+    assert store.delete_tool(tool_id) == tool_id
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert not final.exists()
 
 
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
