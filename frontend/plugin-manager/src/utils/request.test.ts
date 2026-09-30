@@ -404,6 +404,41 @@ describe('mutation CSRF guard', () => {
     tokenBootstrap.mockRestore()
   })
 
+  it('does not retry a bootstrap 403 as the lifecycle mutation', async () => {
+    const retryAdapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
+      data: { csrf_token: 'fresh-token' },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+      request: {},
+    }))
+    const bootstrapError = Object.assign(new Error('bootstrap rejected'), {
+      config: {
+        url: '/security/csrf-token',
+        method: 'get',
+        headers: {},
+        adapter: retryAdapter,
+      },
+      response: {
+        status: 403,
+        data: { error_code: 'csrf_validation_failed' },
+        headers: {},
+      },
+      isAxiosError: true,
+      name: 'AxiosError',
+    })
+    const tokenBootstrap = vi.spyOn(axios, 'get').mockRejectedValue(bootstrapError)
+    const mutationAdapter = vi.fn()
+
+    await expect(request.post('/plugin/demo/stop', {}, { adapter: mutationAdapter }))
+      .rejects.toMatchObject({ response: { status: 403 } })
+    expect(tokenBootstrap).toHaveBeenCalledTimes(1)
+    expect(retryAdapter).not.toHaveBeenCalled()
+    expect(mutationAdapter).not.toHaveBeenCalled()
+    tokenBootstrap.mockRestore()
+  })
+
   it('bootstraps the token, attaches it, and retries one rejected mutation', async () => {
     const tokenBootstrap = vi.spyOn(axios, 'get').mockResolvedValue({
       data: { csrf_token: 'csrf-test-token' },

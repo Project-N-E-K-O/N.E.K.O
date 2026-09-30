@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -46,6 +47,11 @@ def _valid_headers() -> dict[str, str]:
         "Origin": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}",
         "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN,
     }
+
+
+def test_non_ascii_token_is_rejected_without_compare_digest_error() -> None:
+    request = SimpleNamespace(headers={"X-CSRF-Token": "é"})
+    assert mutation_auth._valid_token(request) is False
 
 
 LIFECYCLE_MUTATIONS = [

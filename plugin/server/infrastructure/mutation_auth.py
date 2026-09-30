@@ -122,7 +122,13 @@ def _has_browser_metadata(request: Request) -> bool:
 
 def _valid_token(request: Request) -> bool:
     token = request.headers.get(_CSRF_HEADER, "")
-    return bool(token and AUTOSTART_CSRF_TOKEN and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN))
+    try:
+        return bool(token and AUTOSTART_CSRF_TOKEN and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN))
+    except (TypeError, UnicodeError):
+        # Header values are decoded from raw HTTP bytes. Reject malformed or
+        # non-ASCII values as an ordinary failed credential instead of leaking
+        # a 500 from compare_digest.
+        return False
 
 
 def _deny() -> None:

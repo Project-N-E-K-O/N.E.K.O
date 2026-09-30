@@ -167,7 +167,7 @@ function requestPath(url: unknown): string {
 }
 
 /** Only the plugin lifecycle routes are protected by this PR's CSRF contract. */
-function isPluginLifecycleMutation(config: InternalAxiosRequestConfig): boolean {
+function isPluginLifecycleMutation(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
   if (!isMutationMethod(config.method)) return false
   const path = requestPath(config.url)
   const method = config.method?.toLowerCase()
@@ -287,7 +287,12 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
     const requestConfig = error.config as ErrorDisplayRequestConfig | undefined
-    if (isCsrfValidationFailure(error) && requestConfig && !requestConfig.csrfRetryAttempted) {
+    if (
+      isCsrfValidationFailure(error)
+      && requestConfig
+      && isPluginLifecycleMutation(requestConfig)
+      && !requestConfig.csrfRetryAttempted
+    ) {
       // A rotated token can invalidate an in-flight request. Retry exactly
       // once, and only discard the token that this request actually sent so a
       // newer concurrent bootstrap result cannot be clobbered.
