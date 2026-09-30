@@ -204,10 +204,19 @@ async def get_core_config_api():
             or runtime_core_config.get('CORE_API_TYPE')
             or _core_api_provider
         ).strip().lower()
-        from main_logic.asr_client import get_asr_core_capabilities
+        from main_logic.asr_client import (
+            get_asr_core_capabilities,
+            is_local_asr_available,
+        )
         _core_asr_capabilities = get_asr_core_capabilities(
             _effective_core_api_provider
         )
+        try:
+            # find_spec walks sys.path finders; keep it off the event loop.
+            _local_asr_available = await asyncio.to_thread(is_local_asr_available)
+        except Exception:
+            logger.warning('Unable to probe local ASR availability', exc_info=True)
+            _local_asr_available = False
         _fallback_providers = {_core_api_provider, _assist_api_provider}
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
@@ -226,6 +235,9 @@ async def get_core_config_api():
                 if _core_asr_capabilities is None
                 else _core_asr_capabilities.supports_independent_asr
             ),
+            # Whether the optional local ASR dependency is installed. Packaged
+            # builds do not ship it, so the settings UI hides the option.
+            "localAsrAvailable": _local_asr_available,
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),

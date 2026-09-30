@@ -560,6 +560,8 @@
         "clearScreenshotsConfirm": "确定要清空所有待发送的截图吗？"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "本地语音识别模型准备超时，本次语音输入已停止。第一次使用需要从 HuggingFace 下载模型；网络较慢或连不上时，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "本地语音识别排队等待太久，本次语音输入已停止。可能是之前的识别还没结束，请稍后重新开始语音会话；如果经常出现，可以关闭本地语音识别。",
         "emotionTimeout": "情感分析超时",
         "noAudioTrack": "没有可用的音频轨道",
         "cameraStreamFailed": "无法获取摄像头流",
@@ -1175,7 +1177,16 @@
         "voiceRecognitionSettingsPending": "◐ 设置将在下次语音会话生效",
         "voiceResourceOptimization": "智能资源优化",
         "voiceResourceOptimizationHintOn": "空闲时减少连接和音频上传",
-        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用"
+        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用",
+        "localAsr": "本地语音识别",
+        "localAsrHint": "在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型",
+        "localAsrDependencyMissing": "本地语音识别需要 faster-whisper，但尚未安装，本次语音输入已停止。请先安装，或关闭本地语音识别，然后重新开始语音会话。",
+        "localAsrPreparing": "正在加载本地语音识别模型，第一次使用还需要先下载，可能要几分钟。模型就绪后会识别你的第一句话，请稍候再继续说。",
+        "localAsrModelLoadFailed": "本地语音识别模型加载失败，本次语音输入已停止。首次使用需要从 HuggingFace 下载模型；如果连不上，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "localAsrReloading": "正在重新加载本地语音识别模型，请稍候。模型就绪后会识别你的第一句话。",
+        "localAsrReady": "本地语音识别已就绪",
+        "localAsrWarmupTimeout": "本地语音识别模型准备超时，本次语音输入已停止。第一次使用需要从 HuggingFace 下载模型；网络较慢或连不上时，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "localAsrQueueTimeout": "本地语音识别排队等待太久，本次语音输入已停止。可能是之前的识别还没结束，请稍后重新开始语音会话；如果经常出现，可以关闭本地语音识别。"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -1286,6 +1297,7 @@
             "qwen": "通义千问",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper（本地）",
             "free": "免费版",
             "dummy": "测试服务",
             "unknown": "未知服务"

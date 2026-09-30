@@ -560,6 +560,8 @@
         "clearScreenshotsConfirm": "保留中のすべてのスクリーンショットをクリアしてもよろしいですか？"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "ローカル音声認識モデルの準備がタイムアウトしました。今回の音声入力は停止しました。初回利用時は HuggingFace からモデルをダウンロードします。接続が遅い、または接続できない場合は、環境変数 HF_ENDPOINT（例: https://hf-mirror.com）を設定してから再起動するか、ローカル音声認識をオフにしてください。",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "ローカル音声認識の順番待ちが長すぎたため、今回の音声入力は停止しました。前の認識がまだ終わっていない可能性があります。少し待ってから音声セッションを開始し直してください。頻繁に起きる場合はローカル音声認識をオフにしてください。",
         "emotionTimeout": "感情分析がタイムアウトしました",
         "noAudioTrack": "利用可能なオーディオトラックがありません",
         "cameraStreamFailed": "カメラストリームの取得に失敗しました",
@@ -1175,7 +1177,16 @@
         "voiceRecognitionSettingsPending": "◐ 設定は次の音声セッションから反映されます",
         "voiceResourceOptimization": "スマートリソース最適化",
         "voiceResourceOptimizationHintOn": "待機中の接続と音声アップロードを減らします",
-        "voiceResourceOptimizationHintOff": "音声認識を常時維持するため、通信量とリソース使用量が増える場合があります"
+        "voiceResourceOptimizationHintOff": "音声認識を常時維持するため、通信量とリソース使用量が増える場合があります",
+        "localAsr": "ローカル音声認識",
+        "localAsrHint": "faster-whisper を使ってこのコンピューター上で音声を認識します。faster-whisper の別途インストールが必要で、初回利用時にモデルをダウンロードします",
+        "localAsrDependencyMissing": "ローカル音声認識には faster-whisper が必要ですが、インストールされていません。今回の音声入力は停止しました。インストールするか、ローカル音声認識をオフにしてから、新しい音声セッションを開始してください。",
+        "localAsrPreparing": "ローカル音声認識モデルを読み込んでいます。初回はダウンロードも必要で、数分かかることがあります。モデルの準備ができると最初の発話を認識しますので、続きは少し待ってから話してください。",
+        "localAsrModelLoadFailed": "ローカル音声認識モデルを読み込めませんでした。今回の音声入力は停止しました。初回利用時は HuggingFace からモデルをダウンロードします。接続できない場合は、環境変数 HF_ENDPOINT（例: https://hf-mirror.com）を設定してから再起動するか、ローカル音声認識をオフにしてください。",
+        "localAsrReloading": "ローカル音声認識モデルを再読み込みしています。しばらくお待ちください。準備ができると最初の発話を認識します。",
+        "localAsrReady": "ローカル音声認識の準備ができました",
+        "localAsrWarmupTimeout": "ローカル音声認識モデルの準備がタイムアウトしました。今回の音声入力は停止しました。初回利用時は HuggingFace からモデルをダウンロードします。接続が遅い、または接続できない場合は、環境変数 HF_ENDPOINT（例: https://hf-mirror.com）を設定してから再起動するか、ローカル音声認識をオフにしてください。",
+        "localAsrQueueTimeout": "ローカル音声認識の順番待ちが長すぎたため、今回の音声入力は停止しました。前の認識がまだ終わっていない可能性があります。少し待ってから音声セッションを開始し直してください。頻繁に起きる場合はローカル音声認識をオフにしてください。"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",
@@ -1286,6 +1297,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper（ローカル）",
             "free": "無料版",
             "dummy": "テスト用プロバイダー",
             "unknown": "不明なプロバイダー"

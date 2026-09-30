@@ -7,6 +7,8 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
+APP_SCREEN = ROOT / "static" / "app" / "app-screen.js"
+DESKTOP_CAPTURE_PROVIDER = ROOT / "static" / "app" / "desktop-capture-provider.js"
 VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
@@ -18,6 +20,7 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
     "window:neko:core-api-capability-changed",
+    "window:neko:conversation-settings-hydrated",
     "window:neko:speaker-device-changed",
     "window:neko:screen-source-changed",
 )
@@ -134,6 +137,7 @@ def _install_voice_popover_harness(
         independentAsrActive: true,
         independentAsrProvider: 'qwen',
         voiceInputResourceOptimizationEnabled: true,
+        localAsrAvailable: true,
         voiceInputLifecycleState: 'active',
         voiceSessionStartEpoch: 10,
         voiceSettingsPendingUntilEpoch: null,
@@ -355,6 +359,7 @@ def _install_voice_popover_harness(
     )
     harness = harness.replace("__PERMISSION_SOURCE__", permission_source)
     harness = harness.replace("__RENDER_EXPRESSION__", render_expression)
+    page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
     page.add_script_tag(content=harness)
 
 
@@ -625,9 +630,304 @@ def test_voice_popover_toggles_have_accessible_names_and_hints(
         }"""
     )
 
-    assert len(result) == 2
+    # noise reduction, resource optimization, local speech recognition
+    assert len(result) == 3
     assert all(item["labelId"] and item["labelText"] for item in result)
     assert all(item["hintId"] and item["hintText"] for item in result)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("available", "preference", "expected_inputs"),
+    [
+        # Packaged build without faster-whisper: the option is not offered.
+        (False, "auto", 2),
+        (None, "auto", 2),
+        # Installed earlier and since removed: stay visible so it can be undone.
+        (False, "faster_whisper", 3),
+        (True, "auto", 3),
+    ],
+)
+def test_local_asr_toggle_is_offered_only_when_available_or_already_on(
+    page: Page,
+    available,
+    preference: str,
+    expected_inputs: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async ([available, preference]) => {
+            const test = window.__voicePopoverTest;
+            test.state.localAsrAvailable = available;
+            test.state.independentAsrProviderPreference = preference;
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const labels = Array.from(
+                panel.querySelectorAll('[data-i18n]')
+            ).map((node) => node.getAttribute('data-i18n'));
+            const status = panel.querySelector(
+                '.neko-voice-recognition-status'
+            ).textContent;
+            return {
+                count: inputs.length,
+                hasLocal: labels.indexOf('microphone.localAsr') !== -1,
+                localChecked: inputs.length > 2 ? inputs[2].checked : null,
+                status,
+            };
+        }""",
+        [available, preference],
+    )
+
+    assert result["count"] == expected_inputs
+    assert result["hasLocal"] is (expected_inputs == 3)
+    if expected_inputs == 3:
+        assert result["localChecked"] is (preference == "faster_whisper")
+    # The rest of the panel still renders its status without the toggle.
+    assert result["status"]
+
+
+@pytest.mark.frontend
+def test_local_asr_toggle_follows_availability_that_arrives_while_open(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = null;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            function snapshot() {
+                const inputs = panel.querySelectorAll('input[type="checkbox"]');
+                const order = Array.from(
+                    panel.querySelectorAll(
+                        '[data-i18n], .neko-voice-recognition-status'
+                    )
+                ).map((node) => node.getAttribute('data-i18n') || 'status');
+                return { count: inputs.length, order };
+            }
+            const beforeRefresh = snapshot();
+
+            // The capability refresh resolves after the panel opened.
+            state.localAsrAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const afterAvailable = snapshot();
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const lateInput = inputs[2];
+            lateInput.checked = true;
+            lateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const preferenceAfterLateToggle = state.independentAsrProviderPreference;
+
+            // Unavailable again, but the preference is on: keep it so it can
+            // be turned off.
+            state.localAsrAvailable = false;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const keptWhileOn = snapshot();
+
+            // Unavailable and the preference is off: drop the option.
+            state.independentAsrProviderPreference = 'auto';
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const afterUnavailable = snapshot();
+            return {
+                beforeRefresh,
+                afterAvailable,
+                preferenceAfterLateToggle,
+                keptWhileOn,
+                afterUnavailable,
+            };
+        }"""
+    )
+
+    assert result["beforeRefresh"]["count"] == 2
+    assert result["afterAvailable"]["count"] == 3
+    order = result["afterAvailable"]["order"]
+    # Same place as when created up front: after resource optimization and
+    # before the status line.
+    assert order.index("microphone.localAsr") > order.index(
+        "microphone.voiceResourceOptimizationHintOn"
+    )
+    assert order.index("microphone.localAsr") < order.index("status")
+    assert order[-1] == "status"
+    assert result["preferenceAfterLateToggle"] == "faster_whisper"
+    assert result["keptWhileOn"]["count"] == 3
+    assert result["afterUnavailable"]["count"] == 2
+    assert "microphone.localAsr" not in result["afterUnavailable"]["order"]
+
+
+@pytest.mark.frontend
+def test_late_local_asr_toggle_is_disabled_while_the_master_switch_is_off(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = null;
+            state.independentAsrEnabled = false;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+
+            state.localAsrAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const lateInput = panel.querySelectorAll('input[type="checkbox"]')[2];
+            const disabled = lateInput.disabled;
+            lateInput.checked = true;
+            lateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return {
+                disabled,
+                preference: state.independentAsrProviderPreference,
+            };
+        }"""
+    )
+
+    assert result["disabled"] is True
+    assert result["preference"] == "auto"
+
+
+@pytest.mark.frontend
+def test_local_asr_toggle_follows_the_preference_hydrated_while_open(
+    page: Page,
+) -> None:
+    # Local ASR is known to be unavailable, the panel opens before the settings
+    # GET lands, then the persisted preference turns out to be faster_whisper:
+    # the switch must appear so the user can turn it off.
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = false;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const count = () => panel.querySelectorAll('input[type="checkbox"]').length;
+            const before = count();
+
+            state.independentAsrProviderPreference = 'faster_whisper';
+            window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
+            const afterHydration = count();
+
+            // Turning it off while unavailable folds the switch away at once.
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const localInput = inputs[inputs.length - 1];
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return {
+                before,
+                afterHydration,
+                afterTurnOff: count(),
+                preference: state.independentAsrProviderPreference,
+            };
+        }"""
+    )
+
+    assert result["before"] == 2
+    assert result["afterHydration"] == 3
+    assert result["afterTurnOff"] == 2
+    assert result["preference"] == "auto"
+
+
+@pytest.mark.frontend
+def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            const localInput = panel.querySelectorAll('input[type="checkbox"]')[2];
+            const initial = {
+                checked: localInput.checked,
+                disabled: localInput.disabled,
+            };
+
+            localInput.checked = true;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterEnable = {
+                preference: state.independentAsrProviderPreference,
+                saveCalls: window.__saveCalls,
+                pendingEpoch: state.voiceSettingsPendingUntilEpoch,
+            };
+
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterDisable = state.independentAsrProviderPreference;
+
+            // Master switch off: the provider choice cannot be edited.
+            const asrInput = test.voiceToggle();
+            asrInput.checked = false;
+            asrInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const masterOffDisabled = localInput.disabled;
+            asrInput.checked = true;
+            asrInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            // Free Core: the saved choice stays visible and can be switched
+            // off, but not back on while the Core cannot use it.
+            state.independentAsrProviderPreference = 'faster_whisper';
+            state.coreApiSupportsIndependentAsr = false;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const freeView = {
+                checked: localInput.checked,
+                disabled: localInput.disabled,
+            };
+            const saveCallsBefore = window.__saveCalls;
+            localInput.checked = false;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const freeAfterChange = {
+                preference: state.independentAsrProviderPreference,
+                saveCalls: window.__saveCalls - saveCallsBefore,
+                disabled: localInput.disabled,
+            };
+            localInput.checked = true;
+            localInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const freeReenable = state.independentAsrProviderPreference;
+            return {
+                initial,
+                afterEnable,
+                afterDisable,
+                masterOffDisabled,
+                freeView,
+                freeAfterChange,
+                freeReenable,
+            };
+        }"""
+    )
+
+    assert result["initial"] == {"checked": False, "disabled": False}
+    assert result["afterEnable"]["preference"] == "faster_whisper"
+    assert result["afterEnable"]["saveCalls"] >= 1
+    assert result["afterEnable"]["pendingEpoch"] == 11
+    assert result["afterDisable"] == "auto"
+    assert result["masterOffDisabled"] is True
+    assert result["freeView"] == {"checked": True, "disabled": False}
+    assert result["freeAfterChange"]["preference"] == "auto"
+    assert result["freeAfterChange"]["saveCalls"] >= 1
+    assert result["freeAfterChange"]["disabled"] is True
+    assert result["freeReenable"] == "auto"
 
 
 @pytest.mark.frontend
@@ -703,7 +1003,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
+@pytest.mark.parametrize("capability", [False, True, "browser"])
 def test_screen_source_hover_defers_prompting_enumeration(
     page: Page, capability: bool | str,
 ) -> None:
@@ -717,15 +1017,12 @@ def test_screen_source_hover_defers_prompting_enumeration(
     page.evaluate(
         """(capability) => {
             window.getDesktopCaptureProvider = () => capability === 'browser'
-                ? null : {
-                    getSources() {},
-                    sourceEnumerationMayPrompt: capability === 'unknown'
-                        ? undefined : capability,
-                };
+                ? null : { getSources() {}, sourceEnumerationMayPrompt: capability };
         }""",
         capability,
     )
-    prompting = capability is True or capability == "unknown"
+    # Unflagged providers are covered per platform by the tests below.
+    prompting = capability is True
     action = page.locator('[data-neko-mic-main-action="screen"]')
     action.hover()
     page.wait_for_function("window.__screenRenderOptions.length === 1")
@@ -747,6 +1044,146 @@ def test_screen_source_hover_defers_prompting_enumeration(
     assert page.evaluate("window.__screenRenderOptions") == expected
     assert page.locator(".screen-source-title-filter").count() == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("capability", "platform", "prompting"),
+    [
+        # Legacy bridges without the flag: only Linux may show a portal.
+        (None, "Macintosh; Intel Mac OS X 14_0", False),
+        (None, "Windows NT 10.0; Win64; x64", False),
+        (None, "X11; Linux x86_64", True),
+        (None, "Linux; Android 14; Pixel 8", False),
+        # An explicit flag always wins over the platform guess.
+        (True, "Macintosh; Intel Mac OS X 14_0", True),
+        (False, "X11; Linux x86_64", False),
+    ],
+)
+def test_screen_source_hover_infers_legacy_provider_prompting(
+    page: Page, capability: bool | None, platform: str, prompting: bool,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """([capability, platform]) => {
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
+            });
+            window.getDesktopCaptureProvider = () => {
+                const provider = { getSources() {} };
+                if (capability !== null) {
+                    provider.sourceEnumerationMayPrompt = capability;
+                }
+                return provider;
+            };
+        }""",
+        [capability, platform],
+    )
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.wait_for_function("window.__screenRenderOptions.length === 1")
+    assert page.evaluate("window.__screenRenderOptions") == [
+        {"deferEnumeration": prompting}
+    ]
+    load = page.locator("[data-neko-screen-source-deferred-load]")
+    assert load.count() == (1 if prompting else 0)
+    assert page.locator(".screen-source-title-filter").count() == (
+        0 if prompting else 1
+    )
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("platform", "prompting"),
+    [
+        ("Macintosh; Intel Mac OS X 14_0", False),
+        ("Windows NT 10.0; Win64; x64", False),
+        ("X11; Linux x86_64", True),
+    ],
+)
+def test_legacy_provider_hover_runs_real_source_enumeration(
+    page: Page, platform: str, prompting: bool,
+) -> None:
+    """Hover drives the real app-screen.js list against an unflagged bridge."""
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """(platform) => {
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (' + platform + ') AppleWebKit/537.36 Chrome/130 Safari/537.36',
+            });
+            const storedValues = new Map();
+            Object.defineProperty(window, 'localStorage', {
+                configurable: true,
+                value: {
+                    getItem: (key) => (storedValues.has(key) ? storedValues.get(key) : null),
+                    setItem: (key, value) => { storedValues.set(key, String(value)); },
+                    removeItem: (key) => { storedValues.delete(key); },
+                },
+            });
+            window.appUtils.isMobile = () => false;
+            window.appConst.SCREEN_SOURCE_THUMBNAIL_TIMEOUT = 15000;
+            window.safeT = (_key, fallback) => fallback;
+            window.__getSourcesCalls = [];
+            const emptyThumbnail = { isEmpty: () => true, toDataURL: () => '' };
+            // A bridge from before sourceEnumerationMayPrompt existed.
+            window.electronDesktopCapturer = {
+                getSources(options) {
+                    window.__getSourcesCalls.push(options);
+                    return Promise.resolve([
+                        { id: 'screen:1', name: 'Entire Screen', display_id: '1', thumbnail: emptyThumbnail },
+                        { id: 'window:2', name: 'Editor', display_id: '', thumbnail: emptyThumbnail },
+                    ]);
+                },
+            };
+        }""",
+        platform,
+    )
+    page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
+    page.add_script_tag(path=str(APP_SCREEN))
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"]'
+    )
+    load = panel.locator("[data-neko-screen-source-deferred-load]")
+    options = panel.locator(".screen-source-option")
+    if prompting:
+        load.wait_for()
+        assert page.evaluate("window.__getSourcesCalls.length") == 0
+        assert options.count() == 0
+        load.click()
+
+    options.first.wait_for()
+    assert options.count() == 2
+    if prompting:
+        # A second getSources would reopen the portal on Wayland; the
+        # thumbnail phase must reuse the first enumeration.
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__getSourcesCalls.length") == 1
+    else:
+        # Names first, then one cached thumbnail batch.
+        page.wait_for_function("window.__getSourcesCalls.length === 2")
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__getSourcesCalls.length") == 2
+        assert page.evaluate(
+            "window.__getSourcesCalls[1].thumbnailCache"
+        ) is True
+    # Prompting providers keep a "choose again" button above the list;
+    # macOS / Windows list sources with no extra button at all.
+    assert load.count() == (1 if prompting else 0)
     assert page.evaluate("window.__screenToggleCalls") == 0
 
 

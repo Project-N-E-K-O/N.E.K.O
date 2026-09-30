@@ -560,6 +560,8 @@
         "clearScreenshotsConfirm": "Are you sure you want to clear all pending screenshots?"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening.",
         "emotionTimeout": "Emotion analysis timeout",
         "noAudioTrack": "No available audio track",
         "cameraStreamFailed": "Failed to get camera stream",
@@ -1175,7 +1177,16 @@
         "voiceRecognitionSettingsPending": "◐ Settings take effect in the next voice session",
         "voiceResourceOptimization": "Smart Resource Optimization",
         "voiceResourceOptimizationHintOn": "Reduces connections and audio uploads while idle",
-        "voiceResourceOptimizationHintOff": "Keeps speech recognition active and may use more network and system resources"
+        "voiceResourceOptimizationHintOff": "Keeps speech recognition active and may use more network and system resources",
+        "localAsr": "Local speech recognition",
+        "localAsrHint": "Recognizes speech on this computer with faster-whisper. Requires a separate faster-whisper install; the model downloads on first use",
+        "localAsrDependencyMissing": "Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.",
+        "localAsrPreparing": "Loading the local speech recognition model. The first use also downloads it, which can take a few minutes. Your first sentence is recognized once the model is ready; please wait before saying more.",
+        "localAsrModelLoadFailed": "The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
+        "localAsrReloading": "Reloading the local speech recognition model, please wait. Your first sentence is recognized once the model is ready.",
+        "localAsrReady": "Local speech recognition is ready",
+        "localAsrWarmupTimeout": "The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.",
+        "localAsrQueueTimeout": "Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening."
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -1286,6 +1297,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper (local)",
             "free": "Free Version",
             "dummy": "Test provider",
             "unknown": "Unknown provider"
