@@ -903,6 +903,23 @@ def test_uid_without_account_record_uses_the_shared_fallback(tmp_path, monkeypat
     assert locks == {shared / f"neko-plugin-sync-{me}"}
 
 
+@pytest.mark.parametrize("tmp_usable", [True, False])
+def test_shared_tmp_prefers_a_usable_posix_tmp(tmp_path, monkeypatch, tmp_usable):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    other = tmp_path / "tmpdir"
+    monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(other))
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", lambda self: True if self == Path("/tmp") else real_is_dir(self)
+    )
+    monkeypatch.setattr(
+        deps_cmd.os, "access", lambda path, mode: tmp_usable if Path(path) == Path("/tmp") else True
+    )
+
+    assert deps_cmd._shared_tmp() == (Path("/tmp") if tmp_usable else other)
+
+
 def test_mount_found_in_finished_staging_stops_the_sync(tmp_path, monkeypatch, capsys):
     # _clean_vendor would recurse into it and the swap would expose it as
     # vendor/; keep staging as it is and leave vendor/ alone.

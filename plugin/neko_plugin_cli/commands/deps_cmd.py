@@ -359,9 +359,13 @@ def _lock_cache_base() -> Path | None:
 
 def _shared_tmp() -> Path:
     # The POSIX /tmp rather than gettempdir(), which follows TMPDIR and so
-    # could differ between two processes of the same user.
+    # could differ between two processes of the same user. Every process of
+    # one uid sees /tmp's usability the same way, so the choice stays stable;
+    # an unusable /tmp (read-only in some containers) falls back to TMPDIR.
     fixed = Path("/tmp")
-    return fixed if fixed.is_dir() else Path(gettempdir())
+    if fixed.is_dir() and os.access(fixed, os.W_OK | os.X_OK):
+        return fixed
+    return Path(gettempdir())
 
 
 def _make_private(directory: Path) -> None:
