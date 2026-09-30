@@ -482,10 +482,16 @@ async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
     # patching stdlib time would hand the fake to every background thread too.
     # The unified deadline now uses the event loop's monotonic clock. Patch
     # only the module's clock view; scheduler timers retain their real clock.
+    real_loop = asyncio.get_running_loop()
+    class _ClockLoop:
+        def time(self):
+            return real_monotonic() + (14.0 if stalled["on"] else 0.0)
+
+        def __getattr__(self, name):
+            return getattr(real_loop, name)
+
     module_asyncio = SimpleNamespace(**vars(asyncio))
-    module_asyncio.get_running_loop = lambda: SimpleNamespace(
-        time=lambda: real_monotonic() + (14.0 if stalled["on"] else 0.0)
-    )
+    module_asyncio.get_running_loop = lambda: _ClockLoop()
     monkeypatch.setattr(lifecycle_module, "asyncio", module_asyncio)
     mgr = _make_deduping_manager(route_mode="blocked")
     calls = _record_dedupe_calls(mgr)

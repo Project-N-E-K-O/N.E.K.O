@@ -690,7 +690,10 @@ class LifecycleMixin:
         except Exception:
             return ''
 
-    async def _handle_session_start_exception(self, e: BaseException, input_mode: str, diag_start: float) -> None:
+    async def _handle_session_start_exception(
+        self, e: BaseException, input_mode: str, diag_start: float,
+        *, request_id=None, also_notify=None,
+    ) -> None:
         """Unified handling of session start failure: log, send the status code, send_session_failed, cleanup.
 
         Used by start_session's outer except, covering both the prelude
@@ -774,7 +777,9 @@ class LifecycleMixin:
                 self._check_start_operation()
 
         # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
-        await self.send_session_failed(input_mode)
+        await self.send_session_failed(
+            input_mode, request_id=request_id, also_notify=also_notify,
+        )
         self._check_start_operation()
         if self._current_start_request() is not None:
             # The frontend has a terminal result. Retirement owns the input
@@ -1052,7 +1057,10 @@ class LifecycleMixin:
             raise
         except Exception as exc:
             if operation.valid and self._start_operation is operation:
-                await self._handle_session_start_exception(exc, input_mode, diag_start)
+                await self._handle_session_start_exception(
+                    exc, input_mode, diag_start,
+                    request_id=request_id, also_notify=websocket,
+                )
         finally:
             if new_dialog_task is not None and not new_dialog_task.done():
                 new_dialog_task.cancel()
