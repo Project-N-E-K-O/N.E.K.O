@@ -1570,6 +1570,12 @@
         return '';
     }
 
+    function independentAsrFailureToastText(reason) {
+        var t = window.t;
+        return independentAsrReasonToastText(reason)
+            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
+    }
+
     function clearLocalAsrPreparingNotice() {
         S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
@@ -1578,7 +1584,7 @@
     }
 
     function tearDownBlockedVoiceRoute() {
-
+    clearLocalAsrPreparingNotice();
     removeExternalAsrPreview();
     S.independentAsrActive = false;
     // Set the sticky bit before publishing. The host bridge reacts
@@ -2359,15 +2365,19 @@
      * only bypasses completed cache data; the generation fence remains a
      * defensive guard around request publication.
      */
-    function publishCoreApiCapability(provider, capability) {
+    function publishCoreApiCapability(provider, capability, localAsrAvailable) {
         var previousProvider = S.coreApiProvider || '';
         var previousCapability = S.coreApiSupportsIndependentAsr;
+        var previousLocalAsrAvailable = S.localAsrAvailable;
         S.coreApiProvider = typeof provider === 'string' ? provider : '';
         S.coreApiSupportsIndependentAsr =
             typeof capability === 'boolean' ? capability : null;
+        S.localAsrAvailable =
+            typeof localAsrAvailable === 'boolean' ? localAsrAvailable : null;
         if (
             previousProvider !== S.coreApiProvider
             || previousCapability !== S.coreApiSupportsIndependentAsr
+            || previousLocalAsrAvailable !== S.localAsrAvailable
         ) {
             try {
                 window.dispatchEvent(new CustomEvent(
@@ -2435,7 +2445,8 @@
                 typeof data.effectiveCoreApi === 'string'
                     ? data.effectiveCoreApi
                     : data.coreApi,
-                data.supportsIndependentAsr
+                data.supportsIndependentAsr,
+                data.localAsrAvailable
             );
         }).catch(function (error) {
             console.warn('[Core API] Failed to refresh ASR capability:', error);
@@ -3757,9 +3768,6 @@
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
-                        if (lifecycleState === 'blocked') {
-                            clearLocalAsrPreparingNotice();
-                        }
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
                             'draining', 'warm_idle', 'deep_sleep', 'backoff',
@@ -3793,9 +3801,9 @@
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
-                                    var blockedReasonText = independentAsrReasonToastText(
-                                        statusDetails && statusDetails.reason
-                                    );
+                                    var blockedReason = statusDetails && statusDetails.reason;
+                                    var blockedReasonText = independentAsrFailureToastText(blockedReason);
+                                    // independentAsrFailureToastText(blockedReason)
                                     window.showStatusToast(
                                         blockedReasonText || (window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.'),
                                         5000
@@ -5475,8 +5483,7 @@
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
-                                && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
