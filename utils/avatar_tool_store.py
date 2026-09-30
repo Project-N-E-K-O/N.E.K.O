@@ -129,8 +129,27 @@ def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
         os.close(handle)
 
 
-# (deleting, marker, observed identity of deleting, observed identity of marker)
+# (deleting, marker, observed state of the copy, observed identity of marker)
 _RetainedDelete = tuple[Path, Path, tuple, tuple]
+
+
+def _retained_copy_state(deleting: Path) -> tuple:
+    """Identity of a retained copy: the directory itself plus every entry in it.
+
+    Rewriting a file in place leaves the directory's own identity unchanged, so
+    each entry is probed too (``lstat`` only, no hashing).
+    """
+    kind, _, identity, probe_error = _probe_entry_state(deleting)
+    if probe_error is not None:
+        raise probe_error
+    entries = []
+    if kind == "dir":
+        for entry in sorted(deleting.iterdir(), key=lambda path: path.name):
+            entry_kind, _, entry_identity, probe_error = _probe_entry_state(entry)
+            if probe_error is not None:
+                raise probe_error
+            entries.append((entry.name, entry_kind, entry_identity))
+    return kind, identity, tuple(entries)
 
 
 class AvatarToolStoreError(ValueError):
@@ -634,14 +653,9 @@ class AvatarToolStore:
         """
         marker = deleting.with_name(f"{deleting.name}.unverified")
         try:
-            deleting_kind, _, deleting_identity, probe_error = _probe_entry_state(deleting)
-            if probe_error is not None:
-                raise probe_error
-            # 和删除授权一样，同时绑定目录和其中的 record.json：原地改写文件不会
-            # 改变目录本身的身份。
-            record_kind, _, record_identity, probe_error = _probe_entry_state(deleting / "record.json")
-            if probe_error is not None:
-                raise probe_error
+            # 原地改写副本里的文件不会改变目录本身的身份，所以连同其中每个条目一起记下。
+            deleting_state = _retained_copy_state(deleting)
+            deleting_kind = deleting_state[0]
             marker_kind, _, marker_identity, probe_error = _probe_entry_state(marker)
             if probe_error is not None:
                 raise probe_error
@@ -655,12 +669,7 @@ class AvatarToolStore:
                 return None
         except OSError as exc:
             raise _storage_total_unavailable() from exc
-        return (
-            deleting,
-            marker,
-            (deleting_kind, deleting_identity, record_kind, record_identity),
-            (marker_kind, marker_identity),
-        )
+        return deleting, marker, deleting_state, (marker_kind, marker_identity)
 
     def _discard_retained_delete(
         self, deleting: Path, marker: Path, deleting_state: tuple, marker_state: tuple
@@ -668,15 +677,16 @@ class AvatarToolStore:
         """Drop a retained unconfirmed delete copy on an explicit delete of its ID."""
         # 只丢弃最初观察到的那份副本和授权：从观察到现在（修订号校验、写入围栏期间）
         # 同步客户端换进来的东西可能是更新的版本，对不上就整个拒绝，什么都不动。
-        current_states = []
-        for path in (deleting, deleting / "record.json", marker):
-            kind, _, identity, probe_error = _probe_entry_state(path)
-            if probe_error is not None:
-                raise _storage_total_unavailable() from probe_error
-            current_states.append((kind, identity))
+        try:
+            current_deleting_state = _retained_copy_state(deleting)
+        except OSError as exc:
+            raise _storage_total_unavailable() from exc
+        marker_kind, _, marker_identity, probe_error = _probe_entry_state(marker)
+        if probe_error is not None:
+            raise _storage_total_unavailable() from probe_error
         if (
-            (*current_states[0], *current_states[1]) != deleting_state
-            or current_states[2] != marker_state
+            current_deleting_state != deleting_state
+            or (marker_kind, marker_identity) != marker_state
         ):
             raise AvatarToolStoreError(
                 "tool_delete_failed",

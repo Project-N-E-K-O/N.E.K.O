@@ -1682,7 +1682,7 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     assert not final.exists()
 
 
-@pytest.mark.parametrize("replaced", ("copy", "record-in-place", "marker"))
+@pytest.mark.parametrize("replaced", ("copy", "record-in-place", "resource-in-place", "marker"))
 def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_path, monkeypatch, replaced):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -1706,6 +1706,10 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
         elif replaced == "record-in-place":
             # 原地改写同一个文件：目录本身的身份不变，只有 record.json 的变了。
             (deleting / "record.json").write_bytes(synced_record)
+        elif replaced == "resource-in-place":
+            # 原地改写一张图片：目录和 record.json 的身份都不变。
+            resource = next(path for path in deleting.iterdir() if path.suffix == ".png")
+            resource.write_bytes(resource.read_bytes() + b"synced")
         else:
             marker.unlink()
             marker.write_bytes(b"[]")
@@ -1719,8 +1723,10 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
     assert deleting.is_dir()
     assert marker.is_file()
     assert final.is_dir()
-    if replaced != "marker":
+    if replaced in ("copy", "record-in-place"):
         assert (deleting / "record.json").read_bytes() == synced_record
+    if replaced == "resource-in-place":
+        assert any(path.read_bytes().endswith(b"synced") for path in deleting.glob("*.png"))
 
 
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
