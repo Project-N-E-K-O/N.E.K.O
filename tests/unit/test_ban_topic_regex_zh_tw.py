@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import re._constants as _sre  # 私有模块：结构判据要看解析树（项目锁 Python 3.11）
+import re._parser as _sre_parser
 import unicodedata
 
 import pytest
@@ -48,6 +50,81 @@ def _zh_terms(text: str) -> set[str]:
 
 def _zh_pattern_sources() -> list[str]:
     return [raw for locale, _kind, raw in D._PATTERNS_RAW if locale == "zh"]
+
+
+_REPEATS = (_sre.MAX_REPEAT, _sre.MIN_REPEAT)
+_NOT_SPACE_CATEGORIES = (_sre.CATEGORY_NOT_SPACE, _sre.CATEGORY_UNI_NOT_SPACE)
+
+
+def _class_is_whitespace_only(items) -> bool:
+    if items and items[0][0] is _sre.NEGATE:
+        # ``[^\S...]``: a negated class that excludes every non-space is a subset of \s
+        return any(op is _sre.CATEGORY and av in _NOT_SPACE_CATEGORIES for op, av in items[1:])
+    return all(
+        (op is _sre.LITERAL and chr(av).isspace())
+        or (op is _sre.RANGE and all(chr(c).isspace() for c in range(av[0], av[1] + 1)))
+        or (op is _sre.CATEGORY and av in (_sre.CATEGORY_SPACE, _sre.CATEGORY_UNI_SPACE))
+        for op, av in items
+    )
+
+
+def _matches_only_whitespace(seq) -> bool:
+    consumed = False
+    for op, av in seq:
+        if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
+            continue
+        if op is _sre.LITERAL:
+            ok = chr(av).isspace()
+        elif op is _sre.IN:
+            ok = _class_is_whitespace_only(av)
+        elif op is _sre.SUBPATTERN:
+            ok = _matches_only_whitespace(av[3])
+        elif op is _sre.ATOMIC_GROUP:
+            ok = _matches_only_whitespace(av)
+        elif op is _sre.BRANCH:
+            ok = all(_matches_only_whitespace(branch) for branch in av[1])
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            ok = _matches_only_whitespace(av[2])
+        else:
+            ok = False
+        if not ok:
+            return False
+        consumed = True
+    return consumed
+
+
+def _collect_whitespace_runs(seq, out: list[str]) -> list[str]:
+    for op, av in seq:
+        if op in (_sre.ASSERT, _sre.ASSERT_NOT, _sre.ATOMIC_GROUP, _sre.POSSESSIVE_REPEAT):
+            continue  # zero-width, or already atomic
+        if op in _REPEATS:
+            lo, hi, body = av
+            if (hi is _sre.MAXREPEAT or hi > 8) and _matches_only_whitespace(body):
+                out.append(f"{op}{{{lo},{'' if hi is _sre.MAXREPEAT else hi}}}")
+                continue
+            _collect_whitespace_runs(body, out)
+        elif op is _sre.SUBPATTERN:
+            _collect_whitespace_runs(av[3], out)
+        elif op is _sre.BRANCH:
+            for branch in av[1]:
+                _collect_whitespace_runs(branch, out)
+    return out
+
+
+def _splittable_whitespace_runs(head: str) -> list[str]:
+    """Non-atomic whitespace repetitions in a template source, found on the parsed regex.
+
+    Two such runs next to each other (or next to the topic's plain-char branch,
+    which also eats spaces) can split one run of spaces in O(n^k) ways. An
+    atomic group ``(?>...)`` or a possessive quantifier removes the choice.
+
+    Works on the parse tree rather than the text, so any spelling of a
+    repetition whose body only matches whitespace counts: ``\\s*``,
+    ``(?:\\s)*``, ``[ \\t]+``, ``(?:(?>\\s))*``, ``\\s{0,50}``. Lookarounds are
+    skipped (zero-width, they split nothing), and so is a run bounded at 8 or
+    fewer: that is a constant factor, not an explosion (``_ZH_IDENT_GAP``).
+    """
+    return _collect_whitespace_runs(_sre_parser.parse(head), [])
 
 
 def _zh_terms_without_japanese_guard(text: str) -> set[str]:
@@ -2545,32 +2622,31 @@ def test_a_bare_question_particle_is_a_tail_too(text, expected):
 
 
 def test_a_whitespace_only_message_does_not_blow_up():
-    """⚠️ 前置话题的单字分支也匹配空格，于是话题和后面每个 ``\s*`` 能任意瓜分同一串
-    空白，把「在哪切」变成组合爆炸——``" " * 60`` 一度要 0.42 秒，而这条路径是每条
-    用户消息同步跑的，发一条纯空白消息就能卡住（codex P1）。
+    """A whitespace-only message must not explode template 2 (codex P1).
 
-    ⚠️ 用**增长倍率**而不是绝对秒数。写这条的时候，纯空白消息在 parent 上本来就是
-    三次方（60/120/240 实测 0.006/0.05/0.43），几乎全是 ko 模板
-    ``(.{1,30}?)\s*(?:이|가)?\s*…`` 贡献的，所以当时守的是「不比 parent 更差」。
-    后来所有模板的话题捕获都不许空白起头、ja/ko 捕获后的空白也原子化了（见
-    _PATTERNS_RAW 开头；计时护栏在 test_directive_regex_whitespace.py，n 取到
-    3000），现在整条 extract_directives 在纯空白上是**线性**的：3000 / 6000 个空格
-    实测 0.8 / 1.5 毫秒。这里的倍率判据仍然有效，只是远没有贴线。
-    """  # noqa: DOCSTRING_CJK
+    The preposed topic's plain-char branch also matches spaces, so the topic and
+    every whitespace run after it can split one run of spaces any way they like.
+    ``" " * 60`` once took 0.42s on a path that runs synchronously per message.
+    """
     from tests.wall_clock import fastest_run
 
-    # 预热：别把首次正则编译算进 timings[30]，那会让倍率虚低、判据失灵（CodeRabbit）
-    extract_directives(" ")
-    # ⚠️ 每档取多次里**最快**的一次：单次采样一旦被调度抢占，60 那档会凭空多出
-    # 零点几秒，倍率判据就误红（模板 4 那条同款判据在 Windows CI 和 xdist 下都红过）。
-    # 真爆炸每次都慢，取最小值拦得住。
-    timings = {n: fastest_run(lambda n=n: extract_directives(" " * n)) for n in (30, 60)}
-    # ⚠️ 主判据是**倍率**。绝对秒数只当一道很松的天花板——共享 CI runner 上负载不可控，
-    # 卡得紧会偶发变红（CodeRabbit）。组合爆炸时这里是 0.4 秒往上。
-    assert timings[60] < 0.5, timings
-    # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右、现在的线性是 2 倍左右，
-    # 这么小的 n 上噪声占比大，给足余量取 25
-    assert timings[60] < timings[30] * 25 + 0.02, timings
+    extract_directives(" ")  # 预热：别把首次正则编译算进计时（CodeRabbit）
+    # ⚠️ 主判据只计时**模板 2 自己**。整个 extract_directives 是 21 条模板之和：写这条时
+    # 纯空白上的大头是韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…`` 的三次方（60 个空格约
+    # 7ms，模板 2 自己约 0.7ms），模板 2 前置空白**全部**去原子化后 60 个空格也只要
+    # 21ms，原先那条 ``timings[60] < timings[30] * 25 + 0.02`` 照样通过。韩语那条后来
+    # 修掉了（见 test_directive_regex_whitespace.py），但整体计时量的仍是别人。
+    # ⚠️ 输入要**以正文起头**，不能是纯空白：话题捕获现在不许空白起头（见
+    # _PATTERNS_RAW 开头），纯空白里的每个起点一步就失败，去原子化也测不出来——
+    # 实测 ``" " * 240`` 去原子化前后都在 0.1ms 以下。从 ``工作`` 起头时只有这一个起点，
+    # 瓜分全落在它后面的空白上：原子化版本 0.6ms，全部去原子化 2.2s。0.25 秒的线两侧
+    # 分别约 400 倍、9 倍余量，不要再放宽。取多次里最快一次，滤掉调度抢占。
+    pat = [p for locale, _kind, p in D.DIRECTIVE_PATTERNS if locale == "zh"][1]
+    text = "工作" + " " * 1500
+    elapsed = fastest_run(lambda: list(pat.finditer(text)), stop_below=0.25)
+    assert elapsed < 0.25, f"模板 2 在 {len(text)} 个字符上最快也要 {elapsed:.3f}s，空白瓜分回溯又回来了"
+    # 端到端只留一道很松的天花板：这条路径每条用户消息同步跑。
+    assert fastest_run(lambda: extract_directives(" " * 60), stop_below=0.5) < 0.5
 
 
 def test_the_preposed_template_spacing_is_atomic():
@@ -2587,12 +2663,10 @@ def test_the_preposed_template_spacing_is_atomic():
     # ⚠️ 判据是「**任何**会匹配空白的量词都得包在原子组里」，不是「数出几个 (?>\s*)」。
     # 停顿分隔符里的空白已经收窄成横向空白类（不跨行），数量断言会跟着漂——把两种
     # 单位都摘掉之后再看有没有漏网的，才是真正的不变量。
+    # ⚠️ 在**解析树**上找，不按字面：只认 ``\s*`` / _ZH_HSPACE 两种写法的话，
+    # ``_ZH_HSPACE_ONE + "+"``、``(?:\s)*``、``[ \t]*`` 都能同时绕过这里和耗时判据。
+    assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
     units = (r"(?>\s*)", f"(?>{D._ZH_HSPACE})")
-    rest = head
-    for unit in units:
-        rest = rest.replace(unit, "")
-    assert r"\s*" not in rest, rest
-    assert D._ZH_HSPACE not in rest, rest
     for unit in units:
         assert unit + unit not in head, unit
     # ⚠️ 模板 2 里**触发词之前**已经一个跨行空白都不剩了：话题两侧、填充词两侧、
@@ -2831,14 +2905,17 @@ def test_the_guanyu_template_spacing_is_atomic_too():
     # 同源的 _ZH_PREPOSED_SAY_VERBS 之后它就不在模板里了：split 切不开，head 变成整条，
     # 而模板早已改用横向空白类、不含 ``\s*``，于是下面那条断言恒真，结构面空转。
     verbs = "(?:" + "|".join(D._ZH_PREPOSED_SAY_VERBS) + ")"
-    assert raw.count(verbs) == 1, "模板 4 里找不到触发词组，结构判据会空转"
+    # ⚠️ 出现次数带进消息：多于 1 次同样会空转（split()[0] 把 head 截短），不只是「找不到」
+    assert raw.count(verbs) == 1, (
+        f"模板 4 里触发词组出现 {raw.count(verbs)} 次（应为 1），结构判据会空转"
+    )
     head = raw.split(verbs)[0]
     # 零宽 temper 里的空白是判据的一部分，不参与瓜分，先摘掉
-    rest = head.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
-    for unit in (r"(?>\s*)", f"(?>{D._ZH_HSPACE})"):
-        rest = rest.replace(unit, "")
-    assert r"\s*" not in rest, rest
-    assert D._ZH_HSPACE not in rest, rest
+    head = head.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
+    # ⚠️ 这是**单个**空白单位被去原子化时唯一的防线：逐个还原模板 4 里任何一个
+    # 原子单位，"关于" + 80 个空格都只要毫秒级，下面的耗时判据拦不住。所以在解析树
+    # 上找（``(?:\s)*``、``[ \t]+``、``\s{0,50}`` 这类写法也算），不按字面。
+    assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
 
     # ── 行为面：只计时模板 4 自己 ──
     # ⚠️ 不能计时整个 extract_directives：写这条时韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…``
@@ -2847,9 +2924,10 @@ def test_the_guanyu_template_spacing_is_atomic_too():
     # 下单次采样被调度抢占就是 {40: 0.003, 80: 0.236} 这种误红。那条后来修掉了，整条
     # extract_directives 在空白上已是线性，但整体计时量的仍是 21 条模板之和，模板 4
     # 自己回退时淹在里面，理由不变。
-    # 模板 4 前置空白全部去原子化时，本机 80 个空格要 1 秒量级（n^5：20→40 涨 24 倍）；
-    # 原子化版本是微秒级。0.1 秒的线两边都差四个数量级以上，取多次里最快的一次
-    # 再把调度噪声滤掉。
+    # 模板 4 前置空白全部去原子化时，本机 80 个空格最快一次 0.96s（n^5：20→40 涨
+    # 24 倍）；原子化版本约 2µs。所以 0.1 秒的线**只有快的一侧**余量充足（约五万倍），
+    # 慢的一侧只有**约 10 倍**：慢 runner 上也不要把它放宽到 1 秒，否则全量回退就拦不住了。
+    # 取多次里最快的一次滤掉调度噪声。
     pat = [p for locale, _kind, p in D.DIRECTIVE_PATTERNS if locale == "zh"][3]
     assert pat.pattern == raw
     text = "关于" + " " * 80

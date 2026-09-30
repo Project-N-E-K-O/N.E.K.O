@@ -594,6 +594,10 @@ def test_peeling_is_bounded_for_pathological_input():
     #（``随便说说 `` 那条自己在 0.2–0.6 秒之间抖），xdist 下一次调度抢占就误红。
     # 要守的是「单条消息不卡住事件循环」，按条计时才对得上；界丢了的时候 20k 那两条
     # 本机要 5–11 秒，一秒的线照样拦得住。
+    # ⚠️ 这是**有意放宽**：合计预算从 1 秒变成每条 1 秒（等于合计 4 秒）。「每条都
+    # 退到 0.9 秒」这种部分回退会过，但那就是本判据允许的上限——单条消息不超过一秒。
+    # 不另加合计上限：四条最快值之和本机约 0.4 秒，Windows runner 量到过比本机慢 7 倍，
+    # 合计线收到 2 秒就会在那里重新误红。
     for text in (
         "去执行" + "吧" * 20000,  # 走 _clause_hits 的剥词
         "停下来" + "啊呀" * 10000,
@@ -603,7 +607,7 @@ def test_peeling_is_bounded_for_pathological_input():
         "随便说说 " + "啊" * 60000,
     ):
         elapsed = fastest_run(
-            lambda: OpenClawAdapter.rule_magic_command(text), repeat=3, stop_below=1.0
+            lambda text=text: OpenClawAdapter.rule_magic_command(text), repeat=3, stop_below=1.0
         )
         assert elapsed < 1.0, f"{text[:8]!r}… 最快也要 {elapsed:.2f}s，剥词的界没生效"
 

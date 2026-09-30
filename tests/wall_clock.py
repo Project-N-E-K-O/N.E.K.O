@@ -25,6 +25,7 @@ blow-up (exponential backtracking, a lost bound) is slow on *every* run and
 still fails.
 """
 
+import gc
 import time
 
 
@@ -38,9 +39,19 @@ def fastest_run(fn, *, repeat=5, stop_below=None):
         raise ValueError(f"repeat must be >= 1, got {repeat}")
     best = float("inf")
     for _ in range(repeat):
-        started = time.perf_counter()
-        fn()
-        best = min(best, time.perf_counter() - started)
+        # Like timeit, keep the collector out of the timed call: with
+        # ``stop_below`` a pass rests on one sample, and a generational
+        # collection landing in it is the same kind of noise as preemption.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            started = time.perf_counter()
+            fn()
+            elapsed = time.perf_counter() - started
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+        best = min(best, elapsed)
         if stop_below is not None and best < stop_below:
             break
     return best
