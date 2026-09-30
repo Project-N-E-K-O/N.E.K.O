@@ -1450,7 +1450,6 @@
             S.videoSenderInterval = null;
         }
     }
-    mod.stopScreening = stopScreening;
 
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
@@ -1506,6 +1505,7 @@
             if (stop) stop.disabled = true;
             if (reset) reset.disabled = false;
         }
+        manualScreenShareRunning = false;
         if (screen) screen.classList.remove('active');
         syncFloatingScreenButtonState(false);
     }
@@ -1919,6 +1919,9 @@
     // 进行中的换源重启（停止、等待、重新开始）的令牌；新的选择会换掉它，
     // 其他停止会清掉它。
     var sourceSwitchRestart = null;
+    // 手动分享已经跑起来（启动成功后置 true，任何停止或界面复位后置 false）。
+    // 换源重启期间界面保持「共享中」，不能再用按钮状态判断分享是否在跑。
+    var manualScreenShareRunning = false;
 
     function isScreenSharingStartPending() {
         return !!screenSharingStartAttempt && !screenSharingStartAttempt.cancelled;
@@ -1944,6 +1947,19 @@
         return true;
     }
     mod.cancelPendingScreenSharingStart = cancelPendingScreenSharingStart;
+
+    // 外部的 window.stopScreening：真正的收尾（后端报错、会话结束、goodbye）。
+    // 除了停发送，还取消换源重启和进行中的启动，否则授权请求返回后会在会话
+    // 已结束时把分享打开。只临时停发送、分享要继续的调用方（切换麦克风、
+    // 隐私模式停主动视觉）改用 window.pauseScreenFrameSender。
+    function stopScreeningForTeardown() {
+        var cancelledStart = sourceSwitchRestart !== null || isScreenSharingStartPending();
+        sourceSwitchRestart = null;
+        manualScreenShareRunning = false;
+        cancelPendingScreenSharingStart();
+        stopScreening();
+        if (cancelledStart) resetControlsIfNotSharing();
+    }
 
     function rememberScreenSharingAttemptStream(attempt, stream) {
         if (attempt && stream && stream !== attempt.initialStream) {
@@ -2025,9 +2041,15 @@
     // 换源重启以外的启动入口（开关、按钮、恢复分享）：用当前选中的来源开始
     // 分享，取代还没走到启动的换源重启。无论这次成败，重启都不再补一次，
     // 否则用户在系统对话框里拒绝后会马上又弹一次。
-    function startScreenSharingSupersedingSourceSwitch() {
+    async function startScreenSharingSupersedingSourceSwitch() {
+        var supersededRestart = sourceSwitchRestart !== null;
         sourceSwitchRestart = null;
-        return startScreenSharing();
+        try {
+            return await startScreenSharing();
+        } finally {
+            // 被取代的重启让界面一直显示「共享中」；这次启动没跑起来时复位。
+            if (supersededRestart) resetControlsIfNotSharing();
+        }
     }
 
     async function startScreenSharingOnce(attempt) {
@@ -2139,6 +2161,8 @@
                         && isNativeFrameProvider(desktopProvider)) {
                         try {
                             var initialScreens = await desktopProvider.getSources({ types: ['screen'] });
+                            // 已取消的启动不能再改写选中的来源。
+                            if (discardCancelledScreenSharingStart(attempt)) return;
                             if (initialScreens && initialScreens.length > 0) {
                                 selectedSourceId = initialScreens[0].id;
                                 S.selectedScreenSourceId = selectedSourceId;
@@ -2193,6 +2217,8 @@
                                     thumbnailSize: { width: 0, height: 0 }
                                 }]
                             );
+                            // 已取消的启动不能再按记住的标题改写选中的来源。
+                            if (discardCancelledScreenSharingStart(attempt)) return;
                             if (manualResolutionGeneration !== screenSourceSelectionGeneration
                                 || manualResolutionSourceId !== S.selectedScreenSourceId
                                 || manualResolutionTitle !== normalizeScreenSourceTitle(
@@ -2523,6 +2549,7 @@
 
                     stopScreening();
                     screenButton().classList.remove('active');
+                    manualScreenShareRunning = false;
                     syncFloatingScreenButtonState(false);
 
                     if (typeof captureStream.getTracks === 'function') {
@@ -2563,6 +2590,7 @@
 
             screenButton().classList.add('active');
             syncFloatingScreenButtonState(true);
+            manualScreenShareRunning = true;
 
             if (window.unlockAchievement) {
                 window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
@@ -2612,7 +2640,6 @@
             }
         }
     }
-    mod.startScreenSharing = startScreenSharing;
 
     // ======================== stopScreenSharing ========================
     /**
@@ -2623,11 +2650,18 @@
         // 换源重启以外的停止（用户停止、失败收尾）都取消还没走到启动的换源
         // 重启，否则它醒来后会把刚停掉的分享重新打开。
         sourceSwitchRestart = null;
-        return stopScreenSharingForSourceSwitch(forceRelease);
+        return releaseScreenSharing(forceRelease, false);
     }
 
-    // 换源重启自己的停止：保留重启令牌，停完接着启动新来源。
-    async function stopScreenSharingForSourceSwitch(forceRelease) {
+    // 换源重启自己的停止：保留重启令牌，停完接着启动新来源。界面保持「共享中」，
+    // 停顿和重新启动期间各个开关都按「停止」处理，与显示一致；重启没能恢复
+    // 分享时由 resetControlsIfNotSharing 复位。
+    function stopScreenSharingForSourceSwitch(forceRelease) {
+        return releaseScreenSharing(forceRelease, true);
+    }
+
+    async function releaseScreenSharing(forceRelease, forSourceSwitch) {
+        manualScreenShareRunning = false;
         cancelPendingScreenSharingStart();
         stopScreening();
 
@@ -2664,6 +2698,14 @@
             console.log('[屏幕分享] 主动视觉仍活跃，保留缓存流');
         }
 
+        if (!forSourceSwitch) {
+            finishScreenSharingStopped();
+        }
+    }
+    mod.stopScreenSharing = stopScreenSharing;
+
+    // 分享真正停下后的界面与主动视觉收尾。
+    function finishScreenSharingStopped() {
         // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
         resetScreenSharingControls();
 
@@ -2678,7 +2720,20 @@
             console.warn(window.t('console.resumeVoiceActiveVisionFailed'), e);
         }
     }
-    mod.stopScreenSharing = stopScreenSharing;
+
+    function isScreenShareRunningOrStarting() {
+        return manualScreenShareRunning
+            || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null;
+    }
+
+    // 换源重启让界面一直显示「共享中」。重启被取消、被取代或启动失败后，若
+    // 分享最终没有跑起来，这里把界面复位，不会停在假的「共享中」。
+    function resetControlsIfNotSharing() {
+        if (!isScreenShareRunningOrStarting()) {
+            finishScreenSharingStopped();
+        }
+    }
 
     // ======================== switchMicCapture ========================
     window.switchMicCapture = async function () {
@@ -2809,11 +2864,11 @@
         // pending interval as active so switching sources invalidates the old
         // generation before its late frame can be accepted.
         var isNativeCaptureActive = activeNativeCaptureSourceId !== null;
-        // 上一次换源的重启还没结束时，停止按钮是禁用的，但分享只是在重启中。
-        // 这次选择推进了代次，会让那次还在等待的启动作废；如果这里不接着重启，
-        // 分享就停在那里了。
+        // 换源重启或其他启动还在进行时，分享只是还没跑起来。这次选择推进了
+        // 代次，会让那次还在等待的启动作废；如果这里不接着重启，分享就停在
+        // 那里了。
         var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled)
-            || sourceSwitchRestart !== null;
+            || sourceSwitchRestart !== null || isScreenSharingStartPending();
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
@@ -2837,6 +2892,7 @@
                 if (sourceSwitchRestart === restartToken) {
                     sourceSwitchRestart = null;
                 }
+                resetControlsIfNotSharing();
             }
         }
     }
@@ -3686,6 +3742,10 @@
     mod.getAvatarScreenPosition = getAvatarScreenPosition;
 
     // ======================== Backward-compat window exports ========================
+    // window 与 mod 上的同名导出是同一个函数（换源重启相关的包装）。
+    mod.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
+    mod.stopScreening = stopScreeningForTeardown;
+    mod.pauseScreenFrameSender = stopScreening;
     window.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
     window.stopScreenSharing = stopScreenSharing;
     window.isScreenSharingStartPending = isScreenSharingStartPending;
@@ -3699,16 +3759,8 @@
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
-    // 外部调用默认是真正的停止（报错、会话结束、goodbye），同时取消还没走到
-    // 启动的换源重启，否则它醒来会把刚停掉的分享重新打开。只临时拆掉发送、
-    // 之后要保留分享的调用方（切换麦克风、隐私模式停主动视觉）传
-    // keepSourceSwitchRestart。
-    window.stopScreening = function (options) {
-        if (!(options && options.keepSourceSwitchRestart === true)) {
-            sourceSwitchRestart = null;
-        }
-        stopScreening();
-    };
+    window.stopScreening = stopScreeningForTeardown;
+    window.pauseScreenFrameSender = stopScreening;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;

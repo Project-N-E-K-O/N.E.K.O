@@ -276,34 +276,40 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "data:image/jpeg;base64," in screen
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
     assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
-    # Whitespace-insensitive: a native start or a switch restart in flight
-    # also counts as sharing, so switching sources restarts it.
+    # Whitespace-insensitive: a native start, a switch restart or any start in
+    # flight also counts as sharing, so switching sources restarts it.
     assert re.search(
         r"var isScreenSharingActive = isNativeCaptureActive\s*\|\|"
         r"\s*!!\(stopBtn && !stopBtn\.disabled\)\s*\|\|"
-        r"\s*sourceSwitchRestart !== null;",
+        r"\s*sourceSwitchRestart !== null\s*\|\|\s*isScreenSharingStartPending\(\);",
         select_source,
     )
 
 
-def test_sender_only_screening_stops_keep_the_source_switch_restart() -> None:
-    # window.stopScreening cancels a pending source-switch restart by default
-    # (errors, session end). Callers that only pause the frame sender while
-    # manual sharing continues must opt out, or the new source never resumes.
+def test_sender_only_callers_pause_instead_of_tearing_down() -> None:
+    # window.stopScreening is a teardown: it cancels a source-switch restart
+    # and any start in flight. Callers that only pause the frame sender while
+    # manual sharing continues (microphone switch, privacy mode) must use
+    # window.pauseScreenFrameSender, or the new source never resumes.
     screen = read_text("static/app/app-screen.js")
     audio = read_text("static/app/app-audio-capture.js")
     settings = read_text("static/app/app-settings.js")
-    assert "window.stopScreening = function (options) {" in screen
-    assert "options.keepSourceSwitchRestart === true" in screen
-    mic_switch = audio.split("const shouldRestartScreening", 1)[1].split(
-        "// 停止静音检测", 1
-    )[0]
-    assert "window.stopScreening({ keepSourceSwitchRestart: true });" in mic_switch
-    privacy = settings.split("function stopVisionAfterPrivacyEnabled()", 1)[1]
-    privacy = privacy.split("\n    }\n", 1)[0]
-    assert "window.stopScreening({ keepSourceSwitchRestart: true });" in privacy
-    assert audio.count("keepSourceSwitchRestart") == 1
-    assert settings.count("keepSourceSwitchRestart") == 1
+    assert "window.stopScreening = stopScreeningForTeardown;" in screen
+    assert "window.pauseScreenFrameSender = stopScreening;" in screen
+    teardown = screen.split("function stopScreeningForTeardown()", 1)[1][:600]
+    assert "cancelPendingScreenSharingStart();" in teardown
+    assert "sourceSwitchRestart = null;" in teardown
+
+    mic_switch = audio.split("const shouldRestartScreening", 1)[1][:1500]
+    assert "window.pauseScreenFrameSender();" in mic_switch
+    assert "window.stopScreening(" not in mic_switch
+
+    privacy = settings.split("function stopVisionAfterPrivacyEnabled()", 1)[1][:1500]
+    assert "window.pauseScreenFrameSender();" in privacy
+    assert "window.stopScreening(" not in privacy
+    # A manual start still waiting on its permission request is manual
+    # sharing too: privacy mode must leave its stream alone.
+    assert re.search(r"window\.isScreenSharingStartPending\(\)\)\s*return;", privacy)
 
 
 def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:

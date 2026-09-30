@@ -1473,22 +1473,13 @@ def test_portal_result_already_selected_is_trusted_for_capture(
     }
 
 
-@pytest.mark.frontend
-def test_portal_pick_switches_an_active_share_even_when_remembering(
-    page: Page,
-) -> None:
-    # "Remember window" holds the previous title. The portal answer is the
-    # user's new choice: the running share must move to it. The render
-    # resolves before the restart so the caller can position the panel;
-    # "choose again" stays usable (a newer pick supersedes this restart).
-    _install_screen_source_harness(
-        page,
-        source_enumeration_may_prompt=True,
-        initial_storage={"screenSourceTitleMatchEnabled": "true"},
-    )
-
-    result = page.evaluate(
-        """async () => {
+def _install_share_session(page: Page) -> None:
+    # A running voice session whose captures are real MediaStreams, so a start
+    # really reaches "sharing" (Stop enabled, screen button active). Captures
+    # of ids in __share.holds wait until released; ids in __share.rejects fail
+    # as if the user denied the request.
+    page.evaluate(
+        """() => {
             document.body.insertAdjacentHTML('beforeend', `
                 <div id="live2d-container"></div>
                 <button id="micButton"></button><button id="muteButton"></button>
@@ -1498,33 +1489,88 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
             window.appState.isRecording = true;
             window.appState.voiceChatActive = true;
             window.appState.audioPlayerContext = { state: 'running' };
-            const captureCalls = [];
+            const share = {
+                calls: [],
+                toasts: [],
+                holds: new Set(),
+                rejects: new Set(),
+                pending: [],
+                releaseAll() {
+                    share.pending.splice(0).forEach((entry) => entry.resolve());
+                },
+                rejectAll() {
+                    share.pending.splice(0).forEach((entry) => entry.reject());
+                },
+                state() {
+                    return {
+                        active: document.getElementById('screenButton')
+                            .classList.contains('active'),
+                        stopEnabled: !document.getElementById('stopButton').disabled,
+                    };
+                },
+                async waitFor(predicate, ms = 5000) {
+                    const deadline = Date.now() + ms;
+                    while (!predicate() && Date.now() < deadline) {
+                        await new Promise((resolve) => setTimeout(resolve, 20));
+                    }
+                    return predicate();
+                },
+            };
+            window.__share = share;
+            window.showStatusToast = (message) => { share.toasts.push(String(message)); };
             Object.defineProperty(navigator, 'mediaDevices', {
                 configurable: true,
                 value: {
-                    async getUserMedia(constraints) {
-                        captureCalls.push(constraints.video.mandatory.chromeMediaSourceId);
-                        const track = {
-                            readyState: 'live',
-                            stop() { this.readyState = 'ended'; },
-                            addEventListener() {},
-                        };
-                        return {
-                            active: true,
-                            getVideoTracks() { return [track]; },
-                            getTracks() { return [track]; },
-                        };
+                    getUserMedia(constraints) {
+                        const id = constraints.video.mandatory.chromeMediaSourceId;
+                        share.calls.push(id);
+                        if (share.rejects.has(id)) {
+                            return Promise.reject(new DOMException('denied', 'NotAllowedError'));
+                        }
+                        const stream = () => document.createElement('canvas').captureStream(1);
+                        if (share.holds.has(id)) {
+                            return new Promise((resolve, reject) => {
+                                share.pending.push({
+                                    resolve: () => resolve(stream()),
+                                    reject: () => reject(
+                                        new DOMException('denied', 'NotAllowedError')
+                                    ),
+                                });
+                            });
+                        }
+                        return Promise.resolve(stream());
                     },
                 },
             });
+        }"""
+    )
+
+
+@pytest.mark.frontend
+def test_portal_pick_switches_an_active_share_even_when_remembering(
+    page: Page,
+) -> None:
+    # "Remember window" holds the previous title. The portal answer is the
+    # user's new choice: the running share must move to it. The render
+    # resolves before the restart so the caller can position the panel;
+    # "choose again" stays usable (a newer pick supersedes this restart) and
+    # the controls keep showing "sharing" while it restarts.
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"screenSourceTitleMatchEnabled": "true"},
+    )
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
             const popup = document.getElementById('live2d-popup-screen');
             window.__metadataSources = [{ id: 'window:2', name: 'Editor', display_id: '' }];
             await window.renderFloatingScreenSourceList(popup);
             await window.startScreenSharing();
-            const firstShare = captureCalls.slice();
+            const firstShare = { calls: share.calls.slice(), ...share.state() };
             const rememberedBefore = window.__storedValues.get('selectedScreenWindowTitle');
-            // Treat the share as running, as selectScreenSource does.
-            document.getElementById('stopButton').disabled = false;
 
             window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
             const rendered = await window.renderFloatingScreenSourceList(popup);
@@ -1532,34 +1578,35 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
             // Read right when the render resolves: the restart is still running.
             const whenRendered = {
                 rendered,
-                calls: captureCalls.slice(),
+                calls: share.calls.slice(),
                 chooseAgainDisabled: chooseAgain.disabled,
                 selected: window.getSelectedScreenSourceId(),
+                ...share.state(),
             };
-            const deadline = Date.now() + 5000;
-            while (captureCalls.length < 2 && Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 20));
-            }
+            await share.waitFor(() => share.calls.length >= 2);
+            await new Promise((resolve) => setTimeout(resolve, 50));
             return {
                 firstShare,
                 rememberedBefore,
                 whenRendered,
-                callsAfterRestart: captureCalls.slice(),
+                after: { calls: share.calls.slice(), ...share.state() },
                 remembered: window.__storedValues.get('selectedScreenWindowTitle'),
             };
         }"""
     )
 
     assert result == {
-        "firstShare": ["window:2"],
+        "firstShare": {"calls": ["window:2"], "active": True, "stopEnabled": True},
         "rememberedBefore": "Editor",
         "whenRendered": {
             "rendered": True,
             "calls": ["window:2"],
             "chooseAgainDisabled": False,
             "selected": "window:5",
+            "active": True,
+            "stopEnabled": True,
         },
-        "callsAfterRestart": ["window:2", "window:5"],
+        "after": {"calls": ["window:2", "window:5"], "active": True, "stopEnabled": True},
         "remembered": "Browser",
     }
 
@@ -1569,69 +1616,28 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
 def test_second_pick_during_restart_still_shares_the_new_source(
     page: Page, phase: str,
 ) -> None:
-    # A second pick while the first switch is still restarting (Stop disabled)
-    # supersedes it and must restart the share itself instead of reading the
-    # disabled Stop button as "not sharing".
+    # A second pick while the first switch is still restarting supersedes it
+    # and must end up sharing the newest source.
     # capture: the first capture never settles (e.g. an unanswered permission
     #   request); the second pick must not wait for it.
     # wait: the first restart has not reached its start yet; it must not start
     #   as well, so the new source is captured exactly once.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    _install_share_session(page)
 
     result = page.evaluate(
         """async (phase) => {
-            document.body.insertAdjacentHTML('beforeend', `
-                <div id="live2d-container"></div>
-                <button id="micButton"></button><button id="muteButton"></button>
-                <button id="screenButton"></button><button id="stopButton" disabled></button>
-                <button id="resetSessionButton"></button>
-            `);
-            window.appState.isRecording = true;
-            window.appState.voiceChatActive = true;
-            window.appState.audioPlayerContext = { state: 'running' };
-            const captureCalls = [];
-            const heldCaptures = [];
-            const makeStream = () => {
-                const track = {
-                    readyState: 'live',
-                    stop() { this.readyState = 'ended'; },
-                    addEventListener() {},
-                };
-                return {
-                    active: true,
-                    getVideoTracks() { return [track]; },
-                    getTracks() { return [track]; },
-                };
-            };
-            Object.defineProperty(navigator, 'mediaDevices', {
-                configurable: true,
-                value: {
-                    getUserMedia(constraints) {
-                        const id = constraints.video.mandatory.chromeMediaSourceId;
-                        captureCalls.push(id);
-                        if (id === 'window:5') {
-                            return new Promise((resolve) => {
-                                heldCaptures.push(() => resolve(makeStream()));
-                            });
-                        }
-                        return Promise.resolve(makeStream());
-                    },
-                },
-            });
+            const share = window.__share;
             await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
             await window.startScreenSharing();
-            document.getElementById('stopButton').disabled = false;
+            share.holds.add('window:5');
 
             const firstPick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             if (phase === 'capture') {
-                const deadline = Date.now() + 5000;
-                while (!heldCaptures.length && Date.now() < deadline) {
-                    await new Promise((resolve) => setTimeout(resolve, 20));
-                }
+                await share.waitFor(() => share.pending.length > 0);
             } else {
                 // Midway through the first restart's 300 ms pause: had it not
-                // stepped aside, it would finish its start before the second
-                // restart wakes, and the second would capture again.
+                // stepped aside, it would start as well.
                 await new Promise((resolve) => setTimeout(resolve, 150));
             }
             const secondPick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
@@ -1639,26 +1645,50 @@ def test_second_pick_during_restart_still_shares_the_new_source(
                 secondPick.then(() => true),
                 new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
             ]);
-            const callsWhenSecondSettled = captureCalls.slice();
-            heldCaptures.forEach((release) => release());
+            const whenSecondSettled = { calls: share.calls.slice(), ...share.state() };
+            share.releaseAll();
             await firstPick;
-            return { secondSettled, callsWhenSecondSettled, calls: captureCalls };
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return { secondSettled, whenSecondSettled, after: { calls: share.calls, ...share.state() } };
         }""",
         phase,
     )
 
-    if phase == "capture":
-        assert result == {
-            "secondSettled": True,
-            "callsWhenSecondSettled": ["window:2", "window:5", "window:7"],
-            "calls": ["window:2", "window:5", "window:7"],
-        }
-    else:
-        assert result == {
-            "secondSettled": True,
-            "callsWhenSecondSettled": ["window:2", "window:7"],
-            "calls": ["window:2", "window:7"],
-        }
+    calls = (
+        ["window:2", "window:5", "window:7"] if phase == "capture"
+        else ["window:2", "window:7"]
+    )
+    assert result == {
+        "secondSettled": True,
+        "whenSecondSettled": {"calls": calls, "active": True, "stopEnabled": True},
+        "after": {"calls": calls, "active": True, "stopEnabled": True},
+    }
+
+
+@pytest.mark.frontend
+def test_pick_while_a_start_is_pending_shares_the_new_source(page: Page) -> None:
+    # Not sharing yet: a start is waiting on its permission request when the
+    # user picks another source. That pick supersedes the pending start, so it
+    # has to start the new source itself instead of reading "not sharing".
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const share = window.__share;
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            share.holds.add('window:2');
+            const start = window.startScreenSharing();
+            await share.waitFor(() => share.pending.length > 0);
+            await window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            share.releaseAll();
+            await start;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return { calls: share.calls, ...share.state() };
+        }"""
+    )
+
+    assert result == {"calls": ["window:2", "window:7"], "active": True, "stopEnabled": True}
 
 
 @pytest.mark.frontend
@@ -1666,156 +1696,248 @@ def test_choose_again_stays_usable_while_portal_restart_is_stuck(page: Page) -> 
     # The restart after a portal pick hangs on a capture that never settles.
     # "Choose again" must stay usable: a newer pick supersedes that restart.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    _install_share_session(page)
 
     result = page.evaluate(
         """async () => {
-            document.body.insertAdjacentHTML('beforeend', `
-                <div id="live2d-container"></div>
-                <button id="micButton"></button><button id="muteButton"></button>
-                <button id="screenButton"></button><button id="stopButton" disabled></button>
-                <button id="resetSessionButton"></button>
-            `);
-            window.appState.isRecording = true;
-            window.appState.voiceChatActive = true;
-            window.appState.audioPlayerContext = { state: 'running' };
-            const captureCalls = [];
-            Object.defineProperty(navigator, 'mediaDevices', {
-                configurable: true,
-                value: {
-                    getUserMedia(constraints) {
-                        const id = constraints.video.mandatory.chromeMediaSourceId;
-                        captureCalls.push(id);
-                        if (id === 'window:5') return new Promise(() => {});
-                        const track = {
-                            readyState: 'live',
-                            stop() { this.readyState = 'ended'; },
-                            addEventListener() {},
-                        };
-                        return Promise.resolve({
-                            active: true,
-                            getVideoTracks() { return [track]; },
-                            getTracks() { return [track]; },
-                        });
-                    },
-                },
-            });
+            const share = window.__share;
             const popup = document.getElementById('live2d-popup-screen');
             window.__metadataSources = [{ id: 'window:2', name: 'Editor', display_id: '' }];
             await window.renderFloatingScreenSourceList(popup);
             await window.startScreenSharing();
-            document.getElementById('stopButton').disabled = false;
+            share.holds.add('window:5');
 
             window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
             await window.renderFloatingScreenSourceList(popup);
             const chooseAgain = popup.querySelector('[data-neko-screen-source-deferred-load]');
-            const deadline = Date.now() + 5000;
-            while (!captureCalls.includes('window:5') && Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 20));
-            }
-            return {
-                calls: captureCalls,
-                disabledWhileStuck: chooseAgain.disabled,
-            };
+            await share.waitFor(() => share.pending.length > 0);
+            return { calls: share.calls, disabledWhileStuck: chooseAgain.disabled };
         }"""
     )
 
-    assert result == {
-        "calls": ["window:2", "window:5"],
-        "disabledWhileStuck": False,
-    }
+    assert result == {"calls": ["window:2", "window:5"], "disabledWhileStuck": False}
 
 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     "gesture",
-    ["stop", "session_end", "share_error", "mic_switch", "toggle", "toggle_rejected"],
+    [
+        "stop",
+        "toggle",
+        "teardown",
+        "session_flag",
+        "sender_pause",
+        "external_start_rejected",
+        "external_start_rejected_late",
+    ],
 )
 def test_gestures_during_source_switch_pause(page: Page, gesture: str) -> None:
-    # During a source switch's pause the controls show "not sharing".
-    # stop / session_end / share_error: the restart must not reopen the share
-    #   when it wakes (nor complain that the mic is off after the session ended).
-    # mic_switch: switching microphones only tears down the frame sender (and
-    #   says so); the restart must still bring sharing back on the new source.
-    # toggle / toggle_rejected: matches what the controls show, so it starts
-    #   sharing; that start supersedes the restart, which must not ask again
-    #   even when the user rejected the request.
+    # The controls keep showing "sharing" through a source switch's pause.
+    # stop / toggle: both read as "stop" and must stay stopped.
+    # teardown: window.stopScreening (backend error, session end, goodbye).
+    # session_flag: the session ended (isRecording off) with nothing else
+    #   telling the restart; it must not start or complain about the mic.
+    # sender_pause: switching microphones only pauses the frame sender; the
+    #   restart must still bring sharing back on the new source.
+    # external_start_rejected: a programmatic start supersedes the restart;
+    #   when the user denies it, the restart must not ask again.
+    # external_start_rejected_late: the denial only comes after the restart
+    #   has already stepped aside; the controls must still stop showing
+    #   "sharing".
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    _install_share_session(page)
 
     result = page.evaluate(
         """async (gesture) => {
-            document.body.insertAdjacentHTML('beforeend', `
-                <div id="live2d-container"></div>
-                <button id="micButton"></button><button id="muteButton"></button>
-                <button id="screenButton"></button><button id="stopButton" disabled></button>
-                <button id="resetSessionButton"></button>
-            `);
-            window.appState.isRecording = true;
-            window.appState.voiceChatActive = true;
-            window.appState.audioPlayerContext = { state: 'running' };
-            const captureCalls = [];
-            Object.defineProperty(navigator, 'mediaDevices', {
-                configurable: true,
-                value: {
-                    async getUserMedia(constraints) {
-                        const id = constraints.video.mandatory.chromeMediaSourceId;
-                        captureCalls.push(id);
-                        if (gesture === 'toggle_rejected' && id === 'window:5') {
-                            throw new DOMException('denied', 'NotAllowedError');
-                        }
-                        const track = {
-                            readyState: 'live',
-                            stop() { this.readyState = 'ended'; },
-                            addEventListener() {},
-                        };
-                        return {
-                            active: true,
-                            getVideoTracks() { return [track]; },
-                            getTracks() { return [track]; },
-                        };
-                    },
-                },
-            });
+            const share = window.__share;
             await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
             await window.startScreenSharing();
-            document.getElementById('stopButton').disabled = false;
-            const toasts = [];
-            window.showStatusToast = (message) => { toasts.push(message); };
+            if (gesture === 'external_start_rejected') share.rejects.add('window:5');
+            if (gesture === 'external_start_rejected_late') share.holds.add('window:5');
 
             const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             await new Promise((resolve) => setTimeout(resolve, 150));
-            const pendingDuringPause = window.isScreenSharingStartPending();
-            if (gesture === 'toggle' || gesture === 'toggle_rejected') {
-                await window.switchScreenSharing();
-            } else if (gesture === 'mic_switch') {
-                window.stopScreening({ keepSourceSwitchRestart: true });
-            } else if (gesture === 'share_error') {
-                window.stopScreening();
-            } else if (gesture === 'session_end') {
-                window.appState.isRecording = false;
-                window.stopScreening();
-            } else {
+            const duringPause = {
+                ...share.state(),
+                pending: window.isScreenSharingStartPending(),
+            };
+            if (gesture === 'stop') {
                 await window.stopScreenSharing();
+            } else if (gesture === 'toggle') {
+                await window.switchScreenSharing();
+            } else if (gesture === 'teardown') {
+                window.stopScreening();
+            } else if (gesture === 'session_flag') {
+                window.appState.isRecording = false;
+            } else if (gesture === 'sender_pause') {
+                window.pauseScreenFrameSender();
+            } else if (gesture === 'external_start_rejected') {
+                await window.startScreenSharing();
+            } else if (gesture === 'external_start_rejected_late') {
+                const start = window.startScreenSharing();
+                await share.waitFor(() => share.pending.length > 0);
+                await pick;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                share.rejectAll();
+                await start;
             }
             await pick;
+            await new Promise((resolve) => setTimeout(resolve, 50));
             return {
-                pendingDuringPause,
-                calls: captureCalls,
+                duringPause,
+                calls: share.calls,
                 selected: window.getSelectedScreenSourceId(),
-                micRequiredToasts: toasts.filter((m) => m === 'app.micRequired').length,
+                active: share.state().active,
+                micToasts: share.toasts.filter(
+                    (m) => m === 'app.micRequired' || m === 'app.micNotOpen'
+                ).length,
             };
         }""",
         gesture,
     )
 
+    resumed = gesture == "sender_pause"
     assert result == {
-        "pendingDuringPause": False,
+        "duringPause": {"active": True, "stopEnabled": True, "pending": False},
         "calls": (
-            ["window:2"] if gesture in ("stop", "session_end", "share_error")
-            else ["window:2", "window:5"]
+            ["window:2", "window:5"] if gesture in (
+                "sender_pause", "external_start_rejected", "external_start_rejected_late"
+            )
+            else ["window:2"]
         ),
         "selected": "window:5",
-        "micRequiredToasts": 0,
+        "active": resumed,
+        "micToasts": 0,
     }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("gesture", ["teardown", "toggle", "stop"])
+def test_gestures_while_source_switch_restart_awaits_capture(
+    page: Page, gesture: str,
+) -> None:
+    # After the pause the restart waits on the new source's capture (e.g. an
+    # open portal dialog). The controls still show "sharing", so toggling
+    # stops; a teardown (session end, backend error) cancels that start. When
+    # the capture finally returns, sharing must not come back.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async (gesture) => {
+            const share = window.__share;
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            await window.startScreenSharing();
+            share.holds.add('window:5');
+
+            const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
+            await share.waitFor(() => share.pending.length > 0);
+            const whileWaiting = { ...share.state(), pending: window.isScreenSharingStartPending() };
+            if (gesture === 'teardown') {
+                window.appState.isRecording = false;
+                window.stopScreening();
+            } else if (gesture === 'toggle') {
+                await window.switchScreenSharing();
+            } else {
+                await window.stopScreenSharing();
+            }
+            const pickSettled = await Promise.race([
+                pick.then(() => true),
+                new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+            ]);
+            share.releaseAll();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            return {
+                whileWaiting,
+                pickSettled,
+                calls: share.calls,
+                ...share.state(),
+                micToasts: share.toasts.filter(
+                    (m) => m === 'app.micRequired' || m === 'app.micNotOpen'
+                ).length,
+            };
+        }""",
+        gesture,
+    )
+
+    if gesture == "teardown":
+        # The session's own teardown owns the Stop button once isRecording is off.
+        result.pop("stopEnabled")
+    expected = {
+        "whileWaiting": {"active": True, "stopEnabled": True, "pending": True},
+        "pickSettled": True,
+        "calls": ["window:2", "window:5"],
+        "active": False,
+        "stopEnabled": False,
+        "micToasts": 0,
+    }
+    if gesture == "teardown":
+        expected.pop("stopEnabled")
+    assert result == expected
+
+
+@pytest.mark.frontend
+def test_cancelled_native_start_does_not_pick_a_default_screen(page: Page) -> None:
+    # A native-frame shell with nothing selected looks up its first monitor.
+    # When that start is cancelled meanwhile, the late lookup must not write
+    # a selection the user never made.
+    _install_screen_source_harness(page)
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            const provider = window.__desktopProvider;
+            provider.nativeFrameCapture = true;
+            provider.captureSourceAsDataUrl = () => new Promise(() => {});
+            let releaseSources;
+            provider.getSources = () => new Promise((resolve) => { releaseSources = resolve; });
+            const start = window.startScreenSharing();
+            await window.__share.waitFor(() => typeof releaseSources === 'function');
+            await window.stopScreenSharing();
+            await start;
+            releaseSources([{ id: 'screen:1', name: 'Entire Screen', display_id: '1' }]);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+                selected: window.getSelectedScreenSourceId(),
+                stored: window.__storedValues.get('selectedScreenSourceId') ?? null,
+            };
+        }"""
+    )
+
+    assert result == {"selected": None, "stored": None}
+
+
+@pytest.mark.frontend
+def test_cancelled_start_does_not_act_on_late_source_validation(page: Page) -> None:
+    # Before capturing, a start checks that the selected window still exists.
+    # When that start is cancelled meanwhile, the late answer (the window is
+    # gone) must not clear or replace the user's selection.
+    _install_screen_source_harness(
+        page, initial_storage={"selectedScreenSourceId": "window:old"}
+    )
+    _install_share_session(page)
+
+    result = page.evaluate(
+        """async () => {
+            let releaseSources;
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                releaseSources = resolve;
+            });
+            const start = window.startScreenSharing();
+            await window.__share.waitFor(() => typeof releaseSources === 'function');
+            await window.stopScreenSharing();
+            await start;
+            releaseSources([{ id: 'screen:1', name: 'Entire Screen', display_id: '1' }]);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+                selected: window.getSelectedScreenSourceId(),
+                stored: window.__storedValues.get('selectedScreenSourceId') ?? null,
+                calls: window.__share.calls,
+            };
+        }"""
+    )
+
+    assert result == {"selected": "window:old", "stored": "window:old", "calls": []}
 
 
 @pytest.mark.frontend
@@ -2825,6 +2947,12 @@ def test_manual_share_discards_late_stream_after_source_change(
                         window.__manualCaptureCalls.push(
                             constraints.video.mandatory.chromeMediaSourceId
                         );
+                        if (window.__manualGetUserMediaStarted) {
+                            // The restart for the newly picked source.
+                            return Promise.resolve(
+                                document.createElement('canvas').captureStream(1)
+                            );
+                        }
                         window.__manualGetUserMediaStarted = true;
                         return new Promise((resolve) => {
                             window.__resolveManualGetUserMedia = resolve;
@@ -2839,11 +2967,15 @@ def test_manual_share_discards_late_stream_after_source_change(
 
     result = page.evaluate(
         """async () => {
-            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            // Picking a source while the start is pending supersedes it and
+            // restarts on the new source; the old capture arrives late.
+            const pick = window.selectScreenSource('window:new', 'Browser', 'Browser');
             window.__resolveManualGetUserMedia(window.__oldStream);
             await window.__manualStartPromise;
+            await pick;
             const state = {
                 captureCalls: window.__manualCaptureCalls,
+                sharing: document.getElementById('screenButton').classList.contains('active'),
                 selectedId: window.appState.selectedScreenSourceId,
                 storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
                 rememberedTitle:
@@ -2858,7 +2990,8 @@ def test_manual_share_discards_late_stream_after_source_change(
     )
 
     assert result == {
-        "captureCalls": ["window:old"],
+        "captureCalls": ["window:old", "window:new"],
+        "sharing": True,
         "selectedId": "window:new",
         "storedId": "window:new",
         "rememberedTitle": "Browser",
@@ -3935,6 +4068,11 @@ def test_manual_screen_fallback_discards_late_stream_after_source_change(
                         if (sourceId === 'window:old') {
                             throw new Error('selected source failed');
                         }
+                        // Picking a source while this start is pending supersedes
+                        // it; the restart captures the newly picked source.
+                        if (sourceId === 'window:new') {
+                            return document.createElement('canvas').captureStream(1);
+                        }
                         window.__fallbackStarted = true;
                         return new Promise((resolve) => {
                             window.__resolveFallback = resolve;
@@ -3952,6 +4090,9 @@ def test_manual_screen_fallback_discards_late_stream_after_source_change(
             await window.selectScreenSource('window:new', 'Browser', 'Browser');
             window.__resolveFallback(window.__fallbackStream);
             await window.__manualStartPromise;
+            // The cancelled start returns at once; its late stream is released
+            // when that capture settles a few ticks later.
+            await new Promise((resolve) => setTimeout(resolve, 20));
             const state = {
                 captureCalls: window.__captureCalls,
                 selectedId: window.appState.selectedScreenSourceId,
@@ -3966,7 +4107,7 @@ def test_manual_screen_fallback_discards_late_stream_after_source_change(
     )
 
     assert result == {
-        "captureCalls": ["window:old", "screen:1"],
+        "captureCalls": ["window:old", "screen:1", "window:new"],
         "selectedId": "window:new",
         "storedId": "window:new",
         "fallbackInstalled": False,
@@ -4011,9 +4152,13 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
                 configurable: true,
                 value: {
                     async getUserMedia(constraints) {
-                        window.__captureCalls.push(
-                            constraints.video.mandatory.chromeMediaSourceId
-                        );
+                        const sourceId = constraints.video.mandatory.chromeMediaSourceId;
+                        window.__captureCalls.push(sourceId);
+                        // Picking a source while this start is pending supersedes
+                        // it; the restart captures the newly picked source.
+                        if (sourceId === 'window:new') {
+                            return document.createElement('canvas').captureStream(1);
+                        }
                         throw new Error('selected source failed');
                     },
                     getDisplayMedia() {
@@ -4035,6 +4180,9 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
             await window.selectScreenSource('window:new', 'Browser', 'Browser');
             window.__resolvePicker(window.__pickerStream);
             await window.__manualStartPromise;
+            // The cancelled start returns at once; its late stream is released
+            // when that capture settles a few ticks later.
+            await new Promise((resolve) => setTimeout(resolve, 20));
             const state = {
                 captureCalls: window.__captureCalls,
                 selectedId: window.appState.selectedScreenSourceId,
@@ -4049,7 +4197,7 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
     )
 
     assert result == {
-        "captureCalls": ["window:old", "getDisplayMedia"],
+        "captureCalls": ["window:old", "getDisplayMedia", "window:new"],
         "selectedId": "window:new",
         "storedId": "window:new",
         "pickerInstalled": False,
@@ -4112,7 +4260,12 @@ def test_wgc_restart_approval_requires_current_attempt(
             Object.defineProperty(navigator, 'mediaDevices', {
                 configurable: true,
                 value: {
-                    async getUserMedia() {
+                    async getUserMedia(constraints) {
+                        // Picking a source while this start is pending supersedes
+                        // it; the restart captures the newly picked source.
+                        if (constraints.video.mandatory.chromeMediaSourceId === 'window:new') {
+                            return document.createElement('canvas').captureStream(1);
+                        }
                         const error = new Error('Could not start video source');
                         error.name = 'NotReadableError';
                         throw error;

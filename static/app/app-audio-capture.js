@@ -1003,10 +1003,10 @@
                 if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
                     window.stopProactiveVisionDuringSpeech();
                 }
-                // 停止屏幕共享的发送；切换完成后按 shouldRestartScreening 恢复，
-                // 进行中的换源重启也要保留，否则新来源不会再恢复分享。
-                if (typeof window.stopScreening === 'function') {
-                    window.stopScreening({ keepSourceSwitchRestart: true });
+                // 只临时停掉屏幕共享的发送，切换完成后按 shouldRestartScreening
+                // 恢复；进行中的换源重启和启动都要保留，不能走收尾的 stopScreening。
+                if (typeof window.pauseScreenFrameSender === 'function') {
+                    window.pauseScreenFrameSender();
                 }
                 // 停止静音检测
                 stopSilenceDetection();
