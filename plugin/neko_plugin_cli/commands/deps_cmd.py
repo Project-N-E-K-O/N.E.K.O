@@ -408,6 +408,10 @@ def _clean_vendor(vendor_dir: Path) -> None:
     for pyc in vendor_dir.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
 
+    # A rollback interrupted before clearing its marker leaves it in vendor/;
+    # never carry it into the next tree.
+    (vendor_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+
     # Remove bin/ directory (CLI scripts we don't need)
     bin_dir = vendor_dir / "bin"
     if bin_dir.is_symlink():

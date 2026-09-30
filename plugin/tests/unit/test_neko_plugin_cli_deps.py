@@ -265,6 +265,25 @@ def test_sync_lock_file_is_per_user(tmp_path, monkeypatch):
     assert lock.name.startswith("neko-plugin-sync-4242-")
 
 
+def test_non_clean_sync_drops_marker_left_in_vendor(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("keep")
+    (vendor / ".recovery-pending").touch()
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (vendor / "old.py").read_text() == "keep"
+    assert not (vendor / ".recovery-pending").exists()
+
+
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
