@@ -1469,9 +1469,7 @@ async def test_periodic_no_vad_does_not_restart_strict_wait() -> None:
     async def commit(*_identity: int) -> None:
         committed.set()
 
-    # asyncio timers may fire one clock resolution early (~16 ms on Windows),
-    # so the first strict retry can still land just before the deadline.
-    coordinator = _FakeCoordinator([_incomplete()] * 3)
+    coordinator = _FakeCoordinator([_incomplete()])
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate(),
@@ -1495,13 +1493,19 @@ async def test_periodic_no_vad_does_not_restart_strict_wait() -> None:
 
     await adapter._process_evaluation_result(item)
     first_fallback = adapter._fallback_task
+    first_deadline = adapter._strict_endpoint_deadline
     assert first_fallback is not None
+    assert first_deadline is not None
     # Submit the merged periodic result before yielding to the strict timer;
     # a wall-clock sleep here makes the test race under a loaded Windows CI.
     await adapter._process_evaluation_result(item)
 
     # A later periodic result keeps the original strict wait and its deadline.
     assert adapter._fallback_task is first_fallback
+    assert adapter._strict_endpoint_deadline == first_deadline
+    # Fast-forward the semantic deadline after checking it was preserved so
+    # the test does not depend on wall-clock timer precision.
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
     await asyncio.wait_for(committed.wait(), 1)
     assert adapter._failed is False
     await adapter.close()
