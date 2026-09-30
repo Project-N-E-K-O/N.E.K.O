@@ -1682,6 +1682,29 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     assert not final.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="directories cannot be opened on Windows")
+@pytest.mark.parametrize("strict", (False, True))
+def test_closing_a_synced_directory_only_fails_a_strict_sync(tmp_path, monkeypatch, strict):
+    # 尽力同步夹在必须成对的步骤之间（比如刚把保留副本停放好）：关闭句柄出错不能跳过调用方的回滚。
+    from utils.avatar_tool_store import _fsync_directory
+
+    real_close = os.close
+    closed = []
+
+    def failing_close(fd):
+        real_close(fd)
+        closed.append(fd)
+        raise OSError(errno.EIO, "simulated close failure")
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.close", failing_close)
+    if strict:
+        with pytest.raises(OSError):
+            _fsync_directory(tmp_path, strict=True)
+    else:
+        _fsync_directory(tmp_path)
+    assert len(closed) == 1
+
+
 @pytest.mark.parametrize("failing_step", ("fsync", "open"))
 @pytest.mark.parametrize("code", ("EINVAL", "EBADF", "ENOTSUP", "EOPNOTSUPP"))
 def test_discarding_a_retained_deletion_works_where_directories_cannot_be_synced(

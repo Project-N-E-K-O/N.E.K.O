@@ -143,7 +143,14 @@ def _fsync_directory(path: Path | str, *, strict: bool = False) -> None:
         if strict and exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED_ERRNOS:
             raise
     finally:
-        os.close(handle)
+        try:
+            os.close(handle)
+        except OSError:
+            # Best-effort callers run between steps that must stay paired (e.g.
+            # right after parking a retained copy); a close error must not skip
+            # their rollback.
+            if strict:
+                raise
 
 
 # (deleting, marker, observed state of the copy, observed identity of marker)
