@@ -2674,6 +2674,13 @@
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
                     }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true
+                            && S.independentAsrProviderPreferenceAuthoritative === true) {
+                        msg.independent_asr_provider_preference =
+                            S.independentAsrProviderPreference === 'faster_whisper'
+                                ? 'faster_whisper' : 'auto';
+                        handshakeStamped = true;
+                    }
                     if (msg && msg.action === 'start_session') {
                         var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
                             ? getExplicitConversationLanguageForCurrentCharacter()
@@ -3976,6 +3983,7 @@
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            tearDownBlockedVoiceRoute();
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
