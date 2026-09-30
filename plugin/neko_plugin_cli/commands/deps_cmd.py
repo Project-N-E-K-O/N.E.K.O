@@ -176,6 +176,19 @@ def handle_sync(args: argparse.Namespace) -> int:
             )
             if exit_code != 0:
                 return exit_code
+            # _clean_vendor recurses, and the swap would expose staging as
+            # vendor/: stop if anything got mounted inside during the install.
+            # (An unreadable mount table does not stop the sync: vendor/ was
+            # checked before, and the deletions later keep what they can not
+            # rule out.)
+            mounted = _find_mount(staging_dir)
+            if mounted is not None:
+                print(
+                    f"[FAIL] {mounted} got mounted inside {staging_dir} during the "
+                    "install; not touching it. Unmount it, then retry.",
+                    file=sys.stderr,
+                )
+                return 1  # the finally block's mount check keeps staging
             _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
@@ -313,8 +326,7 @@ def _lock_dir() -> Path:
     """
     if not hasattr(os, "getuid"):
         return Path(gettempdir())
-    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    private = base / "neko-plugin" / "sync-locks"
+    private = _lock_cache_base() / "neko-plugin" / "sync-locks"
     try:
         private.mkdir(parents=True, exist_ok=True, mode=0o700)
         _make_private(private)
@@ -325,6 +337,19 @@ def _lock_dir() -> Path:
     fallback.mkdir(exist_ok=True, mode=0o700)
     _make_private(fallback)
     return fallback
+
+
+def _lock_cache_base() -> Path:
+    """The user's cache dir from the account database, not from HOME or
+    XDG_CACHE_HOME: every sync process of one user must pick the same lock,
+    whatever its environment, or two could run at once and one could delete
+    the other's live staging dir as stale."""
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache"
+    except (ImportError, KeyError):
+        return Path.home() / ".cache"
 
 
 def _make_private(directory: Path) -> None:
@@ -405,6 +430,11 @@ def _remove_retained_backups(plugin_dir: Path) -> None:
             print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
 
 
+def _find_mount(path: Path) -> Path | None:
+    """A mount point that is, or is inside, path, if one is positively seen."""
+    return path if _is_mount_point(path) else _find_foreign_subdir(path, junctions=False)
+
+
 def _mounted_inside(path: Path) -> bool:
     """Whether a leftover work dir is, or contains, a mount point, which
     rmtree would descend into and empty. Such a dir is kept, with a warning."""
@@ -417,7 +447,7 @@ def _mounted_inside(path: Path) -> bool:
             file=sys.stderr,
         )
         return True
-    mount = path if _is_mount_point(path) else _find_foreign_subdir(path, junctions=False)
+    mount = _find_mount(path)
     if mount is None:
         return False
     print(

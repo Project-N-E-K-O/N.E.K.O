@@ -835,6 +835,46 @@ def test_unusable_lock_dir_fails_with_a_message_not_a_traceback(tmp_path, monkey
     assert "[FAIL] Could not sync dependencies" in capsys.readouterr().err
 
 
+def test_lock_location_ignores_per_process_cache_settings(tmp_path, monkeypatch):
+    # Two syncs by one user with different XDG_CACHE_HOME must still share
+    # one lock, or both would run and one could delete the other's staging.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "per-process-cache"))
+    base = deps_cmd._lock_cache_base()
+    assert tmp_path not in base.parents
+    assert base.name == ".cache"
+
+
+def test_mount_found_in_finished_staging_stops_the_sync(tmp_path, monkeypatch, capsys):
+    # _clean_vendor would recurse into it and the swap would expose it as
+    # vendor/; keep staging as it is and leave vendor/ alone.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+    monkeypatch.setattr(
+        deps_cmd,
+        "_find_mount",
+        lambda path: path / "mnt" if path.name.startswith(".vendor.staging-") else None,
+    )
+    monkeypatch.setattr(
+        deps_cmd, "_clean_vendor", lambda path: pytest.fail("must not clean a tree with a mount")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (vendor / "old.py").read_text() == "old"
+    assert [p for p in plugin_dir.glob(".vendor.staging-*") if p.is_dir()]
+    assert "got mounted inside" in capsys.readouterr().err
+
+
 def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
     # Not directly in a shared, sticky /tmp, where another user could
     # pre-create the lock file and block this user's syncs for good.
@@ -843,7 +883,7 @@ def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     me = tmp_path.stat().st_uid
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: cache)
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path / "shared-tmp"))
 
     assert real_lock_dir() == cache / "neko-plugin" / "sync-locks"
@@ -858,7 +898,7 @@ def test_posix_lock_dir_falls_back_to_a_per_user_temp_dir(tmp_path, monkeypatch)
     shared.mkdir()
     me = tmp_path.stat().st_uid
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(unusable))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: unusable)
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
 
     assert real_lock_dir() == shared / f"neko-plugin-sync-{me}"
@@ -875,7 +915,7 @@ def test_posix_lock_dir_refuses_a_fallback_owned_by_someone_else(tmp_path, monke
     # Another user pre-created our fallback dir.
     (shared / f"neko-plugin-sync-{owner + 1}").mkdir()
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: owner + 1, raising=False)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(unusable))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: unusable)
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
 
     with pytest.raises(PermissionError):
@@ -1239,7 +1279,7 @@ def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):
     shared.mkdir()
     me = tmp_path.stat().st_uid
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: me, raising=False)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: cache)
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(shared))
     real_access = os.access
     monkeypatch.setattr(
@@ -1284,7 +1324,7 @@ def test_symlinked_lock_dir_is_not_used_or_chmodded(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     (cache / "neko-plugin").mkdir(parents=True)
     (cache / "neko-plugin" / "sync-locks").symlink_to(shared, target_is_directory=True)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: cache)
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
 
@@ -1302,7 +1342,7 @@ def test_lock_dir_that_is_open_to_others_is_closed(tmp_path, monkeypatch):
     locks = cache / "neko-plugin" / "sync-locks"
     locks.mkdir(parents=True)
     os.chmod(locks, 0o777)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(deps_cmd, "_lock_cache_base", lambda: cache)
 
     assert real_lock_dir() == locks
     assert locks.stat().st_mode & 0o777 == 0o700
