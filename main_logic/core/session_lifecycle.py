@@ -388,6 +388,18 @@ class SessionOwnershipMixin:
         return record.task
 
     async def _retire_session_resources(
+        self, record, **kwargs,
+    ):
+        try:
+            return await self._retire_session_resources_owned(record, **kwargs)
+        except BaseException as exc:
+            if not record.handoff_safe.is_set() and record.handoff_error is None:
+                record.handoff_error = exc
+            raise
+        finally:
+            record.handoff_finished.set()
+
+    async def _retire_session_resources_owned(
         self, record, *, by_server, reset_starting_count, after_memory_settlement,
         memory_settlement_timeout, preserve_pending_input,
     ):
@@ -396,8 +408,9 @@ class SessionOwnershipMixin:
         for predecessor in tuple(self._session_retirements):
             if predecessor is record:
                 break
-            if not predecessor.handoff_safe.is_set():
-                await predecessor.handoff_safe.wait()
+            await predecessor.handoff_finished.wait()
+            if predecessor.handoff_error is not None:
+                raise RuntimeError("Previous session handoff failed") from predecessor.handoff_error
         close_tasks = []
         operation = record.operation
         # Cancellation is requested before waiting. The manager retains this
@@ -512,8 +525,10 @@ class SessionOwnershipMixin:
         self._connection_records[:] = [item for item in self._connection_records if not item.closed]
         self._session_retirements[:] = [
             item for item in self._session_retirements
-            if item is record or not item.cleanup_complete.is_set()
+            if item is record or item.handoff_error is not None or not item.cleanup_complete.is_set()
             or (item.memory_completion is not None and not item.memory_completion.done())
         ]
+        if record.handoff_error is not None:
+            raise RuntimeError("Session end handoff failed") from record.handoff_error
         if cleanup_errors:
             raise cleanup_errors[0]

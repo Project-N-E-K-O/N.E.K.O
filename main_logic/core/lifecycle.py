@@ -988,7 +988,7 @@ class LifecycleMixin:
         abandon_epoch = getattr(self, '_user_session_abandon_epoch', 0)
         try:
             await self._wait_session_handoff(deadline)
-        except TimeoutError:
+        except (TimeoutError, RuntimeError):
             await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
             return
         if abandon_epoch != getattr(self, '_user_session_abandon_epoch', 0):
