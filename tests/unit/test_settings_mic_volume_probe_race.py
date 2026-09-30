@@ -276,6 +276,43 @@ async function liveOnlySampleIgnoresProbeCase() {
          'a liveOnly sample must leave the probe running');
 }
 
+async function lostSessionIsReportedCase() {
+  // 页面重载 / watchdog 到点后设置页还在轮询：如实报 noSession，别让它对着 0 音量空等。
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  assert(env.mod.sampleMicVolumeLevel().noSession === true, 'no settings test running reports noSession');
+  assert(env.mod.sampleMicVolumeLevel({ liveOnly: true }).noSession !== true,
+         'the floating-button sampler never reports noSession');
+
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts');
+  assert(env.mod.sampleMicVolumeLevel().noSession !== true, 'a running probe is a live session');
+
+  // 切换设备重开 probe 期间 probe 暂时为空，但会话仍在。
+  env.S.selectedMicrophoneId = 'mic-A';
+  const release = env.parkGetUserMedia();
+  const switching = env.win.selectMicrophone('mic-B');
+  await settle();
+  const reopening = env.mod.sampleMicVolumeLevel();
+  assert(reopening.noSession !== true && reopening.failed !== true,
+         'a probe being reopened is not a lost session');
+  release();
+  await switching;
+  await settle(10);
+
+  activeWatchdogTimers(timers)[0].callback();
+  assert(env.mod.sampleMicVolumeLevel().noSession === true, 'a probe released by the watchdog reports noSession');
+
+  assert((await env.win.startSettingsMicVolumeTest()).mode === 'probe', 'probe starts again');
+  env.win.stopSettingsMicVolumeTest();
+  assert(env.mod.sampleMicVolumeLevel().noSession === true, 'an explicit stop reports noSession');
+
+  // 正式录音中：报真实音量，不报 noSession。
+  const liveEnv = loadModule();
+  await liveEnv.mod.startMicCapture();
+  assert(liveEnv.mod.sampleMicVolumeLevel().noSession !== true,
+         'while real recording runs the sampler reports its level');
+}
+
 async function deadTrackFallsBackCase() {
   // 选中设备给出的音轨已 ended：和正式录音一样合成 NotReadableError，退回默认麦克风。
   const env = loadModule();
@@ -327,6 +364,7 @@ async function rebuildFailureIsTerminalCase() {
   for (let i = 0; i < 5; i += 1) {
     const sample = env.mod.sampleMicVolumeLevel();
     assert(sample.failed === true && sample.recording === false, 'a failed rebuild is reported to the settings page');
+    assert(sample.noSession !== true, 'a failed rebuild is a failure, not a lost session');
   }
   await settle(10);
   assert(env.getUserMediaCalls.length === callsAfterRebuild, 'a failed rebuild must not be retried on every poll');
@@ -522,6 +560,7 @@ async function liveDeviceSwitchKeepsProbeOffCase() {
   await watchdogReleasesAbandonedProbeCase();
   await probeResumesAfterLiveEndsCase();
   await liveOnlySampleIgnoresProbeCase();
+  await lostSessionIsReportedCase();
   await deadTrackFallsBackCase();
   await resumeDuringLiveReturnsLiveCase();
   await rebuildFailureIsTerminalCase();

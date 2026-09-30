@@ -2575,6 +2575,13 @@
             if (!liveOnly && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'failed') {
                 return { recording: false, percent: 0, tone: 'idle', failed: true };
             }
+            // 没有进行中的试麦（页面重载过、watchdog 已到点）：设置页还在轮询说明它以为测试还在，
+            // 如实告诉它会话已不存在，而不是让它对着 0 音量等满一轮。
+            // 判定看 watchdog 而不是 probe：重开 probe（切换设备 / 录音结束后恢复）期间
+            // probe 暂时为空，但 watchdog 一直有效，不能误报。
+            if (!liveOnly && settingsMicVolumeWatchdog === null) {
+                return { recording: false, percent: 0, tone: 'idle', noSession: true };
+            }
             return { recording: false, percent: 0, tone: 'idle' };
         }
         // 用时域数据反映 worklet/AI 实际收到的线性振幅。
