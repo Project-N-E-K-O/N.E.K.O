@@ -147,13 +147,22 @@ class StreamingMixin:
                     dropped_text_for_voice = 0
                     for index, message in enumerate(pending_messages):
                         msg_input_type = message.get("input_type")
-                        # Dispatch can submit to the provider before yielding
-                        # again. Once attempted, cancellation cannot prove the
-                        # current item was uncommitted, so only its untouched
-                        # suffix may be restored to the local queue.
-                        next_unprocessed = index + 1
+                        # Keep the current item in the rollback window until
+                        # the provider dispatch boundary is reached. Several
+                        # text/image paths await preparation first (for
+                        # example Focus scoring), so advancing this cursor at
+                        # loop entry would lose an item when that await is
+                        # cancelled.
+                        def mark_dispatch_attempted() -> None:
+                            nonlocal next_unprocessed
+                            next_unprocessed = index + 1
+
                         try:
                             if msg_input_type == "audio":
+                                # Queue admission is the audio dispatch
+                                # boundary; the queue worker owns the later
+                                # provider handoff.
+                                mark_dispatch_attempted()
                                 await self._enqueue_audio_stream_data(message)
                             else:
                                 if (
@@ -164,7 +173,14 @@ class StreamingMixin:
                                     dropped_text_for_voice += 1
                                     next_unprocessed = index + 1
                                     continue
-                                await self._process_stream_data_internal(message)
+                                await self._process_stream_data_internal(
+                                    message,
+                                    on_dispatch_attempted=mark_dispatch_attempted,
+                                )
+                                # A normal early return (validation failure or
+                                # an intentional drop) is terminal handling,
+                                # even though it never reaches a provider.
+                                next_unprocessed = index + 1
                         except asyncio.CancelledError:
                             raise
                         except Exception as e:
@@ -178,7 +194,6 @@ class StreamingMixin:
                                 e,
                             )
                             continue
-                        next_unprocessed = index + 1
                     if dropped_text_for_voice:
                         logger.info(
                             "[%s] _flush_pending_input_data: dropped %d cached text "
@@ -403,7 +418,12 @@ class StreamingMixin:
             return False
         return True
 
-    async def _process_stream_data_internal(self, message: dict):
+    async def _process_stream_data_internal(
+        self,
+        message: dict,
+        *,
+        on_dispatch_attempted=None,
+    ):
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
@@ -847,6 +867,8 @@ class StreamingMixin:
                                 # 的话，_focus_thinking_active 已经置上、通知已经入队，
                                 # 而清理永远不会执行，气泡就一直亮到下一轮偶然把它关掉。
                                 await self._push_focus_thinking(True)
+                            if callable(on_dispatch_attempted):
+                                on_dispatch_attempted()
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
                             # stream_text claims the staged attachments (or puts them
@@ -961,6 +983,8 @@ class StreamingMixin:
                             if self._should_drop_magic_command_image(message.get("request_id")):
                                 return
                             # 只添加到待发送队列，等待与文本一起发送
+                            if callable(on_dispatch_attempted):
+                                on_dispatch_attempted()
                             await target_session.stream_image(image_b64)
                             if not self.is_active or self.session is not target_session:
                                 return
@@ -1006,6 +1030,8 @@ class StreamingMixin:
                             # One-shot avatar/chat attachments retain the
                             # pre-existing text/offline contract above.
                             if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                                if callable(on_dispatch_attempted):
+                                    on_dispatch_attempted()
                                 stage_result = await target_session.stream_image(
                                     image_b64,
                                     source=input_type,

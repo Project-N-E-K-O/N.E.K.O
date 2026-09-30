@@ -2581,11 +2581,15 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     deliver_text = AsyncMock()
     process_pending = core_module.LLMSessionManager._process_stream_data_internal
 
-    async def _process_pending(message):
+    async def _process_pending(message, *, on_dispatch_attempted=None):
         if message.get("input_type") == "text":
             await deliver_text(message)
             return
-        await process_pending(mgr, message)
+        await process_pending(
+            mgr,
+            message,
+            on_dispatch_attempted=on_dispatch_attempted,
+        )
 
     mgr._process_stream_data_internal = AsyncMock(side_effect=_process_pending)
 

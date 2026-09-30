@@ -112,7 +112,10 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     await LLMSessionManager._flush_pending_input_data(mgr)
 
     mgr._enqueue_audio_stream_data.assert_awaited_once_with(audio_msg)
-    mgr._process_stream_data_internal.assert_awaited_once_with(text_msg)
+    mgr._process_stream_data_internal.assert_awaited_once_with(
+        text_msg,
+        on_dispatch_attempted=ANY,
+    )
     assert mgr.pending_input_data == []
 
 
@@ -129,8 +132,11 @@ async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first()
     mgr._enqueue_audio_stream_data = AsyncMock()
     blocked_started = asyncio.Event()
 
-    async def process(message):
+    async def process(message, *, on_dispatch_attempted):
         if message is blocked:
+            # Model the provider boundary: cancellation after this point must
+            # leave only the untouched suffix in the cache.
+            on_dispatch_attempted()
             blocked_started.set()
             await asyncio.Event().wait()
 
@@ -149,6 +155,39 @@ async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first()
     assert mgr._pending_input_flush_active is False
 
 
+async def test_cancelled_pending_input_flush_restores_current_before_dispatch():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    blocked = {"input_type": "text", "data": "blocked"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [blocked, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    blocked_started = asyncio.Event()
+
+    async def process(message, *, on_dispatch_attempted):
+        if message is blocked:
+            # Preparation can suspend before the provider call. The callback
+            # is deliberately not invoked, so cancellation must restore the
+            # current item as well as the untouched suffix.
+            blocked_started.set()
+            await asyncio.Event().wait()
+
+    mgr._process_stream_data_internal = process
+    task = asyncio.create_task(LLMSessionManager._flush_pending_input_data(mgr))
+    await blocked_started.wait()
+    mgr.pending_input_data.append(live)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr.pending_input_data == [blocked, suffix, live]
+    assert mgr._pending_input_flush_active is False
+
+
 async def test_failed_pending_input_drops_only_current_and_continues_suffix():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     first = {"input_type": "text", "data": "first"}
@@ -162,7 +201,7 @@ async def test_failed_pending_input_drops_only_current_and_continues_suffix():
     mgr._enqueue_audio_stream_data = AsyncMock()
     attempted: list[dict] = []
 
-    async def process(message):
+    async def process(message, *, on_dispatch_attempted):
         attempted.append(message)
         if message is failed:
             mgr.pending_input_data.append(live)
