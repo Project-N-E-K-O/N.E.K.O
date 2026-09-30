@@ -172,29 +172,49 @@ def test_extract_directives_ko_whitespace_runs(text, expected_term):
     assert terms == {expected_term}, terms
 
 
-@pytest.mark.parametrize("text", [
-    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 5~7 秒
-    " " * 480,
+# 绝对天花板只兜底；主判据是下面的增长倍率，不受 runner 快慢影响
+_WHITESPACE_CEILING_S = 3.0
+
+
+def _best_time(text: str, runs: int = 3) -> float:
+    """Fastest of ``runs`` calls, so one noisy-neighbour spike doesn't count."""
+    import time
+
+    best = float("inf")
+    for _ in range(runs):
+        started = time.perf_counter()
+        extract_directives(text)
+        elapsed = time.perf_counter() - started
+        best = min(best, elapsed)
+        if elapsed > _WHITESPACE_CEILING_S:
+            break  # 已经爆了，别再多跑两遍
+    return best
+
+
+@pytest.mark.parametrize("make", [
+    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 480 要 5~7 秒
+    lambda n: " " * n,
     # 模板 1：触发词后的 ``\s*(?:는|은)?\s*`` 同形，前面垫一段空白让话题有很多种
-    # 切法走到 ``말``，未原子化时 1.6 秒（模板 3 同一输入 8 秒）
-    " " * 39 + "말" + " " * 480,
+    # 切法走到 ``말``，未原子化时模板 1 单独 1.6 秒（模板 3 同一输入 8 秒）
+    lambda n: " " * 39 + "말" + " " * n,
 ], ids=["spaces", "padded_keyword"])
-def test_extract_directives_whitespace_does_not_blow_up(text):
+def test_extract_directives_whitespace_does_not_blow_up(make):
     """``extract_directives`` runs synchronously on every user message with no
     length cap, so a whitespace-heavy message must not stall it.
 
-    Before the ko templates' whitespace runs were made atomic, these inputs took
-    several seconds; now they take roughly 0.2s. The ceiling is loose on purpose
-    (shared CI runners), while still far below the cubic-growth numbers.
+    The main assertion is the growth ratio from 120 to 480 characters, which
+    does not depend on how fast the runner is: quadratic growth is 16x (about
+    13-20x measured), cubic is 64x (about 41-74x measured before the ko
+    whitespace runs were made atomic). The absolute ceiling is only a loose
+    backstop for shared CI runners.
     """
-    import time
-
     # 预热：别把首次正则编译算进去
     extract_directives(" ")
-    started = time.perf_counter()
-    extract_directives(text)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 1.5, f"{elapsed:.3f}s"
+    short = _best_time(make(120))
+    long = _best_time(make(480))
+    assert long < _WHITESPACE_CEILING_S, f"{long:.3f}s"
+    # 小输入只有十几毫秒，加一点绝对余量，别让计时抖动主导倍率
+    assert long < short * 35 + 0.02, f"120: {short:.4f}s, 480: {long:.4f}s"
 
 
 # ── 2. record dedup + refresh ────────────────────────────────────
