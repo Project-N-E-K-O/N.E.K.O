@@ -421,6 +421,28 @@ async function fallbackUpdatesSelectionCase() {
          'a working selected device is left alone');
 }
 
+async function fallbackYieldsToLiveStartWithoutChangingSelectionCase() {
+  // 试麦回退到默认麦克风、默认设备还没打开时正式录音开始：试麦必须先让位，
+  // 不能再改选中项——改了会递增选择代次，把正式录音按原设备发起的请求判为过期取消。
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'usb-mic';
+  env.failNextGetUserMedia(mediaError('NotFoundError'));
+  const release = env.parkGetUserMedia();
+  const probing = env.win.startSettingsMicVolumeTest();
+  await settle();
+  const starting = env.mod.startMicCapture();
+  await settle();
+  release();
+  const result = await probing;
+  await starting;
+
+  assert(result.ok === true && result.mode === 'live', 'the probe yields to the live start');
+  assert(env.S.selectedMicrophoneId === 'usb-mic',
+         'a yielded probe must not rewrite the selection under the live start');
+  assert(env.S.isRecording === true && isLive(env.S.stream), 'the live recording still commits');
+  assert(env.streams.filter(isLive).length === 1, 'only the live stream stays open');
+}
+
 async function failureReportsErrorNameCase() {
   const env = loadModule();
   env.failNextGetUserMedia(mediaError('NotAllowedError'));
@@ -508,6 +530,7 @@ async function liveDeviceSwitchKeepsProbeOffCase() {
   await directTeardownResumesProbeCase();
   await probeYieldsWhenLiveStartClaimsDeviceCase();
   await fallbackUpdatesSelectionCase();
+  await fallbackYieldsToLiveStartWithoutChangingSelectionCase();
   await failureReportsErrorNameCase();
   await deviceSwitchDuringResumeCountsAsSuccessCase();
   await liveDeviceSwitchKeepsProbeOffCase();

@@ -3648,6 +3648,54 @@ async def test_native_session_snapshot_validates_the_cloud_once(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_native_session_snapshot_revalidates_a_replacement_when_asked(monkeypatch):
+    from main_routers import community_oauth
+
+    rotated = {**_delegate_session(), "access_token": "rotated-token"}
+    statuses = [
+        {"logged_in": True, "snapshot": _delegate_session(), "auth": {}},
+        {"logged_in": True, "snapshot": rotated, "auth": {}},
+    ]
+
+    async def resolved():
+        return statuses.pop(0)
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: dict(rotated))
+    snapshot, failure = await C._native_delegate_session_snapshot(revalidate_replacement=True)
+    assert failure == ""
+    assert snapshot["access_token"] == "rotated-token"
+    assert statuses == []
+
+
+def test_native_delegate_handoff_survives_a_refresh_during_validation(client, monkeypatch):
+    from main_routers import community_oauth
+
+    rotated = {**_delegate_session(), "access_token": "rotated-token"}
+    statuses = [
+        {"logged_in": True, "snapshot": _delegate_session(), "auth": {}},
+        {"logged_in": True, "snapshot": rotated, "auth": {}},
+    ]
+
+    async def resolved():
+        return statuses.pop(0)
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: dict(rotated))
+    response = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        params={"return_to": "https://community.example/cards"},
+        headers={"Sec-Fetch-Site": "same-origin"},
+        follow_redirects=False,
+    )
+    # The handoff lands on a static page with no retry, so a token refreshed
+    # between cloud validation and the local read must be validated again.
+    assert response.status_code == 302
+    assert "#native_delegate=" in response.headers["location"]
+    assert statuses == []
+
+
 @pytest.mark.parametrize("status, expected", [
     ({"logged_in": False, "snapshot": None}, "missing"),
     ({"logged_in": False, "snapshot": {"access_token": "t"}}, "unavailable"),

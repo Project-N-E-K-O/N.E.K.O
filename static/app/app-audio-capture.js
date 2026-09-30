@@ -2847,15 +2847,17 @@
             stopMicrophoneStreamTracks(stream);
             stream = null;
         }
-        // 和正式录音一样：选中的设备用不了、实际测的是系统默认麦克风时，把选中项改过去，
-        // 否则设置页还显示原设备名，用户会以为那个设备是好的。
-        if (fellBack) applySystemDefaultMicrophoneSelection();
-        // 等待期间正式录音已启动或开始接管：让位给正式录音。
+        // 等待期间正式录音已启动或开始接管：让位给正式录音。必须先于下面改选中项：
+        // 改选中项会递增选择代次，正在按原设备打开的正式录音会被判为过期而取消，
+        // 回退交给正式录音自己的流程处理。
         if (isLiveMicCaptureActiveOrPending()) {
             stopMicrophoneStreamTracks(stream);
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
         }
+        // 和正式录音一样：选中的设备用不了、实际测的是系统默认麦克风时，把选中项改过去，
+        // 否则设置页还显示原设备名，用户会以为那个设备是好的。
+        if (fellBack) applySystemDefaultMicrophoneSelection();
         let context = null;
         let probe = null;
         try {

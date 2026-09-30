@@ -1443,36 +1443,47 @@ def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
     return f"{base_parsed.scheme}://{base_parsed.netloc}{path}{query}"
 
 
-async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
-    """Refresh, validate, and load a fingerprintable desktop session."""
+async def _native_delegate_session_snapshot(
+    *, revalidate_replacement: bool = False,
+) -> tuple[dict | None, str]:
+    """Refresh, validate, and load a fingerprintable desktop session.
+
+    ``revalidate_replacement`` lets a caller that cannot retry on its own (the
+    handoff navigation lands on a static page) validate a session replaced
+    after the first cloud check once more, instead of reporting it busy.
+    """
     # Pet requests this endpoint before its separate auth-status probe. Resolve
     # OAuth first so a just-refreshed access token cannot invalidate the newly
     # issued delegate immediately after the community tab opens.
     from main_routers import community_oauth
 
-    status = await community_oauth.resolve_saved_oauth_status()
-    if not status.get("logged_in"):
-        return None, (
-            "unavailable" if community_oauth.status_session_saved(status) else "missing"
-        )
+    for _ in range(2 if revalidate_replacement else 1):
+        status = await community_oauth.resolve_saved_oauth_status()
+        if not status.get("logged_in"):
+            return None, (
+                "unavailable" if community_oauth.status_session_saved(status) else "missing"
+            )
 
-    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
-    if snapshot is None:
-        return None, "missing"
-    verified = status.get("snapshot") or {}
-    credentials_changed = any(
-        snapshot.get(key) != verified.get(key)
-        for key in ("base_url", "access_token", "refresh_token")
-    )
-    identity_changed = any(
-        verified.get(key) and snapshot.get(key) != verified.get(key)
-        for key in ("local_user_id", "auth_source")
-    )
-    if credentials_changed or identity_changed:
+        snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+        if snapshot is None:
+            return None, "missing"
+        verified = status.get("snapshot") or {}
+        credentials_changed = any(
+            snapshot.get(key) != verified.get(key)
+            for key in ("base_url", "access_token", "refresh_token")
+        )
+        identity_changed = any(
+            verified.get(key) and snapshot.get(key) != verified.get(key)
+            for key in ("local_user_id", "auth_source")
+        )
+        if not (credentials_changed or identity_changed):
+            break
+    else:
         # A local replacement after cloud validation is not itself validated,
         # but a session still exists -- usually a concurrent token refresh.
-        # Report it as retryable (503) rather than as a logout (409); the
-        # caller retries instead of paying for a second cloud validation here.
+        # Report it as retryable (503) rather than as a logout (409). Proof
+        # callers retry on their own instead of paying for a second cloud
+        # validation here; only the handoff opts into one revalidation.
         return None, "unavailable"
     # A concurrent proof request may have backfilled missing identity metadata
     # for these same validated credentials. Preserve that verified enrichment.
@@ -1563,7 +1574,11 @@ async def native_delegate_handoff_endpoint(
             status_code=400,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    snapshot, failure = await _native_delegate_session_snapshot()
+    # A top-level navigation cannot retry a busy 503 by itself: validate a
+    # session rotated mid-check once more before showing the static error page.
+    snapshot, failure = await _native_delegate_session_snapshot(
+        revalidate_replacement=True,
+    )
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
     if not snapshot or not local_user_id or not session_fingerprint:
