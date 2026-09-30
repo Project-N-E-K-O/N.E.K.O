@@ -3155,7 +3155,7 @@
         "reasonEnrollmentActive": "A new voice profile is being enrolled. Voice activation will not start and standby audio will not be uploaded until enrollment finishes.",
         "reasonRuntimeDegraded": "Voice activation is temporarily unavailable; standby audio will not be uploaded.",
         "reasonUnsupportedAsrRoute": "The current voice route is not ready for voice activation; standby audio will not be uploaded while activation is on.",
-        "reasonShadowMode": "Voice activation is observing only and has not authorized standby audio to upload.",
+        "featureDisabled": "Voice identity is turned off, so enrollment and voice activation are unavailable. A saved voice profile can still be deleted.",
         "sessionWaiting": "Waiting for you to speak and activate voice chat",
         "sessionActive": "Voice chat is active",
         "sessionUnavailable": "Voice activation is temporarily unavailable; standby audio will not be uploaded",

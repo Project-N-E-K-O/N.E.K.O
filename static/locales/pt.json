@@ -3155,7 +3155,7 @@
         "reasonEnrollmentActive": "Um novo perfil está sendo cadastrado. A ativação não começará e o áudio em espera não será enviado até o fim do cadastro.",
         "reasonRuntimeDegraded": "A ativação por voz está temporariamente indisponível; o áudio em espera não será enviado.",
         "reasonUnsupportedAsrRoute": "A rota de voz atual ainda não oferece ativação por voz; o áudio em espera não será enviado enquanto ela estiver ligada.",
-        "reasonShadowMode": "A ativação por voz está apenas observando e ainda não autorizou o envio do áudio em espera.",
+        "featureDisabled": "A identidade de voz está desativada, então não é possível cadastrar a voz nem ligar a ativação por voz. O perfil de voz salvo ainda pode ser excluído.",
         "sessionWaiting": "Aguardando você falar para ativar a conversa por voz",
         "sessionActive": "A conversa por voz está ativa",
         "sessionUnavailable": "A ativação por voz está temporariamente indisponível; o áudio em espera não será enviado",

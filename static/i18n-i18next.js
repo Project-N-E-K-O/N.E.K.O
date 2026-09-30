@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示、免费服务拒绝访问提示、屏幕共享悬停菜单与来源选择提示、智谱 GLM 声音复刻、本地 faster-whisper ASR 等主分支 locale 变更，以及自定义道具 v3 编辑器文案（含互动数量上限提示），递增版本让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-29-avatar-tool-v3-faster-whisper-merge';
+    // 合入主分支的屏幕授权等待、唤醒词/插件 HTML 卡片、独立 ASR 恢复、点歌台管理入口与排序锁提示、免费服务拒绝访问提示、屏幕共享悬停菜单与来源选择提示、智谱 GLM 声音复刻、本地 faster-whisper ASR、声纹模式调整等主分支 locale 变更，以及自定义道具 v3 编辑器文案（含互动数量上限提示），递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-29-avatar-tool-v3-voice-identity-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
