@@ -1916,6 +1916,9 @@
     // attempt 上的 cancelled 标记让“停止”可以否决尚未返回的系统授权弹窗；
     // getDisplayMedia 本身不可中断，因此晚到的流会在返回后立即释放。
     var screenSharingStartAttempt = null;
+    // 进行中的换源重启（停止、等待、重新开始）的令牌；新的选择会换掉它，
+    // 其他停止会清掉它。
+    var sourceSwitchRestart = null;
 
     function isScreenSharingStartPending() {
         return !!screenSharingStartAttempt && !screenSharingStartAttempt.cancelled;
@@ -2598,6 +2601,14 @@
      * @param {boolean} forceRelease - 是否强制释放流。false时若主动视觉仍活跃则保留缓存流。
      */
     async function stopScreenSharing(forceRelease) {
+        // 换源重启以外的停止（用户停止、失败收尾）都取消还没走到启动的换源
+        // 重启，否则它醒来后会把刚停掉的分享重新打开。
+        sourceSwitchRestart = null;
+        return stopScreenSharingForSourceSwitch(forceRelease);
+    }
+
+    // 换源重启自己的停止：保留重启令牌，停完接着启动新来源。
+    async function stopScreenSharingForSourceSwitch(forceRelease) {
         cancelPendingScreenSharingStart();
         stopScreening();
 
@@ -2710,9 +2721,6 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
-    // 进行中的换源重启（停止、等待、重新开始）的令牌；新的选择会换掉它。
-    var sourceSwitchRestart = null;
-
     // options.force：id 与当前相同也当作一次新选择，推进选择代次，让还在等待
     // 的分享启动作废（来源 id 只是枚举快照，同一个 id 可能已换成别的窗口）。
     async function selectScreenSource(sourceId, sourceName, displayName, screenIndex, options) {
@@ -2797,7 +2805,7 @@
             sourceSwitchRestart = restartToken;
             try {
                 // 先停止当前分享（流已释放，forceRelease 无所谓）
-                await stopScreenSharing(true);
+                await stopScreenSharingForSourceSwitch(true);
                 // 等待一小段时间
                 await new Promise(function (resolve) { setTimeout(resolve, 300); });
                 // 重新开始分享（使用新选择的源）

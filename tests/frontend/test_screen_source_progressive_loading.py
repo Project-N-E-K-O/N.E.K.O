@@ -1662,6 +1662,67 @@ def test_second_pick_during_restart_still_shares_the_new_source(
 
 
 @pytest.mark.frontend
+def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
+    page: Page,
+) -> None:
+    # Stopping while a source switch is in its pause must not be undone when
+    # that restart wakes up.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const captureCalls = [];
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(constraints.video.mandatory.chromeMediaSourceId);
+                        const track = {
+                            readyState: 'live',
+                            stop() { this.readyState = 'ended'; },
+                            addEventListener() {},
+                        };
+                        return {
+                            active: true,
+                            getVideoTracks() { return [track]; },
+                            getTracks() { return [track]; },
+                        };
+                    },
+                },
+            });
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            await window.startScreenSharing();
+            document.getElementById('stopButton').disabled = false;
+
+            const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            await window.stopScreenSharing();
+            await pick;
+            return {
+                calls: captureCalls,
+                selected: window.getSelectedScreenSourceId(),
+                stopDisabled: document.getElementById('stopButton').disabled,
+            };
+        }"""
+    )
+
+    assert result == {
+        "calls": ["window:2"],
+        "selected": "window:5",
+        "stopDisabled": True,
+    }
+
+
+@pytest.mark.frontend
 def test_portal_result_with_reused_id_releases_cached_stream(page: Page) -> None:
     _install_screen_source_harness(
         page,

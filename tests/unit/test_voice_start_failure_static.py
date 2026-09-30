@@ -700,10 +700,14 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     audio_capture_source = _read(APP_AUDIO_CAPTURE_PATH)
 
     stop = _js_function_block(screen_source, "stopScreenSharing")
+    stop_body = _js_function_block(screen_source, "stopScreenSharingForSourceSwitch")
     switch = screen_source.split(
         "window.switchScreenSharing = async function () {", 1
     )[1].split("\n    };", 1)[0]
-    assert "cancelPendingScreenSharingStart();" in stop
+    # Every stop also drops a source-switch restart that has not started yet.
+    assert "sourceSwitchRestart = null;" in stop
+    assert "return stopScreenSharingForSourceSwitch(forceRelease);" in stop
+    assert "cancelPendingScreenSharingStart();" in stop_body
     assert "if (isScreenSharingStartPending())" in switch
 
     toggle = common_ui_source.split(
