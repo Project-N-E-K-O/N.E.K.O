@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import re._constants as _sre  # 私有模块：结构判据要看解析树（项目锁 Python 3.11）
+import re._parser as _sre_parser
 import unicodedata
 
 import pytest
@@ -50,33 +52,79 @@ def _zh_pattern_sources() -> list[str]:
     return [raw for locale, _kind, raw in D._PATTERNS_RAW if locale == "zh"]
 
 
-# 模块里的两种空白原子：``\s`` 和横向空白单字类 _ZH_HSPACE_ONE
-_WS_ATOM = r"(?:\\s|" + re.escape(D._ZH_HSPACE_ONE) + r")"
-_WS_QUANT = r"(?:[*+]|\{\d*,\d*\})"
+_REPEATS = (_sre.MAX_REPEAT, _sre.MIN_REPEAT)
+_NOT_SPACE_CATEGORIES = (_sre.CATEGORY_NOT_SPACE, _sre.CATEGORY_UNI_NOT_SPACE)
+
+
+def _class_is_whitespace_only(items) -> bool:
+    if items and items[0][0] is _sre.NEGATE:
+        # ``[^\S...]``: a negated class that excludes every non-space is a subset of \s
+        return any(op is _sre.CATEGORY and av in _NOT_SPACE_CATEGORIES for op, av in items[1:])
+    return all(
+        (op is _sre.LITERAL and chr(av).isspace())
+        or (op is _sre.RANGE and all(chr(c).isspace() for c in range(av[0], av[1] + 1)))
+        or (op is _sre.CATEGORY and av in (_sre.CATEGORY_SPACE, _sre.CATEGORY_UNI_SPACE))
+        for op, av in items
+    )
+
+
+def _matches_only_whitespace(seq) -> bool:
+    consumed = False
+    for op, av in seq:
+        if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
+            continue
+        if op is _sre.LITERAL:
+            ok = chr(av).isspace()
+        elif op is _sre.IN:
+            ok = _class_is_whitespace_only(av)
+        elif op is _sre.SUBPATTERN:
+            ok = _matches_only_whitespace(av[3])
+        elif op is _sre.ATOMIC_GROUP:
+            ok = _matches_only_whitespace(av)
+        elif op is _sre.BRANCH:
+            ok = all(_matches_only_whitespace(branch) for branch in av[1])
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            ok = _matches_only_whitespace(av[2])
+        else:
+            ok = False
+        if not ok:
+            return False
+        consumed = True
+    return consumed
+
+
+def _collect_whitespace_runs(seq, out: list[str]) -> list[str]:
+    for op, av in seq:
+        if op in (_sre.ASSERT, _sre.ASSERT_NOT, _sre.ATOMIC_GROUP, _sre.POSSESSIVE_REPEAT):
+            continue  # zero-width, or already atomic
+        if op in _REPEATS:
+            lo, hi, body = av
+            if (hi is _sre.MAXREPEAT or hi > 8) and _matches_only_whitespace(body):
+                out.append(f"{op}{{{lo},{'' if hi is _sre.MAXREPEAT else hi}}}")
+                continue
+            _collect_whitespace_runs(body, out)
+        elif op is _sre.SUBPATTERN:
+            _collect_whitespace_runs(av[3], out)
+        elif op is _sre.BRANCH:
+            for branch in av[1]:
+                _collect_whitespace_runs(branch, out)
+    return out
 
 
 def _splittable_whitespace_runs(head: str) -> list[str]:
-    """Whitespace runs in a template source that can share a run of spaces with a neighbour.
+    """Non-atomic whitespace repetitions in a template source, found on the parsed regex.
 
     Two such runs next to each other (or next to the topic's plain-char branch,
     which also eats spaces) can split one run of spaces in O(n^k) ways. An
-    atomic group ``(?>...)`` removes the choice. A run bounded at 8 or fewer is a
-    constant factor, not an explosion; that is ``_ZH_IDENT_GAP`` / ``_OPT``, which
-    also only sit inside zero-width lookaheads.
+    atomic group ``(?>...)`` or a possessive quantifier removes the choice.
 
-    Matched by shape (``*``, ``+``, ``{m,}``, ``{m,n}`` with n > 8), not by the
-    literal spelling, so ``_ZH_HSPACE_ONE + "+"`` or ``\\s{0,50}`` is caught too.
+    Works on the parse tree rather than the text, so any spelling of a
+    repetition whose body only matches whitespace counts: ``\\s*``,
+    ``(?:\\s)*``, ``[ \\t]+``, ``(?:(?>\\s))*``, ``\\s{0,50}``. Lookarounds are
+    skipped (zero-width, they split nothing), and so is a run bounded at 8 or
+    fewer: that is a constant factor, not an explosion (``_ZH_IDENT_GAP``).
     """
-    head = re.sub(r"\(\?>" + _WS_ATOM + _WS_QUANT + r"\)", "", head)
-    out = []
-    for m in re.finditer(_WS_ATOM + r"(" + _WS_QUANT + r")", head):
-        quant = m.group(1)
-        if quant.startswith("{"):
-            upper = quant[1:-1].split(",")[1]
-            if upper and int(upper) <= 8:
-                continue
-        out.append(m.group(0))
-    return out
+    return _collect_whitespace_runs(_sre_parser.parse(head), [])
 
 
 def _zh_terms_without_japanese_guard(text: str) -> set[str]:
@@ -2610,8 +2658,8 @@ def test_the_preposed_template_spacing_is_atomic():
     # ⚠️ 判据是「**任何**会匹配空白的量词都得包在原子组里」，不是「数出几个 (?>\s*)」。
     # 停顿分隔符里的空白已经收窄成横向空白类（不跨行），数量断言会跟着漂——把两种
     # 单位都摘掉之后再看有没有漏网的，才是真正的不变量。
-    # ⚠️ 按**形状**找，不按字面：只认 ``\s*`` / _ZH_HSPACE 两种写法的话，有人写成
-    # ``_ZH_HSPACE_ONE + "+"`` 或 ``\s{0,50}`` 就能同时绕过这里和耗时判据。
+    # ⚠️ 在**解析树**上找，不按字面：只认 ``\s*`` / _ZH_HSPACE 两种写法的话，
+    # ``_ZH_HSPACE_ONE + "+"``、``(?:\s)*``、``[ \t]*`` 都能同时绕过这里和耗时判据。
     assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
     units = (r"(?>\s*)", f"(?>{D._ZH_HSPACE})")
     for unit in units:
@@ -2860,8 +2908,8 @@ def test_the_guanyu_template_spacing_is_atomic_too():
     # 零宽 temper 里的空白是判据的一部分，不参与瓜分，先摘掉
     head = head.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
     # ⚠️ 这是**单个**空白单位被去原子化时唯一的防线：逐个还原模板 4 里任何一个
-    # 原子单位，"关于" + 80 个空格都只要毫秒级，下面的耗时判据拦不住。所以按形状找
-    # （``_ZH_HSPACE_ONE + "+"``、``\s{0,50}`` 这类写法也算），不按字面。
+    # 原子单位，"关于" + 80 个空格都只要毫秒级，下面的耗时判据拦不住。所以在解析树
+    # 上找（``(?:\s)*``、``[ \t]+``、``\s{0,50}`` 这类写法也算），不按字面。
     assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
 
     # ── 行为面：只计时模板 4 自己 ──
