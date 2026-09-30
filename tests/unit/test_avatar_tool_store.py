@@ -1631,6 +1631,9 @@ def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_p
 
 
 @pytest.mark.parametrize("failing_step", ("fsync", "open"))
+# Windows 打不开目录句柄，_fsync_directory 在那里本来就不做目录同步，
+# 这两种注入的失败都走不到。
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is unsupported on Windows")
 def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     tmp_path, monkeypatch, failing_step
 ):
