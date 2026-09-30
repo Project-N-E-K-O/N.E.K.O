@@ -1565,6 +1565,72 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
 
 
 @pytest.mark.frontend
+def test_second_pick_during_restart_still_shares_the_new_source(page: Page) -> None:
+    # A second pick while the first switch is still restarting (Stop disabled,
+    # capture pending) supersedes that capture. It must restart the share
+    # itself instead of reading the disabled Stop button as "not sharing".
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    calls = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const captureCalls = [];
+            const heldCaptures = [];
+            const makeStream = () => {
+                const track = {
+                    readyState: 'live',
+                    stop() { this.readyState = 'ended'; },
+                    addEventListener() {},
+                };
+                return {
+                    active: true,
+                    getVideoTracks() { return [track]; },
+                    getTracks() { return [track]; },
+                };
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia(constraints) {
+                        const id = constraints.video.mandatory.chromeMediaSourceId;
+                        captureCalls.push(id);
+                        if (id === 'window:5') {
+                            return new Promise((resolve) => {
+                                heldCaptures.push(() => resolve(makeStream()));
+                            });
+                        }
+                        return Promise.resolve(makeStream());
+                    },
+                },
+            });
+            await window.selectScreenSource('window:2', 'Editor', 'Editor', null);
+            await window.startScreenSharing();
+            document.getElementById('stopButton').disabled = false;
+
+            const firstPick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
+            const deadline = Date.now() + 5000;
+            while (!heldCaptures.length && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            const secondPick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            heldCaptures.forEach((release) => release());
+            await Promise.all([firstPick, secondPick]);
+            return captureCalls;
+        }"""
+    )
+
+    assert calls == ["window:2", "window:5", "window:7"]
+
+
+@pytest.mark.frontend
 def test_portal_result_with_reused_id_releases_cached_stream(page: Page) -> None:
     _install_screen_source_harness(
         page,

@@ -277,7 +277,8 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
     assert (
         "var isScreenSharingActive = isNativeCaptureActive || "
-        "!!(stopBtn && !stopBtn.disabled);"
+        "!!(stopBtn && !stopBtn.disabled)\n"
+        "            || sourceSwitchRestart !== null;"
     ) in select_source
 
 

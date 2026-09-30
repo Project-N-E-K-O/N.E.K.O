@@ -2712,6 +2712,9 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
+    // 进行中的换源重启（停止、等待、重新开始），后一次选择排在它后面。
+    var sourceSwitchRestart = null;
+
     // options.force：id 与当前相同也当作一次新选择，推进选择代次，让还在等待
     // 的分享启动作废（来源 id 只是枚举快照，同一个 id 可能已换成别的窗口）。
     async function selectScreenSource(sourceId, sourceName, displayName, screenIndex, options) {
@@ -2781,16 +2784,35 @@
         // pending interval as active so switching sources invalidates the old
         // generation before its late frame can be accepted.
         var isNativeCaptureActive = activeNativeCaptureSourceId !== null;
-        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled);
+        // 上一次换源的重启还没结束时，停止按钮是禁用的，但分享只是在重启中。
+        // 这次选择推进了代次，会让那次还在等待的启动作废；如果这里不接着重启，
+        // 分享就停在那里了。
+        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled)
+            || sourceSwitchRestart !== null;
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
-            // 先停止当前分享（流已释放，forceRelease 无所谓）
-            await stopScreenSharing(true);
-            // 等待一小段时间
-            await new Promise(function (resolve) { setTimeout(resolve, 300); });
-            // 重新开始分享（使用新选择的源）
-            await startScreenSharing();
+            // 排在上一次重启之后，两次重启不会交错。
+            var previousRestart = sourceSwitchRestart;
+            var restart = (async function () {
+                if (previousRestart) {
+                    try { await previousRestart; } catch (e) { }
+                }
+                // 先停止当前分享（流已释放，forceRelease 无所谓）
+                await stopScreenSharing(true);
+                // 等待一小段时间
+                await new Promise(function (resolve) { setTimeout(resolve, 300); });
+                // 重新开始分享（使用新选择的源）
+                await startScreenSharing();
+            })();
+            sourceSwitchRestart = restart;
+            try {
+                await restart;
+            } finally {
+                if (sourceSwitchRestart === restart) {
+                    sourceSwitchRestart = null;
+                }
+            }
         }
     }
     mod.selectScreenSource = selectScreenSource;
