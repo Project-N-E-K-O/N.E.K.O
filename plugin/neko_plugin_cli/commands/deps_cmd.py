@@ -559,7 +559,11 @@ def _pip_install_to_vendor(
                 )
             continue
         covers = _UV_COVERS[kind]
-        if not any(_uv_env_set(uv_name) for uv_name in covers):
+        # NO_PROXY=* sends every request around the proxy.
+        bypass_all = kind == "proxy" and any(
+            (os.environ.get(name) or "").strip() == "*" for name in ("NO_PROXY", "no_proxy")
+        )
+        if bypass_all or not any(_uv_env_set(uv_name) for uv_name in covers):
             fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
             uncovered.append(f"{name} from {', '.join(where)} ({fix})")
     if uncovered:
@@ -653,7 +657,8 @@ _UV_COVERS = {
     "require-hashes": ("UV_REQUIRE_HASHES",),
     # uv has no proxy option but honors the standard proxy variables;
     # without one, uv would bypass a filtering proxy and connect directly.
-    "proxy": ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"),
+    # Package indexes are HTTPS, which HTTP_PROXY does not cover.
+    "proxy": ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}

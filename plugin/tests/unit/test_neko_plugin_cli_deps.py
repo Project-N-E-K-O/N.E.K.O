@@ -1109,6 +1109,12 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         # standard proxy variables, so one of those must be set.
         ({"PIP_PROXY": "http://corp-proxy:3128"}, False),
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128"}, True),
+        ({"PIP_PROXY": "http://corp-proxy:3128", "ALL_PROXY": "http://corp-proxy:3128"}, True),
+        # Indexes are HTTPS: HTTP_PROXY alone leaves them direct.
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTP_PROXY": "http://corp-proxy:3128"}, False),
+        # NO_PROXY=* bypasses the proxy for every host.
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
+          "NO_PROXY": "*"}, False),
         # Both installers are given --target/--upgrade explicitly.
         ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
     ],
@@ -1116,7 +1122,8 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
 def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
+                 "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
