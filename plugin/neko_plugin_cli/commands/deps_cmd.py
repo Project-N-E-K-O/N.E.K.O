@@ -322,34 +322,46 @@ def _lock_dir() -> Path:
     Windows temp dirs are already per user. On POSIX a lock left directly in
     a shared, sticky /tmp could be pre-created by another user (unopenable,
     and undeletable by its victim), so use a private cache dir instead, and
-    fall back to a uid-named file in the temp dir only if that is unusable.
+    fall back to a uid-named dir in the shared temp dir only if that is
+    unusable. Neither location depends on the process environment, so every
+    sync process of one user picks the same lock.
     """
     if not hasattr(os, "getuid"):
         return Path(gettempdir())
-    private = _lock_cache_base() / "neko-plugin" / "sync-locks"
-    try:
-        private.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _make_private(private)
-        return private
-    except OSError:
-        pass  # e.g. a read-only home in a container; use the fallback below
-    fallback = Path(gettempdir()) / f"neko-plugin-sync-{os.getuid()}"
+    base = _lock_cache_base()
+    if base is not None:
+        private = base / "neko-plugin" / "sync-locks"
+        try:
+            private.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _make_private(private)
+            return private
+        except OSError:
+            pass  # e.g. a read-only home in a container; use the fallback below
+    fallback = _shared_tmp() / f"neko-plugin-sync-{os.getuid()}"
     fallback.mkdir(exist_ok=True, mode=0o700)
     _make_private(fallback)
     return fallback
 
 
-def _lock_cache_base() -> Path:
+def _lock_cache_base() -> Path | None:
     """The user's cache dir from the account database, not from HOME or
     XDG_CACHE_HOME: every sync process of one user must pick the same lock,
     whatever its environment, or two could run at once and one could delete
-    the other's live staging dir as stale."""
+    the other's live staging dir as stale. None when the uid has no account
+    record (common in containers)."""
     try:
         import pwd
 
         return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache"
     except (ImportError, KeyError):
-        return Path.home() / ".cache"
+        return None
+
+
+def _shared_tmp() -> Path:
+    # The POSIX /tmp rather than gettempdir(), which follows TMPDIR and so
+    # could differ between two processes of the same user.
+    fixed = Path("/tmp")
+    return fixed if fixed.is_dir() else Path(gettempdir())
 
 
 def _make_private(directory: Path) -> None:
