@@ -60,20 +60,6 @@ def handle_sync(args: argparse.Namespace) -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
-    pyproject_path = plugin_dir / "pyproject.toml"
-    if not pyproject_path.is_file():
-        print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
-        return 0
-
-    # 1. Read declared dependencies
-    all_deps = _read_dependencies(pyproject_path)
-    external_deps = _filter_external(all_deps)
-    if not external_deps:
-        print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
-        return 0
-
-    # 2. Install into a sibling staging directory.  Keeping the current
-    # vendor untouched until installation succeeds makes sync transactional.
     vendor_dir = plugin_dir / "vendor"
     # Keep a persistent OS lock file outside the plugin. Unlinking lock files
     # can let waiting processes lock different inodes for the same plugin.
@@ -104,6 +90,41 @@ def handle_sync(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
+
+            pyproject_path = plugin_dir / "pyproject.toml"
+            if not pyproject_path.is_file():
+                if pending_backups or (not vendor_dir.exists() and retained_backups):
+                    blocked_backups = pending_backups or retained_backups
+                    locations = ", ".join(str(path) for path in blocked_backups)
+                    print(
+                        f"[FAIL] Cannot sync with an unreconciled dependency backup; "
+                        f"recover it before retrying: {locations}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
+                return 0
+
+            # 1. Read declared dependencies
+            all_deps = _read_dependencies(pyproject_path)
+            external_deps = _filter_external(all_deps)
+            if not external_deps:
+                # There is no installer step that can reconcile a pending
+                # backup in this no-op path, so fail closed even for --clean.
+                if pending_backups or (not vendor_dir.exists() and retained_backups):
+                    blocked_backups = pending_backups or retained_backups
+                    locations = ", ".join(str(path) for path in blocked_backups)
+                    print(
+                        f"[FAIL] Cannot sync with an unreconciled dependency backup; "
+                        f"recover it before retrying: {locations}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
+                return 0
+
+            # 2. Install into a sibling staging directory.  Keeping the current
+            # vendor untouched until installation succeeds makes sync transactional.
             staging_dir = Path(mkdtemp(prefix=".vendor.staging-", dir=plugin_dir))
             if not args.clean and vendor_dir.is_dir():
                 shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True, symlinks=True)
@@ -143,6 +164,7 @@ def handle_sync(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 _HOST_PROVIDED = {"n-e-k-o"}
+_RECOVERY_MARKER = ".recovery-pending"
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -237,6 +259,9 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
     try:
         if had_vendor:
             vendor_dir.replace(backup_dir)
+            # Persist the uncertain recovery state before any operation that
+            # may leave a partial live vendor behind.
+            (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
         try:
             staging_dir.replace(vendor_dir)
         except PermissionError:
@@ -255,6 +280,7 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                     # Copy to a sibling restore directory before publishing it,
                     # so a failed copy can never expose a partial vendor tree.
                     shutil.copytree(backup_dir, restore_dir, symlinks=True)
+                    (restore_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
                     restore_dir.replace(vendor_dir)
                 except OSError as exc:
                     # Do not leave a partially restored live directory.
@@ -267,7 +293,8 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: {exc}",
                         file=sys.stderr,
                     )
-                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
+                    if backup_dir.exists():
+                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
             return False
         except OSError as exc:
             print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
@@ -280,7 +307,8 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: {cleanup_exc}",
                         file=sys.stderr,
                     )
-                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
+                    if backup_dir.exists():
+                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
                     return False
                 if vendor_dir.exists():
                     print(
@@ -288,10 +316,12 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                         f"{backup_dir}: removal was incomplete",
                         file=sys.stderr,
                     )
-                    (backup_dir / ".recovery-pending").touch(exist_ok=True)
+                    if backup_dir.exists():
+                        (backup_dir / _RECOVERY_MARKER).touch(exist_ok=True)
                     return False
             if backup_dir.exists():
                 try:
+                    (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
                     backup_dir.replace(vendor_dir)
                 except OSError as rollback_exc:
                     print(
@@ -301,6 +331,13 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
                     )
             return False
         if backup_dir.exists():
+            try:
+                (backup_dir / _RECOVERY_MARKER).unlink(missing_ok=True)
+            except OSError as marker_exc:
+                print(
+                    f"[WARN] Could not clear recovery marker {backup_dir}: {marker_exc}",
+                    file=sys.stderr,
+                )
             shutil.rmtree(backup_dir, ignore_errors=True)
         return True
     except PermissionError:

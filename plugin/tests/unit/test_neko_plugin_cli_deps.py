@@ -102,6 +102,39 @@ def test_failed_recovery_copy_never_exposes_partial_vendor(tmp_path, monkeypatch
     assert (backup / ".recovery-pending").is_file()
 
 
+def test_recovery_marker_write_failure_still_blocks_retry(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    staging = plugin_dir / ".vendor.staging-test"
+    vendor.mkdir()
+    staging.mkdir()
+    (vendor / "old.py").write_text("keep")
+    (staging / "fresh.py").write_text("new")
+
+    real_touch = Path.touch
+
+    def fail_marker(path, *args, **kwargs):
+        if path.name == ".recovery-pending":
+            raise PermissionError("marker is locked")
+        return real_touch(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "touch", fail_marker)
+    assert _replace_vendor(vendor, staging) is False
+
+    backup, = plugin_dir.glob(".vendor.backup-*")
+    assert not vendor.exists()
+    assert (backup / "old.py").read_text() == "keep"
+    assert not (backup / ".recovery-pending").exists()
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run before recovery"),
+    )
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+
+
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -387,6 +420,27 @@ class TestHandleSync:
         )
         exit_code = handle_sync(args)
         assert exit_code == 0
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_sync_no_deps_refuses_unreconciled_backup(tmp_path, clean, capsys):
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "partial.py").write_text("partial")
+    backup = plugin_dir / ".vendor.backup-previous"
+    backup.mkdir()
+    (backup / "old.py").write_text("backup")
+    (backup / ".recovery-pending").touch()
+    (plugin_dir / "pyproject.toml").write_text(
+        '[project]\nname = "my_plugin"\nversion = "1.0.0"\ndependencies = []\n',
+        encoding="utf-8",
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 1
+    assert (vendor / "partial.py").read_text() == "partial"
+    assert backup.exists()
+    assert "unreconciled dependency backup" in capsys.readouterr().err
 
 @pytest.mark.plugin_unit
 class TestTransactionalDependencyInstall:
