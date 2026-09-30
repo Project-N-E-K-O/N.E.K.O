@@ -154,6 +154,8 @@ def handle_sync(args: argparse.Namespace) -> int:
             # A complete successful sync supersedes retained backups.
             for backup in _retained_backups(plugin_dir):
                 try:
+                    if _mounted_inside(backup):
+                        continue
                     shutil.rmtree(backup)
                 except OSError as exc:
                     print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
@@ -280,6 +282,20 @@ def _short_token() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _mounted_inside(path: Path) -> bool:
+    """Whether a leftover work dir has a mount point inside, which rmtree
+    would descend into and empty. Such a dir is kept, with a warning."""
+    mount = _find_foreign_subdir(path, junctions=False)
+    if mount is None:
+        return False
+    print(
+        f"[WARN] Not removing {path}: {mount} inside it is a mount point. "
+        "Unmount it, then delete the directory.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _remove_stale_staging(plugin_dir: Path) -> None:
     # The sync lock is per user, so holding it only rules out this user's
     # own runs; another user's staging dir may belong to a live install.
@@ -288,6 +304,8 @@ def _remove_stale_staging(plugin_dir: Path) -> None:
         if path.is_dir() and not path.is_symlink():
             try:
                 if uid is not None and path.stat().st_uid != uid:
+                    continue
+                if _mounted_inside(path):
                     continue
                 shutil.rmtree(path)
             except FileNotFoundError:
@@ -359,7 +377,12 @@ def _pip_install_to_vendor(
         return 1
     if result.returncode == 0:
         return 0
-    if "No module named pip" not in (result.stdout or ""):
+    # Only the interpreter's own launch failure means pip is absent; the same
+    # words anywhere in a real install log (a build step, a child process)
+    # must not reroute a genuine pip failure to uv.
+    output_lines = (result.stdout or "").strip().splitlines()
+    pip_missing = len(output_lines) == 1 and output_lines[0].endswith("No module named pip")
+    if not pip_missing:
         print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         return 1

@@ -126,6 +126,27 @@ def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
     assert deps_cmd._pip_package_sources("python") == ([], set())
 
 
+def test_no_module_named_pip_inside_a_real_pip_log_is_not_missing_pip(tmp_path, monkeypatch):
+    # pip ran and failed; a build step merely printed the same words.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command, 1,
+            stdout="Collecting pkg\n  Building wheel\n  No module named pip\nerror: subprocess failed\n",
+        )
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 1
+    assert [command[0] for command in calls] == ["target-python"]
+
+
 @pytest.mark.parametrize("failing_installer", ["pip", "uv"])
 @pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
 def test_installer_start_failure_is_not_missing_pip(
@@ -512,6 +533,29 @@ def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, c
     assert (mount / "external.dat").read_text() == "keep"
     assert not list(plugin_dir.glob(".vendor.*"))
     assert "mount point" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["staging", "backup"])
+def test_leftover_work_dir_with_mount_inside_is_not_deleted(tmp_path, monkeypatch, capsys, kind):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "vendor").mkdir()
+    leftover = plugin_dir / f".vendor.{kind}-old"
+    mount = leftover / "pkg" / "mnt"
+    mount.mkdir(parents=True)
+    (mount / "external.dat").write_text("keep")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: [os.path.realpath(mount)])
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (mount / "external.dat").read_text() == "keep"
+    assert "is a mount point" in capsys.readouterr().err
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
@@ -911,7 +955,7 @@ class TestTransactionalDependencyInstall:
         monkeypatch.setattr(
             "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(
-                command, 1, stdout="target-python: No module named pip\\n"
+                command, 1, stdout="target-python: No module named pip\n"
             ),
         )
 
