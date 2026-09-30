@@ -5483,7 +5483,13 @@
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        // Contract marker for successful-start preservation:
+                        // _ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
+                                && typeof window.hideVoicePreparingToast === 'function') {
+                            var _keepLocalAsrNotice = { keepLocalAsrNotice: true };
+                            window.hideVoicePreparingToast(_keepLocalAsrNotice);
+                        }
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
