@@ -19,6 +19,78 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_host_package_index_config(monkeypatch):
+    """Keep the developer's own pip/uv index settings out of these tests."""
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    for name in (*deps_cmd._PIP_INDEX_ENV, *deps_cmd._UV_INDEX_ENV, "PIP_CONFIG_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [])
+
+
+def _missing_pip_then_uv(calls):
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+    return run
+
+
+@pytest.mark.parametrize(
+    ("env", "config_text", "uses_uv"),
+    [
+        ({}, None, True),
+        ({"PIP_INDEX_URL": "https://private/simple"}, None, False),
+        ({"PIP_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
+        ({"PIP_INDEX_URL": "https://private/simple", "UV_DEFAULT_INDEX": "https://private/simple"}, None, True),
+        ({}, "[global]\nindex-url = https://private/simple\n", False),
+        ({}, "[install]\nextra_index_url = https://private/simple\n", False),
+        ({}, "[global]\ntimeout = 60\n", True),
+        ({}, "not an ini file\n", False),
+    ],
+)
+def test_uv_fallback_refuses_when_pip_has_an_index_uv_cannot_see(
+    tmp_path, monkeypatch, capsys, env, config_text, uses_uv,
+):
+    # uv never reads pip's index settings; falling back would resolve a
+    # private package name against public PyPI.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if config_text is not None:
+        config = tmp_path / "pip.ini"
+        config.write_text(config_text, encoding="utf-8")
+        monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    result = deps_cmd._pip_install_to_vendor(
+        ["private-pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    )
+
+    assert result == (0 if uses_uv else 1)
+    assert [command[0] for command in calls] == (
+        ["target-python", "uv"] if uses_uv else ["target-python"]
+    )
+    if not uses_uv:
+        assert "uv does not read" in capsys.readouterr().err
+
+
+def test_pip_config_file_devnull_disables_config_files(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    config = tmp_path / "pip.ini"
+    config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
+    monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [config])
+    assert deps_cmd._pip_index_source("python") == str(config)
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    assert deps_cmd._pip_index_source("python") is None
+
+
 @pytest.mark.parametrize("failing_installer", ["pip", "uv"])
 @pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
 def test_installer_start_failure_is_not_missing_pip(
@@ -205,6 +277,7 @@ def test_uv_fallback_leaves_uv_index_configuration_alone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: "uv")
     monkeypatch.setenv("PIP_INDEX_URL", "https://mirror/simple")
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv/simple")
     calls = []
 
     def run(command, **kwargs):

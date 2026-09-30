@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import os
 import shutil
@@ -257,7 +258,10 @@ def _pip_install_to_vendor(
 
     The uv fallback runs with uv's own configuration untouched. Mapping pip's
     index variables into UV_* would override uv.toml / [tool.uv] indexes,
-    because uv ranks environment variables above its config files.
+    because uv ranks environment variables above its config files. But when
+    pip is configured with an index and uv's index variables are unset, uv
+    would resolve from public PyPI instead, letting a same-name public package
+    stand in for a private one; that case fails closed.
     """
     if not packages:
         return 0
@@ -292,6 +296,17 @@ def _pip_install_to_vendor(
             file=sys.stderr,
         )
         return 1
+    pip_index_source = _pip_index_source(python)
+    if pip_index_source and not any(os.environ.get(name) for name in _UV_INDEX_ENV):
+        print(
+            "[FAIL] The target Python has no pip, and pip is configured with a "
+            f"package index ({pip_index_source}) that uv does not read. "
+            "Installing with uv would resolve from its default index instead. "
+            "Set UV_DEFAULT_INDEX / UV_INDEX to the same index, or run "
+            "python -m ensurepip --upgrade.",
+            file=sys.stderr,
+        )
+        return 1
     print("  target Python has no pip; installing with uv instead")
     result = _run_installer(
         [
@@ -310,6 +325,71 @@ def _pip_install_to_vendor(
         print(result.stdout, file=sys.stderr)
         return 1
     return 0
+
+
+_UV_INDEX_ENV = ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL")
+_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL")
+_PIP_INDEX_KEYS = {"index-url", "extra-index-url"}
+
+
+def _pip_index_source(python: str) -> str | None:
+    """Where pip would take a custom package index from, if anywhere."""
+    for name in _PIP_INDEX_ENV:
+        if os.environ.get(name):
+            return name
+    config_file = os.environ.get("PIP_CONFIG_FILE")
+    if config_file == os.devnull:
+        # pip documents this value as "load no config files".
+        return None
+    candidates = [Path(config_file)] if config_file else []
+    for path in [*candidates, *_pip_config_files(python)]:
+        if _config_sets_index(path):
+            return str(path)
+    return None
+
+
+def _pip_config_files(python: str) -> list[Path]:
+    """pip's documented global, user and site config file locations."""
+    home = Path.home()
+    files: list[Path] = []
+    if sys.platform == "win32":
+        for base in (os.environ.get("PROGRAMDATA"), os.environ.get("APPDATA")):
+            if base:
+                files.append(Path(base, "pip", "pip.ini"))
+        files.append(home / "pip" / "pip.ini")
+        site_name = "pip.ini"
+    else:
+        xdg_dirs = os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+        files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep) if d)
+        files.append(Path("/etc/pip.conf"))
+        if sys.platform == "darwin":
+            files.append(Path("/Library/Application Support/pip/pip.conf"))
+            files.append(home / "Library" / "Application Support" / "pip" / "pip.conf")
+        files.append(Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config", "pip", "pip.conf"))
+        files.append(home / ".pip" / "pip.conf")
+        site_name = "pip.conf"
+    # Site config sits in the target environment's prefix.
+    interpreter = Path(shutil.which(python) or python)
+    prefix = interpreter.parent
+    if sys.platform != "win32" or prefix.name.lower() == "scripts":
+        prefix = prefix.parent
+    files.append(prefix / site_name)
+    return files
+
+
+def _config_sets_index(path: Path) -> bool:
+    parser = configparser.RawConfigParser()
+    try:
+        if not parser.read(path, encoding="utf-8"):
+            return False
+    except (configparser.Error, UnicodeDecodeError):
+        # pip itself would reject this file; do not guess it is index-free.
+        return True
+    return any(
+        key.replace("_", "-") in _PIP_INDEX_KEYS
+        for section in parser.sections()
+        for key in parser[section]
+    )
 
 
 def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
