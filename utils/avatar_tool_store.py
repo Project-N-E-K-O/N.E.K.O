@@ -134,22 +134,27 @@ _RetainedDelete = tuple[Path, Path, tuple, tuple]
 
 
 def _retained_copy_state(deleting: Path) -> tuple:
-    """Identity of a retained copy: the directory itself plus every entry in it.
+    """Identity of a retained copy: the directory itself plus every entry below it.
 
-    Rewriting a file in place leaves the directory's own identity unchanged, so
-    each entry is probed too (``lstat`` only, no hashing).
+    Rewriting a file in place leaves its parent directory's identity unchanged, so
+    every descendant is probed too (``lstat`` only, no hashing). Symlinked
+    directories are recorded but not followed.
     """
     kind, _, identity, probe_error = _probe_entry_state(deleting)
     if probe_error is not None:
         raise probe_error
     entries = []
-    if kind == "dir":
-        for entry in sorted(deleting.iterdir(), key=lambda path: path.name):
+    pending = [deleting] if kind == "dir" else []
+    while pending:
+        directory = pending.pop()
+        for entry in sorted(directory.iterdir(), key=lambda path: path.name):
             entry_kind, _, entry_identity, probe_error = _probe_entry_state(entry)
             if probe_error is not None:
                 raise probe_error
-            entries.append((entry.name, entry_kind, entry_identity))
-    return kind, identity, tuple(entries)
+            entries.append((entry.relative_to(deleting).as_posix(), entry_kind, entry_identity))
+            if entry_kind == "dir":
+                pending.append(entry)
+    return kind, identity, tuple(sorted(entries))
 
 
 class AvatarToolStoreError(ValueError):
