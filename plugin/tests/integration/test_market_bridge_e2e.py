@@ -32,6 +32,7 @@ import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -141,6 +142,7 @@ def _build_neko_plugin_zip(
 def _serve_bytes(
     *, filename: str, content: bytes, extra_release: dict[str, Any] | None = None,
     catalog_sha256: str | None = None,
+    market_id: str | None = None,
 ) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
@@ -151,14 +153,15 @@ def _serve_bytes(
 
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+    catalog_id = market_id if market_id is not None else str(manifest["id"])
     published = [
-        {"version": manifest["version"], "channel": channel,
+        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
          "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
          "yanked_at": None}
         for channel in ("stable", "beta")
     ]
     if extra_release is not None:
-        published.append(extra_release)
+        published.append({**extra_release, "plugin_id": catalog_id})
     _catalog_releases.extend(published)
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -262,9 +265,12 @@ def bridge_e2e_env(
     async def catalogue_get(self, url, **kwargs):
         catalogue_prefix = market_bridge_module.MARKET_API_URL.rstrip("/") + "/api/v1/plugins/"
         if str(url).startswith(catalogue_prefix) and str(url).endswith("/versions"):
+            market_id = unquote(str(url)[len(catalogue_prefix):-len("/versions")])
+            plugin_releases = [r for r in _catalog_releases if r["plugin_id"] == market_id]
             channel = kwargs.get("params", {}).get("channel", "stable")
             return httpx.Response(
-                200, json=[r for r in _catalog_releases if r["channel"] == channel],
+                200 if plugin_releases else 404,
+                json=[r for r in plugin_releases if r["channel"] == channel],
                 request=httpx.Request("GET", url),
             )
         return await original_get(self, url, **kwargs)
@@ -312,6 +318,70 @@ def bridge_e2e_env(
 
 
 # ─── Tests ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_market_id", ["401", "403"])
+async def test_install_rejects_another_plugins_release(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    requested_market_id: str,
+) -> None:
+    """An existing or unknown Market ID cannot authorize another plugin's hash."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    version = "1.0.0"
+    package_a, _ = _build_neko_plugin_zip(plugin_id="catalog_a", version=version)
+    package_b, _ = _build_neko_plugin_zip(plugin_id="catalog_b", version=version)
+    hash_a = hashlib.sha256(package_a).hexdigest()
+    hash_b = hashlib.sha256(package_b).hexdigest()
+    assert hash_a != hash_b
+
+    async def forbidden_download(*args: Any, **kwargs: Any) -> Path:
+        pytest.fail("another plugin's release reached download")
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", forbidden_download)
+    client = bridge_e2e_env["client"]
+    token = bridge_e2e_env["token"]
+    lock_path = bridge_e2e_env["lock_path"]
+    before = lock_path.read_bytes() if lock_path.exists() else None
+
+    with (
+        _serve_bytes(filename="a.neko-plugin", content=package_a, market_id="401"),
+        _serve_bytes(filename="b.neko-plugin", content=package_b, market_id="402") as url_b,
+    ):
+        for market_id, expected_hash in (("401", hash_a), ("402", hash_b)):
+            response = await client.get(
+                f"{market_bridge_module.MARKET_API_URL.rstrip('/')}/api/v1/plugins/{market_id}/versions",
+                params={"channel": "stable"},
+            )
+            assert response.status_code == 200
+            rows = response.json()
+            assert len(rows) == 1
+            assert rows[0]["plugin_id"] == market_id
+            assert rows[0]["package_sha256"] == expected_hash
+
+        response = await client.post(
+            "/market/install", params={"token": token},
+            json={"plugin_id": requested_market_id, "version": version, "channel": "stable",
+                  "package_url": url_b, "package_sha256": hash_b},
+        )
+        assert response.status_code == 200
+        task_id = response.json()["task_id"]
+        try:
+            await market_bridge_module._task_workers[task_id]
+            response = await client.get(f"/market/tasks/{task_id}", params={"token": token})
+            task = response.json()
+            assert task["status"] == "failed", task
+            assert task["error_code"] == "market_release_mismatch", task
+        finally:
+            market_bridge_module._task_workers.pop(task_id, None)
+            market_bridge_module._tasks.pop(task_id, None)
+
+    assert not (bridge_e2e_env["user_root"] / "catalog_a").exists()
+    assert not (bridge_e2e_env["user_root"] / "catalog_b").exists()
+    after = lock_path.read_bytes() if lock_path.exists() else None
+    assert after == before
 
 
 def test_market_task_cleanup_prunes_overflow_workers(
@@ -1014,6 +1084,7 @@ async def test_authenticated_market_install_reports_usage(
     with _serve_bytes(
         filename=f"{local_plugin_id}-{version}.neko-plugin",
         content=zip_bytes,
+        market_id="42",
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -4704,6 +4775,7 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
 
     with _serve_bytes(
         filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
+        market_id=market_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -4846,6 +4918,7 @@ async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
     intruder_sha = hashlib.sha256(intruder_zip).hexdigest()
     with _serve_bytes(
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=intruder_zip,
+        market_id=plugin_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -4935,6 +5008,7 @@ async def test_failed_market_install_cleans_promoted_profile_dir(
 
     with _serve_bytes(
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=zip_bytes,
+        market_id=plugin_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
