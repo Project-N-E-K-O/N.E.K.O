@@ -45,4 +45,8 @@ These documents preserve design intent and implementation context. They are grou
 - [Steam Auto-Cloud synchronization](./cloud-save-sync-optimization-plan)
 - [Telemetry distribution and Steam user ID race](./telemetry-distribution-race-impact)
 
+## Approved proposals (not yet implemented)
+
+- [Catgirl visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
+
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.
