@@ -1399,6 +1399,10 @@
                 const _status = statusElement();
                 if (_status && _status.textContent.includes(noSoundText)) {
                     window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+                    // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+                    if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                        window.showVoicePreparingToast(S.localAsrPreparingMessage);
+                    }
                     console.log('麦克风静音检测：检测到声音，已清除警告');
                 }
             }
@@ -1814,6 +1818,7 @@
         S.voiceChatActive = false;
         S.voiceStartPending = false;
         window.isMicStarting = false;
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -2215,6 +2220,10 @@
             if (_stop)   _stop.disabled = true;
             if (_reset)  _reset.disabled = false;
             window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+            // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+            if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                window.showVoicePreparingToast(S.localAsrPreparingMessage);
+            }
 
             // 确保active类存在
             if (_mic && !_mic.classList.contains('active')) {
@@ -2287,6 +2296,7 @@
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -3427,6 +3437,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var noiseToggle = null;
             var optimizationToggle = null;
             var optimizationHint = null;
+            var localAsrToggle = null;
+            var localAsrBlock = null;
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
@@ -3439,7 +3451,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     gemini: 'Gemini',
                     openai: 'OpenAI',
                     step: 'Step',
-                    grok: 'Grok'
+                    grok: 'Grok',
+                    faster_whisper: 'faster-whisper'
                 };
                 return known[value.toLowerCase()] || value;
             }
@@ -3490,6 +3503,85 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 toggle.input.setAttribute('aria-describedby', hint.id);
                 panelBody.appendChild(block);
                 return hint;
+            }
+
+            // Packaged builds do not ship faster-whisper, so only offer the
+            // option where it can run. A preference persisted while it was
+            // installed stays visible so the user can still turn it off.
+            function shouldOfferLocalAsr() {
+                return S.localAsrAvailable === true
+                    || S.independentAsrProviderPreference === 'faster_whisper';
+            }
+
+            // Local recognition is an independent-ASR provider choice: it is
+            // only actionable when the Core allows independent ASR and the
+            // master switch is on.
+            function localAsrChoiceActionable() {
+                return !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true;
+            }
+
+            function createLocalAsrSetting(panelBody, beforeNode) {
+                localAsrToggle = createVoiceSettingToggle(
+                    S.independentAsrProviderPreference === 'faster_whisper',
+                    function (enabled) {
+                        // Turning it on needs a route that can use it; turning a
+                        // saved choice off is always allowed, or a preference the
+                        // current Core cannot use could never be cleared.
+                        if (enabled && !localAsrChoiceActionable()) {
+                            updateVoiceRecognitionUi();
+                            return;
+                        }
+                        S.independentAsrProviderPreference = enabled
+                            ? 'faster_whisper'
+                            : 'auto';
+                        // 依赖不可用时关掉就收起开关，免得它又被打开、下一次会话再选中缺失的 provider。
+                        reconcileLocalAsrSetting();
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                var localAsrHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.localAsr',
+                    '本地语音识别',
+                    'microphone.localAsrHint',
+                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                    localAsrToggle
+                );
+                localAsrBlock = localAsrHint.parentNode;
+                // Disabled state is set here rather than left to the next
+                // updateVoiceRecognitionUi(), so a toggle added late never shows
+                // as operable while the master switch is off.
+                localAsrToggle.setDisabled(
+                    !localAsrChoiceActionable()
+                    && S.independentAsrProviderPreference !== 'faster_whisper'
+                );
+                // Keep the panel order stable when added late: after resource
+                // optimization, before the status line.
+                if (beforeNode && beforeNode.parentNode === panelBody) {
+                    panelBody.insertBefore(localAsrBlock, beforeNode);
+                }
+            }
+
+            // Availability can arrive after the panel opened (the capability
+            // refresh is asynchronous): add or drop the option in place.
+            function reconcileLocalAsrSetting() {
+                if (!voicePanel || !voicePanel.isConnected || !voiceStatus) return;
+                var panelBody = voiceStatus.parentNode;
+                if (!panelBody) return;
+                if (shouldOfferLocalAsr()) {
+                    if (!localAsrToggle) createLocalAsrSetting(panelBody, voiceStatus);
+                    return;
+                }
+                if (localAsrToggle) {
+                    if (localAsrBlock && localAsrBlock.parentNode) {
+                        localAsrBlock.parentNode.removeChild(localAsrBlock);
+                    }
+                    localAsrToggle = null;
+                    localAsrBlock = null;
+                }
             }
 
             function updateVoiceRecognitionUi() {
@@ -3546,6 +3638,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
+                // Local recognition is an independent-ASR provider choice, so
+                // it follows the same Core capability gate and master switch.
+                if (localAsrToggle) {
+                    // Show the saved choice as it is, even where the current
+                    // Core cannot use it, and keep an "on" choice switchable off.
+                    var localAsrChosen =
+                        S.independentAsrProviderPreference === 'faster_whisper';
+                    localAsrToggle.setChecked(localAsrChosen);
+                    localAsrToggle.setDisabled(!enabled && !localAsrChosen);
+                }
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
@@ -3611,10 +3713,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function onVoiceSettingsPendingChanged() {
+                // 其它窗口改了偏好也会走到这里：开关的有无跟着偏好走。
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
+            // 可用性（能力刷新）和偏好（设置 GET 合并）都可能在面板打开后才到，
+            // 两者任一变化都要重新决定本地语音识别开关的有无。
             function onCoreApiCapabilityChanged() {
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
@@ -3645,6 +3752,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 noiseToggle = null;
                 optimizationToggle = null;
                 optimizationHint = null;
+                localAsrToggle = null;
+                localAsrBlock = null;
                 voiceStatus = null;
                 asrSummary = null;
                 if (
@@ -3666,6 +3775,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             addVoiceWindowListener(
                 'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:conversation-settings-hydrated',
                 onCoreApiCapabilityChanged
             );
             addVoiceWindowListener(
@@ -4312,6 +4425,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     optimizationToggle
                 );
 
+                localAsrToggle = null;
+                localAsrBlock = null;
+                if (shouldOfferLocalAsr()) {
+                    createLocalAsrSetting(panelBody, null);
+                }
+
                 voiceStatus = document.createElement('div');
                 voiceStatus.className = 'neko-voice-recognition-status';
                 voiceStatus.setAttribute('role', 'status');
@@ -4535,9 +4654,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // Linux source enumeration can show an OS sharing dialog
                     // (xdg-desktop-portal). Hover only opens the panel; the
                     // user clicks the row or the panel's button to enumerate.
-                    // Providers that predate the flag are treated as prompting.
+                    // Bridges that predate the flag are inferred per platform,
+                    // so legacy macOS / Windows bridges still list on hover.
                     var deferEnumeration = !!(triggerEvent && triggerEvent.type === 'mouseenter'
-                        && provider && provider.sourceEnumerationMayPrompt !== false);
+                        && window.desktopSourceEnumerationMayPrompt(provider));
                     panel._nekoOnExplicitOpen = function () {
                         var loadButton = screenSourceList.querySelector(
                             '[data-neko-screen-source-deferred-load]'

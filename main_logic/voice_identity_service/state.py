@@ -20,7 +20,6 @@ class VoiceIdentityEffectiveReason(StrEnum):
     ENROLLMENT_ACTIVE = "enrollment_active"
     RUNTIME_DEGRADED = "runtime_degraded"
     UNSUPPORTED_ASR_ROUTE = "unsupported_asr_route"
-    SHADOW_MODE = "shadow_mode"
 
 
 @dataclass(frozen=True, slots=True)

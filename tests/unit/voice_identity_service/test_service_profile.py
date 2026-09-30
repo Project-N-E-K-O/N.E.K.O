@@ -532,6 +532,112 @@ async def test_commit_failure_rolls_back_old_activation_and_profile(
     assert service.status().state.effective_enabled
     await service.close()
 
+
+def _fail_profile_commits(service: VoiceIdentityService, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    original_stage = service._profile_store.astage  # type: ignore[attr-defined]
+
+    async def staged_with_failed_commit(profile: SpeakerProfile, *, audio_contract):
+        staged = await original_stage(profile, audio_contract=audio_contract)
+        monkeypatch.setattr(staged, "acommit", fail_commit)
+        return staged
+
+    monkeypatch.setattr(service._profile_store, "astage", staged_with_failed_commit)  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_during_rollback_still_restores_old_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, model, activations, events = _service(tmp_path)
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    second = await service.start_enrollment()
+    _fail_profile_commits(service, monkeypatch)
+    restore_started = asyncio.Event()
+    restore_release = asyncio.Event()
+
+    async def blocking_restore(
+        profile: SpeakerProfile | None,
+        generation: str,
+        **_authority,
+    ) -> bool:
+        activations.append((profile, generation))
+        if generation == "profile-a":
+            restore_started.set()
+            await restore_release.wait()
+        return True
+
+    service._activation_callback = blocking_restore  # type: ignore[attr-defined]
+    completion = asyncio.create_task(
+        service.complete_enrollment(second.enrollment_id, "profile-b", _pcm())
+    )
+    await asyncio.wait_for(restore_started.wait(), 1.0)
+    completion.cancel()
+    restore_release.set()
+
+    with pytest.raises(VoiceIdentityServiceError, match="runtime_degraded"):
+        await completion
+
+    status = service.status()
+    assert status.enrollment is None
+    assert status.profile_generation == "profile-a"
+    assert status.state.effective_enabled
+    assert [generation for _profile, generation in activations[-2:]] == [
+        "profile-b",
+        "profile-a",
+    ]
+    assert model.closed
+    assert events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_during_rollback_still_restores_old_preference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, model, _activations, events = _service(tmp_path)
+    await service.initialize()
+    assert not service.status().state.requested_enabled
+    enrollment = await service.start_enrollment()
+    _fail_profile_commits(service, monkeypatch)
+    original_save = service._preference_store.asave
+    restore_started = asyncio.Event()
+    restore_release = asyncio.Event()
+
+    async def blocking_restore_save(enabled: bool) -> None:
+        if not enabled:
+            restore_started.set()
+            await restore_release.wait()
+        await original_save(enabled)
+
+    monkeypatch.setattr(service._preference_store, "asave", blocking_restore_save)
+    completion = asyncio.create_task(
+        service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+    )
+    await asyncio.wait_for(restore_started.wait(), 1.0)
+    completion.cancel()
+    restore_release.set()
+
+    with pytest.raises(VoiceIdentityServiceError, match="runtime_degraded"):
+        await completion
+
+    status = service.status()
+    assert status.enrollment is None
+    assert not status.state.has_profile
+    assert not status.state.requested_enabled
+    assert await service._preference_store.aload() is False
+    assert model.closed
+    assert events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_filter_toggle_delete_and_completion_retry(tmp_path: Path) -> None:
@@ -708,25 +814,31 @@ async def test_initialize_restores_encrypted_profile_and_preference(
     assert activations[-1][1] == "profile-a"
     await restored.close()
 
+async def _off_service_with_enrolled_profile(tmp_path: Path):
+    enforce_service, _model, _activations, _events = _service(tmp_path)
+    await enforce_service.initialize()
+    enrollment = await enforce_service.start_enrollment()
+    await enforce_service.complete_enrollment(
+        enrollment.enrollment_id, "profile-a", _pcm()
+    )
+    await enforce_service.close()
+    service, model, activations, events = _service(tmp_path, runtime_mode="off")
+    await service.initialize()
+    return service, model, activations, events
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_off_mode_records_profile_without_runtime_activation(
+async def test_off_mode_keeps_stored_profile_without_runtime_activation(
     tmp_path: Path,
 ) -> None:
-    service, _model, activations, _events = _service(
-        tmp_path,
-        runtime_mode="off",
-    )
-    await service.initialize()
-    enrollment = await service.start_enrollment()
-
-    status = await service.complete_enrollment(
-        enrollment.enrollment_id,
-        "profile-a",
-        _pcm(),
+    service, _model, activations, _events = await _off_service_with_enrolled_profile(
+        tmp_path
     )
 
+    status = service.status()
     assert status.runtime_mode == "off"
+    assert status.state.has_profile
     assert status.state.requested_enabled
     assert not status.state.effective_enabled
     assert status.state.effective_reason == "runtime_degraded"
@@ -736,16 +848,62 @@ async def test_off_mode_records_profile_without_runtime_activation(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_off_mode_rejects_enrollment_and_filter_enable(
+    tmp_path: Path,
+) -> None:
+    service, _model, activations, events = _service(tmp_path, runtime_mode="off")
+    await service.initialize()
+
+    with pytest.raises(VoiceIdentityServiceError, match="feature_disabled"):
+        await service.start_enrollment()
+    with pytest.raises(VoiceIdentityServiceError, match="feature_disabled"):
+        await service.submit_enrollment_segment(
+            "enrollment-a",
+            "profile-a",
+            1,
+            _pcm(),
+            sample_rate_hz=48_000,
+            audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+        )
+    with pytest.raises(VoiceIdentityServiceError, match="feature_disabled"):
+        await service.set_filter(True)
+
+    status = service.status()
+    assert status.enrollment is None
+    assert not status.state.requested_enabled
+    assert events == []
+    assert activations == []
+    assert await service._preference_store.aload() is False
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_off_mode_still_allows_disabling_and_deleting_stored_profile(
+    tmp_path: Path,
+) -> None:
+    service, _model, _activations, _events = await _off_service_with_enrolled_profile(
+        tmp_path
+    )
+
+    disabled = await service.set_filter(False)
+    assert not disabled.state.requested_enabled
+    assert await service._preference_store.aload() is False
+
+    deleted = await service.delete_profile()
+    assert not deleted.state.has_profile
+    assert not (tmp_path / "voice_identity.profile").exists()
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_off_mode_reconcile_clears_intentional_degraded_transition(
     tmp_path: Path,
 ) -> None:
-    service, _model, activations, _events = _service(
-        tmp_path,
-        runtime_mode="off",
+    service, _model, activations, _events = await _off_service_with_enrolled_profile(
+        tmp_path
     )
-    await service.initialize()
-    enrollment = await service.start_enrollment()
-    await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
 
     status = await service.update_runtime_noise_reduction_enabled(False)
 
@@ -755,29 +913,9 @@ async def test_off_mode_reconcile_clears_intentional_degraded_transition(
     await service.close()
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_shadow_mode_records_profile_without_reporting_enforced(
-    tmp_path: Path,
-) -> None:
-    service, _model, activations, _events = _service(
-        tmp_path,
-        runtime_mode="shadow",
-    )
-    await service.initialize()
-    enrollment = await service.start_enrollment()
-
-    status = await service.complete_enrollment(
-        enrollment.enrollment_id,
-        "profile-a",
-        _pcm(),
-    )
-
-    assert status.runtime_mode == "shadow"
-    assert status.state.requested_enabled
-    assert not status.state.effective_enabled
-    assert status.state.effective_reason == "shadow_mode"
-    assert activations[-1][1] == "profile-a"
-    await service.close()
+def test_shadow_runtime_mode_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="runtime_mode must be off or enforce"):
+        _service(tmp_path, runtime_mode="shadow")
 
 @pytest.mark.unit
 @pytest.mark.asyncio

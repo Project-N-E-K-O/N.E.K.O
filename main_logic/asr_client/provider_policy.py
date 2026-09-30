@@ -27,6 +27,7 @@ class AsrProviderPolicy:
     replay_policy: AsrReplayPolicy
     availability: AsrProviderAvailability = AsrProviderAvailability.IMPLEMENTED
     provider_final_timeout_ms: int = 10_000
+    provider_warmup_timeout_ms: int = 0
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
@@ -40,6 +41,8 @@ class AsrProviderPolicy:
             raise ValueError("segmented ASR must require SmartTurn")
         if self.provider_final_timeout_ms <= 0:
             raise ValueError("provider_final_timeout_ms must be positive")
+        if self.provider_warmup_timeout_ms < 0:
+            raise ValueError("provider_warmup_timeout_ms must not be negative")
         if self.connect_max_attempts <= 0:
             raise ValueError("connect_max_attempts must be positive")
         if self.connect_retry_base_seconds <= 0:
@@ -90,6 +93,7 @@ def resolve_provider_policy(
         replay_policy=meta.replay_policy,
         availability=meta.availability,
         provider_final_timeout_ms=meta.provider_final_timeout_ms,
+        provider_warmup_timeout_ms=meta.provider_warmup_timeout_ms,
         connect_max_attempts=meta.connect_max_attempts,
         connect_retry_base_seconds=meta.connect_retry_base_seconds,
         connect_retry_cap_seconds=meta.connect_retry_cap_seconds,

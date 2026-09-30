@@ -560,6 +560,8 @@
         "clearScreenshotsConfirm": "¿Estás seguro de que deseas borrar todas las capturas de pantalla pendientes?"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "El modelo de reconocimiento de voz local tardó demasiado en prepararse. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si la conexión es lenta o no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "El reconocimiento de voz local esperó demasiado en la cola. La entrada de voz de esta sesión se ha detenido. Es posible que un reconocimiento anterior siga en curso; inicia una nueva sesión de voz en un momento o desactiva el reconocimiento de voz local si vuelve a ocurrir.",
         "emotionTimeout": "Tiempo de espera del análisis de emociones",
         "noAudioTrack": "No hay pista de audio disponible",
         "cameraStreamFailed": "No se pudo obtener la transmisión de la cámara",
@@ -1045,7 +1047,16 @@
         "voiceRecognitionSettingsPending": "◐ La configuración se aplicará en la próxima sesión de voz",
         "voiceResourceOptimization": "Optimización inteligente de recursos",
         "voiceResourceOptimizationHintOn": "Reduce las conexiones y la carga de audio cuando está inactivo",
-        "voiceResourceOptimizationHintOff": "Mantiene activo el reconocimiento de voz y puede aumentar el uso de red y recursos"
+        "voiceResourceOptimizationHintOff": "Mantiene activo el reconocimiento de voz y puede aumentar el uso de red y recursos",
+        "localAsr": "Reconocimiento de voz local",
+        "localAsrHint": "Reconoce la voz en este equipo con faster-whisper. Requiere instalar faster-whisper por separado; el modelo se descarga en el primer uso",
+        "localAsrDependencyMissing": "El reconocimiento de voz local necesita faster-whisper, que no está instalado. La entrada de voz de esta sesión se ha detenido. Instálalo o desactiva el reconocimiento de voz local y luego inicia una nueva sesión de voz.",
+        "localAsrPreparing": "Cargando el modelo de reconocimiento de voz local. En el primer uso también se descarga, lo que puede tardar unos minutos. Tu primera frase se reconocerá cuando el modelo esté listo; espera antes de seguir hablando.",
+        "localAsrModelLoadFailed": "No se pudo cargar el modelo de reconocimiento de voz local. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
+        "localAsrReloading": "Recargando el modelo de reconocimiento de voz local, espera un momento. Tu primera frase se reconocerá cuando el modelo esté listo.",
+        "localAsrReady": "El reconocimiento de voz local está listo",
+        "localAsrWarmupTimeout": "El modelo de reconocimiento de voz local tardó demasiado en prepararse. La entrada de voz de esta sesión se ha detenido. En el primer uso el modelo se descarga de HuggingFace; si la conexión es lenta o no se puede acceder, configura la variable de entorno HF_ENDPOINT (por ejemplo https://hf-mirror.com) y reinicia, o desactiva el reconocimiento de voz local.",
+        "localAsrQueueTimeout": "El reconocimiento de voz local esperó demasiado en la cola. La entrada de voz de esta sesión se ha detenido. Es posible que un reconocimiento anterior siga en curso; inicia una nueva sesión de voz en un momento o desactiva el reconocimiento de voz local si vuelve a ocurrir."
     },
     "speaker": {
         "volumeLabel": "Volumen del altavoz",
@@ -1156,6 +1167,7 @@
             "qwen": "Qwen",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper (local)",
             "free": "Versión gratuita",
             "dummy": "Proveedor de prueba",
             "unknown": "Proveedor desconocido"
@@ -3013,7 +3025,7 @@
         "reasonEnrollmentActive": "Se está registrando un nuevo perfil. La activación no comenzará y el audio en espera no se subirá hasta terminar.",
         "reasonRuntimeDegraded": "La activación por voz no está disponible temporalmente; el audio en espera no se subirá.",
         "reasonUnsupportedAsrRoute": "La ruta de voz actual aún no admite la activación; el audio en espera no se subirá mientras esté encendida.",
-        "reasonShadowMode": "La activación solo está observando y aún no ha autorizado la subida del audio en espera.",
+        "featureDisabled": "La identidad de voz está desactivada, así que no se puede registrar la voz ni encender la activación por voz. El perfil de voz guardado aún se puede eliminar.",
         "sessionWaiting": "Esperando a que hables para activar el chat de voz",
         "sessionActive": "El chat de voz está activo",
         "sessionUnavailable": "La activación por voz no está disponible temporalmente; el audio en espera no se subirá",
