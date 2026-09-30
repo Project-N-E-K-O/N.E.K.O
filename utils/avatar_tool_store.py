@@ -666,9 +666,17 @@ class AvatarToolStore:
             # 副本还在，但授权在本进程里可能已经没了：不补回去的话，同 ID 的删除
             # 重试会把它当成授权缺失的删除残留，一直返回 tool_delete_pending。补一份
             # 对不上的授权，回到「保留副本」状态，重试会重新走这条丢弃路径。
+            # 目录 fsync 刚失败过，补写同样无法保证落盘；尽力而为，和删除路径写授权
+            # 的方式一致。真的崩溃丢了它，恢复清掉的也只是用户刚明确要删的副本。
             try:
                 with marker.open("x", encoding="utf-8") as stream:
                     stream.write("{}")
+                    stream.flush()
+                    try:
+                        os.fsync(stream.fileno())
+                    except OSError:
+                        pass
+                _fsync_directory(marker.parent)
             except FileExistsError:
                 pass
             except OSError:
