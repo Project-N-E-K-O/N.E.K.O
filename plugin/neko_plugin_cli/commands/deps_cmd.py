@@ -282,14 +282,24 @@ def _short_token() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _is_mount_point(path: Path) -> bool:
+    # On Windows, rmtree refuses a junction or mounted folder itself.
+    if sys.platform == "win32":
+        return False
+    mount_points = _linux_mount_points()
+    if mount_points is not None:
+        return os.path.realpath(path) in mount_points
+    return os.path.ismount(path)
+
+
 def _mounted_inside(path: Path) -> bool:
-    """Whether a leftover work dir has a mount point inside, which rmtree
-    would descend into and empty. Such a dir is kept, with a warning."""
-    mount = _find_foreign_subdir(path, junctions=False)
+    """Whether a leftover work dir is, or contains, a mount point, which
+    rmtree would descend into and empty. Such a dir is kept, with a warning."""
+    mount = path if _is_mount_point(path) else _find_foreign_subdir(path, junctions=False)
     if mount is None:
         return False
     print(
-        f"[WARN] Not removing {path}: {mount} inside it is a mount point. "
+        f"[WARN] Not removing {path}: {mount} is a mount point. "
         "Unmount it, then delete the directory.",
         file=sys.stderr,
     )

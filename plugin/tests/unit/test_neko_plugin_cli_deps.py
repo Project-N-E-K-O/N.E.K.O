@@ -535,18 +535,27 @@ def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, c
     assert "mount point" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("detected_by", ["mountinfo", "ismount"])
+@pytest.mark.parametrize("where", ["nested", "root"])
 @pytest.mark.parametrize("kind", ["staging", "backup"])
-def test_leftover_work_dir_with_mount_inside_is_not_deleted(tmp_path, monkeypatch, capsys, kind):
+def test_leftover_work_dir_with_mount_is_not_deleted(
+    tmp_path, monkeypatch, capsys, kind, where, detected_by,
+):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
     leftover = plugin_dir / f".vendor.{kind}-old"
-    mount = leftover / "pkg" / "mnt"
+    mount = leftover / "pkg" / "mnt" if where == "nested" else leftover
     mount.mkdir(parents=True)
     (mount / "external.dat").write_text("keep")
     monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
-    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: [os.path.realpath(mount)])
+    if detected_by == "mountinfo":
+        monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: ["/", os.path.realpath(mount)])
+        monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+    else:
+        monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+        monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: Path(p) == mount)
     monkeypatch.setattr(
         deps_cmd.subprocess,
         "run",
