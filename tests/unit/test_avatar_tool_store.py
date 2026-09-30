@@ -2142,9 +2142,20 @@ def test_a_parked_copy_becomes_resolvable_without_a_restart(tmp_path, monkeypatc
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
-    with pytest.raises(AvatarToolStoreError) as blocked:
-        restarted.delete_tool(tool_id)
-    assert blocked.value.code == "tool_recovery_pending"
+    recovery_runs = []
+    real_recover = AvatarToolStore._recover_interrupted_mutations
+
+    def counting_recover(self):
+        recovery_runs.append(True)
+        return real_recover(self)
+
+    monkeypatch.setattr(AvatarToolStore, "_recover_interrupted_mutations", counting_recover)
+    for _ in range(3):
+        with pytest.raises(AvatarToolStoreError) as blocked:
+            restarted.delete_tool(tool_id)
+        assert blocked.value.code == "tool_recovery_pending"
+    # 周围状态没变、副本仍然判断不了：重复操作不重跑整轮恢复。
+    assert recovery_runs == []
 
     # 之后同步客户端把正式目录放了回来：不用重启，下一次删除先重跑恢复，副本
     # 回到「保留副本」状态，再照常一并丢弃。

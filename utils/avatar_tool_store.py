@@ -657,12 +657,18 @@ class AvatarToolStore:
             raise _storage_total_unavailable() from probe_error
         if parked_kind != "absent":
             # 上次恢复时判断不了的停放副本，周围的状态之后可能变了（比如占着正式
-            # 路径的东西被同步客户端移走）：先重跑一轮恢复，还在才拦这个 ID。
-            _RECOVERY_PENDING_ROOTS.add(self._root_key())
-            self._require_recovery_complete_for_mutation()
-            parked_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.retained")
-            if probe_error is not None:
-                raise _storage_total_unavailable() from probe_error
+            # 路径的东西被同步客户端移走）。只有它现在可以判断时才重跑一轮恢复，
+            # 否则每次操作这个 ID 都会扫一遍整个存储根。
+            final_kind, _, final_error = _probe_entry(self.root / tool_id)
+            deleting_kind, _, deleting_error = _probe_entry(self.root / f".{tool_id}.deleting")
+            if final_error is not None or deleting_error is not None:
+                raise _storage_total_unavailable() from (final_error or deleting_error)
+            if deleting_kind == "absent" and final_kind in ("absent", "dir"):
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                self._require_recovery_complete_for_mutation()
+                parked_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.retained")
+                if probe_error is not None:
+                    raise _storage_total_unavailable() from probe_error
         if parked_kind != "absent":
             # 恢复判断不了的停放副本：既不能丢也挪不回，只拦这一个 ID。
             raise AvatarToolStoreError(
