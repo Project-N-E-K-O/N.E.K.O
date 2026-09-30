@@ -18,7 +18,7 @@ Current code が明示的に読む変数だけがサポート対象です。`NEK
 | `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能）。IPv6 は角括弧の有無どちらでも可。`::` は IPv6 のみを listen します |
 | `NEKO_MONITOR_TOKEN` | empty | 静的モデル asset を除く全 Monitor HTTP/WebSocket route 用の optional token（`MONITOR_TOKEN` も使用可能） |
 
-Token が空の場合は旧クライアント互換のため認証なしです。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。Main server は `NEKO_MONITOR_HOST` に対応する loopback address で Monitor に接続し、token を自動で送ります。
+Token が空の場合は旧クライアント互換のため認証なしです。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。Main server は `NEKO_MONITOR_HOST` にそのまま接続し（wildcard は同じ family の loopback に変換: `0.0.0.0` → `127.0.0.1`、`::` → `[::1]`）、token を自動で送ります。
 
 Token を有効にした場合、native client は `Authorization: Bearer <token>`（または `X-Monitor-Token`）を送ります。Browser では viewer を一度 `http://<host>:<port>/<name>?token=<token>` で開きます。Monitor は address bar から token を除く redirect を返し、HttpOnly の `neko_monitor_session_<port>` cookie を設定します。Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、token を変更すると無効になります。TLS を終端する reverse proxy の背後では `Host` header を転送し、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
 
