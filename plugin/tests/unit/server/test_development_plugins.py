@@ -61,6 +61,7 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     import httpx
     from plugin.server.application.plugins import registry_service
     from plugin.server.routes import plugins as routes
+    from plugin.server.infrastructure.mutation_auth import AUTOSTART_CSRF_TOKEN, MAIN_SERVER_PORT
 
     record = _register(tmp_path)
     registry = registry_service.PluginRegistryService()
@@ -75,8 +76,14 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     monkeypatch.setattr(routes, "ensure_plugin_messaging_started", AsyncMock(return_value=True))
     app = FastAPI()
     app.include_router(routes.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
-                                 base_url="http://127.0.0.1") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1",
+        headers={
+            "Origin": f"http://127.0.0.1:{MAIN_SERVER_PORT}",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    ) as http:
         response = await http.post(f"/plugin/{record.plugin_id}/{action}")
     assert response.status_code == 409, response.text
     assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"

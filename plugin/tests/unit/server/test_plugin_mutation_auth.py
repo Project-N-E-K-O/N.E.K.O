@@ -145,6 +145,17 @@ async def test_token_bootstrap_is_uncached_and_rejects_foreign_origin(app: FastA
 
 
 @pytest.mark.asyncio
+async def test_token_bootstrap_accepts_same_origin_referer_with_path(app: FastAPI) -> None:
+    async with _client(
+        app,
+        headers={"Referer": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}/ui/plugins"},
+    ) as client:
+        response = await client.get("/security/csrf-token")
+    assert response.status_code == 200
+    assert response.json()["csrf_token"] == mutation_auth.AUTOSTART_CSRF_TOKEN
+
+
+@pytest.mark.asyncio
 async def test_token_bootstrap_rejects_referer_only_foreign_request(app: FastAPI) -> None:
     async with _client(
         app,

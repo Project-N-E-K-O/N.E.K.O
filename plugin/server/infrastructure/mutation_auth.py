@@ -59,6 +59,19 @@ def _normalize_origin(raw: str | None) -> str:
     return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
 
 
+def _origin_from_referer(raw: str | None) -> str:
+    """Extract only the origin from a document Referer URL."""
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw.strip())
+        if parsed.username or parsed.password or not parsed.scheme or not parsed.netloc:
+            return ""
+        return _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _origin_for_host_port(host: str, port: int, *, scheme: str = "http") -> str:
     host_text = f"[{host}]" if ":" in host and not host.startswith("[") else host
     return f"{scheme}://{host_text}:{int(port)}"
@@ -151,7 +164,7 @@ def require_plugin_token_bootstrap_access(request: Request) -> None:
             _deny()
         return
     referer = request.headers.get("referer")
-    if referer and _normalize_origin(referer) not in _configured_origins():
+    if referer and _origin_from_referer(referer) not in _configured_origins():
         _deny()
     if _has_browser_metadata(request) and request.headers.get("sec-fetch-site") not in {"same-origin", "same-site", "none"}:
         _deny()
