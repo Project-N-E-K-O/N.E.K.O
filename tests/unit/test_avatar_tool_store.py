@@ -1592,6 +1592,36 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert restarted.get_detail(blocked_id)["name"] == "Reborn"
 
 
+def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_path, monkeypatch):
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    shutil.copytree(final, deleting)
+    marker.write_bytes(b"{")
+    retained_record = (deleting / "record.json").read_bytes()
+
+    def republish_during_fence(*_args, **kwargs):
+        # 写入围栏落在初次身份观察和重验之间：同步客户端恰好在这里换掉了 record。
+        if kwargs.get("operation") == "delete":
+            record_path = final / "record.json"
+            replacement = final / "record.json.synced"
+            replacement.write_bytes(record_path.read_bytes())
+            os.replace(replacement, record_path)
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", republish_during_fence)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 409)
+    assert (deleting / "record.json").read_bytes() == retained_record
+    assert marker.exists()
+    assert final.is_dir()
+
+
 def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

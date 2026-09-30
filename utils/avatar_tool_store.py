@@ -2078,9 +2078,6 @@ class AvatarToolStore:
                         "Avatar tool could not be deleted",
                         status_code=500,
                     ) from exc
-            if retained_delete is not None:
-                # 放在修订号校验和写入围栏之后：被拒绝的删除不能先把副本丢掉。
-                self._discard_retained_delete(*retained_delete)
             recheck_kind, _, recheck_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
@@ -2105,6 +2102,10 @@ class AvatarToolStore:
                     "Avatar tool could not be deleted",
                     status_code=409,
                 )
+            if retained_delete is not None:
+                # 放在修订号校验、写入围栏和正式目录身份重验都通过之后：任何一步
+                # 拒绝这次删除，副本都必须原样留着。
+                self._discard_retained_delete(*retained_delete)
             try:
                 marker = deleting.with_name(f"{deleting.name}.unverified")
                 # 先持久化授权，保证移动后进程退出也不会让未确认的新版本被启动清理。
