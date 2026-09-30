@@ -34,6 +34,8 @@ def fastest_run(fn, *, repeat=5, stop_below=None):
     With ``stop_below`` set, stop as soon as one run beats it: a passing guard
     then costs one call, and only a genuinely slow path pays for every retry.
     """
+    if repeat < 1:
+        raise ValueError(f"repeat must be >= 1, got {repeat}")
     best = float("inf")
     for _ in range(repeat):
         started = time.perf_counter()
