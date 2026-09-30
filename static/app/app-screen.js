@@ -170,7 +170,6 @@
     // 现在的取值规则（process.platform === 'linux'）推断，只把 Linux 当作可能弹窗。
     // 不能一律当作可能弹窗：旧版 macOS 在单显示器、无屏幕录制权限时也只返回
     // 一项，会被误当成系统对话框的结果，每次打开列表都重启分享。
-    // 设置面板悬停时是否延迟列来源也用它判断（window.screenSourceListMayPrompt）。
     function sourceListEnumerationMayPrompt(provider) {
         if (!provider) return false;
         if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
@@ -179,7 +178,6 @@
         var userAgent = String((navigator && navigator.userAgent) || '');
         return /Linux/.test(userAgent) && !/Android/.test(userAgent);
     }
-    window.screenSourceListMayPrompt = sourceListEnumerationMayPrompt;
 
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
         if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
