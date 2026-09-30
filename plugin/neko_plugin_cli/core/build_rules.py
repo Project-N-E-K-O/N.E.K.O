@@ -30,6 +30,11 @@ _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
     "dist",
     "build",
 }
+_DEFAULT_RECOVERY_DIR_PREFIXES = (
+    ".vendor.staging-",
+    ".vendor.backup-",
+    ".vendor.restore-",
+)
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
 }
@@ -99,6 +104,8 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     # Check directory components only (exclude the filename for files).
     dir_parts = relative_path.parts if is_dir else relative_path.parts[:-1]
     if dir_parts and dir_parts[0] in _DEFAULT_ROOT_EXCLUDE_DIR_NAMES:
+        return True
+    if dir_parts and dir_parts[0].startswith(_DEFAULT_RECOVERY_DIR_PREFIXES):
         return True
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in dir_parts):
         return True

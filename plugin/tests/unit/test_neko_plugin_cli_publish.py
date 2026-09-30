@@ -818,6 +818,18 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
     assert "dependency sync did not pass" in capsys.readouterr().err
 
 
+def test_publish_ignores_retained_dependency_recovery_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    backup = plugin_dir / ".vendor.backup-previous"
+    backup.mkdir()
+    (backup / "old.py").write_text("keep", encoding="utf-8")
+
+    publish_cmd._ensure_clean_worktree(plugin_dir)
+
+
 def test_publish_stops_before_tag_when_ruff_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

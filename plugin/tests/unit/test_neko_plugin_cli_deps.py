@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+import sys
 
 import pytest
 
@@ -15,6 +16,124 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _replace_vendor,
     handle_sync,
 )
+
+
+@pytest.mark.parametrize("uv", [None, "uv"])
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
+def test_installer_start_failure_is_not_missing_pip(
+    tmp_path, monkeypatch, capsys, uv, error_type,
+):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda _: uv)
+
+    def fail(*args, **kwargs):
+        raise error_type("interpreter cannot execute")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", fail)
+    assert deps_cmd._pip_install_to_vendor(
+        ["httpx"], vendor_dir=tmp_path / "vendor", python="missing-python",
+    ) == 1
+    error = capsys.readouterr().err
+    assert "could not start" in error
+    assert "interpreter cannot execute" in error
+    assert "ensurepip" not in error
+
+
+def test_overlapping_sync_rejected_across_processes(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    real_run = subprocess.run
+    child_code = '''
+import argparse, sys
+from pathlib import Path
+from plugin.neko_plugin_cli.commands.deps_cmd import handle_sync
+from plugin.neko_plugin_cli.paths import CliDefaults
+p = Path(sys.argv[1])
+d = CliDefaults(plugin_root=p.parent, target_dir=p.parent / 'target',
+                plugins_root=p.parent, profiles_root=p.parent / 'profiles')
+sys.exit(handle_sync(argparse.Namespace(plugin=str(p), python=sys.executable,
+                                       clean=True, _defaults=d)))
+'''
+
+    def install(command, **kwargs):
+        # The first sync holds its OS lock while invoking the installer.
+        child = real_run([sys.executable, "-c", child_code, str(plugin_dir)],
+                         capture_output=True, text=True, timeout=30)
+        assert child.returncode == 1
+        assert "sync already in progress" in child.stderr
+        target = Path(command[command.index("--target") + 1])
+        (target / "fresh.py").write_text("complete")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (plugin_dir / "vendor" / "fresh.py").read_text() == "complete"
+
+
+def test_failed_recovery_copy_never_exposes_partial_vendor(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    staging = tmp_path / ".vendor.staging-test"
+    vendor.mkdir()
+    staging.mkdir()
+    (vendor / "old.py").write_text("keep")
+    real_replace = Path.replace
+
+    def fail_replace(source, target):
+        if source == staging:
+            raise PermissionError("locked")
+        return real_replace(source, target)
+
+    def fail_copy(source, target, **kwargs):
+        Path(target).mkdir(exist_ok=True)
+        (Path(target) / "partial.py").write_text("partial")
+        raise OSError("recovery copy interrupted")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(deps_cmd.shutil, "copytree", fail_copy)
+    assert _replace_vendor(vendor, staging) is False
+    assert not vendor.exists()
+    assert not list(tmp_path.glob(".vendor.restore-*"))
+    backup, = tmp_path.glob(".vendor.backup-*")
+    assert (backup / "old.py").read_text() == "keep"
+
+
+def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    backup = plugin_dir / ".vendor.backup-previous"
+    backup.mkdir()
+    (backup / "old.py").write_text("backup")
+    monkeypatch.setattr(deps_cmd.subprocess, "run",
+                        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"))
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert not backup.exists()
+
+
+def test_non_clean_sync_preserves_links_including_dangling(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    try:
+        (vendor / "linked.txt").symlink_to(outside)
+        (vendor / "dangling.txt").symlink_to(tmp_path / "missing.txt")
+    except OSError:
+        pytest.skip("symlink creation requires OS permission")
+    monkeypatch.setattr(deps_cmd.subprocess, "run",
+                        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"))
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (vendor / "linked.txt").is_symlink()
+    assert (vendor / "linked.txt").readlink() == outside
+    assert (vendor / "dangling.txt").is_symlink()
+    assert outside.read_text() == "outside"
 
 
 @pytest.mark.plugin_unit

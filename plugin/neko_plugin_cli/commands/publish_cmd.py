@@ -346,7 +346,14 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
                 "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
-    if _git(plugin_dir, "status", "--porcelain"):
+    # Retained sync recovery artifacts are not plugin source. Keep checking
+    # tracked changes (including accidentally committed recovery artifacts).
+    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
+        plugin_dir, "status", "--porcelain", "--", ".",
+        ":(top,exclude).vendor.backup-*",
+        ":(top,exclude).vendor.staging-*",
+        ":(top,exclude).vendor.restore-*",
+    ):
         raise RuntimeError(
             _tri(
                 "git working tree has uncommitted changes",

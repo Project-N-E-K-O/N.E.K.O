@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
-from tempfile import mkdtemp
+from tempfile import gettempdir, mkdtemp
+
+import portalocker
 
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
@@ -71,29 +75,39 @@ def handle_sync(args: argparse.Namespace) -> int:
     # 2. Install into a sibling staging directory.  Keeping the current
     # vendor untouched until installation succeeds makes sync transactional.
     vendor_dir = plugin_dir / "vendor"
-    staging_dir = Path(mkdtemp(prefix=f".{vendor_dir.name}.staging-", dir=plugin_dir))
+    # Keep a persistent OS lock file outside the plugin. Unlinking lock files
+    # can let waiting processes lock different inodes for the same plugin.
+    identity = os.path.normcase(str(plugin_dir.resolve()))
+    lock_name = hashlib.sha256(identity.encode()).hexdigest()
+    lock_dir = Path(gettempdir()) / "neko-plugin-sync-locks"
+    staging_dir: Path | None = None
     try:
-        if not args.clean and vendor_dir.is_dir():
-            shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True)
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(lock_dir / f"{lock_name}.lock", timeout=0):
+            staging_dir = Path(mkdtemp(prefix=".vendor.staging-", dir=plugin_dir))
+            if not args.clean and vendor_dir.is_dir():
+                shutil.copytree(vendor_dir, staging_dir, dirs_exist_ok=True, symlinks=True)
 
-        # 3. Install all declared deps into the staging directory.
-        exit_code = _pip_install_to_vendor(
-            external_deps,
-            vendor_dir=staging_dir,
-            python=args.python,
-        )
-        if exit_code != 0:
-            return exit_code
-
-        # 4. Clean vendor artifacts before making staging live.
-        _clean_vendor(staging_dir)
-
-        # 5. Atomically replace vendor/, retaining a short-lived backup so a
-        # failed rename can restore the previous installation.
-        if not _replace_vendor(vendor_dir, staging_dir):
-            return 1
+            exit_code = _pip_install_to_vendor(
+                external_deps, vendor_dir=staging_dir, python=args.python,
+            )
+            if exit_code != 0:
+                return exit_code
+            _clean_vendor(staging_dir)
+            if not _replace_vendor(vendor_dir, staging_dir):
+                return 1
+            # A complete successful sync supersedes retained recovery backups.
+            for backup in plugin_dir.glob(".vendor.backup-*"):
+                if backup.is_dir() and not backup.is_symlink():
+                    shutil.rmtree(backup)
+    except portalocker.exceptions.LockException:
+        print(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"[FAIL] Could not sync dependencies for {plugin_dir}: {exc}", file=sys.stderr)
+        return 1
     finally:
-        if staging_dir.exists():
+        if staging_dir is not None and staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
 
     print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
@@ -173,15 +187,8 @@ def _pip_install_to_vendor(
             stderr=subprocess.STDOUT,
         )
     except OSError as exc:
-        if not uv:
-            print(
-                "[FAIL] Unable to install plugin dependencies: uv was not found "
-                "and the target Python has no pip. Install uv, or run "
-                "python -m ensurepip --upgrade.",
-                file=sys.stderr,
-            )
-        else:
-            print(f"[FAIL] uv pip install could not start: {exc}", file=sys.stderr)
+        installer = "uv pip install" if uv else f"target Python {python!r}"
+        print(f"[FAIL] {installer} could not start: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
         output = result.stdout or ""
@@ -218,10 +225,20 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
             if vendor_dir.exists():
                 shutil.rmtree(vendor_dir, ignore_errors=True)
             if backup_dir.exists():
+                restore_dir = vendor_dir.parent / (
+                    f".{vendor_dir.name}.restore-{uuid.uuid4().hex}"
+                )
                 try:
-                    # Restore a copy while retaining the backup for manual recovery.
-                    shutil.copytree(backup_dir, vendor_dir, dirs_exist_ok=True)
+                    # Copy to a sibling restore directory before publishing it,
+                    # so a failed copy can never expose a partial vendor tree.
+                    shutil.copytree(backup_dir, restore_dir, symlinks=True)
+                    restore_dir.replace(vendor_dir)
                 except OSError as exc:
+                    # Do not leave a partially restored live directory.
+                    if restore_dir.exists():
+                        shutil.rmtree(restore_dir, ignore_errors=True)
+                    if vendor_dir.exists():
+                        shutil.rmtree(vendor_dir, ignore_errors=True)
                     print(
                         f"[FAIL] Could not restore vendor; backup retained at "
                         f"{backup_dir}: {exc}",

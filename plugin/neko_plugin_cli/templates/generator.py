@@ -743,6 +743,9 @@ def _render_gitignore() -> str:
 .venv/
 venv/
 vendor/
+.vendor.staging-*/
+.vendor.backup-*/
+.vendor.restore-*/
 dist/
 build/
 *.egg-info/

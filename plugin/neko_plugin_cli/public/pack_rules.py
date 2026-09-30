@@ -24,6 +24,11 @@ _DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",
     ".pyo",
 }
+_DEFAULT_RECOVERY_DIR_PREFIXES = (
+    ".vendor.staging-",
+    ".vendor.backup-",
+    ".vendor.restore-",
+)
 
 
 class PackRuleSet(BaseModel):
@@ -84,6 +89,12 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -
     path_str = relative_path.as_posix()
 
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in relative_path.parts):
+        return True
+
+    # Dependency sync recovery artifacts must never become plugin payload.
+    if relative_path.parts and relative_path.parts[0].startswith(
+        _DEFAULT_RECOVERY_DIR_PREFIXES
+    ):
         return True
 
     if not is_dir:
