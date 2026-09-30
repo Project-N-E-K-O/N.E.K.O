@@ -88,11 +88,11 @@ def handle_sync(args: argparse.Namespace) -> int:
                 for path in plugin_dir.glob(".vendor.backup-*")
                 if path.is_dir() and not path.is_symlink()
             ]
-            if not args.clean and not vendor_dir.exists() and retained_backups:
+            if not args.clean and retained_backups:
                 locations = ", ".join(str(path) for path in retained_backups)
                 print(
-                    f"[FAIL] Cannot sync without a live vendor; retained dependency "
-                    f"backup requires recovery or explicit --clean: {locations}",
+                    f"[FAIL] Cannot sync with a retained dependency backup; "
+                    f"recover it or use explicit --clean: {locations}",
                     file=sys.stderr,
                 )
                 return 1
