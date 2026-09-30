@@ -33,8 +33,10 @@ from tests.wall_clock import fastest_run
 
 _ATOMIC_WS = r"(?>\s*)"
 _ATOMIC_WS_PLUS = r"(?>\s+)"
+_END_GUARD = r"(?<!\s)"
 _BARE_CAPTURE = re.compile(r"\(\.\{1,\d+\}\?\)")
-_GUARDED_CAPTURE = re.compile(r"\(\(\?!\\s\)\.\{1,\d+\}\?\)")
+# 捕获末尾可以带 ``(?<!\s)``（en 模板 2：以空白结尾的捕获是白试，见那里的注释）
+_GUARDED_CAPTURE = re.compile(r"\(\(\?!\\s\)\.\{1,\d+\}\?(?:\(\?<!\\s\))?\)")
 
 
 def _templates() -> list[tuple[str, str, re.Pattern[str]]]:
@@ -50,8 +52,9 @@ def _templates() -> list[tuple[str, str, re.Pattern[str]]]:
 
 _ALL = _templates()
 _NON_ZH = [t for t in _ALL if not t[0].startswith("zh")]
-# 自动发现，不是手点清单：含原子空白（``(?>\s*)`` / ``(?>\s+)``）的模板都要过等价性比较
-_ATOMIZED = [t for t in _ALL if _ATOMIC_WS in t[1] or _ATOMIC_WS_PLUS in t[1]]
+# 自动发现，不是手点清单：含原子空白（``(?>\s*)`` / ``(?>\s+)``）或捕获末尾守卫
+# ``(?<!\s)`` 的模板都要过等价性比较——这几样都只是剪枝，不许改变命中
+_ATOMIZED = [t for t in _ALL if any(u in t[1] for u in (_ATOMIC_WS, _ATOMIC_WS_PLUS, _END_GUARD))]
 
 
 def _ids(templates):
@@ -60,36 +63,46 @@ def _ids(templates):
 
 # ── 计时：逐条模板，只计时这一条编译后的正则 ──
 # ⚠️ 不计时整个 extract_directives：21 条模板的和里，单条回退会被淹掉。
-# 每种输入各管一件事：
+# 每种输入各管一件事，阈值按「修好一侧的最慢值」和「回退一侧的最快值」各自定，两侧都留
+# 约 4 倍以上余量（数字是本机 fastest-of-5）：
 #   · 纯空白 3000：话题不许空白起头。任何一条回退到「空白里的每个位置都是起点」，
-#     这里就是 0.07 秒（zh 模板 3）到 1 秒（en 模板 2）；修好之后每条 0.1 毫秒以内。
+#     这里就是 75ms（zh 模板 3 的前导空白）到 1 秒（en 模板 2）。
 #   · ``"もうx" + 空白 300 + "y"``：ja 模板 2 捕获后的原子组。去原子化时 1.5 秒。
-#   · ``"x" + 空白 1000 + "y"``：ko 模板 3 的两个原子组。去原子化时约 0.1 秒以上。
-#   · 触发词 + 空白 8000：触发词**之后、捕获之前**的空白。起点只有一个，但话题不许空白
+#   · ``"x" + 空白 1000 + "y"``：ko 模板 3 的两个原子组。去原子化时约 0.1 秒。
+#   这三种修好之后每条都在 0.25ms 以内，阈值 15ms。
+#   · 触发词 + 长空白：触发词**之后、捕获之前**的空白。起点只有一个，但话题不许空白
 #     起头之后，空白话题这条快速出口没了，前面的量词会把同一串空白的切法全试一遍：
-#     es/pt 模板 1 的 ``\s+(?:de|…)?\s*`` 去原子化时 0.33 秒；zh 模板 3 的
-#     ``(?!\s)`` 排到无宾语前视后面时 0.14 秒（前视每个位置都先扫完空白）。
+#     es/pt 模板 1 的 ``\s+(?:de|…)?\s*`` 去原子化时 0.33 秒；zh 模板 3 / 模板 1 的
+#     ``(?!\s)`` 去掉或排到无宾语前视后面时约 0.3 秒（前视每个位置都先扫完空白）。
 #     纯空白输入进不了这条路径——触发词没有出现，模板在第一个字上就失败。
+#   这四种里最慢的修好一侧是 zh 模板 2（``"no hables"`` 那条 14ms）：它以 lazy 话题开头，
+#   前缀里每个非空白字都是起点，每个起点把话题从 2 扩到 30 个单位、每扩一次扫一遍空白，
+#   是线性的，但常数大。它的话题至少 2 个单位，不能像 en 模板 2 那样在末尾加
+#   ``(?<!\s)``（以空白结尾的 2 单位话题是合法的最短切法），所以阈值给 60ms。
 # 其余模板的原子组去掉之后代价小到计时分不出来，由下面的结构判据兜住。
 _TIMING_INPUTS = {
-    "spaces": " " * 3000,
-    "mou-x-spaces-y": "もうx" + " " * 300 + "y",
-    "x-spaces-y": "x" + " " * 1000 + "y",
-    "no-hables-spaces": "no hables" + " " * 8000,
-    "nao-fale-spaces": "não fale" + " " * 8000,
-    "zh-reluctance-spaces-x": "我不想聊" + " " * 8000 + "x",
+    "spaces": (" " * 3000, 0.015),
+    "mou-x-spaces-y": ("もうx" + " " * 300 + "y", 0.015),
+    "x-spaces-y": ("x" + " " * 1000 + "y", 0.015),
+    "no-hables-spaces": ("no hables" + " " * 8000, 0.06),
+    "nao-fale-spaces": ("não fale" + " " * 8000, 0.06),
+    "zh-reluctance-spaces-x": ("我不想聊" + " " * 12000 + "x", 0.06),
+    "zh-negation-spaces-x": ("别提" + " " * 16000 + "x", 0.06),
 }
-_TIMING_LIMIT = 0.03
 
 
 @pytest.mark.parametrize("label,raw,pat", _ALL, ids=_ids(_ALL))
 @pytest.mark.parametrize("input_name", list(_TIMING_INPUTS))
 def test_no_template_backtracks_over_long_whitespace(input_name, label, raw, pat):
-    """Each template alone stays far below 30ms on long whitespace runs."""
-    text = _TIMING_INPUTS[input_name]
-    # 取多次里最快的一次滤掉调度噪声；修好的一侧都在毫秒以下，离 30ms 差一个数量级以上
-    elapsed = fastest_run(lambda: list(pat.finditer(text)), repeat=3, stop_below=_TIMING_LIMIT)
-    assert elapsed < _TIMING_LIMIT, f"{label} 在 {input_name} 上最快也要 {elapsed:.3f}s，空白回溯又回来了"
+    """Each template alone stays well below its input's limit on long whitespace runs."""
+    text, limit = _TIMING_INPUTS[input_name]
+    # 取多次里最快的一次滤掉调度噪声。⚠️ 第一次就超过阈值 10 倍时不再重试：调度噪声造不出
+    # 10 倍，而有些回退单次就要两分钟（ko 模板 3 去原子化后在触发词输入上 130 秒），重试
+    # 三次只会把一个明确的失败拖成 CI 超时。
+    elapsed = fastest_run(lambda: list(pat.finditer(text)), repeat=1)
+    if limit <= elapsed < limit * 10:
+        elapsed = min(elapsed, fastest_run(lambda: list(pat.finditer(text)), repeat=2, stop_below=limit))
+    assert elapsed < limit, f"{label} 在 {input_name} 上最快也要 {elapsed:.3f}s（线 {limit}s），空白回溯又回来了"
 
 
 # ── 结构 ──
@@ -108,7 +121,18 @@ def test_the_zh_topic_captures_refuse_to_start_on_whitespace_too():
     zh = [raw for label, raw, _pat in _ALL if label.startswith("zh")]
     assert r"((?!\s)" in zh[1]
     assert zh[2].startswith("(?:我" + D._ZH_HSPACE + ")?"), zh[2][:80]
-    assert r"(?!\s)" + D._ZH_OBJECTLESS_AHEAD in zh[2]
+
+
+@pytest.mark.parametrize("label,raw,pat", [t for t in _ALL if t[0].startswith("zh")], ids=_ids([t for t in _ALL if t[0].startswith("zh")]))
+def test_every_zh_objectless_lookahead_is_guarded(label, raw, pat):
+    """Structural, auto-discovered: each ``_ZH_OBJECTLESS_AHEAD`` is preceded by ``(?!\s)``.
+
+    The lookahead rescans the whole run of spaces at every position the verb's
+    whitespace gives back; zh template 1 had the same shape as template 3 and
+    was missed when only template 3 was listed by index.
+    """
+    count = raw.count(D._ZH_OBJECTLESS_AHEAD)
+    assert raw.count(r"(?!\s)" + D._ZH_OBJECTLESS_AHEAD) == count, (label, count)
 
 
 # 两个裸空白量词中间只隔着可选组：``\s+(?:de|sobre)?\s*``。可选组缺席时，同一串空白
@@ -144,6 +168,7 @@ _TOKENS = (
     + ["って", "とは", "呼ばないで", "言うな"]
     + ["no hables", "deja de hablar", "de", "sobre", "acerca de", "fútbol", "más", "por favor", ","]
     + ["não fale", "deixa de falar", "a respeito de", "trabalho", "mais", "hoje"]
+    + ["work", "my ex", "is", "is off limits", "is off the table", "is a no-go topic", "off-limits"]
 )
 _SAMPLES = [
     "날씨가 듣기 싫어",
@@ -160,6 +185,8 @@ _SAMPLES = [
     "no hables  sobre  fútbol",
     "no hables de",
     "não fale de trabalho hoje.",
+    "my ex   is off limits.",
+    "work is  a forbidden topic",
 ]
 
 
@@ -175,7 +202,10 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
     whitespace; an optional group that could would silently change matches.
     """
     # 用真实模板自己的 flags 编译对照版，不抄一份常量——模块哪天加了 flag，两边仍同一套规则
-    twin = re.compile(raw.replace(_ATOMIC_WS, r"\s*").replace(_ATOMIC_WS_PLUS, r"\s+"), pat.flags)
+    twin = re.compile(
+        raw.replace(_ATOMIC_WS, r"\s*").replace(_ATOMIC_WS_PLUS, r"\s+").replace(_END_GUARD, ""),
+        pat.flags,
+    )
     assert twin.pattern != pat.pattern
     rng = random.Random(20260930)
     corpus = _SAMPLES + [
@@ -187,7 +217,7 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
             expected = _match_signature(twin.search(text, pos))
             assert _match_signature(pat.search(text, pos)) == expected, (text, pos)
             hits += expected is not None
-    # 防空转：语料里真有足够多的命中，比较才有意义（seed 固定，最少的 ja#2 是 405 次）
+    # 防空转：语料里真有足够多的命中，比较才有意义（seed 固定，最少的 ja#1 是 325 次）
     assert hits > 100, (label, hits)
 
 

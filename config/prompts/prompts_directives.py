@@ -1641,6 +1641,9 @@ def _is_japanese_sentence_match(
 # 命中上的差别只在「空白起头」这一种切法：
 #   · 话题里有正文时，从空白起头的切法和从第一个非空白字起头的切法**结尾相同**，
 #     term 过 _trim_term 之后一样，只是命中起点右移；
+#   · 例外是话题有**最小单位数**的模板（zh 模板 2 至少 2 个单位）：前导空白能占掉一个
+#     单位，``" 钱这事别提了"`` 以前捕获 ``" 钱"``、剥成 1 个字被长度下限丢掉，现在从
+#     ``钱`` 起头、捕获到 ``钱这事``——和不带空白的原句结果一样；
 #   · 整段话题都是空白的切法（``" 짜증나 듣기 싫어"`` 的第一个空格、
 #     ``"no hables de "`` 句尾那个空格）以前会**占住**这段命中、term 剥成空串再丢掉，
 #     等于首尾多一个空格就改了结果。现在这类输入跟去掉那个空格的版本结果一样。
@@ -1667,6 +1670,9 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
      + _ZH_TOPIC_SEPARATOR
+     # ⚠️ ``(?!\s)`` 放在无宾语前视之前，理由同模板 3：动词后的横向空白每吐回一个空格，
+     # 前视就先扫完后面的空白，``"别提" + " " * 8000 + "x"`` 72ms、二次方。
+     + r"(?!\s)"
      + _ZH_OBJECTLESS_AHEAD
      + "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
@@ -1814,8 +1820,12 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"forever|today|tonight|right\s+now|in\s+(?:front|public))"
      r"|[,.!?;]|$)"),
     # X + is off limits / off the table / not a topic
+    # ⚠️ 捕获末尾的 ``(?<!\s)``：本条以 lazy 捕获开头，前缀里每个非空白字都是起点，捕获每往
+    # 后面的空白里伸一格，``\s+`` 就扫一遍剩下的空白（``"no hables" + " " * 8000`` 12~22ms）。
+    # 以空白结尾的捕获在这里是白试：``\s+`` 反正会把剩下的空白吃完，``is`` 落在同一个位置，
+    # 结果和更短的那个一样，而 lazy 总是先试更短的——所以这道判据不改命中。
     ("en", "ban_topic",
-     r"((?!\s).{1,30}?)\s+is\s+(?:off[\s\-]?limits|off\s+the\s+table|a\s+(?:no[\s\-]?go|forbidden)\s+topic)"
+     r"((?!\s).{1,30}?(?<!\s))\s+is\s+(?:off[\s\-]?limits|off\s+the\s+table|a\s+(?:no[\s\-]?go|forbidden)\s+topic)"
      r"(?:[\s,.!?;]|$)"),
     # I don't want to talk/hear about X
     # X 是 NP 可能含空格（"my ex girlfriend"）。terminator 用 filler-word /
