@@ -48,6 +48,8 @@ class Retirement:
     initiating_task: object
     was_active: bool
     handoff_safe: asyncio.Event = field(default_factory=asyncio.Event)
+    handoff_finished: asyncio.Event = field(default_factory=asyncio.Event)
+    handoff_error: BaseException | None = None
     cleanup_complete: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
     memory_completion: object = None

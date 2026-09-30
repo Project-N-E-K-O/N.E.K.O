@@ -956,6 +956,7 @@ class LifecycleMixin:
         user_initiated=False, _allow_cross_mode_restart=True,
         handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
         resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+        provider_preference_override=_HANDSHAKE_OVERRIDE_UNSET,
         request_id=None, _deadline=None,
     ):
         session_handshake_override = (
@@ -966,6 +967,15 @@ class LifecycleMixin:
             getattr(self, '_voice_input_resource_optimization_handshake_override', None)
             if resource_optimization_override is _HANDSHAKE_OVERRIDE_UNSET
             else resource_optimization_override
+        )
+        session_provider_preference_handshake_override = (
+            getattr(
+                self,
+                '_independent_asr_provider_preference_handshake_override',
+                None,
+            )
+            if provider_preference_override is _HANDSHAKE_OVERRIDE_UNSET
+            else provider_preference_override
         )
         deadline = _deadline or (
             asyncio.get_running_loop().time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
@@ -984,7 +994,9 @@ class LifecycleMixin:
             websocket, new, input_mode, user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
             request_id=request_id, handshake_override=session_handshake_override,
-            resource_optimization_override=session_resource_override, deadline=deadline,
+            resource_optimization_override=session_resource_override,
+            provider_preference_override=session_provider_preference_handshake_override,
+            deadline=deadline,
         ):
             return
         operation, token = self._claim_start_operation(websocket, request_id, input_mode, deadline)
@@ -1030,6 +1042,7 @@ class LifecycleMixin:
                     input_mode, llm_result, diag_start, request_id=request_id,
                     handshake_override=session_handshake_override,
                     resource_optimization_override=session_resource_override,
+                    provider_preference_override=session_provider_preference_handshake_override,
                 )
         except asyncio.CancelledError:
             if operation.valid:
@@ -1060,6 +1073,7 @@ class LifecycleMixin:
         request_id,
         handshake_override,
         resource_optimization_override,
+        provider_preference_override,
         deadline=None,
     ):
         """Handle a start request that collides with an in-flight start_session.
@@ -1145,6 +1159,7 @@ class LifecycleMixin:
                     ),
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
                 )
                 if not inflight_is_current():
                     await fail_deduped_request()
@@ -1243,6 +1258,7 @@ class LifecycleMixin:
                     request_id=request_id,
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
                     _deadline=deadline,
                 )
         else:
@@ -2350,6 +2366,7 @@ class LifecycleMixin:
         request_id=None,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
     ):
         """Post-connect activation: flip the active flags, start the message
         handler, drain queued context, open the input gate, and then acknowledge
@@ -2381,6 +2398,7 @@ class LifecycleMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            provider_preference_override=provider_preference_override,
         )
         self._check_start_operation()
 

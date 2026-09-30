@@ -51,7 +51,7 @@ class SessionOwnershipMixin:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
         record = next((item for item in self._session_retirements if item.task is task), None)
-        handoff = asyncio.create_task(record.handoff_safe.wait()) if record is not None else None
+        handoff = asyncio.create_task(record.handoff_finished.wait()) if record is not None else None
         try:
             watched = (task, handoff) if handoff is not None else (task,)
             done, _ = await asyncio.wait(
@@ -62,6 +62,8 @@ class SessionOwnershipMixin:
                 return task.result()  # Preserve close errors and cancellation.
             if handoff is None or not handoff.done():
                 raise TimeoutError("Session end did not reach safe handoff")
+            if record.handoff_error is not None:
+                raise RuntimeError("Session end handoff failed") from record.handoff_error
             # Preserve prompt physical cleanup/error reporting, without making
             # existing end-then-start callers depend on an uncooperative worker.
             done, _ = await asyncio.wait(
@@ -78,7 +80,9 @@ class SessionOwnershipMixin:
         self._init_session_lifecycle_state()
         async with asyncio.timeout_at(deadline):
             for record in tuple(self._session_retirements):
-                await record.handoff_safe.wait()
+                await record.handoff_finished.wait()
+                if record.handoff_error is not None:
+                    raise RuntimeError("Session handoff failed") from record.handoff_error
                 # Timeout fallback is not memory settlement. A late isolation
                 # callback must run before another conversation can produce.
                 if record.memory_completion is not None:
@@ -434,7 +438,13 @@ class SessionOwnershipMixin:
         if owns_state:
             self._reset_proactive_gate()
             self.clear_speech_playback_gains()
-            await self._close_independent_asr(next_route_mode="blocked")
+            try:
+                await self._close_independent_asr(next_route_mode="blocked")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                record.handoff_error = exc
+                logger.exception("Session ASR teardown failed before handoff: %s", exc)
             owns_state = self.session is None and self._session_generation == record.generation
         if owns_state:
             if record.was_active:
@@ -485,7 +495,9 @@ class SessionOwnershipMixin:
                 await self.send_status(json.dumps({
                     "code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name},
                 }))
-        record.handoff_safe.set()
+        if record.handoff_error is None:
+            record.handoff_safe.set()
+        record.handoff_finished.set()
         if record.tts is not None and record.tts.cleanup_task is not None:
             close_tasks.append(record.tts.cleanup_task)
         cleanup_errors = []

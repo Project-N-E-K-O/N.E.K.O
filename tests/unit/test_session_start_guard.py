@@ -191,9 +191,10 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
         user_initiated=True,
         _allow_cross_mode_restart=False,
         request_id=None,
-        handshake_override=None,
-        resource_optimization_override=None,
-        _deadline=deadline,
+            handshake_override=None,
+            resource_optimization_override=None,
+            provider_preference_override=None,
+            _deadline=deadline,
     )
 
 
@@ -665,9 +666,10 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
         user_initiated=True,
         _allow_cross_mode_restart=False,
         request_id=None,
-        handshake_override=None,
-        resource_optimization_override=None,
-        _deadline=deadline,
+            handshake_override=None,
+            resource_optimization_override=None,
+            provider_preference_override=None,
+            _deadline=deadline,
     )
 
 
