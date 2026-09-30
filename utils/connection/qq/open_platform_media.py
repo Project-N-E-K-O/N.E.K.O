@@ -68,6 +68,7 @@ import binascii
 import hashlib
 import mimetypes
 import os
+import string
 from typing import Any, NamedTuple, Optional
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -173,6 +174,24 @@ def _image_file_name(payload: bytes) -> str:
     if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
         return "image.webp"
     return "image.png"
+
+
+def _base64_decoded_size(encoded: str) -> int:
+    """How many bytes ``encoded`` decodes to, without decoding or copying it.
+
+    Whitespace is not data (``_decode_base64_source`` drops it) and trailing ``=``
+    padding stands for no bytes, so neither may count against the size limit: an image
+    of exactly ``MAX_IMAGE_BYTES`` would otherwise be refused.
+    """
+    end = len(encoded)
+    while end and encoded[end - 1] in string.whitespace:
+        end -= 1
+    padding = 0
+    while end and padding < 2 and encoded[end - 1] == "=":
+        end -= 1
+        padding += 1
+    whitespace = sum(encoded.count(ch) for ch in string.whitespace)
+    return (len(encoded) - whitespace) * 3 // 4 - padding
 
 
 def _decode_base64_source(encoded: str) -> SourceFile:
@@ -477,12 +496,16 @@ class QQOpenPlatformMediaMixin:
             return file_info
 
         if url.startswith(_BASE64_PREFIX):
-            # The OneBot `image` segment convention: the bytes travel inline. Decoded
-            # size is estimated from the text length first, so an oversized payload is
-            # refused without being decoded.
+            # The OneBot `image` segment convention: the bytes travel inline. The
+            # decoded size is computed from the text first, so an oversized payload is
+            # refused without being decoded. Text over 4x the limit cannot be a valid
+            # image under it, and skips even the whitespace count.
             encoded = url[len(_BASE64_PREFIX):]
             shown = "base64 图片"
-            if len(encoded) * 3 // 4 > MAX_IMAGE_BYTES:
+            if (
+                len(encoded) > 4 * MAX_IMAGE_BYTES
+                or _base64_decoded_size(encoded) > MAX_IMAGE_BYTES
+            ):
                 self._media_log(
                     "warning",
                     f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: "

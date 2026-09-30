@@ -867,6 +867,34 @@ def test_an_oversized_base64_source_is_refused_without_decoding(monkeypatch):
     assert connection._http.calls == []
 
 
+def test_a_base64_image_of_exactly_the_limit_is_not_refused(monkeypatch):
+    """Padding and line breaks are not data: counting them made an image of exactly the
+    limit look one byte too big, so it was refused before decoding."""
+    import base64
+
+    monkeypatch.setattr(media_module, "MAX_IMAGE_BYTES", 32)
+    payload = bytes.fromhex("89504e47") + b"q" * 28          # 32 bytes -> one "=" of padding
+    encoded = base64.b64encode(payload).decode("ascii")
+    assert encoded.endswith("=") and len(encoded) * 3 // 4 > 32
+    wrapped = encoded[:20] + "\n" + encoded[20:] + "\n"
+
+    for text in (encoded, wrapped):
+        connection = _make_connection(_legacy_ok_for_put)
+        assert _run(connection.upload_image(
+            scope="groups", owner_id="G1", source="base64://" + text,
+        )) == "FI-legacy", repr(text)
+        assert connection._http.puts()[0][1] == payload
+
+
+def test_the_base64_size_counts_only_data():
+    import base64
+
+    for size in range(0, 10):
+        text = base64.b64encode(b"x" * size).decode("ascii")
+        assert media_module._base64_decoded_size(text) == size, (size, text)
+        assert media_module._base64_decoded_size(" " + text[:2] + "\r\n" + text[2:] + "\n") == size
+
+
 def test_an_undecodable_base64_source_fails_cleanly_and_is_not_logged_whole():
     logger = _ListLogger()
     connection = _make_connection(lambda method, url, body: {"file_info": "FI"}, logger=logger)
@@ -996,6 +1024,28 @@ def test_group_replies_to_one_message_get_distinct_seqs():
 
     seqs = [body.get("msg_seq") for url, body in connection._http.posts() if url.endswith("/messages")]
     assert seqs == [1, 2]
+
+
+def test_msg_seq_counters_age_out_by_time_not_by_count(monkeypatch):
+    """A count cap reset the counter of an id that was still inside its passive-reply
+    window once enough other messages had been replied to, and the next reply then
+    reused ``(msg_id, 1)``: a duplicate the platform rejects."""
+    from types import SimpleNamespace
+
+    from utils.connection.qq import open_platform as op_module
+
+    clock = [1000.0]
+    monkeypatch.setattr(op_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    connection = _make_connection(lambda method, url, body: {})
+
+    assert connection._next_msg_seq("OLD") == 1
+    for i in range(1000):
+        connection._next_msg_seq(f"other-{i}")
+    assert connection._next_msg_seq("OLD") == 2, "a live counter was dropped by count"
+
+    clock[0] += op_module._MSG_SEQ_TTL_SECONDS + 1
+    assert connection._next_msg_seq("NEW") == 1
+    assert list(connection._msg_seq_by_reply_id) == ["NEW"], "stale counters were kept"
 
 
 def test_send_private_image_reply_gets_a_seq_too():

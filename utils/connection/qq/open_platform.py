@@ -19,8 +19,12 @@ _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 #: Placeholder text for an image that is not sent as media.
 _IMAGE_PLACEHOLDER = "[图片]"
 
-#: Distinct ``msg_seq`` counters kept per replied-to message id (oldest dropped first).
-_MSG_SEQ_TRACKED_IDS = 256
+#: How long a replied-to id keeps its ``msg_seq`` counter after its last use: twice the
+#: platform's longest passive-reply window (60 minutes, private chat). Dropping a counter
+#: any earlier could restart it at 1 while the platform still remembers ``(msg_id, 1)``
+#: and rejects the reply as a duplicate; past the window no reply to that id is accepted
+#: at all, so restarting is harmless.
+_MSG_SEQ_TTL_SECONDS = 2 * 60 * 60
 
 # ==========================================
 # R11 identity scope: resolved
@@ -277,8 +281,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         #: Set by the media mixin once the legacy direct upload is known dead; cleared
         #: on connect / successful reconnect (see ``open_platform_media``).
         self._legacy_upload_unsupported = False
-        #: Last ``msg_seq`` used per replied-to message id (see ``_next_msg_seq``).
-        self._msg_seq_by_reply_id: dict[str, int] = {}
+        #: Replied-to message id -> (last ``msg_seq`` used, monotonic time of that use),
+        #: least recently used first (see ``_next_msg_seq``).
+        self._msg_seq_by_reply_id: dict[str, tuple[int, float]] = {}
 
     @property
     def needs_attention(self) -> bool:
@@ -544,11 +549,18 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         sends a multi-block answer as several messages that all reply to one id, so
         each needs its own seq.
         """
+        now = time.monotonic()
         seqs = self._msg_seq_by_reply_id
-        seq = seqs.pop(reply_id, 0) + 1
-        seqs[reply_id] = seq
-        while len(seqs) > _MSG_SEQ_TRACKED_IDS:
-            seqs.pop(next(iter(seqs)))
+        seq = seqs.pop(reply_id, (0, now))[0] + 1
+        seqs[reply_id] = (seq, now)
+        # Pop + reinsert keeps the dict in last-use order, so stale entries sit at the
+        # front. Only age decides: a count cap would reset a counter the platform still
+        # remembers once enough other messages were replied to in between.
+        while seqs:
+            oldest_id, (_seq, used_at) = next(iter(seqs.items()))
+            if now - used_at <= _MSG_SEQ_TTL_SECONDS:
+                break
+            del seqs[oldest_id]
         return seq
 
     def _take_image_segment(self, image_url: str, data: dict[str, Any], content_parts: list[str]) -> str:

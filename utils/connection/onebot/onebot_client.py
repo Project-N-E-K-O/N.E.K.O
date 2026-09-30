@@ -67,7 +67,11 @@ def _notice_seconds(value: Any) -> int:
     match = _LEADING_NUMBER_RE.match(str(value if value is not None else ""))
     if not match:
         return 0
-    return max(int(float(match.group(1))), 0)
+    try:
+        # `"9" * 400` matches the pattern but is `inf` as a float, and `int(inf)` raises.
+        return max(int(float(match.group(1))), 0)
+    except (ValueError, OverflowError):
+        return 0
 
 
 class OneBotClient(NapCatActionsMixin, ConnectionBase):

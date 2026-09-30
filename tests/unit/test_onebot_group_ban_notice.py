@@ -258,6 +258,23 @@ def test_an_unparsable_duration_does_not_raise_out_of_the_receive_loop():
         assert notice["duration"] == expected, (raw, notice["duration"])
 
 
+def test_an_overflowing_duration_is_zero_not_an_exception():
+    """``"9" * 400`` matches the number pattern but overflows ``int(float(...))``;
+    ``_process_incoming`` calls the parser before enqueueing, so raising there would
+    drop the notice and leave her own mute unrecorded."""
+    client = _client()
+    payload = _ban(user_id=BOT)
+    payload["duration"] = "9" * 400
+    _feed(client, payload)
+
+    assert client.is_group_muted(GROUP) is True
+
+    third = _ban(user_id=ALICE)
+    third["duration"] = "9" * 400
+    _feed(client, third)
+    assert _take(client)["duration"] == 0
+
+
 def test_an_unparsable_duration_on_her_own_ban_still_mutes_her():
     client = _client()
     payload = _ban(user_id=BOT)
