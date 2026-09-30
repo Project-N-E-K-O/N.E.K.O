@@ -4535,9 +4535,11 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     // Linux source enumeration can show an OS sharing dialog
                     // (xdg-desktop-portal). Hover only opens the panel; the
                     // user clicks the row or the panel's button to enumerate.
-                    // Providers that predate the flag are treated as prompting.
+                    // Ask the same check the source list uses, so hover and
+                    // list agree on providers that predate the flag.
                     var deferEnumeration = !!(triggerEvent && triggerEvent.type === 'mouseenter'
-                        && provider && provider.sourceEnumerationMayPrompt !== false);
+                        && typeof window.screenSourceListMayPrompt === 'function'
+                        && window.screenSourceListMayPrompt(provider));
                     panel._nekoOnExplicitOpen = function () {
                         var loadButton = screenSourceList.querySelector(
                             '[data-neko-screen-source-deferred-load]'

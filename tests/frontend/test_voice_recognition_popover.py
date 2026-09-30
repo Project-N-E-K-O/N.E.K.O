@@ -222,6 +222,10 @@ def _install_voice_popover_harness(
     let deferScreenSources = false;
     const screenSourceResolvers = [];
     window.__screenRenderOptions = [];
+    // app-screen.js owns this check; the harness stands in for it with the
+    // declared flag only. Tests may replace it to prove the caller asks it.
+    window.screenSourceListMayPrompt = (provider) =>
+        !!provider && provider.sourceEnumerationMayPrompt === true;
     window.renderFloatingScreenSourceList = async (container, options = {}) => {
         window.__screenRenderOptions.push({
             deferEnumeration: options.deferEnumeration === true,
@@ -703,7 +707,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
+@pytest.mark.parametrize("capability", [False, True, "shared-check", "browser"])
 def test_screen_source_hover_defers_prompting_enumeration(
     page: Page, capability: bool | str,
 ) -> None:
@@ -714,18 +718,25 @@ def test_screen_source_hover_defers_prompting_enumeration(
         }"""
     )
     # Desktop shells may inject their bridge after the menu was rendered.
+    # "shared-check": a bridge without the flag that the list's own check
+    # (UA inference in app-screen.js) treats as prompting; hover must follow
+    # that check rather than read the flag itself.
     page.evaluate(
         """(capability) => {
             window.getDesktopCaptureProvider = () => capability === 'browser'
                 ? null : {
                     getSources() {},
-                    sourceEnumerationMayPrompt: capability === 'unknown'
+                    sourceEnumerationMayPrompt: capability === 'shared-check'
                         ? undefined : capability,
                 };
+            if (capability === 'shared-check') {
+                window.screenSourceListMayPrompt = (provider) =>
+                    !!provider && provider.sourceEnumerationMayPrompt === undefined;
+            }
         }""",
         capability,
     )
-    prompting = capability is True or capability == "unknown"
+    prompting = capability is True or capability == "shared-check"
     action = page.locator('[data-neko-mic-main-action="screen"]')
     action.hover()
     page.wait_for_function("window.__screenRenderOptions.length === 1")

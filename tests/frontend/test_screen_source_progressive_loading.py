@@ -1478,8 +1478,9 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
     page: Page,
 ) -> None:
     # "Remember window" holds the previous title. The portal answer is the
-    # user's new choice: the running share must move to it, and the render
-    # must not finish (exposing "choose again") before the restart is done.
+    # user's new choice: the running share must move to it. The render
+    # resolves before the restart so the caller can position the panel, but
+    # "choose again" stays disabled until the restart is done.
     _install_screen_source_harness(
         page,
         source_enumeration_may_prompt=True,
@@ -1526,13 +1527,24 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
             document.getElementById('stopButton').disabled = false;
 
             window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
-            await window.renderFloatingScreenSourceList(popup);
+            const rendered = await window.renderFloatingScreenSourceList(popup);
+            const chooseAgain = popup.querySelector('[data-neko-screen-source-deferred-load]');
+            // Read right when the render resolves: the restart is still running.
+            const whenRendered = {
+                rendered,
+                calls: captureCalls.slice(),
+                chooseAgainDisabled: chooseAgain.disabled,
+                selected: window.getSelectedScreenSourceId(),
+            };
+            const deadline = Date.now() + 5000;
+            while (chooseAgain.disabled && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
             return {
                 firstShare,
                 rememberedBefore,
-                // Read right when the render resolves: the restart already ran.
-                callsWhenRendered: captureCalls.slice(),
-                selected: window.getSelectedScreenSourceId(),
+                whenRendered,
+                callsWhenEnabled: chooseAgain.disabled ? null : captureCalls.slice(),
                 remembered: window.__storedValues.get('selectedScreenWindowTitle'),
             };
         }"""
@@ -1541,8 +1553,13 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
     assert result == {
         "firstShare": ["window:2"],
         "rememberedBefore": "Editor",
-        "callsWhenRendered": ["window:2", "window:5"],
-        "selected": "window:5",
+        "whenRendered": {
+            "rendered": True,
+            "calls": ["window:2"],
+            "chooseAgainDisabled": True,
+            "selected": "window:5",
+        },
+        "callsWhenEnabled": ["window:2", "window:5"],
         "remembered": "Browser",
     }
 

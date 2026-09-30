@@ -170,6 +170,7 @@
     // 现在的取值规则（process.platform === 'linux'）推断，只把 Linux 当作可能弹窗。
     // 不能一律当作可能弹窗：旧版 macOS 在单显示器、无屏幕录制权限时也只返回
     // 一项，会被误当成系统对话框的结果，每次打开列表都重启分享。
+    // 设置面板悬停时是否延迟列来源也用它判断（window.screenSourceListMayPrompt）。
     function sourceListEnumerationMayPrompt(provider) {
         if (!provider) return false;
         if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
@@ -178,6 +179,7 @@
         var userAgent = String((navigator && navigator.userAgent) || '');
         return /Linux/.test(userAgent) && !/Android/.test(userAgent);
     }
+    window.screenSourceListMayPrompt = sourceListEnumerationMayPrompt;
 
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
         if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
@@ -2710,10 +2712,12 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
-    async function selectScreenSource(sourceId, sourceName, displayName, screenIndex) {
+    // options.force：id 与当前相同也当作一次新选择，推进选择代次，让还在等待
+    // 的分享启动作废（来源 id 只是枚举快照，同一个 id 可能已换成别的窗口）。
+    async function selectScreenSource(sourceId, sourceName, displayName, screenIndex, options) {
         var previousSourceId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = sourceId;
-        if (previousSourceId !== sourceId) {
+        if (previousSourceId !== sourceId || (options && options.force === true)) {
             markScreenSourceSelectionChanged();
         }
         markCurrentScreenSourceSelectionExplicit(sourceName || '');
@@ -2892,14 +2896,12 @@
                 ? getGenericScreenSourceLabel(portalSource.id)
                 : getScreenSourceDisplayName(portalSource, null);
             // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
-            // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
-            // id 相同时 selectScreenSource 不推进选择代次；这里手动推进，让还在
-            // 等待的分享启动像换了 id 一样作废，不会把上一次选的窗口分享出去。
-            if (S.selectedScreenSourceId === portalSource.id) {
-                markScreenSourceSelectionChanged();
-            }
+            // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建，还在等待的
+            // 分享启动也要作废，不会把上一次选的窗口分享出去。
             try {
-                await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
+                await selectScreenSource(
+                    portalSource.id, portalSource.name, portalLabel, null, { force: true }
+                );
             } catch (error) {
                 console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
             }
@@ -2983,7 +2985,7 @@
                 // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
                 // 容器已经开始了更新的一轮渲染时交给那一轮。
                 if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
-                    await adoptPortalSource(sources[0]);
+                    adoptPortalSource(sources[0]);
                 }
                 return false;
             }
@@ -3323,12 +3325,9 @@
 
             // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
             // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
-            if (isPortalPick) {
-                // 等重建完成再露出「重新选择」，否则用户马上再选时，还没结束的
-                // 重启会把上一次的来源重新分享出去。
-                await adoptPortalSource(sources[0]);
-                if (!isPopupAvailable()) return false;
-            }
+            // 不等采用完成就返回：分享进行中时采用要走完停止、等待、重新开始，
+            // 调用方得先拿到渲染结果去定位面板、接上悬停保持。
+            var portalAdoption = isPortalPick ? adoptPortalSource(sources[0]) : null;
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
@@ -3344,6 +3343,18 @@
                     window.t ? window.t('app.screenSource.chooseAgain') : '重新选择屏幕来源'
                 );
                 chooseAgainButton.style.marginTop = '6px';
+                if (portalAdoption) {
+                    // 采用（含分享重启）结束前禁用，否则用户马上再选时，还没
+                    // 结束的重启会把上一次的来源重新分享出去。
+                    chooseAgainButton.disabled = true;
+                    chooseAgainButton.style.cursor = 'progress';
+                    chooseAgainButton.style.opacity = '0.6';
+                    portalAdoption.then(function () {
+                        chooseAgainButton.disabled = false;
+                        chooseAgainButton.style.cursor = 'pointer';
+                        chooseAgainButton.style.opacity = '';
+                    });
+                }
                 return true;
             }
 
