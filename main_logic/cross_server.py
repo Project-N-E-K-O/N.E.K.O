@@ -30,7 +30,7 @@ import time
 import pickle
 import aiohttp
 from config import (
-    MONITOR_SERVER_PORT,
+    MONITOR_SYNC_URL,
     MEMORY_SERVER_PORT,
     COMMENTER_SERVER_PORT,
     AVATAR_INTERACTION_DEDUPE_WINDOW_MS,
@@ -768,7 +768,7 @@ async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) 
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
-    sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+    sync_server_url=MONITOR_SYNC_URL,
     config=None,
     status_callback=None,
     user_language_provider=None,

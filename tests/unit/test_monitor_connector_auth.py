@@ -37,8 +37,8 @@ async def test_monitor_connector_passes_headers_to_transport(monkeypatch, token)
     try:
         await asyncio.wait_for(connected.wait(), 1)
         assert {url for url, _ in calls} == {
-            f"ws://127.0.0.1:{cross_server.MONITOR_SERVER_PORT}/sync/Mimi",
-            f"ws://127.0.0.1:{cross_server.MONITOR_SERVER_PORT}/sync_binary/Mimi",
+            f"{cross_server.MONITOR_SYNC_URL}/sync/Mimi",
+            f"{cross_server.MONITOR_SYNC_URL}/sync_binary/Mimi",
         }
         for url, kwargs in calls:
             assert kwargs["heartbeat"] == 10

@@ -15,12 +15,12 @@ Current code が明示的に読む変数だけがサポート対象です。`NEK
 
 | Preferred variable | Default | Description |
 | --- | --- | --- |
-| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能） |
-| `NEKO_MONITOR_TOKEN` | empty | Monitor の HTTP/WebSocket data route 用 optional Bearer token（`MONITOR_TOKEN` も使用可能） |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能）。IPv6 は角括弧の有無どちらでも可。`::` は IPv6 のみを listen します |
+| `NEKO_MONITOR_TOKEN` | empty | 静的モデル asset を除く全 Monitor HTTP/WebSocket route 用の optional token（`MONITOR_TOKEN` も使用可能） |
 
-Token が空の場合は旧クライアント互換のため認証なしです。Token を有効にした native client は `Authorization: Bearer <token>` を送り、browser WebSocket viewer は `token` query parameter を使用できます。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。
+Token が空の場合は旧クライアント互換のため認証なしです。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。Main server は `NEKO_MONITOR_HOST` に対応する loopback address で Monitor に接続し、token を自動で送ります。
 
-Viewer は有効な query token を HttpOnly の `monitor_token` cookie に昇格し、以降の API request と WebSocket handshake も認証します。静的モデル asset は公開のまま、token は Monitor の data と realtime route を保護します。
+Token を有効にした場合、native client は `Authorization: Bearer <token>`（または `X-Monitor-Token`）を送ります。Browser では viewer を一度 `http://<host>:<port>/<name>?token=<token>` で開きます。Monitor は address bar から token を除く redirect を返し、HttpOnly の `neko_monitor_session_<port>` cookie を設定します。Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、token を変更すると無効になります。TLS を終端する reverse proxy の背後では `Host` header を転送し、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
 
 Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTART_ALLOWED_ORIGINS`、`NEKO_BEHIND_PROXY`、`NEKO_LOG_LEVEL`、`NEKO_MERGED` を使います。Storage root は `NEKO_STORAGE_SELECTED_ROOT` と `NEKO_STORAGE_ANCHOR_ROOT` です。
 

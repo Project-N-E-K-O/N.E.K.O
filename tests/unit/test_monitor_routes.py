@@ -1,10 +1,14 @@
 """Real ASGI route checks for Monitor authentication and broadcast isolation."""
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import monitor
 from app import monitor_auth
+
+COOKIE = monitor_auth.VIEWER_SESSION_COOKIE
 
 
 @pytest.fixture
@@ -13,11 +17,24 @@ def client(monkeypatch):
     monitor.connected_clients.clear()
     monitor.subtitle_clients.clear()
     monkeypatch.setattr(monitor, "current_subtitle", "private subtitle")
-    # Do not start background cleanup; these tests exercise route ownership.
     with TestClient(monitor.app) as test_client:
         yield test_client
     monitor.connected_clients.clear()
     monitor.subtitle_clients.clear()
+
+
+def _session_headers(origin=None):
+    headers = {"Cookie": f"{COOKIE}={monitor_auth.issue_viewer_session()}"}
+    if origin:
+        headers["Origin"] = origin
+    return headers
+
+
+def _assert_ws_rejected(client, path, headers=None):
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(path, headers=headers or {}):
+            pass
+    assert closed.value.code == 1008
 
 
 @pytest.mark.parametrize("path", ["/subtitle_ws", "/ws/neko", "/sync/neko", "/sync_binary/neko"])
@@ -28,22 +45,28 @@ def test_rejected_websocket_has_no_state_or_broadcast(client, monkeypatch, path,
         broadcasts.append(args)
     monkeypatch.setattr(monitor, "broadcast_message", record)
     monkeypatch.setattr(monitor, "broadcast_binary", record)
-    with pytest.raises(WebSocketDisconnect) as closed:
-        with client.websocket_connect(path + query):
-            pass
-    assert closed.value.code == 1008
+    _assert_ws_rejected(client, path + query)
     assert not monitor.connected_clients
     assert not monitor.subtitle_clients
     assert not broadcasts
     assert monitor.current_subtitle == "private subtitle"
 
 
-@pytest.mark.parametrize("path", ["/subtitle", "/neko", "/api/config/page_config", "/api/config/preferences", "/api/live2d/emotion_mapping/neko"])
-def test_http_business_routes_reject_missing_or_wrong_token(client, path):
+@pytest.mark.parametrize("path", [
+    "/subtitle", "/neko", "/api/config/page_config", "/api/config/preferences",
+    "/api/live2d/emotion_mapping/neko",
+    # No handler opts in: the middleware protects routes by default.
+    "/openapi.json",
+])
+def test_http_routes_reject_missing_or_wrong_token(client, path):
     assert client.get(path).status_code == 401
     response = client.get(path, headers={"Authorization": "Bearer wrong"})
     assert response.status_code == 401
     assert "route-secret" not in response.text
+
+
+def test_static_assets_stay_public(client):
+    assert client.get("/static/theme-manager.js").status_code == 200
 
 
 def test_preferences_whitelist_and_header_auth(client, monkeypatch):
@@ -55,6 +78,53 @@ def test_preferences_whitelist_and_header_auth(client, monkeypatch):
     assert response.json() == [{"model_path": "model", "position": {"x": 1}, "scale": 2}]
 
 
+def test_query_token_page_load_redirects_to_token_free_url_with_session_cookie(client):
+    response = client.get("/neko?lanlan_name=neko&token=route-secret", follow_redirects=False)
+    assert response.status_code == 303
+    location = urlsplit(response.headers["location"])
+    assert location.path == "/neko"
+    assert parse_qs(location.query) == {"lanlan_name": ["neko"]}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    set_cookie = response.headers["set-cookie"]
+    assert set_cookie.startswith(f"{COOKIE}=")
+    assert "route-secret" not in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+    assert "Secure" not in set_cookie
+    assert monitor_auth.verify_viewer_session(response.cookies[COOKIE])
+
+
+def test_query_token_over_https_marks_session_cookie_secure(monkeypatch):
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "route-secret")
+    with TestClient(monitor.app, base_url="https://testserver") as https_client:
+        response = https_client.get("/subtitle?token=route-secret", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/subtitle"
+    assert "Secure" in response.headers["set-cookie"]
+
+
+def test_session_cookie_authenticates_viewer_http_routes(client, monkeypatch):
+    async def preferences():
+        return []
+    monkeypatch.setattr(monitor, "aload_user_preferences", preferences)
+    response = client.get("/api/config/preferences", headers=_session_headers())
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("cookie", ["route-secret", "not-a-session", "1.deadbeef"])
+def test_raw_token_or_forged_cookie_is_not_a_session(client, cookie):
+    headers = {"Cookie": f"{COOKIE}={cookie}"}
+    assert client.get("/api/config/preferences", headers=headers).status_code == 401
+    _assert_ws_rejected(client, "/subtitle_ws", headers)
+
+
+def test_rotated_token_invalidates_existing_session(client, monkeypatch):
+    headers = _session_headers()
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "rotated-secret")
+    assert client.get("/api/config/preferences", headers=headers).status_code == 401
+
+
 def test_authorized_sync_broadcasts_to_authorized_viewer(client):
     with client.websocket_connect("/ws/neko?token=route-secret") as viewer:
         with client.websocket_connect("/sync/neko", headers={"Authorization": "Bearer route-secret"}) as sync:
@@ -64,7 +134,7 @@ def test_authorized_sync_broadcasts_to_authorized_viewer(client):
 
 
 def test_authorized_binary_sync_broadcasts_to_authorized_viewer(client):
-    with client.websocket_connect("/ws/neko?token=route-secret") as viewer:
+    with client.websocket_connect("/ws/neko", headers=_session_headers("http://testserver")) as viewer:
         with client.websocket_connect("/sync_binary/neko?token=route-secret") as sync:
             sync.send_bytes(b"audio bytes")
             assert viewer.receive_bytes() == b"audio bytes"
@@ -75,21 +145,31 @@ def test_subtitle_requires_auth_before_current_subtitle(client):
         assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
 
 
-def test_cookie_authenticated_websocket_rejects_cross_origin(client):
-    with pytest.raises(WebSocketDisconnect) as closed:
-        with client.websocket_connect("/ws/neko", headers={"Origin": "http://evil.example:48911", "Cookie": "monitor_token=route-secret"}):
-            pass
-    assert closed.value.code == 1008
+@pytest.mark.parametrize("path", ["/sync/neko", "/sync_binary/neko"])
+def test_viewer_session_cannot_reach_producer_routes(client, path):
+    _assert_ws_rejected(client, path, _session_headers("http://testserver"))
 
 
-def test_cookie_authenticated_websocket_accepts_same_origin(client):
-    with client.websocket_connect(
-        "/subtitle_ws",
-        headers={
-            "Origin": "http://testserver",
-            "Cookie": "monitor_token=route-secret",
-        },
-    ) as websocket:
+@pytest.mark.parametrize("origin", ["http://evil.example", "http://testserver:48916"])
+def test_session_websocket_rejects_cross_origin(client, origin):
+    _assert_ws_rejected(client, "/ws/neko", _session_headers(origin))
+
+
+@pytest.mark.parametrize("origin", [
+    None,
+    "http://testserver",
+    # TLS terminated at a proxy: the browser Origin is https while the
+    # upstream handshake is plain ws.
+    "https://testserver",
+])
+def test_session_websocket_accepts_same_host(client, origin):
+    with client.websocket_connect("/subtitle_ws", headers=_session_headers(origin)) as websocket:
+        assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
+
+
+def test_explicit_token_is_not_blocked_by_cookie_origin_check(client):
+    headers = _session_headers("http://testserver:48916")
+    with client.websocket_connect("/subtitle_ws?token=route-secret", headers=headers) as websocket:
         assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
 
 
@@ -100,6 +180,11 @@ def test_unconfigured_token_keeps_websocket_compatibility(client, monkeypatch, p
         pass
 
 
-
-
-
+def test_unconfigured_token_keeps_http_compatibility(client, monkeypatch):
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "")
+    async def preferences():
+        return []
+    monkeypatch.setattr(monitor, "aload_user_preferences", preferences)
+    assert client.get("/api/config/preferences").status_code == 200
+    # No token configured: a stray ?token= must not trigger the cookie exchange.
+    assert client.get("/openapi.json?token=x", follow_redirects=False).status_code == 200

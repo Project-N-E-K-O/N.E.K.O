@@ -17,12 +17,12 @@
 
 | 首选变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor 监听地址（兼容 `MONITOR_HOST`） |
-| `NEKO_MONITOR_TOKEN` | 空 | Monitor HTTP/WebSocket 数据路由的可选 Bearer token（兼容 `MONITOR_TOKEN`） |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor 监听地址（兼容 `MONITOR_HOST`）。IPv6 带不带方括号均可；`::` 只监听 IPv6 |
+| `NEKO_MONITOR_TOKEN` | 空 | 除静态模型资源外，所有 Monitor HTTP/WebSocket 路由的可选 token（兼容 `MONITOR_TOKEN`） |
 
-token 为空时为兼容旧客户端而保持开放。启用 token 后，原生客户端使用 `Authorization: Bearer <token>`；浏览器 WebSocket viewer 可使用 `token` 查询参数。默认开放监听只应运行在可信局域网；仅本机使用时请将 host 设为 `127.0.0.1`。不要把 token 写入日志或提交到源码。
+token 为空时为兼容旧客户端而保持开放。默认开放监听只应运行在可信局域网；仅本机使用时请将 host 设为 `127.0.0.1`。不要把 token 写入日志或提交到源码。主服务会按 `NEKO_MONITOR_HOST` 对应的回环地址连接 Monitor，并自动携带 token。
 
-Viewer 会将有效的查询 token 转换为 HttpOnly 的 `monitor_token` cookie，使后续 API 请求和 WebSocket 握手继续认证。静态模型资源保持公开；token 保护 Monitor 数据和实时路由。
+启用 token 后，原生客户端发送 `Authorization: Bearer <token>`（或 `X-Monitor-Token`）。浏览器里先用 `http://<host>:<port>/<name>?token=<token>` 打开一次 viewer：Monitor 会重定向到去掉 token 的地址，并写入 HttpOnly 的 `neko_monitor_session_<port>` cookie。cookie 里是 30 天有效的签名会话而不是 token 本身，只能访问 viewer 路由（不能访问 `/sync*`）；用它发起的 WebSocket 握手必须来自同一 host 和端口；更换 token 后旧会话全部失效。TLS 在反向代理终止时，请转发 `Host` 头，并把代理地址加入 uvicorn 的 `FORWARDED_ALLOW_IPS`（默认 `127.0.0.1`），cookie 才会带上 `Secure`。
 
 Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优先。
 

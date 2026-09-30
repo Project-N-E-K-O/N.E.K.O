@@ -17,12 +17,12 @@ Only variables explicitly read by current code are supported. A `NEKO_` prefix i
 
 | Preferred variable | Default | Description |
 | --- | --- | --- |
-| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor bind address (`MONITOR_HOST` is accepted for compatibility) |
-| `NEKO_MONITOR_TOKEN` | empty | Optional bearer token for Monitor HTTP/WebSocket data routes (`MONITOR_TOKEN` is also accepted) |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor bind address (`MONITOR_HOST` is accepted for compatibility). IPv6 may be written with or without brackets; `::` listens on IPv6 only |
+| `NEKO_MONITOR_TOKEN` | empty | Optional token for every Monitor HTTP/WebSocket route except static model assets (`MONITOR_TOKEN` is also accepted) |
 
-Monitor authentication is disabled when the token is empty for backwards compatibility. When enabled, send `Authorization: Bearer <token>` from native clients; browser WebSocket viewers may use the `token` query parameter. Keep the default open listener on a trusted LAN, or set the host to `127.0.0.1` for local-only use. Never include the token in logs or source control.
+Monitor authentication is disabled when the token is empty for backwards compatibility. Keep the default open listener on a trusted LAN, or set the host to `127.0.0.1` for local-only use. Never include the token in logs or source control. The main server connects to Monitor through the loopback address matching `NEKO_MONITOR_HOST` and sends the token automatically.
 
-The viewer promotes a valid query token to an HttpOnly `monitor_token` cookie so its API requests and WebSocket handshake remain authenticated. Static model assets remain public; the token protects Monitor data and realtime routes.
+When the token is set, native clients send `Authorization: Bearer <token>` (or `X-Monitor-Token`). In a browser, open the viewer once as `http://<host>:<port>/<name>?token=<token>`: Monitor answers with a redirect that removes the token from the address bar and sets an HttpOnly `neko_monitor_session_<port>` cookie. The cookie holds a 30-day signed session, not the token; it only grants viewer routes (never `/sync*`), WebSocket handshakes that use it must come from the same host and port, and changing the token invalidates it. Behind a TLS-terminating reverse proxy, forward the `Host` header and list the proxy in uvicorn's `FORWARDED_ALLOW_IPS` (default `127.0.0.1`) so the cookie is marked `Secure`.
 
 Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` on Windows, macOS Application Support, or `$XDG_CONFIG_HOME/N.E.K.O` on Linux. Explicit environment values win.
 

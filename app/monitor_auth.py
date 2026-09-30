@@ -1,19 +1,44 @@
 # -*- coding: utf-8 -*-
-"""Authentication primitives for the optional Monitor service.
+"""Authentication for the optional Monitor service.
 
-The Monitor deliberately keeps authentication opt-in so existing LAN viewers
-continue to work.  Callers are responsible for deciding which routes require
-authentication and for returning the appropriate HTTP/WebSocket response.
+Authentication stays opt-in (empty ``MONITOR_TOKEN``) so existing LAN viewers
+keep working.  Once a token is configured, ``MonitorAuthMiddleware`` gates
+every HTTP and WebSocket route except the public static asset mounts, so a
+newly added route is protected by default instead of relying on each handler
+to remember an auth call.
+
+Two credential kinds are accepted:
+
+* the configured token itself (``Authorization: Bearer``, ``X-Monitor-Token``
+  or ``?token=``) -- full access, including the ``/sync*`` producer routes;
+* a viewer session cookie, issued in exchange for a ``?token=`` page load.  It
+  carries an expiring HMAC derived from the token rather than the token, is
+  named per Monitor port, and only grants viewer routes (never ``/sync*``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import re
-from typing import Any
+import time
+from urllib.parse import urlencode, urlsplit
 
-from config import MONITOR_TOKEN
+from starlette.requests import HTTPConnection
+from starlette.responses import JSONResponse, RedirectResponse
+from starlette.websockets import WebSocket
+
+from config import MONITOR_SERVER_PORT, MONITOR_TOKEN
+
+# Cookies are scoped by host, not by port: include the port so that services
+# sharing the host neither collide with nor overwrite each other's session.
+VIEWER_SESSION_COOKIE = f"neko_monitor_session_{MONITOR_SERVER_PORT}"
+VIEWER_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+
+_PUBLIC_PATH_PREFIXES = ("/static/", "/user_live2d/", "/user_live2d_local/", "/workshop/")
+_PRODUCER_PATH_PREFIXES = ("/sync/", "/sync_binary/")
+_NO_STORE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
 class MonitorQueryLogFilter(logging.Filter):
@@ -62,68 +87,142 @@ def verify_monitor_token(token: str | None) -> bool:
 
     if not MONITOR_TOKEN:
         return True
-    if token is None:
+    if not token:
         return False
     return hmac.compare_digest(token.encode("utf-8"), MONITOR_TOKEN.encode("utf-8"))
 
 
-def _header_value(headers: Any, name: str) -> str | None:
-    """Read a header from Starlette headers or a plain mapping."""
-
-    value = headers.get(name) if headers is not None else None
-    if value is None and headers is not None:
-        value = headers.get(name.lower())
-    if value is None and headers is not None and hasattr(headers, "items"):
-        wanted = name.lower()
-        value = next(
-            (candidate for key, candidate in headers.items()
-             if str(key).lower() == wanted),
-            None,
-        )
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    return value.strip() if isinstance(value, str) else None
-
-
-def extract_monitor_token(
-    *,
-    headers: Any = None,
-    query_token: str | None = None,
-    cookie_token: str | None = None,
-) -> str | None:
-    """Extract a token using the supported HTTP/WebSocket transport forms.
+def extract_monitor_token(conn: HTTPConnection) -> tuple[str | None, str | None]:
+    """Return ``(token, source)`` for the explicit token transports.
 
     ``Authorization: Bearer`` is preferred, then ``X-Monitor-Token``, then the
-    browser-compatible ``?token=`` query parameter.
+    browser-compatible ``?token=`` query parameter.  ``source`` is ``"header"``
+    or ``"query"``; both are ``None`` when no explicit token was sent.
     """
 
-    authorization = _header_value(headers, "authorization")
-    if authorization:
-        scheme, separator, value = authorization.partition(" ")
-        if separator and scheme.lower() == "bearer" and value:
-            return value.strip()
-    header_token = _header_value(headers, "x-monitor-token")
+    authorization = conn.headers.get("authorization", "").strip()
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip(), "header"
+    header_token = conn.headers.get("x-monitor-token", "").strip()
     if header_token:
-        return header_token
-    if isinstance(query_token, str) and query_token:
-        return query_token
-    if isinstance(cookie_token, str) and cookie_token:
-        return cookie_token
-    return None
+        return header_token, "header"
+    query_token = conn.query_params.get("token")
+    if query_token:
+        return query_token, "query"
+    return None, None
 
 
-def authenticate_monitor_request(
-    *,
-    headers: Any = None,
-    query_token: str | None = None,
-    cookie_token: str | None = None,
-) -> bool:
-    """Authenticate an HTTP request or WebSocket handshake."""
+def _viewer_session_signature(expires_at: int) -> str:
+    return hmac.new(
+        MONITOR_TOKEN.encode("utf-8"),
+        f"neko-monitor-viewer:{expires_at}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
-    return verify_monitor_token(
-        extract_monitor_token(
-            headers=headers,
-            query_token=query_token,
-            cookie_token=cookie_token,
-        )
+
+def issue_viewer_session(now: float | None = None) -> str:
+    """Mint a viewer session value; it never contains the token itself."""
+
+    expires_at = int(now if now is not None else time.time()) + VIEWER_SESSION_TTL_SECONDS
+    return f"{expires_at}.{_viewer_session_signature(expires_at)}"
+
+
+def verify_viewer_session(value: str | None, now: float | None = None) -> bool:
+    """Check signature and expiry; rotating the token invalidates all sessions."""
+
+    if not MONITOR_TOKEN or not value:
+        return False
+    expires_text, _, signature = value.partition(".")
+    if not expires_text.isdigit() or not signature:
+        return False
+    expires_at = int(expires_text)
+    if expires_at <= (now if now is not None else time.time()):
+        return False
+    return hmac.compare_digest(signature, _viewer_session_signature(expires_at))
+
+
+def _same_origin(conn: HTTPConnection) -> bool:
+    """Reject cross-origin browser handshakes that ride on the session cookie.
+
+    SameSite=Lax still sends the cookie on a same-site WebSocket handshake from
+    another port of the same host.  Only host:port is compared: behind a
+    TLS-terminating proxy the browser Origin is ``https`` while the upstream
+    scheme may be ``ws``.  Non-browser clients send no Origin and are allowed.
+    """
+
+    origin = conn.headers.get("origin")
+    if not origin:
+        return True
+    host = conn.headers.get("host", "")
+    return bool(host) and urlsplit(origin).netloc.lower() == host.lower()
+
+
+def _exchange_query_token(conn: HTTPConnection) -> RedirectResponse:
+    """Swap a ``?token=`` page load for a session cookie and drop the token from the URL."""
+
+    remaining = [(key, value) for key, value in conn.query_params.multi_items() if key != "token"]
+    location = conn.url.path + (f"?{urlencode(remaining)}" if remaining else "")
+    response = RedirectResponse(location, status_code=303, headers=_NO_STORE_HEADERS)
+    response.set_cookie(
+        VIEWER_SESSION_COOKIE,
+        issue_viewer_session(),
+        max_age=VIEWER_SESSION_TTL_SECONDS,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        # Uvicorn applies X-Forwarded-Proto from FORWARDED_ALLOW_IPS proxies,
+        # so a TLS-terminating trusted proxy yields https here.
+        secure=conn.url.scheme == "https",
     )
+    return response
+
+
+class MonitorAuthMiddleware:
+    """Default-deny ASGI gate for every Monitor route once a token is configured."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket") or not monitor_auth_enabled():
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path", "").startswith(_PUBLIC_PATH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        conn = HTTPConnection(scope)
+        token, source = extract_monitor_token(conn)
+        if token is not None:
+            authorized = verify_monitor_token(token)
+        else:
+            authorized = (
+                not conn.url.path.startswith(_PRODUCER_PATH_PREFIXES)
+                and verify_viewer_session(conn.cookies.get(VIEWER_SESSION_COOKIE))
+                and (scope["type"] == "http" or _same_origin(conn))
+            )
+
+        if not authorized:
+            if scope["type"] == "websocket":
+                # Closing before accept makes the server answer the handshake
+                # with 403, so connectors take their handshake-failure backoff.
+                await WebSocket(scope, receive, send).close(code=1008)
+            else:
+                response = JSONResponse(
+                    {"detail": "Monitor authentication required"},
+                    status_code=401,
+                    headers=_NO_STORE_HEADERS,
+                )
+                await response(scope, receive, send)
+            return
+
+        if (
+            source == "query"
+            and scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and not conn.url.path.startswith("/api/")
+        ):
+            await _exchange_query_token(conn)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
