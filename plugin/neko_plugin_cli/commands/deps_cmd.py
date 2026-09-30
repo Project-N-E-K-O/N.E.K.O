@@ -368,7 +368,6 @@ _PIP_KEY_KINDS = {
     "no-index": "no-index",
     "find-links": "find-links",
 }
-_PIP_INDEX_ENV = tuple(_PIP_ENV_KINDS)
 _PIP_INDEX_KEYS = set(_PIP_KEY_KINDS)
 # uv settings that keep each kind of pip source from falling through to
 # PyPI. Only UV_NO_INDEX turns off uv's default index; extra indexes and
@@ -378,7 +377,6 @@ _UV_COVERS = {
     "find-links": ("UV_FIND_LINKS", "UV_NO_INDEX"),
     "no-index": ("UV_NO_INDEX",),
 }
-_UV_INDEX_ENV = tuple(dict.fromkeys(name for names in _UV_COVERS.values() for name in names))
 
 
 def _pip_package_sources(python: str) -> tuple[list[str], set[str]]:

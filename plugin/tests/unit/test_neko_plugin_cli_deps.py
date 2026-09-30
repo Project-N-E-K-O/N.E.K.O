@@ -24,7 +24,8 @@ def _no_host_package_index_config(monkeypatch):
     """Keep the developer's own pip/uv index settings out of these tests."""
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    for name in (*deps_cmd._PIP_INDEX_ENV, *deps_cmd._UV_INDEX_ENV, "PIP_CONFIG_FILE"):
+    uv_names = {name for names in deps_cmd._UV_COVERS.values() for name in names}
+    for name in (*deps_cmd._PIP_ENV_KINDS, *uv_names, "PIP_CONFIG_FILE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda python: [])
 
