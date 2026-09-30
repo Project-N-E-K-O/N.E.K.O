@@ -2211,6 +2211,48 @@ def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_
     assert not final.exists()
 
 
+def test_recovery_keeps_a_parked_copy_whose_authorization_is_ambiguous(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    parked = store.root / f".{tool_id}.retained"
+    shutil.copytree(final, parked)
+    # 停放时只移进去一份授权；另一份同名模式的条目是同步客户端放进副本里的。
+    entries = {
+        parked / f".retained-{uuid.uuid4()}.unverified": b"{",
+        parked / f".retained-{uuid.uuid4()}.unverified": b"synced user data",
+    }
+    for path, content in entries.items():
+        path.write_bytes(content)
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    # 认不出哪份是原授权：两份都不挪，副本留在停放名下，只拦这一个 ID。
+    assert parked.is_dir()
+    assert not deleting.exists()
+    for path, content in entries.items():
+        assert path.read_bytes() == content
+    recovery_runs = []
+    real_recover = AvatarToolStore._recover_interrupted_mutations
+
+    def counting_recover(self):
+        recovery_runs.append(True)
+        return real_recover(self)
+
+    monkeypatch.setattr(AvatarToolStore, "_recover_interrupted_mutations", counting_recover)
+    for _ in range(3):
+        with pytest.raises(AvatarToolStoreError) as blocked:
+            restarted.delete_tool(tool_id)
+        assert blocked.value.code == "tool_recovery_pending"
+    assert recovery_runs == []
+    for path, content in entries.items():
+        assert path.read_bytes() == content
+
+
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

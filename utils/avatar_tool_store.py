@@ -664,10 +664,11 @@ class AvatarToolStore:
             deleting_kind, _, deleting_error = _probe_entry(deleting)
             if final_error is not None or deleting_error is not None:
                 raise _storage_total_unavailable() from (final_error or deleting_error)
-            resolvable = final_kind in ("absent", "dir") and (
+            # 停放名下不是目录时恢复不碰它，重跑也没有用。
+            resolvable = parked_kind == "dir" and final_kind in ("absent", "dir") and (
                 deleting_kind == "absent" or (deleting_kind == "dir" and final_kind == "absent")
             )
-            if final_kind == "dir" and deleting_kind == "dir":
+            if parked_kind == "dir" and final_kind == "dir" and deleting_kind == "dir":
                 # .deleting 也在：恢复会先处理它（没有授权或授权对得上就清掉），
                 # 只有授权对不上、正式路径又被占着时它才会一直留着。
                 marker = deleting.with_name(f"{deleting.name}.unverified")
@@ -676,6 +677,12 @@ class AvatarToolStore:
                     if probe_error is not None:
                         raise probe_error
                     resolvable = marker_kind == "absent" or self._delete_authorization_matches(deleting, marker)
+                except OSError as exc:
+                    raise _storage_total_unavailable() from exc
+            if resolvable and final_kind == "dir":
+                # 停放的副本里认不出唯一一份原授权时，恢复同样保留现场。
+                try:
+                    resolvable = len(self._parked_markers(self.root / f".{tool_id}.retained")) <= 1
                 except OSError as exc:
                     raise _storage_total_unavailable() from exc
             if resolvable:
@@ -941,6 +948,15 @@ class AvatarToolStore:
                 _fsync_directory(self.root)
                 return
         _RECOVERY_PENDING_ROOTS.add(self._root_key())
+
+    @staticmethod
+    def _parked_markers(parked: Path) -> list[Path]:
+        """Entries inside a parked copy that look like its moved-in authorization."""
+        return [
+            entry
+            for entry in parked.iterdir()
+            if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
+        ]
 
     def _marker_authorizes_copy(self, copy: Path, marker: Path) -> bool | None:
         """Whether ``marker`` would let recovery delete ``copy``; None when unknown."""
@@ -1323,11 +1339,13 @@ class AvatarToolStore:
                 continue
             # 正式目录还在、删除没有暂存就中断了：这次删除没有发生，副本连同原授权
             # 回到「保留副本」状态。
-            parked_markers = [
-                entry
-                for entry in candidate.iterdir()
-                if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
-            ]
+            parked_markers = self._parked_markers(candidate)
+            if len(parked_markers) > 1:
+                # 停放时只移进去一份授权；多出来的是同步客户端或手工操作放进来的，
+                # 认不出哪份是原授权，随便挪一份出去可能拿走副本里的东西。保留现场，
+                # 由 _require_no_pending_recovery 只拦这一个 ID。
+                logger.warning("Preserving retained avatar tool copy with ambiguous authorization %s", candidate)
+                continue
             self._unpark_retained_delete(
                 candidate,
                 parked_markers[0] if parked_markers else candidate / ".retained-missing.unverified",
