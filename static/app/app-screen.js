@@ -1945,6 +1945,9 @@
         if (screenSharingStartAttempt === attempt) {
             screenSharingStartAttempt = null;
         }
+        if (typeof attempt.resolveCancelled === 'function') {
+            attempt.resolveCancelled();
+        }
         return true;
     }
     mod.cancelPendingScreenSharingStart = cancelPendingScreenSharingStart;
@@ -1993,7 +1996,7 @@
 
     async function startScreenSharing() {
         if (isScreenSharingStartPending()) {
-            return screenSharingStartAttempt.promise;
+            return screenSharingStartAttempt.settled;
         }
         // Defensive cleanup for attempts created before immediate detaching was
         // introduced. Their own finally/cleanup still retains the attempt object.
@@ -2005,12 +2008,20 @@
             cancelled: false,
             initialStream: S.screenCaptureStream,
             acquiredStream: null,
-            promise: null
+            promise: null,
+            settled: null,
+            resolveCancelled: null
         };
+        // 取消（例如用户停止）后调用方立即继续，不再等可能永不返回的系统
+        // 授权请求；那次请求晚到的流仍由 discardCancelledScreenSharingStart 释放。
+        var cancelledSignal = new Promise(function (resolve) {
+            attempt.resolveCancelled = resolve;
+        });
         attempt.promise = startScreenSharingOnce(attempt);
+        attempt.settled = Promise.race([attempt.promise, cancelledSignal]);
         screenSharingStartAttempt = attempt;
         try {
-            return await attempt.promise;
+            return await attempt.settled;
         } finally {
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;

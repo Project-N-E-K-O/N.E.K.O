@@ -1662,6 +1662,79 @@ def test_second_pick_during_restart_still_shares_the_new_source(
 
 
 @pytest.mark.frontend
+def test_stopping_a_stuck_portal_restart_reenables_choose_again(page: Page) -> None:
+    # The restart after a portal pick hangs on a capture that never settles.
+    # Stopping cancels that start; "choose again" must come back instead of
+    # waiting for the abandoned request forever.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const captureCalls = [];
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia(constraints) {
+                        const id = constraints.video.mandatory.chromeMediaSourceId;
+                        captureCalls.push(id);
+                        if (id === 'window:5') return new Promise(() => {});
+                        const track = {
+                            readyState: 'live',
+                            stop() { this.readyState = 'ended'; },
+                            addEventListener() {},
+                        };
+                        return Promise.resolve({
+                            active: true,
+                            getVideoTracks() { return [track]; },
+                            getTracks() { return [track]; },
+                        });
+                    },
+                },
+            });
+            const popup = document.getElementById('live2d-popup-screen');
+            window.__metadataSources = [{ id: 'window:2', name: 'Editor', display_id: '' }];
+            await window.renderFloatingScreenSourceList(popup);
+            await window.startScreenSharing();
+            document.getElementById('stopButton').disabled = false;
+
+            window.__metadataSources = [{ id: 'window:5', name: 'Browser', display_id: '' }];
+            await window.renderFloatingScreenSourceList(popup);
+            const chooseAgain = popup.querySelector('[data-neko-screen-source-deferred-load]');
+            let deadline = Date.now() + 5000;
+            while (!captureCalls.includes('window:5') && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            const disabledWhileStuck = chooseAgain.disabled;
+            await window.stopScreenSharing();
+            deadline = Date.now() + 2000;
+            while (chooseAgain.disabled && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            return {
+                calls: captureCalls,
+                disabledWhileStuck,
+                disabledAfterStop: chooseAgain.disabled,
+            };
+        }"""
+    )
+
+    assert result == {
+        "calls": ["window:2", "window:5"],
+        "disabledWhileStuck": True,
+        "disabledAfterStop": False,
+    }
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("gesture", ["stop", "toggle"])
 def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
     page: Page, gesture: str,
