@@ -29,7 +29,9 @@ _SAMPLE_WIDTH_BYTES = 2
 _MAX_CAPTURE_SECONDS = 30
 _MAX_CAPTURE_BYTES = _SAMPLE_RATE_HZ * _SAMPLE_WIDTH_BYTES * _MAX_CAPTURE_SECONDS
 _ACK_TIMEOUT_SECONDS = 0.05
-_COMPLETE_REASONS = frozenset({"candidate_pause", "periodic_no_vad", "strict_retry"})
+_COMPLETE_REASONS = frozenset(
+    {"candidate_pause", "periodic_no_vad", "strict_retry", "semantic_timeout"}
+)
 
 _Identity: TypeAlias = tuple[int, int, int]
 

@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import json
+import logging
+import socket
 import time
 import uuid
 from collections import deque
@@ -28,6 +31,7 @@ from typing import Any, TypeAlias
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from ..connection_cleanup import connection_registry
 from ..delivery import (
     TransportDeliveryEvidence,
     begin_transport_write,
@@ -38,6 +42,8 @@ from ..delivery import (
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection
 
+logger = logging.getLogger(__name__)
+
 _QWEN_MODEL = "qwen3-asr-flash-realtime"
 _QWEN_CN_URL = f"wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={_QWEN_MODEL}"
 _QWEN_INTL_URL = (
@@ -46,9 +52,8 @@ _QWEN_INTL_URL = (
 _QWEN_FINISH_TIMEOUT_SECONDS = 3.0
 # Server VAD publishes speech_stopped/committed as the logical endpoint of a
 # turn, but the transcription completed event may be delayed or never arrive.
-# An item that outlives this deadline after its endpoint is completed with an
-# empty final so the upstream utterance lifecycle converges instead of waiting
-# unboundedly. Mirrors the OpenAI worker's stalled-item deadline.
+# An item that outlives this deadline after its endpoint fails explicitly so
+# the runtime can settle its owned turn and recover without inventing a final.
 _QWEN_STALLED_ITEM_TIMEOUT_SECONDS = 30.0
 _QWEN_SUPPORTED_LANGUAGES = frozenset(
     {
@@ -128,6 +133,29 @@ def _qwen_is_auth_rejection(exc: BaseException) -> bool:
     return is_auth_rejection(exc)
 
 
+def _qwen_setup_error_code(exc: BaseException) -> str:
+    """Only typed transient setup failures authorize another connection."""
+    if _qwen_is_auth_rejection(exc):
+        return "ASR_CREDENTIALS_REJECTED"
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    if status is not None:
+        if isinstance(status, int) and (status == 429 or 500 <= status <= 599):
+            return "ASR_QWEN_CONNECTION_FAILED"
+        return "ASR_QWEN_SETUP_FAILED"
+    if isinstance(exc, (ConnectionError, TimeoutError, socket.gaierror)):
+        return "ASR_QWEN_CONNECTION_FAILED"
+    if isinstance(exc, OSError) and exc.errno in {
+        errno.ENETUNREACH, errno.ENETDOWN, errno.ENETRESET,
+        errno.EHOSTUNREACH, errno.ECONNREFUSED, errno.ECONNRESET,
+        errno.ECONNABORTED, errno.ETIMEDOUT, errno.EPIPE,
+    }:
+        return "ASR_QWEN_CONNECTION_FAILED"
+    return "ASR_QWEN_SETUP_FAILED"
+
+
 def _qwen_session_update(
     config: AsrSessionConfig,
     language: str | None,
@@ -190,6 +218,11 @@ def _qwen_arm_stalled_item_deadline(
     if item_id and item_id in state.item_keys and item_id not in state.item_deadlines:
         state.item_deadlines[item_id] = time.monotonic()
         state.stalled_deadline_armed.set()
+        key = state.item_keys[item_id]
+        logger.info(
+            "ASR provider wait stage=awaiting_final generation=%s buffer_epoch=%s utterance_id=%s endpoint_received=true",
+            *key,
+        )
 
 
 async def _qwen_expire_stalled_items(
@@ -203,20 +236,20 @@ async def _qwen_expire_stalled_items(
         if now - armed_at >= _QWEN_STALLED_ITEM_TIMEOUT_SECONDS
     ]
     for item_id in expired_ids:
-        del state.item_deadlines[item_id]
+        armed_at = state.item_deadlines.pop(item_id)
         # Popping the key tombstones the item: a late completed event finds
         # no mapping and is dropped instead of resurrecting the closed turn.
         key = state.item_keys.pop(item_id, None)
         if key is None:
             continue
-        await response_queue.put(
-            _AsrWorkerEvent(
-                kind="final",
-                generation=key[0],
-                buffer_epoch=key[1],
-                utterance_id=key[2],
-                text="",
-            )
+        logger.warning(
+            "ASR provider wait stage=awaiting_final generation=%s buffer_epoch=%s utterance_id=%s elapsed_ms=%s failure_code=ASR_PROVIDER_FINAL_TIMEOUT",
+            *key, round((now - armed_at) * 1000),
+        )
+        await _emit_qwen_error_once(
+            response_queue, state, "ASR_PROVIDER_FINAL_TIMEOUT",
+            "Qwen ASR final did not arrive after the provider endpoint",
+            item_key=key,
         )
 
 
@@ -312,13 +345,12 @@ async def _qwen_sender(
 
                 if request.kind == "clear":
                     state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await connection_registry(request_queue).register(
+                        ws, worker_identity="qwen"
+                    ).retire()
                     return "clear", request
 
-                if request.kind == "shutdown":
+                if request.kind in ("shutdown", "finish"):
                     state.shutdown_request = request
                     await ws.send(
                         json.dumps(
@@ -334,6 +366,11 @@ async def _qwen_sender(
                             timeout=_QWEN_FINISH_TIMEOUT_SECONDS,
                         )
                     except asyncio.TimeoutError:
+                        if request.kind == "finish":
+                            await _emit_qwen_error_once(
+                                response_queue, state, "ASR_FINISH_TIMEOUT",
+                                "Qwen ASR did not acknowledge explicit finish",
+                            )
                         if not state.closed_sent.is_set():
                             state.closed_sent.set()
                             await response_queue.put(
@@ -345,10 +382,9 @@ async def _qwen_sender(
                                 )
                             )
                     state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await connection_registry(request_queue).register(
+                        ws, worker_identity="qwen"
+                    ).retire()
                     return "shutdown", request
 
                 await _emit_qwen_error_once(
@@ -476,6 +512,10 @@ async def _qwen_receiver(
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
                 state.item_keys[item_id] = key
+                logger.info(
+                    "ASR provider wait stage=awaiting_endpoint generation=%s buffer_epoch=%s utterance_id=%s endpoint_received=false",
+                    *key,
+                )
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="utterance_started",
@@ -577,7 +617,7 @@ async def _qwen_receiver(
                     request = state.shutdown_request
                     await response_queue.put(
                         _AsrWorkerEvent(
-                            kind="closed",
+                            kind=("finished" if request and request.kind == "finish" else "closed"),
                             generation=(
                                 request.generation if request else state.generation
                             ),
@@ -597,7 +637,7 @@ async def _qwen_receiver(
             await _emit_qwen_error_once(
                 response_queue,
                 state,
-                "ASR_QWEN_CONNECTION_CLOSED",
+                "ASR_QWEN_READ_DISCONNECTED",
                 "Qwen ASR connection closed unexpectedly",
             )
             return "error"
@@ -609,7 +649,7 @@ async def _qwen_receiver(
             await _emit_qwen_error_once(
                 response_queue,
                 state,
-                "ASR_QWEN_CONNECTION_CLOSED",
+                "ASR_QWEN_READ_DISCONNECTED",
                 "Qwen ASR connection closed unexpectedly",
             )
             return "error"
@@ -660,6 +700,8 @@ async def qwen_asr_worker(
                 emit_ready=first_connection,
             )
             active_state = state
+            retirement = None
+            registry = connection_registry(request_queue)
             ws: Any | None = None
             sender_task: asyncio.Task[tuple[str, _AsrWorkerRequest | None]] | None = (
                 None
@@ -674,10 +716,12 @@ async def qwen_asr_worker(
                     additional_headers={"Authorization": f"Bearer {api_key}"},
                     close_timeout=0.5,
                 )
+                retirement = registry.register(ws, worker_identity="qwen")
                 receiver_task = asyncio.create_task(
                     _qwen_receiver(ws, response_queue, config, state),
                     name="qwen-asr-receiver",
                 )
+                registry.register_tasks(receiver_task)
                 await ws.send(json.dumps(session_update))
                 sender_task = asyncio.create_task(
                     _qwen_sender(
@@ -695,6 +739,7 @@ async def qwen_asr_worker(
                     _qwen_watch_stalled_items(response_queue, state),
                     name="qwen-asr-stalled-watch",
                 )
+                registry.register_tasks(sender_task, receiver_task, stalled_watch_task)
                 done, pending = await asyncio.wait(
                     {sender_task, receiver_task},
                     return_when=asyncio.FIRST_COMPLETED,
@@ -718,45 +763,34 @@ async def qwen_asr_worker(
                         outcome = "error"
                     elif receiver_outcome == "closed" and outcome != "clear":
                         outcome = "shutdown"
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                code = _qwen_setup_error_code(exc)
                 await _emit_qwen_error_once(
                     response_queue,
                     state,
-                    (
-                        "ASR_CREDENTIALS_REJECTED"
-                        if _qwen_is_auth_rejection(exc)
-                        else "ASR_QWEN_CONNECTION_FAILED"
-                    ),
+                    code,
                     (
                         "Qwen ASR credentials were rejected"
-                        if _qwen_is_auth_rejection(exc)
+                        if code == "ASR_CREDENTIALS_REJECTED"
                         else "Qwen ASR connection or session setup failed"
                     ),
                 )
                 outcome = "error"
             finally:
+                if retirement is not None:
+                    state.intentional_close.set()
+                    retirement.start()
+                registry.register_tasks(sender_task, receiver_task, stalled_watch_task)
                 for task in (sender_task, receiver_task, stalled_watch_task):
                     if task is not None and not task.done():
                         task.cancel()
-                pending_tasks = [
-                    task
-                    for task in (sender_task, receiver_task, stalled_watch_task)
-                    if task is not None and not task.done()
-                ]
-                if pending_tasks:
-                    await asyncio.gather(*pending_tasks, return_exceptions=True)
-                if ws is not None:
-                    state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                try:
+                    if retirement is not None:
+                        await retirement.retire()
+                finally:
+                    await registry.join_tasks()
 
             closed_sent = state.closed_sent.is_set()
             if outcome == "clear" and outcome_request is not None:

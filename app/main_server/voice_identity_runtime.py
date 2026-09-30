@@ -111,6 +111,16 @@ class OwnerVoiceRuntimeRegistry:
         self._attach_retry_task: asyncio.Task[None] | None = None
         self._detach_pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
         self._detach_retry_task: asyncio.Task[None] | None = None
+        # ACTIVE-session interception is deliberately kept separate from the
+        # Owner activation authority above.  The app layer only installs the
+        # provider-neutral Core bridge; model construction remains an injected
+        # factory owned by the feature implementation.
+        self._interception_factory = None
+        self._interception_required = False
+        self._interception_managers: weakref.WeakSet = weakref.WeakSet()
+        self._interception_manager_factories: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._interception_pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._interception_retry_task: asyncio.Task[None] | None = None
         self._activation: _OwnerActivation | None = None
         self._required = False
         self._authority_request_revision = 0
@@ -127,6 +137,10 @@ class OwnerVoiceRuntimeRegistry:
             if self._closed:
                 raise RuntimeError("Owner voice runtime registry is closed")
             if manager in self._managers:
+                if not await self._sync_manager_interception_bounded(manager):
+                    if self._interception_required or self._interception_factory is not None:
+                        self._record_interception_pending(manager)
+                    return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                 if self._required_intent_revision is not None:
                     generation = self._required_intent_generation or str(uuid.uuid4())
                     self._require_manager_activation(
@@ -185,6 +199,13 @@ class OwnerVoiceRuntimeRegistry:
                 self._ensure_attach_watchdog()
                 return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             self._managers.add(manager)
+            if not await self._sync_manager_interception_bounded(manager):
+                # A missing model/factory is intentionally reported as
+                # degraded after installing the required fail-closed bit.  A
+                # timeout remains pending so a later watchdog can retry it.
+                if self._interception_factory is not None:
+                    self._record_interception_pending(manager)
+                return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             required_generation: str | None = None
             policy_token: int | None = None
             if self._activation_is_required():
@@ -314,6 +335,26 @@ class OwnerVoiceRuntimeRegistry:
 
     async def unregister_manager(self, manager) -> None:
         async with self._lock:
+            interception_was_installed = (
+                manager in self._interception_managers
+                or manager in self._interception_pending
+            )
+            if interception_was_installed:
+                detached = await self._set_manager_interception_bounded(
+                    manager,
+                    None,
+                    interception_required=False,
+                )
+                if detached:
+                    self._interception_managers.discard(manager)
+                    self._interception_manager_factories.pop(manager, None)
+                    self._interception_pending.pop(manager, None)
+                else:
+                    # Keep the identity keyed pending operation alive until
+                    # the bounded retry window expires.  Removing a manager
+                    # from the registry must not strand its Core bridge.
+                    self._interception_pending[manager] = None
+                    self._ensure_interception_watchdog()
             self._managers.discard(manager)
             self._attach_pending.discard(manager)
             # Legacy Core managers predate session activation and have no
@@ -447,6 +488,10 @@ class OwnerVoiceRuntimeRegistry:
         async with self._activation_request_lock(request_revision):
             if self._closed:
                 return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+            # Fence the previous profile/session while holding the registry
+            # authority lock.  The synchronous Core revoke closes the bridge
+            # before this activation can publish a new profile.
+            self._revoke_interception_authority()
             try:
                 next_activation = (
                     None
@@ -665,6 +710,13 @@ class OwnerVoiceRuntimeRegistry:
 
     @staticmethod
     def _manager_activation_result(manager) -> VoiceIdentityActivationResult:
+        # Session startup publishes ``is_active`` before the microphone route
+        # has finished resolving.  During that bounded window Core keeps the
+        # route fail-closed as ``blocked`` while ASR is connecting.  Treat that
+        # state as a runtime transition so the control plane can retry and the
+        # UI does not report a permanently unsupported route.
+        if OwnerVoiceRuntimeRegistry._manager_route_is_starting(manager):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         if OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager):
             return VoiceIdentityActivationResult.READY
         if bool(getattr(manager, "_voice_session_activation_degraded", False)):
@@ -684,6 +736,24 @@ class OwnerVoiceRuntimeRegistry:
         return VoiceIdentityActivationResult.READY
 
     @staticmethod
+    def _manager_route_is_starting(manager) -> bool:
+        """Return whether a blocked active route is still resolving.
+
+        ``LLMSessionManager`` exposes ``is_starting`` as the public state.  The
+        counter fallback keeps this gate correct for managers that are between
+        lifecycle phases and have not yet published the property transition.
+        A starting route remains fail-closed; this helper only changes the
+        reported reason from unsupported to retryable runtime degradation.
+        """
+
+        if getattr(manager, "_asr_route_mode", None) != "blocked":
+            return False
+        if bool(getattr(manager, "is_starting", False)):
+            return True
+        starting_count = getattr(manager, "_starting_session_count", 0)
+        return type(starting_count) is int and starting_count > 0
+
+    @staticmethod
     async def _set_manager_activation_factory(
         manager,
         factory,
@@ -701,6 +771,197 @@ class OwnerVoiceRuntimeRegistry:
             activation_required=activation_required,
             expected_policy_revision=expected_policy_revision,
         )
+
+    @staticmethod
+    def _manager_supports_interception(manager) -> bool:
+        return callable(
+            getattr(manager, "set_active_session_interception_factory", None)
+        )
+
+    @staticmethod
+    async def _set_manager_interception_factory(
+        manager,
+        factory,
+        *,
+        interception_required: bool,
+    ) -> bool:
+        setter = getattr(manager, "set_active_session_interception_factory", None)
+        if not callable(setter):
+            return False
+        result = await setter(
+            factory,
+            interception_required=interception_required,
+        )
+        return bool(result)
+
+    async def _set_manager_interception_bounded(
+        self,
+        manager,
+        factory,
+        *,
+        interception_required: bool,
+    ) -> bool:
+        if not self._manager_supports_interception(manager):
+            return False
+        try:
+            return await asyncio.wait_for(
+                self._set_manager_interception_factory(
+                    manager,
+                    factory,
+                    interception_required=interception_required,
+                ),
+                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            if self._current_task_is_cancelling():
+                raise
+            return False
+        except Exception:
+            return False
+
+    def _interception_enabled(self) -> bool:
+        return self._interception_required or self._interception_factory is not None
+
+    async def _sync_manager_interception_bounded(self, manager) -> bool:
+        """Publish the current app interception contract to one manager.
+
+        ``factory=None, interception_required=True`` is a valid fail-closed
+        state while model/calibration preparation is incomplete.  It is
+        reported as degraded to callers, but does not create a retry loop: a
+        later explicit factory registration is the readiness transition.
+        """
+
+        if not self._interception_enabled():
+            if manager not in self._interception_managers:
+                return True
+            detached = await self._set_manager_interception_bounded(
+                manager,
+                None,
+                interception_required=False,
+            )
+            if detached:
+                self._interception_managers.discard(manager)
+                self._interception_manager_factories.pop(manager, None)
+            return detached
+        factory = self._interception_factory
+        if (
+            manager in self._interception_managers
+            and self._interception_manager_factories.get(manager) is factory
+        ):
+            return bool(factory is not None)
+        updated = await self._set_manager_interception_bounded(
+            manager,
+            factory,
+            interception_required=self._interception_required,
+        )
+        if updated:
+            self._interception_managers.add(manager)
+            self._interception_manager_factories[manager] = factory
+            self._interception_pending.pop(manager, None)
+        return bool(updated and factory is not None)
+
+    def _record_interception_pending(self, manager) -> None:
+        self._interception_pending[manager] = self._interception_factory
+        self._ensure_interception_watchdog()
+
+    @staticmethod
+    def _require_manager_interception(manager) -> None:
+        require = getattr(manager, "require_active_session_interception", None)
+        if callable(require):
+            try:
+                require()
+            except Exception:
+                logger.warning(
+                    "Owner voice interception authority revoke failed",
+                    exc_info=True,
+                )
+
+    def _revoke_interception_authority(self) -> None:
+        """Synchronously fence old profile/session audio before activation changes."""
+
+        previous = self._interception_factory
+        was_enabled = self._interception_enabled()
+        if not was_enabled:
+            return
+        self._interception_factory = None
+        self._interception_required = True
+        managers = tuple(self._managers)
+        self._interception_managers.update(managers)
+        for manager in managers:
+            self._require_manager_interception(manager)
+        if previous is not None:
+            close = getattr(previous, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.warning(
+                        "Owner voice interception factory close failed",
+                        exc_info=True,
+                    )
+
+    async def set_voice_interception_factory(
+        self,
+        factory,
+        *,
+        interception_required: bool = True,
+    ) -> bool:
+        """Install the app-owned ACTIVE-session interception factory.
+
+        The hook is intentionally provider-neutral.  Passing ``None`` with
+        ``interception_required=True`` publishes fail-closed protection while
+        a model/calibration package is unavailable; passing ``None`` with
+        ``False`` restores the legacy raw outlet.  A manager setter timeout is
+        retained as pending and makes this operation return ``False``.
+        """
+
+        if type(interception_required) is not bool:
+            raise TypeError("interception_required must be bool")
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("Owner voice runtime registry is closed")
+            previous = self._interception_factory
+            previous_enabled = self._interception_required or previous is not None
+            managers = tuple(self._managers)
+            if previous_enabled or interception_required:
+                for manager in managers:
+                    self._require_manager_interception(manager)
+            if previous_enabled:
+                # A failed replacement may already have revoked the Core
+                # bridge before returning False.  Keep every prior manager in
+                # the retirement set so disabling cannot strand a fail-closed
+                # policy bit.
+                self._interception_managers.update(managers)
+            self._interception_factory = factory
+            self._interception_required = interception_required
+            self._interception_pending.clear()
+            all_updated = True
+            for manager in managers:
+                updated = await self._sync_manager_interception_bounded(manager)
+                if not updated:
+                    all_updated = False
+                    # Known unavailable model state is fail-closed but not a
+                    # transport timeout.  Keep it out of the retry set until
+                    # the caller supplies a factory.
+                    if previous_enabled or interception_required or factory is not None:
+                        self._record_interception_pending(manager)
+            if self._interception_pending:
+                self._ensure_interception_watchdog()
+            if previous is not None and previous is not factory:
+                close = getattr(previous, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.warning(
+                            "Owner voice interception factory close failed",
+                            exc_info=True,
+                        )
+            # A required-but-unavailable factory is intentionally not reported
+            # ready even though Core accepted the fail-closed policy bit.
+            return all_updated and not (
+                interception_required and factory is None
+            )
 
     @staticmethod
     def _manager_supports_session_activation(manager) -> bool:
@@ -1214,6 +1475,81 @@ class OwnerVoiceRuntimeRegistry:
             if self._detach_retry_task is current:
                 self._detach_retry_task = None
 
+    def _ensure_interception_watchdog(self) -> None:
+        task = self._interception_retry_task
+        if task is not None and not task.done():
+            return
+        self._interception_retry_task = asyncio.create_task(
+            self._run_interception_watchdog(),
+            name="voice-identity-interception-watchdog",
+        )
+
+    async def _run_interception_watchdog(self) -> None:
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._restore_retry_timeout_seconds
+        try:
+            while loop.time() < deadline:
+                await asyncio.sleep(self._restore_retry_interval_seconds)
+                async with self._lock:
+                    if self._closed:
+                        return
+                    targets = tuple(self._interception_pending)
+                    if not targets:
+                        return
+                    for manager in targets:
+                        call_timeout = min(
+                            _WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            deadline - loop.time(),
+                        )
+                        if call_timeout <= 0:
+                            break
+                        # Unregister/close asks for a detach even after the
+                        # manager leaves _managers; active targets use the
+                        # current app factory and required policy.
+                        if manager in self._managers:
+                            factory = self._interception_factory
+                            required = self._interception_required
+                        else:
+                            factory = None
+                            required = False
+                        try:
+                            updated = await asyncio.wait_for(
+                                self._set_manager_interception_factory(
+                                    manager,
+                                    factory,
+                                    interception_required=required,
+                                ),
+                                timeout=call_timeout,
+                            )
+                        except asyncio.CancelledError:
+                            if current is not None and current.cancelling():
+                                raise
+                            continue
+                        except Exception:
+                            continue
+                        if updated:
+                            self._interception_pending.pop(manager, None)
+                            if required:
+                                self._interception_managers.add(manager)
+                                self._interception_manager_factories[manager] = factory
+                            else:
+                                self._interception_managers.discard(manager)
+                                self._interception_manager_factories.pop(manager, None)
+            async with self._lock:
+                pending_count = 0 if self._closed else len(self._interception_pending)
+            if pending_count:
+                logger.warning(
+                    "Owner voice interception watchdog exhausted with %d "
+                    "manager(s) still pending",
+                    pending_count,
+                )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._interception_retry_task is current:
+                self._interception_retry_task = None
+
     async def close(self) -> None:
         async with self._lock:
             if self._closed:
@@ -1222,16 +1558,22 @@ class OwnerVoiceRuntimeRegistry:
             retry_task = self._restore_retry_task
             attach_task = self._attach_retry_task
             detach_task = self._detach_retry_task
+            interception_task = self._interception_retry_task
         tasks = tuple(
             task
-            for task in (retry_task, attach_task, detach_task)
+            for task in (retry_task, attach_task, detach_task, interception_task)
             if task is not None
         )
         for task in tasks:
             task.cancel()
         cleanup_cancellations: list[asyncio.CancelledError] = []
         cleanup_task = asyncio.create_task(
-            self._finish_close_cleanup(retry_task, attach_task, detach_task),
+            self._finish_close_cleanup(
+                retry_task,
+                attach_task,
+                detach_task,
+                interception_task,
+            ),
             name="voice-identity-registry-close-cleanup",
         )
         while not cleanup_task.done():
@@ -1249,10 +1591,11 @@ class OwnerVoiceRuntimeRegistry:
         retry_task: asyncio.Task[None] | None,
         attach_task: asyncio.Task[None] | None,
         detach_task: asyncio.Task[None] | None,
+        interception_task: asyncio.Task[None] | None,
     ) -> None:
         tasks = tuple(
             task
-            for task in (retry_task, attach_task, detach_task)
+            for task in (retry_task, attach_task, detach_task, interception_task)
             if task is not None
         )
         if tasks:
@@ -1263,11 +1606,15 @@ class OwnerVoiceRuntimeRegistry:
             self._attach_retry_task = None
         if self._detach_retry_task is detach_task:
             self._detach_retry_task = None
+        if self._interception_retry_task is interception_task:
+            self._interception_retry_task = None
         async with self._lock:
             managers = tuple(
                 set(self._managers)
                 .union(self._restore_pending)
                 .union(self._detach_pending)
+                .union(self._interception_managers)
+                .union(self._interception_pending)
             )
             self._suppressed = False
             self._restore_pending.clear()
@@ -1275,40 +1622,75 @@ class OwnerVoiceRuntimeRegistry:
             self._detach_pending.clear()
             try:
                 for manager in managers:
-                    if not self._manager_supports_session_activation(manager):
-                        continue
-                    try:
-                        await asyncio.wait_for(
-                            self._restore_manager(
-                                manager,
-                                "voice_identity_enrollment",
-                            ),
-                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                    if self._manager_supports_session_activation(manager):
+                        try:
+                            await asyncio.wait_for(
+                                self._restore_manager(
+                                    manager,
+                                    "voice_identity_enrollment",
+                                ),
+                                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.CancelledError:
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                raise
+                        except Exception:
+                            pass
+                        try:
+                            await asyncio.wait_for(
+                                self._set_manager_activation_factory(
+                                    manager,
+                                    None,
+                                    activation_generation=str(uuid.uuid4()),
+                                    activation_required=False,
+                                ),
+                                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.CancelledError:
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                raise
+                        except Exception:
+                            pass
+                    if (
+                        self._manager_supports_interception(manager)
+                        and (
+                            manager in self._interception_managers
+                            or manager in self._interception_pending
+                            or self._interception_enabled()
                         )
-                    except asyncio.CancelledError:
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling():
-                            raise
-                    except Exception:
-                        pass
-                    try:
-                        await asyncio.wait_for(
-                            self._set_manager_activation_factory(
-                                manager,
-                                None,
-                                activation_generation=str(uuid.uuid4()),
-                                activation_required=False,
-                            ),
-                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.CancelledError:
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling():
-                            raise
-                    except Exception:
-                        pass
+                    ):
+                        try:
+                            await asyncio.wait_for(
+                                self._set_manager_interception_factory(
+                                    manager,
+                                    None,
+                                    interception_required=False,
+                                ),
+                                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.CancelledError:
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                raise
+                        except Exception:
+                            pass
             finally:
                 self._managers.clear()
+                self._interception_managers.clear()
+                self._interception_manager_factories.clear()
+                self._interception_pending.clear()
+                factory = self._interception_factory
+                self._interception_factory = None
+                self._interception_required = False
+                if factory is not None:
+                    close = getattr(factory, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            pass
                 activation = self._activation
                 self._activation = None
                 if activation is not None:
@@ -1518,11 +1900,35 @@ async def unregister_voice_identity_manager(manager) -> None:
         await registry.unregister_manager(manager)
 
 
+async def set_voice_interception_factory(
+    factory,
+    *,
+    interception_required: bool = True,
+) -> bool:
+    """Publish the provider-neutral ACTIVE-session interception hook.
+
+    The model-backed factory is supplied by the feature layer.  This module
+    only applies it to registered managers and keeps missing factories
+    fail-closed when ``interception_required`` is true.
+    """
+
+    registry = _runtime_registry
+    if registry is None:
+        # App startup may prepare the hook before voice identity initialization.
+        # Keep that phase explicit instead of silently opening a raw outlet.
+        return not interception_required and factory is None
+    return await registry.set_voice_interception_factory(
+        factory,
+        interception_required=interception_required,
+    )
+
+
 __all__ = [
     "OwnerVoiceRuntimeRegistry",
     "close_voice_identity_runtime",
     "initialize_voice_identity_runtime",
     "install_voice_identity_runtime",
     "register_voice_identity_manager",
+    "set_voice_interception_factory",
     "unregister_voice_identity_manager",
 ]

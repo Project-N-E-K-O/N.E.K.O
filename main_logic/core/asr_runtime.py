@@ -7,6 +7,8 @@ delivery concerns. Provider sessions and endpointing remain encapsulated by
 
 from __future__ import annotations
 
+from main_logic.voice_turn.transcript_admission import assess_transcript, TranscriptDisposition
+
 import asyncio
 import bisect
 import json
@@ -15,7 +17,7 @@ import os
 import struct
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, ClassVar, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Collection, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -91,6 +93,11 @@ from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
     VoiceSessionActivationRouteContext,
     VoiceSessionActivationRuntime,
+)
+from main_logic.voice_input.interception import (
+    ActiveSessionInterceptionBridge,
+    ActiveSessionInterceptionFactory,
+    InterceptionDecision,
 )
 
 
@@ -362,6 +369,9 @@ class AsrRuntimeMixin:
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
         self._speaker_shadow_factory: SpeakerShadowFactory | None = None
+        self._active_session_interception_bridge: ActiveSessionInterceptionBridge | None = None
+        self._active_session_interception_required = False
+        self._active_session_interception_revision = 0
         self._voice_session_activation_factory: VoiceSessionActivationFactory | None = None
         # ``factory is None`` is intentionally not the policy bit.  It can mean
         # either that the user disabled Owner activation or that protection was
@@ -544,6 +554,14 @@ class AsrRuntimeMixin:
             self._independent_asr_handshake_override = None
         if not hasattr(self, "_speaker_shadow_factory"):
             self._speaker_shadow_factory = None
+        if not hasattr(self, "_active_session_interception_bridge"):
+            self._active_session_interception_bridge = None
+        if not hasattr(self, "_active_session_interception_required"):
+            self._active_session_interception_required = False
+        if not hasattr(self, "_active_session_interception_revision"):
+            self._active_session_interception_revision = 0
+        if not hasattr(self, "_active_session_interception_retirement"):
+            self._active_session_interception_retirement = None
         if not hasattr(self, "_voice_session_activation_required"):
             self._voice_session_activation_required = False
         if not hasattr(self, "_voice_session_activation_policy_revision"):
@@ -1238,6 +1256,8 @@ class AsrRuntimeMixin:
     ) -> None:
         if mode not in {"native", "independent", "blocked"}:
             raise ValueError("MICROPHONE_ROUTE_INVALID")
+        if mode != getattr(self, "_asr_route_mode", "blocked"):
+            self._invalidate_active_session_interception_now("route_changed")
         leaving_blocked = self._asr_route_mode == "blocked" and mode != "blocked"
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
@@ -1267,6 +1287,22 @@ class AsrRuntimeMixin:
             # provider vision. Native mode clears the session fence, so re-arm
             # it after restoring the remembered policy on a replacement session.
             self._block_realtime_raw_visual_delivery()
+
+    def _invalidate_active_session_interception_now(self, reason: str) -> None:
+        """Fence ACTIVE PCM synchronously before async runtime retirement."""
+        self._ensure_asr_runtime_state()
+        bridge = self._active_session_interception_bridge
+        self._active_session_interception_bridge = None
+        self._active_session_interception_revision += 1
+        if bridge is None:
+            return
+        self._active_session_interception_required = True
+        retirement = AsrRuntimeMixin._schedule_core_asr_cleanup(
+            self,
+            bridge.close(reason),
+            name="active-session-interception-retire",
+        )
+        self._active_session_interception_retirement = retirement
 
     def _block_realtime_raw_visual_delivery(self) -> None:
         session = getattr(self, "session", None)
@@ -1560,6 +1596,126 @@ class AsrRuntimeMixin:
                 pass
         return False
 
+    async def set_active_session_interception_factory(
+        self,
+        factory: ActiveSessionInterceptionFactory | None,
+        *,
+        interception_required: bool = True,
+    ) -> bool:
+        """Install the fail-closed ACTIVE-session PCM interception bridge.
+
+        The factory is deliberately separate from Owner activation and from
+        endpointing's advisory speaker shadow.  A configured bridge is the
+        only path that may release ACTIVE PCM to either ASR route.  Replacing
+        it retires the previous session runtime before the new factory can
+        observe audio.
+        """
+
+        if type(interception_required) is not bool:
+            raise TypeError("interception_required must be bool")
+        self._ensure_asr_runtime_state()
+        self._active_session_interception_revision += 1
+        revision = self._active_session_interception_revision
+        previous = self._active_session_interception_bridge
+        self._active_session_interception_bridge = None
+        # Keep the policy bit even when no factory is available.  A caller can
+        # therefore request protection before model preparation completes; in
+        # that interval the common outlet remains fail-closed.
+        self._active_session_interception_required = interception_required
+        retirement_owner = getattr(
+            self, "_active_session_interception_retirement", None
+        )
+        if retirement_owner is not None and not retirement_owner.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(retirement_owner), timeout=1.0)
+            except asyncio.TimeoutError:
+                self._active_session_interception_required = True
+                return False
+            except Exception:
+                self._active_session_interception_required = True
+                return False
+            if revision != self._active_session_interception_revision:
+                return False
+        if previous is not None:
+            retirement = AsrRuntimeMixin._schedule_core_asr_cleanup(
+                self,
+                previous.close("factory_replaced"),
+                name="active-session-interception-retire",
+            )
+            self._active_session_interception_retirement = retirement
+            done, _ = await asyncio.wait({retirement}, timeout=1.0)
+            if not done:
+                self._active_session_interception_required = True
+                return False
+            if retirement.exception() is not None:
+                self._active_session_interception_required = True
+                return False
+            if revision != self._active_session_interception_revision:
+                return False
+        if factory is None:
+            return True
+        try:
+            self._active_session_interception_bridge = ActiveSessionInterceptionBridge(
+                factory,
+                required=interception_required,
+            )
+        except Exception:
+            self._active_session_interception_required = True
+            return False
+        return True
+
+    def require_active_session_interception(self) -> int:
+        """Synchronously revoke the current interception authority.
+
+        App lifecycle code calls this before replacing profile/model
+        authority.  Clearing the bridge and setting the policy bit happen
+        before the next audio frame can be accepted; retirement of the old
+        session runtime is scheduled separately and therefore cannot reopen
+        the raw outlet while an async close is pending.
+        """
+
+        self._ensure_asr_runtime_state()
+        self._active_session_interception_revision += 1
+        self._active_session_interception_required = True
+        previous = self._active_session_interception_bridge
+        self._active_session_interception_bridge = None
+        if previous is not None:
+            AsrRuntimeMixin._schedule_core_asr_cleanup(
+                self,
+                previous.retire("authority_revoked"),
+                name="active-session-interception-revoke",
+            )
+        return self._active_session_interception_revision
+
+    async def _intercept_active_session_frame(
+        self,
+        frame: AudioFrame,
+        generation: ActivationGeneration,
+        context: VoiceSessionActivationRouteContext,
+    ) -> bytes | None:
+        """Return only model-approved PCM for the common ASR outlet.
+
+        ``None`` means pending/drop/unavailable/stale.  In particular, this
+        helper never returns ``frame.pcm`` as a fallback when the bridge or
+        TSE-backed runtime is unavailable.
+        """
+
+        bridge = self._active_session_interception_bridge
+        if bridge is None:
+            if self._active_session_interception_required:
+                return None
+            return frame.pcm
+        result = await bridge.process(
+            frame.pcm,
+            sample_rate_hz=frame.sample_rate,
+            generation=generation,
+            ingress_token=context.ingress_token,
+            captured_at=context.captured_at,
+        )
+        if result.decision is not InterceptionDecision.KEEP:
+            return None
+        return result.pcm16
+
     def require_voice_session_activation(
         self,
         *,
@@ -1588,6 +1744,9 @@ class AsrRuntimeMixin:
         self._voice_session_activation_sequence = 0
         self._voice_session_activation_sample_cursor = 0
         self._voice_session_activation_status = None
+        self._invalidate_active_session_interception_now(
+            "voice_session_activation_authority_revoke"
+        )
         self._invalidate_voice_pcm_sync("voice_session_activation_authority_revoke")
         if previous_factory is not None:
             try:
@@ -2930,7 +3089,16 @@ class AsrRuntimeMixin:
         await self._asr_runtime.abort(reason)
         if still_current is not None and not still_current():
             return
-        self._invalidate_voice_pcm_sync(reason)
+        keep_turns: Collection[VoiceTurnToken] = ()
+        if reason == "ingress_backpressure":
+            # Backpressure retires only the interrupted turn; finals the
+            # runtime already accepted still owe Core their pinned route.
+            pending_turns = getattr(
+                self._asr_runtime, "pending_transcript_turn_tokens", None,
+            )
+            if callable(pending_turns):
+                keep_turns = pending_turns()
+        self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
@@ -4037,7 +4205,7 @@ class AsrRuntimeMixin:
                     self._asr_route_mode,
                     self._voice_session_activation_factory is not None,
                     self._voice_session_activation_required,
-                    bool(getattr(self, "_independent_asr_enabled", False)),
+                    self._asr_route_mode == "independent",
                     bool(getattr(self, "session_closed_by_server", False)),
                 )
         if self._voice_session_activation_degraded:
@@ -4271,7 +4439,31 @@ class AsrRuntimeMixin:
         ticket = self._voice_activation_handoff
         if ticket is not None and ticket.settled:
             return OutputCommit.NOT_SENT
+        interception_bridge = self._active_session_interception_bridge
+        output_identity = self._capture_core_asr_operation_identity()
         delivery_revision = self._voice_activation_delivery_revision
+        filtered_pcm = await self._intercept_active_session_frame(
+            frame,
+            generation,
+            context,
+        )
+        if (
+            self._capture_voice_session_activation_generation() != generation
+            or self._active_session_interception_bridge is not interception_bridge
+            or not self._core_asr_operation_identity_matches(output_identity)
+            or self._voice_activation_delivery_revision != delivery_revision
+        ):
+            return OutputCommit.NOT_SENT
+        if filtered_pcm is None:
+            # The local interception owner consumed this original input.  A
+            # pending interval is retained there; a terminal gap is discarded
+            # there. NOT_SENT would make activation retry the same frame and
+            # break the sample axis, so acknowledge only local consumption.
+            return (
+                OutputCommit.NOT_SENT
+                if interception_bridge is None
+                else OutputCommit.LOCAL_ACCEPTED
+            )
         prefix = None
         if self._asr_route_mode == "independent":
             ingress = context.ingress_token or self._capture_ingress_token()
@@ -4315,7 +4507,7 @@ class AsrRuntimeMixin:
                 else None
             )
         committed = await self._route_microphone_audio_unfiltered(
-            frame.pcm,
+            filtered_pcm,
             sample_rate_hz=frame.sample_rate,
             speech_probability=context.speech_probability,
             rnnoise_available=context.rnnoise_available,
@@ -4324,6 +4516,7 @@ class AsrRuntimeMixin:
             captured_at=context.captured_at,
             preserve_prefix=prefix,
             require_output_commit=True,
+            interception_bridge=interception_bridge,
         )
         if (
             self._capture_voice_session_activation_generation() != generation
@@ -4532,7 +4725,18 @@ class AsrRuntimeMixin:
         captured_at: float | None = None,
         preserve_prefix: PreserveUnsentPrefix | None = None,
         require_output_commit: bool = False,
+        interception_bridge: ActiveSessionInterceptionBridge | None = None,
     ) -> OutputCommit:
+        if self._active_session_interception_required or self._active_session_interception_bridge is not None:
+            # Only the authorized ACTIVE output callback carries the current
+            # bridge identity.  Factory preparation failure, a disabled
+            # activation writer or an old callback cannot reach the ordinary
+            # raw outlet while interception is requested.
+            if (
+                interception_bridge is None
+                or interception_bridge is not self._active_session_interception_bridge
+            ):
+                return OutputCommit.NOT_SENT
         route_mode = self._asr_route_mode
         if not self._voice_input_accepts_pcm():
             return OutputCommit.NOT_SENT
@@ -4879,9 +5083,16 @@ class AsrRuntimeMixin:
                     "ingress_backpressure"
                 )
 
-    def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+    def _invalidate_voice_pcm_sync(
+        self,
+        reason: str,
+        *,
+        keep_turns: Collection[VoiceTurnToken] = (),
+    ) -> None:
         self._wake_name_correction = None
-        self._voice_input_registry.invalidate_utterance(reason=reason)
+        self._voice_input_registry.invalidate_utterance(
+            reason=reason, keep=keep_turns,
+        )
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
         self._native_activation_idle_reconnect_identity = None
@@ -4958,8 +5169,14 @@ class AsrRuntimeMixin:
             reasons.add("focus")
         self._voice_input_suppression_reasons = reasons
         self._voice_input_suppressed = bool(reasons)
-        self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
+        if previous != current and (
+            owner != "core" or hard_muted or focus_suppressed
+        ):
+            self._invalidate_active_session_interception_now(
+                f"voice_lease_{reason}"
+            )
+        self._invalidate_voice_pcm_sync(reason)
         if (
             owner == "core"
             and not hard_muted
@@ -5337,10 +5554,17 @@ class AsrRuntimeMixin:
 
     async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
         self._clear_wake_name_correction(self._wake_name_correction_for_turn(token))
-        self._voice_input_registry.invalidate_utterance(
-            token,
-            reason="asr_turn_abandoned",
-        )
+        try:
+            await self._send_core_asr_preview_clear(
+                f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+            )
+        finally:
+            # The token, rather than current preview ownership, owns the pause.
+            # Even cancellation during notification must release that old debt.
+            self._voice_input_registry.invalidate_utterance(
+                token,
+                reason="asr_turn_abandoned",
+            )
         await self._voice_input_registry.wait_idle()
 
     def _independent_asr_user_turn_active(self) -> bool:
@@ -5439,7 +5663,7 @@ class AsrRuntimeMixin:
     async def _dispatch_voice_input_final(
         self,
         event: VoiceTranscriptEvent,
-    ) -> None:
+    ) -> bool:
         ticket = self._wake_name_correction_for_turn(event.turn_token)
         try:
             result = await self._voice_input_registry.dispatch_final(event)
@@ -5461,6 +5685,7 @@ class AsrRuntimeMixin:
                 event.turn_token.ingress.session_epoch,
                 event.turn_token.turn_id,
             )
+        return result is VoiceInputDispatchResult.DELIVERED
 
     async def _cancel_core_chat_voice_turn(
         self,
@@ -5499,6 +5724,11 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_turn_prepare turn_id=%s session_epoch=%s provider=independent_asr",
+            external_turn_id,
+            token.ingress.session_epoch,
+        )
         self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
@@ -5549,6 +5779,11 @@ class AsrRuntimeMixin:
             await self.handle_new_message()
             if operation_is_current():
                 preparation_succeeded = True
+                logger.info(
+                    "[voice-chain] stage=asr_turn_ready turn_id=%s session_epoch=%s",
+                    external_turn_id,
+                    token.ingress.session_epoch,
+                )
                 return True
             if abandon_on_failure:
                 self._abandon_core_voice_turn(
@@ -5574,6 +5809,11 @@ class AsrRuntimeMixin:
             logger.warning(
                 "[%s] independent ASR turn preparation failed",
                 self.lanlan_name,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_turn_prepare_failed turn_id=%s session_epoch=%s",
+                external_turn_id,
+                token.ingress.session_epoch,
             )
             return False
         finally:
@@ -5627,9 +5867,16 @@ class AsrRuntimeMixin:
         *,
         session_ref: object | None = None,
         source_game_route_identity: tuple[str, str, str] | None = None,
-    ) -> None:
+    ) -> bool | None:
         token = event.turn_token.ingress
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_transcript_dispatch turn_id=%s session_epoch=%s provider=%s text_len=%d",
+            external_turn_id,
+            token.session_epoch,
+            event.provider,
+            len(event.text.strip()),
+        )
         if session_ref is None:
             session_ref = getattr(self, "session", None)
         prepared_session_ref = session_ref
@@ -5642,10 +5889,16 @@ class AsrRuntimeMixin:
             ):
                 return
             ticket = self._wake_name_correction_for_turn(event.turn_token)
-            if ticket is not None:
-                self._clear_wake_name_correction(ticket)
-                event = replace(event, text=correct_wake_name_prefix(event.text))
-            if not event.text.strip():
+            self._clear_wake_name_correction(ticket)
+            # Admission judges the original ASR text and evidence. Correction
+            # only changes an accepted turn's text, never its admission policy.
+            admission = assess_transcript(
+                event.text, event.evidence, is_voice_source=True, final=True,
+            )
+            if admission.disposition is TranscriptDisposition.REJECT:
+                logger.info("[voice-admission] turn_id=%s decision=reject reason=%s",
+                            external_turn_id, admission.reason)
+            if not event.text.strip() or admission.disposition is TranscriptDisposition.REJECT:
                 # An empty final still completed the turn provider-side (e.g.
                 # the OpenAI/Step stalled-item timeouts): Core deliberately
                 # injects no user_transcript for empty text, yet the frontend
@@ -5655,6 +5908,8 @@ class AsrRuntimeMixin:
                 # next turn.
                 await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            if ticket is not None:
+                event = replace(event, text=correct_wake_name_prefix(event.text))
             # A normal pending hot-swap may already be caching the conversation.
             # Snapshot it before handle_input_transcript appends this final: the
             # handoff candidate receives the prior context here, while the raw
@@ -5698,6 +5953,11 @@ class AsrRuntimeMixin:
             accepted = await self.handle_input_transcript(
                 event.text,
                 **transcript_kwargs,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_transcript_accepted turn_id=%s accepted=%s",
+                external_turn_id,
+                accepted,
             )
             def route_still_core() -> bool:
                 """The route-identity half, re-checkable across an await.
@@ -5953,6 +6213,8 @@ class AsrRuntimeMixin:
                         "code": "ASR_MULTIMODAL_TURN_FAILED",
                         "details": {"stage": "offline_vlm_handoff"},
                     }))
+                return bool(delivered)
+            return True
         finally:
             self._abandon_core_voice_turn(
                 external_turn_id,
@@ -5965,6 +6227,12 @@ class AsrRuntimeMixin:
         *,
         remember: bool = True,
     ) -> None:
+        admission = assess_transcript(event.text, event.evidence, is_voice_source=True, final=False)
+        if admission.disposition is TranscriptDisposition.HOLD:
+            return
+        preview_owner = self._core_asr_preview_turn_token
+        if event.evidence is not None and preview_owner is not None and preview_owner != event.turn_token:
+            return
         if (
             event.session_epoch != self._capture_ingress_token().session_epoch
             or self._voice_lease_owner != "core"
@@ -6184,6 +6452,32 @@ class AsrRuntimeMixin:
             ),
         )
 
+    def _asr_recovery_notice_is_current(self, event) -> bool:
+        """Recovery notices retain their captured lease, including after failure."""
+        return event.recovery_id is None or (
+            event.lease_generation is not None
+            and event.lease_generation == self._voice_lease_generation
+            and event.route_generation is not None
+            and event.route_generation == self._capture_ingress_token().route_generation
+            and self._voice_lease_owner == "core"
+            and not self._voice_lease_hard_muted
+        )
+
+    @staticmethod
+    def _asr_recovery_notice_details(event) -> dict:
+        if event.recovery_id is None:
+            return {}
+        return {
+            "recovery_id": event.recovery_id,
+            "lease_generation": event.lease_generation,
+            "route_generation": event.route_generation,
+            "session_epoch": (
+                event.recovery_session_epoch
+                if event.recovery_session_epoch is not None else event.session_epoch
+            ),
+            "buffering": event.buffering,
+        }
+
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
@@ -6206,6 +6500,8 @@ class AsrRuntimeMixin:
                     )
                 )
             ):
+                return
+            if not self._asr_recovery_notice_is_current(event):
                 return
             delivery_failure = event.code in {
                 "ASR_INPUT_DELIVERY_FAILED", "ASR_INPUT_DELIVERY_UNCERTAIN",
@@ -6282,13 +6578,19 @@ class AsrRuntimeMixin:
                 json.dumps(
                     {
                         "code": event.code,
-                        "details": status_details,
+                        "details": {
+                            **status_details,
+                            **self._asr_recovery_notice_details(event),
+                        },
                     }
                 ),
                 progress=(None, independent_failure_progress["primary"])
                 if independent_failure_progress is not None
                 else None,
-                still_current=lambda: self._core_asr_operation_identity_matches(source_identity),
+                still_current=lambda: (
+                    self._core_asr_operation_identity_matches(source_identity)
+                    and self._asr_recovery_notice_is_current(event)
+                ),
             )
             if (delivery_failure and any(delivered)
                     and self._core_asr_operation_identity_matches(source_identity)):
@@ -6363,7 +6665,7 @@ class AsrRuntimeMixin:
                         source_identity,
                         event.session_epoch,
                         event.ingress_token,
-                    ),
+                    ) and self._asr_recovery_notice_is_current(event),
                 )
 
     async def _send_core_asr_lifecycle(
@@ -6378,6 +6680,8 @@ class AsrRuntimeMixin:
                 != self._core_asr_identity_ingress_token(source_identity).session_epoch
             ):
                 return
+            if not self._asr_recovery_notice_is_current(event):
+                return
             await self._send_voice_control_status(
                 json.dumps(
                     {
@@ -6388,8 +6692,13 @@ class AsrRuntimeMixin:
                             "route_mode": self._asr_route_mode,
                             "session_epoch": event.session_epoch,
                             **({"reason": event.reason} if event.reason else {}),
+                            **self._asr_recovery_notice_details(event),
                         },
                     }
+                ),
+                still_current=lambda: (
+                    self._core_asr_operation_identity_matches(source_identity)
+                    and self._asr_recovery_notice_is_current(event)
                 ),
             )
 

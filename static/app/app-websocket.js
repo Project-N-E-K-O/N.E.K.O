@@ -3769,6 +3769,13 @@
                         }
                     } catch (_) { }
 
+                    if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
+                        'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
+                        if (_thisSocket !== S.socket) return;
+                        window.appAudioCapture?.handleAutomaticRecoveryStatus(statusCode, statusDetails);
+                        return;
+                    }
+
                     if (statusCode === 'ASR_INPUT_CONNECTING'
                         || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
                         || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
@@ -3788,6 +3795,11 @@
                     }
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        if (statusDetails?.recovery_id != null
+                            && (_thisSocket !== S.socket
+                                || !window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails)
+                                || (statusDetails.state === 'blocked'
+                                    && S.asrAutomaticRecovery?.state !== 'failed'))) return;
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
@@ -5280,6 +5292,8 @@
 
                 // -------- session_preparing --------
                 } else if (response.type === 'session_preparing') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
                         if (typeof window.isNekoGoodbyeModeActive === 'function'
@@ -5293,6 +5307,7 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (window.sessionStartNotificationIsRetired(response)) return;
                     if (response.input_mode !== 'text'
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
@@ -5363,9 +5378,8 @@
                     //
                     // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
                     // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
-                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
-                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
-                    // pending 启动的情形本就由上面的模式守卫负责。
+                    // 内部路径没有请求标识时仍同步会话 UI，但不能收口本窗口
+                    // 在途的用户请求：同模式的旧内部启动也可能迟到。
                     //
                     // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
                     // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
@@ -5527,12 +5541,14 @@
                     // acknowledged the text session at all (Codex P2). Resolve
                     // only if the slot still holds the very start we acked.
                     var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
+                    var _ackedClaimSeq = window.sessionStartClaimSeq();
                     setTimeout(function () {
                         // Not gated on the resolver: a window with no pending
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
+                                && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -5584,6 +5600,8 @@
 
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
                     // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发

@@ -19,6 +19,7 @@ These documents preserve design intent and implementation context. They are grou
 
 ## Implemented design records
 
+- [Optional voice models and offline diagnostics](/design/optional-voice-model-tools)
 - [ASR client phase record](./asr-client-phase1)
 - [Compact chat mode](./compact-chat-mode-design)
 - [Memory event journal](./memory-event-log-rfc)
@@ -28,6 +29,10 @@ These documents preserve design intent and implementation context. They are grou
 - [TTS provider and voice-source unification](./tts-voice-source-unification)
 - [Live2D idle motion selection and recovery](/live2d_motion_plan)
 - [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
+
+## Research goals and implementation foundations
+
+- [Active-session audio interception before ASR (not wired to production)](/design/active-session-audio-interception)
 
 ## Product-flow and interaction records
 

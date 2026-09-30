@@ -219,7 +219,12 @@ class _TransportMixin:
         if type(end_ms) is not int or end_ms < 0:
             if self._has_server_vad:
                 self._voice_handoff_server_boundary_unknown = True
-                return False
+                # The event belongs to the current server item, but the
+                # server did not provide a usable boundary.  Let the caller
+                # retire the local buffer conservatively; a later event can
+                # still establish a precise boundary.  Stale item ids were
+                # rejected above and never reach this path.
+                return True
             return True
         self._voice_handoff_server_boundary_unknown = False
         end_sample = getattr(self, "_voice_handoff_loud_end_sample", None)
@@ -4110,6 +4115,23 @@ class _TransportMixin:
         # retired session if the bridge recovers -- the offline client is
         # drained the same way, in ``_cancel_bus_copies``.
         await self._cancel_frame_copies()
+        close_task = self._close_task
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            # A failed task owns no retryable await by itself. Recreate the
+            # teardown when its detached transport (or a replacement socket)
+            # is still present; a successful close with no successor remains
+            # idempotent through the completed task.
+            if (
+                close_error is not None
+                or self.ws is not None
+                or self._retired_websockets
+                or self._gemini_close_retry_contexts
+            ):
+                self._close_task = None
         await self._own_teardown("_close_task", self._detach_for_close)
 
     def _detach_for_close(self):
@@ -4133,6 +4155,10 @@ class _TransportMixin:
         self._local_failure_recovery = None
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
+        retired_gemini_contexts = tuple(
+            pair for pair in self._gemini_close_retry_contexts.values()
+            if pair[0] is not gemini_context
+        )
         gemini_close_task = self._gemini_close_task
         gemini_proactive_submit_task = getattr(
             self,
@@ -4167,6 +4193,7 @@ class _TransportMixin:
             gemini_proactive_submit_task,
             gemini_external_submit_task,
             tool_tasks,
+            retired_gemini_contexts,
         )
 
     async def _close_impl(
@@ -4179,6 +4206,7 @@ class _TransportMixin:
         gemini_proactive_submit_task,
         gemini_external_submit_task,
         tool_tasks=(),
+        retired_gemini_contexts=(),
     ) -> None:
         # 先取消在飞的 Gemini 提交，再等退休的工具调用收尾：前者是可能一直挂着的
         # SDK 写，把它留到后面会让整段拆除跟着它一起等。取消逻辑只有
@@ -4217,6 +4245,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # 重置静默超时相关状态
@@ -4245,6 +4274,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # Gemini uses different cleanup
@@ -4253,6 +4283,7 @@ class _TransportMixin:
                 await asyncio.shield(gemini_close_task)
             else:
                 await self._close_gemini()
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         await self._release_retired_connection(ws, gemini_context, gemini_close_task)
@@ -4280,15 +4311,37 @@ class _TransportMixin:
             elif gemini_context is not None:
                 await self._close_gemini_context(gemini_context, ws)
             return
-        if ws:
+        if ws is not None:
+            transports = [ws]
+        else:
+            transports = []
+        pending = list(self._retired_websockets)
+        self._retired_websockets.clear()
+        for retired in pending:
+            if not any(existing is retired for existing in transports):
+                transports.append(retired)
+        if transports:
             try:
                 # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
                 # 在兼容慢代理的同时保持清理等待有界。
-                await ws.close()
-            except Exception as e:
-                logger.error(f"Error closing websocket: {e}")
-            finally:
-                logger.info("WebSocket connection closed")
+                for index, retired in enumerate(transports):
+                    try:
+                        await retired.close()
+                    except Exception as e:
+                        # The retirement registry uses a successful close as
+                        # the physical-release acknowledgement. A failed
+                        # handshake may have left the provider transport live;
+                        # retain this and every later transport for retry.
+                        unresolved = transports[index:]
+                        for item in unresolved:
+                            if not any(existing is item for existing in self._retired_websockets):
+                                self._retired_websockets.append(item)
+                        logger.error(f"Error closing websocket: {e}")
+                        raise
+                    finally:
+                        logger.info("WebSocket connection closed")
+            except Exception:
+                raise
         else:
             logger.warning("WebSocket connection is already closed or None")

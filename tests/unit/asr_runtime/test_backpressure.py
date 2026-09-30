@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import AsyncMock, call
+from dataclasses import replace
+from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from main_logic.asr_client.lifecycle import VoiceLifecycleState, VoiceRouteMode
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
@@ -179,6 +180,37 @@ async def test_idle_backpressure_new_speech_still_wakes_adopted_session(
     runtime.handle_new_message.assert_awaited_once()
 
 
+async def test_active_backpressure_abandons_prepared_turn_once() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    token = runtime._capture_ingress_token()
+    component._asr_current_ingress_token = token
+    epoch = component._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, epoch
+    )
+    assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert component._asr_turn_prepared
+    turn_id = lifecycle.snapshot.turn_id
+    assert component._asr_prepared_turn_token is not None
+    abandoned_callback = AsyncMock(wraps=component._callbacks.on_turn_abandoned)
+    component._callbacks = replace(
+        component._callbacks, on_turn_abandoned=abandoned_callback
+    )
+
+    await component._handle_audio_ingress_backpressure(token)
+    await asyncio.gather(*tuple(component._asr_close_tasks))
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-{turn_id}"
+    )
+    abandoned_callback.assert_awaited_once()
+
+
 async def test_provider_overflow_lock_then_final_preserves_accepted_final() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
@@ -276,3 +308,218 @@ async def test_provider_overflow_waiting_on_final_lock_is_identity_fenced(
     watchdog = runtime._asr_final_watchdog_task
     if watchdog is not None:
         watchdog.cancel()
+
+
+async def _complete_turn(runtime: _Runtime, epoch: int, text: str) -> None:
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final(text, epoch, "qwen")
+
+
+async def _block_first_delivery_behind_queued_final_and_active_turn(
+    runtime: _Runtime,
+) -> asyncio.Event:
+    """Leave turn 1 dispatching, turn 2 queued and turn 3 ACTIVE."""
+
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def blocking_input(text: str, **_kwargs) -> bool:
+        if text == "first":
+            delivery_started.set()
+            await release_delivery.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = blocking_input
+    epoch = runtime._asr_session_epoch
+    await _complete_turn(runtime, epoch, "first")
+    await asyncio.wait_for(delivery_started.wait(), 1)
+    await _complete_turn(runtime, epoch, "second")
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_turn_prepared is True
+    return release_delivery
+
+
+async def test_core_backpressure_delivers_accepted_finals_exactly_once() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    # Only the interrupted third turn loses its audio; both finals the runtime
+    # had already accepted still reach the model, in order, exactly once.
+    assert runtime.session.create_response.await_args_list == [
+        call("first"),
+        call("second"),
+    ]
+    assert call(f"asr-{epoch}-3") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+
+
+async def test_runtime_backpressure_delivers_accepted_finals_exactly_once() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+    ingress_token = runtime._asr_runtime._asr_current_ingress_token
+    assert ingress_token is not None
+
+    await runtime._handle_audio_ingress_backpressure(ingress_token)
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime.session.create_response.await_args_list == [
+        call("first"),
+        call("second"),
+    ]
+    assert "ASR_INGRESS_BACKPRESSURE" in str(runtime.send_status.await_args_list)
+
+
+async def test_non_backpressure_abort_still_retires_accepted_finals() -> None:
+    runtime = _Runtime()
+    release_delivery = (
+        await _block_first_delivery_behind_queued_final_and_active_turn(runtime)
+    )
+
+    await runtime._abort_independent_asr("microphone_stopped")
+    release_delivery.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def _accept_final_behind_blocked_lease_release(
+    runtime: _Runtime,
+) -> tuple[asyncio.Task[None], asyncio.Event]:
+    """Leave turn 1's final accepted while its SmartTurn lease still releases."""
+
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+
+    async def blocked_delivery(_text: str, **_kwargs) -> bool:
+        # Integration queues an accepted final before releasing its lease.
+        # Hold Core before response submission so retirement wins explicitly.
+        await finish_release.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = blocked_delivery
+
+    class _BlockingLease:
+        token = sealed.turn
+
+        async def release(self) -> None:
+            release_started.set()
+            await finish_release.wait()
+
+    runtime._asr_runtime._asr_smart_turn_lease = _BlockingLease()
+    final_task = asyncio.create_task(
+        runtime._handle_independent_asr_final("first", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_started.wait(), 1)
+    assert sealed.turn in runtime._asr_runtime.pending_transcript_turn_tokens()
+    return final_task, finish_release
+
+
+async def test_backpressure_during_lease_release_keeps_accepted_final() -> None:
+    runtime = _Runtime()
+    final_task, finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    finish_release.set()
+    await asyncio.wait_for(final_task, 1)
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    # The final was accepted before the abort, so the user still gets an
+    # answer even though the lease release outlived the old identity.
+    assert runtime.session.create_response.await_args_list == [call("first")]
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def test_cancelled_lease_release_still_delivers_pinned_final() -> None:
+    runtime = _Runtime()
+    final_task, finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+
+    # Session shutdown cancels the provider callback after its drain window.
+    final_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await final_task
+    finish_release.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime.session.create_response.await_args_list == [call("first")]
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def test_cancelled_lease_release_after_purge_abandons_final() -> None:
+    runtime = _Runtime()
+    final_task, _finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+    # Retire both queue ownership and the pinned Core route.
+    await runtime._abort_independent_asr("microphone_stopped")
+
+    final_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert call(f"asr-{epoch}-1") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()
+
+
+async def test_non_backpressure_abort_during_lease_release_abandons_final() -> None:
+    runtime = _Runtime()
+    final_task, finish_release = (
+        await _accept_final_behind_blocked_lease_release(runtime)
+    )
+    epoch = runtime._asr_session_epoch
+
+    await runtime._abort_independent_asr("microphone_stopped")
+    finish_release.set()
+    await asyncio.wait_for(final_task, 1)
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.create_response.assert_not_awaited()
+    assert call(f"asr-{epoch}-1") in (
+        runtime.session.abandon_external_voice_turn.call_args_list
+    )
+    assert runtime._asr_runtime.pending_transcript_turn_tokens() == frozenset()

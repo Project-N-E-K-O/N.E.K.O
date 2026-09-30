@@ -41,6 +41,12 @@ class _FakeWs:
         self.close_calls += 1
 
 
+class _FailingWs(_FakeWs):
+    async def close(self):
+        self.close_calls += 1
+        raise RuntimeError("close handshake failed")
+
+
 def _make_client():
     return OmniRealtimeClient(
         base_url="wss://example.test/realtime",
@@ -94,6 +100,47 @@ async def test_cancelled_close_still_closes_the_socket_it_detached():
 
     assert ws.close_calls == 1
     assert calls == ["realtime client closed"]
+
+
+@pytest.mark.asyncio
+async def test_close_failure_is_propagated_for_capacity_accounting():
+    client = _make_client()
+    ws = _FailingWs()
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client._release_retired_connection(ws)
+
+    assert ws.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_websocket_close_is_retried_by_the_same_client():
+    client = _make_client()
+
+    class _RetryableWs:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("close handshake failed")
+
+    ws = _RetryableWs()
+    client.ws = ws
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client.close()
+    assert ws.close_calls == 1
+    assert client.ws is None
+    assert client._retired_websockets == [ws]
+
+    ws.fail = False
+    await client.close()
+
+    assert ws.close_calls == 2
+    assert client._retired_websockets == []
 
 
 @pytest.mark.asyncio
@@ -458,6 +505,15 @@ async def test_gemini_close_leaves_a_replacement_session_alone():
     assert client.ws is replacement_session
     assert replacement_context.exit_calls == 0
 
+    # The completed retirement task belongs to the old context. A later close
+    # must be allowed to create a new task for the replacement context.
+    replacement_context.release.set()
+    await asyncio.wait_for(client._close_gemini(), timeout=5)
+    assert replacement_context.exit_calls == 1
+    assert client._gemini_context_manager is None
+    assert client._gemini_session is None
+    assert client.ws is None
+
 
 @pytest.mark.asyncio
 async def test_retired_gemini_context_is_exited_even_after_a_reconnect():
@@ -536,19 +592,50 @@ async def test_replacement_attaching_during_the_audio_lock_keeps_its_gemini_sess
 
 @pytest.mark.asyncio
 async def test_failing_gemini_exit_still_drops_the_references():
-    """A raised (non-cancel) exit ran to its own conclusion; the SDK has no
-    second attempt to offer, so the pre-existing behaviour stands."""
+    """A failed SDK exit keeps ownership until a later retry succeeds."""
     client = _make_client()
 
     class _RaisingContext:
+        def __init__(self):
+            self.exit_calls = 0
+            self.fail = True
+
         async def __aexit__(self, *exc_info):
-            raise RuntimeError("sdk exit failed")
+            self.exit_calls += 1
+            if self.fail:
+                raise RuntimeError("sdk exit failed")
 
-    client._gemini_context_manager = _RaisingContext()
-    client._gemini_session = object()
+    class _RetryableSession:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
 
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("transport close failed")
+
+    context = _RaisingContext()
+    session = _RetryableSession()
+    client._gemini_context_manager = context
+    client._gemini_session = session
+    client.ws = session
+
+    with pytest.raises(RuntimeError, match="sdk exit failed"):
+        await client._close_gemini()
+
+    assert context.exit_calls == 1
+    assert session.close_calls == 1
+    assert client._gemini_context_manager is context
+    assert client._gemini_session is session
+    assert client.ws is session
+
+    context.fail = False
+    session.fail = False
     await client._close_gemini()
 
+    assert context.exit_calls == 2
+    assert session.close_calls == 2
     assert client._gemini_context_manager is None
     assert client._gemini_session is None
     assert client.ws is None

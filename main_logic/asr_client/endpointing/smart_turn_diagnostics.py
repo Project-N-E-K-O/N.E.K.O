@@ -50,6 +50,7 @@ FailureStage: TypeAlias = Literal[
 ]
 
 _EVALUATION_REASONS = frozenset({"candidate_pause", "periodic_no_vad", "strict_retry"})
+_COMPLETE_REASONS = _EVALUATION_REASONS | {"semantic_timeout"}
 _EVALUATION_OUTCOMES = frozenset(
     {
         "complete",
@@ -207,7 +208,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
     def complete(self, *, reason: str) -> None:
         self._emit(
             "complete",
-            reason=_allowed_value(reason, _EVALUATION_REASONS),
+            reason=_allowed_value(reason, _COMPLETE_REASONS),
         )
 
     def failure(self, *, kind: str, stage: str) -> None:

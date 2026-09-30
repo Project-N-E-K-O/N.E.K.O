@@ -103,6 +103,14 @@ def test_voice_recognition_reuses_the_shared_mic_action_subwindow() -> None:
     )
 
 
+def test_browser_capture_disables_native_agc_and_records_effective_setting() -> None:
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+
+    assert "autoGainControl: false" in source
+    assert "track.getSettings()" in source
+    assert "autoGainControl: settings.autoGainControl" in source
+
+
 def test_cross_window_voice_settings_publish_a_shared_pending_route_snapshot() -> None:
     state = APP_STATE.read_text(encoding="utf-8")
     settings = APP_SETTINGS.read_text(encoding="utf-8")

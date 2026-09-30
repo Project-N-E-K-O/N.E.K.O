@@ -11,7 +11,8 @@ This directory contains the automated test suite for Project N.E.K.O.
 - `unit/websocket_static/` groups frontend source contracts and Node harness
   tests by status, preview, settings synchronization, and session/microphone control.
   The Node CI shard also runs the microphone recovery route harness in
-  `tests/frontend/test_game_voice_control_runtime.js`.
+  `tests/frontend/mic_recovery_route.test.cjs` and the game voice-control
+  runtime contract in `tests/frontend/test_game_voice_control_runtime.js`.
 - `support/` contains shared fakes and environment construction. Package-local
   `_scenarios.py` modules retain shared helpers with scenario assertions; helpers
   used by only one test module stay in that module.
@@ -20,7 +21,11 @@ Keep the existing test names, decorators, fixture scopes, and module markers
 when moving tests. In ASR files, `_contract` and `_runtime` suffixes preserve the
 `unit_fast` and `runtime` CI populations. Frontend `_contract` and `_process`
 suffixes distinguish source checks from subprocess tests where a theme has both.
-The CI shards discover `tests/unit` recursively and select by marker.
+Pull requests run the four behavior markers and the Node frontend contract
+tests in `unit-test-shards.yml`. `unit-tests.yml` runs only the remaining
+unmarked unit tests. Each Python shard performs a non-empty collection check
+before execution. The CI shards discover `tests/unit` recursively and select
+by marker.
 
 Prefer behavior boundaries over a fixed line count. In particular,
 `unit/websocket_static/test_settings_cas_conflict.py` exceeds 1,000 lines because

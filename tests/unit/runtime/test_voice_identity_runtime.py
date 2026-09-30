@@ -386,6 +386,33 @@ async def test_activation_status_tracks_live_route_and_runtime_degradation() -> 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_starting_blocked_route_is_retryable_degradation() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager.is_active = True  # type: ignore[attr-defined]
+    manager.is_starting = True  # type: ignore[attr-defined]
+    manager._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    await registry.register_manager(manager)
+    profile = _profile("profile-starting-route")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    manager.is_starting = False  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_inactive_blocked_managers_do_not_override_active_route_status() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     active = _Manager()

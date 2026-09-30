@@ -26,6 +26,8 @@
     const FINAL_STATUS_TIMEOUT_MS = 1000;
     const RETRY_CONNECTION_TIMEOUT_MS = 5000;
     const CANCEL_REQUEST_TIMEOUT_MS = 5000;
+    const ROUTE_RECOVERY_POLL_INTERVAL_MS = 600;
+    const ROUTE_RECOVERY_TIMEOUT_MS = 8000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -107,6 +109,11 @@
         segmentPhase: 'idle',
         segmentAdvance: null,
         uiPhase: 'idle',
+        // The final verification is returned only by the segment-4 upload
+        // response. Keep the result in page state so the subsequent status
+        // refresh and the finally block cannot discard it.
+        completionResult: null,
+        routeRecoveryTask: null,
         initializationError: false,
         statusRefreshFallback: null,
         statusRefreshFallbackEpoch: 0,
@@ -135,6 +142,14 @@
         elements.stepCount = document.getElementById('voice-identity-step-count');
         elements.stepTitle = document.getElementById('voice-identity-step-title');
         elements.stepBody = document.getElementById('voice-identity-step-body');
+        elements.eyebrow = document.getElementById('voice-identity-eyebrow');
+        elements.ruleNote = document.getElementById('voice-identity-rule-note');
+        elements.actions = document.getElementById('voice-identity-actions');
+        elements.result = document.getElementById('voice-identity-result');
+        elements.resultTitle = document.getElementById('voice-identity-result-title');
+        elements.matchPercent = document.getElementById('voice-identity-match-percent');
+        elements.scoreHelp = document.getElementById('voice-identity-score-help');
+        elements.resultStatus = document.getElementById('voice-identity-result-status');
         elements.prompt = document.getElementById('voice-identity-prompt');
         elements.progress = typeof document.querySelectorAll === 'function' ? Array.from(document.querySelectorAll('#voice-identity-progress span')) : [];
         elements.next = document.getElementById('voice-identity-next');
@@ -333,6 +348,36 @@
             state.runtimeDisabled = status.runtime_mode === 'off';
         }
         render();
+        startRouteRecoveryPolling();
+    }
+
+    function routeRecoveryNeeded() {
+        return state.profileAvailable
+            && !state.effectiveEnabled
+            && ['runtime_degraded', 'unsupported_asr_route'].includes(
+                state.effectiveReason,
+            );
+    }
+
+    function startRouteRecoveryPolling() {
+        if (!routeRecoveryNeeded() || state.routeRecoveryTask) return;
+        const epoch = state.statusEpoch;
+        const deadline = Date.now() + ROUTE_RECOVERY_TIMEOUT_MS;
+        state.routeRecoveryTask = (async function () {
+            while (Date.now() < deadline) {
+                await new Promise(function (resolve) {
+                    window.setTimeout(resolve, ROUTE_RECOVERY_POLL_INTERVAL_MS);
+                });
+                if (epoch !== state.statusEpoch || state.closeStarted) return;
+                const status = await reconcileStatus({
+                    timeoutMs: FINAL_STATUS_TIMEOUT_MS,
+                });
+                if (status && (state.effectiveEnabled || !routeRecoveryNeeded())) return;
+            }
+        }()).finally(function () {
+            state.routeRecoveryTask = null;
+            render();
+        });
     }
 
     async function reconcileStatus(options) {
@@ -519,7 +564,8 @@
         );
         const enrollmentActive = !state.profileAvailable
             || state.busy || state.cancelPending || Boolean(state.enrollmentId);
-        const enrollmentVisible = enrollmentActive || hasMessage;
+        const enrollmentVisible = enrollmentActive || hasMessage
+            || Boolean(state.completionResult);
         elements.enrollment.hidden = !enrollmentVisible;
         const enrollmentBusy = state.busy || state.cancelPending
             || Boolean(state.enrollmentId) || state.segmentIndex > 0;
@@ -570,8 +616,39 @@
     }
 
     function renderEnrollment() {
-        const active = state.segmentIndex > 0;
-        const captureVisible = active && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
+        const resultVisible = Boolean(
+            state.completionResult && state.completionResult.passed
+        );
+        const active = state.segmentIndex > 0 || resultVisible;
+        const captureVisible = !resultVisible && active
+            && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
+        if (elements.result) elements.result.hidden = !resultVisible;
+        if (elements.eyebrow) elements.eyebrow.hidden = resultVisible;
+        if (elements.ruleNote) elements.ruleNote.hidden = resultVisible;
+        if (elements.actions) elements.actions.hidden = resultVisible;
+        if (elements.stepTitle) elements.stepTitle.hidden = resultVisible;
+        if (elements.stepBody) elements.stepBody.hidden = resultVisible;
+        if (elements.resultTitle && resultVisible) {
+            elements.resultTitle.textContent = translate(
+                'voiceIdentity.verificationResultTitle',
+                '声纹验证通过',
+            );
+        }
+        if (elements.matchPercent) {
+            const matchPercent = resultVisible ? state.completionResult.matchPercent : null;
+            const hasScore = Number.isFinite(matchPercent);
+            elements.matchPercent.hidden = !hasScore;
+            elements.matchPercent.textContent = hasScore ? `${matchPercent}%` : '';
+        }
+        if (elements.scoreHelp) {
+            elements.scoreHelp.textContent = translate(
+                'voiceIdentity.verificationScoreHelp',
+                '结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。',
+            );
+        }
+        if (elements.resultStatus && resultVisible) {
+            elements.resultStatus.textContent = enrollmentCompleteMessage();
+        }
         elements.captureStatus.hidden = !captureVisible;
         elements.captureStatus.classList.toggle('preparing', state.uiPhase === 'preparing');
         elements.captureStatus.classList.toggle('saving', state.saving);
@@ -585,14 +662,15 @@
             elements.voiceState.textContent = state.saving ? '' : translate(configured[0], configured[1]);
         }
         if (elements.finish) {
-            elements.finish.hidden = !state.recording;
+            elements.finish.hidden = resultVisible || !state.recording;
             // Keep the action clickable during capture so an early click can
             // explain the minimum speech requirement instead of looking inert.
             elements.finish.disabled = !state.recording;
             elements.finish.textContent = translate('voiceIdentity.finish', '说完了，保存');
         }
         if (elements.next) {
-            const nextVisible = state.segmentPhase === 'ready' || state.segmentPhase === 'retry';
+            const nextVisible = !resultVisible
+                && (state.segmentPhase === 'ready' || state.segmentPhase === 'retry');
             elements.next.hidden = !nextVisible;
             elements.next.disabled = !nextVisible;
             elements.next.textContent = translate(state.segmentPhase === 'retry' ? 'voiceIdentity.retrySegment' : 'voiceIdentity.nextSegment', state.segmentPhase === 'retry' ? '重录本段' : '开始下一段');
@@ -604,11 +682,13 @@
             : state.segmentIndex;
         if (elements.stepCount) {
             const fallback = '第 ' + displayedSegment + ' / ' + ENROLLMENT_SEGMENT_COUNT + ' 段';
-            elements.stepCount.textContent = active ? translate('voiceIdentity.stepCount', fallback, { current: displayedSegment, total: ENROLLMENT_SEGMENT_COUNT }) : '';
+            elements.stepCount.textContent = resultVisible ? '' : active
+                ? translate('voiceIdentity.stepCount', fallback, { current: displayedSegment, total: ENROLLMENT_SEGMENT_COUNT })
+                : '';
         }
         if (elements.progress) elements.progress.forEach((item, index) => {
-            const completed = active && index < displayedSegment - 1;
-            const current = active && index === displayedSegment - 1;
+            const completed = resultVisible || (active && index < displayedSegment - 1);
+            const current = !resultVisible && active && index === displayedSegment - 1;
             item.classList.toggle('active', completed || current);
             item.classList.toggle('completed', completed);
             item.classList.toggle('current', current);
@@ -629,11 +709,11 @@
         if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请使用平时聊天的自然音量和语速朗读下面这句话，说满约 1.5 秒即可保存；系统会补齐分析所需时长。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音。每段自然说满约 1.5 秒即可保存，系统会补齐分析所需时长。');
         if (elements.prompt) {
             let promptIndex = 0;
-            if (active) {
+            if (!resultVisible && active) {
                 promptIndex = state.segmentPhase === 'ready'
                     ? Math.min(ENROLLMENT_SEGMENT_COUNT, state.segmentIndex + 1)
                     : state.segmentIndex;
-            } else if (!state.profileAvailable) {
+            } else if (!resultVisible && !state.profileAvailable) {
                 // Let the user read the first line before starting capture.
                 promptIndex = 1;
             }
@@ -1142,6 +1222,7 @@
         let settleStart = null;
         let segmentRequestPending = false;
         let finalSegmentCommitted = false;
+        let finalVerification = null;
         let preserveActiveSession = false;
         let ownedMediaStream = null;
         let ownedAudioContext = null;
@@ -1155,6 +1236,9 @@
         };
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
+        // A new enrollment invalidates any result from the previous page
+        // lifetime. The score is intentionally not read from /status.
+        state.completionResult = null;
         state.busy = true;
         state.segmentIndex = state.nextSegmentIndex;
         state.segmentPhase = 'preparing';
@@ -1369,6 +1453,11 @@
                             }
                             continue;
                         }
+                        if (segment === ENROLLMENT_SEGMENT_COUNT && verification && verification.passed) {
+                            // Keep the transient response before the following
+                            // status refresh, which deliberately omits it.
+                            finalVerification = verification;
+                        }
                         setMessage('');
                         segmentAccepted = true;
                         if (segment === ENROLLMENT_SEGMENT_COUNT && state.profileAvailable) {
@@ -1449,6 +1538,7 @@
             }
             state.enrollmentId = null;
             state.profileId = null;
+            state.completionResult = finalVerification || { passed: true, matchPercent: null };
             state.uiPhase = 'success';
             setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
@@ -1461,7 +1551,13 @@
                 && state.profileAvailable
                 && (!profileWasAvailable || (profileRevisionBefore !== null && state.profileRevision !== null && state.profileRevision !== profileRevisionBefore));
             if (profileCommitConfirmed) {
-                state.enrollmentId = null; state.profileId = null; setMessage(enrollmentCompleteMessage(), false);
+                state.enrollmentId = null;
+                state.profileId = null;
+                // A transport error can happen after the profile commit. In
+                // that path finalVerification is absent, so never invent a
+                // score from the ordinary status response.
+                state.completionResult = finalVerification || { passed: true, matchPercent: null };
+                setMessage(enrollmentCompleteMessage(), false);
             } else if (preserveActiveSession && state.enrollmentId) {
                 setMessage(enrollmentErrorMessage(error), true);
             } else {
@@ -1490,6 +1586,7 @@
             !state.enrollmentId || state.microphoneSetupEpoch === state.statusEpoch
         );
         state.statusEpoch += 1;
+        state.completionResult = null;
         state.cancelPending = true;
         if (state.statusAbort) state.statusAbort.abort();
         if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
@@ -1563,6 +1660,7 @@
                 confirmed = window.confirm(message);
             }
             if (!confirmed) return;
+            state.completionResult = null;
             const payload = await apiRequest('/profile', { method: 'DELETE' });
             applyStatus(payload);
             if (state.profileAvailable) await reconcileStatus();
@@ -1761,6 +1859,7 @@
             applyStatus(status);
         } catch (error) {
             if (retryEpoch !== state.statusEpoch) return;
+            state.completionResult = null;
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);
         } finally {
@@ -1783,6 +1882,7 @@
             state.initializationError = false;
             applyStatus(status);
         } catch (error) {
+            state.completionResult = null;
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);
         } finally {

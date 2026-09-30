@@ -57,6 +57,7 @@ released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
 the fail-closed route exits.
 """
 
+import asyncio
 import hashlib
 import json
 from typing import Optional
@@ -624,6 +625,8 @@ class NotifyMixin:
         later microphone frame.
         """
         delivered = False
+        _, _, check_start = self._start_notification_context()
+        check_tts = getattr(self, "_tts_output_is_current", None)
         try:
             if (
                 self.websocket
@@ -631,10 +634,21 @@ class NotifyMixin:
                 and self.websocket.client_state == self.websocket.client_state.CONNECTED
             ):
                 data = json.dumps({"type": "status", "message": message})
+                check_start()
+                if callable(check_tts) and not check_tts():
+                    return False
                 await self.websocket.send_text(data)
                 delivered = True
 
                 # 同步到同步服务器
+                try:
+                    check_start()
+                except asyncio.CancelledError:
+                    # Ownership changed after the display write committed.
+                    # Stop mirroring, but preserve the caller's delivery receipt.
+                    return delivered
+                if callable(check_tts) and not check_tts():
+                    return delivered
                 self.sync_message_queue.put(
                     {"type": "json", "data": {"type": "status", "message": message}}
                 )
@@ -705,18 +719,42 @@ class NotifyMixin:
             )
             return False
 
+    def _start_notification_context(self, request_id=None, also_notify=None):
+        """Capture one operation before a notification crosses a socket await."""
+        current_request = getattr(self, "_current_start_request", None)
+        operation = current_request() if callable(current_request) else None
+        if operation is not None:
+            request_id = request_id or operation.request_id
+            if also_notify is None:
+                also_notify = operation.websocket
+
+        def check():
+            guard = getattr(self, "_check_start_operation", None)
+            if callable(guard) and operation is not None:
+                guard(operation)
+
+        check()
+        return request_id, also_notify, check
+
     async def send_session_preparing(
-        self, input_mode: str
+        self, input_mode: str, *, request_id=None, also_notify=None
     ):  # 通知前端session正在准备（静默期）
         payload = {"type": "session_preparing", "input_mode": input_mode}
+        request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
+        if request_id:
+            payload["request_id"] = request_id
+        delivered_to = []
+        display_socket = self.websocket
         try:
             if (
-                self.websocket
-                and hasattr(self.websocket, "client_state")
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+                display_socket
+                and hasattr(display_socket, "client_state")
+                and display_socket.client_state == display_socket.client_state.CONNECTED
             ):
                 try:
-                    await self.websocket.send_text(json.dumps(payload))
+                    check()
+                    await display_socket.send_text(json.dumps(payload))
+                    delivered_to.append(display_socket)
                 except WebSocketDisconnect:
                     # Isolated like the sibling senders: a display socket dying
                     # between the CONNECTED check and the send must not skip the
@@ -735,7 +773,12 @@ class NotifyMixin:
                 #
                 # No-op for a single window: _voice_owner_socket returns None
                 # when the lease holder IS the current socket.
-                await self._send_to_voice_owner(dict(payload))
+                check()
+                owner_socket = await self._send_to_voice_owner(dict(payload))
+                if owner_socket is not None:
+                    delivered_to.append(owner_socket)
+            check()
+            await self._send_to_socket_if_new(also_notify, payload, delivered_to)
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
@@ -750,6 +793,7 @@ class NotifyMixin:
         also_notify=None,
         microphone_route_override: str | None = None,
     ):  # 通知前端session已启动
+        request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
         # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
@@ -840,6 +884,7 @@ class NotifyMixin:
                     else payload
                 )
                 try:
+                    check()
                     await display_socket.send_text(data)
                     delivered_to.append(display_socket)
                 except WebSocketDisconnect:
@@ -893,6 +938,7 @@ class NotifyMixin:
                 # isRecording true (which a game STT gate requires), releasing
                 # the game lease and closing hardware the text entry never
                 # meant to touch.
+                check()
                 owner_socket = await self._send_to_voice_owner(dict(payload))
                 if owner_socket is not None:
                     delivered_to.append(owner_socket)
@@ -905,6 +951,7 @@ class NotifyMixin:
                 # self.websocket, the requester is then on neither plane, sits on
                 # its promise until the 15s timeout, and that timeout's end_session
                 # tears down the session that just started.
+                check()
                 await self._send_to_socket_if_new(
                     also_notify, _addressed(payload), delivered_to
                 )
@@ -938,17 +985,24 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
 
-    async def send_session_failed(self, input_mode: str):  # 通知前端session启动失败
+    async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None):  # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
+        request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
+        if request_id:
+            payload["request_id"] = request_id
+        delivered_to = []
+        display_socket = self.websocket
         try:
             if (
-                self.websocket
-                and hasattr(self.websocket, "client_state")
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+                display_socket
+                and hasattr(display_socket, "client_state")
+                and display_socket.client_state == display_socket.client_state.CONNECTED
             ):
                 try:
-                    await self.websocket.send_text(json.dumps(payload))
+                    check()
+                    await display_socket.send_text(json.dumps(payload))
+                    delivered_to.append(display_socket)
                 except WebSocketDisconnect:
                     # Isolated like the sibling senders: a display socket dying
                     # between the CONNECTED check and the send must not skip the
@@ -970,7 +1024,12 @@ class NotifyMixin:
                 # No-op for a single window: _voice_owner_socket returns None
                 # when the lease holder IS the current socket. Game owner
                 # exempt, matching the other senders.
-                await self._send_to_voice_owner(dict(payload))
+                check()
+                owner_socket = await self._send_to_voice_owner(dict(payload))
+                if owner_socket is not None:
+                    delivered_to.append(owner_socket)
+            check()
+            await self._send_to_socket_if_new(also_notify, payload, delivered_to)
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
