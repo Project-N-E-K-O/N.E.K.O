@@ -1,5 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 import pytest
+from main_logic.asr_client import _AsrSelection
+from main_logic.asr_client import runtime as runtime_module
+from main_logic.asr_client._registry_meta import AsrProviderAvailability
 from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
 import main_logic.core as core_module
 from utils import preferences
@@ -225,8 +228,6 @@ async def test_start_session_handshake_malformed_value_is_ignored(
 
 
 async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> None:
-    import main_logic.asr_client.runtime as runtime_module
-
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     factory = MagicMock()
@@ -310,3 +311,164 @@ async def test_free_core_uses_native_asr_when_preferences_are_unreadable(
     assert runtime._asr_route_mode == "native"
     start_mock.assert_not_awaited()
     assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_free_core_ignores_persisted_local_asr_preference(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "faster_whisper",
+            }
+        ),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "native"
+    start_mock.assert_not_awaited()
+    assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_local_asr_preference_reaches_resolver_and_reports_missing_dependency(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "faster_whisper",
+            }
+        ),
+    )
+    resolver = MagicMock(
+        return_value=_AsrSelection(
+            provider_key="faster_whisper",
+            endpointing_mode="manual",
+            availability=AsrProviderAvailability.MISSING_DEPENDENCY,
+        )
+    )
+    builder = MagicMock()
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(runtime_module, "_create_asr_session_from_selection", builder)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    resolver.assert_called_once_with("gemini", provider_preference="faster_whisper")
+    builder.assert_not_called()
+    assert runtime._asr_route_mode == "blocked"
+    statuses = [call.args[0] for call in runtime.send_status.await_args_list]
+    assert any("ASR_INDEPENDENT_DEPENDENCY_MISSING" in status for status in statuses)
+    assert not any("ASR_INDEPENDENT_UNAVAILABLE" in status for status in statuses)
+
+
+async def test_auto_preference_resolves_exactly_like_no_preference(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "auto",
+            }
+        ),
+    )
+    resolver = MagicMock(side_effect=RuntimeError("stop after resolve"))
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    resolver.assert_called_once_with("gemini")
+
+
+def _stale_start_mock() -> AsyncMock:
+    return AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("persisted", "handshake", "expected"),
+    [
+        # The settings POST has not landed yet: the handshake wins both ways.
+        ("auto", "faster_whisper", "faster_whisper"),
+        ("faster_whisper", "auto", "auto"),
+        # A malformed handshake is treated as "auto", never as a provider.
+        ("faster_whisper", "qwen", "auto"),
+        ("faster_whisper", 1, "auto"),
+        # Absent field (older frontend / non-authoritative window): persisted.
+        ("faster_whisper", None, "faster_whisper"),
+        (None, None, "auto"),
+    ],
+)
+async def test_provider_preference_handshake_overrides_persisted_setting(
+    monkeypatch,
+    persisted,
+    handshake,
+    expected,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    settings = {"independentAsrEnabled": True}
+    if persisted is not None:
+        settings["independentAsrProviderPreference"] = persisted
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value=settings),
+    )
+    start_mock = _stale_start_mock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_independent_asr_provider_preference_handshake(handshake)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["provider_preference"] == expected
+
+
+async def test_provider_preference_snapshot_beats_the_shared_field_and_sticks(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "independentAsrProviderPreference": "auto",
+            }
+        ),
+    )
+    start_mock = _stale_start_mock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    # A later request overwrote the shared field; this start's own snapshot
+    # (carried down from its start_session) still decides.
+    runtime.set_independent_asr_provider_preference_handshake("auto")
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        provider_preference_override="faster_whisper",
+    )
+    assert start_mock.await_args.kwargs["provider_preference"] == "faster_whisper"
+
+    # Internal re-entry (hot swap / device change) has no request of its own
+    # and reuses the accepted session choice, not the overwritten shared field.
+    await runtime._start_independent_asr_if_enabled("audio")
+    assert start_mock.await_args.kwargs["provider_preference"] == "faster_whisper"

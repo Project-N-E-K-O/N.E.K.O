@@ -187,6 +187,7 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
         request_id=None,
         handshake_override=None,
         resource_optimization_override=None,
+        provider_preference_override=None,
     )
 
 
@@ -353,16 +354,21 @@ async def test_same_mode_dedupe_redecides_with_this_requests_handshake():
         await asyncio.sleep(0.05)
         mgr._independent_asr_handshake_override = False
         mgr._voice_input_resource_optimization_handshake_override = False
+        mgr._independent_asr_provider_preference_handshake_override = "auto"
 
     overwrite = asyncio.create_task(_overwrite_shared_field_during_wait())
     await _run_dedupe_start(
-        mgr, handshake_override=True, resource_optimization_override=True
+        mgr,
+        handshake_override=True,
+        resource_optimization_override=True,
+        provider_preference_override="faster_whisper",
     )
     await overwrite
 
     assert calls[0][0] == "redecide"
     assert calls[0][1]["handshake_override"] is True
     assert calls[0][1]["resource_optimization_override"] is True
+    assert calls[0][1]["provider_preference_override"] == "faster_whisper"
 
 
 @pytest.mark.unit
@@ -599,6 +605,7 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
         request_id=None,
         handshake_override=None,
         resource_optimization_override=None,
+        provider_preference_override=None,
     )
 
 
