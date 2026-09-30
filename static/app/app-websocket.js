@@ -1553,6 +1553,30 @@
     // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
     // so before this was shared they showed a toast and left the hardware
     // microphone running for the whole session.
+    function independentAsrReasonToastText(reason) {
+        var t = window.t;
+        if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
+            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session.';
+        }
+        if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
+            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition dependencies are missing. Voice input has stopped for this session.';
+        }
+        if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
+            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session.';
+        }
+        if (reason === 'ASR_PROVIDER_QUEUE_TIMEOUT') {
+            return t ? t('microphone.localAsrQueueTimeout') : 'Local speech recognition waited too long in line. Voice input has stopped for this session.';
+        }
+        return '';
+    }
+
+    function clearLocalAsrPreparingNotice() {
+        S.localAsrPreparingMessage = null;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+    }
+
     function tearDownBlockedVoiceRoute() {
 
     removeExternalAsrPreview();
@@ -3733,6 +3757,9 @@
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
+                        if (lifecycleState === 'blocked') {
+                            clearLocalAsrPreparingNotice();
+                        }
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
                             'draining', 'warm_idle', 'deep_sleep', 'backoff',
@@ -3766,11 +3793,18 @@
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
+                                    var blockedReasonText = independentAsrReasonToastText(
+                                        statusDetails && statusDetails.reason
+                                    );
                                     window.showStatusToast(
-                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                        blockedReasonText || (window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.'),
                                         5000
                                     );
                                 }
+                            }
+                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off'
+                                    || lifecycleState === 'warm_idle') {
+                                clearLocalAsrPreparingNotice();
                             }
                         }
                         return;
@@ -3892,6 +3926,7 @@
                             S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            clearLocalAsrPreparingNotice();
                             var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
@@ -3931,12 +3966,40 @@
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
+                            var preparingText = statusDetails
+                                && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
+                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait.')
+                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Preparing local speech recognition. Please wait.');
+                            S.localAsrPreparingMessage = preparingText;
+                            if (typeof window.showVoicePreparingToast === 'function') {
+                                window.showVoicePreparingToast(preparingText);
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
+                            clearLocalAsrPreparingNotice();
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',
+                                    3000
+                                );
+                            }
+                            return;
+                        }
                         // Terminal startup failure. Same fail-closed state as a
                         // runtime BLOCKED, but no lifecycle event is ever emitted
                         // for it, so run the same teardown here. The per-code
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
+                            var reasonToastText = independentAsrReasonToastText(
+                                statusDetails && statusDetails.reason
+                            );
+                            if (reasonToastText) {
+                                window.showStatusToast(reasonToastText, 8000);
+                                return;
+                            }
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
                                     window.t
@@ -5482,7 +5545,7 @@
                             'while pending', S._pendingSessionStartMode);
                         return;
                     }
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    clearLocalAsrPreparingNotice();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
@@ -5558,7 +5621,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    clearLocalAsrPreparingNotice();
 
                     // Restore UI to idle state
                     var _mb3 = micButton();
@@ -5918,7 +5981,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
-            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+            clearLocalAsrPreparingNotice();
 
             // Reset button states
             var _mb5 = micButton();
