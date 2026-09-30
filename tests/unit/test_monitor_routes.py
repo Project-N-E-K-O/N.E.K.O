@@ -28,10 +28,10 @@ def test_rejected_websocket_has_no_state_or_broadcast(client, monkeypatch, path,
         broadcasts.append(args)
     monkeypatch.setattr(monitor, "broadcast_message", record)
     monkeypatch.setattr(monitor, "broadcast_binary", record)
-    with client.websocket_connect(path + query) as websocket:
-        with pytest.raises(WebSocketDisconnect) as closed:
-            websocket.receive_json()
-        assert closed.value.code == 1008
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(path + query):
+            pass
+    assert closed.value.code == 1008
     assert not monitor.connected_clients
     assert not monitor.subtitle_clients
     assert not broadcasts
@@ -76,16 +76,10 @@ def test_subtitle_requires_auth_before_current_subtitle(client):
 
 
 def test_cookie_authenticated_websocket_rejects_cross_origin(client):
-    with client.websocket_connect(
-        "/ws/neko",
-        headers={
-            "Origin": "http://evil.example:48911",
-            "Cookie": "monitor_token=route-secret",
-        },
-    ) as websocket:
-        with pytest.raises(WebSocketDisconnect) as closed:
-            websocket.receive_json()
-        assert closed.value.code == 1008
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect("/ws/neko", headers={"Origin": "http://evil.example:48911", "Cookie": "monitor_token=route-secret"}):
+            pass
+    assert closed.value.code == 1008
 
 
 def test_cookie_authenticated_websocket_accepts_same_origin(client):
@@ -104,3 +98,8 @@ def test_unconfigured_token_keeps_websocket_compatibility(client, monkeypatch, p
     monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "")
     with client.websocket_connect(path):
         pass
+
+
+
+
+

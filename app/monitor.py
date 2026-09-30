@@ -125,11 +125,12 @@ def require_monitor_auth(request: Request) -> None:
 
 
 async def authenticate_monitor_websocket(websocket: WebSocket) -> bool:
-    """Accept, authenticate, and only then permit a WebSocket route to proceed."""
-    await websocket.accept()
+    """Authenticate before accepting; constrain cookie-only auth by Origin."""
     cookie_token = websocket.cookies.get("monitor_token")
+    token = extract_monitor_token(headers=websocket.headers, query_token=websocket.query_params.get("token"), cookie_token=cookie_token)
+    explicit_token = extract_monitor_token(headers=websocket.headers, query_token=websocket.query_params.get("token"))
     origin = websocket.headers.get("origin")
-    if cookie_token and origin:
+    if cookie_token and not explicit_token and origin:
         expected_scheme = "https" if websocket.url.scheme == "wss" else "http"
         expected_origin = f"{expected_scheme}://{websocket.headers.get('host', '')}"
         parsed_origin = urlsplit(origin)
@@ -137,16 +138,11 @@ async def authenticate_monitor_websocket(websocket: WebSocket) -> bool:
         if normalized_origin.rstrip("/") != expected_origin.rstrip("/"):
             await websocket.close(code=1008)
             return False
-    token = extract_monitor_token(
-        headers=websocket.headers,
-        query_token=websocket.query_params.get("token"),
-        cookie_token=cookie_token,
-    )
-    if verify_monitor_token(token):
-        return True
-    await websocket.close(code=1008)
-    return False
-
+    if not verify_monitor_token(token):
+        await websocket.close(code=1008)
+        return False
+    await websocket.accept()
+    return True
 
 _ALLOWED_VIEWER_PREFERENCE_KEYS = {
     "model_path", "position", "scale", "rotation", "display", "viewport",
@@ -345,6 +341,9 @@ async def get_index(request: Request, lanlan_name: str):
             token,
             httponly=True,
             samesite="lax",
+            # Keep local HTTP development/LAN viewers working while ensuring
+            # tokens obtained over HTTPS are never sent over a later HTTP hop.
+            secure=request.url.scheme.lower() == "https",
         )
     return response
 
@@ -602,3 +601,4 @@ if __name__ == "__main__":
         "enabled" if monitor_auth_enabled() else "disabled",
     )
     uvicorn.run(app, host=MONITOR_HOST, port=MONITOR_SERVER_PORT, reload=False)
+

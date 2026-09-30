@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from config import MONITOR_SERVER_PORT, MONITOR_TOKEN, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config import MONITOR_HOST, MONITOR_SERVER_PORT, MONITOR_TOKEN, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import (
@@ -44,6 +44,14 @@ from plugin.sdk.shared.core.images import (
     MAX_SOURCE_IMAGE_PIXELS,
     normalize_image_to_jpeg,
 )
+
+
+def _monitor_connector_host(host: str) -> str:
+    """Map wildcard bind addresses to a loopback dial target for local Monitor."""
+
+    return "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+
+
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 from utils.screenshot_utils import normalize_image_for_model
@@ -2000,7 +2008,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 cross_server.run_sync_connector(
                     rs.sync_message_queue,
                     k,
-                    f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+                    f"ws://{_monitor_connector_host(MONITOR_HOST)}:{MONITOR_SERVER_PORT}",
                     {"bullet": False, "monitor": True},
                     _status_cb,
                     user_language_provider=(
