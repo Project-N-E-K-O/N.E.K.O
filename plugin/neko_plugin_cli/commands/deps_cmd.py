@@ -376,7 +376,8 @@ def _pip_package_sources(python: str) -> tuple[list[str], bool]:
     sources: list[str] = []
     no_index = False
     for name in _PIP_INDEX_ENV:
-        if os.environ.get(name):
+        value = os.environ.get(name)
+        if value and not (name == "PIP_NO_INDEX" and _pip_false(value)):
             sources.append(name)
             no_index = no_index or name == "PIP_NO_INDEX"
     config_file = os.environ.get("PIP_CONFIG_FILE")
@@ -429,11 +430,20 @@ def _config_source_keys(path: Path) -> set[str]:
     except (configparser.Error, UnicodeDecodeError):
         # pip itself would reject this file; assume the strictest setting.
         return set(_PIP_INDEX_KEYS)
+    # Any file enabling a setting counts, even if another file might override
+    # it: emulating pip's full config precedence is not worth the risk here,
+    # and the error in that case only asks for an equivalent uv setting.
     return {
         key.replace("_", "-")
         for section in parser.sections()
-        for key in parser[section]
+        for key, value in parser[section].items()
+        if not (key.replace("_", "-") == "no-index" and _pip_false(value))
     } & _PIP_INDEX_KEYS
+
+
+def _pip_false(value: str) -> bool:
+    # pip parses booleans with strtobool; unparseable values stay strict.
+    return value.strip().lower() in {"n", "no", "f", "false", "off", "0"}
 
 
 def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:

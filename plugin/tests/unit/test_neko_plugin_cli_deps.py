@@ -56,6 +56,11 @@ def _missing_pip_then_uv(calls):
         ({"PIP_NO_INDEX": "1", "UV_EXTRA_INDEX_URL": "https://private/simple"}, None, False),
         ({"PIP_NO_INDEX": "1", "UV_NO_INDEX": "1", "UV_FIND_LINKS": "/wheels"}, None, True),
         ({"UV_FIND_LINKS": "/wheels"}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
+        # An explicitly disabled no-index is not a restriction.
+        ({"PIP_NO_INDEX": "false"}, None, True),
+        ({}, "[global]\nno-index = off\n", True),
+        ({"UV_DEFAULT_INDEX": "https://private/simple"},
+         "[global]\nno-index = 0\nindex-url = https://private/simple\n", True),
         ({}, "[global]\nno-index = true\nfind-links = /wheels\n", False),
         ({}, "[global]\ntimeout = 60\n", True),
         ({}, "not an ini file\n", False),
