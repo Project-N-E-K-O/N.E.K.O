@@ -1894,6 +1894,44 @@ def test_a_crash_before_the_published_delete_is_staged_keeps_the_retained_copy(t
     assert not final.exists()
 
 
+@pytest.mark.parametrize("state", ("unresolved-deleting", "final-not-a-directory"))
+def test_recovery_keeps_a_parked_copy_it_cannot_place_and_blocks_only_its_id(tmp_path, monkeypatch, state):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    parked = store.root / f".{tool_id}.retained"
+    # 崩溃前停放的副本（原授权在里面）。
+    shutil.copytree(final, parked)
+    (parked / f".retained-{uuid.uuid4()}.unverified").write_bytes(b"{")
+    parked_record = (parked / "record.json").read_bytes()
+    if state == "unresolved-deleting":
+        # 暂存把一个同步换进来的目录挪去了 .deleting，核对不上，正式路径又被
+        # 重新占着、挪不回：这次删除证实不了，也没有发生。
+        shutil.copytree(final, deleting)
+        (store.root / f".{tool_id}.deleting.unverified").write_bytes(b"{")
+    else:
+        # 正式路径被同步成了普通文件。
+        shutil.rmtree(final)
+        final.write_bytes(b"not a directory")
+
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    # 删除有没有发生判断不了：停放的副本不能被当成已完成删除丢掉，也不能让它
+    # 悄悄占着配额而这个 ID 照常可写。
+    assert (parked / "record.json").read_bytes() == parked_record
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    with pytest.raises(AvatarToolStoreError) as blocked:
+        restarted.delete_tool(tool_id)
+    assert (blocked.value.code, blocked.value.status_code) == ("tool_recovery_pending", 409)
+    other = restarted.create_tool_v3(manifest=_v3_manifest(f"local-{uuid.uuid4()}", name="Other"), uploads=[_png()])
+    assert restarted.delete_tool(other["id"]) == other["id"]
+
+
 def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

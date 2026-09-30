@@ -652,6 +652,16 @@ class AvatarToolStore:
         ``tool_recovery_pending`` instead, so the UI does not suggest deleting.
         """
         retained_delete = None
+        parked_kind, _, probe_error = _probe_entry(self.root / f".{tool_id}.retained")
+        if probe_error is not None:
+            raise _storage_total_unavailable() from probe_error
+        if parked_kind != "absent":
+            # 恢复判断不了的停放副本：既不能丢也挪不回，只拦这一个 ID。
+            raise AvatarToolStoreError(
+                "tool_recovery_pending",
+                "An interrupted change of this avatar tool is still awaiting recovery",
+                status_code=409,
+            )
         deleting = self.root / f".{tool_id}.deleting"
         deleting_kind, _, probe_error = _probe_entry(deleting)
         if probe_error is not None:
@@ -1130,48 +1140,6 @@ class AvatarToolStore:
             # 里，足够大就会让后续创建永久 storage_limit_reached。
             remove_owned_directory(backup)
 
-        # 明确删除停放的保留副本要先于 .deleting / 孤立授权的处理：它的原授权
-        # 可能已经挪回原位、却还没有 .deleting 可以依附。
-        for candidate in list(self.root.iterdir()):
-            match = LOCAL_AVATAR_TOOL_RETAINED_PATTERN.fullmatch(candidate.name)
-            if match is None:
-                continue
-            tool_id = match.group(1)
-            deleting = self.root / f".{tool_id}.deleting"
-            marker = self.root / f".{tool_id}.deleting.unverified"
-            probes = [_probe_entry(path) for path in (candidate, deleting, self.root / tool_id)]
-            probe_error = next((error for _, _, error in probes if error is not None), None)
-            if probe_error is not None:
-                logger.warning("Deferring retained avatar tool copy %s: %s", candidate.name, probe_error)
-                complete = False
-                continue
-            candidate_kind, deleting_kind, final_kind = (kind for kind, _, _ in probes)
-            if candidate_kind != "dir":
-                continue
-            if deleting_kind != "absent" or final_kind == "absent":
-                # 正式目录的删除已经暂存（或已经完成）：用户要删的就是这个 ID，停放的
-                # 副本和原授权随之丢弃。
-                shutil.rmtree(candidate)
-                continue
-            if final_kind != "dir":
-                # 正式路径被别的东西占着：不判断，保留现场，只拦这个 ID。
-                continue
-            # 正式目录还在、删除没有暂存就中断了：这次删除没有发生，副本连同原授权
-            # 回到「保留副本」状态。
-            parked_markers = [
-                entry
-                for entry in candidate.iterdir()
-                if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
-            ]
-            self._unpark_retained_delete(
-                candidate,
-                parked_markers[0] if parked_markers else candidate / ".retained-missing.unverified",
-                deleting,
-                marker,
-            )
-            if _probe_entry(candidate)[0] != "absent":
-                complete = False
-
         for candidate in self.root.iterdir():
             if (
                 candidate.name.endswith(".unverified")
@@ -1242,6 +1210,51 @@ class AvatarToolStore:
                         complete = False
                         continue
             remove_owned_directory(candidate)
+        # 明确删除停放的保留副本放在 .deleting 和孤立授权之后处理：那一轮先把
+        # 已确认或已证实的删除清掉、把证实不了的删除挪回原位，这里才能按剩下的
+        # 状态判断正式目录的删除到底有没有发生。
+        for candidate in list(self.root.iterdir()):
+            match = LOCAL_AVATAR_TOOL_RETAINED_PATTERN.fullmatch(candidate.name)
+            if match is None:
+                continue
+            tool_id = match.group(1)
+            deleting = self.root / f".{tool_id}.deleting"
+            marker = self.root / f".{tool_id}.deleting.unverified"
+            probes = [_probe_entry(path) for path in (candidate, deleting, self.root / tool_id)]
+            probe_error = next((error for _, _, error in probes if error is not None), None)
+            if probe_error is not None:
+                logger.warning("Deferring retained avatar tool copy %s: %s", candidate.name, probe_error)
+                complete = False
+                continue
+            candidate_kind, deleting_kind, final_kind = (kind for kind, _, _ in probes)
+            if candidate_kind != "dir":
+                continue
+            if deleting_kind == "absent" and final_kind == "absent":
+                # 正式目录的删除已经完成：用户要删的就是这个 ID，停放的副本和原授权
+                # 随之丢弃。
+                shutil.rmtree(candidate)
+                continue
+            if deleting_kind != "absent" or final_kind != "dir":
+                # .deleting 还在（证实不了、又挪不回的删除），或者正式路径被别的东西
+                # 占着：删除有没有发生判断不了，停放的副本不能丢也挪不回。保留现场，
+                # 由 _require_no_pending_recovery 只拦这一个 ID。
+                logger.warning("Preserving retained avatar tool copy %s", candidate)
+                continue
+            # 正式目录还在、删除没有暂存就中断了：这次删除没有发生，副本连同原授权
+            # 回到「保留副本」状态。
+            parked_markers = [
+                entry
+                for entry in candidate.iterdir()
+                if entry.name.startswith(".retained-") and entry.name.endswith(".unverified")
+            ]
+            self._unpark_retained_delete(
+                candidate,
+                parked_markers[0] if parked_markers else candidate / ".retained-missing.unverified",
+                deleting,
+                marker,
+            )
+            if _probe_entry(candidate)[0] != "absent":
+                complete = False
         return complete
 
     def read_record(
