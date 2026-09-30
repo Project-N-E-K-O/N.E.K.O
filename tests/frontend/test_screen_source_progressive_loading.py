@@ -1565,14 +1565,21 @@ def test_portal_pick_switches_an_active_share_even_when_remembering(
 
 
 @pytest.mark.frontend
-def test_second_pick_during_restart_still_shares_the_new_source(page: Page) -> None:
-    # A second pick while the first switch is still restarting (Stop disabled,
-    # capture pending) supersedes that capture. It must restart the share
-    # itself instead of reading the disabled Stop button as "not sharing".
+@pytest.mark.parametrize("phase", ["capture", "wait"])
+def test_second_pick_during_restart_still_shares_the_new_source(
+    page: Page, phase: str,
+) -> None:
+    # A second pick while the first switch is still restarting (Stop disabled)
+    # supersedes it and must restart the share itself instead of reading the
+    # disabled Stop button as "not sharing".
+    # capture: the first capture never settles (e.g. an unanswered permission
+    #   request); the second pick must not wait for it.
+    # wait: the first restart has not reached its start yet; it must not start
+    #   as well, so the new source is captured exactly once.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
-    calls = page.evaluate(
-        """async () => {
+    result = page.evaluate(
+        """async (phase) => {
             document.body.insertAdjacentHTML('beforeend', `
                 <div id="live2d-container"></div>
                 <button id="micButton"></button><button id="muteButton"></button>
@@ -1616,18 +1623,42 @@ def test_second_pick_during_restart_still_shares_the_new_source(page: Page) -> N
             document.getElementById('stopButton').disabled = false;
 
             const firstPick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
-            const deadline = Date.now() + 5000;
-            while (!heldCaptures.length && Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 20));
+            if (phase === 'capture') {
+                const deadline = Date.now() + 5000;
+                while (!heldCaptures.length && Date.now() < deadline) {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            } else {
+                // Midway through the first restart's 300 ms pause: had it not
+                // stepped aside, it would finish its start before the second
+                // restart wakes, and the second would capture again.
+                await new Promise((resolve) => setTimeout(resolve, 150));
             }
             const secondPick = window.selectScreenSource('window:7', 'Terminal', 'Terminal', null);
+            const secondSettled = await Promise.race([
+                secondPick.then(() => true),
+                new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+            ]);
+            const callsWhenSecondSettled = captureCalls.slice();
             heldCaptures.forEach((release) => release());
-            await Promise.all([firstPick, secondPick]);
-            return captureCalls;
-        }"""
+            await firstPick;
+            return { secondSettled, callsWhenSecondSettled, calls: captureCalls };
+        }""",
+        phase,
     )
 
-    assert calls == ["window:2", "window:5", "window:7"]
+    if phase == "capture":
+        assert result == {
+            "secondSettled": True,
+            "callsWhenSecondSettled": ["window:2", "window:5", "window:7"],
+            "calls": ["window:2", "window:5", "window:7"],
+        }
+    else:
+        assert result == {
+            "secondSettled": True,
+            "callsWhenSecondSettled": ["window:2", "window:7"],
+            "calls": ["window:2", "window:7"],
+        }
 
 
 @pytest.mark.frontend

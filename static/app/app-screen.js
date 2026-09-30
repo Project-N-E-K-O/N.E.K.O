@@ -2710,7 +2710,7 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
-    // 进行中的换源重启（停止、等待、重新开始），后一次选择排在它后面。
+    // 进行中的换源重启（停止、等待、重新开始）的令牌；新的选择会换掉它。
     var sourceSwitchRestart = null;
 
     // options.force：id 与当前相同也当作一次新选择，推进选择代次，让还在等待
@@ -2790,24 +2790,22 @@
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
-            // 排在上一次重启之后，两次重启不会交错。
-            var previousRestart = sourceSwitchRestart;
-            var restart = (async function () {
-                if (previousRestart) {
-                    try { await previousRestart; } catch (e) { }
-                }
+            // 不等上一次重启：它可能卡在还没返回的授权请求上。这里的停止会
+            // 取消并脱开那次等待中的启动；上一次重启若还没走到启动，醒来时
+            // 发现已被取代就不再启动，只由最新这次启动。
+            var restartToken = {};
+            sourceSwitchRestart = restartToken;
+            try {
                 // 先停止当前分享（流已释放，forceRelease 无所谓）
                 await stopScreenSharing(true);
                 // 等待一小段时间
                 await new Promise(function (resolve) { setTimeout(resolve, 300); });
                 // 重新开始分享（使用新选择的源）
-                await startScreenSharing();
-            })();
-            sourceSwitchRestart = restart;
-            try {
-                await restart;
+                if (sourceSwitchRestart === restartToken) {
+                    await startScreenSharing();
+                }
             } finally {
-                if (sourceSwitchRestart === restart) {
+                if (sourceSwitchRestart === restartToken) {
                     sourceSwitchRestart = null;
                 }
             }
