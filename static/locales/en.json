@@ -2709,6 +2709,7 @@
         "socialUnavailable": "Social service unavailable",
         "socialDisabled": "Social service is disabled",
         "socialOAuthPrompt": "Complete unified account login in your browser",
+        "socialSettingsLoginPrompt": "The desktop app isn't signed in to N.E.K.O yet. If you're signed in on the community page, it will sync to the desktop automatically; you can also sign in from Settings in the tray menu",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",

@@ -2709,6 +2709,7 @@
         "socialUnavailable": "ソーシャルサービスを利用できません",
         "socialDisabled": "ソーシャルサービスは無効です",
         "socialOAuthPrompt": "ブラウザで統一アカウントのログインを完了してください",
+        "socialSettingsLoginPrompt": "デスクトップ版はまだ N.E.K.O アカウントにログインしていません。コミュニティページでログイン済みなら自動でデスクトップに同期されます。トレイメニューの設定からログインすることもできます",
         "welcomeBack": "{{name}}が戻りました！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}は休憩中...",
