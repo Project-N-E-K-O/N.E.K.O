@@ -1925,6 +1925,13 @@
     }
     mod.isScreenSharingStartPending = isScreenSharingStartPending;
 
+    // 给开关用的「启动中」：换源重启的停止和停顿期间界面已经复位，但分享在
+    // 逻辑上仍开着。开关这时应当按「停止」处理（停止会清掉重启令牌），
+    // 不能当成「开始」。启动本身的去重仍只看 isScreenSharingStartPending。
+    function isScreenSharingStartOrSwitchPending() {
+        return isScreenSharingStartPending() || sourceSwitchRestart !== null;
+    }
+
     function cancelPendingScreenSharingStart() {
         var attempt = screenSharingStartAttempt;
         if (!attempt) return false;
@@ -2672,7 +2679,7 @@
 
     // ======================== switchScreenSharing ========================
     window.switchScreenSharing = async function () {
-        if (isScreenSharingStartPending()) {
+        if (isScreenSharingStartOrSwitchPending()) {
             await stopScreenSharing();
         } else if (stopButton().disabled) {
             // 检查是否在录音状态
@@ -3678,7 +3685,7 @@
     // ======================== Backward-compat window exports ========================
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
-    window.isScreenSharingStartPending = isScreenSharingStartPending;
+    window.isScreenSharingStartPending = isScreenSharingStartOrSwitchPending;
     window.selectScreenSource = selectScreenSource;
     window.getScreenSourceDisplayName = getScreenSourceDisplayName;
     window.captureCanvasFrame = captureCanvasFrame;

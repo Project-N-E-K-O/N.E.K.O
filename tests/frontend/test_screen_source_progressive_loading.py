@@ -1662,15 +1662,17 @@ def test_second_pick_during_restart_still_shares_the_new_source(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("gesture", ["stop", "toggle"])
 def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
-    page: Page,
+    page: Page, gesture: str,
 ) -> None:
     # Stopping while a source switch is in its pause must not be undone when
-    # that restart wakes up.
+    # that restart wakes up. The share toggle reads the pause as "sharing"
+    # (pending), so toggling there stops instead of starting a new share.
     _install_screen_source_harness(page, source_enumeration_may_prompt=True)
 
     result = page.evaluate(
-        """async () => {
+        """async (gesture) => {
             document.body.insertAdjacentHTML('beforeend', `
                 <div id="live2d-container"></div>
                 <button id="micButton"></button><button id="muteButton"></button>
@@ -1705,17 +1707,27 @@ def test_user_stop_during_source_switch_restart_keeps_sharing_stopped(
 
             const pick = window.selectScreenSource('window:5', 'Browser', 'Browser', null);
             await new Promise((resolve) => setTimeout(resolve, 150));
-            await window.stopScreenSharing();
+            const pendingDuringPause = window.isScreenSharingStartPending();
+            if (gesture === 'toggle') {
+                await window.switchScreenSharing();
+            } else {
+                await window.stopScreenSharing();
+            }
             await pick;
             return {
+                pendingDuringPause,
+                pendingAfter: window.isScreenSharingStartPending(),
                 calls: captureCalls,
                 selected: window.getSelectedScreenSourceId(),
                 stopDisabled: document.getElementById('stopButton').disabled,
             };
-        }"""
+        }""",
+        gesture,
     )
 
     assert result == {
+        "pendingDuringPause": True,
+        "pendingAfter": False,
         "calls": ["window:2"],
         "selected": "window:5",
         "stopDisabled": True,
