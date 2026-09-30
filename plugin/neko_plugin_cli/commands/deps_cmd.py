@@ -126,6 +126,8 @@ def handle_sync(args: argparse.Namespace) -> int:
                 return 1
 
             if not external_deps:
+                # Leftovers of finished swaps would otherwise never go away.
+                _remove_retained_backups(plugin_dir)
                 print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
                 return 0
 
@@ -176,18 +178,8 @@ def handle_sync(args: argparse.Namespace) -> int:
             _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
-            # A complete successful sync supersedes retained backups, except
-            # one another user is mid-swap on (the lock is per user).
-            for backup in _retained_backups(plugin_dir):
-                try:
-                    if _swapped_by_other_user(backup):
-                        continue
-                    if _mounted_inside(backup):
-                        continue
-                    shutil.rmtree(backup)
-                    _pending_marker(backup).unlink(missing_ok=True)
-                except OSError as exc:
-                    print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
+            # A complete successful sync supersedes retained backups.
+            _remove_retained_backups(plugin_dir)
     except portalocker.exceptions.LockException:
         print(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
         return 1
@@ -365,9 +357,33 @@ def _is_mount_point(path: Path) -> bool:
     return os.path.ismount(path)
 
 
+def _remove_retained_backups(plugin_dir: Path) -> None:
+    """Delete backups of finished swaps, except one another user is
+    mid-swap on (the lock is per user) or one with a mount inside."""
+    for backup in _retained_backups(plugin_dir):
+        try:
+            if _swapped_by_other_user(backup):
+                continue
+            if _mounted_inside(backup):
+                continue
+            shutil.rmtree(backup)
+            _pending_marker(backup).unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
+
+
 def _mounted_inside(path: Path) -> bool:
     """Whether a leftover work dir is, or contains, a mount point, which
     rmtree would descend into and empty. Such a dir is kept, with a warning."""
+    if sys.platform.startswith("linux") and _linux_mount_points() is None:
+        # Without the kernel's mount table a same-filesystem bind mount can
+        # not be ruled out (ismount misses it), so keep the directory.
+        print(
+            f"[WARN] Not removing {path}: /proc/self/mountinfo is unavailable, "
+            "so mounts inside it can not be ruled out. Delete it by hand.",
+            file=sys.stderr,
+        )
+        return True
     mount = path if _is_mount_point(path) else _find_foreign_subdir(path, junctions=False)
     if mount is None:
         return False
@@ -615,9 +631,11 @@ class _TargetPython:
     has_pip: bool
     prefix: Path
     in_venv: bool
-    # The environment the target actually runs with: a launcher or shim
-    # (pyenv, asdf, a wrapper script) may export PIP_* before exec'ing it.
+    # The environment and working directory the target actually runs with:
+    # a launcher or shim (pyenv, asdf, a wrapper script) may export PIP_*,
+    # or cd, before exec'ing it.
     env: dict[str, str]
+    cwd: Path
 
 
 _TARGET_PROBE = (
@@ -626,7 +644,8 @@ _TARGET_PROBE = (
     "'has_pip': importlib.util.find_spec('pip') is not None, "
     "'prefix': sys.prefix, "
     "'in_venv': sys.prefix != sys.base_prefix, "
-    "'env': dict(os.environ)}))"
+    "'env': dict(os.environ), "
+    "'cwd': os.getcwd()}))"
 )
 
 
@@ -649,12 +668,13 @@ def _probe_target(python: str) -> _TargetPython | None:
             data = json.loads(line)
         except ValueError:
             continue
-        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env"} <= data.keys():
+        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env", "cwd"} <= data.keys():
             return _TargetPython(
                 has_pip=bool(data["has_pip"]),
                 prefix=Path(data["prefix"]),
                 in_venv=bool(data["in_venv"]),
                 env={str(k): str(v) for k, v in dict(data["env"]).items()},
+                cwd=Path(data["cwd"]),
             )
     return None
 
@@ -676,7 +696,8 @@ def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
         return found
-    candidates = [Path(config_file)] if config_file else []
+    # pip resolves a relative PIP_CONFIG_FILE from its own working directory.
+    candidates = [target.cwd / config_file] if config_file else []
     for path in [*candidates, *_pip_config_files(target)]:
         for key in _config_setting_keys(path):
             found.setdefault(key, []).append(str(path))

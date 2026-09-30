@@ -44,7 +44,7 @@ def _no_host_package_index_config(monkeypatch):
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
 
 
-def _target(*, has_pip=False, in_venv=True, env=None):
+def _target(*, has_pip=False, in_venv=True, env=None, cwd=None):
     """What a pip-less venv target reports, seeing the test's environment."""
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -53,6 +53,7 @@ def _target(*, has_pip=False, in_venv=True, env=None):
         prefix=Path("/target-env"),
         in_venv=in_venv,
         env=dict(os.environ) if env is None else env,
+        cwd=Path.cwd() if cwd is None else cwd,
     )
 
 
@@ -530,6 +531,7 @@ def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
         "prefix": str(tmp_path / "real-env"),
         "in_venv": True,
         "env": {"PIP_INDEX_URL": "https://private/simple"},
+        "cwd": str(tmp_path / "launcher-dir"),
     }
 
     def run(command, **kwargs):
@@ -544,7 +546,25 @@ def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
         prefix=tmp_path / "real-env",
         in_venv=True,
         env={"PIP_INDEX_URL": "https://private/simple"},
+        cwd=tmp_path / "launcher-dir",
     )
+
+
+def test_relative_pip_config_file_resolves_from_the_targets_cwd(tmp_path, monkeypatch):
+    # pip reads a relative PIP_CONFIG_FILE from its own working directory,
+    # which a launcher may have changed.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    launcher_dir = tmp_path / "launcher-dir"
+    launcher_dir.mkdir()
+    (launcher_dir / "relative-pip.conf").write_text(
+        "[global]\nindex-url = https://private/simple\n", encoding="utf-8"
+    )
+    target = _target(env={"PIP_CONFIG_FILE": "relative-pip.conf"}, cwd=launcher_dir)
+
+    assert deps_cmd._pip_settings(target) == {
+        "index-url": [str(launcher_dir / "relative-pip.conf")]
+    }
 
 
 @pytest.mark.parametrize(
@@ -987,11 +1007,13 @@ def test_leftover_work_dir_with_mount_is_not_deleted(
     mount = leftover / "pkg" / "mnt" if where == "nested" else leftover
     mount.mkdir(parents=True)
     (mount / "external.dat").write_text("keep")
-    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
     if detected_by == "mountinfo":
+        monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
         monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: ["/", os.path.realpath(mount)])
         monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
     else:
+        # Other POSIX systems have no mount table here; ismount decides.
+        monkeypatch.setattr(deps_cmd.sys, "platform", "darwin")
         monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
         monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: Path(p) == mount)
     monkeypatch.setattr(
@@ -1035,6 +1057,40 @@ def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
     assert f"/.vendor.backup-{hex8}" in lines
     assert f"/.vendor.backup-{hex8}.pending" in lines
     assert not any(line.startswith(".vendor.") for line in lines)
+
+
+def test_linux_without_mount_table_keeps_leftovers(tmp_path, monkeypatch, capsys):
+    # ismount() misses same-filesystem bind mounts, so without
+    # /proc/self/mountinfo nothing can be ruled out: keep, do not rmtree.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    leftover = tmp_path / ".vendor.backup-0000cccc"
+    (leftover / "pkg").mkdir(parents=True)
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+
+    assert deps_cmd._mounted_inside(leftover) is True
+    assert "mountinfo is unavailable" in capsys.readouterr().err
+
+
+def test_no_dependency_sync_still_cleans_finished_backups(tmp_path, monkeypatch):
+    # A finished swap whose backup could not be deleted must not linger
+    # forever just because the plugin has no dependencies now.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "pyproject.toml").write_text(
+        '[project]\nname = "my_plugin"\nversion = "1.0.0"\ndependencies = []\n',
+        encoding="utf-8",
+    )
+    (plugin_dir / "vendor").mkdir()
+    leftover = plugin_dir / ".vendor.backup-0000dddd"
+    leftover.mkdir()
+    (leftover / "big.py").write_text("x")
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert not leftover.exists()
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
