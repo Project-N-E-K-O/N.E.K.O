@@ -998,3 +998,28 @@ def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeyp
         for path in tmp_path.rglob("*")
         if path.relative_to(tmp_path).parts[0] != ".vendor.backup-0a1b2c3d"
     )
+
+
+@pytest.mark.parametrize("error", [OSError(5, "I/O error"), PermissionError(13, "denied")])
+def test_plugin_tree_walk_raises_like_rglob(tmp_path, monkeypatch, error):
+    # rglob skipped only denied directories; any other error must fail the
+    # build instead of silently dropping the subtree.
+    import os
+
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "ok.py").write_text("x = 1", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path) == tmp_path / "broken":
+            raise error
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    if isinstance(error, PermissionError):
+        assert tmp_path / "ok.py" in build_rules.walk_plugin_tree(tmp_path)
+    else:
+        with pytest.raises(OSError):
+            build_rules.walk_plugin_tree(tmp_path)

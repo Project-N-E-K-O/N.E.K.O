@@ -124,12 +124,20 @@ def is_vendor_sync_path(relative_path: Path) -> bool:
     )
 
 
+def reraise_walk_error(error: OSError) -> None:
+    """os.walk onerror that fails like Path.rglob did: rglob skipped only
+    directories it was denied, and raised any other error (an I/O error on a
+    network filesystem), so a build or check never silently drops a subtree."""
+    if not isinstance(error, PermissionError):
+        raise error
+
+
 def walk_plugin_tree(source_dir: Path) -> list[Path]:
     """Every path under source_dir, like sorted(source_dir.rglob("*")), but
     without descending into sync work dirs: a backup is retained when it
     holds a mount, and walking it could enumerate another filesystem."""
     paths: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(source_dir):
+    for dirpath, dirnames, filenames in os.walk(source_dir, onerror=reraise_walk_error):
         base = Path(dirpath)
         if base == source_dir:
             dirnames[:] = [name for name in dirnames if not _VENDOR_SYNC_NAME_RE.fullmatch(name)]

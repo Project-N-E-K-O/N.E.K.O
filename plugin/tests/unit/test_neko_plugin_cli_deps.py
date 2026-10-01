@@ -2343,3 +2343,33 @@ def test_config_sections_match_pip_exactly(tmp_path):
     )
 
     assert deps_cmd._config_setting_keys(config) == {"no-deps (invalid value 'maybe')"}
+
+
+def test_windows_lock_dir_ignores_per_process_temp(tmp_path, monkeypatch):
+    # Two syncs by one user with different TEMP/TMP must share one lock, or
+    # one could delete the other's live staging dir as stale.
+    import tempfile
+
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.delattr(deps_cmd.os, "getuid", raising=False)
+    monkeypatch.setattr(deps_cmd, "_windows_local_appdata", lambda: tmp_path / "local")
+    seen = []
+    for temp in ("temp-a", "temp-b"):
+        monkeypatch.setenv("TEMP", str(tmp_path / temp))
+        monkeypatch.setenv("TMP", str(tmp_path / temp))
+        monkeypatch.setattr(tempfile, "tempdir", None)
+        seen.append(real_lock_dir())
+
+    assert seen == [tmp_path / "local" / "neko-plugin" / "sync-locks"] * 2
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows shell API")
+def test_windows_local_appdata_comes_from_the_shell_not_the_environment(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "per-process"))
+    local = deps_cmd._windows_local_appdata()
+
+    assert local is not None and local.is_dir()
+    assert local != tmp_path / "per-process"

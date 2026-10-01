@@ -27,7 +27,7 @@ from plugin.sdk.shared.core.push_message_schema import (
     format_push_message_v1_static_diagnostic,
 )
 
-from ..core.build_rules import is_vendor_sync_path
+from ..core.build_rules import is_vendor_sync_path, reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -826,7 +826,7 @@ def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     walk, not filtered afterwards: a retained sync backup or a venv may hold
     a large tree or a mount."""
     found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(plugin_dir):
+    for dirpath, dirnames, filenames in os.walk(plugin_dir, onerror=reraise_walk_error):
         base = Path(dirpath)
         dirnames[:] = [
             name

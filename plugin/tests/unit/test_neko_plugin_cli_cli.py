@@ -1901,3 +1901,23 @@ def test_git_preflight_skips_git_binary_check_inside_existing_repo(
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _: None)
 
     init_cmd._preflight_git_request(target_dir, initialize_git=True)
+
+
+def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypatch) -> None:
+    # A check must not pass while skipping files it could not list.
+    import os
+
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "broken").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path) == plugin_dir / "broken":
+            raise OSError(5, "I/O error")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(OSError):
+        validate_cmd._plugin_python_files(plugin_dir)

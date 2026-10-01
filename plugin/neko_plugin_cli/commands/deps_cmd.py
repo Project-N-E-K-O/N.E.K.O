@@ -330,14 +330,23 @@ def _parse_mountinfo_points(lines: list[str]) -> list[str]:
 def _lock_dir() -> Path:
     """A per-user directory for the persistent sync lock.
 
-    Windows temp dirs are already per user. On POSIX a lock left directly in
-    a shared, sticky /tmp could be pre-created by another user (unopenable,
-    and undeletable by its victim), so use a private cache dir instead, and
-    fall back to a uid-named dir in the shared temp dir only if that is
-    unusable. Neither location depends on the process environment, so every
-    sync process of one user picks the same lock.
+    On POSIX a lock left directly in a shared, sticky /tmp could be
+    pre-created by another user (unopenable, and undeletable by its victim),
+    so use a private cache dir instead, and fall back to a uid-named dir in
+    the shared temp dir only if that is unusable. On Windows use the user's
+    LocalAppData as the shell reports it. Neither location depends on the
+    process environment (TEMP, HOME, XDG_CACHE_HOME), so every sync process
+    of one user picks the same lock.
     """
     if not hasattr(os, "getuid"):
+        local = _windows_local_appdata()
+        if local is not None:
+            private = local / "neko-plugin" / "sync-locks"
+            try:
+                private.mkdir(parents=True, exist_ok=True)
+                return private
+            except OSError:
+                pass
         return Path(gettempdir())
     base = _lock_cache_base()
     if base is not None:
@@ -352,6 +361,26 @@ def _lock_dir() -> Path:
     fallback.mkdir(exist_ok=True, mode=0o700)
     _make_private(fallback)
     return fallback
+
+
+def _windows_local_appdata() -> Path | None:
+    """FOLDERID_LocalAppData from the shell, not from the LOCALAPPDATA or
+    TEMP variables, which two processes of one user may have set apart."""
+    try:
+        import ctypes
+
+        folder_id = uuid.UUID("F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
+        guid = (ctypes.c_ubyte * 16).from_buffer_copy(folder_id.bytes_le)
+        path = ctypes.c_wchar_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(guid), 0, None, ctypes.byref(path)
+        )
+    except (AttributeError, ImportError, OSError):
+        return None
+    try:
+        return Path(path.value) if result == 0 and path.value else None
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(path)
 
 
 def _lock_cache_base() -> Path | None:
