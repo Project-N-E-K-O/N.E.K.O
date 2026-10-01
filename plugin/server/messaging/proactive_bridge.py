@@ -142,11 +142,18 @@ class ProactiveBridge:
         # 还是退休前那个 PUB 端点，而且和新线程一起往同一个 PUSH 上投递。它
         # 自己那个事件保持置位，于是按自己的节奏退出，且不会被叫回来。
         self._stop = threading.Event()
-        # 必须清：stop() 会置位 _subscribed 来唤醒等待者，重启后不清的话
-        # wait_until_subscribed() 会拿着上一条命的事件立刻返回，窗口原样回来。
-        self._subscribed.clear()
+        # _subscribed 同样每代新建，而不是 clear() 掉共用的那个：退休线程握的是
+        # 它自己那代的事件，即便它在 stop 之后才跑到就绪置位，也只置位自己那代
+        # （已作废）的事件，碰不到新代的——wait_until_subscribed() 读的是
+        # self._subscribed（新代），不会被上一条命误认证就绪。这与上面 _stop 每
+        # 代重绑是同一套设计；无需再加锁去保护代际切换。
+        subscribed = threading.Event()
+        self._subscribed = subscribed
         t = threading.Thread(
-            target=self._run, args=(self._stop,), daemon=True, name="proactive-bridge"
+            target=self._run,
+            args=(self._stop, subscribed),
+            daemon=True,
+            name="proactive-bridge",
         )
         self._thread = t
         t.start()
@@ -190,10 +197,12 @@ class ProactiveBridge:
         if t is not None and t.is_alive():
             t.join(timeout=2.0)
 
-    def _run(self, stop: threading.Event) -> None:
-        # ``stop`` is THIS thread's event, handed over at start. Never
-        # ``self._stop`` -- that name is rebound for each new thread, so reading
-        # it here would make a retired thread obey its successor's lifetime.
+    def _run(self, stop: threading.Event, subscribed: threading.Event) -> None:
+        # ``stop`` and ``subscribed`` are THIS generation's events, handed over at
+        # start. Never ``self._stop`` / ``self._subscribed`` -- those names are
+        # rebound for each new thread, so reading them here would let a retired
+        # thread obey its successor's lifetime, or certify readiness for a
+        # generation that is not its own.
         from plugin.settings import MESSAGE_PLANE_ZMQ_PUB_ENDPOINT
 
         pub_endpoint = os.getenv(
@@ -259,7 +268,9 @@ class ProactiveBridge:
         # and the PUSH forwarder to main_server is connected. Setting this right
         # after SUBSCRIBE (before push_sock was built) let a failure in between
         # latch the bridge as ready while it could receive but never forward.
-        self._subscribed.set()
+        # Sets THIS generation's event, so a retired thread can never certify a
+        # successor that has not finished its own setup.
+        subscribed.set()
 
         logger.info(
             "proactive bridge connected: sub={} push={}",

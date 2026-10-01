@@ -142,13 +142,18 @@ def test_the_bridge_signals_only_after_it_subscribes() -> None:
                 for arg in node.args:
                     if isinstance(arg, ast.Constant) and arg.value == "messages.":
                         subscribe_line = node.lineno
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "set"
-                and isinstance(func.value, ast.Attribute)
-                and func.value.attr == "_subscribed"
-            ):
-                signal_line = node.lineno
+            if isinstance(func, ast.Attribute) and func.attr == "set":
+                # Readiness is signalled on the per-generation ``subscribed``
+                # event handed to _run (historically ``self._subscribed``); match
+                # either shape so this contract survives that ownership change.
+                target = func.value
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "_subscribed"
+                ) or (
+                    isinstance(target, ast.Name) and target.id == "subscribed"
+                ):
+                    signal_line = node.lineno
 
     assert subscribe_line is not None, "找不到 SUBSCRIBE 'messages.'"
     assert signal_line is not None, "_run 里没有置就绪位——启动会一直等到超时"
@@ -216,7 +221,7 @@ def test_restarting_the_bridge_does_not_reuse_the_old_readiness(monkeypatch) -> 
     # Hold socket setup: without the old pre-connect delay a real thread can
     # legitimately subscribe before start() returns, so pin _run to keep this
     # test about clearing the previous generation's event, not about scheduling.
-    monkeypatch.setattr(bridge, "_run", lambda stop: stop.wait(3))
+    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed: stop.wait(3))
     bridge.start()
     try:
         assert not bridge._subscribed.is_set(), (

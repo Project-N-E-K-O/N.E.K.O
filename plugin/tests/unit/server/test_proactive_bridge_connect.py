@@ -46,7 +46,7 @@ def test_subscription_setup_does_not_sleep(monkeypatch):
     # A module-local replacement avoids modifying the process-wide time module.
     monkeypatch.setattr(module, "time", SimpleNamespace(sleep=unexpected_sleep))
     bridge = module.ProactiveBridge()
-    bridge._run(stop)
+    bridge._run(stop, bridge._subscribed)
     assert bridge._subscribed.is_set()
     assert calls[0][0] == "connect"
     assert calls[1] == ("subscribe", "messages.")
@@ -142,7 +142,7 @@ def test_socket_setup_failure_does_not_signal_ready(monkeypatch):
     monkeypatch.setattr(module.zmq.Context, "instance", lambda: context)
 
     bridge = module.ProactiveBridge()
-    bridge._run(stop)  # guarded setup catches, closes sub_sock, returns
+    bridge._run(stop, bridge._subscribed)  # guarded setup catches, closes sub_sock, returns
     assert not bridge._subscribed.is_set(), (
         "readiness signalled despite a dead forwarder"
     )
