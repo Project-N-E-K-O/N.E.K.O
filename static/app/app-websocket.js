@@ -3985,16 +3985,6 @@
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
-                        if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
-                            tearDownBlockedVoiceRoute();
-                            if (typeof window.showStatusToast === 'function') {
-                                window.showStatusToast(
-                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition dependencies are missing. Voice input has stopped for this session.',
-                                    8000
-                                );
-                            }
-                            return;
-                        }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
                             var preparingText = statusDetails
                                 && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
@@ -4012,6 +4002,16 @@
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',
                                     3000
+                                );
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
+                            tearDownBlockedVoiceRoute();
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition dependencies are missing. Voice input has stopped for this session.',
+                                    8000
                                 );
                             }
                             return;
