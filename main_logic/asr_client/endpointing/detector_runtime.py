@@ -1236,6 +1236,7 @@ class _VoiceTurnAdapter:
             if (
                 self._last_no_vad_audio_at is not None
                 and self._last_no_vad_audio_at > wait_started_at
+                and not self._strict_endpoint_wait_expired()
             ):
                 continue
             break
@@ -1243,7 +1244,7 @@ class _VoiceTurnAdapter:
         # A periodic no-VAD inference may be running; the retry then coalesces
         # behind it instead of silently ending the strict wait.
         waiting = state is CoordinatorState.WAIT_CONTINUATION or (
-            state is CoordinatorState.EVALUATING and self._evaluation_task is not None
+            state is CoordinatorState.EVALUATING
         )
         if self._closed or self._failed or identity != self._identity or not waiting:
             return
