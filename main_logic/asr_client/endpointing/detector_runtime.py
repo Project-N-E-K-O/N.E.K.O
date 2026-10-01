@@ -256,6 +256,7 @@ class _VoiceTurnAdapter:
         self._reevaluation_reason: EvaluationReason | None = None
         self._pending_complete_confirmation: _PendingCompleteConfirmation | None = None
         self._strict_endpoint_deadline: float | None = None
+        self._no_vad_deadline_cap: float | None = None
         self._latest_detector_identity: DetectorIngressIdentity | None = None
         self._smart_turn_evaluation_ms = 0
         self._smart_turn_stale_result_count = 0
@@ -647,6 +648,7 @@ class _VoiceTurnAdapter:
             self._cancel_smart_turn_unload()
             self._cancel_fallback()
             self._strict_endpoint_deadline = None
+            self._no_vad_deadline_cap = None
 
         if (
             SpeechActivityEvent.CANDIDATE_PAUSE not in events
@@ -677,8 +679,19 @@ class _VoiceTurnAdapter:
                 self._smart_turn_required
                 and self._strict_endpoint_deadline is not None
             ):
+                # RMS is only an activity hint when Silero is unavailable:
+                # steady HVAC or microphone self-noise can sit above the
+                # floor.  Allow speech to extend the inactivity wait, but
+                # keep a hard bound so noise cannot starve semantic_timeout.
+                cap = self._no_vad_deadline_cap
+                if cap is None:
+                    cap = (
+                        self._strict_endpoint_deadline
+                        + self._max_endpoint_wait_seconds
+                    )
+                    self._no_vad_deadline_cap = cap
                 self._strict_endpoint_deadline = (
-                    now + self._max_endpoint_wait_seconds
+                    min(now + self._max_endpoint_wait_seconds, cap)
                 )
         started_now = False
         if not self._fallback_speech_started:
@@ -913,6 +926,10 @@ class _VoiceTurnAdapter:
                     asyncio.get_running_loop().time()
                     + self._max_endpoint_wait_seconds
                 )
+                self._no_vad_deadline_cap = (
+                    self._strict_endpoint_deadline
+                    + self._max_endpoint_wait_seconds
+                )
             if item.reason != "periodic_no_vad" or (
                 self._smart_turn_required
                 and (
@@ -1027,6 +1044,7 @@ class _VoiceTurnAdapter:
         self._reevaluation_requested = False
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
+        self._no_vad_deadline_cap = None
         self._last_no_vad_audio_at = None
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
@@ -1254,6 +1272,7 @@ class _VoiceTurnAdapter:
                 # complete the retired candidate.
                 return
         self._strict_endpoint_deadline = None
+        self._no_vad_deadline_cap = None
         self._smart_turn_diagnostics.complete(reason=reason)
         self._complete_observed_candidate(detector_identity)
         if active_identity == identity:

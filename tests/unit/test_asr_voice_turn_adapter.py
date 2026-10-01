@@ -1546,7 +1546,9 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
     )
     refreshed_deadline = adapter._strict_endpoint_deadline
     assert refreshed_deadline is not None
-    assert refreshed_deadline > first_deadline
+    assert refreshed_deadline >= first_deadline
+    assert adapter._no_vad_deadline_cap is not None
+    assert refreshed_deadline <= adapter._no_vad_deadline_cap
     await asyncio.sleep(0.03)
     assert not retry.done()
     retry.cancel()
@@ -1581,6 +1583,45 @@ async def test_no_vad_silence_frames_eventually_seal_semantic_timeout() -> None:
             buffer_epoch=45,
             utterance_id=46,
             pcm16=silence,
+        )
+        await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert evidence.completed_reasons == ["semantic_timeout"]
+    assert adapter._failed is False
+    await adapter.close()
+
+
+async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout() -> None:
+    committed = asyncio.Event()
+    evidence = _EvidenceSpy()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()] * 1000)
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=10,
+    )
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    # This frame is above the quiet-speech floor and models steady microphone
+    # noise. Repeated frames may extend the inactivity wait, but only up to
+    # the bounded no-VAD cap.
+    noise = b"\x40\x00" * 160
+    for _ in range(24):
+        await adapter.push_audio(
+            generation=47,
+            buffer_epoch=48,
+            utterance_id=49,
+            pcm16=noise,
         )
         await asyncio.sleep(0.005)
 
