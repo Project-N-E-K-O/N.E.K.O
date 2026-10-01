@@ -1010,7 +1010,7 @@ def test_mount_in_in_place_clean_staging_stops_before_cleanup(tmp_path, monkeypa
     assert "got mounted inside" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("change", ["mount", "retarget"])
+@pytest.mark.parametrize("change", ["mount", "retarget", "replaced"])
 def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, capsys, change):
     # The install can take minutes; vendor/ may change under it.
     import shutil
@@ -1037,14 +1037,59 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
         if change == "retarget":
             # vendor/ now leads somewhere the staging dir is not.
             shutil.rmtree(staging)
+        if change == "replaced":
+            # Another directory now sits at vendor/, even holding a dir of
+            # the staging name: only its identity tells them apart.
+            vendor.rename(plugin_dir / "moved-away")
+            (vendor / staging.name).mkdir(parents=True)
+            (vendor / "other.py").write_text("other")
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
     monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", find)
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
-    assert (vendor / "old.py").read_text() == "old"
+    if change == "replaced":
+        assert (vendor / "other.py").read_text() == "other"
+        assert (plugin_dir / "moved-away" / "old.py").read_text() == "old"
+    else:
+        assert (vendor / "old.py").read_text() == "old"
     assert "changed during the install" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
+def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, capsys):
+    # Two plugins linking vendor/ to one target are one writer's business.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    shared = tmp_path / "shared_vendor"
+    shared.mkdir()
+    plugins = []
+    for name in ("first", "second"):
+        plugin_dir = tmp_path / name
+        plugin_dir.mkdir()
+        (plugin_dir / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "1"\ndependencies = ["httpx"]\n', encoding="utf-8"
+        )
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(plugin_dir / "vendor"), str(shared)],
+                       check=True, capture_output=True)
+        plugins.append(plugin_dir)
+    monkeypatch.setattr(
+        deps_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: Path(plugin)
+    )
+    nested = []
+
+    def install(command, **kwargs):
+        if not nested:
+            nested.append(
+                handle_sync(TestTransactionalDependencyInstall()._args(plugins[1], tmp_path))
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
+    assert nested == [1]
+    assert "already in progress" in capsys.readouterr().err
 
 
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):

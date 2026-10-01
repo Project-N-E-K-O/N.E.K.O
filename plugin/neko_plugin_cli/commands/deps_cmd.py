@@ -151,7 +151,13 @@ def handle_sync(args: argparse.Namespace) -> int:
             # volume) can not be renamed at all. Install into those in place,
             # as before the swap existed, without its rollback.
             if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
-                exit_code = _sync_in_place(vendor_dir, external_deps, args)
+                # Several plugins may link vendor/ to one target: every writer
+                # to it must hold that target's lock, not only its plugin's.
+                target_lock = hashlib.sha256(_lock_identity(vendor_dir)).hexdigest()
+                with portalocker.Lock(
+                    _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
+                ):
+                    exit_code = _sync_in_place(vendor_dir, external_deps, args)
                 if exit_code != 0:
                     return exit_code
                 _remove_retained_backups(plugin_dir)
@@ -293,6 +299,8 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             file=sys.stderr,
         )
         return 1
+    # The directory vendor/ leads to now; refilling must happen in it.
+    identity = vendor_dir.stat()
     staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
     staging_dir.mkdir()
     try:
@@ -310,23 +318,77 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             )
             return 1  # the mount check below keeps staging
         _clean_vendor(staging_dir)
-        # The install can take minutes: recheck right before emptying that
-        # vendor/ still leads to where staging was made (a link may have been
-        # retargeted) and that nothing got mounted inside it meanwhile.
-        if not staging_dir.is_dir() or _find_foreign_subdir(vendor_dir, junctions=False) is not None:
-            print(
-                f"[FAIL] {vendor_dir} changed during the install (retargeted, or a "
-                "mount appeared inside); not emptying it. Check it and retry.",
-                file=sys.stderr,
-            )
-            return 1
+        return _refill_in_place(vendor_dir, staging_dir, identity)
+    finally:
+        if staging_dir.exists() and not _mounted_inside(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+# Directory-handle variants of the calls that empty and refill vendor/
+# (POSIX); Windows offers none of them.
+_DIR_FD_OPS = (
+    os.open in os.supports_dir_fd
+    and os.scandir in os.supports_fd
+    and os.rename in os.supports_dir_fd
+    and shutil.rmtree.avoids_symlink_attacks
+)
+
+
+def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_result) -> int:
+    """Replace vendor/'s contents with staging's, in the directory the
+    install ran in.
+
+    The install can take minutes, during which a link may be retargeted or
+    a mount added inside. Recheck right before emptying; on POSIX every step
+    then goes through one opened handle of that directory, so a retarget
+    after the check can no longer redirect the deletion. (Windows has no
+    such calls; there the check runs right before the path-based deletion.)
+    """
+    def changed() -> int:
+        print(
+            f"[FAIL] {vendor_dir} changed during the install (retargeted, or a "
+            "mount appeared inside); not emptying it. Check it and retry.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if _find_foreign_subdir(vendor_dir, junctions=False) is not None:
+        return changed()
+    if not _DIR_FD_OPS:
+        try:
+            current = vendor_dir.stat()
+        except OSError:
+            return changed()
+        if not os.path.samestat(current, identity) or not staging_dir.is_dir():
+            return changed()
         _empty_directory(vendor_dir, keep=staging_dir.name)
         for child in staging_dir.iterdir():
             child.replace(vendor_dir / child.name)
         return 0
+
+    fd = os.open(vendor_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if not os.path.samestat(os.fstat(fd), identity):
+            return changed()
+        try:
+            staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError:
+            return changed()
+        try:
+            for entry in list(os.scandir(fd)):
+                if entry.name == staging_dir.name:
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.name, dir_fd=fd)
+                else:
+                    os.unlink(entry.name, dir_fd=fd)
+            for name in os.listdir(staging_fd):
+                os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
+        finally:
+            os.close(staging_fd)
     finally:
-        if staging_dir.exists() and not _mounted_inside(staging_dir):
-            shutil.rmtree(staging_dir, ignore_errors=True)
+        os.close(fd)
+    return 0
 
 
 def _empty_directory(directory: Path, *, keep: str) -> None:
