@@ -359,10 +359,6 @@ async def replace_plugin(
             ensure_plugin_layout_runtime_config,
             layout,
         )
-    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
-
-    # 换了一份源码：上一份自动热重载失败留下的恢复许可不再适用。
-    revoke_hot_reload_recovery(plugin_id)
     was_running = await _plugin_is_running(plugin_id)
     if was_running:
         await _stop_plugin(plugin_id)
@@ -424,6 +420,11 @@ async def replace_plugin(
         if was_running:
             stage = "restart"
             await _start_plugin(plugin_id)
+        from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+        # 新源码已就位：上一份自动热重载失败留下的恢复许可不再适用。放在提交
+        # 之后——回滚恢复的是旧源码，许可应当保留。
+        revoke_hot_reload_recovery(plugin_id)
         stage = "cleanup"
         for backup in backups.values():
             try:

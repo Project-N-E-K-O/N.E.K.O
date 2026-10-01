@@ -1247,3 +1247,22 @@ async def test_uninstall_revokes_hot_reload_recovery_of_stopped_plugin(
     assert result.restored_builtin is True
     assert harness.stop_calls == []
     assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_keeps_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "completed"
+    assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")

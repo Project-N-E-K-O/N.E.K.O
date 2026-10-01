@@ -1295,3 +1295,29 @@ async def test_changing_association_revokes_hot_reload_recovery(tmp_path, monkey
         replacement = _source(tmp_path / "replacement")
         await service.rebind_development(record.registration_id, record.revision, str(replacement))
     assert not lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("operation", "mutation"), [
+    ("remove", "remove_registration_sync"),
+    ("disable", "set_enabled_sync"),
+    ("rebind", "rebind_registration_sync"),
+])
+async def test_failed_association_change_keeps_hot_reload_recovery(tmp_path, monkeypatch, operation, mutation):
+    """The old source stays registered, so its recovery permission must too."""
+    from plugin.server.application.plugins import lifecycle_service
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {record.plugin_id})
+
+    def fail(*_args, **_kwargs):
+        raise ServerDomainError(code="DEVELOPMENT_STORE_FAILED", message="disk full", status_code=500)
+
+    monkeypatch.setattr(store, mutation, fail)
+    with pytest.raises(ServerDomainError):
+        if operation == "remove":
+            await service.remove_development(record.registration_id, record.revision)
+        elif operation == "disable":
+            await service.set_development_enabled(False)
+        else:
+            await service.rebind_development(record.registration_id, record.revision, str(_source(tmp_path / "replacement")))
+    assert lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)

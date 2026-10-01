@@ -157,8 +157,10 @@ async def _stop_if_present(record: store.DevelopmentSnapshot) -> None:
 
 
 def _revoke_hot_reload_recovery(record: store.DevelopmentSnapshot) -> None:
-    # The association's source is going away or changing; a stopped plugin never
+    # The association's source has gone away or changed; a stopped plugin never
     # reaches stop_plugin, so its auto-reload recovery permission is dropped here.
+    # Called only after the store mutation commits: a failed operation keeps the
+    # old source, and with it the permission.
     from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
     revoke_hot_reload_recovery(record.plugin_id)
 
@@ -173,12 +175,13 @@ def _forget_metadata_sync(record: store.DevelopmentSnapshot) -> None:
 
 @serialized_plugin_operation
 async def set_development_enabled(enabled: bool) -> dict:
-    if not enabled:
-        for record in await asyncio.to_thread(store.list_registration_records_sync):
-            await _stop_if_present(record)
-            _revoke_hot_reload_recovery(record)
-            await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
+    records =await asyncio.to_thread(store.list_registration_records_sync) if not enabled else []
+    for record in records:
+        await _stop_if_present(record)
+        await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await asyncio.to_thread(store.set_enabled_sync, enabled)
+    for record in records:
+        _revoke_hot_reload_recovery(record)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     await PluginRegistryService().refresh_registry()
     return await asyncio.to_thread(development_view_sync)
@@ -207,8 +210,8 @@ async def register_development(source_dir: str) -> dict:
 async def remove_development(registration_id: str, revision: int) -> dict:
     record = await asyncio.to_thread(store.require_registration_sync, registration_id, revision)
     await _stop_if_present(record)
-    _revoke_hot_reload_recovery(record)
     await asyncio.to_thread(store.remove_registration_sync, record)
+    _revoke_hot_reload_recovery(record)
     await asyncio.to_thread(_forget_metadata_sync, record)
     return {"success": True, "registration_id": registration_id}
 
@@ -223,8 +226,8 @@ async def rebind_development(registration_id: str, revision: int, source_dir: st
         await asyncio.to_thread(_preflight_source_sync, Path(metadata["source_dir"]), record.plugin_id)
     await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await _stop_if_present(record)
-    _revoke_hot_reload_recovery(record)
     updated = await asyncio.to_thread(store.rebind_registration_sync, record, source_dir)
+    _revoke_hot_reload_recovery(record)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     await PluginRegistryService().refresh_plugin(updated.plugin_id)
     return await asyncio.to_thread(registration_view_sync, updated)
