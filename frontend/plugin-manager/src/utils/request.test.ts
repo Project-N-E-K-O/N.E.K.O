@@ -489,7 +489,7 @@ describe('CSRF bootstrap error policy', () => {
     requestMocks.errorMessage.mockClear()
   })
 
-  it('preserves caller timeout and silence policies without sharing error config', async () => {
+  it('uses generic bootstrap timeout and preserves caller silence without sharing error config', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('timeout'), {
       isAxiosError: true, code: 'ECONNABORTED', request: {},
@@ -504,7 +504,13 @@ describe('CSRF bootstrap error policy', () => {
     expect(adapter).not.toHaveBeenCalled()
     expect(results.every(result => result.status === 'rejected')).toBe(true)
     expect(requestMocks.errorMessage).toHaveBeenCalledTimes(1)
-    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.pluginLifecycleTimeout')
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.requestTimeout')
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        expect(result.reason.config.csrfBootstrapFailed).toBe(true)
+        expect(result.reason.config.timeoutErrorMessageKey).toBeUndefined()
+      }
+    }
     bootstrap.mockRestore()
   })
 

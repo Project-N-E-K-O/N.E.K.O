@@ -362,8 +362,8 @@ async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plu
     (directory / "__init__.py").write_text('class Demo: pass\n', encoding="utf-8")
     store._store_path().parent.mkdir(parents=True, exist_ok=True)
     store._store_path().write_text('{', encoding="utf-8")
-    headers = mutation_headers()
-    async with client(app, headers=headers) as http:
+    headers = mutation_headers(Origin="http://192.168.1.5:48911")
+    async with client(app, peer="192.168.1.2", host="192.168.1.5:48911", headers=headers) as http:
         response = await http.post("/plugins/refresh")
         assert response.status_code == 403
         assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
@@ -378,7 +378,7 @@ async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plu
         assert response.json()["success"] is False
         assert response.json()["failed"]
         assert "ordinary" in state.plugins
-    async with client(app, headers=headers) as http:
+    async with client(app, peer="192.168.1.2", host="192.168.1.5:48911", headers=headers) as http:
         assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
 
 

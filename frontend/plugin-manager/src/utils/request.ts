@@ -178,7 +178,7 @@ function isPluginLifecycleMutation(config: Pick<AxiosRequestConfig, 'method' | '
     || /^\/plugins\/(?:refresh|reload)$/.test(path)
 }
 
-/** Fetch the per-process mutation token once, sharing concurrent callers. */
+/** Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts apply after it. */
 function loadCsrfToken(): Promise<string> {
   if (csrfToken) return Promise.resolve(csrfToken)
   if (pendingCsrfToken) return pendingCsrfToken
@@ -273,10 +273,14 @@ service.interceptors.request.use(
         // Bootstrap is shared by concurrent callers. Create a separate error
         // for each caller instead of mutating its shared config/display policy.
         const source = axios.isAxiosError(cause) ? cause : undefined
+        const failureConfig = { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig
+        // The lifecycle operation has not been sent. Its domain timeout label
+        // would incorrectly imply that the plugin itself timed out.
+        delete (failureConfig as ErrorDisplayRequestConfig).timeoutErrorMessageKey
         const error = new RequestAxiosError(
           source?.message || i18n.global.t('messages.requestFailed'),
           source?.code,
-          { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig,
+          failureConfig,
           source?.request,
           source?.response,
         )
