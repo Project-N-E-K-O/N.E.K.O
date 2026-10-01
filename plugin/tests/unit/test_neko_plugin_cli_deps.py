@@ -1423,6 +1423,22 @@ def test_refill_trash_is_marked_until_the_refill_completes(tmp_path, monkeypatch
     assert deps_cmd._unfinished_refills(vendor) == [trash]
 
 
+def test_zero_inode_vendor_replacement_is_told_apart_by_creation_time(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+
+    def zero(ctime_ns):
+        return os.stat_result((0o40755, 0, 7, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ctime_ns))
+
+    before = zero(1_000)
+    monkeypatch.setattr(Path, "lstat", lambda self: zero(1_000))
+    assert deps_cmd._vendor_unchanged(vendor, before) is True
+    monkeypatch.setattr(Path, "lstat", lambda self: zero(2_000))
+    assert deps_cmd._vendor_unchanged(vendor, before) is False
+
+
 def test_swap_refuses_a_vendor_replaced_during_the_install(tmp_path, monkeypatch, capsys):
     # Moving the replacement aside would hand it to backup cleanup.
     from plugin.neko_plugin_cli.commands import deps_cmd

@@ -280,7 +280,15 @@ def _vendor_unchanged(vendor_dir: Path, before: os.stat_result | None) -> bool:
         now = vendor_dir.lstat()
     except FileNotFoundError:
         return before is None
-    return before is not None and os.path.samestat(now, before)
+    if before is None or not os.path.samestat(now, before):
+        return False
+    if not before.st_ino:
+        # Without inode numbers samestat takes any directory on the device
+        # for this one. A replacement was created later: st_ctime is the
+        # creation time on Windows (elsewhere it also moves on changes, which
+        # only makes this stricter).
+        return now.st_ctime_ns == before.st_ctime_ns
+    return True
 
 
 def _pending_marker(backup_dir: Path) -> Path:
