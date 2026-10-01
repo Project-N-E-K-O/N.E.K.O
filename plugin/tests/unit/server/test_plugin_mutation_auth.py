@@ -238,3 +238,27 @@ async def test_trusted_docker_proxy_can_forward_external_browser_mutation(
         response = await client.post("/plugin/demo/stop")
     assert response.status_code == 200
     stop.assert_awaited_once_with("demo", persist_user_intent=True)
+
+
+@pytest.mark.asyncio
+async def test_trusted_docker_proxy_without_browser_provenance_is_rejected(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    async with _client(
+        app,
+        peer="192.168.1.10",
+        host="nas.example",
+        headers={
+            "X-Neko-Trusted-Proxy": "1",
+            "X-Forwarded-For": "192.168.1.10",
+            "X-Forwarded-Host": "nas.example",
+            "X-Forwarded-Proto": "https",
+        },
+    ) as client:
+        response = await client.post(
+            "/plugin/demo/stop",
+            headers={"X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+        )
+    assert response.status_code == 403

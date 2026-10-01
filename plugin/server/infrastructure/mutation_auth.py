@@ -121,14 +121,15 @@ def _configured_origins() -> frozenset[str]:
     return frozenset(origins)
 
 
-def _local_request(request: Request) -> bool:
-    direct_local = bool(
+def _direct_local_request(request: Request) -> bool:
+    return bool(
         request.client is not None
         and _is_loopback(request.client.host)
         and _is_loopback(request.url.hostname)
     )
-    if direct_local:
-        return True
+
+
+def _trusted_proxy_request(request: Request) -> bool:
 
     # The bundled Docker Nginx is the only supported non-loopback ingress for
     # this loopback-bound service.  It marks the hop explicitly and forwards
@@ -141,6 +142,10 @@ def _local_request(request: Request) -> bool:
         and request.headers.get("x-forwarded-host")
         and request.headers.get("x-forwarded-proto") in {"http", "https"}
     )
+
+
+def _local_request(request: Request) -> bool:
+    return _direct_local_request(request) or _trusted_proxy_request(request)
 
 
 def _has_browser_metadata(request: Request) -> bool:
@@ -168,6 +173,7 @@ def _deny() -> None:
 
 def require_plugin_mutation_access(request: Request) -> None:
     """Authorize a plugin lifecycle mutation before any route side effect."""
+    direct_local = _direct_local_request(request)
     if not _local_request(request):
         _deny()
     origin_header = request.headers.get("origin")
@@ -183,6 +189,8 @@ def require_plugin_mutation_access(request: Request) -> None:
         return
     # Native/local callers may omit Origin, but browser metadata must never
     # silently enter this compatibility path.
+    if not direct_local:
+        _deny()
     if _has_browser_metadata(request):
         _deny()
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
@@ -209,6 +217,7 @@ class PluginMutationGuardedRoute(APIRoute):
 
 def require_plugin_token_bootstrap_access(request: Request) -> None:
     """Authorize token bootstrap without exposing it through arbitrary CORS."""
+    direct_local = _direct_local_request(request)
     if not _local_request(request):
         _deny()
     origin_header = request.headers.get("origin")
@@ -219,6 +228,8 @@ def require_plugin_token_bootstrap_access(request: Request) -> None:
         return
     referer = request.headers.get("referer")
     if referer and _normalize_referer_origin(referer) not in _configured_origins():
+        _deny()
+    if not direct_local and not referer:
         _deny()
     if _has_browser_metadata(request) and request.headers.get("sec-fetch-site") not in {"same-origin", "same-site", "none"}:
         _deny()
