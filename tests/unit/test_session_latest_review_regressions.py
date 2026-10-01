@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_logic.core import lifecycle, streaming
-from tests.unit.session_handoff_harness import drain_manager, make_full_manager
+from tests.unit.session_handoff_harness import ConnectedSocket, drain_manager, make_full_manager
 from tests.unit.test_session_handoff_lifecycle import make_manager
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -100,6 +100,55 @@ async def test_server_end_without_target_preserves_pending_start(monkeypatch):
         await asyncio.wait_for(starting, 2)
         assert manager.session is client and manager.is_active
         assert not any(message.get("type") == "session_failed" for message in manager.websocket.messages)
+    finally:
+        await drain_manager(manager, clients, starting)
+        await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("replaced_socket", [False, True])
+async def test_disconnect_during_start_revokes_only_matching_socket(monkeypatch, replaced_socket):
+    manager, created, clients = await make_full_manager(monkeypatch)
+    disconnected = manager.websocket
+    if replaced_socket:
+        manager.websocket = ConnectedSocket()
+    requester = manager.websocket
+    manager._config_manager.core["DISABLE_TTS"] = False
+    monkeypatch.setattr(manager, "_resolve_session_use_tts", lambda *args: True)
+
+    def worker(requests, responses, *_):
+        responses.put(("__ready__", True))
+        while requests.get()[0] != "__shutdown__":
+            pass
+
+    monkeypatch.setattr(lifecycle._core_facade, "get_tts_worker", lambda **kwargs: (worker, "key", "qwen"))
+    starting = asyncio.create_task(manager.start_session(requester, request_id="disconnect-start"))
+    try:
+        client = await asyncio.wait_for(created.get(), 2)
+        await asyncio.wait_for(client.connect_entered.wait(), 2)
+        async with asyncio.timeout(2):
+            while not manager.tts_ready:
+                await asyncio.sleep(0)
+        operation = manager._start_operation
+        runtime = manager._tts_runtime
+        assert manager.session is None
+        await asyncio.wait_for(manager.cleanup(expected_websocket=disconnected), 2)
+        if replaced_socket:
+            assert operation.valid and not starting.done()
+            assert manager.websocket is requester
+            assert manager._tts_runtime_is_current(runtime)
+            client.allow_connect.set()
+            await asyncio.wait_for(starting, 2)
+            assert manager.session is client and manager.is_active
+        else:
+            assert not operation.valid
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(starting, 2)
+            assert client.closed.is_set()
+            assert manager.websocket is None and manager.session is None
+            assert not manager.is_active and runtime.retired
+            await asyncio.wait_for(runtime.cleanup_task, 2)
+            assert not runtime.thread.is_alive()
+            assert not any(message.get("type") == "session_started" for message in requester.messages)
     finally:
         await drain_manager(manager, clients, starting)
         await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)

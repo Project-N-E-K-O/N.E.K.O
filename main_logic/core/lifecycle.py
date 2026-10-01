@@ -4399,6 +4399,13 @@ class LifecycleMixin:
             return
         if expected_session is not None and self.session is not expected_session:
             return
+        operation = self._start_operation
+        if (reset_starting_count and operation is not None
+                and operation.websocket is socket and not operation.finished.is_set()):
+            # Disconnect is terminal intent for this requester, unlike a
+            # targetless server-side config cleanup. Revoke before the first
+            # await so retirement owns its startup children and TTS resources.
+            operation.valid = False
         generation = self._session_generation
         try:
             await self.end_session(by_server=True, expected_session=expected_session,
