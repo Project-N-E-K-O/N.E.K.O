@@ -1201,7 +1201,7 @@ def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypat
     assert "leads to the plugin directory" in capsys.readouterr().err
 
 
-def test_zero_inode_targets_are_compared_by_path(tmp_path):
+def test_zero_inode_targets_are_compared_by_path(tmp_path, monkeypatch):
     # Some filesystems report st_ino 0 for every directory; identity alone
     # would call a separate shared vendor target "the plugin".
     from plugin.neko_plugin_cli.commands import deps_cmd
@@ -1212,8 +1212,12 @@ def test_zero_inode_targets_are_compared_by_path(tmp_path):
     shared.mkdir()
     zero = os.stat_result((0o40755, 0, 1, 1, 0, 0, 0, 0, 0, 0))
 
+    link = tmp_path / "vendor_link"
+    monkeypatch.setattr(deps_cmd, "_is_link", lambda path: path in {shared, tmp_path})
     assert deps_cmd._contains_plugin(zero, shared, plugin_dir) is False
     assert deps_cmd._contains_plugin(zero, tmp_path, plugin_dir) is True
+    # A mount point (not a link) can not be resolved to what it mounts.
+    assert deps_cmd._contains_plugin(zero, link, plugin_dir) is True
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows junction pinning")

@@ -169,7 +169,8 @@ def handle_sync(args: argparse.Namespace) -> int:
                 if _contains_plugin(target, vendor_dir, plugin_dir):
                     print(
                         f"[FAIL] {vendor_dir} leads to the plugin directory or one of "
-                        "its parents; point it at a separate directory and retry.",
+                        "its parents (or, without inode numbers, can not be told "
+                        "apart from them); point it at a separate directory and retry.",
                         file=sys.stderr,
                     )
                     return 1
@@ -268,10 +269,13 @@ def _pending_marker(backup_dir: Path) -> Path:
 
 
 def _contains_plugin(target: os.stat_result, vendor_dir: Path, plugin_dir: Path) -> bool:
-    """Whether the directory vendor/ leads to is plugin_dir or one of its
-    parents: compared by identity (a symlink, junction or bind mount), or by
-    resolved path where the filesystem reports no inode numbers."""
+    """Whether the directory vendor/ leads to is (or may be) plugin_dir or one
+    of its parents: compared by identity (a symlink, junction or bind mount),
+    or by resolved path where the filesystem reports no inode numbers. A
+    mount point there can not be resolved to what it mounts, so it counts."""
     if not target.st_ino:
+        if not _is_link(vendor_dir):
+            return True
         resolved = os.path.normcase(os.path.realpath(vendor_dir))
         plugin = Path(os.path.realpath(plugin_dir))
         return any(
