@@ -971,6 +971,42 @@ def test_in_place_cleanup_skips_a_tree_with_a_mount_inside(tmp_path, monkeypatch
     assert "Skipped removing __pycache__" in capsys.readouterr().err
 
 
+def test_mount_in_in_place_clean_staging_stops_before_cleanup(tmp_path, monkeypatch, capsys):
+    # _clean_vendor recurses: a mount that appeared in staging during the
+    # install must not lose its caches, nor be moved into vendor/.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    mounts = []
+
+    def install(command, **kwargs):
+        staging = Path(command[command.index("--target") + 1])
+        mount = staging / "mnt"
+        (mount / "__pycache__").mkdir(parents=True)
+        (mount / "__pycache__" / "x.pyc").write_text("external")
+        mounts.append(mount)
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+    monkeypatch.setattr(
+        deps_cmd,
+        "_find_mount",
+        lambda path: mounts[0] if mounts and path.name.startswith(".vendor.staging-") else None,
+    )
+    monkeypatch.setattr(
+        deps_cmd, "_mounted_inside", lambda path: path.name.startswith(".vendor.staging-")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (mounts[0] / "__pycache__" / "x.pyc").read_text() == "external"
+    assert (vendor / "old.py").read_text() == "old"
+    assert "got mounted inside" in capsys.readouterr().err
+
+
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
     from plugin.neko_plugin_cli.commands import deps_cmd

@@ -294,6 +294,16 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
         exit_code = _install_to_vendor(external_deps, vendor_dir=staging_dir, python=args.python)
         if exit_code != 0:
             return exit_code
+        # As in the swap path: _clean_vendor recurses, and the move would
+        # carry a mount into vendor/; stop if one appeared during the install.
+        mounted = _find_mount(staging_dir)
+        if mounted is not None:
+            print(
+                f"[FAIL] {mounted} got mounted inside {staging_dir} during the "
+                "install; not touching it. Unmount it, then retry.",
+                file=sys.stderr,
+            )
+            return 1  # the mount check below keeps staging
         _clean_vendor(staging_dir)
         _empty_directory(vendor_dir)
         for child in staging_dir.iterdir():
