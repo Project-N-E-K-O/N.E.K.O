@@ -619,6 +619,8 @@ def _pip_install_to_vendor(
     # environment variable for it). With no index, pip ignores its index
     # settings, and so will uv.
     no_index = "no-index" in settings
+    # Coverage is checked against exactly the environment uv will get.
+    uv_env = _uv_env(target)
     uncovered: list[str] = []
     for name, where in sorted(settings.items()):
         if name in _PIP_HARMLESS_SETTINGS or name == "no-index":
@@ -638,14 +640,15 @@ def _pip_install_to_vendor(
         # hosts uv will contact (indexes, redirected downloads) can not be
         # listed up front, so any bypass list at all fails closed.
         bypass_all = kind == "proxy" and any(
-            (os.environ.get(name) or "").strip() for name in ("NO_PROXY", "no_proxy")
+            (uv_env.get(name) or "").strip() for name in ("NO_PROXY", "no_proxy")
         )
         if kind == "proxy":
             covered = all(
-                any(_uv_env_set(uv_name) for uv_name in scheme) for scheme in _UV_PROXY_SCHEMES
+                any(_uv_env_set(uv_name, uv_env) for uv_name in scheme)
+                for scheme in _UV_PROXY_SCHEMES
             )
         else:
-            covered = any(_uv_env_set(uv_name) for uv_name in covers)
+            covered = any(_uv_env_set(uv_name, uv_env) for uv_name in covers)
         if bypass_all or not covered:
             if kind == "proxy":
                 fix = "set ALL_PROXY, or both HTTPS_PROXY and HTTP_PROXY, and no NO_PROXY"
@@ -679,7 +682,7 @@ def _pip_install_to_vendor(
         # The pip attempt ran (through any launcher) in target.cwd, so
         # relative requirements such as "pkg @ file:./pkg" resolve the same.
         cwd=target.cwd,
-        env=_uv_env(),
+        env=uv_env,
     )
     if result is None:
         return 1
@@ -926,8 +929,8 @@ def _config_setting_keys(path: Path) -> set[str]:
     return {setting for setting in settings if setting is not None}
 
 
-def _uv_env_set(name: str) -> bool:
-    value = os.environ.get(name)
+def _uv_env_set(name: str, env: dict[str, str]) -> bool:
+    value = env.get(name)
     if not value:
         return False
     if name == "SSL_CERT_FILE":
@@ -1015,14 +1018,21 @@ def _effective_setting(name: str, value: str) -> str | None:
     return f"{name} (invalid value {value!r})"
 
 
-def _uv_env() -> dict[str, str]:
+def _uv_env(target: _TargetPython) -> dict[str, str]:
     """This process's environment for uv, with relative SSL_CERT_FILE /
     SSL_CLIENT_CERT pinned: uv runs in another cwd, where a checked file may
-    not exist and uv would silently ignore it."""
+    not exist and uv would silently ignore it.
+
+    A CA bundle the target itself was given (through a launcher, maybe from
+    another cwd) is what pip trusted, so uv gets that same file.
+    """
     env = dict(os.environ)
     for name in ("SSL_CERT_FILE", "SSL_CLIENT_CERT"):
         if env.get(name):
             env[name] = os.path.abspath(env[name])
+    target_ca = _env_get(target.env, "SSL_CERT_FILE")
+    if target_ca:
+        env["SSL_CERT_FILE"] = str(target.cwd / target_ca)
     return env
 
 

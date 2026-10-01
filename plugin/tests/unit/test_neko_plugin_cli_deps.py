@@ -1466,7 +1466,7 @@ def test_uv_gets_an_absolute_client_cert(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "client.pem").write_text("pem")
     monkeypatch.setenv("SSL_CLIENT_CERT", "client.pem")
-    assert deps_cmd._uv_env()["SSL_CLIENT_CERT"] == str(tmp_path / "client.pem")
+    assert deps_cmd._uv_env(_target(env={}))["SSL_CLIENT_CERT"] == str(tmp_path / "client.pem")
 
 
 @pytest.mark.parametrize("clean", [False, True])
@@ -1522,7 +1522,12 @@ def test_uv_gets_an_absolute_ca_file_and_an_absolute_uv(tmp_path, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", "ca.pem")
     relative_uv = os.path.join("bin", "uv")
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: relative_uv if name == "uv" else None)
-    monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target(cwd=tmp_path / "elsewhere"))
+    # The target was not given SSL_CERT_FILE itself (see the next test).
+    monkeypatch.setattr(
+        deps_cmd,
+        "_probe_target",
+        lambda python: _target(env={"PIP_CERT": "/corp/ca.pem"}, cwd=tmp_path / "elsewhere"),
+    )
     seen = []
 
     def run(command, **kwargs):
@@ -1538,6 +1543,47 @@ def test_uv_gets_an_absolute_ca_file_and_an_absolute_uv(tmp_path, monkeypatch):
     uv_command, uv_kwargs = seen[-1]
     assert uv_command[0] == str(tmp_path / relative_uv)
     assert uv_kwargs["env"]["SSL_CERT_FILE"] == str(tmp_path / "ca.pem")
+
+
+@pytest.mark.parametrize("target_ca", ["valid", "malformed"])
+def test_uv_gets_the_ca_file_the_target_resolved(tmp_path, monkeypatch, target_ca):
+    # A launcher may cd before running the target with a relative
+    # SSL_CERT_FILE: pip trusted the file in its own cwd, not the one here.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    _write_client_identity(tmp_path / "ca.pem", key=None)  # this process's
+    launcher_dir = tmp_path / "launcher-dir"
+    launcher_dir.mkdir()
+    if target_ca == "valid":
+        _write_client_identity(launcher_dir / "ca.pem", key=None)
+    else:
+        (launcher_dir / "ca.pem").write_text("pem")
+    monkeypatch.setenv("SSL_CERT_FILE", "ca.pem")
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        deps_cmd,
+        "_probe_target",
+        lambda python: _target(env={"SSL_CERT_FILE": "ca.pem"}, cwd=launcher_dir),
+    )
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs))
+        if _cmd_name(command) == "uv":
+            return subprocess.CompletedProcess(command, 0, stdout="ok")
+        return subprocess.CompletedProcess(command, 1, stdout="No module named pip")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    result = deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    )
+    if target_ca == "valid":
+        assert result == 0
+        assert seen[-1][1]["env"]["SSL_CERT_FILE"] == str(launcher_dir / "ca.pem")
+    else:
+        assert result == 1
+        assert all(_cmd_name(command) != "uv" for command, _ in seen)
 
 
 def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):
