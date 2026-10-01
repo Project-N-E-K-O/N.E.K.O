@@ -1201,6 +1201,53 @@ def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypat
     assert "leads to the plugin directory" in capsys.readouterr().err
 
 
+def test_zero_inode_targets_are_compared_by_path(tmp_path):
+    # Some filesystems report st_ino 0 for every directory; identity alone
+    # would call a separate shared vendor target "the plugin".
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    shared = tmp_path / "shared_vendor"
+    shared.mkdir()
+    zero = os.stat_result((0o40755, 0, 1, 1, 0, 0, 0, 0, 0, 0))
+
+    assert deps_cmd._contains_plugin(zero, shared, plugin_dir) is False
+    assert deps_cmd._contains_plugin(zero, tmp_path, plugin_dir) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction pinning")
+def test_windows_refill_pins_the_junction_against_retargeting(tmp_path, monkeypatch):
+    # Without directory handles, the link itself is held open so another
+    # process can not delete or retarget it mid-refill.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "old.py").write_text("old")
+    staging = target / ".vendor.staging-0000abcd"
+    staging.mkdir()
+    (staging / "new.py").write_text("new")
+    vendor = tmp_path / "vendor"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(vendor), str(target)],
+                   check=True, capture_output=True)
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
+    attempts = []
+    real_empty = deps_cmd._empty_directory
+
+    def empty(directory, *, keep):
+        attempts.append(subprocess.run(["cmd", "/c", "rmdir", str(vendor)], capture_output=True))
+        real_empty(directory, keep=keep)
+
+    monkeypatch.setattr(deps_cmd, "_empty_directory", empty)
+
+    assert deps_cmd._refill_in_place(vendor, staging, vendor.stat()) == 0
+    assert attempts[0].returncode != 0
+    assert os.readlink(vendor)
+    assert (target / "new.py").read_text() == "new"
+    assert not (target / "old.py").exists()
+
+
 def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 

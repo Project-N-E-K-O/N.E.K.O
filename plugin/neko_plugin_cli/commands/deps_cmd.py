@@ -166,7 +166,7 @@ def handle_sync(args: argparse.Namespace) -> int:
                 target = vendor_dir.stat()
                 # vendor -> .. (or a bind mount of a parent): refilling it
                 # would move the plugin itself aside and delete it.
-                if _contains_plugin(target, plugin_dir):
+                if _contains_plugin(target, vendor_dir, plugin_dir):
                     print(
                         f"[FAIL] {vendor_dir} leads to the plugin directory or one of "
                         "its parents; point it at a separate directory and retry.",
@@ -267,9 +267,17 @@ def _pending_marker(backup_dir: Path) -> Path:
     return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
 
 
-def _contains_plugin(target: os.stat_result, plugin_dir: Path) -> bool:
+def _contains_plugin(target: os.stat_result, vendor_dir: Path, plugin_dir: Path) -> bool:
     """Whether the directory vendor/ leads to is plugin_dir or one of its
-    parents (compared by identity: a symlink, junction or bind mount)."""
+    parents: compared by identity (a symlink, junction or bind mount), or by
+    resolved path where the filesystem reports no inode numbers."""
+    if not target.st_ino:
+        resolved = os.path.normcase(os.path.realpath(vendor_dir))
+        plugin = Path(os.path.realpath(plugin_dir))
+        return any(
+            os.path.normcase(str(directory)) == resolved
+            for directory in (plugin, *plugin.parents)
+        )
     for directory in (plugin_dir, *plugin_dir.resolve().parents):
         try:
             if os.path.samestat(directory.stat(), target):
@@ -443,11 +451,21 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
     if _find_foreign_subdir(vendor_dir, junctions=False) is not None:
         return changed()
     if not _DIR_FD_OPS:
-        if not _same_target(vendor_dir, identity) or not staging_dir.is_dir():
+        # No directory-handle calls (Windows): hold the link itself open
+        # instead, so no other process can delete, rename or retarget it
+        # while the path-based refill below works through it.
+        try:
+            unpin = _pin_link(vendor_dir)
+        except OSError:
             return changed()
-        _empty_directory(vendor_dir, keep=staging_dir.name)
-        for child in staging_dir.iterdir():
-            child.replace(vendor_dir / child.name)
+        try:
+            if not _same_target(vendor_dir, identity) or not staging_dir.is_dir():
+                return changed()
+            _empty_directory(vendor_dir, keep=staging_dir.name)
+            for child in staging_dir.iterdir():
+                child.replace(vendor_dir / child.name)
+        finally:
+            unpin()
         return 0
 
     fd = os.open(vendor_dir, os.O_RDONLY | os.O_DIRECTORY)
@@ -508,6 +526,35 @@ def _open_dir_path(fd: int, fallback: Path) -> str:
         return os.readlink(f"/proc/self/fd/{fd}")
     except OSError:
         return os.path.realpath(fallback)
+
+
+def _pin_link(path: Path):
+    """Open a Windows junction / directory symlink itself (not its target)
+    sharing only reads, which makes deleting, renaming or retargeting it fail
+    with a sharing violation in every other process until the returned
+    function closes it. Work through the link is unaffected. For anything
+    but a Windows link there is nothing to pin."""
+    if sys.platform != "win32" or not _is_link(path):
+        return lambda: None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    generic_read, file_share_read, open_existing = 0x80000000, 0x1, 3
+    backup_semantics, open_reparse_point = 0x02000000, 0x00200000
+    handle = kernel32.CreateFileW(
+        str(path), generic_read, file_share_read, None, open_existing,
+        backup_semantics | open_reparse_point, None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return lambda: kernel32.CloseHandle(handle)
 
 
 def _empty_directory(directory: Path, *, keep: str) -> None:
