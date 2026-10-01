@@ -390,6 +390,12 @@ class TurnMixin:
         if active_request_id:
             turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
+        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
+        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
+        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
+        # 必须在下面等 WS 发送之前：等的这段时间里新一轮可能已经开始往这个
+        # buffer 里写，放在后面就会把新一轮的半段算进这一轮、再把它清掉。
+        self._flush_ai_turn_text_to_tracker()
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 ws_msg = {
@@ -402,10 +408,6 @@ class TurnMixin:
                 await self.websocket.send_json(ws_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
-        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
-        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
-        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
-        self._flush_ai_turn_text_to_tracker()
 
     async def _emit_agent_callback_turn_end(self, active_request_id) -> None:
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
@@ -569,16 +571,18 @@ class TurnMixin:
         voice turns, whose completion runs inside ``close()`` rather than after
         it, and proactive replies without ``on_proactive_done``).
         """
+        # 先于接管清理：已经不拥有这一轮的迟到回调也不该去清接管方自己的
+        # TTS（镜像台词）和簿记。
+        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+            self._stand_down_reply_turn(reply_turn)
+            return
+
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
             self._pending_turn_meta = None
             self._current_ai_turn_text = ""
             self._active_text_request_id = None
-            return
-
-        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
-            self._stand_down_reply_turn(reply_turn)
             return
 
         if reply_turn is None:
@@ -609,6 +613,10 @@ class TurnMixin:
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
 
+        # 发 WS turn end 那一下也会让出：期间开始的新一轮自己会收尾。
+        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+            self._stand_down_reply_turn(reply_turn)
+            return
         await self._finalize_turn_after_emit()
 
     async def _finalize_turn_after_emit(self) -> None:
@@ -964,7 +972,14 @@ class TurnMixin:
         # 抢占不代表 A 这一轮不用结算——按产权跳过的话，连续截断又被连续打断
         # 时会链式跳过归档，正好落回上面那个死循环。同理放在 try 外：不能让它
         # 的异常被上面 "回复发送失败" 的 except 吞成一条 warning。
-        if _is_too_long_final or _truncated_text is not None:
+        #
+        # 唯一跳过的是已退役 client 的回复、且宿主已经换到新一轮（见
+        # _reply_turn_is_current；client 仍在用时它恒为真，上面的理由不受影响）：
+        # 它的 session 已经不在了，没有要它结算的上下文；这时跑 finalize 读的是
+        # 新 session，可能在新一轮说到一半时触发续期 / 热切换，结算由新一轮自己做。
+        if (_is_too_long_final or _truncated_text is not None) and (
+            reply_turn is None or self._reply_turn_is_current(reply_turn)
+        ):
             await self._finalize_turn_after_emit()
 
     async def handle_audio_data(self, audio_data: bytes):

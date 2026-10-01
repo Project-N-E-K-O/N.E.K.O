@@ -534,3 +534,82 @@ async def test_the_carry_never_adopts_a_reply_a_newer_turn_superseded():
     replaced, mgr.current_speech_id = mgr.current_speech_id, "speech-promoted"
     mgr._carry_reply_turn(replaced)
     assert reply_turn.speech_id == "speech-A"
+
+
+class _BlockingWebSocket(_FakeConnectedWebSocket):
+    """A connected socket whose sends wait until released (backpressure)."""
+
+    def __init__(self):
+        super().__init__()
+        self.sending, self.release = asyncio.Event(), asyncio.Event()
+
+    async def send_json(self, payload):
+        self.sending.set()
+        await self.release.wait()
+        await super().send_json(payload)
+
+
+async def test_a_turn_starting_while_the_turn_end_is_sent_keeps_its_text_and_wrap_up():
+    """The WS send of the turn end is an await too. A turn that starts during it
+    writes into the shared AI text buffer: the ending reply must have flushed its
+    own text before that send, and must leave the wrap-up to the newer turn."""
+    mgr = _core_manager()
+    mgr.websocket = _BlockingWebSocket()
+    reply_turn = _retired_reply(mgr)
+    mgr._current_ai_turn_text = "A的回答"
+
+    completion = asyncio.create_task(mgr.handle_response_complete(reply_turn=reply_turn))
+    await asyncio.wait_for(mgr.websocket.sending.wait(), 5)
+    mgr.current_speech_id = "speech-B"  # turn B starts and speaks meanwhile
+    mgr._current_ai_turn_text += "B说到一半"
+    mgr.websocket.release.set()
+    await asyncio.wait_for(completion, 5)
+
+    assert mgr._activity_tracker.ai_messages == ["A的回答"]
+    assert mgr._current_ai_turn_text == "B说到一半"
+    mgr._finalize_turn_after_emit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("retired", [True, False])
+async def test_a_truncation_discard_wraps_up_only_while_its_reply_owns_the_turn(retired):
+    """The discard path's wrap-up deliberately survives losing the request to a
+    newer one on a live client (skipping it chains into the truncation death
+    loop). A retired client's reply whose host moved on has no session left to
+    settle; finalizing would act on the newer turn's session mid-reply."""
+    mgr = _core_manager()
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = object() if retired else mgr.session
+    mgr.current_speech_id = "speech-B"  # turn B owns the host now
+    mgr._active_text_request_id = "req-B"
+
+    await mgr.handle_response_discarded(
+        "length_truncated", 1, 1, False,
+        '{"code": "RESPONSE_LENGTH_TRUNCATED", "text": "截断到这里。"}',
+        request_id="req-A",
+        reply_turn=reply_turn,
+    )
+
+    assert _ws(mgr, "turn end") == [] and _sync(mgr, "turn end") == []
+    assert mgr._finalize_turn_after_emit.await_count == (0 if retired else 1)
+
+
+@pytest.mark.parametrize("current", [True, False])
+async def test_a_stale_reply_skips_the_takeover_cleanup(current):
+    """During a game takeover an ordinary completion clears the shared output.
+    A retired reply that no longer owns the turn must not: that would cut the
+    takeover's own speech and wipe its bookkeeping. A current one still does."""
+    mgr = _core_manager()
+    mgr._takeover_active = True
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = _retired_reply(mgr)
+    if not current:
+        mgr.current_speech_id = "speech-mirror"  # the takeover speaks meanwhile
+    mgr._current_ai_turn_text = "镜像台词"
+    mgr._active_text_request_id = "req-mirror"
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert mgr._clear_tts_pipeline.await_count == (1 if current else 0)
+    assert mgr._current_ai_turn_text == ("" if current else "镜像台词")
+    assert mgr._active_text_request_id == (None if current else "req-mirror")
