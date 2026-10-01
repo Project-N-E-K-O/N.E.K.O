@@ -193,8 +193,18 @@ class SessionOwnershipMixin:
         record = self._register_connection(session)
 
         async def flush():
-            if self.session is session and not record.retired:
-                await self._flush_pending_input_data()
+            while self.session is session and not record.retired:
+                async with self.input_cache_lock:
+                    idle_event = (
+                        getattr(self, '_pending_input_flush_idle_event', None)
+                        if getattr(self, '_pending_input_flush_active', False) else None
+                    )
+                if idle_event is None:
+                    await self._flush_pending_input_data()
+                    return
+                # Keep this single reservation while another owner drains or
+                # rolls back its batch, rather than completing and spinning.
+                await idle_event.wait()
 
         context = contextvars.copy_context()
         context.run(_start_context.set, None)
@@ -214,7 +224,6 @@ class SessionOwnershipMixin:
                     and self.session is record.session
                     and not record.retired
                     and bool(self.pending_input_data)
-                    and not getattr(self, '_pending_input_flush_active', False)
                     and not getattr(self, '_deferred_pending_input_flush_count', 0)
                 )
                 if should_retry:

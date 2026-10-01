@@ -384,6 +384,7 @@ class LLMSessionManager(
         # Serialize pending-input replay with live input dispatch. The cache
         # lock cannot span awaits because attachment handoff reacquires it.
         self._pending_input_flush_active = False
+        self._pending_input_flush_idle_event = None
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None

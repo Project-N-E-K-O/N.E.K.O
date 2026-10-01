@@ -51,15 +51,111 @@ async def test_scheduled_flush_does_not_spin_while_another_flush_owns_input(monk
         reservation = object()
         manager._pending_input_flush_scheduled = reservation
         scheduled = manager._schedule_session_input_flush(reservation)
-        await asyncio.wait_for(scheduled, 2)
+        await asyncio.sleep(0)
+        assert not scheduled.done()
+        assert manager._pending_input_flush_scheduled is reservation
         assert schedule.call_count == 1, "an occupied input gate must not create retry tasks"
         release.set()
         await asyncio.wait_for(owning, 2)
+        await asyncio.wait_for(scheduled, 2)
         assert delivered == ["first", "second"]
         assert not manager.pending_input_data
     finally:
         release.set()
         await asyncio.gather(owning, *manager._bg_tasks, return_exceptions=True)
+        await manager.end_session(by_server=True)
+
+
+async def test_reserved_flush_replays_rollback_after_active_owner_is_cancelled(monkeypatch):
+    manager = make_manager()
+    manager.session.allow_close.set()
+    manager._bg_tasks = set()
+    entered = asyncio.Event()
+    delivered = []
+    first_attempt = True
+    manager.pending_input_data = [{"input_type": "text", "data": "first"}]
+
+    async def dispatch(message, *, on_dispatch_attempted):
+        nonlocal first_attempt
+        if first_attempt:
+            first_attempt = False
+            entered.set()
+            await asyncio.Event().wait()  # Cancellation before the dispatch boundary.
+        on_dispatch_attempted()
+        delivered.append(message["data"])
+
+    monkeypatch.setattr(manager, "_process_stream_data_internal", dispatch)
+    owning = asyncio.create_task(manager._flush_pending_input_data())
+    scheduled = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        manager.pending_input_data.append({"input_type": "text", "data": "second"})
+        reservation = object()
+        manager._pending_input_flush_scheduled = reservation
+        scheduled = manager._schedule_session_input_flush(reservation)
+        await asyncio.sleep(0)
+        owning.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owning
+        await asyncio.wait_for(scheduled, 2)
+        assert delivered == ["first", "second"], "the retained reservation must drain rollback before queued input"
+        assert not manager.pending_input_data
+        assert manager._pending_input_flush_scheduled is None
+    finally:
+        owning.cancel()
+        await asyncio.gather(owning, *([scheduled] if scheduled else []), *manager._bg_tasks, return_exceptions=True)
+        await manager.end_session(by_server=True)
+
+
+async def test_completed_flush_retains_retry_when_a_new_owner_claims_gate(monkeypatch):
+    manager = make_manager()
+    manager.session.allow_close.set()
+    manager._bg_tasks = set()
+    manager.pending_input_data = [{"input_type": "text", "data": "first"}]
+    entered = asyncio.Event()
+    delivered = []
+    external_owner = None
+    interrupted_second = False
+
+    async def acquire_as_external_owner():
+        manager.pending_input_data.append({"input_type": "text", "data": "second"})
+        await manager._flush_pending_input_data()
+
+    async def dispatch(message, *, on_dispatch_attempted):
+        nonlocal external_owner, interrupted_second
+        if message["data"] == "first":
+            # This owner starts before the first task's completion callback.
+            external_owner = asyncio.create_task(acquire_as_external_owner())
+        elif message["data"] == "second" and not interrupted_second:
+            interrupted_second = True
+            manager.pending_input_data.append({"input_type": "text", "data": "third"})
+            entered.set()
+            await asyncio.Event().wait()
+        on_dispatch_attempted()
+        delivered.append(message["data"])
+
+    monkeypatch.setattr(manager, "_process_stream_data_internal", dispatch)
+    schedule = Mock(wraps=manager._schedule_session_input_flush)
+    monkeypatch.setattr(manager, "_schedule_session_input_flush", schedule)
+    reservation = object()
+    manager._pending_input_flush_scheduled = reservation
+    first = manager._schedule_session_input_flush(reservation)
+    try:
+        await asyncio.wait_for(first, 2)
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.sleep(0)
+        assert manager._pending_input_flush_scheduled is reservation
+        assert schedule.call_count == 2, "completion must retain one event-waiting retry, without spinning"
+        external_owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await external_owner
+        await asyncio.wait_for(asyncio.gather(*manager._bg_tasks), 2)
+        assert delivered == ["first", "second", "third"]
+        assert not manager.pending_input_data
+    finally:
+        if external_owner is not None:
+            external_owner.cancel()
+        await asyncio.gather(first, *([external_owner] if external_owner else []), *manager._bg_tasks, return_exceptions=True)
         await manager.end_session(by_server=True)
 
 

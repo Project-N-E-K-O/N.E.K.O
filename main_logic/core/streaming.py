@@ -114,12 +114,21 @@ class StreamingMixin:
             if not self.pending_input_data:
                 return
             self._pending_input_flush_active = True
+            idle_event = asyncio.Event()
+            self._pending_input_flush_idle_event = idle_event
+
+        def release_gate():
+            if getattr(self, "_pending_input_flush_idle_event", None) is idle_event:
+                self._pending_input_flush_active = False
+                self._pending_input_flush_idle_event = None
+            # Rollback precedes this signal, including on cancellation.
+            idle_event.set()
 
         try:
             while True:
                 async with self.input_cache_lock:
                     if not self.pending_input_data:
-                        self._pending_input_flush_active = False
+                        release_gate()
                         return
                     # Drain atomically, then process outside this lock. One-shot
                     # image attachments may need _ensure_offline_session_for_text_input(),
@@ -215,8 +224,7 @@ class StreamingMixin:
                     self._pending_input_flush_batch = ()
         finally:
             async with self.input_cache_lock:
-                if getattr(self, "_pending_input_flush_active", False):
-                    self._pending_input_flush_active = False
+                release_gate()
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
