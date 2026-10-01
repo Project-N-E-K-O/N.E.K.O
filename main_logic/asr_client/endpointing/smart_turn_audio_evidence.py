@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
+from .smart_turn_reasons import COMPLETE_REASONS
+
 
 SMART_TURN_AUDIO_EVIDENCE_ENABLED_ENV = "NEKO_SMART_TURN_AUDIO_EVIDENCE"
 SMART_TURN_AUDIO_EVIDENCE_DIR_ENV = "NEKO_SMART_TURN_AUDIO_EVIDENCE_DIR"
@@ -29,10 +31,6 @@ _SAMPLE_WIDTH_BYTES = 2
 _MAX_CAPTURE_SECONDS = 30
 _MAX_CAPTURE_BYTES = _SAMPLE_RATE_HZ * _SAMPLE_WIDTH_BYTES * _MAX_CAPTURE_SECONDS
 _ACK_TIMEOUT_SECONDS = 0.05
-_COMPLETE_REASONS = frozenset(
-    {"candidate_pause", "periodic_no_vad", "strict_retry", "semantic_timeout"}
-)
-
 _Identity: TypeAlias = tuple[int, int, int]
 
 
@@ -186,7 +184,7 @@ class _WavSmartTurnAudioEvidenceRecorder:
                 "duration_ms": len(pcm16)
                 // (_SAMPLE_RATE_HZ * _SAMPLE_WIDTH_BYTES // 1_000),
                 "pcm_sha256": hashlib.sha256(pcm16).hexdigest(),
-                "reason": _allowed_value(reason, _COMPLETE_REASONS),
+                "reason": _allowed_value(reason, COMPLETE_REASONS),
                 "truncated_prefix": truncated_prefix,
             }
             bounded_probability = _bounded_probability(probability)

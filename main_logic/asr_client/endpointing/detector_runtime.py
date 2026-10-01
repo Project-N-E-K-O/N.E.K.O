@@ -38,6 +38,7 @@ from .detector import (
 from .silero_vad import SileroActivityGate, SileroVad
 from .smart_turn_audio_evidence import create_smart_turn_audio_evidence_recorder
 from .smart_turn_diagnostics import create_smart_turn_runtime_diagnostics
+from .smart_turn_reasons import CompletionReason, EvaluationReason
 from .smart_turn_v3 import SmartTurnV3
 from .throttle_policy import (
     ThrottleAction,
@@ -93,7 +94,7 @@ class _EvaluationResultItem:
     identity: _Identity
     coordinator_generation: int
     activity_seq: int
-    reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    reason: EvaluationReason
     detector_identity: DetectorIngressIdentity | None = None
     evaluation_ms: int = 0
     result: object | None = None
@@ -104,7 +105,7 @@ class _EvaluationResultItem:
 class _PendingCompleteConfirmation:
     identity: _Identity
     detector_identity: DetectorIngressIdentity | None
-    reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    reason: EvaluationReason
     probability: float | None
 
 
@@ -248,9 +249,7 @@ class _VoiceTurnAdapter:
         self._smart_turn_unload_task: asyncio.Task[None] | None = None
         self._evaluation_task: asyncio.Task[None] | None = None
         self._reevaluation_requested = False
-        self._reevaluation_reason: (
-            Literal["candidate_pause", "periodic_no_vad", "strict_retry"] | None
-        ) = None
+        self._reevaluation_reason: EvaluationReason | None = None
         self._pending_complete_confirmation: _PendingCompleteConfirmation | None = None
         self._strict_endpoint_deadline: float | None = None
         self._latest_detector_identity: DetectorIngressIdentity | None = None
@@ -264,6 +263,7 @@ class _VoiceTurnAdapter:
         self._vad_degraded = False
         self._fallback_speech_started = False
         self._fallback_audio_bytes = 0
+        self._last_no_vad_audio_at: float | None = None
         self._semantic_degraded = False
         self._failed = False
         self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
@@ -666,6 +666,10 @@ class _VoiceTurnAdapter:
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
 
+        now = asyncio.get_running_loop().time()
+        self._last_no_vad_audio_at = now
+        if self._smart_turn_required and self._strict_endpoint_deadline is not None:
+            self._strict_endpoint_deadline = now + self._max_endpoint_wait_seconds
         started_now = False
         if not self._fallback_speech_started:
             self._fallback_speech_started = True
@@ -696,7 +700,7 @@ class _VoiceTurnAdapter:
     def _request_evaluation(
         self,
         identity: _Identity,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: EvaluationReason,
         detector_identity: DetectorIngressIdentity | None = None,
     ) -> None:
         if self._closed or self._failed or identity != self._identity:
@@ -901,13 +905,6 @@ class _VoiceTurnAdapter:
                 # wait; otherwise continuous no-VAD audio can postpone the
                 # retry past the semantic endpoint deadline.
                 self._schedule_fallback(item.identity, "semantic_incomplete")
-            if reevaluate and reevaluation_reason != "periodic_no_vad":
-                self._request_evaluation(
-                    item.identity,
-                    reevaluation_reason,
-                    self._latest_detector_identity,
-                )
-                return
             if reevaluate:
                 self._request_evaluation(
                     item.identity,
@@ -1011,6 +1008,7 @@ class _VoiceTurnAdapter:
         self._reevaluation_requested = False
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
+        self._last_no_vad_audio_at = None
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
@@ -1085,7 +1083,7 @@ class _VoiceTurnAdapter:
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: EvaluationReason,
         *,
         probability: float | None,
         delay_seconds: float,
@@ -1175,7 +1173,19 @@ class _VoiceTurnAdapter:
     async def _strict_incomplete_wait(self, identity: _Identity) -> None:
         """Schedule one strict retry through the single SmartTurn lane."""
 
-        await asyncio.sleep(self._continuation_timeout_seconds)
+        while True:
+            wait_started_at = asyncio.get_running_loop().time()
+            await asyncio.sleep(self._continuation_timeout_seconds)
+            # Without VAD there is no SPEECH_RESUMED event to move the strict
+            # endpoint deadline. Keep the retry asleep while audio is still
+            # arriving so the deadline measures silence, rather than total
+            # turn duration.
+            if (
+                self._last_no_vad_audio_at is not None
+                and self._last_no_vad_audio_at > wait_started_at
+            ):
+                continue
+            break
         state = self._coordinator.state
         # A periodic no-VAD inference may be running; the retry then coalesces
         # behind it instead of silently ending the strict wait.
@@ -1207,9 +1217,7 @@ class _VoiceTurnAdapter:
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None,
-        reason: Literal[
-            "candidate_pause", "periodic_no_vad", "strict_retry", "semantic_timeout"
-        ],
+        reason: CompletionReason,
         *,
         probability: float | None,
         evaluation_tail: tuple[_AudioItem, ...],

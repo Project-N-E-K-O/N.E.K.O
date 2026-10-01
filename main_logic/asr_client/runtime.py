@@ -550,16 +550,12 @@ class IndependentAsrRuntime:
         if lifecycle is not None:
             lifecycle.invalidate_audio()
         preserve_accepted_finals = reason == "ingress_backpressure"
-        if cleanup_timeout is None:
-            post_detach = await self._abort_transport(
-                reason, preserve_accepted_finals=preserve_accepted_finals
-            )
-        else:
-            post_detach = await self._abort_transport(
-                reason,
-                cleanup_timeout=cleanup_timeout,
-                preserve_accepted_finals=preserve_accepted_finals,
-            )
+        cleanup_kwargs: dict[str, float | bool] = {
+            "preserve_accepted_finals": preserve_accepted_finals,
+        }
+        if cleanup_timeout is not None:
+            cleanup_kwargs["cleanup_timeout"] = cleanup_timeout
+        post_detach = await self._abort_transport(reason, **cleanup_kwargs)
         if not self._runtime_identity_matches(
             post_detach
         ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):

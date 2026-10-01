@@ -2858,11 +2858,7 @@ class AsrRuntimeMixin:
         if reason == "ingress_backpressure":
             # Backpressure retires only the interrupted turn; finals the
             # runtime already accepted still owe Core their pinned route.
-            pending_turns = getattr(
-                self._asr_runtime, "pending_transcript_turn_tokens", None,
-            )
-            if callable(pending_turns):
-                keep_turns = pending_turns()
+            keep_turns = self._asr_runtime.pending_transcript_turn_tokens()
         self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
