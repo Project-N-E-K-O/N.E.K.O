@@ -471,10 +471,10 @@ def test_a_real_user_turn_after_a_tool_result_still_counts():
 
 
 @pytest.mark.parametrize("text", [
-    "The screen comment feature shows a remark next to the game view when it is on. "
-    "A screen comment is short and it is written by the character, not by you.",
-    "Screen comment support is optional here, and it can be turned off at any time. "
-    "Each screen comment appears only once, then it fades out of the chat window.",
+    ("The screen comment feature shows a remark next to the game view when it is on. "
+    "A screen comment is short and it is written by the character, not by you."),
+    ("Screen comment support is optional here, and it can be turned off at any time. "
+    "Each screen comment appears only once, then it fades out of the chat window."),
 ])
 def test_english_prose_about_the_feature_is_not_a_chain(text):
     """"screen comment" followed by a space is ordinary English; only the
@@ -532,15 +532,15 @@ def test_a_chinese_label_after_an_ascii_word_is_a_marker(label):
 
 
 @pytest.mark.parametrize("text", [
-    "The screenshot comment: it looks fine to me, and the colours are right. "
-    "Another screenshot comment: the layout also reads well on a small phone.",
-    "prescreen comment: this is just a word that happens to contain a label. "
-    "prescreen comment: and here it is again, still inside a longer word.",
+    ("The screenshot comment: it looks fine to me, and the colours are right. "
+    "Another screenshot comment: the layout also reads well on a small phone."),
+    ("prescreen comment: this is just a word that happens to contain a label. "
+    "prescreen comment: and here it is again, still inside a longer word."),
     # A slash glued to an English word joins it to the next one.
-    "Check the keyboard/screen display first, it may just be dimmed. "
-    "If the keyboard/screen display still flickers, restart the laptop.",
-    "Open Settings/Screen comment and switch it on for this character. "
-    "Later, Settings/Screen comment also lets you pick how often it talks.",
+    ("Check the keyboard/screen display first, it may just be dimmed. "
+    "If the keyboard/screen display still flickers, restart the laptop."),
+    ("Open Settings/Screen comment and switch it on for this character. "
+    "Later, Settings/Screen comment also lets you pick how often it talks."),
 ])
 def test_labels_inside_english_words_stay_inert(text):
     assert screen_chain_start(text) is None
