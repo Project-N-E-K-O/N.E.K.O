@@ -1052,6 +1052,8 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
     if change == "replaced":
         assert (vendor / "other.py").read_text() == "other"
         assert (plugin_dir / "moved-away" / "old.py").read_text() == "old"
+        # The same-named dir in the replacement is not ours to remove.
+        assert (vendor / installed[0].name).is_dir()
     else:
         assert (vendor / "old.py").read_text() == "old"
     assert "changed during the sync" in capsys.readouterr().err

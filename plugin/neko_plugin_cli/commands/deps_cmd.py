@@ -360,7 +360,15 @@ def _sync_in_place(
         _clean_vendor(staging_dir)
         return _refill_in_place(vendor_dir, staging_dir, identity)
     finally:
-        if staging_dir.exists() and not _mounted_inside(staging_dir):
+        # Through a retargeted vendor/ this path names a directory in the
+        # new target; leave ours for the next sync of that target instead.
+        if not _same_target(vendor_dir, identity):
+            print(
+                f"[WARN] Not removing the staging dir: {vendor_dir} no longer leads "
+                "to the directory it was created in.",
+                file=sys.stderr,
+            )
+        elif staging_dir.exists() and not _mounted_inside(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
