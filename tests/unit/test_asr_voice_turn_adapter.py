@@ -1517,7 +1517,10 @@ async def test_periodic_no_vad_does_not_restart_strict_wait() -> None:
     await adapter.close()
 
 
-async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -> None:
+@pytest.mark.parametrize("no_vad_activity", [True, False, None])
+async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep(
+    no_vad_activity: bool | None,
+) -> None:
     adapter = _VoiceTurnAdapter(
         vad=_UnavailableVad(),
         gate=_FakeGate(),
@@ -1538,7 +1541,7 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
             identity=identity,
             pcm16=b"\x40\x00",
             duration_us=1_000,
-            no_vad_activity=True,
+            no_vad_activity=no_vad_activity,
         )
     )
     first_deadline = adapter._strict_endpoint_deadline
@@ -1551,14 +1554,18 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
             identity=identity,
             pcm16=b"\x40\x00",
             duration_us=1_000,
-            no_vad_activity=True,
+            no_vad_activity=no_vad_activity,
         )
     )
     refreshed_deadline = adapter._strict_endpoint_deadline
     assert refreshed_deadline is not None
     assert refreshed_deadline >= first_deadline
     assert refreshed_deadline > first_deadline
-    assert adapter._no_vad_deadline_cap is None
+    if no_vad_activity is True:
+        assert adapter._no_vad_deadline_cap is None
+    else:
+        assert adapter._no_vad_deadline_cap is not None
+        assert refreshed_deadline <= adapter._no_vad_deadline_cap
     await asyncio.sleep(0.03)
     assert not retry.done()
     retry.cancel()
@@ -1602,7 +1609,10 @@ async def test_no_vad_silence_frames_eventually_seal_semantic_timeout() -> None:
     await adapter.close()
 
 
-async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout() -> None:
+@pytest.mark.parametrize("no_vad_activity", [False, None])
+async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout(
+    no_vad_activity: bool | None,
+) -> None:
     committed = asyncio.Event()
     evidence = _EvidenceSpy()
 
@@ -1632,6 +1642,7 @@ async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout() -> None
             buffer_epoch=48,
             utterance_id=49,
             pcm16=noise,
+            no_vad_activity=no_vad_activity,
         )
         await asyncio.sleep(0.005)
 

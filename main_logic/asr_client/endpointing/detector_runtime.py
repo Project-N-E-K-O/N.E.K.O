@@ -677,7 +677,9 @@ class _VoiceTurnAdapter:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
 
         has_activity = item.no_vad_activity
-        if has_activity is None:
+        if has_activity is not True:
+            # Below RNNoise onset is not proof of silence: quiet speech may
+            # still have PCM energy. Keep the bounded RMS fallback available.
             has_activity = self._pcm_has_no_vad_speech(item.pcm16)
         if has_activity:
             now = asyncio.get_running_loop().time()
@@ -686,9 +688,9 @@ class _VoiceTurnAdapter:
                 self._smart_turn_required
                 and self._strict_endpoint_deadline is not None
             ):
-                if item.no_vad_activity is None:
-                    # RMS is only an activity hint when Silero and RNNoise
-                    # are unavailable: steady HVAC or microphone self-noise
+                if item.no_vad_activity is not True:
+                    # RMS is only an activity hint without a positive RNNoise
+                    # classification: steady HVAC or microphone self-noise
                     # can sit above the floor. Keep this fallback bounded so
                     # noise cannot starve semantic_timeout.
                     cap = self._no_vad_deadline_cap
