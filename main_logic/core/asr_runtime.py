@@ -2851,14 +2851,18 @@ class AsrRuntimeMixin:
 
         if still_current is not None and not still_current():
             return
-        await self._asr_runtime.abort(reason)
+        correction = self._current_wake_name_correction()
+        keep_turns = await self._asr_runtime.abort(reason)
         if still_current is not None and not still_current():
             return
-        keep_turns: Collection[VoiceTurnToken] = ()
-        if reason == "ingress_backpressure":
-            # Backpressure retires only the interrupted turn; finals the
-            # runtime already accepted still owe Core their pinned route.
-            keep_turns = self._asr_runtime.pending_transcript_turn_tokens()
+        if (
+            correction is not None
+            and self._wake_name_correction is correction
+            and correction.turn_token in keep_turns
+        ):
+            # abort may advance audio generation before Core tears down the
+            # activation. Preserve eligibility captured before that await.
+            correction.preserved_final = True
         self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
@@ -4814,7 +4818,13 @@ class AsrRuntimeMixin:
         *,
         keep_turns: Collection[VoiceTurnToken] = (),
     ) -> None:
-        self._wake_name_correction = None
+        correction = self._current_wake_name_correction()
+        if correction is not None and correction.turn_token in keep_turns:
+            # The activation may close, but this pinned final still owns its
+            # one-shot correction. Never transfer it to the next turn.
+            correction.preserved_final = True
+        else:
+            self._wake_name_correction = None
         self._voice_input_registry.invalidate_utterance(
             reason=reason, keep=keep_turns,
         )
@@ -5305,6 +5315,16 @@ class AsrRuntimeMixin:
     def _current_wake_name_correction(self) -> _WakeNameCorrection | None:
         ticket = self._wake_name_correction
         if ticket is None:
+            return None
+        if ticket.preserved_final:
+            if (
+                self._asr_route_mode == "independent"
+                and ticket.turn_token is not None
+                and ticket.turn_token.ingress.session_epoch == self._capture_ingress_token().session_epoch
+                and self._ingress_token_matches(ticket.turn_token.ingress)
+            ):
+                return ticket
+            self._clear_wake_name_correction(ticket)
             return None
         status = self._voice_session_activation_status
         if (

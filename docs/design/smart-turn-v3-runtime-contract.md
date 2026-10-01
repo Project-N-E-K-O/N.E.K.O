@@ -23,6 +23,10 @@
 
 Core 处理 ingress 背压时清空待处理 PCM，并按 identity 调用恢复逻辑。背压只退休 PCM 被打断的那一轮：运行时已经接受的 final、仍在排队或派发中的 final，以及 Smart Turn lease 仍在释放的 accepted final，都保留 Core 投递和 pinned Registry route，因此上一句仍只回答一次。若 lease 释放期间回调被取消，accepted 槽位必须先提交或退休，再传播取消。
 
+`IndependentAsrRuntime.abort()` 返回仍待投递的保留轮次集合；其他 abort 原因返回空集合。Core 使用这个结果保留路由，不重复判断背压原因或读取运行时状态。dispatcher 用同一份待投递记录覆盖 accepted reservation、排队与派发阶段，只在释放、完成或整体作废时移除。
+
+保留轮次已经绑定的唤醒词修正票据也保留到该 final 消费，即使 activation runtime 已关闭。背压可推进 audio generation，但票据不能转移给下一轮；session epoch、麦克风路由或 lease 变化以及显式取消仍会使它失效。
+
 只有 session epoch 变化或显式 teardown（停止、挂起、路由切换、致命错误）才能退休 accepted final。检测器自身队列溢出会安装串行 reset barrier；barrier 完成前提交返回 `BACKPRESSURE`。溢出前完成的评估不能推进新 detector epoch 的语义身份，也不能发布完成或写入完成诊断。
 
 ## Smart Turn 语义超时

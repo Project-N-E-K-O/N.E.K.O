@@ -18,6 +18,7 @@ class _WakeNameCorrection:
     runtime: object
     delivery_revision: int
     turn_token: VoiceTurnToken | None = None
+    preserved_final: bool = False
 
 
 _OPENING_QUOTES = frozenset("\"'“‘「『")

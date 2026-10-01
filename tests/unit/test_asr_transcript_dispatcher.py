@@ -101,6 +101,8 @@ async def test_accepted_reservation_is_pending_until_submit_release_or_purge() -
     dispatcher.submit(submitted)
     assert dispatcher.holds_accepted(submitted.final_key) is False
     assert submitted.turn_token in dispatcher.pending_turn_tokens()
+    dispatcher.release(submitted.final_key)
+    assert submitted.turn_token in dispatcher.pending_turn_tokens()
     dispatcher.invalidate_all()
     assert dispatcher.holds_accepted(purged.final_key) is False
     assert dispatcher.pending_turn_tokens() == frozenset()
@@ -199,6 +201,7 @@ async def test_old_worker_unwind_cannot_clear_new_active_dispatch() -> None:
     release_new.set()
     await asyncio.wait_for(wait_idle, 1)
     assert dispatcher._active is None
+    assert dispatcher.pending_turn_tokens() == frozenset()
 
 
 async def test_wait_idle_returns_while_next_turn_slot_is_reserved() -> None:

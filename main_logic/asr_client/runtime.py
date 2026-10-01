@@ -537,12 +537,15 @@ class IndependentAsrRuntime:
             return False
         return True
 
-    async def abort(self, reason: str, *, cleanup_timeout: float | None = None) -> None:
+    async def abort(
+        self, reason: str, *, cleanup_timeout: float | None = None,
+    ) -> frozenset[VoiceTurnToken]:
+        """Abort input and return the turns whose final delivery is preserved."""
         if reason == "ingress_backpressure":
             token = self._asr_current_ingress_token
             if token is not None and self._ingress_token_matches(token):
                 await self._handle_audio_ingress_backpressure(token)
-                return
+                return self.pending_transcript_turn_tokens()
         epoch = self._asr_session_epoch
         lifecycle = self._asr_lifecycle
         detector = self._asr_detector
@@ -559,7 +562,7 @@ class IndependentAsrRuntime:
         if not self._runtime_identity_matches(
             post_detach
         ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-            return
+            return frozenset()
         if reason == "ingress_backpressure":
             await self._send_asr_status(
                 "ASR_INGRESS_BACKPRESSURE",
@@ -578,7 +581,7 @@ class IndependentAsrRuntime:
             if not self._runtime_identity_matches(
                 post_detach
             ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-                return
+                return frozenset()
         if lifecycle is not None:
             await self._send_asr_lifecycle_state(
                 lifecycle.snapshot.state,
@@ -586,6 +589,10 @@ class IndependentAsrRuntime:
                 session_epoch=epoch,
                 expected_identity=post_detach,
             )
+        return (
+            self.pending_transcript_turn_tokens()
+            if preserve_accepted_finals else frozenset()
+        )
 
     async def wait_transcript_idle(self) -> None:
         await self._asr_transcript_dispatcher.wait_idle()
