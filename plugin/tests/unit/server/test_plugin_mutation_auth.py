@@ -58,6 +58,15 @@ def test_non_ascii_token_is_rejected_without_compare_digest_error() -> None:
     assert mutation_auth._valid_token(request) is False
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("http://[fd00:0:0:0:0:0:0:5]:8080", "http://[fd00::5]:8080"),
+    ("https://bücher.example", "https://xn--bcher-kva.example:443"),
+    ("http://nas.example:0", ""),
+])
+def test_origin_uses_host_guard_canonical_hostname(raw, expected):
+    assert mutation_auth._normalize_origin(raw) == expected
+
+
 LIFECYCLE_MUTATIONS = [
     ("post", "/plugin/demo/start"),
     ("post", "/plugin/demo/stop"),

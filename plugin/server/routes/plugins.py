@@ -203,7 +203,7 @@ async def stop_plugin_endpoint(plugin_id: str, request: Request, _: str = requir
 
 
 @router.delete("/plugin/{plugin_id}")
-async def delete_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin,
                                  __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):

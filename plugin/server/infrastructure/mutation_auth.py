@@ -15,12 +15,14 @@ import secrets
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
+from utils.host_origin_guard import _canonicalize_hostname
 
 from config.network import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
     MAIN_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
+    resolve_user_plugin_base,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,11 @@ def _normalize_origin(raw: str | None) -> str:
         return ""
     if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         return ""
-    hostname = hostname.lower().rstrip(".")
+    # Use the same IPv6/IDNA hostname rules as the outer rebinding guard.
+    canonical = _canonicalize_hostname(hostname)
+    if canonical is None or (port is not None and not 1 <= port <= 65535):
+        return ""
+    hostname = canonical[0]
     host_text = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
     effective_port = (443 if parsed.scheme == "https" else 80) if port is None else port
     return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
@@ -80,20 +86,9 @@ def _origin_for_host_port(host: str, port: int, *, scheme: str = "http") -> str:
     return f"{scheme}://{host_text}:{int(port)}"
 
 
-def _read_runtime_port(name: str, fallback: int) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return int(fallback)
-    try:
-        port = int(raw)
-    except ValueError:
-        return int(fallback)
-    return port if 1 <= port <= 65535 else int(fallback)
-
-
 def _configured_origins() -> frozenset[str]:
     origins: set[str] = set()
-    plugin_port = _read_runtime_port("NEKO_USER_PLUGIN_SERVER_PORT", USER_PLUGIN_SERVER_PORT)
+    plugin_port = urlsplit(resolve_user_plugin_base()).port or USER_PLUGIN_SERVER_PORT
     for port in (MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT, plugin_port):
         for host in ("127.0.0.1", "localhost", "::1"):
             origins.add(_origin_for_host_port(host, port))
