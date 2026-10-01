@@ -779,7 +779,7 @@ async def test_restart_drain_follows_the_recorded_timeout_while_waiting(tmp_path
         assert 0.35 <= time.monotonic() - started < 1.0
     finally:
         release.set()
-        await task
+        assert await task  # the helper task exits cleanly
 
 
 async def test_restart_drain_keeps_the_largest_recorded_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -806,4 +806,4 @@ async def test_restart_drain_keeps_the_largest_recorded_timeout(tmp_path: Path, 
         assert task.done()
     finally:
         release.set()
-        await task
+        assert await task  # the helper task exits cleanly
