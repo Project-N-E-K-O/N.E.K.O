@@ -407,7 +407,7 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
 
     class _Hanging:
         def open(self, req, timeout=None):
-            release.wait(5)
+            release.wait()
             return _JsonResp('{"countryCode": "US"}')
 
     import urllib.request
