@@ -16,8 +16,8 @@
 
 - 浏览器变更请求缺少或提供错误 token 时拒绝；插件本地原生兼容路径仅允许省略 token，不允许错误 token；
 - 浏览器提供 Origin 时必须符合对应端点的来源规则；
-- NAS/Docker 页面来源必须匹配外部请求地址的协议、hostname 和有效端口；桌面跨端口来源只允许明确的 loopback 前端来源，不能接受任意 Origin；
-- 校验失败使用统一 `csrf_validation_failed`，响应和日志不回显 token；
+- NAS/Docker 非 loopback 页面来源优先匹配外部完整地址，并允许仅 hostname 匹配的兼容兜底（不比较协议与端口）；桌面跨端口来源只允许明确的 loopback 前端来源，不能接受任意 Origin；
+- 校验失败保留统一 `csrf_validation_failed`，响应 JSON 的 `detail.csrf_failure` 与 `X-CSRF-Failure: token` 表示可刷新重试的 token 失败，`origin` 表示来源失败；响应和日志不回显 token；
 - GET 读取端点也不能返回超出调用方需要的敏感数据；
 - CORS、CSRF 和身份认证是不同层，不能互相替代。
 
@@ -25,7 +25,9 @@
 
 官方 Docker 的 HTTP 和 HTTPS Nginx 配置都将 `/security/csrf-token` 转发到插件服务，保留外部 `Host`（包括映射端口），并覆盖 `X-Forwarded-Proto`。插件服务的嵌入式与独立 Uvicorn 入口共用代理边界，仅信任 `127.0.0.1`、`::1` 代理传来的客户端地址和协议信息。路由守卫使用处理后的请求协议与原始 Host 比较来源，不直接读取或信任任意 `X-Forwarded-*`。浏览器来源校验不要求客户端地址是 loopback，因此通过 Nginx 的真实 NAS 客户端可以正常操作。
 
-`HostOriginGuardMiddleware` 在路由校验之前仍负责防 DNS rebinding：IP 地址与 localhost 可用，自定义域名沿用 `NEKO_TRUSTED_HOSTS` 显式配置。官方 IP 访问、HTTP/HTTPS 与端口映射无需新增用户配置。自建代理如果改写 Host 或不保留外部协议，需要自行正确传递这些信息；非本机代理不自动获得转发头信任。
+`HostOriginGuardMiddleware` 在路由校验之前仍负责防 DNS rebinding：IP 地址与 localhost 可用，自定义域名沿用 `NEKO_TRUSTED_HOSTS` 显式配置。官方 IP 访问、HTTP/HTTPS 与端口映射无需新增用户配置。外层 NAS 代理终结 HTTPS 后通过 HTTP 转发到容器时，内层 Nginx 仍覆盖协议头；非 loopback Host 的 hostname 兜底使此场景无需新增配置。自建代理仍须保留 Host，自定义域名仍沿用既有主机信任配置；非本机代理不自动获得转发头信任。
+
+这是明确接受的信任取舍：同一 NAS hostname 的其他协议或端口也通过来源校验，可能读取共享 token；不能把此实现描述为隔离同机其他应用的严格 origin 防护。不同 hostname 仍拒绝，loopback 桌面保留完整来源规则，5173 仍需显式允许。
 
 token 引导允许可信 Origin、可信完整 Referer（忽略页面路径），以及无 Origin/Referer 但带 `Sec-Fetch-Site: same-origin` 的请求。仅 `same-site` 不足以授权，因为同一 NAS 的不同端口可能属于其他应用。没有任何浏览器来源信息的请求只允许本机原生调用。七个生命周期以外的 mutation 不依赖 token bootstrap，仍需分别评估安全性。
 
@@ -39,7 +41,7 @@ token 引导允许可信 Origin、可信完整 Referer（忽略页面路径）�
 
 ## 前端调用模式
 
-短操作可以在 token 过期/服务重启后刷新一次并重试。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
+插件短操作仅在收到 token 失败标记时刷新一次并重试；来源拒绝不刷新重试。token 引导失败保持调用方的静默与超时提示配置，且不会发送原变更请求。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
 
 命令行调试应使用项目环境读取 JSON 并显式传 header，例如先保存响应再用：
 

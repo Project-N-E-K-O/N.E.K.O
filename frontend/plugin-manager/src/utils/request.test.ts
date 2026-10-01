@@ -457,7 +457,7 @@ describe('mutation CSRF guard', () => {
           config,
           response: {
             status: 403,
-            data: { detail: 'Request could not be verified' },
+            data: { detail: { csrf_failure: 'token' } },
             headers: { 'X-Error-Code': 'csrf_validation_failed' },
           },
           isAxiosError: true,
@@ -479,5 +479,61 @@ describe('mutation CSRF guard', () => {
     expect(adapter).toHaveBeenCalledTimes(2)
     expect(sentTokens).toEqual(['csrf-test-token', 'csrf-test-token'])
     tokenBootstrap.mockRestore()
+  })
+})
+
+
+describe('CSRF bootstrap error policy', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    requestMocks.errorMessage.mockClear()
+  })
+
+  it('preserves caller timeout and silence policies without sharing error config', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('timeout'), {
+      isAxiosError: true, code: 'ECONNABORTED', request: {},
+      config: { url: '/security/csrf-token', method: 'get' },
+    }))
+    const adapter = vi.fn()
+    const results = await Promise.allSettled([
+      fresh.post('/plugin/demo/start', {}, { adapter, timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout' } as AxiosRequestConfig),
+      fresh.post('/plugin/demo/stop', {}, { adapter, suppressErrorMessage: true } as AxiosRequestConfig),
+    ])
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(adapter).not.toHaveBeenCalled()
+    expect(results.every(result => result.status === 'rejected')).toBe(true)
+    expect(requestMocks.errorMessage).toHaveBeenCalledTimes(1)
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.pluginLifecycleTimeout')
+    bootstrap.mockRestore()
+  })
+
+  it('uses the existing translated failure message for invalid bootstrap data', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: {} } as any)
+    const adapter = vi.fn()
+    await expect(fresh.post('/plugin/demo/start', {}, { adapter })).rejects.toMatchObject({
+      message: 'messages.requestFailed', config: { csrfBootstrapFailed: true },
+    })
+    expect(adapter).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.requestFailed')
+    bootstrap.mockRestore()
+  })
+
+  it('does not refresh or retry a rejected Origin', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: { csrf_token: 'token' } } as any)
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      throw Object.assign(new Error('Origin rejected'), {
+        config, isAxiosError: true,
+        response: { status: 403, data: {}, headers: {
+          'X-Error-Code': 'csrf_validation_failed', 'X-CSRF-Failure': 'origin',
+        } },
+      })
+    })
+    await expect(fresh.post('/plugin/demo/stop', {}, { adapter })).rejects.toThrow('Origin rejected')
+    expect(adapter).toHaveBeenCalledTimes(1)
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    bootstrap.mockRestore()
   })
 })

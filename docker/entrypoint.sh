@@ -582,7 +582,6 @@ server {
         proxy_set_header Host \$http_host;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        add_header Cache-Control "no-store" always;
     }
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
@@ -712,7 +711,6 @@ server {
         proxy_set_header Host \$http_host;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        add_header Cache-Control "no-store" always;
     }
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)

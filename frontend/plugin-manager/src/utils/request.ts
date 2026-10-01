@@ -1,7 +1,7 @@
 /**
  * HTTP 请求封装
  */
-import axios from 'axios'
+import axios, { AxiosError as RequestAxiosError } from 'axios'
 import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
@@ -20,6 +20,8 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   timeoutErrorMessageKey?: string
   /** Internal guard: a failed CSRF request is retried at most once. */
   csrfRetryAttempted?: boolean
+  /** Bootstrap errors carry caller display options but cannot retry a mutation. */
+  csrfBootstrapFailed?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -202,7 +204,13 @@ function loadCsrfToken(): Promise<string> {
 }
 
 function isCsrfValidationFailure(error: AxiosError): boolean {
+  const headers = error.response?.headers as HeaderBag | undefined
+  // Cross-port frontends can read the JSON reason without expanding global
+  // CORS exposed headers; same-origin callers may also use the response header.
+  const data = error.response?.data as { detail?: { csrf_failure?: string } } | undefined
   return error.response?.status === 403 && readErrorCode(error) === 'csrf_validation_failed'
+    && (data?.detail?.csrf_failure === 'token'
+      || Boolean(headers && readHeader(headers, 'X-CSRF-Failure') === 'token'))
 }
 
 function invalidateCsrfTokenIfCurrent(config: AxiosRequestConfig | undefined): void {
@@ -258,7 +266,23 @@ service.interceptors.request.use(
       // Lifecycle calls are fail-closed: bootstrap failure means the original
       // state-changing request is never sent. Other mutation APIs are outside
       // this PR's contract and must not depend on the lifecycle token service.
-      const token = await loadCsrfToken()
+      let token: string
+      try {
+        token = await loadCsrfToken()
+      } catch (cause) {
+        // Bootstrap is shared by concurrent callers. Create a separate error
+        // for each caller instead of mutating its shared config/display policy.
+        const source = axios.isAxiosError(cause) ? cause : undefined
+        const error = new RequestAxiosError(
+          source?.message || i18n.global.t('messages.requestFailed'),
+          source?.code,
+          { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig,
+          source?.request,
+          source?.response,
+        )
+        error.cause = cause
+        throw error
+      }
       if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
       writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
     }
@@ -291,6 +315,7 @@ service.interceptors.response.use(
       isCsrfValidationFailure(error)
       && requestConfig
       && isPluginLifecycleMutation(requestConfig)
+      && !requestConfig.csrfBootstrapFailed
       && !requestConfig.csrfRetryAttempted
     ) {
       // A rotated token can invalidate an in-flight request. Retry exactly

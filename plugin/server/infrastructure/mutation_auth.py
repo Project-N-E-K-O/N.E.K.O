@@ -122,12 +122,18 @@ def _trusted_origin(request: Request, origin: str) -> bool:
     Official Nginx preserves Host (including the published port). Uvicorn
     supplies the external scheme only from trusted proxy peers; do not read
     X-Forwarded-* directly here. Peer IP need not be loopback for NAS access.
-    Cross-port desktop frontends retain the existing explicit allowlist.
+    NAS hosts also permit hostname-only matching for outer TLS termination
+    and port mapping. This deliberately trusts other ports on the same NAS;
+    loopback desktop frontends retain their explicit origin allowlist.
     """
     target = _normalize_origin(f"{request.url.scheme}://{request.headers.get('host', '')}")
     if not origin or not target:
         return False
-    return origin == target or (
+    nas_hostname_match = (
+        not _is_loopback(request.url.hostname)
+        and urlsplit(origin).hostname == urlsplit(target).hostname
+    )
+    return origin == target or nas_hostname_match or (
         _is_loopback(request.url.hostname) and origin in _configured_origins()
     )
 
@@ -150,14 +156,16 @@ def _valid_token(request: Request) -> bool:
         return False
 
 
-def _deny() -> None:
+def _deny(*, token_invalid: bool = False) -> None:
     raise HTTPException(
         status_code=403,
         detail={
             "error_code": _ERROR_CODE,
+            "csrf_failure": "token" if token_invalid else "origin",
             "detail": "Request could not be verified",
         },
-        headers={"X-Error-Code": _ERROR_CODE},
+        # Keep the public error code stable; only token failures are retryable.
+        headers={"X-Error-Code": _ERROR_CODE, "X-CSRF-Failure": "token" if token_invalid else "origin"},
     )
 
 
@@ -166,8 +174,10 @@ def require_plugin_mutation_access(request: Request) -> None:
     origin_header = request.headers.get("origin")
     origin = _normalize_origin(origin_header)
     if origin_header is not None:
-        if not _trusted_origin(request, origin) or not _valid_token(request):
+        if not _trusted_origin(request, origin):
             _deny()
+        if not _valid_token(request):
+            _deny(token_invalid=True)
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer
     # must never silently enter this compatibility path.
@@ -176,7 +186,7 @@ def require_plugin_mutation_access(request: Request) -> None:
     # Keep tokenless native scripts compatible, but never ignore a supplied
     # invalid credential. This is not authentication against local processes.
     if _CSRF_HEADER.lower() in request.headers and not _valid_token(request):
-        _deny()
+        _deny(token_invalid=True)
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
 
 

@@ -93,6 +93,7 @@ async def test_foreign_origin_is_rejected_before_lifecycle_side_effects(
 
     assert response.status_code == 403
     assert response.headers.get("X-Error-Code") == "csrf_validation_failed"
+    assert response.headers.get("X-CSRF-Failure") == "origin"
     ensure.assert_not_awaited()
     for service in (route_module.lifecycle_service, route_module.registry_service):
         for name in (
@@ -271,7 +272,7 @@ async def test_nas_rejects_foreign_missing_or_invalid_browser_credentials(app, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("origin", ["https://evil.example", "http://192.168.1.5:9999"])
+@pytest.mark.parametrize("origin", ["https://evil.example", "http://192.168.1.6:9999"])
 async def test_nas_does_not_expose_token_to_foreign_origins(app, origin):
     async with _client(app, host="192.168.1.5:48911", peer="192.168.1.10") as client:
         for headers in ({"Origin": origin}, {"Referer": f"{origin}/page"}):
@@ -279,9 +280,9 @@ async def test_nas_does_not_expose_token_to_foreign_origins(app, origin):
 
 
 @pytest.mark.asyncio
-async def test_untrusted_peer_cannot_forge_proxy_scheme_or_client(app):
+async def test_untrusted_peer_cannot_enter_native_path_with_forged_proxy_client(app):
     async with _client(app, host="192.168.1.5:48912", peer="192.168.1.10", headers={
-        "Origin": "https://192.168.1.5:48912", "X-Forwarded-Proto": "https",
+        "X-Forwarded-Proto": "https",
         "X-Forwarded-For": "127.0.0.1", "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN,
     }) as client:
         assert (await client.get("/security/csrf-token")).status_code == 403
@@ -331,3 +332,29 @@ async def test_trusted_nas_domain_remains_supported(app, monkeypatch):
         "X-Forwarded-Proto": "https", "X-Forwarded-For": "192.168.1.10",
     }) as client:
         assert (await client.get("/security/csrf-token")).status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host,origin", [
+    ("192.168.1.5:80", "https://192.168.1.5:8443"),
+    ("nas.example.test", "https://nas.example.test"),
+    ("192.168.1.5:48911", "http://192.168.1.5:9999"),
+])
+async def test_nas_hostname_fallback_bootstrap_and_mutation(app, monkeypatch, host, origin):
+    monkeypatch.setenv("NEKO_TRUSTED_HOSTS", "nas.example.test")
+    stop = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    async with _client(app, host=host, peer="127.0.0.1", headers={
+        "Referer": f"{origin}/ui/plugins", "X-Forwarded-Proto": "http",
+        "X-Forwarded-For": "192.168.1.10",
+    }) as client:
+        bootstrap = await client.get("/security/csrf-token")
+        assert bootstrap.status_code == 200
+        denied = await client.post("/plugin/demo/stop", headers={"Origin": origin})
+        assert denied.status_code == 403
+        assert denied.headers["X-CSRF-Failure"] == "token"
+        accepted = await client.post("/plugin/demo/stop", headers={
+            "Origin": origin, "X-CSRF-Token": bootstrap.json()["csrf_token"],
+        })
+        assert accepted.status_code == 200
+    stop.assert_awaited_once()
