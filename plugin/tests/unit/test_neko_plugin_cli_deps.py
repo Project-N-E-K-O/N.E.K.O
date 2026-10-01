@@ -107,6 +107,18 @@ def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
     assert real_find_uv() == uv_exe
 
 
+def test_relative_uv_is_made_absolute(tmp_path, monkeypatch):
+    # uv runs in the N.E.K.O project root; UV=./bin/uv means this directory.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    relative = os.path.join(".", "bin", "uv")
+    monkeypatch.setenv("UV", relative)
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: name if name == relative else None)
+
+    assert real_find_uv() == str(tmp_path / "bin" / "uv")
+
+
 @pytest.mark.parametrize("uv_value", [None, "uv", "/no/such/uv"])
 def test_bare_or_missing_uv_value_falls_back_to_path(tmp_path, monkeypatch, uv_value):
     from plugin.neko_plugin_cli.commands import deps_cmd

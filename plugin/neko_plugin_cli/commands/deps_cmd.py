@@ -1075,7 +1075,9 @@ def _find_uv() -> str | None:
     for candidate in (os.environ.get("UV"), "uv"):
         found = shutil.which(candidate) if candidate else None
         if found:
-            return found
+            # uv may run in another directory (the N.E.K.O project root): a
+            # relative UV or PATH entry must keep meaning what it means here.
+            return os.path.abspath(found)
     return None
 
 
