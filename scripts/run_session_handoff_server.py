@@ -78,12 +78,22 @@ async def serve(args):
                                           ws_ping_interval=20, ws_ping_timeout=60))
     set_start_config({"browser_mode_enabled": False, "browser_page": "",
                       "shutdown_memory_server_on_exit": False, "server": server})
-    sampler = asyncio.create_task(sample_resources(server, args.output, args.interval))
+    async def supervised_sampler():
+        try:
+            await sample_resources(server, args.output, args.interval)
+        except Exception:
+            # An incomplete resource report must fail acceptance visibly.
+            server.should_exit = True
+            raise
+
+    sampler = asyncio.create_task(supervised_sampler())
     try:
         await server.serve()
     finally:
         sampler.cancel()
-        await asyncio.gather(sampler, return_exceptions=True)
+        results = await asyncio.gather(sampler, return_exceptions=True)
+        if isinstance(results[0], Exception):
+            raise results[0]
 
 
 def main():
