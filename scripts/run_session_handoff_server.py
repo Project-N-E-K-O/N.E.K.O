@@ -74,15 +74,27 @@ async def serve(args):
     import uvicorn
     from app.main_server import app, set_start_config
     from config import MAIN_SERVER_PORT
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=MAIN_SERVER_PORT,
+    serving = asyncio.Event()
+    sampling_error = None
+
+    class SamplingServer(uvicorn.Server):
+        async def main_loop(self):
+            serving.set()
+            await super().main_loop()
+
+    server = SamplingServer(uvicorn.Config(app, host="127.0.0.1", port=MAIN_SERVER_PORT,
                                           ws_ping_interval=20, ws_ping_timeout=60))
     set_start_config({"browser_mode_enabled": False, "browser_page": "",
                       "shutdown_memory_server_on_exit": False, "server": server})
     async def supervised_sampler():
+        nonlocal sampling_error
         try:
             await sample_resources(server, args.output, args.interval)
-        except Exception:
-            # An incomplete resource report must fail acceptance visibly.
+        except Exception as exc:
+            sampling_error = exc
+            # During startup, should_exit bypasses Uvicorn shutdown/lifespan cleanup.
+            # Request exit only after entry into its normal main_loop/shutdown path.
+            await serving.wait()
             server.should_exit = True
             raise
 
@@ -91,9 +103,9 @@ async def serve(args):
         await server.serve()
     finally:
         sampler.cancel()
-        results = await asyncio.gather(sampler, return_exceptions=True)
-        if isinstance(results[0], Exception):
-            raise results[0]
+        await asyncio.gather(sampler, return_exceptions=True)
+        if sampling_error is not None:
+            raise sampling_error
 
 
 def main():
