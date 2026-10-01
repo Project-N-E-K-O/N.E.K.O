@@ -35,7 +35,7 @@ Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试�
 
 `periodic_no_vad` 不得覆盖排队中的 `strict_retry`，不得在 strict 推理期间终止等待，也不得推迟截止后的封轮。模型资产缺失、推理异常和 VAD failure 才进入 `UNAVAILABLE`/BLOCKED 路径。
 
-Silero 不可用时，PCM 仍可进入 Smart Turn 作为语义证据；只有达到 RMS 噪声底以上的帧才会刷新严格截止时间。持续上传的静音帧不会把截止时间无限推后。RMS 无法可靠区分低音量语音与底噪，因此刷新受首次 INCOMPLETE 起两倍 `max_endpoint_wait_seconds` 的绝对上限约束（默认约 30 秒）；到期后仍为 INCOMPLETE 就正常封轮。这是无 VAD 降级路径的有界等待取舍，超长未完成语句也可能被分轮；有 VAD 的恢复说话事件仍按正常语义重置等待。
+Silero 不可用时，PCM 仍可进入 Smart Turn 作为语义证据。若 RNNoise 活动证据可用，则只有被判为人声活动的帧刷新严格截止时间，长语音按正常静默窗口等待。若 RNNoise 也不可用，则回退到 RMS 噪声底：静音帧不刷新，达到门槛的帧允许延长等待。RMS 无法可靠区分低音量语音与底噪，因此只有这条纯 RMS 路径受首次 INCOMPLETE 起两倍 `max_endpoint_wait_seconds` 的绝对上限约束（默认约 30 秒）；到期后仍为 INCOMPLETE 就正常封轮。这是缺少人声证据时的有界等待取舍，超长未完成语句也可能被分轮；有 VAD 的恢复说话事件仍按正常语义重置等待。
 
 ## Provider 重连裁剪
 
