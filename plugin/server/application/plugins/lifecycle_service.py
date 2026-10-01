@@ -698,17 +698,22 @@ def effective_startup_timeout_sync(plugin_id: str, config_path: Path) -> float:
     ``PLUGIN_STARTUP_TIMEOUT``——这里只用来估算等待预算，不做校验。
     """
     try:
-        conf = _read_plugin_config_sync(config_path)
-        resolved = resolve_plugin_config_from_path(
-            plugin_id,
-            config_path=config_path,
-            base_config=conf,
-            include_effective_config=True,
-            validate_schema=False,
-        )
-        effective = resolved.get("effective_config")
-        if isinstance(effective, Mapping):
-            conf = effective
+        conf: Mapping[str, object] = _read_plugin_config_sync(config_path)
+        try:
+            resolved = resolve_plugin_config_from_path(
+                plugin_id,
+                config_path=config_path,
+                base_config=conf,
+                include_effective_config=True,
+                validate_schema=False,
+            )
+            effective = resolved.get("effective_config")
+            if isinstance(effective, Mapping):
+                conf = effective
+        except Exception:
+            # start_plugin also carries on with the base manifest when the
+            # overlay cannot be resolved, so its timeout still applies.
+            pass
         runtime_obj = conf.get("plugin_runtime")
         if isinstance(runtime_obj, Mapping) and "timeout" in runtime_obj:
             return _normalize_runtime_timeout(runtime_obj.get("timeout"), plugin_id=plugin_id)

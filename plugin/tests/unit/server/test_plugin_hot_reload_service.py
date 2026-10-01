@@ -741,3 +741,19 @@ async def test_cancelled_recovery_start_keeps_recovery_permission(monkeypatch) -
     with pytest.raises(asyncio.CancelledError):
         await lifecycle.PluginLifecycleService().reload_plugin("demo", only_if_running=True)
     assert lifecycle.plugin_needs_hot_reload_recovery("demo")
+
+
+def test_effective_startup_timeout_keeps_manifest_when_overlay_fails(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    manifest = source / "plugin.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n[plugin_runtime]\ntimeout = 90\n", encoding="utf-8")
+
+    def broken_overlay(*_args, **_kwargs):
+        raise OSError("profile unreadable")
+
+    monkeypatch.setattr(lifecycle_service, "resolve_plugin_config_from_path", broken_overlay)
+    # start_plugin keeps the base manifest when the overlay fails; so must the drain budget.
+    assert lifecycle_service.effective_startup_timeout_sync("demo", manifest) == 90.0
