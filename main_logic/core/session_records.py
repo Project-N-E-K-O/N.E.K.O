@@ -25,6 +25,7 @@ class StartOperation:
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     children: set = field(default_factory=set)
     pending_inputs: tuple = ()
+    previous_session: object = None
 
 
 @dataclass(eq=False)

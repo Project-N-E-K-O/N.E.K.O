@@ -122,6 +122,7 @@ class SessionOwnershipMixin:
         operation = StartOperation(
             self, generation, websocket, request_id,
             input_mode, deadline, asyncio.current_task(),
+            previous_session=getattr(self, "session", None),
         )
         self._start_operation = operation
         operation.pending_inputs = tuple(self.pending_input_data)
@@ -147,6 +148,7 @@ class SessionOwnershipMixin:
 
     def _finish_start_operation(self, operation, token):
         operation.finished.set()
+        operation.previous_session = None
         if self._start_operation is operation:
             self._starting_session_count = 0
             self._starting_input_mode = None
@@ -212,6 +214,7 @@ class SessionOwnershipMixin:
                     and self.session is record.session
                     and not record.retired
                     and bool(self.pending_input_data)
+                    and not getattr(self, '_pending_input_flush_active', False)
                     and not getattr(self, '_deferred_pending_input_flush_count', 0)
                 )
                 if should_retry:
@@ -401,6 +404,13 @@ class SessionOwnershipMixin:
         if expected_session is not None and expected_session is not session:
             return self._own_cleanup_task(asyncio.sleep(0))
         caller = asyncio.current_task()
+        if (by_server and session is not None and operation is not None
+                and operation.valid and not operation.finished.is_set()
+                and session is operation.previous_session and operation.task is not caller):
+            # The predecessor's delayed server end must reuse its retirement,
+            # not revoke the replacement that already reserved this slot.
+            reset_starting_count = False
+            preserve_pending_input = True
         if (by_server and reset_starting_count and session is None
                 and operation is not None and operation.valid
                 and not operation.finished.is_set() and operation.task is not caller):
@@ -630,7 +640,7 @@ class SessionOwnershipMixin:
             elif record.was_active and not callable(after_memory_settlement) and not record.memory_boundary_sent:
                 self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
                 record.memory_boundary_sent = True
-            if not by_server and not record.departure_notified:
+            if not by_server and record.was_active and record.session is not None and not record.departure_notified:
                 try:
                     await self.send_status(json.dumps({
                         "code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name},

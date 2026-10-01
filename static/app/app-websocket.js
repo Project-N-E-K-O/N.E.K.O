@@ -1556,16 +1556,16 @@
     function independentAsrReasonToastText(reason) {
         var t = window.t;
         if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
-            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session.';
+            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
         }
         if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
-            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition dependencies are missing. Voice input has stopped for this session.';
+            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.';
         }
         if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
-            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session.';
+            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
         }
         if (reason === 'ASR_PROVIDER_QUEUE_TIMEOUT') {
-            return t ? t('microphone.localAsrQueueTimeout') : 'Local speech recognition waited too long in line. Voice input has stopped for this session.';
+            return t ? t('microphone.localAsrQueueTimeout') : 'Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening.';
         }
         return '';
     }
@@ -3817,11 +3817,9 @@
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
                                     var blockedReason = statusDetails && statusDetails.reason;
-                                    var blockedReasonText = independentAsrFailureToastText(blockedReason);
-                                    // independentAsrFailureToastText(blockedReason)
                                     window.showStatusToast(
-                                        blockedReasonText || (window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.'),
-                                        8000
+                                        independentAsrFailureToastText(blockedReason),
+                                        blockedReason ? 8000 : 5000
                                     );
                                 }
                             }
@@ -4015,8 +4013,8 @@
                             tearDownBlockedVoiceRoute();
                             if (typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
-                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition dependencies are missing. Voice input has stopped for this session.',
-                                    8000
+                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
                                 );
                             }
                             return;
@@ -5509,12 +5507,9 @@
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        // Contract marker for successful-start preservation:
-                        // _ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
                         if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
                                 && typeof window.hideVoicePreparingToast === 'function') {
-                            var _keepLocalAsrNotice = { keepLocalAsrNotice: true };
-                            window.hideVoicePreparingToast(_keepLocalAsrNotice);
+                            window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
                         }
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {

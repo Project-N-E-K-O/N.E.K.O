@@ -115,7 +115,12 @@ async def test_retirement_joins_start_checkpoint_before_receive_loop_cleanup():
     caller_cleanup = asyncio.Event()
 
     async def receive_loop():
+        # This operation owns the installed client; it is not replacing a
+        # predecessor. Capture an empty slot, then model its publication.
+        installed = manager.session
+        manager.session = None
         operation, token = manager._claim_start_operation(manager.websocket, None, "audio", asyncio.get_running_loop().time() + 15)
+        manager.session = installed
         entered.set()
         try:
             await asyncio.Event().wait()

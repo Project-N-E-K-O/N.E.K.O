@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -11,6 +11,96 @@ from tests.unit.session_handoff_harness import ConnectedSocket, drain_manager, m
 from tests.unit.test_session_handoff_lifecycle import make_manager
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("has_session", [False, True])
+async def test_user_end_announces_departure_only_for_live_session(active, has_session):
+    manager = make_manager()
+    manager.session.allow_close.set()
+    manager.is_active = active
+    if not has_session:
+        manager.session = None
+    await manager.end_session(by_server=False)
+    notices = [json.loads(call.args[0]) for call in manager.send_status.await_args_list]
+    departures = [notice for notice in notices if notice.get("code") == "CHARACTER_LEFT"]
+    assert len(departures) == int(active and has_session)
+
+
+async def test_scheduled_flush_does_not_spin_while_another_flush_owns_input(monkeypatch):
+    manager = make_manager()
+    manager.session.allow_close.set()
+    manager._bg_tasks = set()
+    entered, release = asyncio.Event(), asyncio.Event()
+    delivered = []
+    manager.pending_input_data = [{"input_type": "text", "data": "first"}]
+
+    async def dispatch(message, *, on_dispatch_attempted):
+        on_dispatch_attempted()
+        delivered.append(message["data"])
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(manager, "_process_stream_data_internal", dispatch)
+    schedule = Mock(wraps=manager._schedule_session_input_flush)
+    monkeypatch.setattr(manager, "_schedule_session_input_flush", schedule)
+    owning = asyncio.create_task(manager._flush_pending_input_data())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        manager.pending_input_data.append({"input_type": "text", "data": "second"})
+        reservation = object()
+        manager._pending_input_flush_scheduled = reservation
+        scheduled = manager._schedule_session_input_flush(reservation)
+        await asyncio.wait_for(scheduled, 2)
+        assert schedule.call_count == 1, "an occupied input gate must not create retry tasks"
+        release.set()
+        await asyncio.wait_for(owning, 2)
+        assert delivered == ["first", "second"]
+        assert not manager.pending_input_data
+    finally:
+        release.set()
+        await asyncio.gather(owning, *manager._bg_tasks, return_exceptions=True)
+        await manager.end_session(by_server=True)
+
+
+@pytest.mark.parametrize("explicit_target", [False, True])
+async def test_predecessor_server_end_does_not_revoke_replacement_start(monkeypatch, explicit_target):
+    manager, created, clients = await make_full_manager(monkeypatch)
+    first = asyncio.create_task(manager.start_session(manager.websocket, request_id="predecessor"))
+    starting = None
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_retire = manager._retire_session_resources_owned
+    try:
+        predecessor = await asyncio.wait_for(created.get(), 2)
+        predecessor.allow_connect.set()
+        await asyncio.wait_for(first, 2)
+
+        async def retire(record, **kwargs):
+            if record.session is predecessor:
+                entered.set()
+                await release.wait()
+            await original_retire(record, **kwargs)
+
+        monkeypatch.setattr(manager, "_retire_session_resources_owned", retire)
+        starting = asyncio.create_task(manager.start_session(manager.websocket, new=True, request_id="replacement"))
+        await asyncio.wait_for(entered.wait(), 2)
+        operation = manager._start_operation
+        retirement = manager._session_retirements[-1]
+        assert manager.session is predecessor
+        kwargs = {"expected_session": predecessor} if explicit_target else {}
+        delayed_end = manager.request_end_session(by_server=True, **kwargs)
+        assert operation.valid, "a delayed predecessor end must not revoke the replacement"
+        assert delayed_end is retirement.task
+        release.set()
+        successor = await asyncio.wait_for(created.get(), 2)
+        successor.allow_connect.set()
+        await asyncio.wait_for(starting, 2)
+        assert manager.session is successor and manager.is_active
+        assert predecessor.closed.is_set()
+        assert not any(message.get("type") == "session_failed" for message in manager.websocket.messages)
+    finally:
+        release.set()
+        await drain_manager(manager, clients, first, *([starting] if starting else []))
 
 
 async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
