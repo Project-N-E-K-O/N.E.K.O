@@ -315,6 +315,9 @@ class ProactiveMixin:
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError:
+                logger.info("[%s] prepare_proactive_delivery: session start cancelled", self.lanlan_name)
+                return False
             except Exception as e:
                 logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
                 return False

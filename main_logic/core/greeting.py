@@ -294,6 +294,10 @@ class GreetingMixin:
             try:
                 logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError:
+                logger.info("[%s] handle_avatar_interaction: auto start_session cancelled", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_start_cancelled")
+                return {"accepted": False, "reason": "session_start_cancelled", "interaction_id": interaction_id}
             except Exception as e:
                 logger.warning("[%s] handle_avatar_interaction: auto start_session failed: %s", self.lanlan_name, e)
                 await self.send_avatar_interaction_ack(interaction_id, False, "session_start_failed")

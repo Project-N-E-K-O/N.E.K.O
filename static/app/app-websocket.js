@@ -1577,7 +1577,11 @@
     }
 
     function clearLocalAsrPreparingNotice(options) {
+        var hadLocalNotice = Boolean(S.localAsrPreparingMessage);
         S.localAsrPreparingMessage = null;
+        if (!hadLocalNotice && !(options && options.force)) {
+            return;
+        }
         if (options && options.preserveVoiceToast
                 && (S.voiceStartPending === true || S._pendingSessionStartMode)) {
             return;
@@ -1588,7 +1592,7 @@
     }
 
     function tearDownBlockedVoiceRoute() {
-    clearLocalAsrPreparingNotice();
+    clearLocalAsrPreparingNotice({ force: true });
     removeExternalAsrPreview();
     S.independentAsrActive = false;
     // Set the sticky bit before publishing. The host bridge reacts
@@ -3817,7 +3821,7 @@
                                     // independentAsrFailureToastText(blockedReason)
                                     window.showStatusToast(
                                         blockedReasonText || (window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.'),
-                                        5000
+                                        8000
                                     );
                                 }
                             }
@@ -3997,8 +4001,9 @@
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
+                            var hadPreparingNotice = Boolean(S.localAsrPreparingMessage);
                             clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
-                            if (typeof window.showStatusToast === 'function') {
+                            if (hadPreparingNotice && typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',
                                     3000

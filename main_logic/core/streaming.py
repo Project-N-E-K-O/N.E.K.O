@@ -304,7 +304,13 @@ class StreamingMixin:
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
-                await self.start_session(self.websocket, new=False, input_mode=mode)
+                try:
+                    await self.start_session(self.websocket, new=False, input_mode=mode)
+                except asyncio.CancelledError:
+                    # A concurrent end/reset revoked this auto-start. The
+                    # websocket receive loop remains owned by the caller.
+                    logger.info("Session auto-start cancelled; dropping this input")
+                    return
 
                 # 检查启动是否成功
                 if not self.session or not self.is_active:

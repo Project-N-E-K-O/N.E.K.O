@@ -4316,27 +4316,27 @@ class _TransportMixin:
             if not any(existing is retired for existing in transports):
                 transports.append(retired)
         if transports:
-            try:
-                # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
-                # websockets 内部会自行 abort transport 强制关闭，
-                # 在兼容慢代理的同时保持清理等待有界。
-                for index, retired in enumerate(transports):
-                    try:
-                        await retired.close()
-                    except Exception as e:
-                        # The retirement registry uses a successful close as
-                        # the physical-release acknowledgement. A failed
-                        # handshake may have left the provider transport live;
-                        # retain this and every later transport for retry.
-                        unresolved = transports[index:]
-                        for item in unresolved:
-                            if not any(existing is item for existing in self._retired_websockets):
-                                self._retired_websockets.append(item)
-                        logger.error(f"Error closing websocket: {e}")
-                        raise
-                    finally:
+            # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
+            # websockets 内部会自行 abort transport 强制关闭，
+            # 在兼容慢代理的同时保持清理等待有界。
+            for index, retired in enumerate(transports):
+                closed = False
+                try:
+                    await retired.close()
+                    closed = True
+                except Exception as e:
+                    # The retirement registry uses a successful close as
+                    # the physical-release acknowledgement. A failed
+                    # handshake may have left the provider transport live;
+                    # retain this and every later transport for retry.
+                    unresolved = transports[index:]
+                    for item in unresolved:
+                        if not any(existing is item for existing in self._retired_websockets):
+                            self._retired_websockets.append(item)
+                    logger.error(f"Error closing websocket: {e}")
+                    raise
+                finally:
+                    if closed:
                         logger.info("WebSocket connection closed")
-            except Exception:
-                raise
         else:
             logger.warning("WebSocket connection is already closed or None")

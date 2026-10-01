@@ -2788,7 +2788,10 @@ class TtsRuntimeMixin:
                     self._mark_game_speech_delivery_failed(implicit_speech_id)
                 self._discard_pending_ai_voice_echo()
             except TtsCapacityError:
-                self._tts_capacity_exhausted = True
+                # Capacity is transient while the retired worker drains. Do
+                # not latch the session into a permanent no-audio state; the
+                # next response or scheduled respawn must be allowed to retry.
+                self._tts_capacity_exhausted = False
                 if self._tts_runtime_is_current(runtime):
                     self.tts_ready = False
                     await self.send_status(json.dumps({"code": "TTS_CONNECTION_FAILED"}))

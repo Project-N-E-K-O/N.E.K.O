@@ -1747,7 +1747,7 @@ class TurnMixin:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()
         self.sync_message_queue.put({"type": "json", "data": message})
-        logger.info(
+        logger.debug(
             "[voice-chain] stage=model_text_publish turn_id=%s request_id=%s first=%s text_len=%d",
             effective_turn_id,
             effective_request_id,

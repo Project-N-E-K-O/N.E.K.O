@@ -81,7 +81,7 @@ class SessionOwnershipMixin:
         async with asyncio.timeout_at(deadline):
             for record in tuple(self._session_retirements):
                 await record.handoff_finished.wait()
-                if record.handoff_error is not None:
+                if record.handoff_error is not None and not record.handoff_safe.is_set():
                     raise RuntimeError("Session handoff failed") from record.handoff_error
                 # Timeout fallback is not memory settlement. A late isolation
                 # callback must run before another conversation can produce.
@@ -160,8 +160,19 @@ class SessionOwnershipMixin:
         def finished(done):
             record.callbacks.discard(done)
             self._bg_tasks.discard(done)
+            should_retry = False
             if getattr(self, '_pending_input_flush_scheduled', None) is reservation:
                 self._pending_input_flush_scheduled = None
+                should_retry = (
+                    not done.cancelled()
+                    and done.exception() is None
+                    and self.session is record.session
+                    and not record.retired
+                    and bool(self.pending_input_data)
+                )
+                if should_retry:
+                    self._pending_input_flush_scheduled = reservation
+                    self._schedule_session_input_flush(reservation)
             if not done.cancelled() and done.exception() is not None:
                 logger.error('Session input flush failed: %s', done.exception())
 
@@ -361,7 +372,12 @@ class SessionOwnershipMixin:
             ):
                 return previous.task
         caller = asyncio.current_task()
-        if reset_starting_count and operation is not None:
+        # A server-side cleanup callback may be stale while a new start is
+        # still preparing. Only an explicit user end, or a server end that has
+        # a live session target, is allowed to revoke that start operation.
+        if reset_starting_count and operation is not None and (
+            not by_server or session is not None
+        ):
             operation.valid = False
         record = Retirement(
             self._session_generation, operation if reset_starting_count else None,
@@ -409,7 +425,7 @@ class SessionOwnershipMixin:
             if predecessor is record:
                 break
             await predecessor.handoff_finished.wait()
-            if predecessor.handoff_error is not None:
+            if predecessor.handoff_error is not None and not predecessor.handoff_safe.is_set():
                 raise RuntimeError("Previous session handoff failed") from predecessor.handoff_error
         close_tasks = []
         operation = record.operation
@@ -458,6 +474,11 @@ class SessionOwnershipMixin:
             except Exception as exc:
                 record.handoff_error = exc
                 logger.exception("Session ASR teardown failed before handoff: %s", exc)
+                # _close_independent_asr detaches manager-owned callbacks
+                # before awaiting provider cleanup. A post-detach cleanup
+                # error is reported to the current end request, but it must
+                # not pin the next session behind a historical failure.
+                record.handoff_safe.set()
             owns_state = self.session is None and self._session_generation == record.generation
         if owns_state:
             if record.was_active:
@@ -525,7 +546,7 @@ class SessionOwnershipMixin:
         self._connection_records[:] = [item for item in self._connection_records if not item.closed]
         self._session_retirements[:] = [
             item for item in self._session_retirements
-            if item is record or item.handoff_error is not None or not item.cleanup_complete.is_set()
+            if not item.cleanup_complete.is_set()
             or (item.memory_completion is not None and not item.memory_completion.done())
         ]
         if record.handoff_error is not None:

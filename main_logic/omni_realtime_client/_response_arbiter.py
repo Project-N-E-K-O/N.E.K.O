@@ -745,7 +745,7 @@ class RealtimeResponseArbiter:
         )
         self._queued_by_ticket[id(ticket)] = queued
         await self._queue.put(queued)
-        logger.info(
+        logger.debug(
             "[voice-chain] stage=response_enqueue source=%s ack_expected=%s queue_depth=%d",
             source,
             ack_expected,

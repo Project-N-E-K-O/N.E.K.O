@@ -1431,7 +1431,7 @@ class IndependentAsrRuntime:
             or not getattr(session_ref, "is_ready", True)
             or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
         ):
-            logger.info(
+            logger.debug(
                 "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=false reason=not_ready",
                 getattr(turn_token.ingress, "session_epoch", ""),
                 getattr(turn_token, "turn_id", ""),
@@ -1472,7 +1472,7 @@ class IndependentAsrRuntime:
                 payload,
                 sample_rate_hz=16_000,
             )
-        logger.info(
+        logger.debug(
             "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=%s bytes=%d",
             getattr(turn_token.ingress, "session_epoch", ""),
             getattr(turn_token, "turn_id", ""),

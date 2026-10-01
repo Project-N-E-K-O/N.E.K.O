@@ -1036,9 +1036,16 @@ class LifecycleMixin:
                     return_exceptions=True,
                 )
                 self._check_start_operation()
-                for result in (tts_result, llm_result):
-                    if isinstance(result, BaseException):
-                        raise result
+                if isinstance(tts_result, asyncio.CancelledError):
+                    raise tts_result
+                if isinstance(tts_result, BaseException):
+                    # TTS is an optional output path. Keep the LLM session
+                    # usable and let the normal response/respawn path recover
+                    # the worker instead of turning this into session_failed.
+                    self.tts_ready = False
+                    logger.warning("TTS startup failed; continuing without audio: %s", tts_result)
+                if isinstance(llm_result, BaseException):
+                    raise llm_result
                 if llm_result is _START_LLM_CONCURRENT_ABORTED:
                     return
                 if self.session is None:
@@ -1450,7 +1457,9 @@ class LifecycleMixin:
             self.request_end_session(by_server=True, reset_starting_count=False,
                                      preserve_pending_input=True)
             record = self._session_retirements[-1]
-            await record.handoff_safe.wait()
+            await record.handoff_finished.wait()
+            if record.handoff_error is not None and not record.handoff_safe.is_set():
+                raise RuntimeError("Session handoff failed") from record.handoff_error
             if record.memory_completion is not None:
                 await asyncio.shield(record.memory_completion)
 
@@ -1464,7 +1473,14 @@ class LifecycleMixin:
                 await self._stop_tts_response_handler()
                 self._check_start_operation()
             return True
-        deadline = self._current_start_deadline()
+        loop = asyncio.get_running_loop()
+        start_deadline = self._current_start_deadline()
+        # TTS is a recoverable output dependency. Reserve a small tail of the
+        # shared startup budget for LLM publication, and cap a slow TTS
+        # provider so it cannot turn a healthy session into session_failed.
+        deadline = min(start_deadline - 0.1, loop.time() + 5.0)
+        if deadline <= loop.time():
+            return False
         runtime = self._snapshot_tts_runtime()
         if (runtime is not None and not runtime.retired
                 and getattr(self, "_tts_runtime_key", None) != self._build_tts_runtime_key()):

@@ -115,11 +115,12 @@ async def test_close_error_finishes_retirement_bookkeeping():
         raise RuntimeError("provider close failed")
 
     old.close = failing_close
+    ending = manager.request_end_session(by_server=True)
+    retirement = manager._session_retirements[-1]
 
     with pytest.raises(RuntimeError, match="provider close failed"):
-        await manager.end_session(by_server=True)
+        await manager._wait_session_end(ending)
 
-    retirement = manager._session_retirements[-1]
     assert retirement.handoff_safe.is_set()
     assert retirement.cleanup_complete.is_set()
     # A failed provider close leaves physical ownership uncertain. The
