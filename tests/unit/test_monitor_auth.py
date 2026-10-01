@@ -53,3 +53,14 @@ def test_viewer_session_is_signed_expiring_and_not_the_token(monkeypatch):
 
 def test_viewer_session_cookie_name_is_scoped_by_port():
     assert monitor_auth.VIEWER_SESSION_COOKIE == f"neko_monitor_session_{monitor_auth.MONITOR_SERVER_PORT}"
+
+
+def test_token_scopes(monkeypatch):
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "secret")
+    monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "viewer")
+    assert monitor_auth.monitor_token_scope("secret") == "full"
+    assert monitor_auth.monitor_token_scope("viewer") == "viewer"
+    assert monitor_auth.monitor_token_scope("wrong") is None
+    assert not monitor_auth.verify_monitor_token("viewer")
+    monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "")
+    assert monitor_auth.monitor_token_scope("") is None

@@ -166,17 +166,16 @@ def _read_monitor_host() -> str:
 def _monitor_dial_host(bind_host: str) -> str:
     """Map Monitor's bind address to a URL host the local main server can dial.
 
-    Wildcards map to the loopback of the same family: asyncio sets
-    IPV6_V6ONLY on AF_INET6 listeners, so a ``::`` bind accepts no IPv4.
+    Wildcards (any spelling, e.g. ``::0``) map to the loopback of the same
+    family: asyncio sets IPV6_V6ONLY on AF_INET6 listeners, so a ``::`` bind
+    accepts no IPv4.
     """
-    if bind_host == "0.0.0.0":
-        return "127.0.0.1"
-    if bind_host == "::":
-        return "[::1]"
     try:
         address = ipaddress.ip_address(bind_host)
     except ValueError:
         return bind_host
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
     return f"[{address}]" if address.version == 6 else str(address)
 
 
@@ -188,6 +187,7 @@ MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
 # the default and leave authentication opt-in for backwards compatibility.
 MONITOR_HOST = _read_monitor_host()
 MONITOR_TOKEN = _read_str_env("MONITOR_TOKEN", "")
+MONITOR_VIEWER_TOKEN = _read_str_env("MONITOR_VIEWER_TOKEN", "")
 COMMENTER_SERVER_PORT = _read_port_env("COMMENTER_SERVER_PORT", 48914)
 TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)

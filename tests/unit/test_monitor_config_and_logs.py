@@ -7,7 +7,7 @@ from app.monitor_auth import MonitorQueryLogFilter
 from config import network
 
 
-@pytest.mark.parametrize("name, default", [("MONITOR_HOST", "0.0.0.0"), ("MONITOR_TOKEN", "")])
+@pytest.mark.parametrize("name, default", [("MONITOR_HOST", "0.0.0.0"), ("MONITOR_TOKEN", ""), ("MONITOR_VIEWER_TOKEN", "")])
 def test_monitor_config_defaults_and_env_precedence(monkeypatch, name, default):
     monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv(f"NEKO_{name}", raising=False)
@@ -30,3 +30,13 @@ def test_uvicorn_request_logs_omit_query_strings(message, args):
     assert "secret" not in rendered
     assert "?" not in rendered
     assert "/" in rendered
+
+
+@pytest.mark.parametrize("message, args", [
+    ("Unexpected value?%s", ("x",)),
+    ("ratio?%d%%", (5,)),
+])
+def test_redaction_never_breaks_a_format_template(message, args):
+    record = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, message, args, None)
+    assert MonitorQueryLogFilter().filter(record)
+    assert record.getMessage() == message % args

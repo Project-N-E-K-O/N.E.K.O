@@ -7,6 +7,8 @@ from config import network
     ("0.0.0.0", "127.0.0.1"),
     # asyncio binds "::" with IPV6_V6ONLY, so dialing IPv4 loopback would fail.
     ("::", "[::1]"),
+    ("::0", "[::1]"),
+    ("0:0:0:0:0:0:0:0", "[::1]"),
     ("::1", "[::1]"),
     ("localhost", "localhost"),
     ("192.168.1.20", "192.168.1.20"),

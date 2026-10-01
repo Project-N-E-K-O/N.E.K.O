@@ -32,7 +32,7 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
-from config import MONITOR_SERVER_PORT, MONITOR_HOST, DEFAULT_LIVE2D_MODEL_NAME
+from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
 from app.monitor_auth import (
     MonitorAuthMiddleware,
     install_monitor_log_redaction,
@@ -102,6 +102,11 @@ async def lifespan(app: FastAPI):
     # Startup: launch a background task that periodically cleans up
     # disconnected WebSocket clients. Replaces the deprecated
     # @app.on_event("startup") hook (FastAPI lifespan is the supported API).
+    # Redaction lives here rather than under __main__ so `uvicorn app.monitor:app`
+    # and embedded runs never write ?token= into the access log either.
+    install_monitor_log_redaction()
+    if MONITOR_VIEWER_TOKEN and not MONITOR_TOKEN:
+        logger.warning("MONITOR_VIEWER_TOKEN is ignored because MONITOR_TOKEN is empty")
     _fire_task(cleanup_disconnected_clients())
     yield
 
@@ -535,7 +540,6 @@ if __name__ == "__main__":
     # reachable by external clients, so MONITOR_HOST defaults to 0.0.0.0.
     # Set it to 127.0.0.1 for local-only use, and MONITOR_TOKEN to require
     # authentication (see app/monitor_auth.py).
-    install_monitor_log_redaction()
     logger.info(
         "Monitor listening on %s:%s; authentication %s",
         MONITOR_HOST,

@@ -188,3 +188,54 @@ def test_unconfigured_token_keeps_http_compatibility(client, monkeypatch):
     assert client.get("/api/config/preferences").status_code == 200
     # No token configured: a stray ?token= must not trigger the cookie exchange.
     assert client.get("/openapi.json?token=x", follow_redirects=False).status_code == 200
+
+
+@pytest.fixture
+def viewer_client(client, monkeypatch):
+    monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "viewer-secret")
+    return client
+
+
+def test_viewer_token_reads_viewer_routes(viewer_client):
+    with viewer_client.websocket_connect("/subtitle_ws?token=viewer-secret") as websocket:
+        assert websocket.receive_json() == {"type": "subtitle", "text": "private subtitle"}
+    with viewer_client.websocket_connect("/ws/neko", headers={"Authorization": "Bearer viewer-secret"}):
+        pass
+    response = viewer_client.get("/neko?token=viewer-secret", follow_redirects=False)
+    assert response.status_code == 303
+    assert monitor_auth.verify_viewer_session(response.cookies[COOKIE])
+
+
+@pytest.mark.parametrize("path", ["/sync/neko", "/sync_binary/neko"])
+@pytest.mark.parametrize("transport", ["query", "header"])
+def test_viewer_token_cannot_write_producer_routes(viewer_client, path, transport):
+    if transport == "query":
+        _assert_ws_rejected(viewer_client, path + "?token=viewer-secret")
+    else:
+        _assert_ws_rejected(viewer_client, path, {"Authorization": "Bearer viewer-secret"})
+
+
+def test_rotating_viewer_token_invalidates_sessions(viewer_client, monkeypatch):
+    headers = _session_headers()
+    monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "rotated-viewer")
+    assert viewer_client.get("/api/config/preferences", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("raw_url, location", [
+    # A decoded "#" must not truncate the character name.
+    ("/Neko%232?token=route-secret", "/Neko%232"),
+    ("/Neko%3Fx?token=route-secret&a=1", "/Neko%3Fx?a=1"),
+    # Leading slashes would make a protocol-relative open redirect.
+    ("//evil.example/?token=route-secret", "/evil.example/"),
+    ("/%5Cevil.example?token=route-secret", "/%5Cevil.example"),
+])
+def test_query_token_redirect_keeps_raw_path_and_stays_on_site(client, raw_url, location):
+    response = client.get("http://testserver" + raw_url, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == location
+
+
+def test_lifespan_installs_log_redaction_for_any_launch_mode(client):
+    import logging
+    for name in ("uvicorn.access", "uvicorn.error"):
+        assert any(isinstance(f, monitor_auth.MonitorQueryLogFilter) for f in logging.getLogger(name).filters)

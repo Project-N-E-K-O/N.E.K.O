@@ -7,13 +7,15 @@ every HTTP and WebSocket route except the public static asset mounts, so a
 newly added route is protected by default instead of relying on each handler
 to remember an auth call.
 
-Two credential kinds are accepted:
+Credentials (``Authorization: Bearer``, ``X-Monitor-Token`` or ``?token=``):
 
-* the configured token itself (``Authorization: Bearer``, ``X-Monitor-Token``
-  or ``?token=``) -- full access, including the ``/sync*`` producer routes;
-* a viewer session cookie, issued in exchange for a ``?token=`` page load.  It
-  carries an expiring HMAC derived from the token rather than the token, is
-  named per Monitor port, and only grants viewer routes (never ``/sync*``).
+* ``MONITOR_TOKEN`` -- full access, including the ``/sync*`` producer routes
+  the main server writes to;
+* optional ``MONITOR_VIEWER_TOKEN`` -- viewer routes only, so a shared viewer
+  link does not hand out write access to ``/sync*``;
+* a viewer session cookie, issued in exchange for a ``?token=`` page load with
+  either token.  It carries an expiring HMAC instead of a token, is named per
+  Monitor port, and only grants viewer routes.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.websockets import WebSocket
 
-from config import MONITOR_SERVER_PORT, MONITOR_TOKEN
+from config import MONITOR_SERVER_PORT, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN
 
 # Cookies are scoped by host, not by port: include the port so that services
 # sharing the host neither collide with nor overwrite each other's session.
@@ -55,8 +57,11 @@ class MonitorQueryLogFilter(logging.Filter):
         return re.sub(r"\?[^\s\"']*", "", value)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redact(record.msg)
-        if isinstance(record.args, tuple):
+        # Never rewrite a format template that still has args to apply: a
+        # "?%s" would lose its placeholder and break formatting.
+        if not record.args:
+            record.msg = self._redact(record.msg)
+        elif isinstance(record.args, tuple):
             record.args = tuple(self._redact(value) for value in record.args)
         elif isinstance(record.args, dict):
             record.args = {key: self._redact(value) for key, value in record.args.items()}
@@ -78,18 +83,33 @@ def monitor_auth_enabled() -> bool:
     return bool(MONITOR_TOKEN)
 
 
-def verify_monitor_token(token: str | None) -> bool:
-    """Constant-time verification of a candidate Monitor token.
+def _matches(candidate: str, secret: str) -> bool:
+    return bool(secret) and hmac.compare_digest(candidate.encode("utf-8"), secret.encode("utf-8"))
 
-    An unconfigured token keeps the historical open-service behavior.  Empty
-    or missing candidates are rejected once authentication is enabled.
+
+def monitor_token_scope(token: str | None) -> str | None:
+    """Return ``"full"``, ``"viewer"`` or ``None`` (rejected) for a candidate token.
+
+    An unconfigured ``MONITOR_TOKEN`` keeps the historical open service, so
+    every candidate gets full access.  Empty or missing candidates are
+    rejected once authentication is enabled.
     """
 
     if not MONITOR_TOKEN:
-        return True
+        return "full"
     if not token:
-        return False
-    return hmac.compare_digest(token.encode("utf-8"), MONITOR_TOKEN.encode("utf-8"))
+        return None
+    if _matches(token, MONITOR_TOKEN):
+        return "full"
+    if _matches(token, MONITOR_VIEWER_TOKEN):
+        return "viewer"
+    return None
+
+
+def verify_monitor_token(token: str | None) -> bool:
+    """Whether ``token`` grants full (producer) access."""
+
+    return monitor_token_scope(token) == "full"
 
 
 def extract_monitor_token(conn: HTTPConnection) -> tuple[str | None, str | None]:
@@ -114,9 +134,11 @@ def extract_monitor_token(conn: HTTPConnection) -> tuple[str | None, str | None]
 
 
 def _viewer_session_signature(expires_at: int) -> str:
+    # Bind the viewer token too: rotating either token invalidates every session.
+    viewer_digest = hashlib.sha256(MONITOR_VIEWER_TOKEN.encode("utf-8")).hexdigest()
     return hmac.new(
         MONITOR_TOKEN.encode("utf-8"),
-        f"neko-monitor-viewer:{expires_at}".encode("ascii"),
+        f"neko-monitor-viewer:{expires_at}:{viewer_digest}".encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -129,7 +151,7 @@ def issue_viewer_session(now: float | None = None) -> str:
 
 
 def verify_viewer_session(value: str | None, now: float | None = None) -> bool:
-    """Check signature and expiry; rotating the token invalidates all sessions."""
+    """Check signature and expiry; rotating a token invalidates all sessions."""
 
     if not MONITOR_TOKEN or not value:
         return False
@@ -162,7 +184,12 @@ def _exchange_query_token(conn: HTTPConnection) -> RedirectResponse:
     """Swap a ``?token=`` page load for a session cookie and drop the token from the URL."""
 
     remaining = [(key, value) for key, value in conn.query_params.multi_items() if key != "token"]
-    location = conn.url.path + (f"?{urlencode(remaining)}" if remaining else "")
+    # Use the still-encoded raw path: ``url.path`` truncates at a decoded
+    # "#"/"?" in a character name.  Collapse leading slashes so "//evil.example"
+    # cannot become a protocol-relative open redirect.
+    raw_path = conn.scope.get("raw_path") or conn.url.path.encode("utf-8")
+    path = "/" + raw_path.decode("latin-1").lstrip("/\\")
+    location = path + (f"?{urlencode(remaining)}" if remaining else "")
     response = RedirectResponse(location, status_code=303, headers=_NO_STORE_HEADERS)
     response.set_cookie(
         VIEWER_SESSION_COOKIE,
@@ -193,12 +220,14 @@ class MonitorAuthMiddleware:
             return
 
         conn = HTTPConnection(scope)
+        producer_route = conn.url.path.startswith(_PRODUCER_PATH_PREFIXES)
         token, source = extract_monitor_token(conn)
         if token is not None:
-            authorized = verify_monitor_token(token)
+            scope_granted = monitor_token_scope(token)
+            authorized = scope_granted == "full" or (scope_granted == "viewer" and not producer_route)
         else:
             authorized = (
-                not conn.url.path.startswith(_PRODUCER_PATH_PREFIXES)
+                not producer_route
                 and verify_viewer_session(conn.cookies.get(VIEWER_SESSION_COOKIE))
                 and (scope["type"] == "http" or _same_origin(conn))
             )

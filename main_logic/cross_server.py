@@ -31,6 +31,7 @@ import pickle
 import aiohttp
 from config import (
     MONITOR_SYNC_URL,
+    MONITOR_TOKEN,
     MEMORY_SERVER_PORT,
     COMMENTER_SERVER_PORT,
     AVATAR_INTERACTION_DEDUPE_WINDOW_MS,
@@ -545,6 +546,7 @@ async def _slot_maintainer(
     *,
     backoff_min: float = 0.25,
     backoff_max: float = 1.5,
+    auth_retry: float = 30.0,
 ) -> None:
     """Per-slot reconnect loop, event-driven + exponential backoff.
 
@@ -560,6 +562,7 @@ async def _slot_maintainer(
     failure can take ~4s (TCP SYN timeout); without wait_for this guarantee would break.
     """
     backoff = backoff_min
+    auth_warned = False
     while True:
         await slot.dead_event.wait()
 
@@ -584,13 +587,23 @@ async def _slot_maintainer(
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            # 失败的 session 立即后台收，避免 lingering
+            asyncio.create_task(_safe_close(new_session))
+            slot.session = None
+            if isinstance(e, aiohttp.WSServerHandshakeError) and e.status in (401, 403):
+                # token 不一致快速重试也好不了：只提示一次，并放慢重试，别每 1.5s 刷 Monitor
+                if not auth_warned:
+                    logger.warning(
+                        f"[{slot.lanlan_name}] {slot.name} Monitor 拒绝认证 (HTTP {e.status})，"
+                        f"请检查主服务与 Monitor 的 NEKO_MONITOR_TOKEN 是否一致；{auth_retry:.0f}s 后重试"
+                    )
+                    auth_warned = True
+                await asyncio.sleep(auth_retry)
+                continue
             logger.debug(
                 f"[{slot.lanlan_name}] {slot.name} ws_connect 失败: "
                 f"{type(e).__name__}: {e} (backoff {backoff:.2f}s)"
             )
-            # 失败的 session 立即后台收，避免 lingering
-            asyncio.create_task(_safe_close(new_session))
-            slot.session = None
             # 拉到 backoff 周期：fast-fail (refused, ms 级) 时补 sleep；
             # timeout 到点失败时基本不 sleep 直接进下一轮
             elapsed = time.monotonic() - cycle_start
@@ -602,6 +615,7 @@ async def _slot_maintainer(
         # 顺序很重要：先把 ws 装上 + 清 dead_event，再创建 reader。
         # 否则 reader 可能在 clear() 之前就 mark_dead，clear 会把这个信号擦掉。
         slot.ws = new_ws
+        auth_warned = False
         slot.dead_event.clear()
         slot.reader = asyncio.create_task(
             _slot_reader(slot, new_ws),
@@ -773,7 +787,7 @@ async def run_sync_connector(
     status_callback=None,
     user_language_provider=None,
     render_language_provider=None,
-    monitor_auth_token: str | None = None,
+    monitor_auth_token: str | None = MONITOR_TOKEN or None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -798,8 +812,9 @@ async def run_sync_connector(
         user_language_provider: optional callable returning the live session locale.
         render_language_provider: optional callable returning the current renderer
             locale when the session has no explicit language preference.
-        monitor_auth_token: optional Monitor bearer token. When provided it is sent
-            as an Authorization header on Monitor sync WebSocket connections.
+        monitor_auth_token: Monitor bearer token, defaulting to the configured
+            ``MONITOR_TOKEN``. When set it is sent as an Authorization header on
+            Monitor sync WebSocket connections.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
