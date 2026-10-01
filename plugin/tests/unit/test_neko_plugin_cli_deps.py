@@ -1010,6 +1010,43 @@ def test_mount_in_in_place_clean_staging_stops_before_cleanup(tmp_path, monkeypa
     assert "got mounted inside" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("change", ["mount", "retarget"])
+def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, capsys, change):
+    # The install can take minutes; vendor/ may change under it.
+    import shutil
+
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    installed = []
+    real_find = deps_cmd._find_foreign_subdir
+
+    def find(root, junctions):
+        if change == "mount" and installed and Path(root) == vendor:
+            return vendor / "pkg" / "new-mount"
+        return real_find(root, junctions=junctions)
+
+    def install(command, **kwargs):
+        staging = Path(command[command.index("--target") + 1])
+        (staging / "fresh.py").write_text("new")
+        installed.append(staging)
+        if change == "retarget":
+            # vendor/ now leads somewhere the staging dir is not.
+            shutil.rmtree(staging)
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", find)
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (vendor / "old.py").read_text() == "old"
+    assert "changed during the install" in capsys.readouterr().err
+
+
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
     from plugin.neko_plugin_cli.commands import deps_cmd

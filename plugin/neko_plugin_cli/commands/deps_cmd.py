@@ -310,6 +310,16 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             )
             return 1  # the mount check below keeps staging
         _clean_vendor(staging_dir)
+        # The install can take minutes: recheck right before emptying that
+        # vendor/ still leads to where staging was made (a link may have been
+        # retargeted) and that nothing got mounted inside it meanwhile.
+        if not staging_dir.is_dir() or _find_foreign_subdir(vendor_dir, junctions=False) is not None:
+            print(
+                f"[FAIL] {vendor_dir} changed during the install (retargeted, or a "
+                "mount appeared inside); not emptying it. Check it and retry.",
+                file=sys.stderr,
+            )
+            return 1
         _empty_directory(vendor_dir, keep=staging_dir.name)
         for child in staging_dir.iterdir():
             child.replace(vendor_dir / child.name)
