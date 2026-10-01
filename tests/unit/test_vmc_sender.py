@@ -1327,32 +1327,44 @@ async def test_enable_broadcast_cannot_hang_the_control_endpoint(monkeypatch):
     returns. Only a bounded wait keeps the endpoint responsive.
     """
     monkeypatch.setattr(vmc_sender_module, "_ENABLED_CALLBACK_TIMEOUT_SEC", 0.05)
+    callback_started = asyncio.Event()
+    callback_cancelled = asyncio.Event()
+    observed_timeouts = []
+    original_wait_for = asyncio.wait_for
+
+    async def observed_wait_for(awaitable, timeout):
+        observed_timeouts.append(timeout)
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(vmc_sender_module.asyncio, "wait_for", observed_wait_for)
 
     async def never_returns(_enabled: bool) -> None:
-        await asyncio.Event().wait()
+        callback_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            callback_cancelled.set()
 
     sender = VmcSender(config_dir=None, on_enabled_callback=never_returns)
     sender._enabled = True
 
-    started = time.monotonic()
     # Wrap the call itself: without the sender's own wait_for, this await never
     # returns, and an unbounded test would hang the suite instead of failing.
     # The outer budget is deliberately well above the 0.05s timeout under test
     # so it only trips on a missing timeout, never on scheduling noise.
     try:
-        await asyncio.wait_for(sender._notify_enabled_changed(True), timeout=5.0)
+        await original_wait_for(sender._notify_enabled_changed(True), timeout=5.0)
     except asyncio.TimeoutError:
         pytest.fail(
             "_notify_enabled_changed() never returned: the enable broadcast has "
             "no per-call timeout, so one backpressured socket stalls "
             "POST /api/vmc/enable forever"
         )
-    elapsed = time.monotonic() - started
-
-    # Bound the wait near the configured timeout, not merely "not forever":
-    # a 1.0s ceiling on a 0.05s timeout would still pass if the timeout were
-    # ignored and something else happened to unblock the await.
-    assert elapsed < 0.5, f"notification took {elapsed:.3f}s for a 0.05s timeout"
+    # Check the configured deadline and actual cancellation rather than wall
+    # time: a busy runner can resume a correct 0.05s timeout over a second late.
+    assert observed_timeouts == [0.05]
+    assert callback_started.is_set()
+    assert callback_cancelled.is_set()
     # The state enable() already committed survives a failed notification.
     assert sender.enabled is True
 

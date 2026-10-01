@@ -4292,19 +4292,24 @@ class LifecycleMixin:
                 and self.session is new_session
                 and not self._swap_session_is_dead(new_session)
             ):
-                queued_extra_objects = {id(e) for e in self.pending_extra_replies}
-                delivered_ids = {
-                    e.get("_callback_delivery_id") for e in _prime_selected_extras
-                    if isinstance(e, dict) and id(e) not in queued_extra_objects
-                }
-                delivered_cbs = [
-                    cb for cb in _prime_extra_callbacks
-                    if cb.get("_callback_delivery_id") in delivered_ids
-                ]
-                queued_cb_objects = {id(cb) for cb in self.pending_agent_callbacks}
-                self._remove_swap_delivered_callbacks([
-                    cb for cb in delivered_cbs if id(cb) in queued_cb_objects
-                ])
+                # Nuitka 4.2.x cannot clone comprehension scopes inside this
+                # async finally block. Keep the same snapshots and ordering
+                # with ordinary loops so all desktop targets can compile it.
+                queued_extra_objects = set(map(id, self.pending_extra_replies))
+                delivered_ids = set()
+                for delivered_extra in _prime_selected_extras:
+                    if isinstance(delivered_extra, dict) and id(delivered_extra) not in queued_extra_objects:
+                        delivered_ids.add(delivered_extra.get("_callback_delivery_id"))
+                delivered_cbs = []
+                for delivered_cb in _prime_extra_callbacks:
+                    if delivered_cb.get("_callback_delivery_id") in delivered_ids:
+                        delivered_cbs.append(delivered_cb)
+                queued_cb_objects = set(map(id, self.pending_agent_callbacks))
+                queued_delivered_cbs = []
+                for delivered_cb in delivered_cbs:
+                    if id(delivered_cb) in queued_cb_objects:
+                        queued_delivered_cbs.append(delivered_cb)
+                self._remove_swap_delivered_callbacks(queued_delivered_cbs)
                 # A paired callback outside the queue is held by a text turn
                 # that drained it. Retract it so a precommit failure there does
                 # not restore it (and its mirror) after the swap delivered them.
