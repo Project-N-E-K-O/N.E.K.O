@@ -1047,13 +1047,17 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", find)
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+    cleaned = []
+    real_clean = deps_cmd._clean_vendor
+    monkeypatch.setattr(deps_cmd, "_clean_vendor", lambda path: (cleaned.append(path), real_clean(path)))
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
     if change == "replaced":
         assert (vendor / "other.py").read_text() == "other"
         assert (plugin_dir / "moved-away" / "old.py").read_text() == "old"
-        # The same-named dir in the replacement is not ours to remove.
+        # The same-named dir in the replacement is not ours to clean or remove.
         assert (vendor / installed[0].name).is_dir()
+        assert cleaned == []
     else:
         assert (vendor / "old.py").read_text() == "old"
     assert "changed during the sync" in capsys.readouterr().err

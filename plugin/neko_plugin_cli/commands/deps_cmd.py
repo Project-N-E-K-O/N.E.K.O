@@ -347,6 +347,10 @@ def _sync_in_place(
         exit_code = _install_to_vendor(external_deps, vendor_dir=staging_dir, python=args.python)
         if exit_code != 0:
             return exit_code
+        # Every later step reaches staging through vendor/; after a retarget
+        # that path names a directory in the new target.
+        if not _same_target(vendor_dir, identity):
+            return _report_vendor_changed(vendor_dir)
         # As in the swap path: _clean_vendor recurses, and the move would
         # carry a mount into vendor/; stop if one appeared during the install.
         mounted = _find_mount(staging_dir)
