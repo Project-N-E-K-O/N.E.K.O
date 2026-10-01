@@ -182,7 +182,7 @@ async def test_v3_empty_description_never_starts_model_or_consumes_cooldown(monk
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_v2_v3_and_special_each_send_only_selected_text_once(monkeypatch):
-    from main_logic.core import greeting
+    from main_logic.core import greeting, turn
 
     current_record = V3_RECORD
 
@@ -202,7 +202,7 @@ async def test_v2_v3_and_special_each_send_only_selected_text_once(monkeypatch):
             self.instructions.append(instruction)
             return True
 
-    class Harness(greeting.GreetingMixin):
+    class Harness(greeting.GreetingMixin, turn.TurnMixin):
         lanlan_name = "YUI"
         master_name = "Alice"
         user_language = "zh"

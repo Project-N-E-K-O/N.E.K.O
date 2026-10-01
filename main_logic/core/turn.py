@@ -38,6 +38,7 @@ from uuid import uuid4
 import numpy as np
 from ._shared import (
     _REQUEST_ID_UNSET,
+    _ReplyTurn,
     _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX,
     _VOICE_ECHO_LOOKBACK_SECONDS,
     _VOICE_ECHO_LOOKBACK_CHARS,
@@ -361,19 +362,31 @@ class TurnMixin:
         except Exception as e:
             logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
 
-    async def _emit_turn_end(self, active_request_id) -> None:
+    async def _emit_turn_end(
+        self,
+        active_request_id,
+        *,
+        reply_turn: _ReplyTurn | None = None,
+    ) -> None:
         """Send the turn end signal to both sync_message_queue and the WebSocket,
         passing ``_pending_turn_meta`` through both channels before clearing it.
         Shared by two paths:
         - ``handle_response_complete`` normal completion
         - ``handle_response_discarded``'s truncate-recovery / too-long-final
         Unified semantics: sync queue and WS carry the same meta, avoiding one
-        having meta while the other doesn't."""
+        having meta while the other doesn't.
+
+        A bound reply (``reply_turn``) carries the meta it was started with
+        instead: it never takes a ``_pending_turn_meta`` another reply staged,
+        and clears the shared field only while that still holds its own."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
-        pending_meta = self._pending_turn_meta
+        pending_meta = (
+            self._pending_turn_meta if reply_turn is None else reply_turn.meta
+        )
         if pending_meta:
             turn_end_msg['meta'] = pending_meta
-            self._pending_turn_meta = None
+            if self._pending_turn_meta is pending_meta:
+                self._pending_turn_meta = None
         if active_request_id:
             turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
@@ -470,8 +483,92 @@ class TurnMixin:
                         break
         self._prune_request_staged_images()
 
-    async def handle_response_complete(self):
-        """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
+    def _begin_reply_turn(
+        self,
+        *,
+        speech_id: str | None,
+        request_id: str | None = None,
+        meta: dict | None = None,
+    ) -> _ReplyTurn:
+        """Open the snapshot for a reply Core is about to hand to the Offline client.
+
+        It becomes the open reply that ``_carry_reply_turn`` moves along; the
+        caller attaches ``session`` right before the hand-over and passes the
+        snapshot to ``_end_reply_turn`` once the reply has returned.
+        """
+        reply_turn = _ReplyTurn(speech_id=speech_id, request_id=request_id, meta=meta)
+        self._open_reply_turn = reply_turn
+        return reply_turn
+
+    def _end_reply_turn(self, reply_turn: _ReplyTurn) -> None:
+        if self._open_reply_turn is reply_turn:
+            self._open_reply_turn = None
+
+    def _carry_reply_turn(self, previous_speech_id: str | None) -> None:
+        """Move the open reply onto the speech id that just replaced ``previous_speech_id``.
+
+        Only for the two rotations that start no turn. After the hot-swap
+        promotion, a reply the old session was cut off in is still the host's
+        turn, and its late completion is the only thing that closes it. A
+        truncation recovery re-speaks the same reply under a fresh id, and its
+        remaining steps must keep treating that reply as the owner.
+        """
+        reply_turn = getattr(self, "_open_reply_turn", None)
+        if reply_turn is not None and reply_turn.speech_id == previous_speech_id:
+            reply_turn.speech_id = self.current_speech_id
+
+    def _reply_turn_is_current(self, reply_turn: _ReplyTurn) -> bool:
+        """Does this reply still own the host's turn?
+
+        While its client is still ``self.session`` the answer is yes, as before
+        replies carried a snapshot: turn succession on a live client belongs to
+        the interruption path, which cancels the reply before the interrupter's
+        turn starts. A retired client (closed by ``end_session`` or a hot swap)
+        has no such hand-over, so its reply owns the turn only while the host is
+        still on the speech id it spoke under. Every writer that starts a turn
+        assigns a fresh speech id, and the rotations that start no turn (the
+        hot-swap promotion, a truncation recovery) carry the open reply along.
+
+        Client identity alone cannot decide it: ``end_session`` closes the client
+        before it clears ``self.session``, and after a hot swap the retired
+        client's completion is still the only thing that closes the turn it cut.
+        """
+        if reply_turn.session is self.session:
+            return True
+        return self.current_speech_id == reply_turn.speech_id
+
+    def _stand_down_reply_turn(self, reply_turn: _ReplyTurn) -> None:
+        """Leave the host's newer turn alone; release only the request id this reply owns.
+
+        A newer voice or proactive turn does not replace
+        ``_active_text_request_id``, so the id may still be this reply's and
+        would otherwise ride on that turn's end. A staged meta is left to the
+        path that staged it (the avatar path clears its own once it sees the
+        speech id moved on).
+        """
+        logger.info(
+            "[%s] a retired reply completed after the host moved to a newer turn "
+            "(request_id=%s); leaving that turn alone",
+            self.lanlan_name,
+            reply_turn.request_id,
+        )
+        if self._active_text_request_id == reply_turn.request_id:
+            self._active_text_request_id = None
+
+    async def handle_response_complete(self, *, reply_turn: _ReplyTurn | None = None):
+        """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic.
+
+        ``reply_turn`` is set when Core bound the callback to one Offline reply
+        (``_ReplyTurn``). Such a completion ends the turn with its own request id
+        and meta rather than whatever the shared fields hold when it finally
+        runs, and when a newer turn already owns the host
+        (``_reply_turn_is_current``) it leaves every shared effect (TTS done,
+        turn end, AI text flush, wrap-up) to that turn. Unbound completions read
+        the shared fields as they stand: realtime clients, which guard their own
+        turn ends, and the Offline replies Core does not bind (independent-ASR
+        voice turns, whose completion runs inside ``close()`` rather than after
+        it, and proactive replies without ``on_proactive_done``).
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
@@ -480,16 +577,32 @@ class TurnMixin:
             self._active_text_request_id = None
             return
 
-        active_request_id = self._active_text_request_id
+        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+            self._stand_down_reply_turn(reply_turn)
+            return
+
+        if reply_turn is None:
+            active_request_id = self._active_text_request_id
+            tts_expected_speech_id = None
+        else:
+            active_request_id = reply_turn.request_id
+            tts_expected_speech_id = reply_turn.speech_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
-                await self._request_tts_done_for_turn("handle_response_complete")
+                await self._request_tts_done_for_turn(
+                    "handle_response_complete",
+                    expected_speech_id=tts_expected_speech_id,
+                )
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
+            # 上面等 tts_cache_lock 的这段时间里可能开了新一轮：复查一次。
+            if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+                self._stand_down_reply_turn(reply_turn)
+                return
         try:
-            await self._emit_turn_end(active_request_id)
+            await self._emit_turn_end(active_request_id, reply_turn=reply_turn)
         finally:
             # Compare-and-clear：仅在共享字段仍是本轮快照时才清空，避免
             # 抹掉用户在 turn end 发出前提交的新轮 request_id。
@@ -608,9 +721,16 @@ class TurnMixin:
         message: Optional[str] = None,
         *,
         request_id: Any = _REQUEST_ID_UNSET,
+        reply_turn: _ReplyTurn | None = None,
     ):
         """
         Handle the response-discarded notification: clear the TTS pipeline + frontend output, sending turn end if necessary
+
+        ``reply_turn`` binds the notification to one Offline reply the same way
+        it binds that reply's completion: once a newer turn owns the host
+        (``_reply_turn_is_current``), the discard no longer touches shared
+        output. The request id alone cannot see a newer voice or proactive
+        turn, which leaves ``_active_text_request_id`` as it was.
         """
         # 文本流在发起时显式绑定 request_id；旧调用者未传时才兼容回读共享字段。
         # 不能只在函数入口快照 self._active_text_request_id：旧请求 A 的回调若在
@@ -632,6 +752,8 @@ class TurnMixin:
             return (
                 not request_has_owner
                 or self._active_text_request_id == active_request_id
+            ) and (
+                reply_turn is None or self._reply_turn_is_current(reply_turn)
             )
 
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
@@ -730,10 +852,13 @@ class TurnMixin:
                 # 会把恢复内容和新轮串到一起。
                 if self.use_tts:
                     async with self.lock:
+                        replaced_speech_id = self.current_speech_id
                         recovery_turn_id = str(uuid4())
                         self.current_speech_id = recovery_turn_id
                         self._tts_done_queued_for_turn = False
                         self._tts_done_pending_until_ready = False
+                        # 同一轮只是换了 speech id，本回复仍是这一轮的主人。
+                        self._carry_reply_turn(replaced_speech_id)
                 else:
                     recovery_turn_id = self.current_speech_id
 
@@ -752,7 +877,10 @@ class TurnMixin:
                     # persist_response=False 的路径）时才写历史。avatar_interaction
                     # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
                     # 不留下 AIMessage 痕迹。
-                    pending_meta = self._pending_turn_meta
+                    # 绑定了快照的回复只看自己起轮时的 meta，不拿别的回复挂上的。
+                    pending_meta = (
+                        self._pending_turn_meta if reply_turn is None else reply_turn.meta
+                    )
                     is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
                     if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
                         self.session._conversation_history.append(AIMessage(content=body_text))
@@ -796,9 +924,11 @@ class TurnMixin:
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
                 # 走同一套语义；sync queue 和 WS 都带相同 meta）。
                 # 注：_append_recovery_history 读 pending_meta 已经触发 is_ephemeral
-                # 判定，但这里 _emit_turn_end 自己会再读一次 _pending_turn_meta 做
-                # 透传 + 清空，二者读的是同一个值，幂等。
-                recovery_steps.append(lambda: self._emit_turn_end(active_request_id))
+                # 判定，但这里 _emit_turn_end 自己会再读一次（同一个快照或共享
+                # 字段）做透传 + 清空，二者读的是同一个值，幂等。
+                recovery_steps.append(
+                    lambda: self._emit_turn_end(active_request_id, reply_turn=reply_turn)
+                )
 
                 for recovery_step in recovery_steps:
                     await recovery_step()
