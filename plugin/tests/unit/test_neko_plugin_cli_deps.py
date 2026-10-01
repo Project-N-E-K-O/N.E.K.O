@@ -1379,6 +1379,8 @@ def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     uv_exe = tmp_path / "tools" / "uv.exe"
+    uv_exe.parent.mkdir()
+    uv_exe.write_text("")
     monkeypatch.setenv("UV", str(uv_exe))
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: None)
     calls = []
@@ -1388,6 +1390,28 @@ def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
         ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
     ) == 0
     assert calls[-1][0] == str(uv_exe)
+
+
+@pytest.mark.parametrize("uv_value", ["uv", "/no/such/uv"])
+def test_bare_or_missing_uv_value_falls_back_to_path(tmp_path, monkeypatch, uv_value):
+    # UV=uv is a PATH lookup, not ./uv; a UV naming no file falls back too.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    on_path = tmp_path / "bin" / "uv.exe"
+    on_path.parent.mkdir()
+    on_path.write_text("")
+    monkeypatch.setenv("UV", uv_value)
+    monkeypatch.setattr(
+        deps_cmd.shutil, "which", lambda name: str(on_path) if name == "uv" else None
+    )
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    assert calls[-1][0] == str(on_path)
 
 
 def test_bare_python_name_is_resolved_through_path_here(tmp_path, monkeypatch):

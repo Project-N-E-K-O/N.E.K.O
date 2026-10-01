@@ -587,9 +587,14 @@ def _pip_install_to_vendor(
 
     # `uv run` exports its own path as UV, which finds uv even when it is not
     # on PATH (e.g. installed with pipx or `py -m uv` on Windows).
-    uv = os.environ.get("UV") or shutil.which("uv")
-    # uv runs in target.cwd; a relative PATH entry may have found it here.
-    uv = os.path.abspath(uv) if uv else None
+    # A bare name in UV ("uv") is a PATH lookup, not a file in this cwd; a UV
+    # that does not name an existing file falls back to PATH. The result is
+    # absolute, since uv runs in target.cwd.
+    uv_from_env = os.environ.get("UV")
+    uv = _absolute_if_path(uv_from_env) if uv_from_env else None
+    if not uv or not Path(uv).is_file():
+        found = shutil.which("uv")
+        uv = os.path.abspath(found) if found else None
     if not uv:
         print(
             "[FAIL] Unable to install plugin dependencies: the target Python "
