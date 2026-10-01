@@ -207,11 +207,13 @@ def handle_sync(args: argparse.Namespace) -> int:
             if sys.platform.startswith("linux") and _linux_mount_points() is None:
                 # ismount() misses a same-filesystem bind mount, and the
                 # cleanup recurses: skip it rather than reach into one.
+                # (build and pack leave out caches anyway; bin/ they ship.)
                 print(
-                    f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {staging_dir}: "
+                    f"[WARN] Skipped removing __pycache__ and .pyc from {staging_dir}: "
                     "/proc/self/mountinfo is unavailable, so mounts inside can not be ruled out.",
                     file=sys.stderr,
                 )
+                _remove_installer_bin(staging_dir)
             else:
                 _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
@@ -312,10 +314,11 @@ def _sync_in_place(
             sys.platform.startswith("linux") and _linux_mount_points() is None
         ) or _find_foreign_subdir(vendor_dir, junctions=True) is not None:
             print(
-                f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {vendor_dir}: "
+                f"[WARN] Skipped removing __pycache__ and .pyc from {vendor_dir}: "
                 "a mount point or junction inside it can not be ruled out.",
                 file=sys.stderr,
             )
+            _remove_installer_bin(vendor_dir)
         else:
             _clean_vendor(vendor_dir)
         return 0
@@ -1016,6 +1019,31 @@ def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
         )
     else:
         print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
+
+
+def _remove_installer_bin(vendor_dir: Path) -> None:
+    """Remove the installer's top-level bin/ (console scripts, which build
+    and pack would ship) without recursing: it normally holds only files, and
+    one holding a directory, which could be a mount, is left with a warning."""
+    bin_dir = vendor_dir / "bin"
+    if _is_link(bin_dir):
+        try:
+            bin_dir.unlink()
+        except OSError:
+            os.rmdir(bin_dir)
+        return
+    if not bin_dir.is_dir():
+        return
+    children = list(bin_dir.iterdir())
+    if any(child.is_dir() and not _is_link(child) for child in children):
+        print(f"[WARN] Not removing {bin_dir}: it contains directories.", file=sys.stderr)
+        return
+    for child in children:
+        try:
+            child.unlink()
+        except OSError:
+            os.rmdir(child)  # a link to a directory on Windows
+    bin_dir.rmdir()
 
 
 def _clean_vendor(vendor_dir: Path) -> None:

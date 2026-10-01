@@ -1111,16 +1111,34 @@ def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, m
     monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: False)
 
     def install(command, **kwargs):
-        cache = Path(command[command.index("--target") + 1]) / "pkg" / "__pycache__"
+        target = Path(command[command.index("--target") + 1])
+        cache = target / "pkg" / "__pycache__"
         cache.mkdir(parents=True)
         (cache / "x.pyc").write_text("cache")
+        (target / "bin").mkdir()
+        (target / "bin" / "tool").write_text("script")
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
     assert (plugin_dir / "vendor" / "pkg" / "__pycache__" / "x.pyc").exists()
+    # build and pack would ship bin/; it is still removed, without recursing.
+    assert not (plugin_dir / "vendor" / "bin").exists()
     assert "Skipped removing __pycache__" in capsys.readouterr().err
+
+
+def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    (tmp_path / "bin" / "sub").mkdir(parents=True)
+    (tmp_path / "bin" / "sub" / "keep").write_text("keep")
+    (tmp_path / "bin" / "tool").write_text("script")
+
+    deps_cmd._remove_installer_bin(tmp_path)
+
+    assert (tmp_path / "bin" / "sub" / "keep").read_text() == "keep"
+    assert "contains directories" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
