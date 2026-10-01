@@ -377,7 +377,7 @@ async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch
         assert old_task.done()
         # Waited in recheck slices against the restart budget, not the shutdown one.
         assert deadlines == [module._DRAIN_RECHECK_SECONDS]
-        budget = service._restart_drain_budget()
+        budget = service._restart_drain_budget(None)
         assert budget == module._RESTART_DRAIN_SECONDS
         assert budget > module.PLUGIN_STARTUP_TIMEOUT
         assert budget > module._STOP_TIMEOUT_SECONDS
@@ -729,22 +729,15 @@ async def test_cancelled_recovery_start_keeps_recovery_permission(monkeypatch) -
     assert lifecycle.plugin_needs_hot_reload_recovery("demo")
 
 
-def test_restart_drain_assumes_max_timeout_until_start_records_one(tmp_path: Path, monkeypatch) -> None:
-    """Before start_plugin has read the config the real timeout is unknown, so
-    the largest configurable one is assumed; afterwards the granted value is
-    used exactly. No config file is read either way."""
-    granted: dict[str, float] = {}
-    monkeypatch.setattr(module, "active_startup_timeout", granted.get)
-    service = module.PluginHotReloadService(_FakeLifecycleService())
-    assert service._restart_drain_budget() == module._RESTART_DRAIN_SECONDS
-
-    service._inflight_target = module._WatchTarget("demo", tmp_path / "missing", False)
+def test_restart_drain_uses_default_until_start_records_a_timeout() -> None:
+    """Before start_plugin records its timeout, the default budget applies (the
+    steps before the record take seconds); afterwards the granted value extends
+    it, never below the default."""
+    budget = module.PluginHotReloadService._restart_drain_budget
     overhead = module._RESTART_DRAIN_OVERHEAD_SECONDS
-    assert service._restart_drain_budget() == overhead + module.STARTUP_TIMEOUT_MAX_SECONDS
-    granted["demo"] = 250.0
-    assert service._restart_drain_budget() == overhead + 250.0
-    granted["demo"] = 1.0  # never below the global default budget
-    assert service._restart_drain_budget() == module._RESTART_DRAIN_SECONDS
+    assert budget(None) == module._RESTART_DRAIN_SECONDS
+    assert budget(250.0) == overhead + 250.0
+    assert budget(1.0) == module._RESTART_DRAIN_SECONDS
 
 
 async def test_reload_target_exposes_the_inflight_plugin_to_the_drain(tmp_path: Path, monkeypatch) -> None:
@@ -762,13 +755,14 @@ async def test_reload_target_exposes_the_inflight_plugin_to_the_drain(tmp_path: 
 
 
 async def test_restart_drain_follows_the_recorded_timeout_while_waiting(tmp_path: Path, monkeypatch) -> None:
-    """The budget is re-derived during the drain: once start_plugin records a
-    short timeout, a reload that outlives it fails startup at that deadline."""
+    """The budget is re-derived during the drain: a timeout start_plugin records
+    mid-drain extends the default deadline, and a reload that outlives the
+    recorded one still fails startup at that deadline."""
     granted: dict[str, float] = {}
     monkeypatch.setattr(module, "active_startup_timeout", granted.get)
-    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.15)
     monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
-    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.05)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.02)
     release = asyncio.Event()
     task = asyncio.create_task(release.wait())
     service = module.PluginHotReloadService(_FakeLifecycleService())
@@ -776,13 +770,40 @@ async def test_restart_drain_follows_the_recorded_timeout_while_waiting(tmp_path
     service._stop_event.set()
     service._task = task
     service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
-    asyncio.get_running_loop().call_later(0.1, lambda: granted.update(demo=0.2))
+    asyncio.get_running_loop().call_later(0.05, lambda: granted.update(demo=0.4))
     try:
         started = time.monotonic()
         with pytest.raises(RuntimeError, match="retry server startup"):
             await asyncio.wait_for(service.wait_for_stopped(), 3)
-        # Not the 300s assumed before the record, nor an immediate failure.
-        assert 0.15 <= time.monotonic() - started < 1.0
+        # Past the 0.15s default (extended by the record), bounded by the 0.4s one.
+        assert 0.35 <= time.monotonic() - started < 1.0
+    finally:
+        release.set()
+        await task
+
+
+async def test_restart_drain_keeps_the_largest_recorded_timeout(tmp_path: Path, monkeypatch) -> None:
+    """start_plugin drops its record when the start ends, just before the reload
+    finishes; the drain must not fall back to the default under it."""
+    granted: dict[str, float] = {}
+    monkeypatch.setattr(module, "active_startup_timeout", granted.get)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.1)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.02)
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    service._task = task
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    granted["demo"] = 2.0
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.05, granted.clear)  # start ended, reload still finishing
+    loop.call_later(0.3, release.set)  # past the 0.1s default, within 2.0s
+    try:
+        await asyncio.wait_for(service.wait_for_stopped(), 3)
+        assert task.done()
     finally:
         release.set()
         await task

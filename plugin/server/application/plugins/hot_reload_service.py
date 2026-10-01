@@ -52,7 +52,6 @@ from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
     _resolve_registered_config_path_sync,
-    STARTUP_TIMEOUT_MAX_SECONDS,
     active_startup_timeout,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
@@ -286,8 +285,15 @@ class PluginHotReloadService:
                 self._raise_drain_timeout()
             return
         started = time_module.monotonic()
+        # Sticky across the drain: start_plugin drops its record when the start
+        # ends, just before the reload finishes, and the budget must not shrink
+        # back under a reload that legitimately ran long.
+        granted_seen: float | None = None
         while True:
-            remaining = started + self._restart_drain_budget() - time_module.monotonic()
+            granted = self._inflight_granted_timeout()
+            if granted is not None:
+                granted_seen = granted if granted_seen is None else max(granted_seen, granted)
+            remaining = started + self._restart_drain_budget(granted_seen) - time_module.monotonic()
             if remaining <= 0:
                 self._raise_drain_timeout()
             done, _pending_tasks = await asyncio.wait(
@@ -303,22 +309,24 @@ class PluginHotReloadService:
             "retry server startup after it finishes"
         )
 
-    def _restart_drain_budget(self) -> float:
-        """Drain budget for the in-flight reload, from in-memory state only.
-
-        Once start_plugin has read the effective config it records the startup
-        timeout it granted, and that exact value is used. Before then (stopping
-        the old process, waiting for the lock, reading the config) the timeout
-        is not known yet, so the largest one a plugin may configure is assumed.
-        No file is read here: a drain must never block on, or leak threads into,
-        a stalled filesystem.
-        """
+    def _inflight_granted_timeout(self) -> float | None:
         target = self._inflight_target
-        if target is None:
+        return None if target is None else active_startup_timeout(target.plugin_id)
+
+    @staticmethod
+    def _restart_drain_budget(granted: float | None) -> float:
+        """Drain budget, from in-memory state only.
+
+        Until start_plugin records the timeout it granted, the default budget
+        applies: the steps before that record (stopping the old process, the
+        bounded lock wait, reading the config) take seconds, so a reload still
+        short of it after the default budget is stalled. Once recorded, the
+        plugin's own timeout extends the budget. No file is read here: a drain
+        must never block on, or leak threads into, a stalled filesystem.
+        """
+        if granted is None:
             return _RESTART_DRAIN_SECONDS
-        granted = active_startup_timeout(target.plugin_id)
-        startup = STARTUP_TIMEOUT_MAX_SECONDS if granted is None else granted
-        return max(_RESTART_DRAIN_SECONDS, _RESTART_DRAIN_OVERHEAD_SECONDS + startup)
+        return max(_RESTART_DRAIN_SECONDS, _RESTART_DRAIN_OVERHEAD_SECONDS + granted)
 
     @property
     def is_running(self) -> bool:

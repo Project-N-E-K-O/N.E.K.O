@@ -99,9 +99,6 @@ from plugin.utils import parse_bool_config
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
-# Public alias: the hot-reload drain assumes this bound before a start has
-# recorded the timeout it actually granted.
-STARTUP_TIMEOUT_MAX_SECONDS = _PLUGIN_STARTUP_TIMEOUT_MAX
 # 被整轮预算压缩后，一步至少还能拿到这么久。
 #
 # 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
