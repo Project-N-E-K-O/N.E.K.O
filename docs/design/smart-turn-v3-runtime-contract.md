@@ -31,6 +31,8 @@ Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试�
 
 `periodic_no_vad` 不得覆盖排队中的 `strict_retry`，不得在 strict 推理期间终止等待，也不得推迟截止后的封轮。模型资产缺失、推理异常和 VAD failure 才进入 `UNAVAILABLE`/BLOCKED 路径。
 
+Silero 不可用时，PCM 仍可进入 Smart Turn 作为语义证据；只有达到 RMS 噪声底以上的帧才会刷新严格截止时间。持续上传的静音帧不会把截止时间无限推后，因此截止时间仍表示静默时长。
+
 ## Provider 重连裁剪
 
 Soniox 重连时，`end_ms` 以当前连接的流起点为基准。重放从上一轮最后一个 final 词之后开始，并扣除重连后先发送的重放段；如果最后一个 final 词没有有效时间戳，则保留固定两秒尾部，不能沿用更早词的时间戳。

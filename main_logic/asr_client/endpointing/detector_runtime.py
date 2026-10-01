@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import time
+from array import array
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -61,6 +62,7 @@ _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
 _COMMIT_DRAIN_ON_CLOSE_SECONDS = 0.5
 _SPEAKER_SHADOW_REPLACEMENT_CLOSE_SECONDS = 2.0
+_NO_VAD_SPEECH_RMS = 0.015 * 32_768
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,10 +668,16 @@ class _VoiceTurnAdapter:
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
 
-        now = asyncio.get_running_loop().time()
-        self._last_no_vad_audio_at = now
-        if self._smart_turn_required and self._strict_endpoint_deadline is not None:
-            self._strict_endpoint_deadline = now + self._max_endpoint_wait_seconds
+        if self._pcm_has_no_vad_speech(item.pcm16):
+            now = asyncio.get_running_loop().time()
+            self._last_no_vad_audio_at = now
+            if (
+                self._smart_turn_required
+                and self._strict_endpoint_deadline is not None
+            ):
+                self._strict_endpoint_deadline = (
+                    now + self._max_endpoint_wait_seconds
+                )
         started_now = False
         if not self._fallback_speech_started:
             self._fallback_speech_started = True
@@ -696,6 +704,15 @@ class _VoiceTurnAdapter:
             "periodic_no_vad",
             item.detector_identity,
         )
+
+    @staticmethod
+    def _pcm_has_no_vad_speech(pcm16: bytes) -> bool:
+        samples = array("h")
+        samples.frombytes(pcm16)
+        if not samples:
+            return False
+        rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+        return rms >= _NO_VAD_SPEECH_RMS
 
     def _request_evaluation(
         self,
