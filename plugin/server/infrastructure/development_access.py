@@ -9,6 +9,17 @@ from fastapi import HTTPException, Request
 _DEFAULT_DEV_ORIGIN_PORTS = (48911, 48916, 5173)
 
 
+def _read_runtime_port(name: str, fallback: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return int(fallback)
+    try:
+        port = int(raw)
+    except ValueError:
+        return int(fallback)
+    return port if 1 <= port <= 65535 else int(fallback)
+
+
 def _configured_development_origins() -> frozenset[str]:
     """Return the exact browser origins allowed to mutate development state.
 
@@ -24,16 +35,19 @@ def _configured_development_origins() -> frozenset[str]:
     if configured.strip():
         candidates = (item.strip().rstrip("/") for item in configured.split(","))
     else:
+        configured_plugin_port = 48916
         try:
             import config
 
+            configured_plugin_port = int(config.USER_PLUGIN_SERVER_PORT)
             ports = {
                 int(config.MAIN_SERVER_PORT),
-                int(config.USER_PLUGIN_SERVER_PORT),
+                configured_plugin_port,
                 *_DEFAULT_DEV_ORIGIN_PORTS,
             }
         except (AttributeError, TypeError, ValueError):
             ports = set(_DEFAULT_DEV_ORIGIN_PORTS)
+        ports.add(_read_runtime_port("NEKO_USER_PLUGIN_SERVER_PORT", configured_plugin_port))
         candidates = (
             f"{scheme}://{host}:{port}"
             for scheme in ("http", "https")

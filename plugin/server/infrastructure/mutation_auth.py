@@ -62,6 +62,32 @@ def _normalize_origin(raw: str | None) -> str:
     return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
 
 
+def _normalize_referer_origin(raw: str | None) -> str:
+    """Extract and normalize the origin from a page URL in ``Referer``.
+
+    A browser Referer normally includes the page path (and may include a
+    query), while Origin deliberately does not.  Only the URL authority is
+    relevant to the trust decision; credentials and malformed authorities are
+    still rejected.
+    """
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw.strip())
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    hostname = hostname.lower().rstrip(".")
+    host_text = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    effective_port = (443 if parsed.scheme == "https" else 80) if port is None else port
+    return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
+
+
 def _origin_for_host_port(host: str, port: int, *, scheme: str = "http") -> str:
     host_text = f"[{host}]" if ":" in host and not host.startswith("[") else host
     return f"{scheme}://{host_text}:{int(port)}"
@@ -96,10 +122,24 @@ def _configured_origins() -> frozenset[str]:
 
 
 def _local_request(request: Request) -> bool:
-    return bool(
+    direct_local = bool(
         request.client is not None
         and _is_loopback(request.client.host)
         and _is_loopback(request.url.hostname)
+    )
+    if direct_local:
+        return True
+
+    # The bundled Docker Nginx is the only supported non-loopback ingress for
+    # this loopback-bound service.  It marks the hop explicitly and forwards
+    # the original request metadata; Origin/token validation still runs below.
+    behind_proxy = os.getenv("NEKO_BEHIND_PROXY", "").strip().lower() in {"1", "true", "yes"}
+    return bool(
+        behind_proxy
+        and request.headers.get("x-neko-trusted-proxy") == "1"
+        and request.headers.get("x-forwarded-for")
+        and request.headers.get("x-forwarded-host")
+        and request.headers.get("x-forwarded-proto") in {"http", "https"}
     )
 
 
@@ -136,9 +176,14 @@ def require_plugin_mutation_access(request: Request) -> None:
         if not origin or origin not in _configured_origins() or not _valid_token(request):
             _deny()
         return
-    # Native/local callers may omit Origin, but browser metadata or a Referer
-    # must never silently enter this compatibility path.
-    if request.headers.get("referer") or _has_browser_metadata(request):
+    referer = request.headers.get("referer")
+    if referer:
+        if _normalize_referer_origin(referer) not in _configured_origins() or not _valid_token(request):
+            _deny()
+        return
+    # Native/local callers may omit Origin, but browser metadata must never
+    # silently enter this compatibility path.
+    if _has_browser_metadata(request):
         _deny()
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
 
@@ -173,7 +218,7 @@ def require_plugin_token_bootstrap_access(request: Request) -> None:
             _deny()
         return
     referer = request.headers.get("referer")
-    if referer and _normalize_origin(referer) not in _configured_origins():
+    if referer and _normalize_referer_origin(referer) not in _configured_origins():
         _deny()
     if _has_browser_metadata(request) and request.headers.get("sec-fetch-site") not in {"same-origin", "same-site", "none"}:
         _deny()

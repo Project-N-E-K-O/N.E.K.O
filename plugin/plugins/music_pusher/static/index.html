@@ -1040,7 +1040,12 @@
             return data.csrf_token;
           });
       }
-      return { "X-CSRF-Token": await csrfTokenPromise };
+      try {
+        return { "X-CSRF-Token": await csrfTokenPromise };
+      } catch (error) {
+        csrfTokenPromise = null;
+        throw error;
+      }
     }
     // 500MB 是浏览器安全的上限（readAsDataURL 会把文件整体加载到内存 + 约 33% base64 膨胀）
     // 大文件路径应未来迁移到 multipart/form-data 或分片上传

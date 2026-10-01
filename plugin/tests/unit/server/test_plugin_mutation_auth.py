@@ -171,6 +171,25 @@ async def test_originless_loopback_native_call_with_token_remains_supported(
 
 
 @pytest.mark.asyncio
+async def test_originless_trusted_referer_with_page_path_requires_token_and_is_supported(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stop = AsyncMock(return_value={"success": True, "plugin_id": "demo"})
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    async with _client(
+        app,
+        headers={
+            "Referer": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}/ui/plugins/demo",
+            "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN,
+        },
+    ) as client:
+        response = await client.post("/plugin/demo/stop")
+    assert response.status_code == 200
+    stop.assert_awaited_once_with("demo", persist_user_intent=True)
+
+
+@pytest.mark.asyncio
 async def test_originless_loopback_native_call_without_browser_metadata_is_supported(
     app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
@@ -192,3 +211,30 @@ async def test_loopback_and_host_are_required(app: FastAPI) -> None:
     async with _client(app, host="example.test:48916", headers=_valid_headers()) as client:
         response = await client.post("/plugin/demo/stop")
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_trusted_docker_proxy_can_forward_external_browser_mutation(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stop = AsyncMock(return_value={"success": True, "plugin_id": "demo"})
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", "https://nas.example")
+    async with _client(
+        app,
+        peer="192.168.1.10",
+        host="nas.example",
+        headers={
+            "Origin": "https://nas.example",
+            "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN,
+            "X-Neko-Trusted-Proxy": "1",
+            "X-Forwarded-For": "192.168.1.10",
+            "X-Forwarded-Host": "nas.example",
+            "X-Forwarded-Proto": "https",
+        },
+    ) as client:
+        response = await client.post("/plugin/demo/stop")
+    assert response.status_code == 200
+    stop.assert_awaited_once_with("demo", persist_user_intent=True)

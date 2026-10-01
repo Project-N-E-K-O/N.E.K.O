@@ -15,7 +15,12 @@ async function mutationHeaders() {
                 return data.csrf_token;
             });
     }
-    return { 'X-CSRF-Token': await csrfTokenPromise };
+    try {
+        return { 'X-CSRF-Token': await csrfTokenPromise };
+    } catch (error) {
+        csrfTokenPromise = null;
+        throw error;
+    }
 }
 
 function delay(ms) {
