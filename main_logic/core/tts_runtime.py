@@ -1879,7 +1879,11 @@ class TtsRuntimeMixin:
         pending = getattr(self, "_tts_respawn_task", None)
         if (pending is not None and not pending.done()
                 and pending is not asyncio.current_task()):
-            return
+            if fallback_stage is None:
+                return
+            # The fallback owns provider/replay state that a plain retry cannot
+            # resume. Replace only the reservation, never its cleanup tasks.
+            pending.cancel()
         blocked = tuple(
             record for record in self._tts_runtimes
             if record.retired and record.thread is not None
