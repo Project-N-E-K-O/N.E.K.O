@@ -410,11 +410,16 @@ class StreamingMixin:
                 self._starting_input_mode = None
         # Do not await between releasing the guard and entering start_session;
         # its synchronous prologue reacquires the startup ownership.
-        await self.start_session(
-            self.websocket,
-            new=False,
-            input_mode="text",
-        )
+        try:
+            await self.start_session(
+                self.websocket,
+                new=False,
+                input_mode="text",
+            )
+        except asyncio.CancelledError as exc:
+            if not self._consume_start_retirement_cancellation(exc):
+                raise
+            return False
         if (
             not self.session
             or not self.is_active
@@ -504,7 +509,12 @@ class StreamingMixin:
             
             # 根据输入类型确定模式
             mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
-            await self.start_session(self.websocket, new=False, input_mode=mode)
+            try:
+                await self.start_session(self.websocket, new=False, input_mode=mode)
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                return
             
             # 检查启动是否成功
             if not self.session or not self.is_active:

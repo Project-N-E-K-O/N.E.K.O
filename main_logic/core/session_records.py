@@ -23,6 +23,7 @@ class StartOperation:
     valid: bool = True
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     children: set = field(default_factory=set)
+    pending_inputs: tuple = ()
 
 
 @dataclass(eq=False)
@@ -59,6 +60,12 @@ class Retirement:
     swap: object = None
     retry_kwargs: dict = field(default_factory=dict)
     pending_inputs: tuple = ()
+    state_detached: bool = False
+    asr_detached: bool = False
+    renewal_complete: bool = False
+    stream_state_cleared: bool = False
+    memory_boundary_sent: bool = False
+    departure_notified: bool = False
 
 
 def start_phase(method):

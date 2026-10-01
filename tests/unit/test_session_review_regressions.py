@@ -97,7 +97,8 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
             assert manager._tts_runtime is not old
         elif outcome == "cancel":
             assert workers == ["configured"]
-            assert not started and not failed
+            assert not started
+            assert [item["request_id"] for item in failed] == ["tts-fallback"]
             assert manager._live_tts_runtime_count() == 1
             assert not old.cleanup_task.cancelled()
         else:

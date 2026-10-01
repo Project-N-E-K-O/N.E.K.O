@@ -1008,11 +1008,13 @@ class LifecycleMixin:
             try:
                 await self._wait_session_handoff(deadline)
             except Exception:
+                await self._discard_start_reservation_inputs(operation)
                 await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
                 return
             if abandon_epoch != getattr(self, '_user_session_abandon_epoch', 0):
+                await self._discard_start_reservation_inputs(operation)
                 if request_id is not None:
-                    await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
+                    await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket, allow_retired_operation=True)
                 return
             self._check_start_operation()
             # The reservation must not take state ownership away from the
@@ -1067,8 +1069,9 @@ class LifecycleMixin:
                     provider_preference_override=session_provider_preference_handshake_override,
                 )
         except asyncio.CancelledError:
+            await self._discard_start_reservation_inputs(operation)
             if request_id is not None:
-                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
+                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket, allow_retired_operation=True)
             if operation.valid:
                 self.request_end_session(by_server=True)
             # An accepted user end revoked this operation. The manager-owned

@@ -40,7 +40,7 @@ async def test_handoff_wait_reserves_start_and_queues_ingress(monkeypatch):
         start.cancel()
         with pytest.raises(asyncio.CancelledError):
             await start
-        manager.send_session_failed.assert_awaited_once_with("audio", request_id="waiting", also_notify=manager.websocket)
+        manager.send_session_failed.assert_awaited_once_with("audio", request_id="waiting", also_notify=manager.websocket, allow_retired_operation=True)
     finally:
         release.set()
         await drain_manager(manager, clients, start)
@@ -71,9 +71,13 @@ async def test_failed_renewal_does_not_pin_retirement(monkeypatch):
     with pytest.raises(RuntimeError, match="handoff failed"):
         await asyncio.wait_for(ending, 1)
     assert old.closed.is_set()
-    assert record.handoff_safe.is_set()
+    assert not record.handoff_safe.is_set()
     assert record.cleanup_complete.is_set()
+    manager._init_renew_status.side_effect = None
     await manager._wait_session_handoff(asyncio.get_running_loop().time() + .5)
+    await record.task
+    assert record.handoff_safe.is_set()
+    assert manager._init_renew_status.await_count == 2
     await manager.end_session(by_server=True)
 
 
@@ -157,6 +161,10 @@ async def test_runtime_tts_capacity_failure_does_not_block_turn():
         assert manager._live_tts_runtime_count() == 2
         manager._stop_tts_response_handler.assert_not_awaited()
     finally:
+        retry = getattr(manager, "_tts_respawn_task", None)
+        if retry is not None:
+            retry.cancel()
+            await asyncio.gather(retry, return_exceptions=True)
         for release in releases:
             release.set()
         await asyncio.gather(*(runtime.cleanup_task for runtime in runtimes))

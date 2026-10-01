@@ -384,15 +384,13 @@ async def test_respawn_capacity_failure_retries_only_for_its_session(replace_ses
         assert manager._live_tts_runtime_count() == 2
         assert manager._tts_respawn_task is not None
 
-        releases[0].set()
-        await asyncio.wait_for(first.cleanup_task, 1)
-        assert not started.is_set()
         if replace_session:
             manager.session = object()
         manager._last_tts_respawn_time -= 12.0
         retry_task = manager._tts_respawn_task
-        releases[1].set()
+        releases[0].set()
         await asyncio.wait_for(retry_task, 1)
+        assert second.thread.is_alive(), "one released slot is enough for overlapping workers"
         if replace_session:
             assert not started.is_set()
             assert manager._start_tts_thread.call_count == 1

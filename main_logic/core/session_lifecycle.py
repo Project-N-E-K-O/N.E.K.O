@@ -89,7 +89,13 @@ class SessionOwnershipMixin:
                 # Timeout fallback is not memory settlement. A late isolation
                 # callback must run before another conversation can produce.
                 if record.memory_completion is not None:
-                    await asyncio.shield(record.memory_completion)
+                    try:
+                        await asyncio.shield(record.memory_completion)
+                    except Exception as exc:
+                        record.memory_boundary_sent = False
+                        record.handoff_safe.clear()
+                        record.handoff_error = exc
+                        raise RuntimeError("Session memory settlement failed") from exc
             for completion in tuple(self._idle_memory_barriers):
                 await asyncio.shield(completion)
 
@@ -103,9 +109,26 @@ class SessionOwnershipMixin:
             input_mode, deadline, asyncio.current_task(),
         )
         self._start_operation = operation
+        operation.pending_inputs = tuple(self.pending_input_data)
         self._starting_session_count = 1
         self._starting_input_mode = input_mode
         return operation, _start_context.set(operation)
+
+    async def _discard_start_reservation_inputs(self, operation):
+        async with self.input_cache_lock:
+            if self._start_operation is operation:
+                previous_ids = {id(item) for item in operation.pending_inputs}
+                self.pending_input_data[:] = [item for item in self.pending_input_data if id(item) in previous_ids]
+                self._clear_pending_context_appends()
+
+    def _consume_start_retirement_cancellation(self, error):
+        task = asyncio.current_task()
+        if error.args == ("session start operation retired",) and not task.cancelling():
+            return True
+        if error.args != ("session start retired",) or task.cancelling() > 1:
+            return False
+        task.uncancel()
+        return True
 
     def _finish_start_operation(self, operation, token):
         operation.finished.set()
@@ -416,7 +439,7 @@ class SessionOwnershipMixin:
         # A failed isolation remains owned, but is retryable. Never pretend
         # that an exception proves physical release or a safe handoff.
         if (record.task is not None and record.task.done()
-                and not record.handoff_safe.is_set() and not record.cleanup_complete.is_set()):
+                and not record.handoff_safe.is_set()):
             record.handoff_error = None
             record.handoff_finished.clear()
             record.task = self._own_cleanup_task(self._retire_session_resources(record, **record.retry_kwargs))
@@ -455,7 +478,7 @@ class SessionOwnershipMixin:
             # retirement. Fence the operation and join its phases, not that
             # long-lived caller's unrelated cleanup.
             if operation.task is not record.initiating_task:
-                operation.task.cancel()
+                operation.task.cancel("session start retired")
         for task in (record.listener, record.preparation, record.swap):
             if task is not None and task is not record.initiating_task:
                 producers.add(task)
@@ -466,9 +489,12 @@ class SessionOwnershipMixin:
             if not task.done():
                 task.cancel()
         async with self.lock:
-            owns_state = self.session is record.session and self._session_generation == record.generation
+            owns_state = self._session_generation == record.generation and (
+                self.session is record.session or (record.state_detached and self.session is None)
+            )
             if owns_state:
                 self.session = None
+                record.state_detached = True
                 self.is_active = False
                 if self.message_handler_task is record.listener:
                     self.message_handler_task = None
@@ -486,7 +512,7 @@ class SessionOwnershipMixin:
             for candidate in self._connection_records:
                 if candidate.operation is operation and not candidate.closed:
                     close_tasks.append(self._close_connection_record(candidate))
-        if owns_state:
+        if owns_state and not record.asr_detached:
             self._reset_proactive_gate()
             self.clear_speech_playback_gains()
             try:
@@ -500,17 +526,18 @@ class SessionOwnershipMixin:
                 # before awaiting provider cleanup. A post-detach cleanup
                 # error is reported to the current end request, but it must
                 # not pin the next session behind a historical failure.
-                record.handoff_safe.set()
+            record.asr_detached = True
             owns_state = self.session is None and self._session_generation == record.generation
         if owns_state:
-            if record.was_active:
+            if record.was_active and not record.renewal_complete:
                 try:
                     await self._init_renew_status()
+                    record.renewal_complete = True
                 except Exception as exc:
                     record.handoff_error = exc
                     logger.exception("Session renewal failed during retirement")
                 owns_state = self.session is None and self._session_generation == record.generation
-        if owns_state:
+        if owns_state and not record.stream_state_cleared:
             if record.was_active:
                 self._activity_tracker.on_voice_mode(False)
             self._audio_stream_epoch += 1
@@ -536,6 +563,7 @@ class SessionOwnershipMixin:
                     self._starting_input_mode = None
             self._reset_tts_retry_state()
             self.last_time = None
+            record.stream_state_cleared = True
         # Release ledger entries that pointed into the retired session's queue.
         # Prune rather than clear: a replacement session may already have
         # staged (and recorded) attachments while this teardown was awaiting.
@@ -549,27 +577,35 @@ class SessionOwnershipMixin:
                 handler.cancel()
                 await asyncio.gather(handler, return_exceptions=True)
         if owns_state:
-            if callable(after_memory_settlement):
-                record.memory_completion = self._queue_session_end_memory_barrier(after_memory_settlement)
+            if callable(after_memory_settlement) and not record.memory_boundary_sent:
                 try:
+                    if record.memory_completion is None or record.memory_completion.done():
+                        record.memory_completion = self._queue_session_end_memory_barrier(after_memory_settlement)
                     await self._wait_for_session_end_memory_barrier(
                         record.memory_completion, after_memory_settlement,
                         timeout_seconds=memory_settlement_timeout,
                     )
+                    record.memory_boundary_sent = True
                 except Exception as exc:
                     record.handoff_error = exc
                     logger.exception("Session memory settlement failed during retirement")
-            elif record.was_active:
+            elif record.was_active and not callable(after_memory_settlement) and not record.memory_boundary_sent:
                 self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
-            if not by_server:
+                record.memory_boundary_sent = True
+            if not by_server and not record.departure_notified:
                 try:
                     await self.send_status(json.dumps({
                         "code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name},
                     }))
+                    record.departure_notified = True
                 except Exception as exc:
                     record.handoff_error = exc
                     logger.exception("Session departure notification failed")
-        record.handoff_safe.set()
+        if not owns_state or (
+            (not record.was_active or record.renewal_complete)
+            and (not callable(after_memory_settlement) or record.memory_boundary_sent)
+        ):
+            record.handoff_safe.set()
         record.handoff_finished.set()
         if record.tts is not None and record.tts.cleanup_task is not None:
             close_tasks.append(record.tts.cleanup_task)
@@ -586,6 +622,7 @@ class SessionOwnershipMixin:
         self._session_retirements[:] = [
             item for item in self._session_retirements
             if not item.cleanup_complete.is_set()
+            or not item.handoff_safe.is_set()
             or (item.memory_completion is not None and not item.memory_completion.done())
         ]
         if record.handoff_error is not None:

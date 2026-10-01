@@ -719,7 +719,7 @@ class NotifyMixin:
             )
             return False
 
-    def _start_notification_context(self, request_id=None, also_notify=None):
+    def _start_notification_context(self, request_id=None, also_notify=None, *, enforce_start_guard=True):
         """Capture one operation before a notification crosses a socket await."""
         current_request = getattr(self, "_current_start_request", None)
         operation = current_request() if callable(current_request) else None
@@ -730,7 +730,7 @@ class NotifyMixin:
 
         def check():
             guard = getattr(self, "_check_start_operation", None)
-            if callable(guard) and operation is not None:
+            if enforce_start_guard and callable(guard) and operation is not None:
                 guard(operation)
 
         check()
@@ -985,10 +985,12 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
 
-    async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None):  # 通知前端session启动失败
+    async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None, allow_retired_operation=False):  # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
-        request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
+        request_id, also_notify, check = self._start_notification_context(
+            request_id, also_notify, enforce_start_guard=not allow_retired_operation,
+        )
         if request_id:
             payload["request_id"] = request_id
         delivered_to = []

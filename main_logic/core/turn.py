@@ -2180,9 +2180,8 @@ class TurnMixin:
                 cache_for_new_session=False,
             )
 
-        self._remember_game_speech_correlation(turn_id, speech_correlation_id)
-
         if cached_chunks is not None:
+            self._remember_game_speech_correlation(turn_id, speech_correlation_id)
             # One call, one lock hold: sending frame by frame let an overlapping
             # ordinary/project TTS stream interleave between them, and the
             # frontend schedules decoded chunks in arrival order.
@@ -2231,6 +2230,7 @@ class TurnMixin:
             }
 
         await self.ensure_tts_pipeline_alive()
+        self._remember_game_speech_correlation(turn_id, speech_correlation_id)
         audio_queued = False
         capture_started = False
         completion_supported = bool(

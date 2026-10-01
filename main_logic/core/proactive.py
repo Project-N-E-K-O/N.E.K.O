@@ -1551,7 +1551,7 @@ class ProactiveMixin:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, re-queueing for later", self.lanlan_name)
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
                     callbacks_snapshot[:] = []
-        except Exception as e:
+        except (asyncio.CancelledError, Exception) as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             # Filter into a local before extending: filter_deliverable_callbacks
             # rebinds self.pending_agent_callbacks, and Python binds ``.extend``
@@ -1559,6 +1559,8 @@ class ProactiveMixin:
             # extending inline would append the survivors to an orphaned list.
             _requeue = self.filter_deliverable_callbacks(callbacks_snapshot)
             self.pending_agent_callbacks.extend(_requeue)
+            if isinstance(e, asyncio.CancelledError) and not self._consume_start_retirement_cancellation(e):
+                raise
         finally:
             # Runs after the except-path restore above, so the deferred tail
             # lands behind the prefix it was split from either way.
