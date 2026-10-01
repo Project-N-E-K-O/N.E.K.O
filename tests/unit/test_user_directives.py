@@ -189,7 +189,7 @@ def _best_time(text: str, runs: int = 3) -> float:
 
 
 @pytest.mark.parametrize("make", [
-    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 480 要 5~7 秒
+    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 480 要 5~7 秒、800 要 19 秒
     lambda n: " " * n,
     # 模板 1：触发词后的 ``\s*(?:는|은)?\s*`` 同形，前面垫一段空白让话题有很多种
     # 切法走到 ``말``，未原子化时模板 1 单独 1.6 秒（模板 3 同一输入 8 秒）
@@ -199,20 +199,26 @@ def test_extract_directives_whitespace_does_not_blow_up(make):
     """``extract_directives`` runs synchronously on every user message with no
     length cap, so a whitespace-heavy message must not stall it.
 
-    The main assertion is the growth ratio from 120 to 480 characters, which
-    does not depend on how fast the runner is: cubic is 64x (about 41-74x
-    measured before the ko whitespace runs were made atomic), quadratic 16x
-    (13-20x right after), and linear 4x (about 3.3x since topic captures may no
-    longer start on whitespace; see test_directive_regex_whitespace.py). The
-    absolute ceiling is only a loose backstop for shared CI runners.
+    The main assertion is the growth ratio from 200 to 800 characters, which
+    does not depend on how fast the runner is: cubic is 64x (the ko templates
+    before their whitespace runs were made atomic), quadratic 16x (about
+    12-13x measured, the shape right after that, before topic captures were
+    barred from starting on whitespace), linear 4x (about 3.5x now; see
+    test_directive_regex_whitespace.py). The line sits at 7x, between linear
+    and quadratic. The absolute ceiling is only a loose backstop for shared CI
+    runners.
     """
     # 预热：别把首次正则编译算进去
     extract_directives(" ")
-    short = _best_time(make(120))
-    long = _best_time(make(480))
+    short = _best_time(make(200))
+    long = _best_time(make(800))
     assert long < _WHITESPACE_CEILING_S, f"{long:.3f}s"
-    # 小输入只有十几毫秒，加一点绝对余量，别让计时抖动主导倍率
-    assert long < short * 35 + 0.02, f"120: {short:.4f}s, 480: {long:.4f}s"
+    # ⚠️ 倍率线在线性（约 3.5 倍）和二次方（约 12~13 倍）之间取 7 倍：原先的 35 倍只拦三次方，
+    # 二次方回退（话题又能从空白起头）照样通过。规模从 120/480 放到 200/800，是因为太短时
+    # 二次方项还没压过常数项、实测只有 10~12 倍，离线太近；再放大的话三次方回退单次就要
+    # 上分钟。实测：修好时 800 个字符 0.2~0.6ms；二次方回退 109 / 174ms，对应的线是
+    # 59 / 101ms。绝对余量 2ms 只给修好那一侧兜计时抖动——它远小于二次方回退的绝对值。
+    assert long < short * 7 + 0.002, f"200: {short:.4f}s, 800: {long:.4f}s"
 
 
 # ── 2. record dedup + refresh ────────────────────────────────────
