@@ -59,6 +59,9 @@ from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     bounded_operation_wait,
 )
+from plugin.server.application.plugins.metadata_scanner import (
+    _DEFAULT_SCAN_TIMEOUT_SECONDS,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import (
@@ -67,6 +70,9 @@ from plugin.settings import (
     PLUGIN_HOT_RELOAD_DEBOUNCE,
     PLUGIN_HOT_RELOAD_INTERVAL,
     PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS,
+    PLUGIN_STARTUP_TIMEOUT,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    PROCESS_SHUTDOWN_TIMEOUT,
 )
 from plugin.utils.time_utils import now_iso
 
@@ -79,6 +85,12 @@ _MIN_TICK_SECONDS = PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS
 # 取消时，超时说明它还在跑完最后一步。服务器关停另传 0.05s，
 # 为 host teardown 保留总预算；注册门闩拒绝迟到的 host。
 _STOP_TIMEOUT_SECONDS = 1.5
+# Restart has a different budget from shutdown: a healthy in-flight reload may
+# still consume the configured host start/stop and isolated metadata scan limits.
+_RESTART_DRAIN_SECONDS = (
+    PLUGIN_STARTUP_TIMEOUT + PLUGIN_SHUTDOWN_TIMEOUT
+    + PROCESS_SHUTDOWN_TIMEOUT + _DEFAULT_SCAN_TIMEOUT_SECONDS + 5.0
+)
 _BUSY_RETRY_SECONDS = 1.0
 # 与 dev preflight 保持一致的目录排除表：这些目录里的 .py 不是插件源码。
 _EXCLUDED_DIR_NAMES = frozenset(
@@ -248,7 +260,7 @@ class PluginHotReloadService:
             self._restart_requested = False
             self.start()
 
-    async def wait_for_stopped(self, timeout: float = _STOP_TIMEOUT_SECONDS) -> None:
+    async def wait_for_stopped(self, timeout: float = _RESTART_DRAIN_SECONDS) -> None:
         """Drain a stopping generation before reopening the server host gate.
 
         Shutdown need not spend its host cleanup budget on an in-flight reload,

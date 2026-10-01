@@ -353,6 +353,36 @@ async def test_restart_drain_has_deadline_and_retains_old_task() -> None:
         await task
 
 
+async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch) -> None:
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    release = asyncio.Event()
+    old_task = asyncio.create_task(release.wait())
+    service._task = old_task
+    deadlines = []
+    original_wait = asyncio.wait
+
+    async def observe_wait(tasks, *, timeout):
+        deadlines.append(timeout)
+        # Scale the normal stop budget down for a fast behavioral test.
+        await asyncio.sleep(0.03)
+        release.set()
+        return await original_wait(tasks, timeout=timeout)
+
+    monkeypatch.setattr(module, "_STOP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(module.asyncio, "wait", observe_wait)
+    try:
+        await service.wait_for_stopped()
+        assert old_task.done()
+        assert deadlines == [module._RESTART_DRAIN_SECONDS]
+        assert deadlines[0] > module.PLUGIN_STARTUP_TIMEOUT
+        assert deadlines[0] > module._STOP_TIMEOUT_SECONDS
+    finally:
+        release.set()
+        await old_task
+
+
 async def test_stop_timeout_keeps_task_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
