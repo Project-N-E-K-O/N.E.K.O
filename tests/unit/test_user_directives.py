@@ -151,6 +151,70 @@ def test_directive_patterns_have_capture_group():
         )
 
 
+# ── 1b. ko 模板的空白不能被任意瓜分（ReDoS） ─────────────────────
+
+
+@pytest.mark.parametrize("text,expected_term", [
+    # 模板 1：话题 / 触发词 / 助词之间多打的空白（含 tab）照样认
+    ("그 일   에 대해서는   그만 얘기해줘", "그 일"),
+    ("회사  얘기   는   그만해", "회사"),
+    ("시험 얘기\t그만", "시험"),
+    # 模板 3：可选的 이/가 两侧都有空白
+    ("숙제  가   듣기 싫어", "숙제"),
+    ("야근   짜증나", "야근"),
+])
+def test_extract_directives_ko_whitespace_runs(text, expected_term):
+    """Extra whitespace around the ko topic still yields the same term.
+
+    Pins the behaviour the atomic ``(?>\\s*)`` runs in the ko templates must keep.
+    """
+    terms = {t for loc, _kind, t in extract_directives(text) if loc == "ko"}
+    assert terms == {expected_term}, terms
+
+
+# 绝对天花板只兜底；主判据是下面的增长倍率，不受 runner 快慢影响
+_WHITESPACE_CEILING_S = 3.0
+
+
+def _best_time(text: str, runs: int = 3) -> float:
+    """Fastest of ``runs`` calls, so one noisy-neighbour spike doesn't count."""
+    import time
+
+    best = float("inf")
+    for _ in range(runs):
+        started = time.perf_counter()
+        extract_directives(text)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+@pytest.mark.parametrize("make", [
+    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 480 要 5~7 秒
+    lambda n: " " * n,
+    # 模板 1：触发词后的 ``\s*(?:는|은)?\s*`` 同形，前面垫一段空白让话题有很多种
+    # 切法走到 ``말``，未原子化时模板 1 单独 1.6 秒（模板 3 同一输入 8 秒）
+    lambda n: " " * 39 + "말" + " " * n,
+], ids=["spaces", "padded_keyword"])
+def test_extract_directives_whitespace_does_not_blow_up(make):
+    """``extract_directives`` runs synchronously on every user message with no
+    length cap, so a whitespace-heavy message must not stall it.
+
+    The main assertion is the growth ratio from 120 to 480 characters, which
+    does not depend on how fast the runner is: cubic is 64x (about 41-74x
+    measured before the ko whitespace runs were made atomic), quadratic 16x
+    (13-20x right after), and linear 4x (about 3.3x since topic captures may no
+    longer start on whitespace; see test_directive_regex_whitespace.py). The
+    absolute ceiling is only a loose backstop for shared CI runners.
+    """
+    # 预热：别把首次正则编译算进去
+    extract_directives(" ")
+    short = _best_time(make(120))
+    long = _best_time(make(480))
+    assert long < _WHITESPACE_CEILING_S, f"{long:.3f}s"
+    # 小输入只有十几毫秒，加一点绝对余量，别让计时抖动主导倍率
+    assert long < short * 35 + 0.02, f"120: {short:.4f}s, 480: {long:.4f}s"
+
+
 # ── 2. record dedup + refresh ────────────────────────────────────
 
 
