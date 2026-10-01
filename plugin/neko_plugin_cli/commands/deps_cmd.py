@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from tempfile import gettempdir
+from typing import NamedTuple
 
 import portalocker
 
@@ -163,10 +164,10 @@ def handle_sync(args: argparse.Namespace) -> int:
             if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
                 # Several plugins may link vendor/ to one target: every writer
                 # to it must hold that target's lock, not only its plugin's.
-                target = vendor_dir.stat()
+                target = _vendor_target(vendor_dir)
                 # vendor -> .. (or a bind mount of a parent): refilling it
                 # would move the plugin itself aside and delete it.
-                if _contains_plugin(target, vendor_dir, plugin_dir):
+                if _contains_plugin(target.stat, vendor_dir, plugin_dir):
                     print(
                         f"[FAIL] {vendor_dir} leads to the plugin directory or one of "
                         "its parents (or, without inode numbers, can not be told "
@@ -174,7 +175,7 @@ def handle_sync(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 1
-                target_lock = hashlib.sha256(_lock_identity(vendor_dir, target)).hexdigest()
+                target_lock = hashlib.sha256(_lock_identity(vendor_dir, target.stat)).hexdigest()
                 with portalocker.Lock(
                     _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
                 ):
@@ -300,9 +301,30 @@ def _report_vendor_changed(vendor_dir: Path) -> int:
     return 1
 
 
-def _same_target(vendor_dir: Path, identity: os.stat_result) -> bool:
+class _VendorTarget(NamedTuple):
+    """The directory vendor/ led to when its lock was taken."""
+
+    stat: os.stat_result
+    # Compared too where the filesystem reports no inode numbers: samestat
+    # alone would take any directory on the device for this one.
+    path: str
+
+
+def _vendor_target(vendor_dir: Path) -> _VendorTarget:
+    return _VendorTarget(vendor_dir.stat(), os.path.realpath(vendor_dir))
+
+
+def _is_target(identity: _VendorTarget, info: os.stat_result, path: str) -> bool:
+    if not os.path.samestat(info, identity.stat):
+        return False
+    return bool(identity.stat.st_ino) or (
+        os.path.normcase(path) == os.path.normcase(identity.path)
+    )
+
+
+def _same_target(vendor_dir: Path, identity: _VendorTarget) -> bool:
     try:
-        return os.path.samestat(vendor_dir.stat(), identity)
+        return _is_target(identity, vendor_dir.stat(), os.path.realpath(vendor_dir))
     except OSError:
         return False
 
@@ -311,7 +333,7 @@ def _sync_in_place(
     vendor_dir: Path,
     external_deps: list[str],
     args: argparse.Namespace,
-    identity: os.stat_result,
+    identity: _VendorTarget,
 ) -> int:
     """Sync a linked or mounted vendor/ without renaming it.
 
@@ -439,7 +461,7 @@ _DIR_FD_OPS = (
 )
 
 
-def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_result) -> int:
+def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarget) -> int:
     """Replace vendor/'s contents with staging's, in the directory the
     install ran in.
 
@@ -474,7 +496,7 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
 
     fd = os.open(vendor_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        if not os.path.samestat(os.fstat(fd), identity):
+        if not _is_target(identity, os.fstat(fd), _open_dir_path(fd, vendor_dir)):
             return changed()
         try:
             staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)

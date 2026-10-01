@@ -1076,7 +1076,7 @@ def test_in_place_sync_refuses_a_vendor_retargeted_after_locking(tmp_path, monke
     )
     args = TestTransactionalDependencyInstall()._args(tmp_path, tmp_path)
 
-    assert deps_cmd._sync_in_place(vendor, ["httpx"], args, other.stat()) == 1
+    assert deps_cmd._sync_in_place(vendor, ["httpx"], args, deps_cmd._vendor_target(other)) == 1
     assert "changed during the sync" in capsys.readouterr().err
 
 
@@ -1201,6 +1201,17 @@ def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypat
     assert "leads to the plugin directory" in capsys.readouterr().err
 
 
+def test_zero_inode_vendor_target_is_also_compared_by_path(tmp_path):
+    # samestat alone takes any directory on the device for a zero-inode one.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    zero = os.stat_result((0o40755, 0, 1, 1, 0, 0, 0, 0, 0, 0))
+    target = deps_cmd._VendorTarget(zero, str(tmp_path / "a"))
+
+    assert deps_cmd._is_target(target, zero, str(tmp_path / "a")) is True
+    assert deps_cmd._is_target(target, zero, str(tmp_path / "b")) is False
+
+
 def test_zero_inode_targets_are_compared_by_path(tmp_path, monkeypatch):
     # Some filesystems report st_ino 0 for every directory; identity alone
     # would call a separate shared vendor target "the plugin".
@@ -1245,7 +1256,7 @@ def test_windows_refill_pins_the_junction_against_retargeting(tmp_path, monkeypa
 
     monkeypatch.setattr(deps_cmd, "_empty_directory", empty)
 
-    assert deps_cmd._refill_in_place(vendor, staging, vendor.stat()) == 0
+    assert deps_cmd._refill_in_place(vendor, staging, deps_cmd._vendor_target(vendor)) == 0
     assert attempts[0].returncode != 0
     assert os.readlink(vendor)
     assert (target / "new.py").read_text() == "new"
@@ -1316,7 +1327,7 @@ def test_in_place_refill_leaves_another_users_staging(tmp_path, monkeypatch):
     staging = vendor / ".vendor.staging-0000abcd"
     staging.mkdir()
     (staging / "new.py").write_text("new")
-    identity = vendor.stat()
+    identity = deps_cmd._vendor_target(vendor)
     monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
     monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: False)
     me = os.getuid()
@@ -1350,7 +1361,7 @@ def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypat
     staging = vendor / ".vendor.staging-0000abcd"
     staging.mkdir()
     (staging / "new.py").write_text("new")
-    identity = vendor.stat()
+    identity = deps_cmd._vendor_target(vendor)
     monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
     monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: True)
 
