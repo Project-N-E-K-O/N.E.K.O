@@ -150,6 +150,12 @@ class TtsLifecycleMixin:
 
     async def _wait_tts_capacity(self, deadline=None, *, worker=None):
         loop = asyncio.get_running_loop()
+        self._init_tts_lifecycle_state()
+        # Adopt retirements accepted before a loop existed, even when resource
+        # admission is already available. Cleanup ownership is not capacity.
+        for runtime in tuple(self._tts_runtimes):
+            if runtime.retired:
+                self._schedule_tts_cleanup(runtime)
         if deadline is None:
             deadline_getter = getattr(self, "_current_start_deadline", None)
             deadline = deadline_getter() if deadline_getter else None

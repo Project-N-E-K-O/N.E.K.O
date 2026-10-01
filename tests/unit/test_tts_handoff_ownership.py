@@ -71,6 +71,29 @@ def install(manager, release):
 
 
 @pytest.mark.asyncio
+async def test_capacity_entry_adopts_sync_retirement_below_resource_limit():
+    manager = Manager()
+    release = Event()
+    runtime = install(manager, release)
+    try:
+        # A real synchronous caller has no running event loop to own cleanup.
+        await asyncio.to_thread(manager._retire_tts_runtime, runtime)
+        assert runtime.retired and runtime.cleanup_task is None
+        assert manager._live_tts_runtime_count() < manager._tts_capacity_limit()
+        await manager._wait_tts_capacity(asyncio.get_running_loop().time() + 1)
+        assert runtime.cleanup_task is not None, "available capacity must not skip retained-owner cleanup"
+        release.set()
+        await asyncio.wait_for(runtime.cleanup_task, 2)
+        assert runtime.cleanup_complete.is_set()
+        assert not runtime.thread.is_alive()
+        assert runtime not in manager._tts_runtimes
+    finally:
+        release.set()
+        manager._schedule_tts_cleanup(runtime)
+        await asyncio.wait_for(runtime.cleanup_task, 2)
+
+
+@pytest.mark.asyncio
 async def test_retired_live_workers_keep_both_slots_until_real_exit():
     manager = Manager()
     releases = [Event() for _ in range(MAX_LIVE_TTS_RUNTIMES)]
