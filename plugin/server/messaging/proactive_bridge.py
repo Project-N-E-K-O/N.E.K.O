@@ -128,7 +128,7 @@ class ProactiveBridge:
         # startup 钩子里 push_message()，而 PUB 对缺席的订阅方是直接丢弃 ——
         # 那扇窗口里推的消息角色永远不会说，push_message() 却已经回了
         # submitted=True。只把 bridge 挪到插件前面只是让计时更早开始，窗口
-        # 本身还在（下面那个 1 秒等待就在窗口里）。
+        # 本身还在（SUBSCRIBE 传播到 PUB 侧之前那一小段）。
         self._subscribed = threading.Event()
 
     def start(self) -> None:
@@ -202,8 +202,14 @@ class ProactiveBridge:
         )
         agent_push_addr = _resolve_agent_push_addr()
 
-        # Brief wait for message_plane PUB to bind before we connect.
-        time.sleep(1.0)
+        # No fixed wait before connecting. Server startup binds the plane PUB
+        # synchronously (MessagePlanePubServer.__post_init__) before it starts
+        # this bridge, so the endpoint is already listening; and even if a peer
+        # binds later, ZeroMQ connect is asynchronous and reconnects, replaying
+        # the subscription on each attach. A delay before SUBSCRIBE only
+        # postpones subscription -- it never closes the PUB/SUB slow-joiner
+        # window. Readiness is gated on _subscribed (set below), which startup
+        # waits for before admitting autostart plugins.
         if stop.is_set():
             return
 
