@@ -688,3 +688,49 @@ def test_a_cache_slice_is_judged_with_what_precedes_it(monkeypatch):
     later = [{"role": "YUI", "text": _COMMENT_B}]
     assert NotifyMixin._convert_cache_to_str(owner, later).splitlines() == [f"YUI | {_COMMENT_B}"]
     assert NotifyMixin._convert_cache_to_str(owner, later, preceding=earlier) == ""
+
+
+# ── Review round on the split PR ────────────────────────────────────────────
+
+def test_a_chain_that_starts_inside_one_message_and_continues_in_the_next_is_cut_once():
+    """The run is judged on the original texts: rewriting the first message
+    alone must not hide the label in the message that continues its chain."""
+    messages = [_user("聊"), _assistant(chain()), _assistant(_COMMENT_B), _user("继续")]
+    projected = project_screen_history(messages)
+    assert [m["content"] for m in projected] == ["聊", FIRST, "继续"]
+    assert _rewritten(messages) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_hot_swap_cache_keeps_each_proactive_delivery_apart(monkeypatch):
+    """Consecutive assistant publishes are merged into one cache entry, which
+    would read two independent proactive deliveries as one chain. Guarded
+    (proactive) publishes get their own entries, marked, and the cache
+    rendering splits the run at them."""
+    from main_logic.core import LLMSessionManager
+    from main_logic.core.notify import NotifyMixin
+    from tests.unit.test_core_game_route_memory_contract import _make_manager
+
+    monkeypatch.delenv(SCREEN_GUARD_ENV, raising=False)
+    mgr = _make_manager()
+    mgr.is_preparing_new_session = True
+    mgr.current_speech_id = "s-proactive"
+    mgr.message_cache_for_new_session = [{"role": "Master", "text": "陪我聊聊"}]
+    for comment in (_COMMENT_A, _COMMENT_B):
+        await LLMSessionManager.send_lanlan_response(
+            mgr, comment, is_first_chunk=True, expected_speech_id="s-proactive",
+        )
+    cache = list(mgr.message_cache_for_new_session)
+    assert cache == [
+        {"role": "Master", "text": "陪我聊聊"},
+        {"role": "Lan", "text": _COMMENT_A, "source": "proactive"},
+        {"role": "Lan", "text": _COMMENT_B, "source": "proactive"},
+    ]
+    assert NotifyMixin._convert_cache_to_str(mgr, cache).splitlines() == [
+        "Master | 陪我聊聊", f"Lan | {_COMMENT_A}", f"Lan | {_COMMENT_B}",
+    ]
+    # An ordinary reply still starts its own entry after a delivery and
+    # merges its own chunks, as before.
+    await LLMSessionManager.send_lanlan_response(mgr, "普通回复", is_first_chunk=True)
+    await LLMSessionManager.send_lanlan_response(mgr, "，接着说。")
+    assert mgr.message_cache_for_new_session[-1] == {"role": "Lan", "text": "普通回复，接着说。"}

@@ -205,10 +205,13 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
 
     Every assistant message is judged alone first. Then the consecutive
     assistant run immediately before the last user turn is judged as one
-    sequence over those (possibly already rewritten) texts, because a chain
-    spread one comment per message is invisible to a per-message check.
-    Internally marked proactive deliveries split the run and are checked
-    individually. Unmarked legacy deliveries remain positionally ambiguous.
+    sequence over the original texts, because a chain spread one comment per
+    message is invisible to a per-message check; where it finds a chain, its
+    result replaces the per-message one for every message of the run (a
+    chain that starts inside one message and continues in the next is cut
+    once, at its second comment). Internally marked proactive deliveries
+    split the run and are checked individually. Unmarked legacy deliveries
+    remain positionally ambiguous.
 
     ``trailing_turn`` is for restored history: the end of ``messages`` is
     treated as followed by the next user turn (see ``_assistant_tail_run``).
@@ -217,16 +220,16 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
     one spread over the assistant run.
     """
     rewrites: dict = {}
-    current: dict = {}
+    originals: dict = {}
     for index, message in enumerate(messages):
         role, content = _role_and_content(message)
         text = _text_of(content)
         if role not in _ASSISTANT_ROLES or text is None:
             continue
-        current[index] = text
+        originals[index] = text
         rewritten = _dechained_message(text)
         if rewritten is not None:
-            rewrites[index] = current[index] = rewritten[0]
+            rewrites[index] = rewritten[0]
             if hits is not None:
                 hits["message"] = hits.get("message", 0) + 1
     tail_start, tail_end = _assistant_tail_run(messages, trailing_turn=trailing_turn)
@@ -234,19 +237,18 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
     for boundary in range(tail_start, tail_end + 1):
         if boundary < tail_end and not _is_independent_delivery(messages[boundary]):
             continue
-        indices = [
-            index for index in range(segment_start, boundary)
-            if current.get(index) is not None
-        ]
+        indices = [index for index in range(segment_start, boundary) if index in originals]
         segment_start = boundary + 1
         if len(indices) < 2:
             continue
-        rewritten = _dechain(tuple(current[index] for index in indices))
+        rewritten = _dechain(tuple(originals[index] for index in indices))
         if rewritten is None:
             continue
+        # Messages before the cut carry no chain of their own (the cut is the
+        # first chain), so the run's result never undoes a per-message one.
         for index, text in zip(indices, rewritten):
-            if text != current[index]:
-                rewrites[index] = current[index] = text
+            if text != rewrites.get(index, originals[index]):
+                rewrites[index] = text
                 if hits is not None:
                     hits["run"] = hits.get("run", 0) + 1
     return rewrites

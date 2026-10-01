@@ -164,7 +164,14 @@ class NotifyMixin:
             }
             rewrites = screen_history_rewrites(
                 [
-                    {"role": roles.get(i['role'], "system"), "content": i['text']}
+                    {
+                        "role": roles.get(i['role'], "system"),
+                        "content": i['text'],
+                        # Proactive deliveries are cached as their own
+                        # entries (send_lanlan_response); keep them apart.
+                        "additional_kwargs": {"dialog_source": i['source']}
+                        if i.get('source') else {},
+                    }
                     for i in entries
                 ],
                 trailing_turn=True,
