@@ -310,12 +310,19 @@ def _sync_in_place(
             return _report_vendor_changed(vendor_dir)
         # _clean_vendor's recursive searches would cross a mount or junction
         # inside and delete caches and bin/ in that external tree.
-        if (
-            sys.platform.startswith("linux") and _linux_mount_points() is None
-        ) or _find_foreign_subdir(vendor_dir, junctions=True) is not None:
+        if sys.platform.startswith("linux") and _linux_mount_points() is None:
+            # vendor/ is the user's tree: even its bin/ may be a bind mount
+            # that ismount() can not see.
+            print(
+                f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {vendor_dir}: "
+                "/proc/self/mountinfo is unavailable, so mounts inside can not be "
+                "ruled out. Remove vendor/bin by hand if it should not be packaged.",
+                file=sys.stderr,
+            )
+        elif _find_foreign_subdir(vendor_dir, junctions=True) is not None:
             print(
                 f"[WARN] Skipped removing __pycache__ and .pyc from {vendor_dir}: "
-                "a mount point or junction inside it can not be ruled out.",
+                "a mount point or junction is inside it.",
                 file=sys.stderr,
             )
             _remove_installer_bin(vendor_dir)
@@ -1024,7 +1031,9 @@ def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
 def _remove_installer_bin(vendor_dir: Path) -> None:
     """Remove the installer's top-level bin/ (console scripts, which build
     and pack would ship) without recursing: it normally holds only files, and
-    one holding a directory, which could be a mount, is left with a warning."""
+    one holding a directory, which could be a mount, is left with a warning.
+    A bin/ that is itself a mount point is left too: its files are another
+    tree's."""
     bin_dir = vendor_dir / "bin"
     if _is_link(bin_dir):
         try:
@@ -1033,6 +1042,9 @@ def _remove_installer_bin(vendor_dir: Path) -> None:
             os.rmdir(bin_dir)
         return
     if not bin_dir.is_dir():
+        return
+    if _is_mount_point(bin_dir):
+        print(f"[WARN] Not removing {bin_dir}: it is a mount point.", file=sys.stderr)
         return
     children = list(bin_dir.iterdir())
     if any(child.is_dir() and not _is_link(child) for child in children):

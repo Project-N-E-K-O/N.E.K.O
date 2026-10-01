@@ -1128,6 +1128,43 @@ def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, m
     assert "Skipped removing __pycache__" in capsys.readouterr().err
 
 
+def test_installer_bin_that_is_a_mount_point_is_left(tmp_path, monkeypatch, capsys):
+    # Its files belong to the mounted tree, even when there are only files.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "tool").write_text("external")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == bin_dir)
+
+    deps_cmd._remove_installer_bin(tmp_path)
+
+    assert (bin_dir / "tool").read_text() == "external"
+    assert "is a mount point" in capsys.readouterr().err
+
+
+def test_in_place_sync_without_linux_mount_table_keeps_vendor_bin(tmp_path, monkeypatch, capsys):
+    # vendor/ is the user's tree; its bin/ may be a bind mount ismount misses.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    (vendor / "bin").mkdir(parents=True)
+    (vendor / "bin" / "tool").write_text("external")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (vendor / "bin" / "tool").read_text() == "external"
+    assert "Remove vendor/bin by hand" in capsys.readouterr().err
+
+
 def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
