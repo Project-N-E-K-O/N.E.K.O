@@ -1195,6 +1195,11 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             stop_attempted=stop_attempted,
             registry_target=registry_target,
         )
+        if rollback.filesystem_rollback == "incomplete":
+            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。
+            from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+            revoke_hot_reload_recovery(plugin_id)
         if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists):
             # 回滚把插件文件放回去了，那条待批准记录也得跟着回去。少了它，一个
             # 用户从没启动过的插件在一次失败的卸载之后变成"已批准"，下次开机自己

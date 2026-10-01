@@ -922,3 +922,35 @@ async def test_replace_plugin_rollback_keeps_hot_reload_recovery(
     # The old source is back, so its pending recovery stays valid.
     assert exc_info.value.rollback_status == "completed"
     assert lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_incomplete_rollback_revokes_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    async def rollback_fails(**_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(replace_transaction, "_rollback_targets", rollback_fails)
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    # The failed new payload may still be on disk; it must not inherit the retry.
+    assert exc_info.value.rollback_status == "incomplete"
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery("demo")

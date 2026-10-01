@@ -1266,3 +1266,31 @@ async def test_uninstall_rollback_keeps_hot_reload_recovery(
 
     assert captured.value.filesystem_rollback == "completed"
     assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_incomplete_rollback_revokes_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Whatever an incomplete rollback leaves on disk is not the source the
+    recovery permission was granted for."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+    original_rollback = uninstall_module._rollback_precommit
+
+    async def incomplete_rollback(**kwargs):
+        outcome = await original_rollback(**kwargs)
+        return replace(outcome, filesystem_rollback="incomplete")
+
+    monkeypatch.setattr(uninstall_module, "_rollback_precommit", incomplete_rollback)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")

@@ -70,6 +70,12 @@ async def _stop_plugin(plugin_id: str) -> None:
         raise
 
 
+def _revoke_hot_reload_recovery(plugin_id: str) -> None:
+    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+    revoke_hot_reload_recovery(plugin_id)
+
+
 async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
@@ -394,6 +400,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        if not recovered:
+            # 旧源码没能原样恢复：留在盘上的东西不是许可当初针对的那份。
+            _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage="backup",
             rollback_status="completed" if recovered else "incomplete",
@@ -420,11 +429,9 @@ async def replace_plugin(
         if was_running:
             stage = "restart"
             await _start_plugin(plugin_id)
-        from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
-
         # 新源码已就位：上一份自动热重载失败留下的恢复许可不再适用。放在提交
-        # 之后——回滚恢复的是旧源码，许可应当保留。
-        revoke_hot_reload_recovery(plugin_id)
+        # 之后——完整回滚恢复的是旧源码，许可应当保留。
+        _revoke_hot_reload_recovery(plugin_id)
         stage = "cleanup"
         for backup in backups.values():
             try:
@@ -468,6 +475,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        if not restored:
+            # 旧源码没能原样恢复：留在盘上的可能是失败的新包，不能凭旧许可自启。
+            _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage=stage,
             rollback_status="completed" if restored else "incomplete",
