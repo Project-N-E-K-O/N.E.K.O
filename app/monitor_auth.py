@@ -27,7 +27,6 @@ import re
 import time
 from urllib.parse import urlencode, urlsplit
 
-from starlette._utils import get_route_path
 from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.websockets import WebSocket
@@ -216,6 +215,24 @@ def _exchange_query_token(conn: HTTPConnection) -> RedirectResponse:
     return response
 
 
+def _route_path(scope) -> str:
+    """The path the router matches: ``scope["path"]`` minus ``root_path``.
+
+    Mirrors starlette's routing (``starlette._utils.get_route_path``) without
+    importing a private module that a starlette upgrade may move.
+    """
+
+    path = scope.get("path", "")
+    root_path = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path):]
+    return path
+
+
 class MonitorAuthMiddleware:
     """Default-deny ASGI gate for every Monitor route once a token is configured."""
 
@@ -230,7 +247,7 @@ class MonitorAuthMiddleware:
         # (a proxy mount would otherwise hide /sync/* behind a prefix), and
         # never conn.url, which starlette 0.46 rebuilds from the unvalidated
         # Host header (a Host containing "#", "?" or "/" would hide it too).
-        path = get_route_path(scope)
+        path = _route_path(scope)
         if path.startswith(_PUBLIC_PATH_PREFIXES):
             await self.app(scope, receive, send)
             return

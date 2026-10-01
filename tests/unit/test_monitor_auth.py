@@ -78,3 +78,17 @@ def test_token_scopes(monkeypatch):
 def test_malformed_viewer_session_is_rejected_without_raising(monkeypatch, value):
     monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "secret")
     assert monitor_auth.verify_viewer_session(value, now=1) is False
+
+
+@pytest.mark.parametrize("path, root_path", [
+    ("/sync/x", ""),
+    ("/monitor/sync/x", "/monitor"),
+    ("/monitor", "/monitor"),
+    ("/monitorx/sync", "/monitor"),
+    ("/other/sync/x", "/monitor"),
+    ("//sync/x", ""),
+])
+def test_route_path_matches_starlette_routing(path, root_path):
+    starlette_utils = pytest.importorskip("starlette._utils")
+    scope = {"path": path, "root_path": root_path}
+    assert monitor_auth._route_path(scope) == starlette_utils.get_route_path(scope)
