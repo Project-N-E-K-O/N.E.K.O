@@ -1724,6 +1724,7 @@ async def test_no_vad_rnnoise_activity_preserves_long_speech_wait() -> None:
         adapter._strict_endpoint_deadline + adapter._max_endpoint_wait_seconds
     )
 
+    old_cap = adapter._no_vad_deadline_cap
     for _ in range(4):
         await adapter._process_without_vad(
             _AudioItem(
@@ -1735,8 +1736,43 @@ async def test_no_vad_rnnoise_activity_preserves_long_speech_wait() -> None:
         )
 
     assert adapter._strict_endpoint_deadline is not None
-    assert adapter._strict_endpoint_deadline > adapter._no_vad_deadline_cap
+    assert adapter._strict_endpoint_deadline > old_cap
     await adapter.close()
+
+
+@pytest.mark.parametrize("fallback_activity", [False, None])
+async def test_rnnoise_speech_rebases_stale_rms_cap_before_fallback(fallback_activity):
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(), gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 20),
+        on_commit=_noop_commit, continuation_timeout_seconds=0.01,
+        smart_turn_required=True, max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (53, 54, 55)
+    adapter._identity = identity
+    now = asyncio.get_running_loop().time()
+    adapter._strict_endpoint_deadline = now - 1
+    adapter._no_vad_deadline_cap = now - 0.5
+    try:
+        await adapter._process_without_vad(_AudioItem(
+            identity=identity, pcm16=b"\x40\x00" * 160,
+            duration_us=10_000, no_vad_activity=True,
+        ))
+        speech_deadline = adapter._strict_endpoint_deadline
+        await adapter._process_without_vad(_AudioItem(
+            identity=identity, pcm16=b"\x40\x00" * 160,
+            duration_us=10_000, no_vad_activity=fallback_activity,
+        ))
+        assert adapter._strict_endpoint_deadline >= speech_deadline
+        assert not adapter._strict_endpoint_wait_expired()
+        cap = adapter._no_vad_deadline_cap
+        assert cap is not None
+        assert cap == speech_deadline + adapter._max_endpoint_wait_seconds
+        assert adapter._strict_endpoint_deadline <= cap
+    finally:
+        await adapter.close()
 
 
 async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -> None:

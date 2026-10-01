@@ -31,11 +31,13 @@ Core 处理 ingress 背压时清空待处理 PCM，并按 identity 调用恢复�
 
 ## Smart Turn 语义超时
 
-Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试，直到当前严格截止时间。首次严格截止时间由 `max_endpoint_wait_seconds`（当前 15 秒）设定；无 Silero 时，RNNoise 确认的人声活动可刷新该静默窗口，RMS 回退的延长则受首次 `INCOMPLETE` 起的绝对上限约束。截止后仍为 `INCOMPLETE` 时，通过正常完成路径以 `semantic_timeout` 封轮；这是语义结果，不是 endpointing failure，不会拆掉 ASR session。
+Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试，直到当前严格截止时间。首次严格截止时间由 `max_endpoint_wait_seconds`（当前 15 秒）设定；无 Silero 时，RNNoise 确认的人声活动可刷新该静默窗口并退休旧 RMS 上限，RMS 回退的延长则受当前等待周期的绝对上限约束。截止后仍为 `INCOMPLETE` 时，通过正常完成路径以 `semantic_timeout` 封轮；这是语义结果，不是 endpointing failure，不会拆掉 ASR session。
 
 `periodic_no_vad` 不得覆盖排队中的 `strict_retry`，不得在 strict 推理期间终止等待，也不得推迟截止后的封轮。模型资产缺失、推理异常和 VAD failure 才进入 `UNAVAILABLE`/BLOCKED 路径。
 
 Silero 不可用时，PCM 仍可进入 Smart Turn 作为语义证据。RNNoise 明确判为人声活动时，长语音按正常静默窗口刷新严格截止时间。RNNoise 不可用或低于起音阈值时，则回退到 RMS 噪声底：低分数不能证明静音，达到 RMS 门槛的轻声帧仍允许延长等待，静音帧不刷新。RMS 无法可靠区分低音量语音与底噪，因此只有这条 RMS 回退路径受首次 INCOMPLETE 起两倍 `max_endpoint_wait_seconds` 的绝对上限约束（默认约 30 秒）；到期后仍为 INCOMPLETE 就正常封轮。这是缺少明确人声证据时的有界等待取舍，超长未完成语句也可能被分轮；有 VAD 的恢复说话事件仍按正常语义重置等待。
+
+RNNoise 确认的人声活动会清除旧 RMS 上限。随后切回 RMS 时，从最新静默截止时间加一个 `max_endpoint_wait_seconds` 建立新上限，不能把截止时间压回之前的过期上限；没有新的人声确认时，RMS 帧仍不能无限续期。
 
 ## Provider 重连裁剪
 

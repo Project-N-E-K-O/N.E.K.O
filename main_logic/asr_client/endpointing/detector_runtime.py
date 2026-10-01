@@ -709,6 +709,9 @@ class _VoiceTurnAdapter:
                     self._strict_endpoint_deadline = (
                         now + self._max_endpoint_wait_seconds
                     )
+                    # Confirmed speech retires the previous RMS-only wait.
+                    # A later fallback starts a fresh bound from this window.
+                    self._no_vad_deadline_cap = None
         started_now = False
         if not self._fallback_speech_started:
             self._fallback_speech_started = True
