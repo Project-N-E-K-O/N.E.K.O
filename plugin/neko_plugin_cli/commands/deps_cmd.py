@@ -151,6 +151,15 @@ def handle_sync(args: argparse.Namespace) -> int:
                 )
                 return 1
 
+            if vendor_dir.is_dir() and _is_mount_point(vendor_dir):
+                print(
+                    f"[FAIL] {vendor_dir} is a mount point; sync replaces vendor/ by "
+                    "renaming, which a mount point does not allow. Use a plain "
+                    "directory for vendor/ and retry.",
+                    file=sys.stderr,
+                )
+                return 1
+
             if vendor_dir.is_dir():
                 foreign = _find_foreign_subdir(vendor_dir, junctions=not args.clean)
                 if foreign is not None:
@@ -678,16 +687,16 @@ _PIP_SETTING_KINDS = {
     "require-hashes": "require-hashes",
     "proxy": "proxy",
     "cert": "cert",
+    "client-cert": "client-cert",
 }
 # Settings that cannot make uv install different packages when dropped:
-# output, caching, retries, a client certificate (without it uv only fails),
-# and options both installers are given explicitly anyway. Every other pip setting (only-binary,
+# output, caching, retries, and options both installers are given
+# explicitly anyway. Every other pip setting (only-binary,
 # constraint, pre, ...) has no checked uv counterpart here and blocks the
 # fallback, since uv would silently ignore it.
 _PIP_HARMLESS_SETTINGS = {
     "break-system-packages",
     "cache-dir",
-    "client-cert",
     "default-timeout",
     "disable-pip-version-check",
     "log",
@@ -731,6 +740,9 @@ _UV_COVERS = {
     # silently ignores a path that does not exist; its default TLS backend
     # does not read SSL_CERT_DIR at all.
     "cert": ("SSL_CERT_FILE",),
+    # An index may serve different packages to anonymous clients; uv reads
+    # SSL_CLIENT_CERT but silently goes anonymous when the file is missing.
+    "client-cert": ("SSL_CLIENT_CERT",),
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
@@ -880,7 +892,7 @@ def _uv_env_set(name: str) -> bool:
     value = os.environ.get(name)
     if not value:
         return False
-    if name == "SSL_CERT_FILE":
+    if name in {"SSL_CERT_FILE", "SSL_CLIENT_CERT"}:
         return Path(value).is_file()
     if name in _UV_BOOLEAN_ENV:
         # uv parses these as booleans: "0" / "false" turn them off.
@@ -888,10 +900,11 @@ def _uv_env_set(name: str) -> bool:
     return True
 
 
-# pip's boolean flags (store_true options of `pip install` and the general
-# options, per pip 25 --help). Only these can be switched off with a false
-# value; for any other option "off" or "0" is a real value (a file name, a
-# package list) and the option stays set.
+# pip's store_true flags (of `pip install` and the general options, per pip
+# 25 --help). Only these are switched off by a false value. Not listed: the
+# store_false "no-*" flags (no-build-isolation, no-compile, ...), where pip
+# assigns a configured false straight to the option and so turns the "no-"
+# behavior on; and value options, where "off" or "0" is a real value.
 _PIP_BOOLEAN_SETTINGS = {
     "break-system-packages",
     "check-build-dependencies",
@@ -903,18 +916,14 @@ _PIP_BOOLEAN_SETTINGS = {
     "ignore-installed",
     "ignore-requires-python",
     "isolated",
-    "no-build-isolation",
     "no-cache-dir",
     "no-clean",
     "no-color",
-    "no-compile",
     "no-deps",
     "no-index",
     "no-input",
     "no-proxy-env",
     "no-require-hashes",
-    "no-warn-conflicts",
-    "no-warn-script-location",
     "pre",
     "prefer-binary",
     "require-hashes",
@@ -935,13 +944,13 @@ def _pip_false(value: str) -> bool:
 
 
 def _uv_env() -> dict[str, str]:
-    """This process's environment for uv, with a relative SSL_CERT_FILE
-    pinned: uv runs in another cwd, where the checked file may not exist and
-    uv would silently fall back to its bundled roots."""
+    """This process's environment for uv, with relative SSL_CERT_FILE /
+    SSL_CLIENT_CERT pinned: uv runs in another cwd, where a checked file may
+    not exist and uv would silently ignore it."""
     env = dict(os.environ)
-    cert = env.get("SSL_CERT_FILE")
-    if cert:
-        env["SSL_CERT_FILE"] = os.path.abspath(cert)
+    for name in ("SSL_CERT_FILE", "SSL_CLIENT_CERT"):
+        if env.get(name):
+            env[name] = os.path.abspath(env[name])
     return env
 
 

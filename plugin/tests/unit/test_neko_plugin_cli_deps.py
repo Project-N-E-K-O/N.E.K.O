@@ -456,7 +456,11 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
         ({"PIP_NO_DEPS": "false"}, False),
         ({"PIP_PRE": "0"}, False),
         ({"PIP_NO_DEPS": "1"}, True),
-        ({"PIP_NO_CLEAN": "false", "PIP_NO_COMPILE": "0", "PIP_UPGRADE": "off"}, False),
+        ({"PIP_NO_CLEAN": "false", "PIP_UPGRADE": "off"}, False),
+        # store_false "no-*" flags: pip sets build_isolation=False, i.e. a
+        # false value turns isolation off, so the setting is active.
+        ({"PIP_NO_BUILD_ISOLATION": "false"}, True),
+        ({"PIP_NO_COMPILE": "0"}, True),
     ],
 )
 def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch, env, blocked):
@@ -1248,8 +1252,11 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"PIP_CERT": "/corp/ca.pem"}, False),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<existing>"}, True),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "/missing/ca.pem"}, False),
-        # Without a client certificate uv can only fail.
-        ({"PIP_CLIENT_CERT": "/corp/client.pem"}, True),
+        # An index may serve other packages to anonymous clients; uv ignores
+        # a missing SSL_CLIENT_CERT file with only a warning.
+        ({"PIP_CLIENT_CERT": "/corp/client.pem"}, False),
+        ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "<existing>"}, True),
+        ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "/missing/client.pem"}, False),
         # Both installers are given --target/--upgrade explicitly.
         ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
     ],
@@ -1258,7 +1265,7 @@ def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
-                 "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+                 "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "SSL_CLIENT_CERT"):
         monkeypatch.delenv(name, raising=False)
     existing = tmp_path / "ca.pem"
     existing.write_text("pem")
@@ -1293,6 +1300,40 @@ def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
     uv_command = calls[-1]
     assert uv_command[uv_command.index("--python") + 1] == str(tmp_path / relative_python)
     assert uv_command[uv_command.index("--target") + 1] == str(tmp_path / "staging")
+
+
+def test_uv_gets_an_absolute_client_cert(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "client.pem").write_text("pem")
+    monkeypatch.setenv("SSL_CLIENT_CERT", "client.pem")
+    assert deps_cmd._uv_env()["SSL_CLIENT_CERT"] == str(tmp_path / "client.pem")
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_sync_refuses_a_mounted_vendor_root(tmp_path, monkeypatch, capsys, clean):
+    # A mount point cannot be renamed to the backup name; copying it into
+    # staging would also follow it into the mounted tree.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "external.dat").write_text("keep")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("installer must not run"),
+    )
+
+    assert handle_sync(
+        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)
+    ) == 1
+    assert (vendor / "external.dat").read_text() == "keep"
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "is a mount point" in capsys.readouterr().err
 
 
 def test_ssl_cert_dir_does_not_cover_pips_cert(tmp_path, monkeypatch):
