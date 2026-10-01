@@ -1718,8 +1718,11 @@ class LifecycleMixin:
                 self.lanlan_name,
                 self.memory_server_port,
             )
-            initial_prompt += self._convert_cache_to_str(next_context)
-            initial_prompt += self._convert_cache_to_str(cached_turns)
+            # One call for both slices: a screen chain split across them is
+            # judged as one run (see _convert_cache_to_str).
+            initial_prompt += self._convert_cache_to_str(
+                list(next_context) + list(cached_turns)
+            )
             self._bind_session_lifecycle_callbacks(candidate)
             await candidate.connect(initial_prompt, native_audio=False)
         except BaseException:
@@ -2711,8 +2714,11 @@ class LifecycleMixin:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
             initial_prompt += (
                 resp.text
-                + self._convert_cache_to_str(next_session_context_messages)
-                + self._convert_cache_to_str(initial_cache_snapshot)
+                # One call for both slices: a screen chain split across them
+                # is judged as one run (see _convert_cache_to_str).
+                + self._convert_cache_to_str(
+                    list(next_session_context_messages) + list(initial_cache_snapshot)
+                )
             )
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
@@ -3229,9 +3235,27 @@ class LifecycleMixin:
                 list(incremental_next_session_context)
                 + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             )
+            # What the pending session was primed with at preparation, in
+            # prime order: next-session context snapshot, then cache snapshot.
+            primed_snapshot = (
+                list(next_session_context_messages[
+                    :self.initial_next_session_context_snapshot_len
+                ])
+                + list(self.message_cache_for_new_session[
+                    :self.initial_cache_snapshot_len
+                ])
+            )
+            # ...and everything the final prime below adds. Late context
+            # (arriving while that prime awaits) is judged after all of it.
+            primed_context_sequence = primed_snapshot + incremental_cache
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
-                final_prime_text = self._convert_cache_to_str(incremental_cache)
+                # Judged together with exactly what the pending session was
+                # already primed with, so a chain crossing that boundary counts.
+                final_prime_text = self._convert_cache_to_str(
+                    incremental_cache,
+                    preceding=primed_snapshot,
+                )
             else:  # Ensure session cycles a turn even if no incremental cache
                 final_prime_text = ""  # Initialize to empty string to prevent NameError
                 logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
@@ -4098,6 +4122,7 @@ class LifecycleMixin:
                 self._prime_late_next_session_context_after_swap(
                     transferred_next_context_count,
                     next_context_count_at_promote,
+                    preceding=primed_context_sequence,
                 ),
                 stage="late context reconciliation",
                 allow_promoted=True,

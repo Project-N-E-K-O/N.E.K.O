@@ -546,6 +546,7 @@ class ProactiveMixin:
                 history_text = full_text
                 additional_kwargs = {
                     "anti_repeat_response_id": str(commit_sid),
+                    "dialog_source": "proactive",
                 }
                 if action_note:
                     note = action_note.strip()

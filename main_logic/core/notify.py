@@ -72,6 +72,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASKS_NOTICE,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
+from utils.screen_comment_guard import screen_guard_enabled, screen_history_rewrites
 from ._shared import logger
 
 
@@ -132,11 +133,49 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send User Activity Error: {e}")
 
-    def _convert_cache_to_str(self, cache):
-        """[Hot-swap related] Convert the cache to a string"""
+    def _convert_cache_to_str(self, cache, preceding=()):
+        """[Hot-swap related] Convert the cache to a string.
+
+        This text is primed into the next session's system prompt, where the
+        offline client's request-view projection never sees it, so the
+        character's lines pass the same screen-chain rewrite here, with the
+        same rules (a chain inside one line, or spread over the run of
+        character lines that ends the cache and follows a master line). The
+        next thing the new session sees is the user speaking, hence
+        ``trailing_turn``. A line left with nothing is not rendered.
+
+        Pass every slice that ends up adjacent in one prompt in one call:
+        judged apart, a chain split across two slices is missed. A slice
+        appended after text that was already primed passes that text as
+        ``preceding``; it is judged with the slice but not rendered again.
+
+        Known boundary: the memory server's recent history (rendered by
+        ``/new_dialog`` just before these lines) is judged on its own, so a
+        chain split between memory's last replies and the cache's first ones
+        is not joined.
+        """
+        preceding = list(preceding)
+        entries = preceding + list(cache)
+        rewrites = {}
+        if screen_guard_enabled():
+            roles = {
+                self.lanlan_name: "assistant",
+                getattr(self, "master_name", None): "user",
+            }
+            rewrites = screen_history_rewrites(
+                [
+                    {"role": roles.get(i['role'], "system"), "content": i['text']}
+                    for i in entries
+                ],
+                trailing_turn=True,
+            )
         res = ""
-        for i in cache:
-            res += f"{i['role']} | {i['text']}\n"
+        for index in range(len(preceding), len(entries)):
+            i = entries[index]
+            text = rewrites.get(index, i['text'])
+            if text is None:
+                continue
+            res += f"{i['role']} | {text}\n"
         return res
 
     async def _build_initial_prompt(self) -> str:
