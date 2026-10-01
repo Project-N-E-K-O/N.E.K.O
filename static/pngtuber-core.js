@@ -2567,6 +2567,11 @@
             const bounce = this.currentSpeakingBounceTransform();
             const breathing = this.currentLayeredBreathingTransform(timestamp);
             const talkingHop = this.currentTalkingHopTransform(timestamp);
+            // 记录本帧动画位移/缩放，供 getStableAnchorRect() 还原静止锚点，
+            // 让悬浮按钮等 UI 不跟随模型自主上下运动漂移。
+            this._appliedAnimOffsetY = bounce.y + breathing.y + talkingHop.y;
+            this._appliedAnimScaleX = bounce.scaleX * breathing.scaleX * talkingHop.scaleX;
+            this._appliedAnimScaleY = bounce.scaleY * breathing.scaleY * talkingHop.scaleY;
             const placement = this.getActivePlacement();
             const renderPlacement = this.getRenderPlacement(placement);
             const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
@@ -2578,6 +2583,10 @@
                 this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            this._appliedAnimCenterAnchored = centerAnchored;
+            // 镜像时 finalScaleX 为负:right bottom 原点固定的是可见矩形的左边界,
+            // getStableAnchorRect 需要据此选择保持不动的水平边
+            this._appliedAnimMirrored = finalScaleX < 0;
             if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -3493,6 +3502,49 @@
             this.updateLockIconPosition();
         }
 
+        // 固定锚点：从当前 image rect 中剥离呼吸/说话弹跳/talkingHop 的动画位移与缩放，
+        // 返回模型静止布局下的矩形。悬浮按钮、锁图标等 UI 用它定位，
+        // 避免跟随模型自主上下运动而漂移、难以点击。
+        getStableAnchorRect() {
+            const image = this.image || (this.ensureContainer() && this.image);
+            if (!image) return null;
+            const rect = image.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+            const rectRight = Number.isFinite(rect.right) ? rect.right : rect.left + rect.width;
+            const rectBottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height;
+            const animY = Number(this._appliedAnimOffsetY) || 0;
+            const animScaleX = Number(this._appliedAnimScaleX) || 1;
+            const animScaleY = Number(this._appliedAnimScaleY) || 1;
+            const stableWidth = rect.width / animScaleX;
+            const stableHeight = rect.height / animScaleY;
+            if (this._appliedAnimCenterAnchored === false) {
+                // transform-origin: right bottom —— Y 向缩放围绕底边不动,剥离 Y 向平移即可。
+                // 水平方向:非镜像(finalScaleX>0)时右边界固定;镜像时 scale 为负,
+                // 变换后矩形从原点向右展开,固定的是左边界 rect.left。
+                const bottom = rectBottom - animY;
+                const left = this._appliedAnimMirrored ? rect.left : rectRight - stableWidth;
+                return {
+                    left,
+                    top: bottom - stableHeight,
+                    right: left + stableWidth,
+                    bottom,
+                    width: stableWidth,
+                    height: stableHeight
+                };
+            }
+            // transform-origin: center center —— 缩放围绕中心不动，中心点剥离 Y 向平移
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2 - animY;
+            return {
+                left: centerX - stableWidth / 2,
+                top: centerY - stableHeight / 2,
+                right: centerX + stableWidth / 2,
+                bottom: centerY + stableHeight / 2,
+                width: stableWidth,
+                height: stableHeight
+            };
+        }
+
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
@@ -3502,8 +3554,10 @@
                 lockIcon.style.opacity = '0';
                 return;
             }
-            const image = this.image || (this.ensureContainer() && this.image);
-            const rect = image ? image.getBoundingClientRect() : null;
+            // 用固定锚点定位，锁图标不随模型呼吸/弹跳上下漂移
+            const rect = typeof this.getStableAnchorRect === 'function'
+                ? this.getStableAnchorRect()
+                : (this.image ? this.image.getBoundingClientRect() : null);
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 if (!window.isInTutorial) lockIcon.style.display = 'none';
                 return;
@@ -4419,8 +4473,10 @@
                     return;
                 }
 
-                const image = this.image || (this.ensureContainer() && this.image);
-                const rect = image ? image.getBoundingClientRect() : null;
+                // 固定锚点：剥离呼吸/说话弹跳的动画位移，工具栏不随模型自主上下运动漂移
+                const rect = typeof this.getStableAnchorRect === 'function'
+                    ? this.getStableAnchorRect()
+                    : (this.image ? this.image.getBoundingClientRect() : null);
                 if (!rect || rect.width <= 0 || rect.height <= 0) {
                     buttonsContainer.style.display = 'none';
                     return;
@@ -4527,7 +4583,15 @@
                 this._pngtuberControlsHover = true;
                 showFloatingControls();
             };
-            const unmarkControlsHover = () => {
+            const unmarkControlsHover = (event) => {
+                // 在相邻按钮边缘移动时,mouseleave 可能因目标切换而触发;
+                // 若 relatedTarget 仍在控件区域内,说明指针没有真正离开,不取消悬停标记
+                const related = event && event.relatedTarget;
+                if (related && related !== document && related !== document.documentElement
+                    && (buttonsContainer.contains(related)
+                        || (this._lockIconElement && this._lockIconElement.contains && this._lockIconElement.contains(related)))) {
+                    return;
+                }
                 this._pngtuberControlsHover = false;
                 startHideTimer();
             };
@@ -4571,16 +4635,35 @@
                 }
             };
             const handleWindowBlur = () => clearPointerAndHideSoon();
+            // document 上 capture=true 的 mouseenter/mouseleave 会收到页面内所有元素的
+            // 进出事件;只有 target 为 document/documentElement 且 relatedTarget 为空
+            // 才是真正进出浏览器窗口,否则(如相邻按钮之间跨越边缘)忽略,避免按钮
+            // 在边缘移动时被反复判定隐藏/显示
+            const isWindowBoundaryMouseEvent = (event) => {
+                if (!event) return false;
+                const target = event.target;
+                const isDocTarget = !target || target === document || target === document.documentElement;
+                return isDocTarget && !event.relatedTarget;
+            };
             const handleDocumentMouseEnter = (event) => {
                 if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
-                    handlePointerMove(event);
+                    if (isWindowBoundaryMouseEvent(event)) {
+                        handlePointerMove(event);
+                    } else {
+                        // 元素级 enter 仅刷新指针坐标,不做显示/隐藏判定
+                        this._lastPngtuberPointerX = event.clientX;
+                        this._lastPngtuberPointerY = event.clientY;
+                    }
                     return;
                 }
-                if (shouldKeepFloatingControlsVisible()) {
+                if (isWindowBoundaryMouseEvent(event) && shouldKeepFloatingControlsVisible()) {
                     showFloatingControls();
                 }
             };
-            const handleDocumentMouseLeave = () => clearPointerAndHideSoon();
+            const handleDocumentMouseLeave = (event) => {
+                if (!isWindowBoundaryMouseEvent(event)) return;
+                clearPointerAndHideSoon();
+            };
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {

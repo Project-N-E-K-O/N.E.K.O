@@ -906,6 +906,7 @@ def _plugin_process_runner(
     uplink_token = str(uplink_token or "").strip()
     if not uplink_token:
         raise ValueError("Plugin child process requires an uplink token")
+    state.mark_plugin_child_process()
 
     # 保存进程级 stop event
     process_stop_event = stop_event

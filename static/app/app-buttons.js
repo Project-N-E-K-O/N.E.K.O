@@ -2682,8 +2682,8 @@
                 display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
             });
 
-            if (typeof window.stopScreening === 'function') {
-                window.stopScreening();
+            if (typeof window.teardownScreenSharing === 'function') {
+                window.teardownScreenSharing();
             }
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {

@@ -14,6 +14,7 @@ import AvatarToolInteractionInspector from './AvatarToolInteractionInspector';
 import {
   createLocalAvatarToolId,
   LocalAvatarToolCreateError,
+  LocalAvatarToolDeleteError,
   type CreateLocalAvatarToolInput,
   type LocalAvatarToolDetail,
   type LocalAvatarToolLimits,
@@ -388,6 +389,11 @@ export default function AvatarToolCreatePage({
     return null;
   };
 
+  const recoveryPendingError = () => i18n(
+    'chat.avatarToolRecoveryPendingError',
+    'An earlier change to this tool was interrupted and couldn\'t be recovered automatically, so it can\'t be changed or deleted right now.',
+  );
+
   const validateAndAcceptImage = async (
     file: File,
     selectionKey: string,
@@ -734,7 +740,15 @@ export default function AvatarToolCreatePage({
       }
     } catch (cause) {
       const saveError = i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Please try again.');
-      if (cause instanceof LocalAvatarToolCreateError && cause.message === 'tool_limit_reached') {
+      if (cause instanceof LocalAvatarToolCreateError && cause.message === 'tool_delete_pending') {
+        // 恢复保留了这个道具一次没被证实的删除：修改会一直被拒绝，只有删除能解开。
+        setError(i18n(
+          'chat.avatarToolDeletePendingSaveError',
+          'An earlier deletion of this tool didn\'t finish, so changes can\'t be saved. Delete this tool, then create it again.',
+        ));
+      } else if (cause instanceof LocalAvatarToolCreateError && cause.message === 'tool_recovery_pending') {
+        setError(recoveryPendingError());
+      } else if (cause instanceof LocalAvatarToolCreateError && cause.message === 'tool_limit_reached') {
         setError(i18n('chat.avatarToolCreateToolLimitError', 'The custom tool library is full.'));
       } else if (cause instanceof LocalAvatarToolCreateError && cause.message === 'storage_limit_reached') {
         setError(i18n('chat.avatarToolCreateStorageLimitError', 'There is not enough space for another custom tool.'));
@@ -848,8 +862,14 @@ export default function AvatarToolCreatePage({
     setError('');
     try {
       await onDelete();
-    } catch {
-      setError(i18n('chat.avatarToolDeleteError', 'Could not delete this tool. Please try again.'));
+    } catch (cause) {
+      // 这两种拒绝重试也不会变，别让用户以为「稍后重试」就好。
+      setError(
+        cause instanceof LocalAvatarToolDeleteError
+          && (cause.message === 'tool_recovery_pending' || cause.message === 'tool_delete_pending')
+          ? recoveryPendingError()
+          : i18n('chat.avatarToolDeleteError', 'Could not delete this tool. Please try again.'),
+      );
     } finally {
       setDeleting(false);
     }

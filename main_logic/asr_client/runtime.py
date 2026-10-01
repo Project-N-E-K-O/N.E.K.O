@@ -585,28 +585,32 @@ class IndependentAsrRuntime:
             return False
         return True
 
-    async def abort(self, reason: str, *, cleanup_timeout: float | None = None) -> None:
+    async def abort(
+        self, reason: str, *, cleanup_timeout: float | None = None,
+    ) -> frozenset[VoiceTurnToken]:
+        """Abort input and return the turns whose final delivery is preserved."""
         if reason == "ingress_backpressure":
             token = self._asr_current_ingress_token
             if token is not None and self._ingress_token_matches(token):
                 await self._handle_audio_ingress_backpressure(token)
-                return
+                return self.pending_transcript_turn_tokens()
         epoch = self._asr_session_epoch
         lifecycle = self._asr_lifecycle
         detector = self._asr_detector
         provider = self._asr_provider or "unknown"
         if lifecycle is not None:
             lifecycle.invalidate_audio()
-        if cleanup_timeout is None:
-            post_detach = await self._abort_transport(reason)
-        else:
-            post_detach = await self._abort_transport(
-                reason, cleanup_timeout=cleanup_timeout
-            )
+        preserve_accepted_finals = reason == "ingress_backpressure"
+        cleanup_kwargs: dict[str, float | bool] = {
+            "preserve_accepted_finals": preserve_accepted_finals,
+        }
+        if cleanup_timeout is not None:
+            cleanup_kwargs["cleanup_timeout"] = cleanup_timeout
+        post_detach = await self._abort_transport(reason, **cleanup_kwargs)
         if not self._runtime_identity_matches(
             post_detach
         ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-            return
+            return frozenset()
         if reason == "ingress_backpressure":
             await self._send_asr_status(
                 "ASR_INGRESS_BACKPRESSURE",
@@ -625,7 +629,7 @@ class IndependentAsrRuntime:
             if not self._runtime_identity_matches(
                 post_detach
             ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-                return
+                return frozenset()
         if lifecycle is not None:
             await self._send_asr_lifecycle_state(
                 lifecycle.snapshot.state,
@@ -633,6 +637,10 @@ class IndependentAsrRuntime:
                 session_epoch=epoch,
                 expected_identity=post_detach,
             )
+        return (
+            self.pending_transcript_turn_tokens()
+            if preserve_accepted_finals else frozenset()
+        )
 
     async def wait_transcript_idle(self) -> None:
         await self._asr_transcript_dispatcher.wait_idle()
@@ -641,6 +649,18 @@ class IndependentAsrRuntime:
         """Return whether an accepted final has not finished Core dispatch."""
 
         return self._asr_transcript_dispatcher.has_pending_delivery
+
+    def pending_transcript_turn_tokens(self) -> frozenset[VoiceTurnToken]:
+        """Return turns whose accepted final is still owed to Core."""
+
+        tokens = set(self._asr_transcript_dispatcher.pending_turn_tokens())
+        # A provider endpoint seals the current turn before its final arrives.
+        # During DRAINING that final is still owed to Core even though the
+        # dispatcher has not reserved its transcript slot yet.
+        sealed_turn = self._asr_sealed_turn_token
+        if sealed_turn is not None:
+            tokens.add(sealed_turn.turn)
+        return frozenset(tokens)
 
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
@@ -1734,7 +1754,8 @@ class IndependentAsrRuntime:
             try:
                 lifecycle.invalidate_audio()
                 post_detach = await self._abort_transport(
-                    "detector_audio_backpressure"
+                    "detector_audio_backpressure",
+                    preserve_accepted_finals=True,
                 )
                 if not self._runtime_identity_matches(
                     post_detach
@@ -3695,12 +3716,22 @@ class IndependentAsrRuntime:
         reason: str,
         *,
         cleanup_timeout: float | None = None,
+        preserve_accepted_finals: bool = False,
     ) -> _AsrRuntimeIdentity:
-        """Invalidate provider I/O before closing a live transport."""
+        """Invalidate provider I/O before closing a live transport.
+
+        ``preserve_accepted_finals`` keeps queued and in-flight Core delivery
+        of already accepted finals; only the interrupted turn is retired.
+        """
 
         self._begin_asr_start_operation()
         self._asr_audio_generation += 1
-        self._asr_transcript_dispatcher.invalidate_all()
+        if preserve_accepted_finals:
+            reserved_final_key = self._asr_reserved_final_key
+            if reserved_final_key is not None:
+                self._asr_transcript_dispatcher.release(reserved_final_key)
+        else:
+            self._asr_transcript_dispatcher.invalidate_all()
         self._asr_detector_dispatcher.invalidate_all()
         self._asr_audio_dispatcher.abort()
         self._reset_asr_turn_state()
@@ -4852,8 +4883,18 @@ class IndependentAsrRuntime:
         lease = self._asr_smart_turn_lease
         if lease is not None and lease.token == accepted_turn_token:
             self._asr_smart_turn_lease = None
+            # Keep the accepted final visible to Core while the release
+            # awaits: ingress backpressure retires only unaccepted turns.
+            transcript_dispatcher.mark_accepted(final_key, accepted_turn_token)
             try:
                 await lease.release()
+            except asyncio.CancelledError:
+                # Session shutdown may cancel this callback mid-release; the
+                # pinned slot must not outlive it.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
+                raise
             except Exception:
                 # The final is already accepted; a failed release must not
                 # skip transcript delivery or pending-turn activation below.
@@ -4862,10 +4903,10 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
             if not self._runtime_identity_matches(final_identity):
-                transcript_dispatcher.release(final_key)
-                # The accepted final can no longer be delivered, so release
-                # the Core-side pause keyed to this turn.
-                await self._notify_asr_turn_abandoned(accepted_turn_token)
+                # Lifecycle follow-up belongs to whoever moved identity.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
                 return
         elif not self._runtime_identity_matches(final_identity):
             transcript_dispatcher.release(final_key)
@@ -5035,14 +5076,39 @@ class IndependentAsrRuntime:
             ):
                 self._asr_pending_speech_onset_at = None
 
+    async def _settle_pinned_final(
+        self,
+        transcript_dispatcher: TranscriptDispatcher,
+        envelope: TranscriptEnvelope | None,
+        final_key: FinalKey,
+        turn_token: VoiceTurnToken,
+    ) -> None:
+        """Deliver or retire an accepted final whose follow-up was interrupted."""
+
+        if (
+            envelope is not None
+            and transcript_dispatcher.holds_accepted(final_key)
+            and turn_token.ingress.session_epoch == self._asr_session_epoch
+        ):
+            # No purge retired the pinned slot, so the final is still owed to
+            # Core, the same rule as for a queued envelope.
+            transcript_dispatcher.submit(envelope)
+            return
+        transcript_dispatcher.release(final_key)
+        # The accepted final can no longer be delivered, so release the
+        # Core-side pause keyed to this turn.
+        await self._notify_asr_turn_abandoned(turn_token)
+
     async def _dispatch_asr_transcript_envelope(
         self,
         envelope: TranscriptEnvelope,
     ) -> None:
         ingress_token = envelope.turn_token.ingress
-        if not self._ingress_token_matches(ingress_token):
-            # The envelope was accepted before the audio generation moved on,
-            # so neither on_final nor a teardown path will run for this turn.
+        # Only the session epoch retires an accepted final here. Ingress
+        # backpressure bumps the audio generation to retire the interrupted
+        # turn, and every other retirement purges this queue synchronously.
+        if ingress_token.session_epoch != self._asr_session_epoch:
+            # Neither on_final nor a teardown path will run for this turn.
             # Release the Core-side pause keyed to it instead of leaking the
             # pause until the next turn.
             await self._notify_asr_turn_abandoned(envelope.turn_token)

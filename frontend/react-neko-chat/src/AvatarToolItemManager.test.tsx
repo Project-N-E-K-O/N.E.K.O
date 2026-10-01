@@ -2,7 +2,12 @@ import { useCallback, useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager, { openAvatarToolEditorWindow } from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
-import { LocalAvatarToolRevisionConflictError, type LocalAvatarToolDetail } from './avatar-tools/localTools';
+import {
+  LocalAvatarToolCreateError,
+  LocalAvatarToolDeleteError,
+  LocalAvatarToolRevisionConflictError,
+  type LocalAvatarToolDetail,
+} from './avatar-tools/localTools';
 import {
   MISSING_SLOT_REPROBE_INTERVAL_MS,
   useAvatarToolSlotReconciliation,
@@ -599,6 +604,44 @@ describe('AvatarToolItemManager local creation', () => {
         confirm.mockRestore();
       }
     });
+
+    it('explains a save refused by a retained unconfirmed deletion instead of asking for a retry', async () => {
+      const onUpdate = vi.fn().mockRejectedValue(new LocalAvatarToolCreateError('tool_delete_pending'));
+      await renderEditor({ onUpdate });
+      fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Flow edited' } });
+      fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent("An earlier deletion of this tool didn't finish");
+      expect(alert).not.toHaveTextContent('Please try again');
+      expect(screen.getByLabelText('Tool name')).toHaveValue('Flow edited');
+    });
+
+    it.each(['tool_recovery_pending', 'tool_delete_pending'])(
+      'explains a %s refusal on save or delete as an unrecovered interruption',
+      async (code) => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const onDelete = vi.fn().mockRejectedValue(new LocalAvatarToolDeleteError(code));
+        const onUpdate = vi.fn().mockRejectedValue(new LocalAvatarToolCreateError('tool_recovery_pending'));
+        try {
+          await renderEditor({ onUpdate, onDelete });
+          fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+          expect(await screen.findByRole('alert')).toHaveTextContent(
+            "An earlier change to this tool was interrupted and couldn't be recovered automatically",
+          );
+          expect(screen.getByRole('dialog', { name: 'Edit custom tool' })).toBeInTheDocument();
+
+          fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Flow edited' } });
+          fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+          await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+          expect(await screen.findByRole('alert')).toHaveTextContent(
+            "An earlier change to this tool was interrupted and couldn't be recovered automatically",
+          );
+        } finally {
+          confirm.mockRestore();
+        }
+      },
+    );
   });
 
   it('keeps the local card and draft when deletion fails', async () => {

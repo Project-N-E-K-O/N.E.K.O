@@ -170,6 +170,64 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
+    # /oauth/status 放行无 Origin 的本机进程且不验身份，手机号不能从这里读到。
+    def load_records():
+        return (
+            {"access_token": "access", "auth_source": "oauth"},
+            {
+                "user": {
+                    "display_name": "User",
+                    "email": "user@example.com",
+                    "phone": "+8613800000000",
+                }
+            },
+        )
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
+
+    async def lookup_identity(_base, _access):
+        return C._CloudIdentityLookup(
+            C._CloudIdentity(USER_ID, "oauth", {}),
+            200,
+        )
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+
+    result = await O.oauth_status_endpoint(object())
+
+    assert result["logged_in"] is True
+    assert result["user"] == {"display_name": "User", "email": "user@example.com"}
+
+
+@pytest.mark.unit
+def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
+    # 回调落盘的 community_auth.json 是明文、本机还有其它读取方，只存脱敏手机号，
+    # 桌面端设置页用它在没有邮箱时显示账号；经本机路由返回的 public 版本永远不带手机号。
+    raw = {"username": "User", "email": None, "phone_number": " +8613800000000 "}
+    assert "phone" not in O._public_user_profile(raw, USER_ID)
+    profile = O._persisted_user_profile(raw, USER_ID)
+
+    assert profile == {
+        "id": USER_ID,
+        "display_name": "User",
+        "email": None,
+        "phone": "+86138****0000",
+    }
+    assert "+8613800000000" not in json.dumps(profile)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "masked"),
+    [("13800000000", "138****0000"), ("1234567", "****67")],
+)
+def test_mask_phone_hides_the_middle_digits(raw, masked):
+    assert O._mask_phone(raw) == masked
+
+
+@pytest.mark.unit
 async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
     old_snapshot = {
         "base_url": "https://community.example",
@@ -582,6 +640,7 @@ async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeyp
         "logged_in": False,
         "snapshot": snapshot,
         "auth": auth,
+        "rejected": True,
     }
 
 

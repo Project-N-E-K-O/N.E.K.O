@@ -1867,3 +1867,67 @@ async def test_start_session_forwards_normalized_provider_preference_handshake(
         None,
     ]
     assert shared_values == ["faster_whisper", "qwen", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['{', 'null', '[]', '123', '"x"'])
+async def test_bad_json_frame_does_not_disconnect_and_valid_frame_resets_budget(monkeypatch, text):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    # Repeated bursts of nine bad frames with valid messages between them must
+    # survive; raw user data must not be passed to lifecycle logging.
+    socket.events = ([{'type': 'websocket.receive', 'text': text}] * 9
+                     + [{'type': 'websocket.receive', 'text': '{}'}]) * 2
+    socket.events.append({'type': 'websocket.disconnect', 'code': 1000})
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert not socket.closed
+    assert not any('SERVER_ERROR' in item for item in socket.sent_text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text_only', [False, True])
+async def test_bad_frame_budget_applies_to_both_receive_apis(monkeypatch, text_only):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    socket.events = [{'type': 'websocket.receive', 'text': 'null'}] * 20
+    codes = []
+    async def close(code=1000):
+        codes.append(code)
+        socket.closed = True
+    socket.close = close
+    if text_only:
+        async def receive_text():
+            return socket.events.pop(0)['text']
+        socket.receive = None
+        socket.receive_text = receive_text
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert codes == [1008]
+    assert len(socket.events) == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owns_voice', [False, True])
+async def test_bad_frame_uses_voice_identity_and_stale_terminal_notice(monkeypatch, owns_voice):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    session_ids, _ = _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    received_claim = False
+    async def receive():
+        nonlocal received_claim
+        if not received_claim:
+            received_claim = True
+            return {'type': 'websocket.receive', 'text': json.dumps(_LEASE_SYNC_MESSAGE)}
+        if socket.events:
+            socket.events.clear()
+            old_id = session_ids['Lan']
+            session_ids['Lan'] = 'new-window'
+            manager._voice_lease_connection_id = str(old_id) if owns_voice else 'new-window'
+            return {'type': 'websocket.receive', 'text': 'null'}
+        return {'type': 'websocket.disconnect', 'code': 1000}
+    socket.receive = receive
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert socket.closed is (not owns_voice)
+    notices = [item for item in socket.sent_text if 'CHARACTER_SWITCHING_TERMINAL' in item]
+    assert bool(notices) is (not owns_voice)

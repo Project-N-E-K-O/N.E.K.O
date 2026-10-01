@@ -269,7 +269,7 @@ async def test_blocked_core_response_does_not_block_next_asr_turn() -> None:
     await runtime._wait_asr_transcript_dispatch_idle()
 
 
-async def test_accepted_final_dropped_by_generation_bump_abandons_turn(
+async def test_accepted_final_dropped_by_session_epoch_bump_abandons_turn(
     monkeypatch,
 ) -> None:
     runtime, sessions, callbacks, detector = (
@@ -295,15 +295,48 @@ async def test_accepted_final_dropped_by_generation_bump_abandons_turn(
 
     await on_final("hello world")
 
-    # The final was accepted, but the generation moves on before the serial
-    # transcript dispatcher delivers the queued envelope.
-    component._asr_audio_generation += 1
+    # The final was accepted, but the session epoch moves on before the
+    # serial transcript dispatcher delivers the queued envelope.
+    component._asr_session_epoch += 1
     await component.wait_transcript_idle()
 
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(
         f"asr-{epoch}-{sealed_turn_id}"
     )
+
+
+async def test_accepted_final_survives_audio_generation_bump(
+    monkeypatch,
+) -> None:
+    runtime, sessions, callbacks, detector = (
+        await _start_runtime_with_callback_candidates(
+            monkeypatch,
+            candidate_count=1,
+        )
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    epoch = component._asr_session_epoch
+    on_activity = callbacks[0]["on_speech_activity"]
+    on_final = callbacks[0]["on_input_transcript"]
+
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+    await component._handle_independent_asr_endpoint(epoch)
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+
+    await on_final("hello world")
+
+    # Ingress backpressure retires the interrupted successor audio by bumping
+    # the audio generation; the already accepted final still reaches Core.
+    component._asr_audio_generation += 1
+    await component.wait_transcript_idle()
+
+    runtime.handle_input_transcript.assert_awaited_once()
+    assert runtime.handle_input_transcript.await_args.args[0] == "hello world"
+    runtime.session.create_response.assert_awaited_once_with("hello world")
 
 
 async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> None:
@@ -318,7 +351,10 @@ async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> N
     assert lease is not None
 
     async def bumping_release() -> None:
+        # A retiring identity barrier purges the dispatcher; a bare audio
+        # generation bump is ingress backpressure, which keeps the final.
         component._asr_audio_generation += 1
+        component._asr_transcript_dispatcher.invalidate_all()
 
     lease.release = bumping_release
 

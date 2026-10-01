@@ -34,8 +34,6 @@ try:
 except ImportError:  # pragma: no cover
     zmq = None
 
-from fastapi import FastAPI
-
 from plugin.core.state import state
 from plugin.settings import (
     EXPORT_INLINE_BINARY_MAX_BYTES,
@@ -46,6 +44,8 @@ from plugin.settings import (
 )
 
 if TYPE_CHECKING:
+    # 仅用于 PluginContext.app 的类型标注；运行时导入会把整个 fastapi/starlette 拉进每个插件子进程。
+    from fastapi import FastAPI
     from plugin.core.bus.types import BusHubProtocol
     from plugin.core.bus.events import EventClient
     from plugin.core.bus.lifecycle import LifecycleClient
@@ -253,7 +253,7 @@ class PluginContext:
     logger: "LoguruLogger"
     status_queue: Any
     message_queue: Any = None  # 消息推送队列
-    app: Optional[FastAPI] = None
+    app: Optional["FastAPI"] = None
     _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（主进程提供）
     _zmq_ipc_client: Optional[Any] = None
     _cmd_queue: Optional[Any] = None  # 命令队列（用于在等待期间处理命令）

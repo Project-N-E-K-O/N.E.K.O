@@ -9,7 +9,7 @@ from main_logic.voice_input.wake_word.transcript import correct_wake_name_prefix
     ("text", "expected"),
     [
         ("悠宜。", "悠怡。"),
-        ("友谊，帮我打开灯。", "悠怡，帮我打开灯。"),
+        ("友谊。", "悠怡。"),
         ("悠宜帮我打开灯。", "悠怡帮我打开灯。"),
         ("悠宜悠宜。", "悠怡悠怡。"),
         ("呦呦呦。", "悠怡悠怡。"),

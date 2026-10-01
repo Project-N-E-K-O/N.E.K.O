@@ -731,9 +731,18 @@ class StreamingMixin:
                                 callbacks_snapshot
                             )
 
+                    # 同 _cb_turn_committed：在 try 之前绑定，finally 才读得到。
+                    reply_turn = None
                     try:
                         text_request_id = message.get("request_id")
                         self._active_text_request_id = text_request_id
+                        # 本回复的快照：它的丢弃 / 完成回调可能在很久之后才跑
+                        # （close() 截断的回复要等停住的工具或退避返回才收尾），
+                        # 那时共享的 request id / meta 可能已属于新一轮。
+                        reply_turn = self._begin_reply_turn(
+                            speech_id=new_user_sid,
+                            request_id=text_request_id,
+                        )
                         # Path A (inline) Focus 凝神：score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -752,6 +761,7 @@ class StreamingMixin:
                             discard_message: str | None = None,
                             *,
                             _request_id=text_request_id,
+                            _reply_turn=reply_turn,
                         ) -> None:
                             await self.handle_response_discarded(
                                 reason,
@@ -760,7 +770,14 @@ class StreamingMixin:
                                 will_retry,
                                 discard_message,
                                 request_id=_request_id,
+                                reply_turn=_reply_turn,
                             )
+
+                        async def response_done_callback(
+                            *,
+                            _reply_turn=reply_turn,
+                        ) -> None:
+                            await self.handle_response_complete(reply_turn=_reply_turn)
 
                         input_transcript_callback = None
                         if memory_text:
@@ -784,6 +801,7 @@ class StreamingMixin:
                             "system_prefix": _agent_cb_ctx or None,
                             "thinking_on": _focus_thinking,
                             "response_discarded_callback": response_discarded_callback,
+                            "response_done_callback": response_done_callback,
                         }
                         def _mark_cb_turn_committed() -> None:
                             nonlocal _cb_turn_committed
@@ -819,6 +837,8 @@ class StreamingMixin:
                                 # 的话，_focus_thinking_active 已经置上、通知已经入队，
                                 # 而清理永远不会执行，气泡就一直亮到下一轮偶然把它关掉。
                                 await self._push_focus_thinking(True)
+                            # 与下面的调用之间没有 await：记下的就是真正接这轮的 client。
+                            reply_turn.session = self.session
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
                             # stream_text claims the staged attachments (or puts them
@@ -844,6 +864,8 @@ class StreamingMixin:
                             self._requeue_undelivered_callbacks(
                                 _agent_cb_drained, _agent_cb_extra_snapshot
                             )
+                        if reply_turn is not None:
+                            self._end_reply_turn(reply_turn)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

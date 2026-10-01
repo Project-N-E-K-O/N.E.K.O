@@ -274,6 +274,34 @@ class FreshScreenshot:
     avatar_position: dict | None = None
 
 
+@dataclass(eq=False)
+class _ReplyTurn:
+    """The host turn one Offline reply was started for.
+
+    Core opens one when it hands a reply to the Offline client and binds that
+    reply's completion (and, on the text path, its discard) callback to it. A
+    callback can run long after its reply started: ``close()`` retires the
+    generation, but a reply parked in a slow tool call or a retry backoff only
+    unwinds when that await returns, and its completion still runs then
+    because nothing else closes a turn cut by a close. The shared per-turn
+    fields (``_active_text_request_id``, ``_pending_turn_meta``) may belong to
+    a newer turn by that time, so the callbacks act from this snapshot
+    instead.
+
+    ``speech_id`` is the host turn token the reply speaks under. It is mutable
+    only so that the rotations that start no turn (the hot-swap promotion, a
+    truncation recovery) can carry an open reply along (``_carry_reply_turn``).
+    ``session`` is the client the reply was handed to, attached right before
+    the hand-over. Identity only (``eq=False``): the manager compares its open
+    reply by ``is``.
+    """
+
+    speech_id: str | None
+    request_id: str | None = None
+    meta: dict | None = None
+    session: Any = None
+
+
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
     """Remove every CLOSED tool-call pair from the conversation history: an
     assistant message (role=assistant, carrying tool_calls) plus the tool-result

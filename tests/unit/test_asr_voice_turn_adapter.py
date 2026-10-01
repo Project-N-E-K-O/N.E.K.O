@@ -10,7 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client.endpointing.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.endpointing.detector_runtime import (
+    _AudioItem,
+    _EvaluationResultItem,
+    _VoiceTurnAdapter,
+)
 from main_logic.asr_client.endpointing.detector import DetectorIngressIdentity
 from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
@@ -218,6 +222,7 @@ class _EvidenceSpy:
         self.accepted: list[bytes] = []
         self.current: list[bytes] = []
         self.completed: list[tuple[bytes, ...]] = []
+        self.completed_reasons: list[str] = []
 
     @property
     def enabled(self) -> bool:
@@ -229,8 +234,9 @@ class _EvidenceSpy:
         self.current.append(pcm16)
 
     def complete(self, *, identity, reason, probability, threshold) -> None:
-        del identity, reason, probability, threshold
+        del identity, probability, threshold
         self.completed.append(tuple(self.current))
+        self.completed_reasons.append(reason)
         self.current.clear()
 
     def discard(self) -> None:
@@ -1392,15 +1398,16 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
     await adapter.close()
 
 
-async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> (
-    None
-):
+async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
+    committed = asyncio.Event()
     commits: list[tuple[int, int, int]] = []
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
 
     coordinator = _FakeCoordinator([_incomplete()] * 20)
+    evidence = _EvidenceSpy()
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
@@ -1410,16 +1417,485 @@ async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit
         smart_turn_required=True,
         max_endpoint_wait_seconds=0.035,
     )
+    adapter._smart_turn_audio_evidence = evidence
     await adapter.start()
 
     await adapter.push_audio(
         generation=31, buffer_epoch=32, utterance_id=33, pcm16=b"\x01\x00"
     )
-    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+    await asyncio.wait_for(committed.wait(), 1)
+    await asyncio.sleep(0.05)
 
-    assert failure.stage == "smart_turn"
-    assert commits == []
+    # A semantic "not finished yet" past the deadline is an answer, not an
+    # endpointing failure: the turn is sealed once and the session survives.
+    assert commits == [(31, 32, 33)]
+    assert evidence.completed_reasons == ["semantic_timeout"]
     assert coordinator.evaluate_calls >= 2
+    assert adapter._failed is False
+    await adapter.close()
+
+
+async def test_periodic_no_vad_incomplete_starts_strict_endpoint_wait() -> None:
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()] * 20)
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.035,
+        fallback_evaluation_interval_ms=10,
+    )
+    await adapter.start()
+
+    frame = b"\x01\x00" * 160
+    await adapter.push_audio(generation=34, buffer_epoch=35, utterance_id=36, pcm16=frame)
+    await adapter.push_audio(generation=34, buffer_epoch=35, utterance_id=36, pcm16=frame)
+    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await _eventually(lambda: adapter._strict_endpoint_deadline is not None)
+    await asyncio.wait_for(committed.wait(), 1)
+
+    assert commits == [(34, 35, 36)]
+    assert coordinator.evaluate_calls >= 2
+    assert adapter._failed is False
+    await adapter.close()
+
+
+async def test_periodic_no_vad_does_not_restart_strict_wait() -> None:
+    committed = asyncio.Event()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.08,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.08,
+    )
+    await adapter.start()
+    identity = (37, 38, 39)
+    adapter._identity = identity
+    adapter._coordinator.state = CoordinatorState.WAIT_CONTINUATION
+    item = _EvaluationResultItem(
+        identity=identity,
+        coordinator_generation=0,
+        activity_seq=0,
+        reason="periodic_no_vad",
+        result=_incomplete(),
+    )
+
+    await adapter._process_evaluation_result(item)
+    first_fallback = adapter._fallback_task
+    first_deadline = adapter._strict_endpoint_deadline
+    assert first_fallback is not None
+    assert first_deadline is not None
+    # Submit the merged periodic result before yielding to the strict timer;
+    # a wall-clock sleep here makes the test race under a loaded Windows CI.
+    await adapter._process_evaluation_result(item)
+
+    # A later periodic result keeps the original strict wait and its deadline.
+    assert adapter._fallback_task is first_fallback
+    assert adapter._strict_endpoint_deadline == first_deadline
+    # Fast-forward the semantic deadline after checking it was preserved so
+    # the test does not depend on wall-clock timer precision.
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
+    await asyncio.wait_for(committed.wait(), 1)
+    assert adapter._failed is False
+    await adapter.close()
+
+
+@pytest.mark.parametrize("no_vad_activity", [True, False, None])
+async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep(
+    no_vad_activity: bool | None,
+) -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()]),
+        on_commit=_noop_commit,
+        continuation_timeout_seconds=0.1,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.2,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (39, 40, 41)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 0.001
+
+    await adapter._process_without_vad(
+        _AudioItem(
+            identity=identity,
+            pcm16=b"\x40\x00",
+            duration_us=1_000,
+            no_vad_activity=no_vad_activity,
+        )
+    )
+    first_deadline = adapter._strict_endpoint_deadline
+    assert first_deadline is not None
+    adapter._coordinator.state = CoordinatorState.WAIT_CONTINUATION
+    retry = asyncio.create_task(adapter._strict_incomplete_wait(identity))
+    await asyncio.sleep(0.04)
+    await adapter._process_without_vad(
+        _AudioItem(
+            identity=identity,
+            pcm16=b"\x40\x00",
+            duration_us=1_000,
+            no_vad_activity=no_vad_activity,
+        )
+    )
+    refreshed_deadline = adapter._strict_endpoint_deadline
+    assert refreshed_deadline is not None
+    assert refreshed_deadline >= first_deadline
+    assert refreshed_deadline > first_deadline
+    if no_vad_activity is True:
+        assert adapter._no_vad_deadline_cap is None
+    else:
+        assert adapter._no_vad_deadline_cap is not None
+        assert refreshed_deadline <= adapter._no_vad_deadline_cap
+    await asyncio.sleep(0.03)
+    assert not retry.done()
+    retry.cancel()
+    await asyncio.gather(retry, return_exceptions=True)
+    await adapter.close()
+
+
+async def test_strict_wait_exits_after_deadline_during_continuous_no_vad_activity() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 10),
+        on_commit=_noop_commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (42, 43, 44)
+    adapter._identity = identity
+    adapter._coordinator.state = CoordinatorState.WAIT_CONTINUATION
+    adapter._strict_endpoint_deadline = (
+        asyncio.get_running_loop().time() + 0.04
+    )
+    retry = asyncio.create_task(adapter._strict_incomplete_wait(identity))
+    activity = _AudioItem(
+        identity=identity,
+        pcm16=b"\x40\x00" * 160,
+        duration_us=10_000,
+        no_vad_activity=False,
+    )
+    for _ in range(200):
+        if retry.done():
+            break
+        await adapter._process_without_vad(activity)
+        await asyncio.sleep(0.005)
+
+    assert retry.done()
+    await asyncio.wait_for(retry, 1)
+    await adapter.close()
+
+
+async def test_no_vad_silence_frames_eventually_seal_semantic_timeout() -> None:
+    committed = asyncio.Event()
+    evidence = _EvidenceSpy()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete()] * 1000)
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.02,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.08,
+        fallback_evaluation_interval_ms=10,
+    )
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    silence = b"\x00\x00" * 160
+    for _ in range(20):
+        await adapter.push_audio(
+            generation=44,
+            buffer_epoch=45,
+            utterance_id=46,
+            pcm16=silence,
+        )
+        await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert evidence.completed_reasons == ["semantic_timeout"]
+    assert adapter._failed is False
+    await adapter.close()
+
+
+@pytest.mark.parametrize("no_vad_activity", [False, None])
+async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout(
+    no_vad_activity: bool | None,
+) -> None:
+    committed = asyncio.Event()
+    evidence = _EvidenceSpy()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    class NoiseCoordinator(_FakeCoordinator):
+        async def evaluate_buffered(self):
+            # Keep inference asynchronous while PCM continues arriving.
+            await asyncio.sleep(0.02)
+            return await super().evaluate_buffered()
+
+    coordinator = NoiseCoordinator([_incomplete()] * 1000)
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.04,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.08,
+        fallback_evaluation_interval_ms=10,
+    )
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    # This frame is above the quiet-speech floor and models steady microphone
+    # noise. Repeated frames may extend the inactivity wait, but only up to
+    # the bounded no-VAD cap.
+    noise = b"\x40\x00" * 160
+
+    async def feed_noise() -> None:
+        while True:
+            await adapter.push_audio(
+                generation=47,
+                buffer_epoch=48,
+                utterance_id=49,
+                pcm16=noise,
+                no_vad_activity=no_vad_activity,
+            )
+            next_frame_at = asyncio.get_running_loop().time() + 0.01
+            await _eventually(
+                lambda: asyncio.get_running_loop().time() >= next_frame_at
+            )
+
+    feeder = asyncio.create_task(feed_noise())
+    try:
+        await asyncio.wait_for(committed.wait(), 1)
+        assert not feeder.done()
+        assert evidence.completed_reasons == ["semantic_timeout"]
+        assert adapter._failed is False
+    finally:
+        feeder.cancel()
+        await asyncio.gather(feeder, return_exceptions=True)
+        await adapter.close()
+
+
+async def test_no_vad_rnnoise_activity_preserves_long_speech_wait() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 20),
+        on_commit=_noop_commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (50, 51, 52)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
+    adapter._no_vad_deadline_cap = (
+        adapter._strict_endpoint_deadline + adapter._max_endpoint_wait_seconds
+    )
+
+    old_cap = adapter._no_vad_deadline_cap
+    for _ in range(4):
+        await adapter._process_without_vad(
+            _AudioItem(
+                identity=identity,
+                pcm16=b"\x40\x00" * 160,
+                duration_us=10_000,
+                no_vad_activity=True,
+            )
+        )
+
+    assert adapter._strict_endpoint_deadline is not None
+    assert adapter._strict_endpoint_deadline > old_cap
+    await adapter.close()
+
+
+@pytest.mark.parametrize("fallback_activity", [False, None])
+async def test_rnnoise_speech_rebases_stale_rms_cap_before_fallback(fallback_activity):
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(), gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 20),
+        on_commit=_noop_commit, continuation_timeout_seconds=0.01,
+        smart_turn_required=True, max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (53, 54, 55)
+    adapter._identity = identity
+    now = asyncio.get_running_loop().time()
+    adapter._strict_endpoint_deadline = now - 1
+    adapter._no_vad_deadline_cap = now - 0.5
+    try:
+        await adapter._process_without_vad(_AudioItem(
+            identity=identity, pcm16=b"\x40\x00" * 160,
+            duration_us=10_000, no_vad_activity=True,
+        ))
+        speech_deadline = adapter._strict_endpoint_deadline
+        await adapter._process_without_vad(_AudioItem(
+            identity=identity, pcm16=b"\x40\x00" * 160,
+            duration_us=10_000, no_vad_activity=fallback_activity,
+        ))
+        assert adapter._strict_endpoint_deadline >= speech_deadline
+        assert not adapter._strict_endpoint_wait_expired()
+        cap = adapter._no_vad_deadline_cap
+        assert cap is not None
+        assert cap == speech_deadline + adapter._max_endpoint_wait_seconds
+        assert adapter._strict_endpoint_deadline <= cap
+    finally:
+        await adapter.close()
+
+
+async def test_expired_strict_retry_seals_despite_coalesced_periodic_request() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    coordinator = _FakeCoordinator([_incomplete()] * 5)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    identity = (41, 42, 43)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
+    # VAD-degraded audio merged a periodic request into the in-flight retry.
+    adapter._reevaluation_requested = True
+    adapter._reevaluation_reason = "periodic_no_vad"
+
+    await adapter._process_evaluation_result(
+        _EvaluationResultItem(
+            identity=identity,
+            coordinator_generation=0,
+            activity_seq=0,
+            reason="strict_retry",
+            result=_incomplete(),
+        )
+    )
+    await adapter.wait_idle()
+
+    assert commits == [identity]
+    assert coordinator.evaluate_calls == 0
+    await adapter.close()
+
+
+async def test_early_strict_incomplete_keeps_strict_wait_behind_periodic() -> None:
+    coordinator = _FakeCoordinator([_incomplete()] * 5, block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    identity = (61, 62, 63)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 60
+    adapter._reevaluation_requested = True
+    adapter._reevaluation_reason = "periodic_no_vad"
+
+    await adapter._process_evaluation_result(
+        _EvaluationResultItem(
+            identity=identity,
+            coordinator_generation=0,
+            activity_seq=0,
+            reason="strict_retry",
+            result=_incomplete(),
+        )
+    )
+
+    # The periodic tick runs, and the strict wait still owns the next retry.
+    assert adapter._evaluation_task is not None
+    assert adapter._fallback_task is not None
+    assert not adapter._fallback_task.done()
+    coordinator.evaluate_release.set()
+    await adapter.close()
+
+
+async def test_strict_wait_coalesces_retry_behind_running_evaluation() -> None:
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+        continuation_timeout_seconds=0.001,
+    )
+    identity = (71, 72, 73)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 60
+    coordinator.state = CoordinatorState.EVALUATING
+    in_flight = asyncio.get_running_loop().create_future()
+    adapter._evaluation_task = in_flight
+
+    await adapter._strict_incomplete_wait(identity)
+
+    assert adapter._reevaluation_requested is True
+    assert adapter._reevaluation_reason == "strict_retry"
+    assert adapter._failed is False
+    adapter._evaluation_task = None
+    in_flight.cancel()
+    await adapter.close()
+
+
+async def test_coalesced_periodic_request_keeps_pending_strict_retry() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([]),
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    identity = (51, 52, 53)
+    adapter._identity = identity
+    in_flight = asyncio.get_running_loop().create_future()
+    adapter._evaluation_task = in_flight
+
+    adapter._request_evaluation(identity, "periodic_no_vad")
+    adapter._request_evaluation(identity, "strict_retry")
+    adapter._request_evaluation(identity, "periodic_no_vad")
+
+    # Only a strict retry can seal the turn past the deadline, so a later
+    # periodic tick must not overwrite it.
+    assert adapter._reevaluation_reason == "strict_retry"
+    adapter._evaluation_task = None
+    in_flight.cancel()
     await adapter.close()
 
 

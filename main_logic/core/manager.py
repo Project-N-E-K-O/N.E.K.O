@@ -31,7 +31,7 @@ from config import MEMORY_SERVER_PORT, AVATAR_INTERACTION_DEDUPE_MAX_ITEMS
 from utils.config_manager import get_config_manager
 from queue import Queue
 import soxr
-from ._shared import logger, ContextAppendResult
+from ._shared import logger, ContextAppendResult, _ReplyTurn
 
 from .context_append import ContextAppendMixin
 from .focus import FocusMixin
@@ -357,6 +357,9 @@ class LLMSessionManager(
         # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
         self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
+        # 最近一次交给 Offline client 的回复（见 _shared._ReplyTurn）。热切换
+        # promote 轮换 speech id 时靠它把仍在途的回复带到新 id 上。
+        self._open_reply_turn: Optional[_ReplyTurn] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
         # (request_id, staged image) pairs for offline attachments still queued in

@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: 'Plugin package verification failed.',
     downloadFailed: 'The plugin package download failed.',
     marketListFetchFailed: 'The Plugin Market is temporarily unavailable.',
+    catalogNotConfigured: 'The Plugin Market address is not configured.',
+    releaseMismatch: 'The install request does not match the Market release record. Refresh the Plugin Market and try again.',
     unsafeProfilePath: 'The recorded package profile path is unsafe.',
     packageIdentityMismatch: 'The package identity does not match the target plugin.',
     confirmationChanged: 'The plugin or package changed after confirmation. Review the new plan and try again.',

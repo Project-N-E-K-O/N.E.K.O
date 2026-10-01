@@ -595,6 +595,31 @@ async def test_targeted_and_global_invalidation_cancel_each_route_once() -> None
     ]
 
 
+async def test_global_invalidation_keeps_routes_owed_an_accepted_final() -> None:
+    registry = VoiceInputRegistry()
+    chat = _consumer()
+    registration = _register_chat(registry, chat)
+    registry.activate(registration.handle)
+    accepted = _turn(1)
+    interrupted = _turn(2)
+    assert registry.begin_utterance(accepted)
+    assert registry.begin_utterance(interrupted)
+
+    assert registry.invalidate_utterance(
+        reason="ingress_backpressure", keep=frozenset({accepted}),
+    ) is True
+    await registry.wait_idle()
+
+    assert chat.on_cancelled.await_args_list == [
+        ((interrupted, "ingress_backpressure"), {}),
+    ]
+    final = VoiceTranscriptEvent(turn_token=accepted, provider="qwen", text="hi")
+    assert (
+        await registry.dispatch_final(final)
+        is VoiceInputDispatchResult.DELIVERED
+    )
+
+
 async def test_close_cancels_routes_and_invalidates_registrations() -> None:
     registry = VoiceInputRegistry()
     chat = _consumer()

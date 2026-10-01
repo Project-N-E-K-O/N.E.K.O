@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: '插件包校验失败。',
     downloadFailed: '插件包下载失败。',
     marketListFetchFailed: '插件市场暂时不可用。',
+    catalogNotConfigured: '未配置插件市场地址。',
+    releaseMismatch: '安装请求与市场发布记录不一致，请刷新插件市场后重试。',
     unsafeProfilePath: '记录的包 Profile 路径不安全。',
     packageIdentityMismatch: '插件包身份与目标插件不一致。',
     confirmationChanged: '确认后插件或安装包已变化，请检查新计划后重试。',
