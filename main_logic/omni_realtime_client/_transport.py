@@ -4034,8 +4034,9 @@ class _TransportMixin:
     def _detach_for_failed_transport(self, reason: str):
         generation = self._connection_generation
         ws, self.ws = self.ws, None
+        gemini_context = self._gemini_context_manager if self._is_gemini else None
         tool_tasks = self._advance_tool_scope()
-        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks)
+        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks, gemini_context)
 
     async def _close_failed_transport_impl(
         self,
@@ -4043,6 +4044,7 @@ class _TransportMixin:
         generation,
         ws,
         tool_tasks=(),
+        gemini_context=None,
     ) -> None:
         await self._await_retired_tool_tasks(tool_tasks)
         # The fatal flag is the retired connection's, and the wrapper has
@@ -4056,15 +4058,17 @@ class _TransportMixin:
                 # it for the replacement. Shutting it down now would fail the
                 # new connection's tickets over a socket that is fine.
                 await response_arbiter.shutdown(reason)
-        await self._abort_failed_transport(reason, ws, generation)
+        await self._abort_failed_transport(reason, ws, generation, gemini_context=gemini_context)
 
     async def _abort_failed_transport(
         self,
         reason: str,
         ws=_ATTACHED_TRANSPORT,
         generation=None,
+        *,
+        gemini_context=None,
     ) -> None:
-        """Detach, when needed, and physically close a failed raw WebSocket.
+        """Detach and release a failed transport through its retained owner.
 
         The sentinel ``ws`` marks the arbiter's own entry point: it seizes the
         attached socket itself, where ``_close_failed_transport_impl`` hands
@@ -4078,6 +4082,7 @@ class _TransportMixin:
         if attached_transport:
             generation = getattr(self, "_connection_generation", None)
             ws, self.ws = self.ws, None
+            gemini_context = self._gemini_context_manager if self._is_gemini else None
             self._fatal_error_occurred = True
             # Arm recovery before the first await. The receive loop can wake as
             # soon as the socket is detached and must still be able to report
@@ -4090,9 +4095,12 @@ class _TransportMixin:
             await self._await_retired_tool_tasks(tool_tasks)
         elif generation is None or self._still_owns_connection(generation):
             self._fatal_error_occurred = True
-        if ws is not None:
+        if ws is not None or gemini_context is not None:
             try:
-                await ws.close()
+                # Ordinary and fatal closes share physical-release accounting.
+                # A failed raw close or SDK exit remains owned across a
+                # replacement and must be retried before capacity is released.
+                await self._release_retired_connection(ws, gemini_context)
             except Exception as exc:
                 logger.debug(
                     "failed transport close also failed (%s): %s",

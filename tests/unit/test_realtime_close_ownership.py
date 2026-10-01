@@ -144,6 +144,85 @@ async def test_failed_websocket_close_is_retried_by_the_same_client():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["websocket", "gemini"])
+@pytest.mark.parametrize("entrypoint", ["abort", "failed_close"])
+@pytest.mark.parametrize("replace", [False, True])
+async def test_fatal_close_failure_retains_owner_and_capacity(backend, entrypoint, replace):
+    from main_logic.core.session_lifecycle import SessionOwnershipMixin
+
+    class Socket:
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("unreleased transport")
+
+    class Context:
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.exit_calls = 0
+
+        async def __aexit__(self, *args):
+            self.exit_calls += 1
+            if self.fail:
+                raise RuntimeError("unreleased SDK context")
+
+    client = _make_client()
+    old = Socket(fail=True)
+    old_context = Context(fail=True)
+    client.ws = old
+    if backend == "gemini":
+        client._is_gemini = True
+        client._gemini_session = old
+        client._gemini_context_manager = old_context
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_tools(*args):
+        entered.set()
+        await release.wait()
+
+    client._await_retired_tool_tasks = wait_for_tools
+    abort = client._abort_failed_transport if entrypoint == "abort" else client._close_failed_transport
+    failing = asyncio.create_task(abort("preparation failed"))
+    replacement, replacement_context = Socket(), Context()
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert client.ws is None
+        if replace:
+            client.ws = replacement
+            if backend == "gemini":
+                client._gemini_session = replacement
+                client._gemini_context_manager = replacement_context
+            client._on_connection_attached()
+        release.set()
+        await asyncio.wait_for(failing, 2)
+        if backend == "websocket":
+            assert client._retired_websockets == [old]
+        else:
+            assert client._gemini_close_retry_contexts[id(old_context)] == (old_context, old)
+        if replace:
+            assert client.ws is replacement
+            assert replacement.close_calls == 0 and replacement_context.exit_calls == 0
+
+        manager = SessionOwnershipMixin()
+        with pytest.raises(RuntimeError, match="unreleased"):
+            await manager._close_owned_session(client)
+        record = manager._connection_record(client)
+        assert record.retired and not record.closed
+        old.fail = old_context.fail = False
+        await manager._close_owned_session(client)
+        assert record.closed
+        assert old.close_calls == 3
+        assert not client._retired_websockets and not client._gemini_close_retry_contexts
+    finally:
+        release.set()
+        await asyncio.gather(failing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_cancelled_failed_transport_close_still_closes_the_socket():
     client = _make_client()
     ws = _FakeWs()
