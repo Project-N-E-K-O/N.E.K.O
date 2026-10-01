@@ -151,8 +151,8 @@ def plugin_ui_test_app() -> FastAPI:
 
 @pytest.fixture
 async def plugin_ui_async_client(plugin_ui_test_app: FastAPI) -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=plugin_ui_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    transport = ASGITransport(app=plugin_ui_test_app, client=("127.0.0.1", 1234))
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as client:
         yield client
 
 

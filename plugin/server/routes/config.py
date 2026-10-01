@@ -20,7 +20,7 @@ from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.server.infrastructure.config_access import ConfigAccessSnapshot, bind_config_access
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.infrastructure.development_access import require_development_access
-from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
+from plugin.server.infrastructure.mutation_auth import PluginConfigMutationGuardedRoute
 from plugin.server.application.plugins.development import registration_for_plugin_sync
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
@@ -28,7 +28,7 @@ from plugin.server.application.plugins.operation_lock import (
 )
 
 router = APIRouter()
-mutation_router = APIRouter(route_class=PluginMutationGuardedRoute)
+mutation_router = APIRouter(route_class=PluginConfigMutationGuardedRoute)
 logger = get_logger("server.routes.config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()

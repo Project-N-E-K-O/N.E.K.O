@@ -24,6 +24,7 @@ from config.network import (
     MAIN_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
 )
+from plugin.server.infrastructure.development_access import require_development_access
 
 logger = logging.getLogger(__name__)
 _CSRF_HEADER = "X-CSRF-Token"
@@ -196,6 +197,19 @@ def require_plugin_mutation_access(request: Request) -> None:
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
 
 
+def require_plugin_mutation_or_development_access(request: Request) -> None:
+    """Select the auth contract for ordinary versus registered-dev mutations.
+
+    Development lifecycle/config requests carry ``registration_id`` and use
+    the separate local development contract. Ordinary plugin mutations keep
+    the CSRF/Origin contract above.
+    """
+    if request.query_params.get("registration_id") is not None:
+        require_development_access(request)
+        return
+    require_plugin_mutation_access(request)
+
+
 class PluginMutationGuardedRoute(APIRoute):
     """Run the mutation guard before FastAPI parses a request body.
 
@@ -210,6 +224,19 @@ class PluginMutationGuardedRoute(APIRoute):
 
         async def guarded_handler(request: Request) -> Response:
             require_plugin_mutation_access(request)
+            return await handler(request)
+
+        return guarded_handler
+
+
+class PluginConfigMutationGuardedRoute(APIRoute):
+    """Guard config writes before body parsing with the matching auth contract."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def guarded_handler(request: Request) -> Response:
+            require_plugin_mutation_or_development_access(request)
             return await handler(request)
 
         return guarded_handler

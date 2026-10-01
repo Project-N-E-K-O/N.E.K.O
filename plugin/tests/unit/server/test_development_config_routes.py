@@ -155,7 +155,7 @@ async def test_ordinary_config_does_not_wait_for_development_operation(workspace
     (ordinary / "plugin.toml").write_text('[plugin]\nid="ordinary"\n', encoding="utf-8")
     state.plugins["ordinary"] = {"config_path": str(ordinary / "plugin.toml")}
     monkeypatch.setenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "1")
-    async with client(app, peer="192.168.1.2") as http:
+    async with client(app, peer="127.0.0.1") as http:
         async with operation_lock.plugin_operation_lock.hold():
             response = await asyncio.wait_for(http.put("/plugin/ordinary/config/profiles/default",
                 json={"config": {"settings": {"value": "ordinary"}}}), 3)
@@ -191,7 +191,7 @@ async def test_ordinary_request_keeps_source_and_host_after_metadata_takeover(wo
         return await original(**kwargs)
 
     monkeypatch.setattr(routes.config_command_service, method, delayed)
-    async with client(app, peer="192.168.1.2") as http:
+    async with client(app, peer="127.0.0.1") as http:
         async with operation_lock.plugin_operation_lock.hold():
             request = http.post("/plugin/ordinary/config/hot-update",
                 json={"config": {"settings": {"value": "captured"}}, "mode": "permanent"}) if hot_update else http.put(
