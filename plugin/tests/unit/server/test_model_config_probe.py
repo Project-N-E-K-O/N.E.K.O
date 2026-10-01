@@ -99,7 +99,10 @@ async def setup_probe(monkeypatch):
 @pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
 async def test_probe_uses_saved_credentials_and_shared_accounting(setup_probe, protocol):
     app, store, recorder, seen, clients = setup_probe(protocol=protocol)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.status_code == 200, response.text
     result = response.json()
@@ -137,7 +140,10 @@ async def test_probe_uses_saved_credentials_and_shared_accounting(setup_probe, p
 
 async def test_probe_cannot_override_saved_target_in_request_body(setup_probe):
     app, _, _, seen, _ = setup_probe()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test", json={
             "base_url": "https://untrusted.test", "api_key": "different", "model": "different", "max_tokens": 999,
         })
@@ -156,7 +162,10 @@ async def test_probe_supports_openai_models_rejecting_legacy_max_tokens(setup_pr
         return httpx.Response(200, json=response_for("openai_chat"))
 
     app, _, recorder, seen, _ = setup_probe(upstream)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.status_code == 200
     assert response.json()["status"] == "success"
@@ -169,7 +178,10 @@ async def test_probe_without_usage_does_not_invent_zero_counters(setup_probe):
         return httpx.Response(200, json=response_for("openai_chat", include_usage=False))
 
     app, _, recorder, _, _ = setup_probe(upstream)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.json()["usage_status"] == "unknown"
     assert response.json()["usage"] is None
@@ -183,7 +195,10 @@ async def test_probe_obeys_admin_dependency_before_reading_config(setup_probe):
         raise HTTPException(403, "Denied")
 
     app.dependency_overrides[verify_admin_code] = deny
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.status_code == 403
     assert not store.threads and not recorder.requests and not seen
@@ -191,7 +206,10 @@ async def test_probe_obeys_admin_dependency_before_reading_config(setup_probe):
 
 async def test_missing_slot_fails_without_creating_a_request(setup_probe):
     app, _, recorder, seen, _ = setup_probe()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post("/api/model-config/slots/missing/test")
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "MODEL_SLOT_NOT_FOUND"
@@ -203,7 +221,10 @@ async def test_probe_reports_provider_failure_without_fallback_or_secret(setup_p
         return httpx.Response(503, json={"error": {"message": SECRET}})
 
     app, _, recorder, seen, clients = setup_probe(upstream)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.status_code == 502
     assert response.json()["detail"]["code"] == "upstream_error"
@@ -221,7 +242,10 @@ async def test_probe_uses_shorter_slot_or_probe_deadline(setup_probe, monkeypatc
 
     monkeypatch.setattr(model_config, "PROBE_MAX_SECONDS", cap)
     app, _, recorder, _, clients = setup_probe(upstream, timeout_seconds=slot_timeout)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
     assert response.status_code == 504
     assert response.json()["detail"]["code"] == "gateway_timeout"
@@ -238,7 +262,10 @@ async def test_probe_shares_capacity_with_other_model_requests(setup_probe):
         await asyncio.Event().wait()
 
     app, _, recorder, seen, _ = setup_probe(upstream)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
         first = asyncio.create_task(client.post(f"/api/model-config/slots/{SLOT_ID}/test"))
         await started.wait()
         response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
