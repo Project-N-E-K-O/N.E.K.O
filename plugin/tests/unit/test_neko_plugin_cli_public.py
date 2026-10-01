@@ -263,6 +263,13 @@ def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
     marker = Path(".vendor.backup-0a1b2c3d.pending")
     assert should_skip_path(marker, is_dir=False, rules=build_rules) is True
     assert should_skip_pack_path(marker, is_dir=False, rules=pack_rules) is True
+    # An in-place --clean of a linked or mounted vendor/ stages inside it.
+    for path, is_dir in (
+        (Path("vendor", ".vendor.staging-0a1b2c3d"), True),
+        (Path("vendor", ".vendor.staging-0a1b2c3d", "half.py"), False),
+    ):
+        assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+        assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
     # Only exact generated names at the plugin root: a plugin's own
     # look-alike directory, or one nested deeper, is plugin source.
     for kept in (
@@ -271,6 +278,9 @@ def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
         Path(".vendor.backup-notes", "data.txt"),
         Path(".vendor.staging-assets", "data.txt"),
         Path("assets", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # Only staging is ever created inside vendor/.
+        Path("vendor", ".vendor.backup-0a1b2c3d", "data.txt"),
+        Path("vendor", "pkg", ".vendor.staging-0a1b2c3d", "data.txt"),
     ):
         assert should_skip_path(kept, is_dir=False, rules=build_rules) is False
         assert should_skip_pack_path(kept, is_dir=False, rules=pack_rules) is False
@@ -976,6 +986,7 @@ def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeyp
 
     (tmp_path / ".vendor.backup-0a1b2c3d" / "deep").mkdir(parents=True)
     (tmp_path / ".vendor.backup-0a1b2c3d.pending").touch()
+    (tmp_path / "vendor" / ".vendor.staging-1111abcd" / "deep").mkdir(parents=True)
     (tmp_path / ".vendor.backup-notes").mkdir()
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
@@ -990,13 +1001,21 @@ def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeyp
     monkeypatch.setattr(build_rules.os, "walk", walk)
     paths = build_rules.walk_plugin_tree(tmp_path)
 
+    pruned = {
+        Path(".vendor.backup-0a1b2c3d"),
+        Path("vendor", ".vendor.staging-1111abcd"),
+    }
     assert not any(
-        path.parts and path.parts[0] == ".vendor.backup-0a1b2c3d" for path in visited
+        path == root or root in path.parents for path in visited for root in pruned
     )
     assert paths == sorted(
         path
         for path in tmp_path.rglob("*")
-        if path.relative_to(tmp_path).parts[0] != ".vendor.backup-0a1b2c3d"
+        if not any(
+            rel == root or root in rel.parents
+            for rel in [path.relative_to(tmp_path)]
+            for root in pruned
+        )
     )
 
 

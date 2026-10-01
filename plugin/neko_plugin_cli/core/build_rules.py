@@ -56,6 +56,7 @@ _VENDOR_SYNC_NAME_RE = re.compile(
     rf"|{re.escape(VENDOR_SYNC_BACKUP_PREFIX)}[0-9a-f]{{8}}"
     rf"(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
 )
+_VENDOR_SYNC_STAGING_RE = re.compile(rf"{re.escape(VENDOR_SYNC_STAGING_PREFIX)}[0-9a-f]{{8}}")
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
 }
@@ -118,9 +119,14 @@ def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
 
 
 def is_vendor_sync_path(relative_path: Path) -> bool:
-    """Whether a plugin-relative path lives in a sync staging/backup dir."""
-    return bool(relative_path.parts) and bool(
-        _VENDOR_SYNC_NAME_RE.fullmatch(relative_path.parts[0])
+    """Whether a plugin-relative path lives in a sync staging/backup dir: at
+    the plugin root, or the staging dir an in-place --clean of a linked or
+    mounted vendor/ creates inside it (half-installed until it finishes)."""
+    parts = relative_path.parts
+    if parts and _VENDOR_SYNC_NAME_RE.fullmatch(parts[0]):
+        return True
+    return len(parts) > 1 and parts[0] == "vendor" and bool(
+        _VENDOR_SYNC_STAGING_RE.fullmatch(parts[1])
     )
 
 
@@ -139,8 +145,11 @@ def walk_plugin_tree(source_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(source_dir, onerror=reraise_walk_error):
         base = Path(dirpath)
-        if base == source_dir:
-            dirnames[:] = [name for name in dirnames if not _VENDOR_SYNC_NAME_RE.fullmatch(name)]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not is_vendor_sync_path((base / name).relative_to(source_dir))
+        ]
         paths.extend(base / name for name in (*dirnames, *filenames))
     return sorted(paths)
 
