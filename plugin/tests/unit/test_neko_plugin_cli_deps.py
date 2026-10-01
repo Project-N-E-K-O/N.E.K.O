@@ -39,7 +39,9 @@ def _no_host_package_index_config(monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     for name in list(os.environ):
-        if name.upper() == "UV" or name.upper().startswith(("PIP_", "UV_")):
+        if name.upper() in {"UV", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR"} or (
+            name.upper().startswith(("PIP_", "UV_"))
+        ):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [])
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
@@ -1302,6 +1304,11 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "/missing/ca.pem"}, False),
         # uv treats an empty or malformed bundle like an unset one.
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<malformed>"}, False),
+        # pip also takes its CA set from these; uv's default TLS does not.
+        ({"REQUESTS_CA_BUNDLE": "/corp/ca.pem"}, False),
+        ({"CURL_CA_BUNDLE": "/corp/ca.pem"}, False),
+        ({"SSL_CERT_DIR": "/corp/certs"}, False),
+        ({"REQUESTS_CA_BUNDLE": "/corp/ca.pem", "SSL_CERT_FILE": "<ca>"}, True),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<empty>"}, False),
         # An index may serve other packages to anonymous clients; uv ignores
         # an unusable SSL_CLIENT_CERT with only a warning.

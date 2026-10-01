@@ -764,6 +764,7 @@ _UV_COVERS = {
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
+_PIP_CA_ENV = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR")
 # pip's proxy applies to every URL, and an index, find-links page or direct
 # reference may be http as well as https: uv must have a proxy for each.
 _UV_PROXY_SCHEMES = (
@@ -847,6 +848,12 @@ def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
         name = upper[4:].lower().replace("_", "-")
         if not _explicitly_off(name, value):
             found.setdefault(name, []).append(env_name)
+    # pip's TLS also takes its CA set from these (requests and OpenSSL
+    # conventions); uv's default TLS ignores them, so each counts as pip's
+    # cert and needs a loadable SSL_CERT_FILE.
+    for env_name in _PIP_CA_ENV:
+        if _env_get(env, env_name):
+            found.setdefault("cert", []).append(env_name)
     config_file = _env_get(env, "PIP_CONFIG_FILE")
     if config_file == os.devnull:
         # pip documents this value as "load no config files".
