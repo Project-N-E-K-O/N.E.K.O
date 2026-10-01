@@ -97,6 +97,8 @@ _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECOND
 # The in-flight plugin's budget is re-derived this often while draining, so a
 # timeout that start_plugin read after the watcher's estimate is still honoured.
 _DRAIN_RECHECK_SECONDS = 1.0
+# At an expiring deadline, how long one final config read may take to extend it.
+_DRAIN_FINAL_REFRESH_SECONDS = 2.0
 _BUSY_RETRY_SECONDS = 1.0
 # 与 dev preflight 共用的目录排除表：这些目录里的 .py 不是插件源码。
 _EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
@@ -300,10 +302,18 @@ class PluginHotReloadService:
         config_startup = 0.0
         refresh: asyncio.Future[float] | None = None
         next_refresh_at = started
+        graced_budget: float | None = None
         while True:
             now = time_module.monotonic()
             target = self._inflight_target
-            if refresh is None and target is not None and now >= next_refresh_at:
+            budget = self._restart_drain_budget(config_startup)
+            remaining = started + budget - now
+            # At the deadline, read the config once more (bounded) before giving
+            # up: a timeout raised just before it must still extend the wait.
+            # Each budget value gets one such grace, so a stalled read still
+            # fails promptly.
+            expiring = remaining <= 0 and target is not None and graced_budget != budget
+            if refresh is None and target is not None and (now >= next_refresh_at or expiring):
                 refresh = asyncio.ensure_future(asyncio.to_thread(
                     effective_startup_timeout_sync,
                     target.plugin_id,
@@ -311,15 +321,18 @@ class PluginHotReloadService:
                 ))
                 refresh.add_done_callback(_consume_future_result)
                 next_refresh_at = now + _DRAIN_RECHECK_SECONDS
-            remaining = started + self._restart_drain_budget(config_startup) - now
+            wait_seconds = min(remaining, _DRAIN_RECHECK_SECONDS)
             if remaining <= 0:
-                self._raise_drain_timeout()
+                if not expiring:
+                    self._raise_drain_timeout()
+                graced_budget = budget
+                wait_seconds = _DRAIN_FINAL_REFRESH_SECONDS
             waiters: set[asyncio.Future[object]] = {task}
             if refresh is not None:
                 waiters.add(refresh)
             done, _pending_tasks = await asyncio.wait(
                 waiters,
-                timeout=min(remaining, _DRAIN_RECHECK_SECONDS),
+                timeout=wait_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if task in done:
