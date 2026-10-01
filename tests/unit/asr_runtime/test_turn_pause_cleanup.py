@@ -1,5 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 import pytest
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import VoiceTurnToken
@@ -7,6 +8,7 @@ from main_logic.voice_turn.contracts import AsrFailureEvent, VoiceTranscriptEven
 
 from tests.support.core_asr_harness import (
     _install_ready_lifecycle,
+    _install_active_smart_turn,
 )
 
 from tests.support.asr_fakes import (
@@ -14,6 +16,24 @@ from tests.support.asr_fakes import (
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
+
+
+async def test_pause_owner_probe_is_fenced_to_active_asr_runtime_and_turn():
+    runtime = _Runtime()
+    arbiter = SimpleNamespace()
+    runtime.session._response_arbiter = arbiter
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    owner = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+    assert arbiter.pause_owner_alive(owner)
+    assert not arbiter.pause_owner_alive("another turn")
+    component = runtime._asr_runtime
+    component._asr_audio_generation += 1
+    assert not arbiter.pause_owner_alive(owner)
+    component._asr_audio_generation -= 1
+    assert arbiter.pause_owner_alive(owner)
+    component._asr_turn_prepared = False
+    assert not arbiter.pause_owner_alive(owner)
 
 
 async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:

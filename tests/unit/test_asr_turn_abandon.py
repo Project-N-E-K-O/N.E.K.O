@@ -117,6 +117,49 @@ async def test_unclaimed_dispatch_pause_expires_and_releases_the_lane(caplog):
     await arbiter.shutdown()
 
 
+@pytest.mark.parametrize("probe_state", ["alive", "orphan", "error"])
+async def test_dispatch_pause_checks_owner_before_releasing(probe_state):
+    sent = asyncio.Event()
+    checked = asyncio.Event()
+    alive = True
+
+    def probe(owner):
+        assert owner == "long-utterance"
+        checked.set()
+        if probe_state == "error":
+            raise RuntimeError("probe failed")
+        return alive and probe_state == "alive"
+
+    async def send(event):
+        if event["type"] == "response.create":
+            sent.set()
+            arbiter.notify_response_created({})
+            arbiter.notify_response_terminal({})
+
+    arbiter = RealtimeResponseArbiter(send, pause_owner_alive=probe)
+    arbiter._dispatch_pause_timeout = .02
+    arbiter._dispatch_pause_max_timeout = .15
+    arbiter.pause_dispatch("long-utterance")
+    ticket = await arbiter.enqueue(source="proactive")
+    try:
+        await asyncio.wait_for(checked.wait(), 1)
+        if probe_state != "orphan":
+            assert not ticket.sent.done()
+            assert not sent.is_set()
+            assert not arbiter._dispatch_allowed.is_set()
+        if probe_state == "alive":
+            # A second expiry still cannot interrupt the same live utterance.
+            checked.clear()
+            await asyncio.wait_for(checked.wait(), 1)
+            assert not ticket.sent.done()
+            alive = False
+        await asyncio.wait_for(ticket.sent, 1)
+        assert sent.is_set()
+        assert arbiter._dispatch_allowed.is_set()
+    finally:
+        await arbiter.shutdown()
+
+
 async def test_stuck_preparation_timeout_fails_closed_instead_of_wedging_lane():
     sent_events: list[dict] = []
     arbiter: RealtimeResponseArbiter | None = None

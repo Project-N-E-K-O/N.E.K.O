@@ -22,7 +22,7 @@ def pytest_runtest_call(item):
     mutation = os.environ["NEKO_HANDOFF_MUTATION"]
     changes = {
         "capacity": (SessionOwnershipMixin, "_connect_owned_session", [
-            ("if len(live) < (1 if serial else 2):", "if True:"),
+            ("if len(live) < (1 if serial else MAX_LIVE_LLM_CONNECTIONS):", "if True:"),
         ]),
         "memory": (SessionOwnershipMixin, "_wait_session_handoff", [
             ("await asyncio.shield(record.memory_completion)", "pass"),
@@ -35,9 +35,9 @@ def pytest_runtest_call(item):
             ("if session is not self.session or (record is not None and record.retired):", "if False:"),
         ]),
         "cancel_cleanup": (LifecycleMixin, "end_session", [
-            ("await asyncio.shield(task)", "await task"),
+            ("await self._wait_session_end(task)", "await task"),
         ]),
-        "slot_detach": (SessionOwnershipMixin, "_retire_session_resources", [
+        "slot_detach": (SessionOwnershipMixin, "_retire_session_resources_owned", [
             ("self.session = None", "pass"),
         ]),
         "pcm": (StreamingMixin, "_process_stream_data_internal", [
@@ -47,7 +47,7 @@ def pytest_runtest_call(item):
             ("if not owns_ready_flush:", "if True:"),
         ]),
         "input_commit": (StreamingMixin, "_flush_pending_input_data", [
-            ("next_unprocessed = index + 1\n                    try:", "next_unprocessed = index\n                    try:"),
+            ("next_unprocessed = index + 1\n\n                    try:", "next_unprocessed = index\n\n                    try:"),
         ]),
         "live_order": (StreamingMixin, "_stream_data_now", [
             ('or getattr(self, "_pending_input_flush_scheduled", None) is not None', 'or False'),

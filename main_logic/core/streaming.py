@@ -127,6 +127,7 @@ class StreamingMixin:
                     # path while still holding the lock would deadlock.
                     pending_messages = list(self.pending_input_data)
                     self.pending_input_data.clear()
+                    self._pending_input_flush_batch = tuple(pending_messages)
 
                 # Once detached from ``pending_input_data``, this local batch
                 # owns every message until each item reaches a terminal handling
@@ -211,6 +212,7 @@ class StreamingMixin:
                     if unprocessed:
                         async with self.input_cache_lock:
                             self.pending_input_data[0:0] = unprocessed
+                    self._pending_input_flush_batch = ()
         finally:
             async with self.input_cache_lock:
                 if getattr(self, "_pending_input_flush_active", False):

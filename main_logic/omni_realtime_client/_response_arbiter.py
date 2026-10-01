@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterator
@@ -88,16 +89,11 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 # so an unbounded host callback would stall every later dispatch; short
 # because the work it fronts is local bookkeeping plus one frontend send.
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
-# Ceiling on how long dispatch may stay paused without anyone claiming it.
-# A pause is a promise that some turn is about to take the lane, and only the
-# party that armed it can redeem it -- so a preparer that never returns (an
-# external-ASR turn whose provider final never arrives, an ownership slot
-# overwritten by a newer turn) leaves the lane shut with no other release
-# path, because the dispatch barrier itself is deliberately unbounded. Wide
-# enough to cover a whole spoken utterance plus its provider round trip: the
-# cost of expiring early is only that an already-completed turn takes the
-# lane while the user is still talking, which barge-in handles.
+# Check for orphaned pauses after this interval. A provider-neutral owner
+# probe can extend a live utterance's pause; the absolute bound still recovers
+# from a faulty probe. In-flight interruption preparation fails closed.
 _DISPATCH_PAUSE_TIMEOUT = 30.0
+_DISPATCH_PAUSE_MAX_TIMEOUT = 300.0
 # Dispatch waits past this are reported. The barrier has no bound of its own
 # to measure against, so this is a flat floor rather than a fraction: below
 # it the wait is ordinary turn-taking, above it something is holding the lane
@@ -287,8 +283,10 @@ class RealtimeResponseArbiter:
         trace: bool = False,
         trace_tag: str | None = None,
         trace_generation: Callable[[], Any] | None = None,
+        pause_owner_alive: Callable[[str | None], bool] | None = None,
     ) -> None:
         self._send_event = send_event
+        self.pause_owner_alive = pause_owner_alive
         # Structural decision trace (NEKO_REALTIME_WIRE_TRACE), injected by the
         # construction site like ``fail_open`` so this module reads no
         # configuration. Every trace call is guarded by this flag, so the
@@ -397,6 +395,7 @@ class RealtimeResponseArbiter:
         self._turn_preparation_tokens: set[_TurnPreparationToken] = set()
         self._turn_preparation_serial = 0
         self._dispatch_pause_timeout = _DISPATCH_PAUSE_TIMEOUT
+        self._dispatch_pause_max_timeout = _DISPATCH_PAUSE_MAX_TIMEOUT
         # Bumped by every pause so a resume followed by a re-pause retires the
         # earlier expiry instead of letting it fire against the new promise.
         self._pause_generation = 0
@@ -785,6 +784,7 @@ class RealtimeResponseArbiter:
 
         self._dispatch_allowed.clear()
         self._pause_owner = owner
+        self._pause_started_at = time.monotonic()
         self._pause_generation += 1
         self._arm_pause_expiry(self._pause_generation)
 
@@ -817,6 +817,18 @@ class RealtimeResponseArbiter:
                 or not self._connection_available
             ):
                 return
+            probe = self.pause_owner_alive
+            if not self._turn_preparations and probe is not None:
+                try:
+                    owner_alive = probe(self._pause_owner)
+                except Exception:
+                    logger.exception("Dispatch pause owner probe failed")
+                    owner_alive = True  # Preserve the pause until the hard bound.
+                if owner_alive and time.monotonic() - self._pause_started_at < self._dispatch_pause_max_timeout:
+                    self._arm_pause_expiry(generation)
+                    return
+                if owner_alive:
+                    logger.warning("Dispatch pause exceeded absolute bound for owner=%s", self._pause_owner)
             logger.warning(
                 "realtime dispatch held paused for its full %.1fs bound "
                 "(owner=%s preparations=%d current=%s queued=%d)",

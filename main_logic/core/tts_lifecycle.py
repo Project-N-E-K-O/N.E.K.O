@@ -4,7 +4,7 @@ import asyncio
 
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 
-from .tts_records import TtsCapacityError, TtsRuntimeRecord, tts_output_runtime
+from .tts_records import MAX_LIVE_TTS_RUNTIMES, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime
 
 
 class TtsLifecycleMixin:
@@ -67,7 +67,7 @@ class TtsLifecycleMixin:
         if any(not record.supports_runtime_overlap and record.thread.is_alive()
                for record in self._tts_runtimes if record.thread is not None):
             return 1
-        return 2
+        return MAX_LIVE_TTS_RUNTIMES
 
     def _schedule_tts_cleanup(self, runtime):
         if runtime.cleanup_task is not None:

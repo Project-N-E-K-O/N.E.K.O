@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from main_logic.core.tts_runtime import TtsRuntimeMixin
-from main_logic.core.tts_lifecycle import TtsLifecycleMixin
+from main_logic.core.tts_lifecycle import MAX_LIVE_TTS_RUNTIMES, TtsLifecycleMixin
 from main_logic.core.tts_records import TtsCapacityError, tts_output_runtime
 
 
@@ -35,25 +35,23 @@ def install(manager, release):
 @pytest.mark.asyncio
 async def test_retired_live_workers_keep_both_slots_until_real_exit():
     manager = Manager()
-    releases = [Event(), Event()]
-    first = install(manager, releases[0])
-    manager._retire_tts_runtime(first)
-    second = install(manager, releases[1])
-    manager._retire_tts_runtime(second)
+    releases = [Event() for _ in range(MAX_LIVE_TTS_RUNTIMES)]
+    runtimes = [install(manager, release) for release in releases]
+    for runtime in runtimes:
+        manager._retire_tts_runtime(runtime)
     try:
-        assert manager._live_tts_runtime_count() == 2
+        assert manager._live_tts_runtime_count() == MAX_LIVE_TTS_RUNTIMES
         with pytest.raises(TtsCapacityError):
             await manager._wait_tts_capacity(asyncio.get_running_loop().time() + 0.03)
-        assert not first.cleanup_complete.is_set()
-        assert not second.cleanup_complete.is_set()
+        assert all(not runtime.cleanup_complete.is_set() for runtime in runtimes)
         releases[0].set()
-        await asyncio.wait_for(first.cleanup_complete.wait(), 1)
+        await asyncio.wait_for(runtimes[0].cleanup_complete.wait(), 1)
         await manager._wait_tts_capacity(asyncio.get_running_loop().time() + 0.1)
-        assert manager._live_tts_runtime_count() == 1
+        assert manager._live_tts_runtime_count() == MAX_LIVE_TTS_RUNTIMES - 1
     finally:
         for release in releases:
             release.set()
-        await asyncio.gather(first.cleanup_task, second.cleanup_task)
+        await asyncio.gather(*(runtime.cleanup_task for runtime in runtimes))
 
 
 @pytest.mark.asyncio
@@ -162,29 +160,31 @@ async def test_fallback_cannot_create_third_worker(monkeypatch):
     from main_logic.core import tts_runtime as module
 
     manager = Manager()
-    releases = [Event(), Event()]
-    first = install(manager, releases[0])
-    manager._retire_tts_runtime(first)
-    second = install(manager, releases[1])
+    releases = [Event() for _ in range(MAX_LIVE_TTS_RUNTIMES)]
+    runtimes = [install(manager, release) for release in releases]
+    for runtime in runtimes[:-1]:
+        manager._retire_tts_runtime(runtime)
+    second = runtimes[-1]
     manager._tts_active_provider_key = "configured"
     manager._tts_excluded_provider_keys = frozenset()
     monkeypatch.setattr(module._core_facade, "tts_provider_falls_back_on_failure", lambda _: True)
     try:
         with pytest.raises(TtsCapacityError):
             manager._activate_configured_tts_fallback("test")
-        assert manager._live_tts_runtime_count() == 2
+        assert manager._live_tts_runtime_count() == MAX_LIVE_TTS_RUNTIMES
         assert second.request_queue.empty()
         assert manager._tts_capacity_exhausted
     finally:
         manager._retire_tts_runtime(second)
         for release in releases:
             release.set()
-        await asyncio.gather(first.cleanup_task, second.cleanup_task)
+        await asyncio.gather(*(runtime.cleanup_task for runtime in runtimes))
 
 
 @pytest.mark.asyncio
 async def test_handler_retries_fallback_after_retired_worker_releases_capacity():
     manager = Manager()
+    manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event(), Event()]
     first = install(manager, releases[0])
     manager._retire_tts_runtime(first)
@@ -297,6 +297,7 @@ async def test_handler_finishes_nonoverlapping_fallback_after_own_worker_exits()
 @pytest.mark.parametrize("outcome", ["timeout", "takeover"])
 async def test_fallback_capacity_wait_preserves_cleanup_and_session_owner(outcome):
     manager = Manager()
+    manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event()]
     first = install(manager, releases[0])
     manager._retire_tts_runtime(first)
@@ -348,6 +349,7 @@ async def test_fallback_capacity_wait_preserves_cleanup_and_session_owner(outcom
 async def test_respawn_capacity_failure_retries_only_for_its_session(replace_session):
     """Capacity release restarts the worker unless another session took over."""
     manager = Manager()
+    manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event()]
     first = install(manager, releases[0])
     manager._retire_tts_runtime(first)
@@ -475,6 +477,7 @@ async def test_capacity_retry_can_replace_a_retired_dead_current_runtime():
 @pytest.mark.asyncio
 async def test_cancelled_capacity_retry_keeps_worker_cleanup_owned():
     manager = Manager()
+    manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event()]
     first = install(manager, releases[0])
     manager._retire_tts_runtime(first)

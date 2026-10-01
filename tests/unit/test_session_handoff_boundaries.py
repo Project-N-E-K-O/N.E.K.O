@@ -28,9 +28,11 @@ async def close_connections(manager, clients, tasks):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing_kind", ["current", "prewarm", "connecting", "retired"])
 async def test_third_llm_connect_waits_for_real_capacity(monkeypatch, existing_kind):
+    from main_logic.core.session_lifecycle import MAX_LIVE_LLM_CONNECTIONS
     manager, _, _ = await make_full_manager(monkeypatch)
     first, second, third = ProviderClient(), ProviderClient(), ProviderClient()
     tasks = []
+    additional = [ProviderClient() for _ in range(MAX_LIVE_LLM_CONNECTIONS - 2)]
     manager._current_start_deadline = lambda: asyncio.get_running_loop().time() + 10.0
     try:
         if existing_kind == "current":
@@ -47,14 +49,17 @@ async def test_third_llm_connect_waits_for_real_capacity(monkeypatch, existing_k
             await asyncio.wait_for(first.connect_entered.wait(), 1.0)
         tasks.append(asyncio.create_task(manager._connect_owned_session(second, "prompt")))
         await asyncio.wait_for(second.connect_entered.wait(), 1.0)
+        for client in additional:
+            tasks.append(asyncio.create_task(manager._connect_owned_session(client, "prompt")))
+            await asyncio.wait_for(client.connect_entered.wait(), 1.0)
         # Keep both occupied while a third attempts to connect.
         manager._current_start_deadline = lambda: asyncio.get_running_loop().time() + 0.1
         with pytest.raises(TimeoutError):
             await manager._connect_owned_session(third, "prompt")
         assert not third.connect_entered.is_set()
-        assert sum(not record.closed for record in manager._connection_records) == 2
+        assert sum(not record.closed for record in manager._connection_records) == MAX_LIVE_LLM_CONNECTIONS
     finally:
-        await close_connections(manager, [first, second, third], tasks)
+        await close_connections(manager, [first, second, third, *additional], tasks)
 
 
 @pytest.mark.unit
@@ -76,6 +81,7 @@ async def test_provider_overlap_opt_out_serializes_connect(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancel_resistant_handshakes_keep_capacity_until_they_stop(monkeypatch):
+    monkeypatch.setattr("main_logic.core.session_lifecycle.MAX_LIVE_LLM_CONNECTIONS", 2)
     manager, _, _ = await make_full_manager(monkeypatch)
 
     class ResistantProvider(ProviderClient):

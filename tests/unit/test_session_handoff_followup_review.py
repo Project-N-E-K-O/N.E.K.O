@@ -123,6 +123,7 @@ async def test_failure_after_detachment_resumes_state_cleanup():
 @pytest.mark.parametrize("superseded", [False, True])
 async def test_tts_capacity_release_recovers_only_captured_session(monkeypatch, superseded):
     manager, _, clients = await make_full_manager(monkeypatch)
+    manager._tts_capacity_limit = lambda worker=None: 2
     manager.session = object()
     manager.use_tts = True
     manager.is_active = True

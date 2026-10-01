@@ -7,6 +7,7 @@ import pytest
 
 from main_logic import core as core_module
 from main_logic.core import lifecycle, session_lifecycle
+from main_logic.core.tts_records import MAX_LIVE_TTS_RUNTIMES
 from tests.unit.session_handoff_harness import ProviderClient, drain_manager, make_full_manager
 from tests.unit.test_session_handoff_lifecycle import make_manager
 
@@ -134,6 +135,24 @@ async def test_end_timeout_retains_owned_cleanup_and_never_reports_unsafe_succes
     assert retirement.cleanup_complete.is_set()
 
 
+async def test_cancelled_end_caller_keeps_retirement_owned():
+    manager = make_manager()
+    client = manager.session
+    ending = asyncio.create_task(manager.end_session(by_server=True))
+    try:
+        await asyncio.wait_for(client.close_entered.wait(), 2)
+        retirement = manager._session_retirements[-1]
+        ending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ending
+        assert not retirement.task.cancelled()
+        assert not retirement.cleanup_complete.is_set()
+    finally:
+        client.allow_close.set()
+        await asyncio.gather(*manager._session_cleanup_tasks, return_exceptions=True)
+        await asyncio.gather(ending, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('slow_worker', [False, True])
 async def test_full_audio_to_text_start(monkeypatch, slow_worker):
@@ -184,7 +203,7 @@ async def test_full_audio_to_text_start(monkeypatch, slow_worker):
         assert client.closed.is_set()
         assert runtime.retired and runtime.thread.is_alive()
         assert manager._live_tts_runtime_count() == 1
-        assert manager._tts_capacity_limit() == 2
+        assert manager._tts_capacity_limit() == MAX_LIVE_TTS_RUNTIMES
         if not slow_worker:
             release_old.set()
         try:

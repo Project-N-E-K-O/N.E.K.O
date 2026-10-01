@@ -7,6 +7,7 @@ syntax, timeout and cancellation errors do not count as killed mutations.
 
 import argparse
 import inspect
+import os
 import subprocess
 import sys
 import textwrap
@@ -25,6 +26,15 @@ CASES = {
     "notification_owner": "test_runtime_handoff_drains_status_blocked_inside_websocket_send",
     "hot_swap_callbacks": "test_hot_swap_close_drains_inflight_owned_output_before_promote",
     "queue_consumer": "test_retirement_keeps_wakeup_until_real_queue_consumer_exits",
+    "cancel_cleanup": "test_cancelled_end_caller_keeps_retirement_owned",
+    "slot_detach": "test_failed_renewal_does_not_pin_retirement",
+    "input_commit": "test_cancelled_flush_restores_only_inputs_not_submitted",
+}
+
+PLUGIN_FILES = {
+    "cancel_cleanup": "test_session_wait_budgets.py",
+    "slot_detach": "test_session_handoff_review_regressions.py",
+    "input_commit": "test_session_input_commit_handoff.py",
 }
 
 
@@ -54,16 +64,16 @@ def run_mutant(name):
     elif name == "capacity":
         TtsLifecycleMixin._tts_capacity_limit = lambda self, worker=None: 99
     elif name == "cleanup_shield":
-        replace_method(TtsRuntimeMixin, "_teardown_tts_runtime", dict(vars(tts_module)),
+        replace_method(TtsRuntimeMixin, "_teardown_tts_runtime", tts_module.__dict__,
                        "asyncio.shield(runtime.cleanup_task)", "runtime.cleanup_task")
     elif name == "notification_owner":
-        replace_method(TtsRuntimeMixin, "tts_response_handler", dict(vars(tts_module)),
+        replace_method(TtsRuntimeMixin, "tts_response_handler", tts_module.__dict__,
                        "await self.send_status(data[1])", "self._fire_task(self.send_status(data[1]))")
     elif name == "hot_swap_callbacks":
-        replace_method(SessionOwnershipMixin, "_close_connection_record", dict(vars(session_module)),
+        replace_method(SessionOwnershipMixin, "_close_connection_record", session_module.__dict__,
                        "callbacks = tuple(record.callbacks - {initiating_task})", "callbacks = ()")
     elif name == "queue_consumer":
-        replace_method(TtsRuntimeMixin, "tts_response_handler", dict(vars(tts_module)),
+        replace_method(TtsRuntimeMixin, "tts_response_handler", tts_module.__dict__,
                        "while not pending_get.done():\n"
                        "                    try:\n"
                        "                        await asyncio.shield(pending_get)\n"
@@ -86,9 +96,14 @@ def run_mutant(name):
                 self.unexpected_failure |= not assertion
 
     witness = AssertionWitness()
-    filename = ("test_session_callback_contract_review.py" if name == "hot_swap_callbacks"
+    filename = (PLUGIN_FILES[name] if name in PLUGIN_FILES else
+                "test_session_callback_contract_review.py" if name == "hot_swap_callbacks"
                 else "test_tts_handoff_ownership.py")
-    result = pytest.main([f"tests/unit/{filename}::{CASES[name]}", "-q", "--tb=short"], plugins=[witness])
+    args = [f"tests/unit/{filename}::{CASES[name]}", "-q", "--tb=short"]
+    if name in PLUGIN_FILES:
+        os.environ["NEKO_HANDOFF_MUTATION"] = name
+        args.extend(["-p", "tests.session_handoff_mutations"])
+    result = pytest.main(args, plugins=[witness])
     killed = result == pytest.ExitCode.TESTS_FAILED and witness.assertion_failed and not witness.unexpected_failure
     print(f"MUTATION {name}: {'KILLED_BY_ASSERTION' if killed else 'INVALID_OR_SURVIVED'}", flush=True)
     return 0 if killed else 1

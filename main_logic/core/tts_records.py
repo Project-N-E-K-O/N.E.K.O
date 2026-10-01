@@ -1,10 +1,12 @@
 """Provider-neutral ownership records for a main TTS worker and its queues."""
 
 import asyncio
+
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+MAX_LIVE_TTS_RUNTIMES = 5
 
 # Bound a single frame while preserving its header/payload ordering on cancel.
 TTS_FRAME_WRITE_TIMEOUT_SECONDS = 5.0

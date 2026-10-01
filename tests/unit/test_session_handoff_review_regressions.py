@@ -150,6 +150,7 @@ async def test_deferred_flush_stays_idle_until_owner_releases_it():
 
 async def test_runtime_tts_capacity_failure_does_not_block_turn():
     manager = Manager()
+    manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event()]
     runtimes = [install(manager, release) for release in releases]
     for runtime in runtimes:

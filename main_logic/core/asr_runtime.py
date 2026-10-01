@@ -5557,6 +5557,26 @@ class AsrRuntimeMixin:
             )
 
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+        arbiter = getattr(session_ref, "_response_arbiter", None)
+        runtime = getattr(self, "_asr_runtime", None)
+        capture_identity = getattr(runtime, "_capture_runtime_identity", None)
+        identity = capture_identity(ingress_token=token.ingress, turn_token=token) if callable(capture_identity) else None
+        if arbiter is not None:
+            def pause_owner_alive(owner):
+                lifecycle = getattr(runtime, "_asr_lifecycle", None)
+                return bool(
+                    owner == external_turn_id
+                    and operation_is_current()
+                    and runtime is self._asr_runtime
+                    and identity is not None
+                    and runtime._runtime_identity_matches(identity)
+                    and lifecycle is not None
+                    and lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+                    and lifecycle.snapshot.turn_id == token.turn_id
+                    and runtime._asr_turn_prepared
+                )
+
+            arbiter.pause_owner_alive = pause_owner_alive
         preparation_succeeded = False
         try:
             if callable(prepare):

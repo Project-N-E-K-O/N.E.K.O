@@ -13,7 +13,9 @@ import json
 from functools import wraps
 
 from ._shared import FRONTEND_START_SESSION_TIMEOUT_SECONDS, logger
-from .session_records import ConnectionRecord, Retirement, StartOperation, _start_context
+from .session_records import (
+    MAX_LIVE_LLM_CONNECTIONS, ConnectionRecord, Retirement, StartOperation, _start_context,
+)
 
 
 class SessionOwnershipMixin:
@@ -289,7 +291,7 @@ class SessionOwnershipMixin:
                 serial = not getattr(session, 'supports_session_overlap', True) or any(
                     not getattr(record.session, 'supports_session_overlap', True) for record in live
                 )
-                if len(live) < (1 if serial else 2):
+                if len(live) < (1 if serial else MAX_LIVE_LLM_CONNECTIONS):
                     break
                 self._check_start_operation()
                 await asyncio.sleep(0.02)
@@ -416,7 +418,9 @@ class SessionOwnershipMixin:
             tts, caller, bool(getattr(self, "is_active", False)),
         )
         record.resets_operation = reset_starting_count
-        record.pending_inputs = tuple(self.pending_input_data)
+        record.pending_inputs = tuple(self.pending_input_data) + tuple(
+            getattr(self, "_pending_input_flush_batch", ())
+        )
         record.memory_callback = after_memory_settlement
         record.preparation = getattr(self, 'background_preparation_task', None)
         record.swap = getattr(self, 'final_swap_task', None)
