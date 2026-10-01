@@ -1413,7 +1413,7 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
         coordinator=coordinator,
         on_commit=commit,
-        continuation_timeout_seconds=0.1,
+        continuation_timeout_seconds=0.01,
         smart_turn_required=True,
         max_endpoint_wait_seconds=0.035,
     )
