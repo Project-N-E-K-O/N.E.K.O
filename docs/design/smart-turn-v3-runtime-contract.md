@@ -31,7 +31,7 @@ Core 处理 ingress 背压时清空待处理 PCM，并按 identity 调用恢复�
 
 ## Smart Turn 语义超时
 
-Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试，直到 `max_endpoint_wait_seconds`（当前 15 秒）截止。截止后仍为 `INCOMPLETE` 时，通过正常完成路径以 `semantic_timeout` 封轮；这是语义结果，不是 endpointing failure，不会拆掉 ASR session。
+Smart Turn 路径中，语义 `INCOMPLETE` 会按 continuation interval 重试，直到当前严格截止时间。首次严格截止时间由 `max_endpoint_wait_seconds`（当前 15 秒）设定；无 Silero 时，RNNoise 确认的人声活动可刷新该静默窗口，RMS 回退的延长则受首次 `INCOMPLETE` 起的绝对上限约束。截止后仍为 `INCOMPLETE` 时，通过正常完成路径以 `semantic_timeout` 封轮；这是语义结果，不是 endpointing failure，不会拆掉 ASR session。
 
 `periodic_no_vad` 不得覆盖排队中的 `strict_retry`，不得在 strict 推理期间终止等待，也不得推迟截止后的封轮。模型资产缺失、推理异常和 VAD failure 才进入 `UNAVAILABLE`/BLOCKED 路径。
 
