@@ -536,6 +536,13 @@ async def test_remote_reload_cannot_publish_stopped_development_metadata(app, tm
     await registry_service.PluginRegistryService().refresh_registry()
     manifest.write_text(manifest.read_text(encoding="utf-8").replace("Before", "After"), encoding="utf-8")
 
+    # The lifecycle mutation guard must admit this local request before the
+    # development provenance guard rejects it for missing the development mark.
+    async with client(app, headers=mutation_headers()) as http:
+        response = await http.post("/plugins/reload")
+    assert response.status_code == 403
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
+
     async with client(app, peer="192.168.1.2", headers=mutation_headers(**{"X-Neko-Development": "1"})) as http:
         response = await http.post("/plugins/reload")
     assert response.status_code == 403

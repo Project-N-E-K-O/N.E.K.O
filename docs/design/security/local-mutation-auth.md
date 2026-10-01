@@ -4,9 +4,11 @@
 
 ## 威胁边界
 
-浏览器可以从任意站点向 localhost 发请求，因此“只监听本地地址”并不足够。变更端点需要同时验证应用签发的 CSRF token 与请求来源语义。非浏览器本地调用方也必须显式取得并携带 token。
+浏览器可以从任意站点向 localhost 发请求，因此“只监听本地地址”并不足够。浏览器变更端点需要同时验证应用签发的 CSRF token 与请求来源语义。主服务的非浏览器本地调用方必须显式取得并携带 token；插件生命周期路由另有一个为既有本地原生调用保留的兼容路径，见下文。
 
-共享实现位于 `main_routers/system_router/_shared.py`，包括允许的本地 Origin、token 提取、常量时间比较和统一错误响应。前端调用方应从已有配置/状态端点取得 token，并通过 `X-CSRF-Token` 发送；兼容 body token 只按当前 helper 支持范围使用。
+主服务共享实现位于 `main_routers/system_router/_shared.py`，包括允许的本地 Origin、token 提取、常量时间比较和统一错误响应。前端调用方应从已有配置/状态端点取得 token，并通过 `X-CSRF-Token` 发送；兼容 body token 只按当前 helper 支持范围使用。
+
+插件服务器的本 PR 只保护插件生命周期路由和 CSRF token 引导路由。带 `Origin` 的浏览器变更请求必须同时通过可信来源和 token 校验。为兼容现有本地原生调用，暂时保留无 `Origin` 的 loopback 路径：客户端和 Host 必须是 loopback，且不能携带 Referer 或 Fetch Metadata；该兼容路径的 token 是可选的。后续收紧此路径时，应先确认没有依赖它的外部本地调用方。
 
 ## 稳定合同
 
@@ -16,6 +18,8 @@
 - 校验失败使用统一 `csrf_validation_failed`，响应和日志不回显 token；
 - GET 读取端点也不能返回超出调用方需要的敏感数据；
 - CORS、CSRF 和身份认证是不同层，不能互相替代。
+
+插件生命周期路由的 loopback guard 以插件服务收到的 Host 和客户端地址为准，因此 Docker/Nginx 的局域网端口映射或 HTTPS 外部端口不属于本 PR 的支持范围；开放这些部署形态需要单独设计可信代理身份和来源映射，不能仅放宽 loopback 判断。
 
 ## 前端调用模式
 

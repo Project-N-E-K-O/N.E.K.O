@@ -172,15 +172,18 @@ async def test_token_bootstrap_rejects_referer_only_foreign_request(app: FastAPI
 
 
 @pytest.mark.asyncio
-async def test_originless_loopback_native_call_with_token_remains_supported(
+@pytest.mark.parametrize("token", [None, mutation_auth.AUTOSTART_CSRF_TOKEN])
+async def test_originless_loopback_native_call_with_optional_token_remains_supported(
     app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
+    token: str | None,
 ) -> None:
     stop = AsyncMock(return_value={"success": True, "plugin_id": "demo"})
     monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    headers = {} if token is None else {"X-CSRF-Token": token}
     async with _client(
         app,
-        headers={"X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+        headers=headers,
     ) as client:
         response = await client.post("/plugin/demo/stop")
     assert response.status_code == 200
