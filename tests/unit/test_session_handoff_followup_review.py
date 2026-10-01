@@ -65,6 +65,7 @@ async def test_memory_callback_failure_blocks_until_successful_retry():
     manager = make_manager()
     manager.session.allow_close.set()
     calls = []
+    queued = []
 
     async def callback():
         calls.append("clear")
@@ -72,6 +73,7 @@ async def test_memory_callback_failure_blocks_until_successful_retry():
             raise OSError("context clear failed")
 
     def queue(cb):
+        queued.append(cb)
         return asyncio.create_task(cb())
 
     async def wait(completion, _callback, **kwargs):
@@ -88,6 +90,7 @@ async def test_memory_callback_failure_blocks_until_successful_retry():
     await manager._wait_session_handoff(asyncio.get_running_loop().time() + 1)
     await record.task
     assert calls == ["clear", "clear"]
+    assert len(queued) == 1
     assert record.handoff_safe.is_set()
 
 
@@ -136,7 +139,14 @@ async def test_tts_capacity_release_recovers_only_captured_session(monkeypatch, 
         calls.append(list(manager.tts_pending_chunks))
         recovered.set()
 
-    manager._respawn_tts_worker = respawn
+    # Exercise the real respawn guards with the current retired pointer still
+    # alive. Only provider construction/handler I/O is replaced.
+    def start_worker(**kwargs):
+        assert manager._live_tts_runtime_count() < manager._tts_capacity_limit()
+        respawn()
+
+    manager._start_tts_thread = start_worker
+    manager._start_tts_response_handler = lambda: None
     try:
         await asyncio.wait_for(manager.ensure_tts_pipeline_alive(), .1)
         retry = manager._tts_respawn_task
@@ -232,7 +242,7 @@ async def test_game_speech_registers_correlation_after_recovery():
         await runtime.cleanup_task
 
 
-@pytest.mark.parametrize("path", ["rebuild", "stream"])
+@pytest.mark.parametrize("path", ["rebuild", "stream", "raw_stream"])
 @pytest.mark.parametrize("external", [False, True])
 async def test_streaming_boundaries_keep_loop_only_for_retired_start(monkeypatch, path, external):
     manager, _, clients = await make_full_manager(monkeypatch)
@@ -246,8 +256,12 @@ async def test_streaming_boundaries_keep_loop_only_for_retired_start(monkeypatch
     async def receive():
         if path == "rebuild":
             assert not await manager._rebuild_offline_session_for_text_input("text")
-        else:
+        elif path == "stream":
             await manager._process_stream_data_internal({"input_type": "text", "data": "input"})
+        else:
+            for _ in range(2):
+                await manager._stream_data_now({"input_type": "text", "data": "input"})
+                assert asyncio.current_task().cancelling() == 0
         await asyncio.sleep(0)
         return "receive loop alive"
 
@@ -282,3 +296,33 @@ async def test_agent_callbacks_requeued_on_start_cancellation(external):
     else:
         assert not await task
     assert manager.pending_agent_callbacks == [callback]
+
+
+@pytest.mark.parametrize("committed", [False, True])
+async def test_text_callback_cancel_requeues_only_uncommitted_batch(committed):
+    from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+    from tests.unit.test_proactive_sm_integration import _FakeOmniOffline, _make_mgr
+
+    entered = asyncio.Event()
+
+    class Session(_FakeOmniOffline):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+            if committed:
+                on_committed()
+            entered.set()
+            await asyncio.Event().wait()
+
+    manager = _make_mgr(session=Session())
+    ack = asyncio.get_running_loop().create_future()
+    callback = {"_callback_delivery_id": "cancelled", "status": "completed", "summary": "result", DELIVERY_ACK_FUTURE_KEY: ack}
+    manager.pending_agent_callbacks = [callback]
+    extra = {"_callback_delivery_id": "cancelled", "summary": "result"}
+    manager.pending_extra_replies = [extra]
+    task = asyncio.create_task(manager.trigger_agent_callbacks())
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel("external shutdown")
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.pending_agent_callbacks == ([] if committed else [callback])
+    assert manager.pending_extra_replies == ([] if committed else [extra])
+    assert (ack.done() and ack.result() is True) == committed

@@ -266,10 +266,14 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
 
 def _evict_replaced_plugin_modules(plugin_id: str) -> None:
     from plugin.core.host import evict_cached_plugin_modules
+    from plugin.sdk.shared.i18n import clear_plugin_i18n_cache
 
     # 已导入的模块仍然要清：这个进程里可能残留着被换掉的那份代码。元数据扫描缓存
     # 曾经也在这里一起清，现在没有那个缓存了。
     evict_cached_plugin_modules(plugin_id)
+    # 语言包缓存按 stat 指纹校验；copy2/copytree 会保留时间戳，同尺寸替换可能骗过
+    # 指纹，所以换树之后显式清掉。
+    clear_plugin_i18n_cache()
 
 
 def _path_is_within(path: Path, root: Path) -> bool:

@@ -40,7 +40,7 @@ def test_backend_screenshot_remains_a_safe_one_shot_fallback():
 def test_manual_screen_share_never_polls_the_backend_screenshot_endpoint():
     source = APP_SCREEN_JS.read_text(encoding="utf-8")
     start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[1].split(
-        "mod.startScreenSharing = startScreenSharing;",
+        "// ======================== stopScreenSharing ========================",
         1,
     )[0]
 
@@ -58,7 +58,7 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
     )[1].split("function hasVisibleModelSurface", 1)[0]
     start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[
         1
-    ].split("mod.startScreenSharing = startScreenSharing;", 1)[0]
+    ].split("// ======================== stopScreenSharing ========================", 1)[0]
 
     assert "provider.requestWindowsGraphicsCaptureFallback" in helper
     assert "name: String(error && error.name || '')" in helper
@@ -95,7 +95,7 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
 def test_linux_portal_screen_share_does_not_reenumerate_sources_during_fallbacks():
     source = APP_SCREEN_JS.read_text(encoding="utf-8")
     start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[1].split(
-        "mod.startScreenSharing = startScreenSharing;",
+        "// ======================== stopScreenSharing ========================",
         1,
     )[0]
     acquire_once = source.split("async function acquireOrReuseCachedStream(opts)", 1)[1].split(
@@ -115,7 +115,7 @@ def test_linux_portal_screen_share_does_not_reenumerate_sources_during_fallbacks
 def test_manual_screen_share_resolves_remembered_title_before_capture():
     source = APP_SCREEN_JS.read_text(encoding="utf-8")
     start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[1].split(
-        "mod.startScreenSharing = startScreenSharing;",
+        "// ======================== stopScreenSharing ========================",
         1,
     )[0]
 

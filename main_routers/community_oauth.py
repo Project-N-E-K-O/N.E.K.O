@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from utils.social_base import auth_public_url as _configured_auth_public_url
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -37,7 +38,6 @@ _OAUTH_PENDING_FILENAME = "community_oauth_pending.json"
 _OAUTH_PENDING_TTL_SEC = 600
 _OAUTH_REDIRECT_PATH = "/oauth/callback"
 _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
-_DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _oauth_start_lock = asyncio.Lock()
@@ -91,10 +91,7 @@ def _desktop_client_id() -> str:
 
 
 def _auth_public_url() -> str:
-    raw = (os.environ.get("NEKO_AUTH_URL") or "").strip().rstrip("/")
-    if raw:
-        return raw
-    return _DEFAULT_AUTH_URL
+    return _configured_auth_public_url()
 
 
 def _main_server_port() -> int:
@@ -425,11 +422,26 @@ async def _resolve_saved_oauth_status(
         return await _resolve_saved_oauth_status(_attempt + 1)
     if cleared:
         return {"logged_in": False, "snapshot": current, "auth": current_auth}
-    return {
+    # Cleanup failed, so the snapshot left on disk may still be the one the
+    # cloud just rejected. Flag it: callers must treat that as a definite
+    # logout, not as an unverified-but-saved session.
+    status = {
         "logged_in": False,
         "snapshot": current or snapshot,
         "auth": current_auth or auth,
     }
+    if not current or _status_snapshot_matches(current, snapshot):
+        status["rejected"] = True
+    return status
+
+
+def status_session_saved(status: dict[str, Any]) -> bool:
+    """A saved session the cloud could not verify right now (offline, 5xx, refresh unavailable).
+
+    Not logged in, but also not a definite logout: a snapshot the cloud already
+    rejected and only local cleanup left behind does not count.
+    """
+    return bool(status.get("snapshot")) and not status.get("rejected")
 
 
 async def _run_oauth_status_resolution(
@@ -654,6 +666,40 @@ async def oauth_start_endpoint(request: Request):
     }
 
 
+def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
+    """User profile safe to return from local routes; never includes the phone number."""
+    source = user if isinstance(user, dict) else {}
+    display_name = source.get("display_name") or source.get("username") or source.get("name")
+    profile: dict[str, Any] = {
+        "display_name": display_name,
+        "email": source.get("email"),
+    }
+    if local_user_id:
+        profile = {"id": local_user_id, **profile}
+    return profile
+
+
+def _mask_phone(phone: str) -> str:
+    """Keep only enough of a phone number to recognise the account (138****0000)."""
+    if len(phone) >= 8:
+        return f"{phone[:-8]}****{phone[-4:]}"
+    return f"****{phone[-2:]}"
+
+
+def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
+    """User profile persisted to community_auth.json.
+
+    The file is plaintext and read by other local modules, so the phone number
+    (shown by the desktop settings page when there is no email) is stored masked.
+    """
+    profile = _public_user_profile(user, local_user_id)
+    source = user if isinstance(user, dict) else {}
+    phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
+    if isinstance(phone, str) and phone.strip():
+        profile["phone"] = _mask_phone(phone.strip())
+    return profile
+
+
 @router.get("/oauth/status", summary="社区 OAuth 本地登录状态（不含 token）")
 async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
@@ -670,14 +716,13 @@ async def oauth_status_endpoint(request: Request):
             "user": None,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+    # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
+    public_profile = _public_user_profile(user)
     return {
         "logged_in": True,
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
-        "user": {
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": public_profile,
     }
 
 
@@ -835,11 +880,7 @@ async def _handle_oauth_callback(
         "auth_source": "oauth",
         "auth_public_url": auth_public_url,
         "client_id": client_id,
-        "user": {
-            "id": local_user_id,
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": _persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
     credentials_saved = await asyncio.to_thread(

@@ -1084,13 +1084,14 @@ class LifecycleMixin:
                     request_id=request_id, also_notify=websocket,
                 )
         finally:
-            if new_dialog_task is not None and not new_dialog_task.done():
-                new_dialog_task.cancel()
-                try:
-                    await new_dialog_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            self._finish_start_operation(operation, token)
+            try:
+                if new_dialog_task is not None and not new_dialog_task.done():
+                    new_dialog_task.cancel()
+                    # Child cancellation is a result; cancellation of the
+                    # caller still propagates and always releases ownership.
+                    await asyncio.gather(new_dialog_task, return_exceptions=True)
+            finally:
+                self._finish_start_operation(operation, token)
 
     async def _start_session_handle_inflight(
         self,
@@ -4029,7 +4030,11 @@ class LifecycleMixin:
                 stage="post-promote ASR reconciliation",
                 allow_promoted=True,
             )
+            replaced_speech_id = self.current_speech_id
             self.current_speech_id = str(uuid4())
+            # 换 session 不开新一轮：旧 session 里被 close() 截断、还没收尾的
+            # 回复仍是这一轮，它迟到的完成回调要能认出来（见 _carry_reply_turn）。
+            self._carry_reply_turn(replaced_speech_id)
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self.session_start_time = datetime.now()

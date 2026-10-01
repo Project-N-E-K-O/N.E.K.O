@@ -1773,10 +1773,9 @@ class TtsRuntimeMixin:
         if not self._tts_output_is_current() or getattr(self, "_tts_capacity_exhausted", False):
             return
         runtime = self._snapshot_tts_runtime()
-        if (runtime is not None and runtime.retired
-                and runtime.thread is not None and runtime.thread.is_alive()):
-            return
-        if self.tts_thread and self.tts_thread.is_alive():
+        # A retired worker still owns capacity, but no longer serves this
+        # session. The capacity gate below decides whether a replacement fits.
+        if self.tts_thread and self.tts_thread.is_alive() and not (runtime and runtime.retired):
             return
 
         # 如果上次错误属于不应自动重试的类型，直接跳过 respawn

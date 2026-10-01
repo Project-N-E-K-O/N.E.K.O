@@ -315,7 +315,9 @@ class ProactiveMixin:
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
                 logger.info("[%s] prepare_proactive_delivery: session start cancelled", self.lanlan_name)
                 return False
             except Exception as e:
@@ -1818,6 +1820,18 @@ class ProactiveMixin:
                 ack_resolved = True
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
+                if delivered:
+                    # Publish the commit before prompt_ephemeral's remaining
+                    # awaits: cancellation must not restore this batch.
+                    delivered_ids = {
+                        cb.get("_callback_delivery_id") for cb in active_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id") not in delivered_ids
+                    ]
+                    callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend

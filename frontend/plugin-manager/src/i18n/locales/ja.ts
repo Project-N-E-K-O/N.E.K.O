@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: 'プラグインパッケージの検証に失敗しました。',
     downloadFailed: 'プラグインパッケージのダウンロードに失敗しました。',
     marketListFetchFailed: 'プラグイン Market は一時的に利用できません。',
+    catalogNotConfigured: 'プラグイン Market のアドレスが設定されていません。',
+    releaseMismatch: 'インストール要求が Market の公開記録と一致しません。プラグイン Market を再読み込みしてから再試行してください。',
     unsafeProfilePath: '記録されたパッケージ Profile のパスは安全ではありません。',
     packageIdentityMismatch: 'パッケージ ID が対象プラグインと一致しません。',
     confirmationChanged: '確認後にプラグインまたはパッケージが変更されました。新しい計画を確認してください。',

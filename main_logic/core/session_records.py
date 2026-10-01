@@ -65,6 +65,7 @@ class Retirement:
     renewal_complete: bool = False
     stream_state_cleared: bool = False
     memory_boundary_sent: bool = False
+    memory_settled: bool = False
     departure_notified: bool = False
 
 

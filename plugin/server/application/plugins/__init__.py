@@ -1,4 +1,5 @@
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
+from plugin.server.application.plugins.hot_reload_service import PluginHotReloadService
 from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
 from plugin.server.application.plugins.query_service import PluginQueryService
 from plugin.server.application.plugins.registry_service import PluginRegistryService
@@ -12,4 +13,5 @@ __all__ = [
     "PluginUiQueryService",
     "PluginRouterQueryService",
     "PluginDispatchService",
+    "PluginHotReloadService",
 ]

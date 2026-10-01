@@ -2907,7 +2907,7 @@ async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current
         request_id="req-A",
     )
 
-    mgr._emit_turn_end.assert_awaited_once_with("req-A")
+    mgr._emit_turn_end.assert_awaited_once_with("req-A", reply_turn=None)
     mgr._finalize_turn_after_emit.assert_awaited_once()
     assert mgr._active_text_request_id is None
 
@@ -4318,7 +4318,7 @@ async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
     # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
     buffer_at_turn_end = []
 
-    async def capture_emit(request_id):
+    async def capture_emit(request_id, **_kwargs):
         buffer_at_turn_end.append(mgr._current_ai_turn_text)
 
     mgr._emit_turn_end = capture_emit

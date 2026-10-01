@@ -3314,6 +3314,7 @@ def run(root: Path) -> list[Violation]:
                 "abort",
                 "wait_transcript_idle",
                 "has_pending_transcript_delivery",
+                "pending_transcript_turn_tokens",
                 "set_speaker_verifier_factory",
                 "request_speaker_candidate_rejection",
                 "invalidate_protected_prefix",

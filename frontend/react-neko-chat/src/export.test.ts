@@ -2,7 +2,11 @@ import { expect, it, vi } from 'vitest';
 import { mountPluginContent, unmountPluginContent } from './mount-plugin-content';
 
 vi.mock('./mount', () => ({
-  mount: vi.fn(), unmount: vi.fn(), mountChatWindow: vi.fn(), unmountChatWindow: vi.fn(),
+  mount: vi.fn(),
+  mountAvatarToolEditor: vi.fn(),
+  unmount: vi.fn(),
+  mountChatWindow: vi.fn(),
+  unmountChatWindow: vi.fn(),
 }));
 
 it('announces plugin content availability after exposing its public API', async () => {

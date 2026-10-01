@@ -14,6 +14,7 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.hot_reload_service import hot_reload_service
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import (
     _CrossLoopLock,
@@ -117,6 +118,11 @@ class ServerLifecycleService:
         # Consecutive failed health probes against the CURRENT runner. Reset on a
         # healthy probe and whenever the runner is replaced.
         self._plane_probe_failures = 0
+        # Plugin source hot-reload watcher (no-op unless NEKO_PLUGIN_HOT_RELOAD
+        # is enabled). Must stop before the hosts below: a reload firing
+        # mid-teardown would race the shutdown it is being torn down by.
+        self._hot_reload_service = hot_reload_service
+        self._hot_reload_started = False
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -457,11 +463,18 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        # A short shutdown wait may leave an old shielded reload alive. Drain it
+        # while both gates remain closed before admitting the next server run.
+        await self._hot_reload_service.wait_for_stopped()
         # Reopen the gate a previous shutdown closed: this service instance is
         # reused across a restart in the same process, and a latched-closed gate
         # would make every delivery-path start a no-op for the new run.
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
+        # 同样重置插件操作门闩：关停时置位的门闩会让 start_plugin 拒绝启动，
+        # 重启后必须放开，否则所有插件启动都会吃 409。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = False
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -504,6 +517,9 @@ class ServerLifecycleService:
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.debug("metrics collector started")
+
+        # 关闭时是 no-op：PLUGIN_HOT_RELOAD 默认 false，必须显式开启。
+        self._hot_reload_started = self._hot_reload_service.start()
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -813,12 +829,29 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
+        # 关停门闩：在动任何插件宿主之前置位，让 start_plugin 拒绝启动新插件。
+        # 被 asyncio.shield 保护的 in-flight reload 若在 host 快照之后才注册新
+        # host，那个子进程就是没人停止的孤儿。startup() 开头会重置。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = True
+
         try:
             emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
             logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
+
+        # 先停热重载 watcher 再动任何插件宿主：它触发的 reload 是完整的
+        # stop+start 事务，和关停流程并发会把插件留在半启动状态。in-flight
+        # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
+        if self._hot_reload_started or self._hot_reload_service.is_running:
+            try:
+                await self._hot_reload_service.stop(timeout=0.05)
+                self._hot_reload_started = False
+            except Exception as exc:
+                had_errors = True
+                logger.warning("failed to stop plugin hot-reload watcher: {}", exc)
 
         # Phase 1: sync signals (instant)
         for stop_fn, label in [
@@ -882,7 +915,9 @@ class ServerLifecycleService:
             had_errors = True
             logger.warning("failed to cleanup plugin communication resources: {}", exc)
 
-        # Phase 4: clear registry so next startup() / manual start_plugin() is clean
+        # Phase 4: clear registry for the next startup(), which reopens the gate.
+        # Keep the shutdown latch closed until then: an old reload may still finish.
+        _lifecycle_module._hot_reload_failed.clear()
         try:
             with state.acquire_plugin_hosts_write_lock():
                 state.plugin_hosts.clear()

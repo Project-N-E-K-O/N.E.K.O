@@ -579,12 +579,24 @@ class SessionOwnershipMixin:
         if owns_state:
             if callable(after_memory_settlement) and not record.memory_boundary_sent:
                 try:
-                    if record.memory_completion is None or record.memory_completion.done():
-                        record.memory_completion = self._queue_session_end_memory_barrier(after_memory_settlement)
-                    await self._wait_for_session_end_memory_barrier(
-                        record.memory_completion, after_memory_settlement,
-                        timeout_seconds=memory_settlement_timeout,
-                    )
+                    if record.memory_settled:
+                        # The connector already wrote this session. Retry only
+                        # the failed local isolation, not terminal settlement.
+                        result = after_memory_settlement()
+                        if inspect.isawaitable(result):
+                            await result
+                        record.memory_completion = None
+                    else:
+                        if record.memory_completion is None or record.memory_completion.done():
+                            def settled_callback():
+                                record.memory_settled = True
+                                return after_memory_settlement()
+
+                            record.memory_completion = self._queue_session_end_memory_barrier(settled_callback)
+                        await self._wait_for_session_end_memory_barrier(
+                            record.memory_completion, after_memory_settlement,
+                            timeout_seconds=memory_settlement_timeout,
+                        )
                     record.memory_boundary_sent = True
                 except Exception as exc:
                     record.handoff_error = exc

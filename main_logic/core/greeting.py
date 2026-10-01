@@ -104,28 +104,44 @@ class GreetingMixin:
         }
 
     @staticmethod
-    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict:
-        change_items = record.get("imageChange", {}).get("items")
-        change_index = raw.get("change_index")
-        if (
-            not isinstance(change_items, list)
-            or isinstance(change_index, bool)
-            or not isinstance(change_index, int)
-            or change_index < 0
-            or change_index >= len(change_items)
-        ):
-            raise ValueError("invalid local change index")
+    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict | None:
+        version = record.get("recordVersion")
+        if version == 2:
+            change_items = record.get("imageChange", {}).get("items")
+            change_index = raw.get("change_index")
+            if (
+                "image_id" in raw
+                or not isinstance(change_items, list)
+                or isinstance(change_index, bool)
+                or not isinstance(change_index, int)
+                or change_index < 0
+                or change_index >= len(change_items)
+            ):
+                raise ValueError("invalid local change index")
+            meaning = change_items[change_index]["meaning"]
+        elif version == 3:
+            image_id = raw.get("image_id")
+            images = record.get("images")
+            if "change_index" in raw or not isinstance(images, list):
+                raise ValueError("invalid local image ID")
+            image = next((item for item in images if item["id"] == image_id), None)
+            if image is None:
+                raise ValueError("invalid local image ID")
+            meaning = image["meaning"]
+        else:
+            raise ValueError("invalid local record version")
         special = record.get("interaction", {}).get("special")
         has_special_fact = "special_triggered" in raw
         if bool(special) != has_special_fact:
             raise ValueError("local special fact does not match record")
+        selected_meaning = (
+            special["meaning"] if special and raw["special_triggered"] is True else meaning
+        )
+        if not selected_meaning:
+            return None
         return {
             "name": record["name"],
-            "meaning": (
-                special["meaning"]
-                if special and raw["special_triggered"] is True
-                else change_items[change_index]["meaning"]
-            ),
+            "meaning": selected_meaning,
         }
 
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
@@ -265,7 +281,7 @@ class GreetingMixin:
                     )
                     gate_rejection = (raw_interaction_id, "invalid_payload")
 
-            if not cooldown_hit and gate_rejection is None:
+            if not cooldown_hit and gate_rejection is None and (local_store is None or local_prompt_record is not None):
                 self._remember_avatar_interaction_id(interaction_id)
                 self._last_avatar_interaction_at = now_ms
 
@@ -281,6 +297,10 @@ class GreetingMixin:
             await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
 
+        if local_store is not None and local_prompt_record is None:
+            await self.send_avatar_interaction_ack(interaction_id, False, "no_meaning")
+            return {"accepted": False, "reason": "no_meaning", "interaction_id": interaction_id}
+
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
             await self.send_avatar_interaction_ack(interaction_id, False, "voice_session_active")
@@ -294,7 +314,9 @@ class GreetingMixin:
             try:
                 logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
                 await self.start_session(self.websocket, new=False, input_mode='text')
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
                 logger.info("[%s] handle_avatar_interaction: auto start_session cancelled", self.lanlan_name)
                 await self.send_avatar_interaction_ack(interaction_id, False, "session_start_cancelled")
                 return {"accepted": False, "reason": "session_start_cancelled", "interaction_id": interaction_id}
@@ -358,6 +380,16 @@ class GreetingMixin:
             }
 
             current_turn_id = self.current_speech_id
+            # 本回复的快照（见 _shared._ReplyTurn）：完成回调用它自己的 meta
+            # 收尾，不去读届时可能已属于新一轮的共享字段。
+            reply_turn = self._begin_reply_turn(
+                speech_id=current_turn_id,
+                meta=self._pending_turn_meta,
+            )
+
+            async def response_done_callback() -> None:
+                await self.handle_response_complete(reply_turn=reply_turn)
+
             # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
             # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
             # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
@@ -365,10 +397,12 @@ class GreetingMixin:
             _sid_token = _proactive_expected_sid.set(current_turn_id)
             try:
                 try:
+                    reply_turn.session = self.session
                     delivered = await self.session.prompt_ephemeral(
                         instruction,
                         completion_mode="response",
                         persist_response=False,
+                        response_done_callback=response_done_callback,
                     )
                 except Exception as e:
                     logger.exception(
@@ -384,6 +418,7 @@ class GreetingMixin:
                     return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                self._end_reply_turn(reply_turn)
 
             # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
             # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，

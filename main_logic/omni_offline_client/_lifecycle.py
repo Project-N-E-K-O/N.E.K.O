@@ -35,6 +35,7 @@ from utils.slop_filter import resolve_dialog_slop_lang
 from ._media import _FRAME_SOURCE_PROACTIVE
 from ._shared import (
     AIMessage,
+    Awaitable,
     Callable,
     HumanMessage,
     Optional,
@@ -259,6 +260,7 @@ class _LifecycleMixin:
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
         on_committed_text: Optional[Callable[[str], None]] = None,
+        response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -287,7 +289,9 @@ class _LifecycleMixin:
         - ``completion_mode="response"``:
           Uses ``on_response_done()`` so the reply goes through the
           regular user-visible completion path while still keeping the
-          injected instruction itself ephemeral.
+          injected instruction itself ephemeral. ``response_done_callback``
+          replaces it for this invocation only (the caller binds the
+          completion to this reply), and runs whenever it would.
         - ``on_committed``:
           Called after visible text is confirmed but before completion
           callbacks flush proactive state.
@@ -773,8 +777,9 @@ class _LifecycleMixin:
             # idempotent when nothing pulsed or the first token already cleared it.
             await self._notify_reasoning_done(_reasoning_owner_seq)
             if completion_mode == "response":
-                if self.on_response_done:
-                    await self.on_response_done()
+                done_callback = response_done_callback or self.on_response_done
+                if done_callback:
+                    await done_callback()
                 # 只录常规 reply（completion_mode == "response"）。proactive 路径
                 # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
                 # 与 core.finish_proactive_delivery 同因同治：摘下来不 await。下面的
