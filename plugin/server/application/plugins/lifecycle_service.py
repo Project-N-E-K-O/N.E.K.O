@@ -1759,6 +1759,21 @@ class PluginLifecycleService:
                 # invalid, just like the single-plugin reload path.
                 stop_outcomes.append(_ReloadOutcome(plugin_id=plugin_id, success=False, error=exc.message))
                 continue
+            except Exception as exc:
+                # An unexpected preflight error (e.g. a symlink loop making
+                # Path.resolve raise RuntimeError) must fail only this plugin:
+                # escaping would abort the batch after earlier plugins were
+                # stopped, and the start phase would never bring them back.
+                logger.error(
+                    "reload_all preflight raised unexpectedly: plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                stop_outcomes.append(
+                    _ReloadOutcome(plugin_id=plugin_id, success=False, error=f"{type(exc).__name__}: {exc}")
+                )
+                continue
             # 这一次 stop 也要受剩余预算约束：只在开始前检查的话，一个慢关停
             # （或者调大了的 NEKO_PLUGIN_SHUTDOWN_TIMEOUT）就能让整个阶段冲破
             # 对外承诺的墙钟上限（codex）。

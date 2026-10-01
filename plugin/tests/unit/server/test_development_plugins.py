@@ -1321,3 +1321,31 @@ async def test_failed_association_change_keeps_hot_reload_recovery(tmp_path, mon
         else:
             await service.rebind_development(record.registration_id, record.revision, str(_source(tmp_path / "replacement")))
     assert lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)
+
+
+@pytest.mark.asyncio
+async def test_bulk_reload_isolates_unexpected_preflight_errors(monkeypatch, tmp_path):
+    """A preflight that raises something other than ServerDomainError (a symlink
+    loop makes Path.resolve raise RuntimeError) fails only that plugin; the
+    batch still reloads the others instead of leaving them stopped."""
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle, "_list_running_plugin_ids_sync", lambda: ["ordinary", record.plugin_id])
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "refresh_registry", AsyncMock())
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "order_plugin_ids", AsyncMock(side_effect=lambda ids: ids))
+
+    def preflight(snapshot):
+        raise RuntimeError("Symlink loop")
+
+    monkeypatch.setattr(service, "preflight_development_sync", preflight)
+    manager = lifecycle.PluginLifecycleService()
+    stop, start = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(manager, "stop_plugin", stop)
+    monkeypatch.setattr(manager, "start_plugin", start)
+    result = await manager.reload_all_plugins()
+    stopped = [call.args[0] for call in stop.await_args_list]
+    started = [call.args[0] for call in start.await_args_list]
+    assert stopped == ["ordinary"] and started == ["ordinary"]
+    assert result["reloaded"] == ["ordinary"]
+    assert not result["success"]
