@@ -764,7 +764,7 @@ _UV_COVERS = {
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
-_PIP_CA_ENV = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR")
+_PIP_CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR")
 # pip's proxy applies to every URL, and an index, find-links page or direct
 # reference may be http as well as https: uv must have a proxy for each.
 _UV_PROXY_SCHEMES = (
@@ -849,8 +849,9 @@ def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
         if not _explicitly_off(name, value):
             found.setdefault(name, []).append(env_name)
     # pip's TLS also takes its CA set from these (requests and OpenSSL
-    # conventions); uv's default TLS ignores them, so each counts as pip's
-    # cert and needs a loadable SSL_CERT_FILE.
+    # conventions); uv's default TLS ignores them, or (SSL_CERT_FILE) one it
+    # can not load where pip would fail. Each counts as pip's cert and needs
+    # a loadable SSL_CERT_FILE for uv.
     for env_name in _PIP_CA_ENV:
         if _env_get(env, env_name):
             found.setdefault("cert", []).append(env_name)
@@ -887,7 +888,8 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
         site_name = "pip.ini"
     else:
         xdg_dirs = env.get("XDG_CONFIG_DIRS") or "/etc/xdg"
-        files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep) if d)
+        # An empty component is kept: pip reads it as its working directory.
+        files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep))
         files.append(Path("/etc/pip.conf"))
         if sys.platform == "darwin":
             files.append(Path("/Library/Application Support/pip/pip.conf"))

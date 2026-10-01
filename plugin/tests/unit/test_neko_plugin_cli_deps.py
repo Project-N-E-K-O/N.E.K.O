@@ -629,6 +629,18 @@ def test_home_config_comes_from_the_targets_own_home(tmp_path, monkeypatch):
     assert not any("parent-home" in str(path) for path in real_pip_config_files(target))
 
 
+def test_empty_xdg_config_dir_component_is_the_targets_cwd(tmp_path, monkeypatch):
+    # pip joins an empty XDG_CONFIG_DIRS component as a relative path.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd.os, "pathsep", ":")
+    launcher_dir = tmp_path / "launcher-dir"
+    target = _target(env={"XDG_CONFIG_DIRS": ":"}, cwd=launcher_dir)
+
+    assert launcher_dir / "pip" / "pip.conf" in real_pip_config_files(target)
+
+
 def test_relative_pip_config_file_resolves_from_the_targets_cwd(tmp_path, monkeypatch):
     # pip reads a relative PIP_CONFIG_FILE from its own working directory,
     # which a launcher may have changed.
@@ -1309,6 +1321,9 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"CURL_CA_BUNDLE": "/corp/ca.pem"}, False),
         ({"SSL_CERT_DIR": "/corp/certs"}, False),
         ({"REQUESTS_CA_BUNDLE": "/corp/ca.pem", "SSL_CERT_FILE": "<ca>"}, True),
+        # pip fails on a bundle it can not load; uv would use its own roots.
+        ({"SSL_CERT_FILE": "<malformed>"}, False),
+        ({"SSL_CERT_FILE": "<ca>"}, True),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<empty>"}, False),
         # An index may serve other packages to anonymous clients; uv ignores
         # an unusable SSL_CLIENT_CERT with only a warning.
