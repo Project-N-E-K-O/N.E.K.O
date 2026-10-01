@@ -66,7 +66,7 @@ beautifulsoup4==4.14.3
     #   markdownify
     #   n-e-k-o
     #   translatepy
-bilibili-api-dev==18.0.0a1
+bilibili-api-dev==18.0.0a2
     # via n-e-k-o
 blessed==1.25.0
     # via inquirer

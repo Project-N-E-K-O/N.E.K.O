@@ -40,7 +40,7 @@ dependencies = [
   "pyrnnoise>=0.4.3 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
   "aiotieba>=4.7.1",
   "beautifulsoup4>=4.12.0",
-  "bilibili-api-dev==18.0.0a1",
+  "bilibili-api-dev==18.0.0a2",
   # Twitch read-only Helix/EventSub integration. OAuth Device Code Flow remains
   # in-tree because TwitchIO 3.2 does not expose the client-secret-free flow.
   "twitchio==3.2.2",
