@@ -1534,7 +1534,7 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
     adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 0.001
 
     await adapter._process_without_vad(
-        _AudioItem(identity=identity, pcm16=b"\x00\x10", duration_us=1_000)
+        _AudioItem(identity=identity, pcm16=b"\x40\x00", duration_us=1_000)
     )
     first_deadline = adapter._strict_endpoint_deadline
     assert first_deadline is not None
@@ -1542,7 +1542,7 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
     retry = asyncio.create_task(adapter._strict_incomplete_wait(identity))
     await asyncio.sleep(0.04)
     await adapter._process_without_vad(
-        _AudioItem(identity=identity, pcm16=b"\x00\x10", duration_us=1_000)
+        _AudioItem(identity=identity, pcm16=b"\x40\x00", duration_us=1_000)
     )
     refreshed_deadline = adapter._strict_endpoint_deadline
     assert refreshed_deadline is not None

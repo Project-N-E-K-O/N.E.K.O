@@ -62,7 +62,9 @@ _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
 _COMMIT_DRAIN_ON_CLOSE_SECONDS = 0.5
 _SPEAKER_SHADOW_REPLACEMENT_CLOSE_SECONDS = 2.0
-_NO_VAD_SPEECH_RMS = 0.015 * 32_768
+# Keep the floor below the AGC noise floor: no-VAD must preserve quiet speech,
+# while an all-zero (digital silence) frame still leaves the deadline alone.
+_NO_VAD_SPEECH_RMS = 0.001 * 32_768
 
 
 @dataclass(frozen=True, slots=True)
