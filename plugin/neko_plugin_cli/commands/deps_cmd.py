@@ -236,8 +236,11 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
     Without --clean the install goes straight into it, as before the swap
     existed. With --clean it goes into a staging dir first, and vendor/ is
     emptied and refilled only once that succeeded, so a failed install
-    (publish always cleans) leaves the working dependencies alone. Either
-    way there is no rollback once vendor/ itself is being written.
+    (publish always cleans) leaves the working dependencies alone. That
+    staging dir lives inside vendor/, on the filesystem vendor/ really is
+    (the other disk a link leads to, the volume): the plugin's own disk may
+    be the one without room, and refilling is then a rename, not a copy.
+    Either way there is no rollback once vendor/ itself is being written.
     """
     print(
         "[WARN] "
@@ -251,6 +254,8 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
         ),
         file=sys.stderr,
     )
+    # Left inside vendor/ by a killed --clean run; it would ship with it.
+    _remove_stale_staging(vendor_dir)
     if not args.clean:
         exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
         if exit_code != 0:
@@ -288,7 +293,7 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             file=sys.stderr,
         )
         return 1
-    staging_dir = vendor_dir.parent / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+    staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
     staging_dir.mkdir()
     try:
         exit_code = _install_to_vendor(external_deps, vendor_dir=staging_dir, python=args.python)
@@ -305,18 +310,20 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             )
             return 1  # the mount check below keeps staging
         _clean_vendor(staging_dir)
-        _empty_directory(vendor_dir)
+        _empty_directory(vendor_dir, keep=staging_dir.name)
         for child in staging_dir.iterdir():
-            shutil.move(str(child), str(vendor_dir / child.name))
+            child.replace(vendor_dir / child.name)
         return 0
     finally:
         if staging_dir.exists() and not _mounted_inside(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-def _empty_directory(directory: Path) -> None:
-    """Delete what is inside directory, keeping directory itself."""
+def _empty_directory(directory: Path, *, keep: str) -> None:
+    """Delete what is inside directory, except the entry named keep."""
     for child in directory.iterdir():
+        if child.name == keep:
+            continue
         if _is_link(child):
             # A link to a directory (or a junction) is removed with rmdir on
             # Windows; neither form follows it.
@@ -641,10 +648,12 @@ def _swapped_by_other_user(backup: Path) -> bool:
         return False
 
 
-def _remove_stale_staging(plugin_dir: Path) -> None:
+def _remove_stale_staging(directory: Path) -> None:
+    """Delete this user's staging dirs in directory: the plugin dir, or a
+    linked / mounted vendor/ that an in-place --clean stages inside."""
     # The sync lock is per user, so holding it only rules out this user's
     # own runs; another user's staging dir may belong to a live install.
-    for path in _sync_work_dirs(plugin_dir, VENDOR_SYNC_STAGING_PREFIX):
+    for path in _sync_work_dirs(directory, VENDOR_SYNC_STAGING_PREFIX):
         try:
             if _owned_by_other_user(path):
                 continue

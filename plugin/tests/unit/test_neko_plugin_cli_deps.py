@@ -503,11 +503,14 @@ def test_linked_vendor_is_synced_in_place(tmp_path, monkeypatch, capsys, clean):
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
-    # --clean installs into staging first and refills vendor/ only on success.
+    # --clean installs into staging first and refills vendor/ only on success;
+    # the staging dir is inside vendor/, on the disk the link leads to.
     if clean:
         assert len(targets) == 1 and targets[0].name.startswith(".vendor.staging-")
+        assert targets[0].parent == link
     else:
         assert targets == [link]
+    assert not list(real_vendor.glob(".vendor.*"))
     assert os.readlink(link)
     assert (real_vendor / "fresh.py").read_text() == "new"
     assert (real_vendor / "old.py").exists() is (not clean)
@@ -1025,6 +1028,29 @@ def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch,
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
     assert (vendor / "old.py").read_text() == "old"
     assert not list(plugin_dir.glob(".vendor.*"))
+    assert not list(vendor.glob(".vendor.*"))
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_in_place_sync_removes_staging_left_inside_vendor(tmp_path, monkeypatch, clean):
+    # A killed in-place --clean leaves its staging dir inside vendor/, which
+    # would otherwise ship with the plugin.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    stale = vendor / ".vendor.staging-0000abcd"
+    stale.mkdir(parents=True)
+    (stale / "half.py").write_text("half")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
+    assert not stale.exists()
 
 
 def test_in_place_clean_without_linux_mount_table_is_refused(tmp_path, monkeypatch, capsys):
