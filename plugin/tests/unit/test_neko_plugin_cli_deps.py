@@ -1255,8 +1255,11 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         # pip's cert replaces the default CA bundle; uv would otherwise trust
         # its bundled roots, and ignores an SSL_CERT_FILE that does not exist.
         ({"PIP_CERT": "/corp/ca.pem"}, False),
-        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<existing>"}, True),
+        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<ca>"}, True),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "/missing/ca.pem"}, False),
+        # uv treats an empty or malformed bundle like an unset one.
+        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<malformed>"}, False),
+        ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<empty>"}, False),
         # An index may serve other packages to anonymous clients; uv ignores
         # an unusable SSL_CLIENT_CERT with only a warning.
         ({"PIP_CLIENT_CERT": "/corp/client.pem"}, False),
@@ -1274,10 +1277,16 @@ def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
                  "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "SSL_CLIENT_CERT"):
         monkeypatch.delenv(name, raising=False)
-    existing = tmp_path / "ca.pem"
-    existing.write_text("pem")
-    identity = _write_client_identity(tmp_path / "client.pem")
-    placeholders = {"<existing>": str(existing), "<identity>": str(identity)}
+    malformed = tmp_path / "malformed.pem"
+    malformed.write_text("pem")
+    empty = tmp_path / "empty.pem"
+    empty.write_text("")
+    placeholders = {
+        "<ca>": str(_write_client_identity(tmp_path / "ca.pem", key=None)),
+        "<malformed>": str(malformed),
+        "<empty>": str(empty),
+        "<identity>": str(_write_client_identity(tmp_path / "client.pem")),
+    }
     for name, value in env.items():
         monkeypatch.setenv(name, placeholders.get(value, value))
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
@@ -1440,7 +1449,7 @@ def test_uv_gets_an_absolute_ca_file_and_an_absolute_uv(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "ca.pem").write_text("pem")
+    _write_client_identity(tmp_path / "ca.pem", key=None)
     monkeypatch.setenv("PIP_CERT", "/corp/ca.pem")
     monkeypatch.setenv("SSL_CERT_FILE", "ca.pem")
     relative_uv = os.path.join("bin", "uv")

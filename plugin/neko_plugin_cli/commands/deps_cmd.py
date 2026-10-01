@@ -753,8 +753,8 @@ _UV_COVERS = {
     "proxy": ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"),
     # pip's cert replaces the default CA bundle (possibly a restrictive one);
     # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE but
-    # silently ignores a path that does not exist; its default TLS backend
-    # does not read SSL_CERT_DIR at all.
+    # silently ignores one it can not load; its default TLS backend does not
+    # read SSL_CERT_DIR at all.
     "cert": ("SSL_CERT_FILE",),
     # An index may serve different packages to anonymous clients; uv reads
     # SSL_CLIENT_CERT (certificate and key in one PEM file) but goes
@@ -916,12 +916,24 @@ def _uv_env_set(name: str) -> bool:
     if not value:
         return False
     if name == "SSL_CERT_FILE":
-        return Path(value).is_file()
+        return _ca_bundle_loads(value)
     if name == "SSL_CLIENT_CERT":
         return _client_identity_loads(value)
     if name in _UV_BOOLEAN_ENV:
         # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
+    return True
+
+
+def _ca_bundle_loads(path: str) -> bool:
+    """Whether path loads as a CA bundle (an empty or malformed one raises):
+    uv treats an SSL_CERT_FILE it can not load like an unset one and trusts
+    its bundled roots instead."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        context.load_verify_locations(cafile=path)
+    except (OSError, ValueError):  # ssl.SSLError is an OSError
+        return False
     return True
 
 
