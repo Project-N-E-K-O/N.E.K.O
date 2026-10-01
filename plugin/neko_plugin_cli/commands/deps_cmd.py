@@ -649,24 +649,22 @@ def _install_to_vendor(
         ]
         label = "pip install"
     result = _run_installer(command, label=label)
+    if result is not None and result.returncode != 0:
+        print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
+        print(result.stdout, file=sys.stderr)
     if uv is None:
-        # pip's output may have pushed the warning off screen.
+        # Last, after any installer output that may have scrolled the
+        # warning away.
         print(
             "[WARN] "
             + _tri(
-                "vendor/ was installed with pip, not uv; see the warning above.",
-                "vendor/ 是用 pip 而不是 uv 安装的，见上方警告。",
-                "vendor/ は uv ではなく pip でインストールされました。上の警告を参照してください。",
+                "This sync used pip, not uv; see the warning above.",
+                "本次同步用的是 pip 而不是 uv，见上方警告。",
+                "今回の同期は uv ではなく pip を使用しました。上の警告を参照してください。",
             ),
             file=sys.stderr,
         )
-    if result is None:
-        return 1
-    if result.returncode != 0:
-        print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
-        print(result.stdout, file=sys.stderr)
-        return 1
-    return 0
+    return 0 if result is not None and result.returncode == 0 else 1
 
 
 def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:

@@ -1313,8 +1313,8 @@ class TestTransactionalDependencyInstall:
         error = capsys.readouterr().err
         for text in ("This project requires uv", "本项目强制要求使用 uv", "uv の使用を必須"):
             assert text in error
-        # Repeated after pip's output, which may have scrolled the warning away.
-        assert "vendor/ was installed with pip, not uv" in error
+        # Repeated at the end, after any installer output.
+        assert error.rstrip().endswith("上の警告を参照してください。")
 
     def test_uv_failure_does_not_fall_back_to_pip(
         self,
@@ -1363,6 +1363,8 @@ class TestTransactionalDependencyInstall:
         assert "uv was not found" in error
         assert "https://docs.astral.sh/uv/" in error
         assert "No module named pip" in error
+        # The reminder comes after pip's error output, not before it.
+        assert error.index("No module named pip") < error.index("This sync used pip, not uv")
 
     @pytest.mark.parametrize("clean", [False, True])
     def test_install_failure_preserves_existing_vendor(
