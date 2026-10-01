@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -121,6 +122,19 @@ def is_vendor_sync_path(relative_path: Path) -> bool:
     return bool(relative_path.parts) and bool(
         _VENDOR_SYNC_NAME_RE.fullmatch(relative_path.parts[0])
     )
+
+
+def walk_plugin_tree(source_dir: Path) -> list[Path]:
+    """Every path under source_dir, like sorted(source_dir.rglob("*")), but
+    without descending into sync work dirs: a backup is retained when it
+    holds a mount, and walking it could enumerate another filesystem."""
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source_dir):
+        base = Path(dirpath)
+        if base == source_dir:
+            dirnames[:] = [name for name in dirnames if not _VENDOR_SYNC_NAME_RE.fullmatch(name)]
+        paths.extend(base / name for name in (*dirnames, *filenames))
+    return sorted(paths)
 
 
 def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) -> bool:

@@ -845,9 +845,9 @@ def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
         upper = env_name.upper() if sys.platform == "win32" else env_name
         if not upper.startswith("PIP_") or upper == "PIP_CONFIG_FILE" or not value:
             continue
-        name = upper[4:].lower().replace("_", "-")
-        if not _explicitly_off(name, value):
-            found.setdefault(name, []).append(env_name)
+        setting = _effective_setting(upper[4:].lower().replace("_", "-"), value)
+        if setting is not None:
+            found.setdefault(setting, []).append(env_name)
     # pip's TLS also takes its CA set from these (requests and OpenSSL
     # conventions); uv's default TLS ignores them, or (SSL_CERT_FILE) one it
     # can not load where pip would fail. Each counts as pip's cert and needs
@@ -915,14 +915,15 @@ def _config_setting_keys(path: Path) -> set[str]:
     # Any file enabling a setting counts, even if another file might override
     # it: emulating pip's full config precedence is not worth the risk here,
     # and the error in that case only asks for a uv setting or pip itself.
-    # `pip install` reads only [global] and its own [install] section.
-    return {
-        key.replace("_", "-")
+    # `pip install` reads only [global] and its own [install] section, by
+    # exact (lowercase) name.
+    settings = (
+        _effective_setting(key.replace("_", "-"), value)
         for section in parser.sections()
-        if section.lower() in {"global", "install"}
+        if section in {"global", "install"}
         for key, value in parser[section].items()
-        if not _explicitly_off(key.replace("_", "-"), value)
-    }
+    )
+    return {setting for setting in settings if setting is not None}
 
 
 def _uv_env_set(name: str) -> bool:
@@ -1000,13 +1001,18 @@ _PIP_BOOLEAN_SETTINGS = {
 }
 
 
-def _explicitly_off(name: str, value: str) -> bool:
-    return name in _PIP_BOOLEAN_SETTINGS and _pip_false(value)
-
-
-def _pip_false(value: str) -> bool:
-    # pip parses booleans with strtobool; unparseable values stay strict.
-    return value.strip().lower() in {"n", "no", "f", "false", "off", "0"}
+def _effective_setting(name: str, value: str) -> str | None:
+    """The setting as it counts: None for a boolean switched off. pip parses
+    booleans with strtobool and exits on any other value, so an unparseable
+    one counts as an unknown setting and the fallback fails closed too."""
+    if name not in _PIP_BOOLEAN_SETTINGS:
+        return name
+    lowered = value.strip().lower()
+    if lowered in {"n", "no", "f", "false", "off", "0"}:
+        return None
+    if lowered in {"y", "yes", "t", "true", "on", "1"}:
+        return name
+    return f"{name} (invalid value {value!r})"
 
 
 def _uv_env() -> dict[str, str]:

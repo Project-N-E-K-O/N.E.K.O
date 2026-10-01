@@ -466,6 +466,9 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
         ({"PIP_NO_COMPILE": "0"}, True),
         # ... but one that only silences a warning stays harmless.
         ({"PIP_NO_WARN_CONFLICTS": "false"}, False),
+        # pip exits on a boolean it can not parse; so does the fallback.
+        ({"PIP_NO_INDEX": "maybe"}, True),
+        ({"PIP_NO_DEPS": "maybe"}, True),
         # use-pep517 defaults to unset: false is a policy (legacy builds, or
         # refusing a declared backend) that uv would not follow.
         ({"PIP_USE_PEP517": "false"}, True),
@@ -2279,3 +2282,18 @@ class TestTransactionalDependencyInstall:
         finally:
             os.umask(old_umask)
         assert (plugin_dir / "vendor").stat().st_mode & 0o777 == 0o755
+
+
+def test_config_sections_match_pip_exactly(tmp_path):
+    # pip reads only the lowercase [global] / [install] sections, and exits
+    # on a boolean it can not parse.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    config = tmp_path / "pip.conf"
+    config.write_text(
+        "[GLOBAL]\nindex-url = https://ignored/simple\n"
+        "[install]\nno-deps = maybe\nno-clean = false\n",
+        encoding="utf-8",
+    )
+
+    assert deps_cmd._config_setting_keys(config) == {"no-deps (invalid value 'maybe')"}

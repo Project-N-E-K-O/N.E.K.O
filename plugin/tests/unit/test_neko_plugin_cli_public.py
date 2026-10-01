@@ -968,3 +968,33 @@ def test_build_metadata_does_not_store_absolute_source_paths(tmp_path: Path) -> 
 
     assert str(plugin_dir.resolve()) not in metadata
     assert 'paths = ["metadata_demo"]' in metadata
+
+
+def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeypatch):
+    # A backup is retained when it holds a mount; build/pack must not walk it.
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / ".vendor.backup-0a1b2c3d" / "deep").mkdir(parents=True)
+    (tmp_path / ".vendor.backup-0a1b2c3d.pending").touch()
+    (tmp_path / ".vendor.backup-notes").mkdir()
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
+    visited = []
+    real_walk = build_rules.os.walk
+
+    def walk(top, *args, **kwargs):
+        for entry in real_walk(top, *args, **kwargs):
+            visited.append(Path(entry[0]).relative_to(tmp_path))
+            yield entry
+
+    monkeypatch.setattr(build_rules.os, "walk", walk)
+    paths = build_rules.walk_plugin_tree(tmp_path)
+
+    assert not any(
+        path.parts and path.parts[0] == ".vendor.backup-0a1b2c3d" for path in visited
+    )
+    assert paths == sorted(
+        path
+        for path in tmp_path.rglob("*")
+        if path.relative_to(tmp_path).parts[0] != ".vendor.backup-0a1b2c3d"
+    )
