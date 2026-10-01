@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import configparser
 import hashlib
-import json
 import os
 import re
 import shutil
-import ssl
 import stat
 import subprocess
 import sys
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -49,8 +45,8 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         "--python",
         default=sys.executable,
         help=(
-            "Target Python interpreter; its pip installs the dependencies, "
-            "or uv does when that interpreter has no pip"
+            "Target Python interpreter; uv installs the dependencies for it "
+            "(falls back to its pip, with a warning, only when uv is not found)"
         ),
     )
     sync_parser.add_argument(
@@ -180,7 +176,7 @@ def handle_sync(args: argparse.Namespace) -> int:
             else:
                 staging_dir.mkdir()
 
-            exit_code = _pip_install_to_vendor(
+            exit_code = _install_to_vendor(
                 external_deps, vendor_dir=staging_dir, python=args.python,
             )
             if exit_code != 0:
@@ -375,15 +371,13 @@ def _lock_identity(plugin_dir: Path) -> bytes:
     return os.fsencode(os.path.normcase(str(plugin_dir.resolve())))
 
 
-# Windows known folders, as SHGetKnownFolderPath reports them.
+# FOLDERID_LocalAppData, as SHGetKnownFolderPath reports it.
 _FOLDERID_LOCAL_APPDATA = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
-_FOLDERID_ROAMING_APPDATA = "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D"
-_FOLDERID_PROGRAM_DATA = "62AB5D82-FDC1-4DC3-A9DD-070D1D495D97"
 
 
 def _windows_known_folder(folder_id: str) -> Path | None:
-    """A known folder from the shell, not from LOCALAPPDATA / APPDATA /
-    PROGRAMDATA / TEMP, which a process may have set to something else."""
+    """A known folder from the shell, not from LOCALAPPDATA / TEMP, which a
+    process may have set to something else."""
     try:
         import ctypes
 
@@ -445,16 +439,6 @@ def _make_private(directory: Path) -> None:
     # here so the private dir falls back instead of every lock open failing.
     if not os.access(directory, os.W_OK | os.X_OK):
         raise PermissionError(f"lock directory {directory} is not writable")
-
-
-def _absolute_if_path(program: str) -> str:
-    """Pin an interpreter to what it means in this process's cwd: a path is
-    made absolute, and a bare name is resolved through PATH here (a relative
-    PATH entry would change meaning in another cwd)."""
-    if any(sep and sep in program for sep in (os.sep, os.altsep)):
-        return os.path.abspath(program)
-    found = shutil.which(program)
-    return os.path.abspath(found) if found else program
 
 
 def _short_token() -> str:
@@ -590,512 +574,102 @@ def _unreconciled_backups(plugin_dir: Path, vendor_dir: Path) -> list[Path]:
     return [] if vendor_dir.exists() else backups
 
 
-def _pip_install_to_vendor(
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
+
+
+_PIP_FALLBACK_BANNER = "!" * 78
+_PIP_FALLBACK_WARNING = "\n".join([
+    _PIP_FALLBACK_BANNER,
+    "[WARN] uv was not found; falling back to pip.",
+    "  This project requires uv. pip reads a different configuration (pip.conf,",
+    "  PIP_* variables) and resolves dependencies its own way, so vendor/ may",
+    "  not match what uv installs, with unpredictable results. Install uv",
+    "  (https://docs.astral.sh/uv/) and run this command again.",
+    "[警告] 未找到 uv，改用 pip 安装。",
+    "  本项目强制要求使用 uv。pip 读取的是另一套配置（pip.conf、PIP_* 环境变量），",
+    "  解析依赖的方式也不同，装出的 vendor/ 可能与 uv 不一致，后果不可预测。",
+    "  请安装 uv（https://docs.astral.sh/uv/）后重新运行本命令。",
+    "[警告] uv が見つからないため、pip にフォールバックします。",
+    "  本プロジェクトは uv の使用を必須としています。pip は別の設定（pip.conf、",
+    "  PIP_* 環境変数）を読み、依存関係の解決方法も異なるため、vendor/ が uv の",
+    "  結果と一致せず、予測できない問題が起きる可能性があります。",
+    "  uv（https://docs.astral.sh/uv/）をインストールして、再実行してください。",
+    _PIP_FALLBACK_BANNER,
+])
+
+
+def _find_uv() -> str | None:
+    # `uv run` exports its own path as UV, which finds uv even when it is not
+    # on PATH (installed with pipx, or `py -m uv` on Windows).
+    for candidate in (os.environ.get("UV"), "uv"):
+        found = shutil.which(candidate) if candidate else None
+        if found:
+            return found
+    return None
+
+
+def _install_to_vendor(
     packages: list[str],
     *,
     vendor_dir: Path,
     python: str,
 ) -> int:
-    """Install packages into vendor/ with the target Python's pip.
+    """Install packages into vendor/ for the target interpreter.
 
-    Interpreters created by uv ship without pip; only then (as the target
-    itself reports) fall back to
-    ``uv pip install``. Trying pip first keeps pip's own configuration
-    (pip.conf, PIP_INDEX_URL mirrors) in effect for everyone who has pip, and
-    a uv failure can never block an install pip would have completed.
-
-    The uv fallback runs with uv's own configuration untouched. Mapping pip's
-    index variables into UV_* would override uv.toml / [tool.uv] indexes,
-    because uv ranks environment variables above its config files. But uv
-    silently ignores pip's settings: a private index would fall through to
-    public PyPI (a same-name public package could stand in), and policies
-    like require-hashes or only-binary would be dropped. So any pip setting
-    that is not known to be harmless, and not covered by a matching uv
-    variable, fails closed.
+    The project requires uv: `uv pip install` (uv's own installer, not pip)
+    installs for the target interpreter, which needs no pip of its own, and
+    reads uv's configuration (uv.toml, UV_* variables). Only when uv can not
+    be found does the target's own pip install them, behind a warning: pip
+    reads another configuration and resolves differently.
     """
     if not packages:
         return 0
 
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
-    result = _run_installer(
-        [
+    uv = _find_uv()
+    if uv is not None:
+        command = [
+            uv, "pip", "install",
+            "--python", python,
+            "--target", str(vendor_dir),
+            "--upgrade",
+            *packages,
+        ]
+        label = "uv pip install"
+    else:
+        print(_PIP_FALLBACK_WARNING, file=sys.stderr)
+        command = [
             python, "-m", "pip", "install",
             "--target", str(vendor_dir),
             "--upgrade",
             "--no-user",
             *packages,
-        ],
-        label=f"target Python {python!r}",
-    )
-    if result is None:
-        return 1
-    if result.returncode == 0:
-        return 0
-    # Ask the target whether it has pip at all, rather than reading the
-    # install log: a startup banner can surround the launch error, and a real
-    # install log can mention "No module named pip" too. If the target can
-    # not be asked, do not fall back.
-    target = _probe_target(python)
-    if target is None or target.has_pip:
-        print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
-        print(result.stdout, file=sys.stderr)
-        return 1
-
-    # `uv run` exports its own path as UV, which finds uv even when it is not
-    # on PATH (e.g. installed with pipx or `py -m uv` on Windows).
-    # A bare name in UV ("uv") is a PATH lookup, not a file in this cwd; a UV
-    # that does not name an existing file falls back to PATH. The result is
-    # absolute, since uv runs in target.cwd.
-    uv_from_env = os.environ.get("UV")
-    uv = _absolute_if_path(uv_from_env) if uv_from_env else None
-    if not uv or not Path(uv).is_file():
-        found = shutil.which("uv")
-        uv = os.path.abspath(found) if found else None
-    if not uv:
+        ]
+        label = "pip install"
+    result = _run_installer(command, label=label)
+    if uv is None:
+        # pip's output may have pushed the warning off screen.
         print(
-            "[FAIL] Unable to install plugin dependencies: the target Python "
-            "has no pip and uv was not found. Install uv, or run "
-            "python -m ensurepip --upgrade.",
+            "[WARN] "
+            + _tri(
+                "vendor/ was installed with pip, not uv; see the warning above.",
+                "vendor/ 是用 pip 而不是 uv 安装的，见上方警告。",
+                "vendor/ は uv ではなく pip でインストールされました。上の警告を参照してください。",
+            ),
             file=sys.stderr,
         )
-        return 1
-    settings = _pip_settings(target)
-    # pip's no-index is passed on as uv's --no-index flag (uv reads no
-    # environment variable for it). With no index, pip ignores its index
-    # settings, and so will uv.
-    no_index = "no-index" in settings
-    # Coverage is checked against exactly the environment uv will get.
-    uv_env = _uv_env(target)
-    uncovered: list[str] = []
-    for name, where in sorted(settings.items()):
-        if name in _PIP_HARMLESS_SETTINGS or name == "no-index":
-            continue
-        kind = _PIP_SETTING_KINDS.get(name, "other")
-        if no_index and kind in {"index", "extra-index"}:
-            continue
-        if name == "require-virtualenv":
-            # pip refuses to install outside a venv; uv would not check.
-            if not target.in_venv:
-                uncovered.append(
-                    f"{name} from {', '.join(where)} (the target Python is not a virtual environment)"
-                )
-            continue
-        covers = _UV_COVERS[kind]
-        # pip's explicit proxy ignores NO_PROXY; uv honors it per host. Which
-        # hosts uv will contact (indexes, redirected downloads) can not be
-        # listed up front, so any bypass list at all fails closed.
-        bypass_all = kind == "proxy" and any(
-            (uv_env.get(name) or "").strip() for name in ("NO_PROXY", "no_proxy")
-        )
-        if kind == "proxy":
-            covered = all(
-                any(_uv_env_set(uv_name, uv_env) for uv_name in scheme)
-                for scheme in _UV_PROXY_SCHEMES
-            )
-        else:
-            covered = any(_uv_env_set(uv_name, uv_env) for uv_name in covers)
-        if bypass_all or not covered:
-            if kind == "proxy":
-                fix = "set ALL_PROXY, or both HTTPS_PROXY and HTTP_PROXY, and no NO_PROXY"
-            elif covers:
-                fix = f"set {' or '.join(covers)}"
-            else:
-                fix = "no uv equivalent"
-            uncovered.append(f"{name} from {', '.join(where)} ({fix})")
-    if uncovered:
-        print(
-            "[FAIL] The target Python has no pip, and pip has settings that uv "
-            f"does not read: {'; '.join(uncovered)}. Installing with uv would "
-            "ignore them. Configure uv the same way, or run "
-            "python -m ensurepip --upgrade so pip installs with its own settings.",
-            file=sys.stderr,
-        )
-        return 1
-    print("  target Python has no pip; installing with uv instead")
-    result = _run_installer(
-        [
-            uv, "pip", "install",
-            # uv runs in target.cwd, so pin the interpreter to what it means
-            # here, where the pip attempt resolved it.
-            "--python", _absolute_if_path(python),
-            "--target", str(vendor_dir.absolute()),
-            "--upgrade",
-            *(["--no-index"] if no_index else []),
-            *packages,
-        ],
-        label="uv pip install",
-        # The pip attempt ran (through any launcher) in target.cwd, so
-        # relative requirements such as "pkg @ file:./pkg" resolve the same.
-        cwd=target.cwd,
-        env=uv_env,
-    )
     if result is None:
         return 1
     if result.returncode != 0:
-        print(f"[FAIL] uv pip install failed (exit {result.returncode}):", file=sys.stderr)
+        print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         return 1
     return 0
 
 
-# pip settings by option name; env PIP_FOO_BAR is the same setting as the
-# config key foo-bar. Package-source and hash settings have uv counterparts.
-_PIP_SETTING_KINDS = {
-    "index-url": "index",
-    "extra-index-url": "extra-index",
-    "no-index": "no-index",
-    "find-links": "find-links",
-    "require-hashes": "require-hashes",
-    "proxy": "proxy",
-    "cert": "cert",
-    "client-cert": "client-cert",
-}
-# Settings that cannot make uv install different packages when dropped:
-# output, caching, retries, and options both installers are given
-# explicitly anyway. Every other pip setting (only-binary,
-# constraint, pre, ...) has no checked uv counterpart here and blocks the
-# fallback, since uv would silently ignore it.
-_PIP_HARMLESS_SETTINGS = {
-    "break-system-packages",
-    "cache-dir",
-    "default-timeout",
-    "disable-pip-version-check",
-    "log",
-    "log-file",
-    "no-cache-dir",
-    "no-color",
-    "no-input",
-    "no-python-version-warning",
-    "no-warn-conflicts",
-    "no-warn-script-location",
-    "progress-bar",
-    "quiet",
-    "retries",
-    "root-user-action",
-    # Overridden by the explicit --target/--upgrade of both installers.
-    "target",
-    "upgrade",
-    "timeout",
-    "trusted-host",
-    # pip is given --no-user explicitly; uv's --target never installs to the
-    # user site either.
-    "no-user",
-    "user",
-    "verbose",
-}
-# uv environment variables that keep each kind of pip setting from being
-# lost (all checked against `uv pip install --help` env bindings). pip's
-# index-url replaces PyPI, so only a replaced uv default index covers it;
-# UV_INDEX / UV_EXTRA_INDEX_URL / UV_FIND_LINKS are only added next to PyPI,
-# so each covers only pip's additive kinds. uv has no environment variable
-# for --no-index: pip's no-index is carried over by passing the flag itself
-# (see _pip_install_to_vendor), which only makes uv stricter.
-_UV_COVERS = {
-    "index": ("UV_DEFAULT_INDEX", "UV_INDEX_URL"),
-    "extra-index": ("UV_DEFAULT_INDEX", "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL"),
-    "find-links": ("UV_FIND_LINKS",),
-    # uv only reads its own variable; without it uv installs unhashed.
-    "require-hashes": ("UV_REQUIRE_HASHES",),
-    # uv has no proxy option but honors the standard proxy variables, per URL
-    # scheme; without them uv would bypass a filtering proxy and connect
-    # directly. Both schemes must be covered (see _UV_PROXY_SCHEMES).
-    "proxy": ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"),
-    # pip's cert replaces the default CA bundle (possibly a restrictive one);
-    # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE but
-    # silently ignores one it can not load; its default TLS backend does not
-    # read SSL_CERT_DIR at all.
-    "cert": ("SSL_CERT_FILE",),
-    # An index may serve different packages to anonymous clients; uv reads
-    # SSL_CLIENT_CERT (certificate and key in one PEM file) but goes
-    # anonymous when it can not load it.
-    "client-cert": ("SSL_CLIENT_CERT",),
-    "other": (),
-}
-_UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
-_PIP_CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR")
-# pip's proxy applies to every URL, and an index, find-links page or direct
-# reference may be http as well as https: uv must have a proxy for each.
-_UV_PROXY_SCHEMES = (
-    ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
-    ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"),
-)
-
-
-@dataclass(frozen=True)
-class _TargetPython:
-    """What the target interpreter reports about itself."""
-
-    has_pip: bool
-    prefix: Path
-    in_venv: bool
-    # The environment and working directory the target actually runs with:
-    # a launcher or shim (pyenv, asdf, a wrapper script) may export PIP_*,
-    # or cd, before exec'ing it.
-    env: dict[str, str]
-    cwd: Path
-    # "~" as the target expands it (from its own HOME / USERPROFILE /
-    # HOMEPATH or account record), which is what pip's config paths use.
-    home: Path
-
-
-_TARGET_PROBE = (
-    "import importlib.util, json, os, sys; "
-    "print(json.dumps({"
-    "'has_pip': importlib.util.find_spec('pip') is not None, "
-    "'prefix': sys.prefix, "
-    "'in_venv': sys.prefix != sys.base_prefix, "
-    "'env': dict(os.environ), "
-    "'cwd': os.getcwd(), "
-    "'home': os.path.expanduser('~')}))"
-)
-
-
-def _probe_target(python: str) -> _TargetPython | None:
-    """Ask the target interpreter about itself; None if it can not answer."""
-    try:
-        result = subprocess.run(
-            [python, "-c", _TARGET_PROBE],
-            text=True,
-            capture_output=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    # Startup output (a sitecustomize banner) may precede the JSON line.
-    for line in reversed((result.stdout or "").splitlines()):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env", "cwd", "home"} <= data.keys():
-            return _TargetPython(
-                has_pip=bool(data["has_pip"]),
-                prefix=Path(data["prefix"]),
-                in_venv=bool(data["in_venv"]),
-                env={str(k): str(v) for k, v in dict(data["env"]).items()},
-                cwd=Path(data["cwd"]),
-                home=Path(data["home"]),
-            )
-    return None
-
-
-def _pip_settings(target: _TargetPython) -> dict[str, list[str]]:
-    """pip settings in effect for the target (its environment and pip's
-    config files), mapped to where each one is set. A boolean option set to
-    false does not count."""
-    env = target.env
-    found: dict[str, list[str]] = {}
-    for env_name, value in env.items():
-        # Environment names are case-insensitive only on Windows; elsewhere
-        # pip ignores e.g. "pip_constraint".
-        upper = env_name.upper() if sys.platform == "win32" else env_name
-        if not upper.startswith("PIP_") or upper == "PIP_CONFIG_FILE" or not value:
-            continue
-        setting = _effective_setting(upper[4:].lower().replace("_", "-"), value)
-        if setting is not None:
-            found.setdefault(setting, []).append(env_name)
-    # pip's TLS also takes its CA set from these (requests and OpenSSL
-    # conventions); uv's default TLS ignores them, or (SSL_CERT_FILE) one it
-    # can not load where pip would fail. Each counts as pip's cert and needs
-    # a loadable SSL_CERT_FILE for uv.
-    for env_name in _PIP_CA_ENV:
-        if _env_get(env, env_name):
-            found.setdefault("cert", []).append(env_name)
-    config_file = _env_get(env, "PIP_CONFIG_FILE")
-    if config_file == os.devnull:
-        # pip documents this value as "load no config files".
-        return found
-    # pip resolves a relative PIP_CONFIG_FILE from its own working directory.
-    candidates = [target.cwd / config_file] if config_file else []
-    for path in [*candidates, *_pip_config_files(target)]:
-        for key in _config_setting_keys(path):
-            found.setdefault(key, []).append(str(path))
-    return found
-
-
-def _env_get(env: dict[str, str], name: str) -> str | None:
-    # Windows environment names are case-insensitive.
-    if sys.platform == "win32":
-        return next((v for k, v in env.items() if k.upper() == name), None)
-    return env.get(name)
-
-
-def _pip_config_files(target: _TargetPython) -> list[Path]:
-    """pip's documented global, user and site config file locations, as the
-    target's environment resolves them."""
-    env = target.env
-    files: list[Path] = []
-    home = target.home
-    if sys.platform == "win32":
-        # pip's platformdirs asks the shell for these folders; the variables
-        # are what a launcher may have changed. Scanning both only adds files.
-        bases = [
-            _env_get(env, "PROGRAMDATA"),
-            _windows_known_folder(_FOLDERID_PROGRAM_DATA),
-            _env_get(env, "APPDATA"),
-            _windows_known_folder(_FOLDERID_ROAMING_APPDATA),
-        ]
-        for base in dict.fromkeys(base for base in bases if base):
-            files.append(Path(base, "pip", "pip.ini"))
-        files.append(home / "pip" / "pip.ini")
-        site_name = "pip.ini"
-    else:
-        xdg_dirs = env.get("XDG_CONFIG_DIRS") or "/etc/xdg"
-        # An empty component is kept: pip reads it as its working directory.
-        files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep))
-        files.append(Path("/etc/pip.conf"))
-        if sys.platform == "darwin":
-            files.append(Path("/Library/Application Support/pip/pip.conf"))
-            files.append(home / "Library" / "Application Support" / "pip" / "pip.conf")
-        files.append(Path(env.get("XDG_CONFIG_HOME") or home / ".config", "pip", "pip.conf"))
-        files.append(home / ".pip" / "pip.conf")
-        site_name = "pip.conf"
-    # Site config sits in the target environment's own prefix.
-    files.append(target.prefix / site_name)
-    # pip resolves relative bases (HOME, XDG_CONFIG_HOME, XDG_CONFIG_DIRS)
-    # from its own working directory; absolute paths are unchanged by this.
-    return [target.cwd / path for path in files]
-
-
-def _config_setting_keys(path: Path) -> set[str]:
-    parser = configparser.RawConfigParser()
-    try:
-        if not parser.read(path, encoding="utf-8"):
-            return set()
-    except (configparser.Error, UnicodeDecodeError):
-        # pip itself would reject this file; it counts as an unknown setting.
-        return {"(unreadable config)"}
-    # Any file enabling a setting counts, even if another file might override
-    # it: emulating pip's full config precedence is not worth the risk here,
-    # and the error in that case only asks for a uv setting or pip itself.
-    # `pip install` reads only [global] and its own [install] section, by
-    # exact (lowercase) name.
-    settings = (
-        _effective_setting(key.replace("_", "-"), value)
-        for section in parser.sections()
-        if section in {"global", "install"}
-        for key, value in parser[section].items()
-    )
-    return {setting for setting in settings if setting is not None}
-
-
-def _uv_env_set(name: str, env: dict[str, str]) -> bool:
-    value = env.get(name)
-    if not value:
-        return False
-    if name == "SSL_CERT_FILE":
-        return _ca_bundle_loads(value)
-    if name == "SSL_CLIENT_CERT":
-        return _client_identity_loads(value)
-    if name in _UV_BOOLEAN_ENV:
-        # uv parses these as booleans: "0" / "false" turn them off.
-        return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
-    return True
-
-
-def _ca_bundle_loads(path: str) -> bool:
-    """Whether path loads as a CA bundle (an empty or malformed one raises):
-    uv treats an SSL_CERT_FILE it can not load like an unset one and trusts
-    its bundled roots instead."""
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    try:
-        context.load_verify_locations(cafile=path)
-    except (OSError, ValueError):  # ssl.SSLError is an OSError
-        return False
-    return True
-
-
-def _client_identity_loads(path: str) -> bool:
-    """Whether path holds a certificate with its matching private key, as uv
-    needs: uv only warns about an unreadable or unusable file and connects
-    without a client certificate."""
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    try:
-        # An encrypted key gets an empty password instead of a terminal
-        # prompt; uv can not decrypt it either.
-        context.load_cert_chain(path, password=lambda: b"")
-    except (OSError, ValueError):  # ssl.SSLError is an OSError
-        return False
-    return True
-
-
-# pip's store_true flags (of `pip install` and the general options, per pip
-# 25 --help). Only these are switched off by a false value. Not listed: the
-# store_false "no-*" flags (no-build-isolation, no-compile, ...), where pip
-# assigns a configured false straight to the option and so turns the "no-"
-# behavior on; use-pep517, whose default is unset, so false is a policy
-# (legacy builds) uv would not follow; and value options, where "off" or "0"
-# is a real value.
-_PIP_BOOLEAN_SETTINGS = {
-    "break-system-packages",
-    "check-build-dependencies",
-    "compile",
-    "debug",
-    "disable-pip-version-check",
-    "dry-run",
-    "force-reinstall",
-    "ignore-installed",
-    "ignore-requires-python",
-    "isolated",
-    "no-cache-dir",
-    "no-clean",
-    "no-color",
-    "no-deps",
-    "no-index",
-    "no-input",
-    "no-proxy-env",
-    "no-require-hashes",
-    "pre",
-    "prefer-binary",
-    "require-hashes",
-    "require-virtualenv",
-    "upgrade",
-    "user",
-}
-
-
-def _effective_setting(name: str, value: str) -> str | None:
-    """The setting as it counts: None for a boolean switched off. pip parses
-    booleans with strtobool and exits on any other value, so an unparseable
-    one counts as an unknown setting and the fallback fails closed too."""
-    if name not in _PIP_BOOLEAN_SETTINGS:
-        return name
-    lowered = value.strip().lower()
-    if lowered in {"n", "no", "f", "false", "off", "0"}:
-        return None
-    if lowered in {"y", "yes", "t", "true", "on", "1"}:
-        return name
-    return f"{name} (invalid value {value!r})"
-
-
-def _uv_env(target: _TargetPython) -> dict[str, str]:
-    """This process's environment for uv, with relative SSL_CERT_FILE /
-    SSL_CLIENT_CERT pinned: uv runs in another cwd, where a checked file may
-    not exist and uv would silently ignore it.
-
-    A CA bundle the target itself was given (through a launcher, maybe from
-    another cwd) is what pip trusted, so uv gets that same file.
-    """
-    env = dict(os.environ)
-    for name in ("SSL_CERT_FILE", "SSL_CLIENT_CERT"):
-        if env.get(name):
-            env[name] = os.path.abspath(env[name])
-    target_ca = _env_get(target.env, "SSL_CERT_FILE")
-    if target_ca:
-        env["SSL_CERT_FILE"] = str(target.cwd / target_ca)
-    return env
-
-
-def _run_installer(
-    cmd: list[str],
-    *,
-    label: str,
-    cwd: Path | None = None,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str] | None:
+def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -1103,8 +677,6 @@ def _run_installer(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=cwd,
-            env=env,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)
