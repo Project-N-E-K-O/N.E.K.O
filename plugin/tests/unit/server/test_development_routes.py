@@ -342,7 +342,8 @@ async def test_ordinary_refresh_still_allows_lan_without_development_records(app
     monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [])
     monkeypatch.setattr(routes.registry_service, "refresh_plugin", AsyncMock(return_value={"success": True}))
     monkeypatch.setattr(routes.registry_service, "refresh_registry", AsyncMock(return_value={"success": True}))
-    async with client(app, headers=mutation_headers()) as http:
+    async with client(app, peer="192.168.1.2", host="192.168.1.5:48911",
+                      headers=mutation_headers(Origin="http://192.168.1.5:48911")) as http:
         assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
         assert (await http.post("/plugins/refresh")).status_code == 200
 
@@ -486,14 +487,15 @@ async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("registered", [False, True])
-async def test_ordinary_bulk_reload_remains_available_locally(app, monkeypatch, registered):
+async def test_ordinary_bulk_reload_remains_available_remotely(app, monkeypatch, registered):
     from types import SimpleNamespace
     store.set_enabled_sync(True)
     monkeypatch.setattr(routes, "list_registration_records_sync",
                         lambda: [SimpleNamespace(plugin_id="stopped_development")] if registered else [])
     action = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
-    async with client(app, headers=mutation_headers()) as http:
+    async with client(app, peer="192.168.1.2", host="192.168.1.5:48911",
+                      headers=mutation_headers(Origin="http://192.168.1.5:48911")) as http:
         response = await http.post("/plugins/reload")
         assert response.status_code == (403 if registered else 200)
     if registered:
@@ -543,10 +545,13 @@ async def test_remote_reload_cannot_publish_stopped_development_metadata(app, tm
     assert response.status_code == 403
     assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
 
-    async with client(app, peer="192.168.1.2", headers=mutation_headers(**{"X-Neko-Development": "1"})) as http:
+    # Ordinary NAS mutations pass CSRF; development metadata still requires
+    # its independent loopback provenance even with the development marker.
+    async with client(app, peer="192.168.1.2", host="192.168.1.5:48911",
+                      headers=mutation_headers(Origin="http://192.168.1.5:48911", **{"X-Neko-Development": "1"})) as http:
         response = await http.post("/plugins/reload")
     assert response.status_code == 403
-    assert response.headers["X-Error-Code"] == "csrf_validation_failed"
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
     assert state.plugins["demo"]["name"] == "Before"
     # Exercise the actual lifecycle refresh, with no host stop/start mocks.
     async with client(app, headers=mutation_headers(**{"X-Neko-Development": "1"})) as http:

@@ -40,6 +40,12 @@ npm install
 
 ### 启动开发服务器
 
+默认 Vite 页面来源是 `http://localhost:5173`。启动插件后端前，在后端进程环境中设置
+`NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS=http://localhost:5173`，才能获取生命周期操作的 CSRF token。
+如使用 `127.0.0.1` 或其他开发端口，填写实际完整来源；多个来源以逗号分隔。
+后端不会默认信任所有运行在 5173 的网页。此配置仅用于开发，官方 NAS/Docker 部署无需设置。
+允许列表中的网页可以读取主服务与插件服务共享的实例 token，只应添加受信任的开发页面。
+
 ```bash
 npm run dev
 ```

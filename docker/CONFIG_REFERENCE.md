@@ -87,6 +87,8 @@
 
 > **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。Nginx 反代配置里只有主服务的上游端口跟随 `NEKO_MAIN_SERVER_PORT`，记忆（48912）、Agent（48915）、插件（48916）的上游端口都写死了，所以在容器里不要改这三个端口。
 
+> **插件安全与 NAS 兼容**：官方 HTTP/HTTPS 代理同时转发插件操作与 `/security/csrf-token`，浏览器自动获取和附加校验 token。通过 NAS IP 和宿主机映射端口访问不需要额外配置 Origin/token。自定义域名沿用 `NEKO_TRUSTED_HOSTS`；公网访问认证与网络隔离仍由部署层负责。此校验防跨站操作，不提供用户登录认证。Vite `5173` 仅在开发者显式设置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS` 后允许，不应加入普通 NAS 部署配置。完整合同见 [`local-mutation-auth.md`](../docs/design/security/local-mutation-auth.md)。
+
 ### 4. 模型配置
 
 各用途用哪个模型，由当前选中提供商的 profile 决定：`coreApi` 决定实时语音模型（`get_core_config()` 快照里的 `CORE_MODEL`），`assistApi` 决定对话、摘要、纠错、情感、视觉和 Agent 模型（`CONVERSATION_MODEL`、`SUMMARY_MODEL`、`CORRECTION_MODEL`、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`）。各提供商的 profile 来自 `config/api_providers.json`，来源和回退规则见第 5 节。

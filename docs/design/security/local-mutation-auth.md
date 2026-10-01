@@ -8,18 +8,34 @@
 
 主服务共享实现位于 `main_routers/system_router/_shared.py`，包括允许的本地 Origin、token 提取、常量时间比较和统一错误响应。前端调用方应从已有配置/状态端点取得 token，并通过 `X-CSRF-Token` 发送；兼容 body token 只按当前 helper 支持范围使用。
 
-插件服务器的本 PR 只保护插件生命周期路由和 CSRF token 引导路由。带 `Origin` 的浏览器变更请求必须同时通过可信来源和 token 校验。为兼容现有本地原生调用，暂时保留无 `Origin` 的 loopback 路径：客户端和 Host 必须是 loopback，且不能携带 Referer 或 Fetch Metadata；该兼容路径的 token 是可选的。后续收紧此路径时，应先确认没有依赖它的外部本地调用方。
+插件服务器保护七个插件生命周期路由和 `GET /security/csrf-token` 引导路由。带 `Origin` 的浏览器变更请求必须同时通过可信来源和 token 校验。桌面与 NAS/Docker 都是支持场景；正常页面自动获取并携带 token，普通 NAS 用户无需新增来源白名单或手动配置 token。
+
+为兼容现有本地原生脚本，暂时保留无 `Origin` 的 loopback 路径：客户端和 Host 必须是 loopback，且不能携带 Referer 或 Fetch Metadata；没有 token 时仍可调用，但显式提供空值或错误 token 必须拒绝。该例外只用于本地原生调用，不适用于远程脚本，也不是对恶意本地进程的身份认证。强制所有原生调用带 token 需要另行评估调用方迁移。
 
 ## 稳定合同
 
-- 变更请求缺少或提供错误 token 时拒绝；
-- 浏览器提供 Origin 时必须符合允许的本地 host/port 规则；
-- Electron/开发端口差异只允许 helper 中明确的 loopback 兼容，不能接受任意远端 Origin；
+- 浏览器变更请求缺少或提供错误 token 时拒绝；插件本地原生兼容路径仅允许省略 token，不允许错误 token；
+- 浏览器提供 Origin 时必须符合对应端点的来源规则；
+- NAS/Docker 页面来源必须匹配外部请求地址的协议、hostname 和有效端口；桌面跨端口来源只允许明确的 loopback 前端来源，不能接受任意 Origin；
 - 校验失败使用统一 `csrf_validation_failed`，响应和日志不回显 token；
 - GET 读取端点也不能返回超出调用方需要的敏感数据；
 - CORS、CSRF 和身份认证是不同层，不能互相替代。
 
-插件生命周期路由的 loopback guard 以插件服务收到的 Host 和客户端地址为准，因此 Docker/Nginx 的局域网端口映射或 HTTPS 外部端口不属于本 PR 的支持范围；开放这些部署形态需要单独设计可信代理身份和来源映射，不能仅放宽 loopback 判断。
+## NAS/Docker 与代理边界
+
+官方 Docker 的 HTTP 和 HTTPS Nginx 配置都将 `/security/csrf-token` 转发到插件服务，保留外部 `Host`（包括映射端口），并覆盖 `X-Forwarded-Proto`。插件服务的嵌入式与独立 Uvicorn 入口共用代理边界，仅信任 `127.0.0.1`、`::1` 代理传来的客户端地址和协议信息。路由守卫使用处理后的请求协议与原始 Host 比较来源，不直接读取或信任任意 `X-Forwarded-*`。浏览器来源校验不要求客户端地址是 loopback，因此通过 Nginx 的真实 NAS 客户端可以正常操作。
+
+`HostOriginGuardMiddleware` 在路由校验之前仍负责防 DNS rebinding：IP 地址与 localhost 可用，自定义域名沿用 `NEKO_TRUSTED_HOSTS` 显式配置。官方 IP 访问、HTTP/HTTPS 与端口映射无需新增用户配置。自建代理如果改写 Host 或不保留外部协议，需要自行正确传递这些信息；非本机代理不自动获得转发头信任。
+
+token 引导允许可信 Origin、可信完整 Referer（忽略页面路径），以及无 Origin/Referer 但带 `Sec-Fetch-Site: same-origin` 的请求。仅 `same-site` 不足以授权，因为同一 NAS 的不同端口可能属于其他应用。没有任何浏览器来源信息的请求只允许本机原生调用。七个生命周期以外的 mutation 不依赖 token bootstrap，仍需分别评估安全性。
+
+这套保护防止跨站网页借用浏览器执行插件操作，不是远程访问登录认证。公网访问的身份认证、网络隔离、防火墙仍属于部署层责任；这些措施不能替代应用的 CSRF 校验。安全修复不得通过禁用官方 NAS/Docker 访问来规避兼容问题。
+
+## 开发来源与共享 token
+
+插件引导接口复用实例级 `AUTOSTART_CSRF_TOKEN`，因此允许读取它的来源也可能影响主服务认同一 token 的接口。生产默认不信任通用 Vite 端口 `5173`。开发插件前端时，启动后端前显式配置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS=http://localhost:5173`（如实际使用 `127.0.0.1`，配置对应完整来源；多个来源以逗号分隔）。这仅对开发者有配置要求，官方 NAS 用户不需要设置此变量。
+
+`AUTOSTART_ALLOWED_ORIGINS` 中的显式配置也属于共享 token 的信任合同。不要把无关应用加入允许列表；配置只识别网页来源，不能验证该端口运行的是哪个项目。本次没有引入独立插件 token，也没有改变全局 CORS。
 
 ## 前端调用模式
 
@@ -45,4 +61,5 @@ uv run python -c "import json,sys; print(json.load(sys.stdin)['autostart_csrf_to
 
 ```bash
 uv run pytest tests/unit/test_uncovered_endpoints_csrf.py tests/unit/test_activity_signal_router.py tests/unit/test_card_assist_csrf.py -q
+uv run pytest plugin/tests/unit/server/test_plugin_mutation_auth.py plugin/tests/unit/server/test_development_routes.py plugin/tests/unit/server/test_docker_plugin_proxy.py -q
 ```

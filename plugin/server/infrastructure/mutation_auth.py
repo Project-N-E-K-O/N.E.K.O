@@ -1,8 +1,9 @@
 """Local mutation authentication for the user-plugin server.
 
-The plugin manager is a browser client of a loopback HTTP service. CORS does
-not prevent a simple cross-origin POST from executing, so lifecycle mutations
-require both a trusted Origin and the instance CSRF token.
+The plugin manager may use desktop loopback or NAS/Docker same-origin access.
+CORS does not prevent simple cross-origin POSTs from executing, so browser
+lifecycle mutations require both trusted provenance and the instance token.
+HostOriginGuard rejects DNS-rebinding hosts before these route dependencies.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from config.network import (
 logger = logging.getLogger(__name__)
 _CSRF_HEADER = "X-CSRF-Token"
 _ERROR_CODE = "csrf_validation_failed"
+# Embedded and standalone servers share the same trusted proxy boundary.
+TRUSTED_PROXY_IPS = "127.0.0.1,::1"
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -91,7 +94,7 @@ def _read_runtime_port(name: str, fallback: int) -> int:
 def _configured_origins() -> frozenset[str]:
     origins: set[str] = set()
     plugin_port = _read_runtime_port("NEKO_USER_PLUGIN_SERVER_PORT", USER_PLUGIN_SERVER_PORT)
-    for port in (MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT, plugin_port, 5173):
+    for port in (MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT, plugin_port):
         for host in ("127.0.0.1", "localhost", "::1"):
             origins.add(_origin_for_host_port(host, port))
     for value in AUTOSTART_ALLOWED_ORIGINS:
@@ -110,6 +113,22 @@ def _local_request(request: Request) -> bool:
         request.client is not None
         and _is_loopback(request.client.host)
         and _is_loopback(request.url.hostname)
+    )
+
+
+def _trusted_origin(request: Request, origin: str) -> bool:
+    """Match the external origin or an explicitly allowed frontend origin.
+
+    Official Nginx preserves Host (including the published port). Uvicorn
+    supplies the external scheme only from trusted proxy peers; do not read
+    X-Forwarded-* directly here. Peer IP need not be loopback for NAS access.
+    Cross-port desktop frontends retain the existing explicit allowlist.
+    """
+    target = _normalize_origin(f"{request.url.scheme}://{request.headers.get('host', '')}")
+    if not origin or not target:
+        return False
+    return origin == target or (
+        _is_loopback(request.url.hostname) and origin in _configured_origins()
     )
 
 
@@ -144,35 +163,43 @@ def _deny() -> None:
 
 def require_plugin_mutation_access(request: Request) -> None:
     """Authorize a plugin lifecycle mutation before any route side effect."""
-    if not _local_request(request):
-        _deny()
     origin_header = request.headers.get("origin")
     origin = _normalize_origin(origin_header)
     if origin_header is not None:
-        if not origin or origin not in _configured_origins() or not _valid_token(request):
+        if not _trusted_origin(request, origin) or not _valid_token(request):
             _deny()
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer
     # must never silently enter this compatibility path.
-    if request.headers.get("referer") or _has_browser_metadata(request):
+    if not _local_request(request) or request.headers.get("referer") or _has_browser_metadata(request):
+        _deny()
+    # Keep tokenless native scripts compatible, but never ignore a supplied
+    # invalid credential. This is not authentication against local processes.
+    if _CSRF_HEADER.lower() in request.headers and not _valid_token(request):
         _deny()
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
 
 
 def require_plugin_token_bootstrap_access(request: Request) -> None:
     """Authorize token bootstrap without exposing it through arbitrary CORS."""
-    if not _local_request(request):
-        _deny()
     origin_header = request.headers.get("origin")
     if origin_header is not None:
         origin = _normalize_origin(origin_header)
-        if not origin or origin not in _configured_origins():
+        if not _trusted_origin(request, origin):
             _deny()
         return
     referer = request.headers.get("referer")
-    if referer and _origin_from_referer(referer) not in _configured_origins():
-        _deny()
-    if _has_browser_metadata(request) and request.headers.get("sec-fetch-site") not in {"same-origin", "same-site", "none"}:
+    if referer:
+        if not _trusted_origin(request, _origin_from_referer(referer)):
+            _deny()
+        return
+    # Browsers with a suppressed Referer may still fetch their same-origin
+    # token. same-site is insufficient: another service on the NAS is a
+    # different origin even when browsers classify it as the same site.
+    if _has_browser_metadata(request):
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            _deny()
+    elif not _local_request(request):
         _deny()
 
 
