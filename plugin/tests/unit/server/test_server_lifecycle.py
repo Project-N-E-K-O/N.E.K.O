@@ -12,6 +12,50 @@ from plugin.server.application.plugins.operation_lock import plugin_operation_lo
 
 pytestmark = pytest.mark.plugin_unit
 
+
+@pytest.mark.asyncio
+async def test_shutdown_reserves_host_budget_and_keeps_registration_gate_closed(monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service
+
+    service = module.ServerLifecycleService()
+    timeouts = []
+    hosts_stopped = []
+
+    class Watcher:
+        is_running = True
+
+        async def stop(self, timeout):
+            timeouts.append(timeout)
+            assert lifecycle_service._operations_shutting_down
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def stop_hosts():
+        hosts_stopped.append(True)
+        return False
+
+    monkeypatch.setattr(lifecycle_service, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    monkeypatch.setattr(service, "_hot_reload_service", Watcher())
+    monkeypatch.setattr(service, "_shutdown_hosts", stop_hosts)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module.metrics_collector, "stop", noop)
+    monkeypatch.setattr(module.status_manager, "shutdown_status_consumer", noop)
+    monkeypatch.setattr(module.bus_subscription_manager, "stop", noop)
+    monkeypatch.setattr(module.plugin_router, "stop", noop)
+    monkeypatch.setattr(module.state, "close_plugin_resources", lambda: None)
+    for name in ("plugin_hosts", "plugins", "event_handlers"):
+        monkeypatch.setattr(module.state, name, {})
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda payload: None)
+    result = await service._shutdown_internal()
+    assert not result.had_errors
+    assert timeouts == [0.05]
+    assert hosts_stopped == [True]
+    assert lifecycle_service._operations_shutting_down
+    assert not lifecycle_service._hot_reload_failed
+
 # Stands in for the runner the real ``_start_message_plane`` assigns. Stubs
 # must set it: ``_start_delivery_path_locked`` decides whether to bind the
 # bridges by asking whether a runner exists, so a stub that reports success

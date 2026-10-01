@@ -369,9 +369,14 @@ async def test_stop_timeout_keeps_task_reference(
         await service.stop(timeout=0.01)
         assert service.is_running is True
 
-        # orphan 仍在跑时 start() 应短路（返回 True 且不新建 task）。
+        old_task = service._task
+        # Restart is deferred until the old generation exits.
         assert service.start() is True
+        assert service._task is old_task
         assert service.is_running is True
+        release.set()
+        assert await _wait_for(lambda: service._task is not None and service._task is not old_task)
+        assert service.is_running
     finally:
         release.set()
         await _stop(service)
@@ -461,3 +466,107 @@ def test_preflight_compile_sync(tmp_path: Path) -> None:
     (bad_manifest / "plugin.toml").write_text("[plugin\n", encoding="utf-8")
     error = module._preflight_compile_sync(bad_manifest)
     assert error is not None and "plugin.toml" in error
+
+
+@pytest.mark.parametrize("entry", ["missing_colon", "plugins.other:DemoPlugin"])
+def test_invalid_entry_is_rejected_before_stopping(tmp_path: Path, entry: str) -> None:
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    manifest = source / "plugin.toml"
+    manifest.write_text(manifest.read_text().replace("demo:DemoPlugin", entry))
+    assert module._preflight_compile_sync(source) is not None
+
+
+def test_registered_metadata_locates_running_sources(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "different-directory"
+    _write_plugin_source(source)
+    monkeypatch.setattr(module.development_store, "list_registration_records_sync", lambda: [])
+    monkeypatch.setattr(module.state, "plugins", {
+        "demo_1": {"config_path": str(source / "plugin.toml")},
+        "stopped": {"config_path": str(source / "plugin.toml")},
+    })
+    monkeypatch.setattr(module, "plugin_is_running_sync", lambda pid: pid == "demo_1")
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    targets = service._collect_targets_sync()
+    assert [(t.plugin_id, t.root) for t in targets] == [("demo_1", source)]
+
+
+async def test_locked_skip_emits_skipped_event(tmp_path: Path, monkeypatch) -> None:
+    class SkippingLifecycle:
+        async def reload_plugin(self, *args, **kwargs):
+            return {"success": True, "skipped": True}
+
+    events = []
+    monkeypatch.setattr(module, "emit_lifecycle_event", events.append)
+    service = _make_service(tmp_path, SkippingLifecycle(), monkeypatch)
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    assert events[-1]["type"] == "plugin_hot_reload_skipped"
+    assert events[-1]["reason"] == "not_running"
+    assert "demo" not in service._pending
+
+
+async def test_zero_debounce_busy_retry_has_backoff(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+
+    class BusyLifecycle:
+        async def reload_plugin(self, *args, **kwargs):
+            raise PluginOperationBusy("busy")
+
+    service = _make_service(tmp_path, BusyLifecycle(), monkeypatch)
+    monkeypatch.setattr(module, "PLUGIN_HOT_RELOAD_DEBOUNCE", 0)
+    before = time.monotonic()
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    assert service._pending["demo"] >= before + module._BUSY_RETRY_SECONDS
+
+
+async def test_runtime_failure_recovers_without_persisting_intent(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    monkeypatch.setattr(lifecycle, "_hot_reload_failed", set())
+    monkeypatch.setattr(lifecycle, "_operations_shutting_down", False)
+    running = {"value": True}
+    starts = []
+
+    async def stop(self, pid, **kwargs):
+        running["value"] = False
+        return {"success": True}
+
+    async def start(self, pid, **kwargs):
+        starts.append(kwargs)
+        if len(starts) == 1:
+            raise ServerDomainError(code="PLUGIN_START_FAILED", message="bad import", status_code=500)
+        running["value"] = True
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle, "_plugin_is_running_sync", lambda pid: running["value"])
+    monkeypatch.setattr(lifecycle.PluginLifecycleService, "stop_plugin", stop)
+    monkeypatch.setattr(lifecycle.PluginLifecycleService, "start_plugin", start)
+    service = _make_service(tmp_path, lifecycle.PluginLifecycleService(), monkeypatch)
+    monkeypatch.setattr(module, "plugin_is_running_sync", lambda pid: running["value"])
+    service.start()
+    try:
+        assert await _wait_for(lambda: bool(service._signatures))
+        (tmp_path / "demo" / "__init__.py").write_text("import reqests\n")
+        assert await _wait_for(lambda: lifecycle.plugin_needs_hot_reload_recovery("demo"))
+        assert not running["value"]
+        await asyncio.sleep(0.2)
+        assert len(starts) == 1  # No retry until another source edit.
+        (tmp_path / "demo" / "__init__.py").write_text("VALUE = 123\n")
+        assert await _wait_for(lambda: running["value"])
+        assert starts == [{"persist_user_intent": False}] * 2
+        assert not lifecycle.plugin_needs_hot_reload_recovery("demo")
+    finally:
+        await _stop(service)
+
+
+async def test_manual_stop_revokes_recovery_even_without_host(monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    monkeypatch.setattr(lifecycle, "_hot_reload_failed", {"demo"})
+    monkeypatch.setattr(lifecycle, "_get_plugin_host_sync", lambda pid: None)
+    monkeypatch.setattr(lifecycle, "_plugin_is_running_sync", lambda pid: False)
+    service = lifecycle.PluginLifecycleService()
+    with pytest.raises(ServerDomainError):
+        await service.stop_plugin("demo")
+    assert not lifecycle.plugin_needs_hot_reload_recovery("demo")
+    assert (await service.reload_plugin("demo", only_if_running=True))["skipped"]

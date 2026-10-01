@@ -14,11 +14,13 @@ reload 复用 ``PluginLifecycleService.reload_plugin``（stop + start，杀进�
 
 安全边界（与手动 reload 的差异全部在触发侧收口）：
 
-- 只 reload **正在运行**的插件。用户手动停下的插件不会因为一次文件
+- reload **正在运行**或上次自动重载启动失败的插件。失败仅在下一次源码
+  变更后重试；任何显式 start/stop 都会在操作锁内撤销恢复许可。
+  用户手动停下的插件不会因为一次文件
   变更被拉起来——那是把"改了代码"偷换成"改变了我的启动意图"。锁外先
   查一次做快速路径，拿到操作锁后 ``reload_plugin(only_if_running=True)``
   还会复查，兜住两次检查之间用户 Stop 的竞态。
-- reload 前先做语法 preflight（compile 全部 ``.py`` + 解析 ``plugin.toml``），
+- reload 前先做 preflight（compile 全部 ``.py`` + 验证 manifest/entry/依赖），
   语法坏掉的编辑直接跳过这一轮，保住旧实例；下次变更再试。开发模式
   插件在 ``reload_plugin`` 内部另有完整 preflight，这里对普通（内置/安装）
   插件补上同等的保护。
@@ -49,7 +51,9 @@ from plugin.logging_config import get_logger
 from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
+    _resolve_registered_config_path_sync,
     plugin_is_running_sync,
+    plugin_needs_hot_reload_recovery,
 )
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
@@ -72,9 +76,10 @@ logger = get_logger("server.application.plugins.hot_reload")
 # 让"静默结束 → reload"的延迟不受整秒级轮询间隔拖累。
 _MIN_TICK_SECONDS = PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS
 # stop() 等待 watcher 退出的上限。in-flight reload 被 operation lock 屏蔽
-# 取消时，超时说明它还在跑完最后一步，而不是泄漏。保持在整体 shutdown
-# 预算（PLUGIN_SHUTDOWN_TOTAL_TIMEOUT 默认 3s）之内。
+# 取消时，超时说明它还在跑完最后一步。服务器关停另传 0.05s，
+# 为 host teardown 保留总预算；注册门闩拒绝迟到的 host。
 _STOP_TIMEOUT_SECONDS = 1.5
+_BUSY_RETRY_SECONDS = 1.0
 # 与 dev preflight 保持一致的目录排除表：这些目录里的 .py 不是插件源码。
 _EXCLUDED_DIR_NAMES = frozenset(
     {"vendor", ".venv", ".git", "__pycache__", "node_modules"}
@@ -122,8 +127,19 @@ def _preflight_compile_sync(root: Path) -> str | None:
     """
     manifest_path = root / "plugin.toml"
     try:
-        tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        # Reuse discovery validation, including entry and dependency checks,
+        # without importing the plugin in the server process. Manifest IDs may
+        # differ from conflict-suffixed runtime IDs.
+        from plugin.server.application.plugins.development_service import (
+            _preflight_source_sync,
+        )
+
+        _preflight_source_sync(root.resolve(), manifest.get("plugin", {}).get("id"))
+    except (
+        OSError, UnicodeDecodeError, tomllib.TOMLDecodeError,
+        ServerDomainError, ValueError, TypeError, AttributeError,
+    ) as exc:
         return f"plugin.toml: {exc}"
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [name for name in dirnames if name not in _EXCLUDED_DIR_NAMES]
@@ -149,6 +165,7 @@ class PluginHotReloadService:
         self._lifecycle_service = lifecycle_service or PluginLifecycleService()
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
+        self._restart_requested = False
         # plugin_id -> 上一次看到的签名。None 值表示"目录本轮不可见"。
         self._signatures: dict[str, dict[str, tuple[int, int]]] = {}
         # plugin_id -> 防抖截止时刻（monotonic）。
@@ -168,6 +185,10 @@ class PluginHotReloadService:
             )
             return False
         if self._task is not None and not self._task.done():
+            if self._stop_event is not None and self._stop_event.is_set():
+                # Defer the replacement until the old task has finished touching
+                # shared signatures; never run two generations concurrently.
+                self._restart_requested = True
             return True
         # 重启场景：上一轮的 pending/签名描述的是上一个进程世代的磁盘，
         # 保留只会产生一次假 reload。
@@ -175,6 +196,7 @@ class PluginHotReloadService:
         self._pending.clear()
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="plugin-hot-reload-watcher")
+        self._task.add_done_callback(self._watcher_done)
         logger.info(
             "plugin hot-reload watcher started (interval={}s, debounce={}s)",
             PLUGIN_HOT_RELOAD_INTERVAL,
@@ -184,6 +206,7 @@ class PluginHotReloadService:
 
     async def stop(self, timeout: float = _STOP_TIMEOUT_SECONDS) -> None:
         """Stop the watcher. Safe to call when not running."""
+        self._restart_requested = False
         event = self._stop_event
         if event is not None:
             event.set()
@@ -198,7 +221,7 @@ class PluginHotReloadService:
             # 超时：in-flight reload 还在跑。必须保留 task 引用，否则
             # start() 会看不到存活中的 watcher 而另起一个，两个 watcher
             # 短暂并发写 _signatures。orphan 的 stop_event 已置位，跑完
-            # 当前一步会自行退出；期间 start() 会因引用仍在而正确短路。
+            # 当前一步会自行退出；期间 start() 会预约退出后的 replacement。
             self._task = task
             logger.warning(
                 "plugin hot-reload watcher did not stop within {}s; "
@@ -206,13 +229,24 @@ class PluginHotReloadService:
                 timeout,
             )
         else:
-            self._task = None
+            if self._task is task:
+                self._task = None
             if not task.cancelled():
                 exc = task.exception()
                 if exc is not None:
                     logger.warning(
                         "plugin hot-reload watcher exited with error: {}", exc
                     )
+
+    def _watcher_done(self, task: asyncio.Task[None]) -> None:
+        if self._task is not task:
+            return
+        self._task = None
+        if not task.cancelled():
+            task.exception()  # Retrieve errors even after a timed-out stop.
+        if self._restart_requested:
+            self._restart_requested = False
+            self.start()
 
     @property
     def is_running(self) -> bool:
@@ -241,7 +275,8 @@ class PluginHotReloadService:
                     type(exc).__name__,
                     exc,
                 )
-            await asyncio.sleep(self._next_sleep_seconds())
+            if not stop_event.is_set():
+                await asyncio.sleep(self._next_sleep_seconds())
 
     def _next_sleep_seconds(self) -> float:
         interval = PLUGIN_HOT_RELOAD_INTERVAL
@@ -252,13 +287,19 @@ class PluginHotReloadService:
         return max(_MIN_TICK_SECONDS, min(interval, remaining))
 
     async def _tick(self, stop_event: asyncio.Event) -> None:
-        targets = await asyncio.to_thread(self._collect_targets_sync)
+        def collect_signatures():
+            return [
+                (target, _signature_sync(target.root))
+                for target in self._collect_targets_sync()
+            ]
+
+        scanned = await asyncio.to_thread(collect_signatures)
+        targets = [target for target, _signature in scanned]
 
         now = time_module.monotonic()
         visible_ids: set[str] = set()
-        for target in targets:
+        for target, signature in scanned:
             visible_ids.add(target.plugin_id)
-            signature = await asyncio.to_thread(_signature_sync, target.root)
             previous = self._signatures.get(target.plugin_id)
             self._signatures[target.plugin_id] = signature
             if previous is None:
@@ -304,34 +345,43 @@ class PluginHotReloadService:
             )
         try:
             with state.acquire_plugins_read_lock():
-                registered_ids = [
-                    plugin_id
-                    for plugin_id in state.plugins.keys()
+                registered_plugins = [
+                    (plugin_id, dict(meta) if isinstance(meta, dict) else None)
+                    for plugin_id, meta in state.plugins.items()
                     if isinstance(plugin_id, str)
                 ]
         except Exception as exc:
             logger.debug("failed to read plugin registry for hot-reload: err={}", exc)
-            registered_ids = []
-        for plugin_id in registered_ids:
+            registered_plugins = []
+        for plugin_id, meta in registered_plugins:
             if plugin_id in targets:
                 continue
-            for base in PLUGIN_CONFIG_ROOTS:
-                candidate = Path(base) / plugin_id
-                if (candidate / "plugin.toml").is_file():
-                    targets[plugin_id] = _WatchTarget(
-                        plugin_id=plugin_id,
-                        root=candidate,
-                        is_development=False,
-                    )
-                    break
-        return list(targets.values())
+            config_path = _resolve_registered_config_path_sync(meta)
+            candidate = (
+                config_path.parent
+                if config_path is not None and config_path.is_file()
+                else None
+            )
+            if candidate is None:
+                for base in PLUGIN_CONFIG_ROOTS:
+                    fallback = Path(base) / plugin_id
+                    if (fallback / "plugin.toml").is_file():
+                        candidate = fallback
+                        break
+            if candidate is not None:
+                targets[plugin_id] = _WatchTarget(plugin_id, candidate, False)
+        return [
+            target for target in targets.values()
+            if plugin_is_running_sync(target.plugin_id)
+            or plugin_needs_hot_reload_recovery(target.plugin_id)
+        ]
 
     # ---------- reload execution ----------
 
     async def _reload_target(self, target: _WatchTarget) -> None:
         plugin_id = target.plugin_id
         is_running = await asyncio.to_thread(plugin_is_running_sync, plugin_id)
-        if not is_running:
+        if not is_running and not plugin_needs_hot_reload_recovery(plugin_id):
             # 停着的插件不自动拉起。这是锁外的快速路径；拿到锁之后
             # reload_plugin(only_if_running=True) 还会复查一次，兜住
             # "这里查完、用户 Stop 落进窗口"的竞态。下次手动 start 时
@@ -369,14 +419,21 @@ class PluginHotReloadService:
             # serialized_plugin_operation 会无界等待，busy 永远抛不出来，
             # 下面的 except 分支就是死路径。预算取防抖窗口——和顺延窗口一致。
             with bounded_operation_wait(PLUGIN_HOT_RELOAD_DEBOUNCE):
-                await self._lifecycle_service.reload_plugin(
+                result = await self._lifecycle_service.reload_plugin(
                     plugin_id, only_if_running=True
                 )
+            if result.get("skipped"):
+                self._pending.pop(plugin_id, None)
+                self._emit_event(
+                    "plugin_hot_reload_skipped", plugin_id, reason="not_running"
+                )
+                return
             logger.info("hot-reload completed: plugin_id={}", plugin_id)
         except PluginOperationBusy:
             # 用户操作正在持有锁：顺延一个防抖窗口再试，不报错误。
             self._pending[plugin_id] = (
-                time_module.monotonic() + PLUGIN_HOT_RELOAD_DEBOUNCE
+                time_module.monotonic()
+                + max(PLUGIN_HOT_RELOAD_DEBOUNCE, _BUSY_RETRY_SECONDS)
             )
             logger.debug(
                 "hot-reload deferred (operation busy): plugin_id={}", plugin_id

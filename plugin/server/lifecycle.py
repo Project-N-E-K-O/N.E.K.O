@@ -844,7 +844,7 @@ class ServerLifecycleService:
         # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
         if self._hot_reload_started or self._hot_reload_service.is_running:
             try:
-                await self._hot_reload_service.stop()
+                await self._hot_reload_service.stop(timeout=0.05)
                 self._hot_reload_started = False
             except Exception as exc:
                 had_errors = True
@@ -912,7 +912,9 @@ class ServerLifecycleService:
             had_errors = True
             logger.warning("failed to cleanup plugin communication resources: {}", exc)
 
-        # Phase 4: clear registry so next startup() / manual start_plugin() is clean
+        # Phase 4: clear registry for the next startup(), which reopens the gate.
+        # Keep the shutdown latch closed until then: an old reload may still finish.
+        _lifecycle_module._hot_reload_failed.clear()
         try:
             with state.acquire_plugin_hosts_write_lock():
                 state.plugin_hosts.clear()

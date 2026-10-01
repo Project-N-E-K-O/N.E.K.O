@@ -128,6 +128,12 @@ _MIN_TOOL_CLEANUP_TIMEOUT = 0.25
 # 保护的 in-flight reload 若在 host 快照/清空之后才注册新 host，那个子进程就是
 # 没人停止的孤儿。与 _delivery_path_shutting_down 同模式：关停置位、启动重置。
 _operations_shutting_down = False
+_hot_reload_failed: set[str] = set()
+
+
+def plugin_needs_hot_reload_recovery(plugin_id: str) -> bool:
+    """Recovery permission, revoked by any explicit start/stop under the lock."""
+    return plugin_id in _hot_reload_failed
 
 
 def _resolve_python_requirements(
@@ -911,6 +917,7 @@ class PluginLifecycleService:
         persist_user_intent: bool = False,
         start_deadline: float | None = None,
     ) -> dict[str, object]:
+        _hot_reload_failed.discard(plugin_id)
         if _operations_shutting_down:
             # 关停已经开始了：这时候拉起的插件会落在 host 快照之后，变成没人
             # 停止的孤儿进程。这里是快速失败（省掉 spawn）；权威的检查点在
@@ -1447,6 +1454,7 @@ class PluginLifecycleService:
         persist_user_intent: bool = False,
         stop_deadline: float | None = None,
     ) -> dict[str, object]:
+        _hot_reload_failed.discard(plugin_id)
         host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
         if host_obj is None:
             raise _to_domain_error(
@@ -1614,6 +1622,8 @@ class PluginLifecycleService:
         "改变了我的启动意图"。
         """
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
+        if not only_if_running:
+            _hot_reload_failed.discard(plugin_id)
 
         development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
         if development_snapshot is not None:
@@ -1627,7 +1637,7 @@ class PluginLifecycleService:
             except ServerDomainError as error:
                 if error.status_code != 404:
                     raise
-        elif only_if_running:
+        elif only_if_running and not plugin_needs_hot_reload_recovery(plugin_id):
             # 复查发现插件已经停了（watcher 锁外检查之后用户 Stop 了它）：
             # 不 start，不持久化自启意图。返回 skipped 让调用方知道这一轮没做。
             _emit_lifecycle_event(event_type="plugin_reload_skipped", plugin_id=plugin_id)
@@ -1641,9 +1651,15 @@ class PluginLifecycleService:
         # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
         # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
         # 那个插件永远启动得起来、却永远不自启（codex）。
-        if development_snapshot is not None:
-            await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
-        result = await self.start_plugin(plugin_id, persist_user_intent=True)
+        try:
+            if development_snapshot is not None:
+                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
+            result = await self.start_plugin(plugin_id, persist_user_intent=not only_if_running)
+        except Exception:
+            if only_if_running and not _operations_shutting_down:
+                _hot_reload_failed.add(plugin_id)
+            raise
+        _hot_reload_failed.discard(plugin_id)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 
