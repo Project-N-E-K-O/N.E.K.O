@@ -212,6 +212,7 @@ def handle_sync(args: argparse.Namespace) -> int:
 
             exit_code = _install_to_vendor(
                 external_deps, vendor_dir=staging_dir, python=args.python,
+                project_root=defaults.repo_root,
             )
             if exit_code != 0:
                 return exit_code
@@ -403,7 +404,10 @@ def _sync_in_place(
     # Left inside vendor/ by a killed --clean run; it would ship with it.
     _remove_stale_staging(vendor_dir)
     if not args.clean:
-        exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
+        exit_code = _install_to_vendor(
+            external_deps, vendor_dir=vendor_dir, python=args.python,
+            project_root=args._defaults.repo_root,
+        )
         if exit_code != 0:
             return exit_code
         if not _same_target(vendor_dir, identity):
@@ -455,7 +459,10 @@ def _sync_in_place(
     staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
     staging_dir.mkdir()
     try:
-        exit_code = _install_to_vendor(external_deps, vendor_dir=staging_dir, python=args.python)
+        exit_code = _install_to_vendor(
+            external_deps, vendor_dir=staging_dir, python=args.python,
+            project_root=args._defaults.repo_root,
+        )
         if exit_code != 0:
             return exit_code
         # Every later step reaches staging through vendor/; after a retarget
@@ -472,6 +479,10 @@ def _sync_in_place(
                 file=sys.stderr,
             )
             return 1  # the mount check below keeps staging
+        if sys.platform.startswith("linux") and _linux_mount_points() is None:
+            # The table was readable before the install; without it now a
+            # same-filesystem bind mount in staging can not be ruled out.
+            return _report_vendor_changed(vendor_dir)
         _clean_vendor(staging_dir)
         return _refill_in_place(vendor_dir, staging_dir, identity)
     finally:
@@ -1073,6 +1084,7 @@ def _install_to_vendor(
     *,
     vendor_dir: Path,
     python: str,
+    project_root: Path | None = None,
 ) -> int:
     """Install packages into vendor/ for the target interpreter.
 
@@ -1081,6 +1093,11 @@ def _install_to_vendor(
     reads uv's configuration (uv.toml, UV_* variables). Only when uv can not
     be found does the target's own pip install them, behind a warning: pip
     reads another configuration and resolves differently.
+
+    uv pip finds project configuration (uv.toml, [tool.uv]) from its working
+    directory, and `uv run --project` does not pass the project on: run it in
+    the N.E.K.O project root, with paths made absolute first, so a plugin
+    repository outside N.E.K.O uses the same indexes as N.E.K.O itself.
     """
     if not packages:
         return 0
@@ -1088,11 +1105,16 @@ def _install_to_vendor(
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
     uv = _find_uv()
+    cwd: Path | None = None
     if uv is not None:
+        if project_root is not None and (project_root / "pyproject.toml").is_file():
+            cwd = project_root
         command = [
             uv, "pip", "install",
-            "--python", python,
-            "--target", str(vendor_dir),
+            # A bare name is uv's own interpreter lookup; a path must keep
+            # meaning what it means here.
+            "--python", os.path.abspath(python) if _looks_like_path(python) else python,
+            "--target", str(vendor_dir.absolute()),
             "--upgrade",
             *packages,
         ]
@@ -1107,7 +1129,7 @@ def _install_to_vendor(
             *packages,
         ]
         label = "pip install"
-    result = _run_installer(command, label=label)
+    result = _run_installer(command, label=label, cwd=cwd)
     if result is not None and result.returncode != 0:
         print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
@@ -1126,7 +1148,13 @@ def _install_to_vendor(
     return 0 if result is not None and result.returncode == 0 else 1
 
 
-def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
+def _looks_like_path(program: str) -> bool:
+    return any(sep and sep in program for sep in (os.sep, os.altsep))
+
+
+def _run_installer(
+    cmd: list[str], *, label: str, cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -1134,6 +1162,7 @@ def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            cwd=cwd,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

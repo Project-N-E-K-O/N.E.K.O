@@ -66,6 +66,36 @@ def test_installer_start_failure_is_reported(tmp_path, monkeypatch, capsys, uv_f
     assert "installer cannot execute" in error
 
 
+@pytest.mark.parametrize("has_project", [True, False])
+def test_uv_runs_in_the_neko_project_root(tmp_path, monkeypatch, has_project):
+    # uv pip finds uv.toml / [tool.uv] from its cwd; a plugin repo outside
+    # N.E.K.O (`uv run --project <N.E.K.O>`) must still use N.E.K.O's indexes.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    root = tmp_path / "neko"
+    root.mkdir()
+    if has_project:
+        (root / "pyproject.toml").write_text("[project]\nname = 'n-e-k-o'\n", encoding="utf-8")
+    elsewhere = tmp_path / "plugin-repo"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    relative_python = os.path.join("env", "bin", "python")
+    assert deps_cmd._install_to_vendor(
+        ["pkg"], vendor_dir=Path("staging"), python=relative_python, project_root=root,
+    ) == 0
+    command, kwargs = seen[-1]
+    assert kwargs["cwd"] == (root if has_project else None)
+    assert command[command.index("--python") + 1] == str(elsewhere / relative_python)
+    assert command[command.index("--target") + 1] == str(elsewhere / "staging")
+
+
 def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
     # `uv run` exports UV; uv may not be on PATH (pipx, `py -m uv`).
     from plugin.neko_plugin_cli.commands import deps_cmd
@@ -1503,6 +1533,34 @@ def test_in_place_sync_removes_staging_left_inside_vendor(tmp_path, monkeypatch,
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
     assert not stale.exists()
+
+
+def test_in_place_clean_rechecks_the_mount_table_after_the_install(tmp_path, monkeypatch, capsys):
+    # The table can vanish during the install; staging may then hold a bind
+    # mount ismount() misses, and the cleanup recurses.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+    readable = [[]]
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: readable[0])
+    cleaned = []
+    monkeypatch.setattr(deps_cmd, "_clean_vendor", lambda path: cleaned.append(path))
+
+    def install(command, **kwargs):
+        readable[0] = None  # /proc/self/mountinfo gone during the install
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert cleaned == []
+    assert (vendor / "old.py").read_text() == "old"
 
 
 def test_in_place_clean_without_linux_mount_table_is_refused(tmp_path, monkeypatch, capsys):
