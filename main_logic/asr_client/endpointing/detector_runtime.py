@@ -1231,8 +1231,8 @@ class _VoiceTurnAdapter:
             await asyncio.sleep(self._continuation_timeout_seconds)
             # Without VAD there is no SPEECH_RESUMED event to move the strict
             # endpoint deadline. Keep the retry asleep while audio is still
-            # arriving so the deadline measures silence, rather than total
-            # turn duration.
+            # arriving while the deadline permits it. The bounded RMS
+            # fallback must retry at its cap even with continuous noise.
             if (
                 self._last_no_vad_audio_at is not None
                 and self._last_no_vad_audio_at > wait_started_at

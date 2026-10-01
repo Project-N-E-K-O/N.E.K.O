@@ -1619,15 +1619,21 @@ async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout(
     async def commit(*_identity: int) -> None:
         committed.set()
 
-    coordinator = _FakeCoordinator([_incomplete()] * 1000)
+    class NoiseCoordinator(_FakeCoordinator):
+        async def evaluate_buffered(self):
+            # Keep inference asynchronous while PCM continues arriving.
+            await asyncio.sleep(0.02)
+            return await super().evaluate_buffered()
+
+    coordinator = NoiseCoordinator([_incomplete()] * 1000)
     adapter = _VoiceTurnAdapter(
         vad=_UnavailableVad(),
         gate=_FakeGate(),
         coordinator=coordinator,
         on_commit=commit,
-        continuation_timeout_seconds=0.01,
+        continuation_timeout_seconds=0.04,
         smart_turn_required=True,
-        max_endpoint_wait_seconds=0.04,
+        max_endpoint_wait_seconds=0.08,
         fallback_evaluation_interval_ms=10,
     )
     adapter._smart_turn_audio_evidence = evidence
@@ -1636,20 +1642,31 @@ async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout(
     # noise. Repeated frames may extend the inactivity wait, but only up to
     # the bounded no-VAD cap.
     noise = b"\x40\x00" * 160
-    for _ in range(24):
-        await adapter.push_audio(
-            generation=47,
-            buffer_epoch=48,
-            utterance_id=49,
-            pcm16=noise,
-            no_vad_activity=no_vad_activity,
-        )
-        await asyncio.sleep(0.005)
 
-    await asyncio.wait_for(committed.wait(), 1)
-    assert evidence.completed_reasons == ["semantic_timeout"]
-    assert adapter._failed is False
-    await adapter.close()
+    async def feed_noise() -> None:
+        while True:
+            await adapter.push_audio(
+                generation=47,
+                buffer_epoch=48,
+                utterance_id=49,
+                pcm16=noise,
+                no_vad_activity=no_vad_activity,
+            )
+            next_frame_at = asyncio.get_running_loop().time() + 0.01
+            await _eventually(
+                lambda: asyncio.get_running_loop().time() >= next_frame_at
+            )
+
+    feeder = asyncio.create_task(feed_noise())
+    try:
+        await asyncio.wait_for(committed.wait(), 1)
+        assert not feeder.done()
+        assert evidence.completed_reasons == ["semantic_timeout"]
+        assert adapter._failed is False
+    finally:
+        feeder.cancel()
+        await asyncio.gather(feeder, return_exceptions=True)
+        await adapter.close()
 
 
 async def test_no_vad_rnnoise_activity_preserves_long_speech_wait() -> None:
