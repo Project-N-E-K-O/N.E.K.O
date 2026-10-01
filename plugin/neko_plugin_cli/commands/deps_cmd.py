@@ -585,7 +585,9 @@ def _pip_install_to_vendor(
         print(result.stdout, file=sys.stderr)
         return 1
 
-    uv = shutil.which("uv")
+    # `uv run` exports its own path as UV, which finds uv even when it is not
+    # on PATH (e.g. installed with pipx or `py -m uv` on Windows).
+    uv = os.environ.get("UV") or shutil.which("uv")
     # uv runs in target.cwd; a relative PATH entry may have found it here.
     uv = os.path.abspath(uv) if uv else None
     if not uv:

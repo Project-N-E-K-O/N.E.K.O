@@ -39,7 +39,7 @@ def _no_host_package_index_config(monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     for name in list(os.environ):
-        if name.upper().startswith(("PIP_", "UV_")):
+        if name.upper() == "UV" or name.upper().startswith(("PIP_", "UV_")):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [])
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
@@ -1372,6 +1372,22 @@ def test_posix_pip_environment_names_are_case_sensitive(monkeypatch):
     assert deps_cmd._pip_settings(target) == {}
     monkeypatch.setattr(deps_cmd.sys, "platform", "win32")
     assert deps_cmd._pip_settings(target) == {"constraint": ["pip_constraint"]}
+
+
+def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
+    # `uv run` exports UV; uv may not be on PATH (pipx, `py -m uv`).
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    uv_exe = tmp_path / "tools" / "uv.exe"
+    monkeypatch.setenv("UV", str(uv_exe))
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: None)
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 0
+    assert calls[-1][0] == str(uv_exe)
 
 
 def test_bare_python_name_is_resolved_through_path_here(tmp_path, monkeypatch):

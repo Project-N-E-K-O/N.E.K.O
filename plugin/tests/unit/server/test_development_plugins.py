@@ -907,6 +907,24 @@ def test_preflight_prunes_dependency_directories_before_visiting(monkeypatch, tm
     service.preflight_development_sync(record)
 
 
+def test_preflight_skips_dependency_sync_work_dirs(tmp_path):
+    # Staging/backup trees of `neko-plugin sync` hold third-party code (maybe
+    # half-written, maybe Python 2), like vendor/; a look-alike plugin dir and
+    # a nested one are still plugin source.
+    record = _register(tmp_path)
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        legacy = record.source_dir / name / "oldpkg"
+        legacy.mkdir(parents=True)
+        (legacy / "legacy.py").write_text('print "x"\n', encoding="utf-8")
+    service.preflight_development_sync(record)
+
+    own = record.source_dir / ".vendor.backup-notes"
+    own.mkdir()
+    (own / "mine.py").write_text("broken syntax !", encoding="utf-8")
+    with pytest.raises(ServerDomainError, match="invalid syntax"):
+        service.preflight_development_sync(record)
+
+
 def test_preflight_still_checks_runtime_source_excluded_from_packaging(tmp_path):
     record = _register(tmp_path)
     (record.source_dir / "pyproject.toml").write_text('[tool.neko.build]\nexclude = ["generated/**"]\n', encoding="utf-8")
