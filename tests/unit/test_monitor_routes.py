@@ -266,3 +266,14 @@ def test_preferences_hide_reserved_global_conversation_entry(client, monkeypatch
     monkeypatch.setattr(monitor, "aload_user_preferences", preferences)
     response = client.get("/api/config/preferences", headers={"Authorization": "Bearer route-secret"})
     assert response.json() == [{"model_path": "model", "scale": 2}]
+
+
+def test_root_path_prefix_cannot_hide_producer_route(monkeypatch):
+    # Mounted under a proxy prefix the router strips root_path; auth must too.
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "route-secret")
+    monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "viewer-secret")
+    with TestClient(monitor.app, root_path="/monitor") as prefixed:
+        _assert_ws_rejected(prefixed, "/monitor/sync/neko", {"Authorization": "Bearer viewer-secret"})
+        _assert_ws_rejected(prefixed, "/monitor/sync_binary/neko", _session_headers())
+        with prefixed.websocket_connect("/monitor/sync/neko", headers={"Authorization": "Bearer route-secret"}):
+            pass

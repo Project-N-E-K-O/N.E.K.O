@@ -27,6 +27,7 @@ import re
 import time
 from urllib.parse import urlencode, urlsplit
 
+from starlette._utils import get_route_path
 from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.websockets import WebSocket
@@ -51,8 +52,9 @@ class MonitorQueryLogFilter(logging.Filter):
     """
 
     # Only a query string that follows a path ("/x?..."), so unrelated text
-    # containing "?" is left alone.
-    _PATH_QUERY = re.compile(r"(/[^\s?\"']*)\?[^\s\"']*")
+    # containing "?" is left alone.  The whole query up to whitespace goes:
+    # quotes are legal query characters and must not end the redaction early.
+    _PATH_QUERY = re.compile(r"(/[^\s?]*)\?\S*")
 
     @classmethod
     def _redact(cls, value: object) -> object:
@@ -224,15 +226,16 @@ class MonitorAuthMiddleware:
         if scope["type"] not in ("http", "websocket") or not monitor_auth_enabled():
             await self.app(scope, receive, send)
             return
-        if scope.get("path", "").startswith(_PUBLIC_PATH_PREFIXES):
+        # Decide from the path the router actually matches: root_path stripped
+        # (a proxy mount would otherwise hide /sync/* behind a prefix), and
+        # never conn.url, which starlette 0.46 rebuilds from the unvalidated
+        # Host header (a Host containing "#", "?" or "/" would hide it too).
+        path = get_route_path(scope)
+        if path.startswith(_PUBLIC_PATH_PREFIXES):
             await self.app(scope, receive, send)
             return
 
         conn = HTTPConnection(scope)
-        # Decide from scope["path"] (what the router matches), never conn.url:
-        # starlette 0.46 rebuilds url from the unvalidated Host header, so a
-        # Host containing "#", "?" or "/" would hide a /sync/* path.
-        path = scope.get("path", "")
         producer_route = path.startswith(_PRODUCER_PATH_PREFIXES)
         token, source = extract_monitor_token(conn)
         if token is not None:
