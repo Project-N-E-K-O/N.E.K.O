@@ -1123,9 +1123,9 @@ def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, m
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
     assert (plugin_dir / "vendor" / "pkg" / "__pycache__" / "x.pyc").exists()
-    # build and pack would ship bin/; it is still removed, without recursing.
-    assert not (plugin_dir / "vendor" / "bin").exists()
-    assert "Skipped removing __pycache__" in capsys.readouterr().err
+    # Even bin/ could be a bind mount ismount() misses: left, with a hint.
+    assert (plugin_dir / "vendor" / "bin" / "tool").exists()
+    assert "Remove vendor/bin by hand" in capsys.readouterr().err
 
 
 def test_installer_bin_that_is_a_mount_point_is_left(tmp_path, monkeypatch, capsys):

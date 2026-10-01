@@ -229,15 +229,15 @@ def handle_sync(args: argparse.Namespace) -> int:
                 )
                 return 1  # the finally block's mount check keeps staging
             if sys.platform.startswith("linux") and _linux_mount_points() is None:
-                # ismount() misses a same-filesystem bind mount, and the
-                # cleanup recurses: skip it rather than reach into one.
-                # (build and pack leave out caches anyway; bin/ they ship.)
+                # ismount() misses a same-filesystem bind mount, and every
+                # cleanup step (even bin/'s files) could reach into one: skip
+                # it. build and pack leave out caches anyway; bin/ they ship.
                 print(
-                    f"[WARN] Skipped removing __pycache__ and .pyc from {staging_dir}: "
-                    "/proc/self/mountinfo is unavailable, so mounts inside can not be ruled out.",
+                    f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {staging_dir}: "
+                    "/proc/self/mountinfo is unavailable, so mounts inside can not be "
+                    "ruled out. Remove vendor/bin by hand if it should not be packaged.",
                     file=sys.stderr,
                 )
-                _remove_installer_bin(staging_dir)
             else:
                 _clean_vendor(staging_dir)
             if not _vendor_unchanged(vendor_dir, vendor_before):
