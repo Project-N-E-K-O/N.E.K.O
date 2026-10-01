@@ -138,13 +138,6 @@ def reraise_walk_error(error: OSError) -> None:
         raise error
 
 
-def is_vendor_installer_bin(relative_path: Path) -> bool:
-    """Whether a plugin-relative path is in vendor/bin: console scripts the
-    installer writes there, which sync removes and a plugin never runs. It is
-    left in place when it may be another tree's mount, and must not ship."""
-    return relative_path.parts[:2] == ("vendor", "bin")
-
-
 def walk_plugin_tree(source_dir: Path) -> list[Path]:
     """Every path under source_dir, like sorted(source_dir.rglob("*")), but
     without descending into sync work dirs: a backup is retained when it
@@ -170,7 +163,7 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     dir_parts = relative_path.parts if is_dir else relative_path.parts[:-1]
     if dir_parts and dir_parts[0] in _DEFAULT_ROOT_EXCLUDE_DIR_NAMES:
         return True
-    if is_vendor_sync_path(relative_path) or is_vendor_installer_bin(relative_path):
+    if is_vendor_sync_path(relative_path):
         return True
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in dir_parts):
         return True

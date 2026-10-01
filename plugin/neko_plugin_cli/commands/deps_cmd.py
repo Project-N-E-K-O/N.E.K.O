@@ -347,7 +347,7 @@ def _sync_in_place(
             print(
                 f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {vendor_dir}: "
                 "/proc/self/mountinfo is unavailable, so mounts inside can not be "
-                "ruled out (build and pack leave out vendor/bin and caches).",
+                "ruled out. Remove vendor/bin by hand if it should not be packaged.",
                 file=sys.stderr,
             )
         elif _find_foreign_subdir(vendor_dir, junctions=True) is not None:

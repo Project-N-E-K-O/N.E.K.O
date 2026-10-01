@@ -263,17 +263,6 @@ def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
     marker = Path(".vendor.backup-0a1b2c3d.pending")
     assert should_skip_path(marker, is_dir=False, rules=build_rules) is True
     assert should_skip_pack_path(marker, is_dir=False, rules=pack_rules) is True
-    # Installer console scripts left in vendor/bin (kept when they may be a
-    # mount) never ship.
-    for path, is_dir in (
-        (Path("vendor", "bin"), True),
-        (Path("vendor", "bin", "tool"), False),
-    ):
-        assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
-        assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
-    for kept_bin in (Path("bin", "tool"), Path("vendor", "pkg", "bin", "tool")):
-        assert should_skip_path(kept_bin, is_dir=False, rules=build_rules) is False
-        assert should_skip_pack_path(kept_bin, is_dir=False, rules=pack_rules) is False
     # An in-place --clean of a linked or mounted vendor/ stages inside it.
     for path, is_dir in (
         (Path("vendor", ".vendor.staging-0a1b2c3d"), True),
@@ -291,6 +280,8 @@ def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
         Path("assets", ".vendor.backup-0a1b2c3d", "data.txt"),
         # Only staging is ever created inside vendor/.
         Path("vendor", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # A plugin may ship its own files in vendor/bin, as on main.
+        Path("vendor", "bin", "tool"),
         Path("vendor", "pkg", ".vendor.staging-0a1b2c3d", "data.txt"),
     ):
         assert should_skip_path(kept, is_dir=False, rules=build_rules) is False

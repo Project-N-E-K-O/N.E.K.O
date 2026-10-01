@@ -1162,7 +1162,7 @@ def test_in_place_sync_without_linux_mount_table_keeps_vendor_bin(tmp_path, monk
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
     assert (vendor / "bin" / "tool").read_text() == "external"
-    assert "build and pack leave out vendor/bin" in capsys.readouterr().err
+    assert "Remove vendor/bin by hand" in capsys.readouterr().err
 
 
 def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
