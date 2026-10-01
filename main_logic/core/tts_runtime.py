@@ -1627,7 +1627,8 @@ class TtsRuntimeMixin:
         return True
 
     async def _activate_configured_tts_fallback_after_capacity(
-        self, failure_stage: str, runtime: TtsRuntimeRecord | None
+        self, failure_stage: str, runtime: TtsRuntimeRecord | None,
+        *, fallback_prepared: bool = False,
     ) -> bool:
         """Wait for real worker exits before retrying the existing fallback."""
         expected_session = getattr(self, "session", None)
@@ -1636,7 +1637,6 @@ class TtsRuntimeMixin:
         deadline = deadline_getter() if callable(deadline_getter) else None
         loop = asyncio.get_running_loop()
         deadline = min(deadline or float("inf"), loop.time() + 15.0)
-        fallback_prepared = False
         for _ in range(3):
             try:
                 if fallback_prepared:
@@ -1690,6 +1690,21 @@ class TtsRuntimeMixin:
                         timeout=max(0, deadline - loop.time()),
                     )
                 except asyncio.TimeoutError as error:
+                    if (
+                        getattr(self, "session", None) is not expected_session
+                        or getattr(self, "use_tts", None) != expected_use_tts
+                        or getattr(self, "_tts_runtime", None) is not runtime
+                        or (runtime is not None and
+                            getattr(self, "tts_thread", None) is not runtime.thread)
+                    ):
+                        return False
+                    self.tts_ready = False
+                    # Bound this handler's wait, while retaining fallback/replay
+                    # ownership for capacity released after its deadline.
+                    self._schedule_tts_capacity_recovery(
+                        fallback_stage=failure_stage,
+                        fallback_prepared=waiting_for_retirement,
+                    )
                     raise TtsCapacityError("TTS fallback capacity did not clear") from error
                 finally:
                     if runtime is not None and runtime.fallback_task is fallback_task:
@@ -1858,11 +1873,12 @@ class TtsRuntimeMixin:
 
         logger.info("🔄 TTS Worker 已重新拉起，等待运行时就绪信号...")
 
-    def _schedule_tts_capacity_recovery(self):
+    def _schedule_tts_capacity_recovery(self, *, fallback_stage=None, fallback_prepared=False):
         """Retry the captured session once its retired workers physically exit."""
         import time
         pending = getattr(self, "_tts_respawn_task", None)
-        if pending is not None and not pending.done():
+        if (pending is not None and not pending.done()
+                and pending is not asyncio.current_task()):
             return
         blocked = tuple(
             record for record in self._tts_runtimes
@@ -1907,9 +1923,19 @@ class TtsRuntimeMixin:
                     return
                 # The provider callback had the retired runtime in its
                 # context; this new attempt belongs to the current owner.
-                token = tts_output_runtime.set(None)
+                token = tts_output_runtime.set(expected_runtime if fallback_stage is not None else None)
                 try:
-                    self._respawn_tts_worker()
+                    if fallback_stage is None:
+                        self._respawn_tts_worker()
+                    elif await self._activate_configured_tts_fallback_after_capacity(
+                        fallback_stage, expected_runtime,
+                        fallback_prepared=fallback_prepared,
+                    ):
+                        self._start_tts_response_handler()
+                except TtsCapacityError as error:
+                    # A second admission deadline may transfer the reservation
+                    # to another owned retry while physical cleanup continues.
+                    logger.warning("TTS fallback recovery deferred: %s", error)
                 finally:
                     tts_output_runtime.reset(token)
             finally:
