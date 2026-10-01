@@ -435,8 +435,9 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
         trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
             for name in os.listdir(fd):
-                if name not in {staging_dir.name, trash}:
-                    os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
+                if name in {staging_dir.name, trash} or _others_staging(name, fd):
+                    continue
+                os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
             for name in os.listdir(staging_fd):
                 os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
         finally:
@@ -452,6 +453,21 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
     finally:
         os.close(fd)
     return 0
+
+
+_STAGING_NAME_RE = re.compile(re.escape(VENDOR_SYNC_STAGING_PREFIX) + r"[0-9a-f]{8}")
+
+
+def _others_staging(name: str, dir_fd: int) -> bool:
+    """Another user's staging dir in a shared vendor/ target: the lock is per
+    user, so it may belong to a live install (as _remove_stale_staging)."""
+    if not _STAGING_NAME_RE.fullmatch(name):
+        return False
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and info.st_uid != os.getuid()
 
 
 def _open_dir_path(fd: int, fallback: Path) -> str:

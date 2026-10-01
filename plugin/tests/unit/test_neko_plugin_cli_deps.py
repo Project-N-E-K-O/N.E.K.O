@@ -1214,6 +1214,43 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
+def test_in_place_refill_leaves_another_users_staging(tmp_path, monkeypatch):
+    # The lock is per user: another user's staging in a shared target may be
+    # a live install.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    theirs = vendor / ".vendor.staging-1111abcd"
+    theirs.mkdir()
+    (theirs / "half.py").write_text("theirs")
+    staging = vendor / ".vendor.staging-0000abcd"
+    staging.mkdir()
+    (staging / "new.py").write_text("new")
+    identity = vendor.stat()
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
+    monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: False)
+    me = os.getuid()
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if path == theirs.name:
+            values = list(info)
+            values[4] = me + 1  # st_uid
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(deps_cmd.os, "stat", stat)
+
+    assert deps_cmd._refill_in_place(vendor, staging, identity) == 0
+    assert (theirs / "half.py").read_text() == "theirs"
+    assert (vendor / "new.py").read_text() == "new"
+    assert not (vendor / "old.py").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
 def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypatch, capsys):
     # A mount added under vendor/ while the install ran must not be deleted:
     # the old contents are moved aside and checked right before deletion.
