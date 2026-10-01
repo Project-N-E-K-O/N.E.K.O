@@ -503,12 +503,16 @@ def test_linked_vendor_is_synced_in_place(tmp_path, monkeypatch, capsys, clean):
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
-    assert targets == [link]
+    # --clean installs into staging first and refills vendor/ only on success.
+    if clean:
+        assert len(targets) == 1 and targets[0].name.startswith(".vendor.staging-")
+    else:
+        assert targets == [link]
     assert os.readlink(link)
     assert (real_vendor / "fresh.py").read_text() == "new"
     assert (real_vendor / "old.py").exists() is (not clean)
     assert not list(plugin_dir.glob(".vendor.*"))
-    assert "installing into it in place" in capsys.readouterr().err
+    assert "updating it in place" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
@@ -917,7 +921,7 @@ def test_sync_installs_into_a_mounted_vendor_root_in_place(tmp_path, monkeypatch
     assert (vendor / "fresh.py").read_text() == "new"
     assert (vendor / "old.py").exists() is (not clean)
     assert not list(plugin_dir.glob(".vendor.*"))
-    assert "installing into it in place" in capsys.readouterr().err
+    assert "updating it in place" in capsys.readouterr().err
 
 
 def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
@@ -940,6 +944,46 @@ def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
     assert "--clean would delete what it holds" in capsys.readouterr().err
 
 
+def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
+    # publish always cleans; a resolver failure must not empty vendor/.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="resolver error"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (vendor / "old.py").read_text() == "old"
+    assert not list(plugin_dir.glob(".vendor.*"))
+
+
+def test_in_place_clean_without_linux_mount_table_is_refused(tmp_path, monkeypatch, capsys):
+    # ismount() misses a same-filesystem bind mount; emptying could follow it.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (vendor / "old.py").read_text() == "old"
+    assert "mountinfo is unavailable" in capsys.readouterr().err
+
+
 def test_failed_in_place_install_is_reported(tmp_path, monkeypatch, capsys):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -958,7 +1002,7 @@ def test_failed_in_place_install_is_reported(tmp_path, monkeypatch, capsys):
     assert "uv pip install failed" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("owner", ["mine", "theirs"])
+@pytest.mark.parametrize("owner", ["mine", "theirs", "fresh"])
 def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
     # Left by a run killed between creating the marker and the rename, or by
     # a rollback that could not delete it; nothing else would remove it.
@@ -966,6 +1010,11 @@ def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
 
     orphan = tmp_path / ".vendor.backup-0000abcd.pending"
     orphan.touch()
+    if owner != "fresh":
+        # A fresh marker may be another sync's, right before its rename
+        # (Windows can not tell whose it is).
+        old = orphan.stat().st_mtime - 3600
+        os.utime(orphan, (old, old))
     live = tmp_path / ".vendor.backup-1111abcd"
     live.mkdir()
     live_marker = tmp_path / ".vendor.backup-1111abcd.pending"
@@ -977,7 +1026,7 @@ def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
 
     deps_cmd._remove_orphan_markers(tmp_path)
 
-    assert orphan.exists() is (owner == "theirs")
+    assert orphan.exists() is (owner != "mine")
     assert live_marker.exists()
     assert look_alike.exists()
 

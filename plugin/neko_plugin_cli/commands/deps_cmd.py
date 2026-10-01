@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from tempfile import gettempdir
@@ -230,36 +231,65 @@ def _pending_marker(backup_dir: Path) -> Path:
 
 
 def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Namespace) -> int:
-    """Install straight into a linked or mounted vendor/ (no staging, no
-    rollback): a failed install may leave it half updated."""
+    """Sync a linked or mounted vendor/ without renaming it.
+
+    Without --clean the install goes straight into it, as before the swap
+    existed. With --clean it goes into a staging dir first, and vendor/ is
+    emptied and refilled only once that succeeded, so a failed install
+    (publish always cleans) leaves the working dependencies alone. Either
+    way there is no rollback once vendor/ itself is being written.
+    """
     print(
         "[WARN] "
         + _tri(
-            f"{vendor_dir} is a link or mount point; installing into it in place. "
-            "A failed install can leave it partly updated (no rollback).",
-            f"{vendor_dir} 是链接或挂载点，将直接在原处安装。"
-            "安装失败时它可能处于更新了一半的状态（无法回滚）。",
-            f"{vendor_dir} はリンクまたはマウントポイントのため、その場でインストールします。"
-            "失敗すると一部だけ更新された状態になる可能性があります（ロールバック不可）。",
+            f"{vendor_dir} is a link or mount point; updating it in place. "
+            "If writing into it fails, it can be left partly updated (no rollback).",
+            f"{vendor_dir} 是链接或挂载点，将在原处更新。"
+            "写入它的过程中出错时，它可能处于更新了一半的状态（无法回滚）。",
+            f"{vendor_dir} はリンクまたはマウントポイントのため、その場で更新します。"
+            "書き込み中に失敗すると一部だけ更新された状態になる可能性があります（ロールバック不可）。",
         ),
         file=sys.stderr,
     )
-    if args.clean:
-        # Emptying recurses: a mount inside would lose its files. (rmtree
-        # removes a nested Windows junction itself, not its target.)
-        foreign = _find_foreign_subdir(vendor_dir, junctions=False)
-        if foreign is not None:
-            print(
-                f"[FAIL] {foreign} is a mount point inside vendor/; --clean would "
-                "delete what it holds. Remove it and retry.",
-                file=sys.stderr,
-            )
-            return 1
+    if not args.clean:
+        exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
+        if exit_code == 0:
+            _clean_vendor(vendor_dir)
+        return exit_code
+
+    # Emptying recurses: a mount inside would lose its files. (rmtree
+    # removes a nested Windows junction itself, not its target.) Without
+    # Linux's mount table a same-filesystem bind mount can not be ruled out.
+    if sys.platform.startswith("linux") and _linux_mount_points() is None:
+        print(
+            f"[FAIL] /proc/self/mountinfo is unavailable, so mounts inside {vendor_dir} "
+            "can not be ruled out; --clean would delete what they hold. "
+            "Run without --clean, or empty vendor/ by hand.",
+            file=sys.stderr,
+        )
+        return 1
+    foreign = _find_foreign_subdir(vendor_dir, junctions=False)
+    if foreign is not None:
+        print(
+            f"[FAIL] {foreign} is a mount point inside vendor/; --clean would "
+            "delete what it holds. Remove it and retry.",
+            file=sys.stderr,
+        )
+        return 1
+    staging_dir = vendor_dir.parent / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+    staging_dir.mkdir()
+    try:
+        exit_code = _install_to_vendor(external_deps, vendor_dir=staging_dir, python=args.python)
+        if exit_code != 0:
+            return exit_code
+        _clean_vendor(staging_dir)
         _empty_directory(vendor_dir)
-    exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
-    if exit_code == 0:
-        _clean_vendor(vendor_dir)
-    return exit_code
+        for child in staging_dir.iterdir():
+            shutil.move(str(child), str(vendor_dir / child.name))
+        return 0
+    finally:
+        if staging_dir.exists() and not _mounted_inside(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _empty_directory(directory: Path) -> None:
@@ -606,6 +636,11 @@ def _remove_stale_staging(plugin_dir: Path) -> None:
             print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
 
 
+# A marker is created right before its rename; one older than this with no
+# backup dir is certainly orphaned, whoever made it.
+_ORPHAN_MARKER_AGE_SECONDS = 600
+
+
 def _remove_orphan_markers(plugin_dir: Path) -> None:
     """Delete this user's pending markers whose backup dir is gone: left when
     a run was killed between creating the marker and the rename, or when a
@@ -618,8 +653,11 @@ def _remove_orphan_markers(plugin_dir: Path) -> None:
             continue
         backup = marker.with_name(marker.name[: -len(VENDOR_SYNC_PENDING_SUFFIX)])
         try:
-            # Another user's marker may precede their rename right now.
+            # Another user's marker may precede their rename right now; on
+            # Windows ownership is unknown, so a fresh marker is left alone.
             if backup.exists() or _owned_by_other_user(marker):
+                continue
+            if time.time() - marker.stat().st_mtime < _ORPHAN_MARKER_AGE_SECONDS:
                 continue
             marker.unlink()
         except FileNotFoundError:
