@@ -90,7 +90,6 @@ def _build_client(config_manager) -> TestClient:
         steamworks=None,
         templates=None,
         config_manager=config_manager,
-        logger=None,
     )
     app = FastAPI()
     app.include_router(router_module.router)

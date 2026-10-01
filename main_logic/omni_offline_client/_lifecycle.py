@@ -35,6 +35,7 @@ from utils.slop_filter import resolve_dialog_slop_lang
 from ._media import _FRAME_SOURCE_PROACTIVE
 from ._shared import (
     AIMessage,
+    Awaitable,
     Callable,
     HumanMessage,
     Optional,
@@ -259,6 +260,7 @@ class _LifecycleMixin:
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
         on_committed_text: Optional[Callable[[str], None]] = None,
+        response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -287,7 +289,9 @@ class _LifecycleMixin:
         - ``completion_mode="response"``:
           Uses ``on_response_done()`` so the reply goes through the
           regular user-visible completion path while still keeping the
-          injected instruction itself ephemeral.
+          injected instruction itself ephemeral. ``response_done_callback``
+          replaces it for this invocation only (the caller binds the
+          completion to this reply), and runs whenever it would.
         - ``on_committed``:
           Called after visible text is confirmed but before completion
           callbacks flush proactive state.
@@ -369,7 +373,9 @@ class _LifecycleMixin:
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
-            if self.vision_model and self.vision_model != self.model:
+            # 不要求 vision_model != model：同一个模型 id 配了不同的视觉 URL / Key
+            # 也要切；id 和端点都相同时 switch_model 自己会直接返回。
+            if self.vision_model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
@@ -771,8 +777,9 @@ class _LifecycleMixin:
             # idempotent when nothing pulsed or the first token already cleared it.
             await self._notify_reasoning_done(_reasoning_owner_seq)
             if completion_mode == "response":
-                if self.on_response_done:
-                    await self.on_response_done()
+                done_callback = response_done_callback or self.on_response_done
+                if done_callback:
+                    await done_callback()
                 # 只录常规 reply（completion_mode == "response"）。proactive 路径
                 # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
                 # 与 core.finish_proactive_delivery 同因同治：摘下来不 await。下面的
@@ -955,4 +962,6 @@ class _LifecycleMixin:
                 logger.warning(f"OmniOfflineClient.close: genai client close failed: {e}")
             self._genai_client = None
         self._genai_tools_unsupported = False
+        self._openai_tools_unsupported = False
+        self._openai_tools_unsupported_with_images = False
         logger.info("OmniOfflineClient closed")

@@ -1,14 +1,5 @@
 <template>
   <div class="pcf">
-    <el-alert
-      type="info"
-      :title="t('plugins.formMode')"
-      :description="t('plugins.formModeHint')"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 12px"
-    />
-
     <el-empty v-if="!modelValue" :description="t('common.noData')" />
 
     <div v-else>
@@ -16,6 +7,13 @@
         :model-value="modelValue"
         @update:model-value="(v) => emit('update:modelValue', v)"
         :baseline-value="baselineValue"
+        :schema="schema"
+        :search="search"
+        :filter="filter"
+        :changes="changes"
+        :compact="true"
+        :segments="[]"
+        @undo="emit('undo', $event)"
         path=""
       />
     </div>
@@ -26,14 +24,23 @@
 import { useI18n } from 'vue-i18n'
 
 import ConfigValueEditor from '@/components/plugin/ConfigValueEditor.vue'
+import type { ConfigChange, ConfigFilter } from '@/utils/configEditor'
+import type { ConfigEditorSchema } from '@/types/configSchema'
 
 interface Props {
   modelValue: Record<string, any> | null
   baselineValue: Record<string, any> | null
+  schema?: ConfigEditorSchema
+  search?: string
+  filter?: ConfigFilter
+  changes?: ConfigChange[]
 }
 
 const props = defineProps<Props>()
-const emit = defineEmits<{ (e: 'update:modelValue', v: Record<string, any> | null): void }>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', v: Record<string, any> | null): void
+  (e: 'undo', path: string[]): void
+}>()
 
 const { t } = useI18n()
 </script>

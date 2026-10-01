@@ -189,6 +189,62 @@ def test_stale_unsupported_capability_does_not_override_paid_core_preference_har
     assert result.stdout.strip() == "ok"
 
 
+def test_start_session_stamps_provider_preference_only_when_authoritative_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function attachStartSessionHandshake(ws)")
+    end = source.index("function connectWebSocket()", start)
+    attach_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          settingsHydrated: true,
+          independentAsrAuthoritative: false,
+          voiceInputResourceOptimizationAuthoritative: false,
+          independentAsrProviderPreferenceAuthoritative: false,
+          independentAsrProviderPreference: 'auto',
+        };
+        """
+        + attach_source
+        + """
+        const frames = [];
+        const ws = { send(data) { frames.push(data); } };
+        attachStartSessionHandshake(ws);
+        function start() {
+          ws.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+          return JSON.parse(frames[frames.length - 1]);
+        }
+        function assert(condition, message) {
+          if (!condition) throw new Error(message);
+        }
+        // Boot default before any authoritative event: omit the field so the
+        // backend's persisted choice keeps governing.
+        let sent = start();
+        assert(!('independent_asr_provider_preference' in sent), 'boot default leaked');
+
+        S.independentAsrProviderPreferenceAuthoritative = true;
+        S.independentAsrProviderPreference = 'faster_whisper';
+        sent = start();
+        assert(sent.independent_asr_provider_preference === 'faster_whisper', 'local choice not stamped');
+
+        S.independentAsrProviderPreference = 'auto';
+        sent = start();
+        assert(sent.independent_asr_provider_preference === 'auto', 'auto choice not stamped');
+
+        S.independentAsrProviderPreference = 'something-else';
+        sent = start();
+        assert(sent.independent_asr_provider_preference === 'auto', 'unknown value must stamp auto');
+
+        S.settingsHydrated = false;
+        sent = start();
+        assert(!('independent_asr_provider_preference' in sent), 'unhydrated window stamped');
+        console.log('ok');
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
 def test_failure_paths_keep_status_provided_asr_provider():
     # Negative counterpart to the teardown reset: failure paths receive the
     # provider from the status event and must keep it for the toasts/hint,

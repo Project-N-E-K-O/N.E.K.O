@@ -453,6 +453,7 @@ function discardCancelledScreenSharingStart(attempt) {{
   discardCalls += 1;
   return attempt.cancelled;
 }}
+function releaseReusedStreamUnderPrivacy() {{}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
@@ -484,6 +485,8 @@ async function run() {{
   assert.strictEqual(cancelPendingScreenSharingStart(), true);
   assert.strictEqual(discardCalls, 1, 'cancellation must immediately clean any already-acquired stream');
   assert.strictEqual(isScreenSharingStartPending(), false, 'a cancelled chooser must stop blocking retries immediately');
+  // The chooser is still open (never released here): the caller must not hang on it.
+  assert.strictEqual(await cancelledStart, undefined, 'a cancelled start must release its caller at once');
 
   let releaseReplacement;
   startScreenSharingOnce = async function (attempt) {{
@@ -497,14 +500,23 @@ async function run() {{
   assert.strictEqual(isScreenSharingStartPending(), true);
 
   releaseCancelled();
-  assert.strictEqual(await cancelledStart, 'cancelled');
-  assert.strictEqual(isScreenSharingStartPending(), true, 'the old finally must not clear the replacement attempt');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(isScreenSharingStartPending(), true, 'the late chooser result must not clear the replacement attempt');
 
   releaseReplacement();
   assert.strictEqual(await replacement, 'restarted');
   assert.strictEqual(isScreenSharingStartPending(), false);
+  completed = true;
 }}
 
+// Node exits with 0 when run() hangs on a promise that never settles.
+let completed = false;
+process.on('exit', () => {{
+  if (!completed) {{
+    console.error('run() never finished: a start is still awaiting its chooser');
+    process.exitCode = 1;
+  }}
+}});
 run().catch((error) => {{
   console.error(error);
   process.exitCode = 1;
@@ -700,10 +712,14 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     audio_capture_source = _read(APP_AUDIO_CAPTURE_PATH)
 
     stop = _js_function_block(screen_source, "stopScreenSharing")
+    stop_body = _js_function_block(screen_source, "releaseScreenSharing")
     switch = screen_source.split(
         "window.switchScreenSharing = async function () {", 1
     )[1].split("\n    };", 1)[0]
-    assert "cancelPendingScreenSharingStart();" in stop
+    # Every stop also drops a source-switch restart that has not started yet.
+    assert "sourceSwitchRestart = null;" in stop
+    assert "releaseScreenSharing(forceRelease, false);" in stop
+    assert "cancelPendingScreenSharingStart();" in stop_body
     assert "if (isScreenSharingStartPending())" in switch
 
     toggle = common_ui_source.split(
@@ -818,10 +834,9 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "arrow.textContent = '\\u203A';" in action_button or 'arrow.textContent = "\u203A";' in action_button or "arrow.textContent = '\u203A';" in action_button
     assert "fontSize: '16px'" in action_button
     assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
-    assert "openMicActionPanel(actionKey, onClick)" in action_button
+    assert "openMicActionPanel(actionKey, onClick, event)" in action_button
     assert "button.addEventListener('mouseenter'" in action_button
     assert "interactionOptions.openOnHover !== false" in action_button
-    assert "xdg-desktop-portal" in action_button
     assert "button.addEventListener('click'" in action_button
     assert "scheduleMicActionHoverCollapse()" in action_button
     assert "createMainActionButton(" in source
@@ -837,7 +852,13 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
         "var screenActionButton = createMainActionButton(", 1
     )[1].split(");", 1)[0]
     assert "openScreenSourceSubwindow" in screen_action
-    assert "{ openOnHover: false }" in screen_action
+    # Every source-capable provider expands on hover; providers that may
+    # prompt defer enumeration until a click inside the panel or on the row.
+    assert "return !provider || typeof provider.getSources === 'function';" in screen_action
+    screen_subwindow = _js_function_block(source, "openScreenSourceSubwindow")
+    assert "xdg-desktop-portal" in screen_subwindow
+    assert "deferEnumeration: deferEnumeration" in screen_subwindow
+    assert "retryOnFailure: true" in screen_subwindow
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

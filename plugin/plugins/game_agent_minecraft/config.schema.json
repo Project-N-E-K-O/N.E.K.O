@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "plugin_runtime": {
+      "type": "object",
+      "title": "Runtime settings",
+      "description": "Plugin availability and automatic startup settings.",
+      "x-title-i18n": {
+        "zh-CN": "运行设置",
+        "zh-TW": "執行設定",
+        "en": "Runtime settings",
+        "ja": "実行設定",
+        "ko": "실행 설정",
+        "ru": "Настройки запуска",
+        "es": "Ajustes de ejecución",
+        "pt": "Configurações de execução"
+      },
+      "x-description-i18n": {
+        "zh-CN": "插件的启用与自动启动设置。",
+        "zh-TW": "外掛程式的啟用與自動啟動設定。",
+        "en": "Plugin availability and automatic startup settings.",
+        "ja": "プラグインの有効化と自動起動の設定。",
+        "ko": "플러그인 활성화 및 자동 시작 설정입니다.",
+        "ru": "Доступность плагина и его автоматический запуск.",
+        "es": "Disponibilidad del complemento e inicio automático.",
+        "pt": "Disponibilidade do plugin e inicialização automática."
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable plugin",
+          "description": "Allow this plugin to be loaded.",
+          "x-title-i18n": {
+            "zh-CN": "启用插件",
+            "zh-TW": "啟用外掛程式",
+            "en": "Enable plugin",
+            "ja": "プラグインを有効化",
+            "ko": "플러그인 활성화",
+            "ru": "Включить плагин",
+            "es": "Activar complemento",
+            "pt": "Ativar plugin"
+          },
+          "x-description-i18n": {
+            "zh-CN": "是否允许加载此插件。",
+            "zh-TW": "是否允許載入此外掛程式。",
+            "en": "Allow this plugin to be loaded.",
+            "ja": "このプラグインの読み込みを許可します。",
+            "ko": "이 플러그인을 로드할 수 있도록 합니다.",
+            "ru": "Разрешить загрузку этого плагина.",
+            "es": "Permitir que se cargue este complemento.",
+            "pt": "Permitir o carregamento deste plugin."
+          },
+          "default": true
+        },
+        "auto_start": {
+          "type": "boolean",
+          "title": "Start automatically",
+          "description": "Start this plugin when the plugin system starts.",
+          "x-title-i18n": {
+            "zh-CN": "自动启动",
+            "zh-TW": "自動啟動",
+            "en": "Start automatically",
+            "ja": "自動起動",
+            "ko": "자동 시작",
+            "ru": "Автоматический запуск",
+            "es": "Iniciar automáticamente",
+            "pt": "Iniciar automaticamente"
+          },
+          "x-description-i18n": {
+            "zh-CN": "插件系统启动时自动启动此插件。",
+            "zh-TW": "外掛程式系統啟動時自動啟動此外掛程式。",
+            "en": "Start this plugin when the plugin system starts.",
+            "ja": "プラグインシステムの起動時に自動起動します。",
+            "ko": "플러그인 시스템이 시작될 때 자동으로 시작합니다.",
+            "ru": "Запускать плагин при запуске системы плагинов.",
+            "es": "Iniciar este complemento al arrancar el sistema de complementos.",
+            "pt": "Iniciar este plugin quando o sistema de plugins iniciar."
+          },
+          "default": false
+        }
+      }
+    },
+    "game_agent": {
+      "type": "object",
+      "title": "Minecraft agent settings",
+      "description": "Configure the local agent connection, task waiting, and screenshot delivery.",
+      "x-title-i18n": {
+        "zh-CN": "Minecraft 代理设置",
+        "zh-TW": "Minecraft 代理設定",
+        "en": "Minecraft agent settings",
+        "ja": "Minecraft エージェント設定",
+        "ko": "Minecraft 에이전트 설정",
+        "ru": "Настройки агента Minecraft",
+        "es": "Ajustes del agente de Minecraft",
+        "pt": "Configurações do agente Minecraft"
+      },
+      "x-description-i18n": {
+        "zh-CN": "配置本地代理连接、任务等待和截图传递。",
+        "zh-TW": "設定本機代理連線、任務等候與截圖傳遞。",
+        "en": "Configure the local agent connection, task waiting, and screenshot delivery.",
+        "ja": "ローカルエージェント接続、タスク待機、スクリーンショット送信を設定します。",
+        "ko": "로컬 에이전트 연결, 작업 대기 및 스크린샷 전송을 설정합니다.",
+        "ru": "Подключение к локальному агенту, ожидание задач и передача снимков.",
+        "es": "Configura conexión al agente local, espera de tareas y envío de capturas.",
+        "pt": "Configure conexão ao agente local, espera de tarefas e envio de capturas."
+      },
+      "properties": {
+        "ws_url": {
+          "type": "string",
+          "title": "Agent WebSocket URL",
+          "description": "WebSocket URL of the local mc-agent service, for example ws://localhost:48909.",
+          "x-title-i18n": {
+            "zh-CN": "代理连接地址",
+            "zh-TW": "代理連線位址",
+            "en": "Agent WebSocket URL",
+            "ja": "エージェントの WebSocket URL",
+            "ko": "에이전트 WebSocket URL",
+            "ru": "WebSocket-адрес агента",
+            "es": "URL WebSocket del agente",
+            "pt": "URL WebSocket do agente"
+          },
+          "x-description-i18n": {
+            "zh-CN": "本地 mc-agent 服务的 WebSocket 地址，例如 ws://localhost:48909。",
+            "zh-TW": "本機 mc-agent 服務的 WebSocket 位址，例如 ws://localhost:48909。",
+            "en": "WebSocket URL of the local mc-agent service, for example ws://localhost:48909.",
+            "ja": "ローカル mc-agent サービスの WebSocket URL です。例：ws://localhost:48909。",
+            "ko": "로컬 mc-agent 서비스의 WebSocket URL입니다. 예: ws://localhost:48909.",
+            "ru": "WebSocket-адрес локального сервиса mc-agent, например ws://localhost:48909.",
+            "es": "URL WebSocket del servicio local mc-agent, por ejemplo ws://localhost:48909.",
+            "pt": "URL WebSocket do serviço local mc-agent, por exemplo ws://localhost:48909."
+          },
+          "default": "ws://localhost:48909"
+        },
+        "reconnect_interval_seconds": {
+          "type": "number",
+          "title": "Reconnect interval (seconds)",
+          "description": "Wait between reconnection attempts after the agent connection drops.",
+          "x-title-i18n": {
+            "zh-CN": "断线重连间隔（秒）",
+            "zh-TW": "斷線重連間隔（秒）",
+            "en": "Reconnect interval (seconds)",
+            "ja": "再接続間隔（秒）",
+            "ko": "재연결 간격(초)",
+            "ru": "Интервал переподключения (секунды)",
+            "es": "Intervalo de reconexión (segundos)",
+            "pt": "Intervalo de reconexão (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "与代理的连接断开后，两次重连尝试之间的等待时间。",
+            "zh-TW": "與代理的連線中斷後，兩次重連嘗試之間的等候時間。",
+            "en": "Wait between reconnection attempts after the agent connection drops.",
+            "ja": "エージェントとの切断後、再接続を試みる間隔です。",
+            "ko": "에이전트 연결이 끊긴 후 재연결 시도 사이의 대기 시간입니다.",
+            "ru": "Пауза между попытками подключения после разрыва связи с агентом.",
+            "es": "Espera entre intentos de reconexión tras perder la conexión con el agente.",
+            "pt": "Espera entre tentativas de reconexão após perder a conexão com o agente."
+          },
+          "minimum": 0.5,
+          "default": 5.0
+        },
+        "task_timeout_seconds": {
+          "type": "number",
+          "title": "Task completion timeout (seconds)",
+          "description": "Background wait for task_finished, from 1 to 295 seconds; it does not block the main conversation.",
+          "x-title-i18n": {
+            "zh-CN": "任务完成等待上限（秒）",
+            "zh-TW": "任務完成等候上限（秒）",
+            "en": "Task completion timeout (seconds)",
+            "ja": "タスク完了の待機上限（秒）",
+            "ko": "작업 완료 대기 제한(초)",
+            "ru": "Тайм-аут завершения задачи (секунды)",
+            "es": "Espera máxima de tarea (segundos)",
+            "pt": "Espera máxima da tarefa (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "后台等待 task_finished 的上限，范围为 1–295 秒；不会阻塞主对话。",
+            "zh-TW": "背景等候 task_finished 的上限，範圍為 1–295 秒；不會阻塞主對話。",
+            "en": "Background wait for task_finished, from 1 to 295 seconds; it does not block the main conversation.",
+            "ja": "バックグラウンドで task_finished を待つ上限です。1～295 秒。メインの会話はブロックしません。",
+            "ko": "백그라운드에서 task_finished를 기다리는 상한입니다. 1~295초이며 주 대화를 차단하지 않습니다.",
+            "ru": "Ожидание task_finished в фоне: 1–295 секунд; основной диалог не блокируется.",
+            "es": "Espera en segundo plano de task_finished, de 1 a 295 segundos; no bloquea la conversación principal.",
+            "pt": "Espera em segundo plano por task_finished, de 1 a 295 segundos; não bloqueia a conversa principal."
+          },
+          "minimum": 1,
+          "maximum": 295,
+          "default": 120.0
+        },
+        "system_prompt_interval_seconds": {
+          "type": "number",
+          "title": "Game-state prompt interval (seconds)",
+          "description": "Interval between periodic game-state and log prompts sent to the AI.",
+          "x-title-i18n": {
+            "zh-CN": "游戏状态提示间隔（秒）",
+            "zh-TW": "遊戲狀態提示間隔（秒）",
+            "en": "Game-state prompt interval (seconds)",
+            "ja": "ゲーム状態の通知間隔（秒）",
+            "ko": "게임 상태 안내 간격(초)",
+            "ru": "Интервал подсказок о состоянии игры (секунды)",
+            "es": "Intervalo de avisos de estado (segundos)",
+            "pt": "Intervalo de avisos de estado (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "向 AI 定期发送游戏状态和日志提示的间隔。",
+            "zh-TW": "向 AI 定期傳送遊戲狀態與日誌提示的間隔。",
+            "en": "Interval between periodic game-state and log prompts sent to the AI.",
+            "ja": "AI にゲーム状態とログの通知を定期送信する間隔です。",
+            "ko": "AI에 게임 상태와 로그 안내를 주기적으로 보내는 간격입니다.",
+            "ru": "Интервал отправки ИИ сведений о состоянии игры и журнале.",
+            "es": "Intervalo entre avisos periódicos de estado del juego y registros enviados a la IA.",
+            "pt": "Intervalo entre avisos periódicos de estado do jogo e registros enviados à IA."
+          },
+          "minimum": 1,
+          "default": 15.0
+        },
+        "screenshot_stream_min_interval_seconds": {
+          "type": "number",
+          "title": "Minimum screenshot interval (seconds)",
+          "description": "Limit how often screenshots are streamed to the AI.",
+          "x-title-i18n": {
+            "zh-CN": "实时截图最短间隔（秒）",
+            "zh-TW": "即時截圖最短間隔（秒）",
+            "en": "Minimum screenshot interval (seconds)",
+            "ja": "スクリーンショットの最小送信間隔（秒）",
+            "ko": "최소 스크린샷 전송 간격(초)",
+            "ru": "Минимальный интервал снимков (секунды)",
+            "es": "Intervalo mínimo de capturas (segundos)",
+            "pt": "Intervalo mínimo de capturas (segundos)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "限制实时发送给 AI 的截图频率，避免过于频繁。",
+            "zh-TW": "限制即時傳送給 AI 的截圖頻率，避免過於頻繁。",
+            "en": "Limit how often screenshots are streamed to the AI.",
+            "ja": "AI へのスクリーンショットのリアルタイム送信頻度を制限します。",
+            "ko": "AI에 실시간으로 스크린샷을 보내는 빈도를 제한합니다.",
+            "ru": "Ограничить частоту передачи снимков экрана ИИ.",
+            "es": "Limita la frecuencia de envío de capturas a la IA en tiempo real.",
+            "pt": "Limita a frequência de envio de capturas à IA em tempo real."
+          },
+          "minimum": 0.2,
+          "default": 6.0
+        },
+        "skip_system_prompt_if_busy": {
+          "type": "boolean",
+          "title": "Skip state prompts while busy",
+          "description": "Do not send periodic game-state prompts while a task is pending.",
+          "x-title-i18n": {
+            "zh-CN": "任务进行时暂停状态提示",
+            "zh-TW": "任務進行時暫停狀態提示",
+            "en": "Skip state prompts while busy",
+            "ja": "処理中は状態通知を省略",
+            "ko": "작업 중 상태 안내 건너뛰기",
+            "ru": "Пропускать подсказки во время задачи",
+            "es": "Omitir avisos durante tareas",
+            "pt": "Omitir avisos durante tarefas"
+          },
+          "x-description-i18n": {
+            "zh-CN": "已有待完成任务时，不再追加周期性游戏状态提示。",
+            "zh-TW": "已有待完成任務時，不再追加週期性遊戲狀態提示。",
+            "en": "Do not send periodic game-state prompts while a task is pending.",
+            "ja": "タスクの完了待ち中は定期的なゲーム状態通知を送信しません。",
+            "ko": "완료 대기 중인 작업이 있으면 주기적인 게임 상태 안내를 보내지 않습니다.",
+            "ru": "Не отправлять периодические подсказки о состоянии игры, пока задача ожидает завершения.",
+            "es": "No enviar avisos periódicos del estado del juego mientras haya una tarea pendiente.",
+            "pt": "Não enviar avisos periódicos do estado do jogo enquanto houver uma tarefa pendente."
+          },
+          "default": true
+        },
+        "stream_screenshots_to_llm": {
+          "type": "boolean",
+          "title": "Stream screenshots to the AI",
+          "description": "Disabling stops live streaming only; screenshots remain cached for periodic state prompts.",
+          "x-title-i18n": {
+            "zh-CN": "实时发送截图给 AI",
+            "zh-TW": "即時傳送截圖給 AI",
+            "en": "Stream screenshots to the AI",
+            "ja": "AI にスクリーンショットを即時送信",
+            "ko": "AI에 실시간 스크린샷 전송",
+            "ru": "Передавать снимки ИИ в реальном времени",
+            "es": "Enviar capturas a la IA en tiempo real",
+            "pt": "Enviar capturas à IA em tempo real"
+          },
+          "x-description-i18n": {
+            "zh-CN": "关闭仅停止实时推送；截图仍会缓存，并可用于周期性状态提示。",
+            "zh-TW": "關閉僅停止即時推送；截圖仍會快取，並可用於週期性狀態提示。",
+            "en": "Disabling stops live streaming only; screenshots remain cached for periodic state prompts.",
+            "ja": "無効にしても定期通知用の画像キャッシュは保持されます。停止するのは即時送信のみです。",
+            "ko": "끄면 실시간 전송만 중지합니다. 주기적인 상태 안내용 스크린샷은 계속 캐시됩니다.",
+            "ru": "Отключается только прямая передача; снимки остаются в кэше для периодических подсказок.",
+            "es": "Desactivarlo solo detiene el envío en tiempo real; las capturas siguen en caché para avisos periódicos.",
+            "pt": "Desativar interrompe apenas o envio em tempo real; as capturas continuam em cache para avisos periódicos."
+          },
+          "default": true
+        },
+        "screenshot_cache_size": {
+          "type": "integer",
+          "title": "Screenshot cache size",
+          "description": "Number of recent screenshots kept in memory; at least 1.",
+          "x-title-i18n": {
+            "zh-CN": "截图缓存帧数",
+            "zh-TW": "截圖快取影格數",
+            "en": "Screenshot cache size",
+            "ja": "保持するスクリーンショット数",
+            "ko": "스크린샷 캐시 수",
+            "ru": "Количество снимков в кэше",
+            "es": "Cantidad de capturas en caché",
+            "pt": "Quantidade de capturas no cache"
+          },
+          "x-description-i18n": {
+            "zh-CN": "在内存中保留最近多少张截图；至少保留 1 张。",
+            "zh-TW": "在記憶體中保留最近多少張截圖；至少保留 1 張。",
+            "en": "Number of recent screenshots kept in memory; at least 1.",
+            "ja": "メモリに保持する最新のスクリーンショット数です。最低 1 枚。",
+            "ko": "메모리에 보관할 최근 스크린샷 수입니다. 최소 1장입니다.",
+            "ru": "Число последних снимков в памяти; не менее 1.",
+            "es": "Número de capturas recientes conservadas en memoria; al menos 1.",
+            "pt": "Número de capturas recentes mantidas na memória; pelo menos 1."
+          },
+          "minimum": 1,
+          "default": 3
+        },
+        "screenshot_max_edge_px": {
+          "type": "integer",
+          "title": "Maximum screenshot edge (pixels)",
+          "description": "Longest edge after resizing; 0 disables resizing but still converts to JPEG.",
+          "x-title-i18n": {
+            "zh-CN": "截图最长边（像素）",
+            "zh-TW": "截圖最長邊（像素）",
+            "en": "Maximum screenshot edge (pixels)",
+            "ja": "画像の最長辺（ピクセル）",
+            "ko": "스크린샷 최대 변 길이(픽셀)",
+            "ru": "Максимальная сторона снимка (пиксели)",
+            "es": "Lado máximo de captura (píxeles)",
+            "pt": "Maior lado da captura (pixels)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "截图缩放后的最长边上限；0 关闭缩放，但仍转换为 JPEG。",
+            "zh-TW": "截圖縮放後的最長邊上限；0 關閉縮放，但仍轉換為 JPEG。",
+            "en": "Longest edge after resizing; 0 disables resizing but still converts to JPEG.",
+            "ja": "縮小後の最長辺の上限です。0 で縮小を無効にしますが、JPEG 変換は行います。",
+            "ko": "크기 조정 후 가장 긴 변의 상한입니다. 0은 크기 조정을 끄지만 JPEG 변환은 유지합니다.",
+            "ru": "Предел длинной стороны после уменьшения; 0 отключает уменьшение, но сохраняет преобразование в JPEG.",
+            "es": "Límite del lado más largo al redimensionar; 0 desactiva el cambio de tamaño, pero mantiene JPEG.",
+            "pt": "Limite do maior lado ao redimensionar; 0 desativa o redimensionamento, mas mantém a conversão para JPEG."
+          },
+          "minimum": 0,
+          "default": 1024
+        },
+        "screenshot_jpeg_quality": {
+          "type": "integer",
+          "title": "Screenshot JPEG quality",
+          "description": "From 1 to 95; higher values improve clarity and usually increase size.",
+          "x-title-i18n": {
+            "zh-CN": "截图 JPEG 质量",
+            "zh-TW": "截圖 JPEG 品質",
+            "en": "Screenshot JPEG quality",
+            "ja": "スクリーンショットの JPEG 品質",
+            "ko": "스크린샷 JPEG 품질",
+            "ru": "Качество JPEG снимков",
+            "es": "Calidad JPEG de capturas",
+            "pt": "Qualidade JPEG das capturas"
+          },
+          "x-description-i18n": {
+            "zh-CN": "范围为 1–95；值越高越清晰，文件通常也越大。",
+            "zh-TW": "範圍為 1–95；值越高越清晰，檔案通常也越大。",
+            "en": "From 1 to 95; higher values improve clarity and usually increase size.",
+            "ja": "1～95。高いほど鮮明になりますが、通常はサイズも大きくなります。",
+            "ko": "1~95입니다. 값이 높을수록 선명하지만 일반적으로 파일도 커집니다.",
+            "ru": "От 1 до 95; выше — чётче, но обычно больше размер файла.",
+            "es": "De 1 a 95; valores mayores dan más nitidez y suelen aumentar el tamaño.",
+            "pt": "De 1 a 95; valores maiores melhoram a nitidez e geralmente aumentam o tamanho."
+          },
+          "minimum": 1,
+          "maximum": 95,
+          "default": 80
+        },
+        "screenshot_max_bytes": {
+          "type": "integer",
+          "title": "Screenshot size budget (bytes)",
+          "description": "Reduce JPEG quality and dimensions to fit; 0 disables this budget, but oversized images may still be rejected by the message channel.",
+          "x-title-i18n": {
+            "zh-CN": "单张截图大小上限（字节）",
+            "zh-TW": "單張截圖大小上限（位元組）",
+            "en": "Screenshot size budget (bytes)",
+            "ja": "画像 1 枚の容量上限（バイト）",
+            "ko": "스크린샷 크기 상한(바이트)",
+            "ru": "Лимит размера снимка (байты)",
+            "es": "Límite de tamaño de captura (bytes)",
+            "pt": "Limite de tamanho da captura (bytes)"
+          },
+          "x-description-i18n": {
+            "zh-CN": "JPEG 超限时继续降低质量和尺寸；0 关闭此预算，过大图片仍可能被消息通道拒绝。",
+            "zh-TW": "JPEG 超限時繼續降低品質與尺寸；0 關閉此預算，過大圖片仍可能被訊息通道拒絕。",
+            "en": "Reduce JPEG quality and dimensions to fit; 0 disables this budget, but oversized images may still be rejected by the message channel.",
+            "ja": "上限に収まるまで JPEG 品質や寸法を下げます。0 で無効ですが、大きすぎる画像は送信経路で拒否される場合があります。",
+            "ko": "상한에 맞게 JPEG 품질과 크기를 줄입니다. 0은 이 제한을 끄지만 너무 큰 이미지는 메시지 채널에서 거부될 수 있습니다.",
+            "ru": "Уменьшать качество JPEG и размеры до лимита; 0 отключает его, но слишком большие изображения может отклонить канал сообщений.",
+            "es": "Reduce calidad y dimensiones JPEG para ajustarse; 0 desactiva este límite, pero el canal puede rechazar imágenes grandes.",
+            "pt": "Reduz qualidade e dimensões JPEG para caber; 0 desativa esse limite, mas o canal pode rejeitar imagens grandes."
+          },
+          "minimum": 0,
+          "default": 102400
+        }
+      }
+    }
+  }
+}

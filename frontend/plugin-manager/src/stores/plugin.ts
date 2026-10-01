@@ -5,15 +5,25 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   getPlugins,
+  getPlugin,
+  getPluginSummaries,
   getPluginStatus,
   startPlugin,
   stopPlugin,
   reloadPlugin,
+  reloadAllPlugins,
   refreshPluginsRegistry,
 } from '@/api/plugins'
+import type { PluginListSummary } from '@/api/plugins'
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
+import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
+import {
+  pendingReloadPlugins,
+  pendingReloadRevision,
+  setPendingReload,
+} from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -30,149 +40,222 @@ type PluginMutationOptions = {
 
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
-  const plugins = ref<PluginMeta[]>([])
+  const pluginSummaries = ref<PluginListSummary[]>([])
+  const pluginDetails = ref<Record<string, PluginMeta>>({})
   const pluginStatuses = ref<Record<string, PluginStatusData>>({})
-  const selectedPluginId = ref<string | null>(null)
-  const loading = ref(false)
-  const error = ref<string | null>(null)
+  const pluginStatusSnapshotLoaded = ref(false)
+  const pluginStatusFetchedAt = ref(0)
+  const PLUGIN_SNAPSHOT_MAX_AGE = 10_000
+  const pluginSummarySnapshotLoaded = ref(false)
+  const pluginSummaryFetchedAt = ref(0)
+  const pluginSummaryFetchedLocale = ref<string | null>(null)
   
   // 防止请求堆积：正在进行的请求
-  let pendingFetchPlugins: Promise<void> | null = null
   let pendingFetchStatus: Promise<void> | null = null
+  let pendingFetchSummaries: Promise<void> | null = null
+  let pendingFetchSummariesLocale: string | null = null
+  const pendingFetchDetails = new Map<string, Promise<void>>()
   let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
   const pluginListRegistrySynced = ref(false)
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
   // 请求序列号，用于忽略过期响应
-  let fetchPluginsSeq = 0
   let fetchStatusSeq = 0
+  let fetchSummariesSeq = 0
+  const fetchDetailSeq = new Map<string, number>()
 
-  // 计算属性
-  const selectedPlugin = computed(() => {
-    if (!selectedPluginId.value) return null
-    return plugins.value.find(p => p.id === selectedPluginId.value) || null
-  })
-
-  const pluginsWithStatus = computed(() => {
-    return plugins.value.map(plugin => {
-      const enabled = plugin.runtime_enabled !== false
-      const autoStart = plugin.runtime_auto_start !== false
-      // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
-      // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
-      // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
-      // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
-      // 现在直接信任 runtime status（stopped / running / load_failed），
-      // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
-      // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
-      const displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-      
-      return {
-        ...plugin,
-        status: displayStatus,
-        enabled,
-        autoStart
-      }
-    })
-  })
-
-  const normalPlugins = computed(() => {
-    return pluginsWithStatus.value
-  })
-
-  // 操作
-  async function fetchPlugins(force = false, options: RegistrySyncOptions = {}) {
-    // 防止请求堆积
-    if (!force && pendingFetchPlugins) {
-      return pendingFetchPlugins
+  // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
+  // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
+  // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
+  // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
+  // 现在直接信任 runtime status（stopped / running / load_failed），
+  // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
+  // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
+  function withDisplayState<P extends PluginListSummary>(plugin: P) {
+    return {
+      ...plugin,
+      status: typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED,
+      enabled: plugin.runtime_enabled !== false,
+      autoStart: plugin.runtime_auto_start !== false,
     }
-    
-    loading.value = true
-    error.value = null
-    
-    // 设置超时自动清理，防止请求堆积
-    const timeoutId = setTimeout(() => {
-      if (pendingFetchPlugins) {
-        console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
-        pendingFetchPlugins = null
-        loading.value = false
-      }
-    }, REQUEST_TIMEOUT)
-    
-    const seq = ++fetchPluginsSeq
-    pendingFetchPlugins = (async () => {
+  }
+
+  // Read precedence: detail > summary.
+  function resolvePluginById(pluginId: string) {
+    const plugin = pluginDetails.value[pluginId]
+      || pluginSummaries.value.find(item => item.id === pluginId)
+    return plugin ? withDisplayState(plugin) : null
+  }
+
+  const pluginSummariesWithStatus = computed(() => pluginSummaries.value.map(withDisplayState))
+
+  async function fetchPluginSummaries(force = false, options: RegistrySyncOptions = {}) {
+    const requestLocale = getLocale()
+    if (!force && pendingFetchSummaries && pendingFetchSummariesLocale === requestLocale) {
+      return pendingFetchSummaries
+    }
+    const seq = ++fetchSummariesSeq
+    pendingFetchSummariesLocale = requestLocale
+    pendingFetchSummaries = (async () => {
       try {
-        const response = await getPlugins(
-          getLocale(),
-          options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
-        )
-        // 忽略过期响应，防止旧数据覆盖新数据
-        if (seq !== fetchPluginsSeq) return
-        plugins.value = response.plugins || []
-      } catch (err: any) {
-        if (seq !== fetchPluginsSeq) return
-        error.value = err.message || '获取插件列表失败'
-        console.error('Failed to fetch plugins:', err)
+        const response = await getPluginSummaries(requestLocale, options.preserveMessagesOn404
+          ? { preserveMessagesOn404: true }
+          : undefined)
+        if (seq !== fetchSummariesSeq) return
+        const nextSummaries = response.plugins || []
+        pruneDetails(new Set(nextSummaries.map(plugin => plugin.id)))
+        pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
+        pluginSummarySnapshotLoaded.value = true
+        pluginSummaryFetchedAt.value = Date.now()
+        pluginSummaryFetchedLocale.value = requestLocale
       } finally {
-        clearTimeout(timeoutId)
-        if (seq === fetchPluginsSeq) {
-          loading.value = false
-          pendingFetchPlugins = null
+        if (seq === fetchSummariesSeq) {
+          pendingFetchSummaries = null
+          pendingFetchSummariesLocale = null
         }
       }
     })()
-    
-    return pendingFetchPlugins
+    return pendingFetchSummaries
   }
 
-  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
-    let registryRefreshed = false
-    let warningMessage: string | null = null
+  async function ensurePluginSummaries(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
+    const locale = getLocale()
+    const fresh = pluginSummarySnapshotLoaded.value
+      && pluginSummaryFetchedLocale.value === locale
+      && Date.now() - pluginSummaryFetchedAt.value < maxAgeMs
+    if (fresh) return
+    await fetchPluginSummaries()
+  }
 
+  async function fetchPluginDetail(pluginId: string, force = false) {
+    const existing = pendingFetchDetails.get(pluginId)
+    if (existing && !force) return existing
+    const requestLocale = getLocale()
+    const seq = (fetchDetailSeq.get(pluginId) || 0) + 1
+    fetchDetailSeq.set(pluginId, seq)
+    let request!: Promise<void>
+    // A locale switch or a summary that dropped this plugin bumps the fence.
+    // The late response must not republish the detail it fetched.
+    const stillCurrent = () => fetchDetailSeq.get(pluginId) === seq && getLocale() === requestLocale
+    request = (async () => {
+      try {
+        const detail = await getPlugin(pluginId, requestLocale)
+        if (!stillCurrent()) return
+        pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+      } catch (error: any) {
+        const status = error?.response?.status
+        if (status !== 404 && status !== 405) throw error
+        // Compatibility with older plugin servers: the old full list endpoint
+        // remains a safe fallback when the single-plugin route is unavailable.
+        const response = await getPlugins(requestLocale)
+        const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
+        if (!stillCurrent()) return
+        if (detail) {
+          pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+        } else if (pluginId in pluginDetails.value) {
+          const rest = { ...pluginDetails.value }
+          delete rest[pluginId]
+          pluginDetails.value = rest
+        }
+      } finally {
+        if (pendingFetchDetails.get(pluginId) === request) pendingFetchDetails.delete(pluginId)
+      }
+    })()
+    pendingFetchDetails.set(pluginId, request)
+    return request
+  }
+
+  // Installs and upgrades only refresh summaries, so a cached copy is served
+  // immediately and revalidated in the background.
+  async function ensurePlugin(pluginId: string) {
+    const cached = pluginDetails.value[pluginId]
+    if (cached) {
+      fetchPluginDetail(pluginId).catch(err => console.warn(`Failed to revalidate plugin ${pluginId}:`, err))
+      return cached
+    }
+    let current = fetchPluginDetail(pluginId)
+    await current
+    // A locale refresh may have replaced the request while this one was in flight.
+    for (;;) {
+      const pending = pendingFetchDetails.get(pluginId)
+      if (!pending || pending === current) break
+      current = pending
+      await current
+    }
+    return pluginDetails.value[pluginId] || null
+  }
+
+  function invalidateDetail(pluginId: string) {
+    fetchDetailSeq.set(pluginId, (fetchDetailSeq.get(pluginId) || 0) + 1)
+  }
+
+  function pruneDetails(liveIds: ReadonlySet<string>) {
+    const ids = new Set([...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys()])
+    let dropped = false
+    for (const id of ids) {
+      if (liveIds.has(id)) continue
+      invalidateDetail(id)
+      dropped = true
+    }
+    if (!dropped) return
+    pluginDetails.value = Object.fromEntries(
+      Object.entries(pluginDetails.value).filter(([id]) => liveIds.has(id)),
+    )
+  }
+
+  function getPluginById(pluginId: string) {
+    return resolvePluginById(pluginId)
+  }
+
+  async function refreshLoadedPluginData(options: RegistrySyncOptions = {}) {
+    const tasks: Promise<unknown>[] = []
+    if (pluginSummarySnapshotLoaded.value) {
+      tasks.push(fetchPluginSummaries(true, options))
+    }
+    // Include requests that have not landed yet. A locale switch otherwise
+    // leaves that response free to publish the previous language.
+    const detailIds = new Set([
+      ...Object.keys(pluginDetails.value),
+      ...pendingFetchDetails.keys(),
+    ])
+    for (const id of detailIds) {
+      tasks.push(fetchPluginDetail(id, true))
+    }
+    if (tasks.length === 0) {
+      tasks.push(fetchPluginSummaries(true, options))
+    }
+    await Promise.all(tasks)
+  }
+
+  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+    let result: RegistrySyncResult
     try {
       const response = await refreshPluginsRegistry(
         options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
       )
-      registryRefreshed = true
+      result = { registryRefreshed: true, warningMessage: null }
       if (response.success === false) {
         const firstFailure = response.failed[0]
-        if (firstFailure) {
-          const failureTarget = firstFailure.plugin_id || firstFailure.config_path
-          if (!failureTarget) {
-            warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
-          } else {
-            warningMessage = response.failed.length > 1
-              ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
-                  count: response.failed.length,
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
-              : i18n.global.t('messages.pluginListRefreshPartial', {
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
-          }
-        } else {
-          warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
-        }
+        const target = firstFailure?.plugin_id || firstFailure?.config_path
+        result.warningMessage = !target
+          ? i18n.global.t('messages.pluginListRefreshPartialUnknown')
+          : response.failed.length > 1
+            ? i18n.global.t('messages.pluginListRefreshPartialMultiple', { count: response.failed.length, target, error: firstFailure.error })
+            : i18n.global.t('messages.pluginListRefreshPartial', { target, error: firstFailure.error })
       }
     } catch (err: any) {
       const status = err?.response?.status
-      if (status !== 401 && status !== 403 && status !== 404) {
-        throw err
+      if (status !== 401 && status !== 403 && status !== 404) throw err
+      result = {
+        registryRefreshed: false,
+        warningMessage: status === 403
+          ? i18n.global.t('messages.pluginListRefreshForbidden')
+          : status === 404 ? i18n.global.t('messages.resourceNotFound') : i18n.global.t('messages.pluginListRefreshUnauthenticated'),
       }
-      warningMessage = status === 403
-        ? i18n.global.t('messages.pluginListRefreshForbidden')
-        : status === 404
-          ? i18n.global.t('messages.resourceNotFound')
-          : i18n.global.t('messages.pluginListRefreshUnauthenticated')
     }
-
-    await fetchPlugins(true, options)
+    await fetchPluginSummaries(true, options)
     pluginListRegistrySynced.value = true
-    return {
-      registryRefreshed,
-      warningMessage,
-    }
+    return result
   }
 
   async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
@@ -182,31 +265,38 @@ export const usePluginStore = defineStore('plugin', () => {
     if (pendingPluginListRegistrySync) {
       return pendingPluginListRegistrySync
     }
-    pendingPluginListRegistrySync = syncRegistryAndFetch().finally(() => {
+    pendingPluginListRegistrySync = syncRegistryAndFetchSummaries().finally(() => {
       pendingPluginListRegistrySync = null
     })
     return pendingPluginListRegistrySync
   }
 
-  async function fetchPluginStatus(pluginId?: string) {
+  async function fetchPluginStatus(pluginId?: string, force = false) {
+    if (pluginId) {
+      // A single-plugin mutation makes any in-flight full snapshot stale.
+      fetchStatusSeq += 1
+      pendingFetchStatus = null
+      pluginStatusSnapshotLoaded.value = false
+    }
     // 只对全量状态请求做防抖（单个插件状态请求不做限制）
-    if (!pluginId && pendingFetchStatus) {
+    if (!pluginId && pendingFetchStatus && !force) {
       return pendingFetchStatus
     }
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let timeoutReject: ((reason?: unknown) => void) | null = null
+    const seq = !pluginId ? ++fetchStatusSeq : 0
     if (!pluginId) {
       timeoutId = setTimeout(() => {
-        if (pendingFetchStatus) {
+        if (seq === fetchStatusSeq && pendingFetchStatus) {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
+          fetchStatusSeq += 1
           pendingFetchStatus = null
+          timeoutReject?.(new Error('获取插件状态超时'))
         }
       }, REQUEST_TIMEOUT)
     }
-    
-    // 仅对全量请求使用序列号
-    const seq = !pluginId ? ++fetchStatusSeq : 0
     
     const doFetch = async () => {
       try {
@@ -220,6 +310,8 @@ export const usePluginStore = defineStore('plugin', () => {
           // 所有插件状态
           const statuses = response as { plugins: Record<string, PluginStatusData> }
           pluginStatuses.value = statuses.plugins || {}
+          pluginStatusSnapshotLoaded.value = true
+          pluginStatusFetchedAt.value = Date.now()
         }
       } catch (err: any) {
         console.error('Failed to fetch plugin status:', err)
@@ -232,72 +324,111 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     
     if (!pluginId) {
-      pendingFetchStatus = doFetch()
+      const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+      pendingFetchStatus = Promise.race([doFetch(), timeout])
       return pendingFetchStatus
     } else {
       return doFetch()
     }
   }
 
+  async function ensurePluginStatus(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
+    if (pluginStatusSnapshotLoaded.value && Date.now() - pluginStatusFetchedAt.value < maxAgeMs) return
+    await fetchPluginStatus()
+  }
+
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await startPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
-      }
-    } catch (err: any) {
-      throw err
-    }
+    // Captured before the request: the process reads the saved configuration while it
+    // starts, so a profile write that lands in the meantime is newer than what that
+    // process can have read and has to keep its reload warning.
+    const pendingRevision = pendingReloadRevision(pluginId)
+    const result = await startPlugin(pluginId)
+    // Starting an already running plugin returns success without restarting the
+    // process or re-reading the saved profile overlay, so the server reports that
+    // case explicitly; the pending flag may only be cleared for a real start.
+    if (result?.already_running !== true) setPendingReload(pluginId, false, pendingRevision)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function stop(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await stopPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
-      }
-    } catch (err: any) {
-      throw err
-    }
+    await stopPlugin(pluginId)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await reloadPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
-      }
-    } catch (err: any) {
-      throw err
-    }
+    const pendingRevision = pendingReloadRevision(pluginId)
+    await reloadPlugin(pluginId)
+    // The running host now matches the persisted configuration, whichever entry
+    // point triggered the reload — unless a profile write claimed the flag while
+    // this reload was in flight, which this host may have missed.
+    setPendingReload(pluginId, false, pendingRevision)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
-  function setSelectedPlugin(pluginId: string | null) {
-    selectedPluginId.value = pluginId
+  async function reloadAll(options: PluginMutationOptions = {}) {
+    // The bulk endpoint restarts every plugin it reports back, so those hosts match their
+    // saved configuration again and the flags have to go with it. Capture the revisions
+    // first for the same reason as the single-plugin path: a profile write that lands during
+    // the request describes a configuration the restarted host cannot have read. The flagged
+    // plugins are included because the server restarts hosts from its own running set, which
+    // can be ahead of (or behind) the list this window last loaded.
+    const baseline = [
+      ...new Set([...pluginSummaries.value.map((p) => p.id), ...pendingReloadPlugins()]),
+    ]
+    const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
+    const result = await reloadAllPlugins()
+    for (const pluginId of result.reloaded) {
+      const revision = revisions.get(pluginId)
+      // Only ids that were neither listed nor flagged are skipped, and for those there is no
+      // flag to clear anyway.
+      if (revision !== undefined) setPendingReload(pluginId, false, revision)
+    }
+    // The reload already happened; a follow-up refresh that fails or times out must not
+    // turn its result into a failure for the caller.
+    if (options.refresh !== false) {
+      try {
+        await fetchPluginStatus()
+        await refreshLoadedPluginData()
+      } catch (err) {
+        console.warn('Failed to refresh plugin data after reloading all plugins:', err)
+      }
+    }
+    return result
+  }
+
+  // The mutation already succeeded; a failed follow-up refresh must not be
+  // reported to the caller as a failed start/stop/reload.
+  async function refreshAfterMutation(pluginId: string) {
+    await fetchPluginStatus(pluginId)
+    try {
+      await refreshLoadedPluginData()
+    } catch (err) {
+      console.warn('Failed to refresh plugin data after mutation:', err)
+    }
   }
 
   return {
     // 状态
-    plugins,
+    pluginSummaries,
+    pluginDetails,
     pluginStatuses,
-    selectedPluginId,
-    selectedPlugin,
-    pluginsWithStatus,
-    normalPlugins,
+    pluginSummariesWithStatus,
+    getPluginById,
     pluginListRegistrySynced,
-    loading,
-    error,
+    pluginStatusSnapshotLoaded,
     // 操作
-    fetchPlugins,
-    syncRegistryAndFetch,
+    fetchPluginSummaries,
+    ensurePluginSummaries,
+    fetchPluginDetail,
+    ensurePlugin,
+    refreshLoadedPluginData,
+    syncRegistryAndFetchSummaries,
     ensurePluginListRegistrySynced,
     fetchPluginStatus,
+    ensurePluginStatus,
     start,
     stop,
     reload,
-    setSelectedPlugin
+    reloadAll,
   }
 })

@@ -1,9 +1,7 @@
 import pytest
 from dataclasses import FrozenInstanceError
-from unittest.mock import Mock
 
 from main_logic.voice_turn.contracts import (
-    AsrTurnCapabilities,
     AsrLifecycleNotification,
     AsrStatusEvent,
     AsrSubmitResult,
@@ -14,8 +12,6 @@ from main_logic.voice_turn.contracts import (
     VoiceIngressToken,
     VoicePartialEvent,
     VoiceTurnToken,
-    build_turn_detector_if_required,
-    requires_external_turn_detector,
 )
 
 
@@ -32,21 +28,9 @@ def _turn_token(*, session_epoch: int = 1, turn_id: int = 2) -> VoiceTurnToken:
     )
 
 
-def test_semantic_endpoint_provider_does_not_require_smart_turn():
-    assert requires_external_turn_detector(AsrTurnCapabilities(semantic_endpoint=True)) is False
-    assert requires_external_turn_detector(AsrTurnCapabilities(semantic_endpoint=False)) is True
-
-
-def test_semantic_endpoint_provider_never_constructs_smart_turn_runtime():
-    factory = Mock()
-    detector = build_turn_detector_if_required(
-        AsrTurnCapabilities(semantic_endpoint=True), factory
-    )
-    assert detector is None
-    factory.assert_not_called()
-
-
-def test_unavailable_is_not_an_incomplete_decision():
+def test_unavailable_without_a_result_constructs():
+    # 模型缺失时的合法形态：没有 decision 也没有 probability。__post_init__
+    # 若收得过严，这条路径会在运行时崩掉，而下面的反向用例照样全绿。
     evaluation = TurnEvaluation(
         status=EvaluationStatus.UNAVAILABLE,
         decision=None,
@@ -55,7 +39,23 @@ def test_unavailable_is_not_an_incomplete_decision():
         activity_seq=2,
         reason="model_missing",
     )
-    assert evaluation.decision is not TurnDecision.INCOMPLETE
+    assert evaluation.status is EvaluationStatus.UNAVAILABLE
+    assert evaluation.decision is None
+    assert evaluation.probability is None
+
+
+def test_unavailable_carries_no_decision():
+    # UNAVAILABLE 不得携带语义结果：带上 decision 会被构造契约直接拒绝，
+    # 而不是静默吞掉（吞掉会让上层把「模型缺失」误读成回合结论）。
+    with pytest.raises(ValueError, match="non-OK evaluations must not carry"):
+        TurnEvaluation(
+            status=EvaluationStatus.UNAVAILABLE,
+            decision=TurnDecision.COMPLETE,
+            probability=None,
+            generation=1,
+            activity_seq=2,
+            reason="model_missing",
+        )
 
 
 def test_ok_evaluation_requires_probability_and_decision():

@@ -70,18 +70,35 @@ from .plugin_types import (
     SCAFFOLDABLE_PLUGIN_TYPES,
     SUPPORTED_PLUGIN_TYPES,
 )
-from .models import (
-    RunStatus,
-    RunCreateRequest,
-    RunCreateResponse,
-    PluginAuthor,
-    PluginDependency,
-    PluginMeta,
-    HealthCheckResponse,
-    PluginPushMessageRequest,
-    PluginPushMessage,
-    PluginPushMessageResponse,
-)
+
+# .models 是服务端 API 用的 pydantic 模型，导入要两百多毫秒；插件子进程经
+# plugin._types 下的轻量子模块（如 bus_sort）进来时用不到它，所以按需导入。
+_LAZY_MODEL_EXPORTS = frozenset({
+    "RunStatus",
+    "RunCreateRequest",
+    "RunCreateResponse",
+    "PluginAuthor",
+    "PluginDependency",
+    "PluginMeta",
+    "HealthCheckResponse",
+    "PluginPushMessageRequest",
+    "PluginPushMessage",
+    "PluginPushMessageResponse",
+})
+
+
+def __getattr__(name):
+    if name in _LAZY_MODEL_EXPORTS:
+        from . import models
+
+        value = getattr(models, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _LAZY_MODEL_EXPORTS)
 
 __all__ = [
     # 版本

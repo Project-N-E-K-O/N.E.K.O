@@ -107,7 +107,7 @@ class VoiceActivationTransaction(Protocol):
     async def abort_activation(self, prepared: PreparedVoiceActivation) -> VoiceIdentityActivationResult: ...
 
 
-VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
+VoiceIdentityRuntimeMode = Literal["off", "enforce"]
 EnrollmentPhase = Literal[
     "collecting_reference",
     "checking_consistency",
@@ -286,8 +286,8 @@ class VoiceIdentityService:
             )
         if type(enrollment_noise_reduction_enabled) is not bool:
             raise TypeError("enrollment_noise_reduction_enabled must be bool")
-        if runtime_mode not in ("off", "shadow", "enforce"):
-            raise ValueError("runtime_mode must be off, shadow, or enforce")
+        if runtime_mode not in ("off", "enforce"):
+            raise ValueError("runtime_mode must be off or enforce")
         for name, value in (
             ("enrollment_ttl_seconds", enrollment_ttl_seconds),
             ("model_timeout_seconds", model_timeout_seconds),
@@ -479,6 +479,7 @@ class VoiceIdentityService:
     async def start_enrollment(self) -> EnrollmentStatus:
         async with self._operation_lock:
             self._require_initialized()
+            self._require_runtime_enabled()
             if self._runtime_audio_contract_transition_pending:
                 self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
                 raise VoiceIdentityServiceError("runtime_degraded")
@@ -688,6 +689,7 @@ class VoiceIdentityService:
 
         async with self._operation_lock:
             self._require_initialized()
+            self._require_runtime_enabled()
             if self._last_completed == (enrollment_id, profile_id):
                 return self.status()
             if type(pcm16) is not bytes or len(pcm16) % 2:
@@ -1412,16 +1414,28 @@ class VoiceIdentityService:
                         if rollback_profile is not None
                         else str(uuid.uuid4())
                     )
-                    old_activation_restore_result = await self._activate(
-                        rollback_profile,
-                        rollback_generation,
-                        protection_requested=old_requested,
+                    restore_cancellations: list[asyncio.CancelledError] = []
+                    old_activation_restore_result = await _await_cancellation_safe(
+                        self._activate(
+                            rollback_profile,
+                            rollback_generation,
+                            protection_requested=old_requested,
+                        ),
+                        name="voice-identity-enrollment-activation-restore",
+                        cancellations=restore_cancellations,
                     )
                     if old_activation_restore_result is VoiceIdentityActivationResult.RUNTIME_DEGRADED:
                         failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 if preference_changed:
                     try:
-                        await self._preference_store.asave(old_requested)
+                        preference_restore_cancellations: list[
+                            asyncio.CancelledError
+                        ] = []
+                        await _await_cancellation_safe(
+                            self._preference_store.asave(old_requested),
+                            name="voice-identity-enrollment-preference-restore",
+                            cancellations=preference_restore_cancellations,
+                        )
                     except VoiceIdentityPreferenceStoreError:
                         failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 if new_profile is not None:
@@ -1790,6 +1804,8 @@ class VoiceIdentityService:
             raise TypeError("enabled must be bool")
         async with self._operation_lock:
             self._require_initialized()
+            if enabled:
+                self._require_runtime_enabled()
             cancellations: list[asyncio.CancelledError] = []
             try:
                 await _await_cancellation_safe(
@@ -2263,9 +2279,6 @@ class VoiceIdentityService:
         result: VoiceIdentityActivationResult,
     ) -> None:
         if result is VoiceIdentityActivationResult.READY:
-            if self._runtime_mode == "shadow":
-                self._set_ineffective(VoiceIdentityEffectiveReason.SHADOW_MODE)
-                return
             self._set_ready()
             return
         self._set_ineffective(VoiceIdentityEffectiveReason(result.value))
@@ -2316,6 +2329,10 @@ class VoiceIdentityService:
         self._require_open()
         if not self._initialized:
             raise VoiceIdentityServiceError("service_not_initialized")
+
+    def _require_runtime_enabled(self) -> None:
+        if self._runtime_mode == "off":
+            raise VoiceIdentityServiceError("feature_disabled")
 
 
 def _require_identifier(name: str, value: str) -> None:

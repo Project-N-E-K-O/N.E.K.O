@@ -776,6 +776,183 @@ async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
     assert output.is_music_used is True
 
 
+def _meme_guard_harness(monkeypatch, *, regen_content, duplicate_texts):
+    """Wire a fresh-MEME guard run; ``duplicate_texts`` are verbatim-guard hits."""
+    decisions = []
+    monkeypatch.setattr(
+        generation_module,
+        "record_anti_repeat_decision",
+        lambda _name, decision: decisions.append(decision),
+    )
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    monkeypatch.setattr(anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus)
+
+    literal_calls = []
+
+    def _match(_name, message):
+        literal_calls.append(message)
+        if message.strip() in duplicate_texts:
+            return generation_module.ProactiveSimilarityMatch(
+                is_duplicate=True,
+                best_score=0.95,
+                matched_text="快看这个，真的笑死我了！",
+                common_fragment=message.strip(),
+            )
+        return generation_module.ProactiveSimilarityMatch()
+
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_verbatim_recent_proactive_chat",
+        _match,
+    )
+    # Fresh memes may reuse a SIMILAR caption; the 0.90 guard must never run.
+    similarity_guard = MagicMock(
+        return_value=generation_module.ProactiveSimilarityMatch(is_duplicate=True)
+    )
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
+        similarity_guard,
+    )
+
+    regen_inputs = []
+
+    class _CapturingRegenLlm(_FakeRegenLlm):
+        async def ainvoke(self, messages):
+            regen_inputs.append(messages[-1].content)
+            return await super().ainvoke(messages)
+
+    async def make_llm(**_kwargs):
+        return _CapturingRegenLlm(regen_content)
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        current_speech_id="sid",
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+    return SimpleNamespace(
+        mgr=mgr,
+        corpus=corpus,
+        decisions=decisions,
+        literal_calls=literal_calls,
+        similarity_guard=similarity_guard,
+        regen_inputs=regen_inputs,
+        make_llm=make_llm,
+    )
+
+
+async def _run_fresh_meme_guard(harness, response_text):
+    return await _guard_phase2_output(
+        mgr=harness.mgr,
+        proactive_sid="sid",
+        lanlan_name="fresh-meme-literal-regen-test",
+        response_text=response_text,
+        full_text=response_text,
+        source_tag="MEME",
+        active_channels=["meme"],
+        selected_music_link=None,
+        selected_meme_link={"title": "新表情包", "url": "https://example.test/new.png"},
+        music_content=None,
+        # Random hot-word fallback: empty keyword -> empty material key ->
+        # always "fresh", which is exactly the path that bypassed every guard.
+        meme_content={"keyword": ""},
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=harness.make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fresh_meme_literal_repeat_rewrites_instead_of_dropping(monkeypatch):
+    """A fresh meme whose caption is a pure repeat is rewritten, not dropped.
+
+    Only the verbatim guard applies: similarity, BM25 and the unanswered window
+    stay exempt so templated meme openers are not suppressed the way music
+    intros were.
+    """
+    harness = _meme_guard_harness(
+        monkeypatch,
+        regen_content="[MEME] 这张图里的猫表情也太像你了吧。",
+        duplicate_texts={"快看这个，真的笑死我了！"},
+    )
+
+    output = await _run_fresh_meme_guard(harness, "快看这个，真的笑死我了！")
+
+    assert harness.literal_calls == [
+        "快看这个，真的笑死我了！",
+        "这张图里的猫表情也太像你了吧。",
+    ]
+    assert len(harness.regen_inputs) == 1
+    assert "「快看这个，真的笑死我了！」" in harness.regen_inputs[0]
+    harness.corpus.score_draft.assert_not_called()
+    harness.corpus.score_unanswered_proactive_draft.assert_not_called()
+    harness.similarity_guard.assert_not_called()
+    harness.mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
+    assert output.source_tag == "MEME"
+    assert output.response_text == "这张图里的猫表情也太像你了吧。"
+    assert [d.outcome for d in harness.decisions] == ["regen_guard_passed"]
+    decision = harness.decisions[0]
+    decision.validate()
+    assert decision.action == "regenerate"
+    assert decision.reasons == ("literal_similarity",)
+
+
+@pytest.mark.asyncio
+async def test_fresh_meme_rewrite_still_literal_repeat_is_dropped(monkeypatch):
+    """One rewrite only: a rewrite that still repeats verbatim is dropped."""
+    harness = _meme_guard_harness(
+        monkeypatch,
+        regen_content="[MEME] 快看这个，真的笑死我了。",
+        duplicate_texts={"快看这个，真的笑死我了！", "快看这个，真的笑死我了。"},
+    )
+
+    output = await _run_fresh_meme_guard(harness, "快看这个，真的笑死我了！")
+
+    assert len(harness.regen_inputs) == 1
+    harness.corpus.score_draft.assert_not_called()
+    harness.corpus.score_unanswered_proactive_draft.assert_not_called()
+    harness.similarity_guard.assert_not_called()
+    harness.mgr.handle_new_message.assert_awaited_once()
+    assert output.result is not None
+    assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_DUPLICATE
+    assert [d.outcome for d in harness.decisions] == ["blocked_after_regen_literal"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_meme_without_literal_repeat_keeps_text_exemption(monkeypatch):
+    """A non-verbatim caption on fresh material passes with no rewrite or scoring."""
+    harness = _meme_guard_harness(
+        monkeypatch,
+        regen_content="[MEME] unused",
+        duplicate_texts=set(),
+    )
+
+    output = await _run_fresh_meme_guard(harness, "这只猫的眼神像极了周一早上的你。")
+
+    assert harness.literal_calls == ["这只猫的眼神像极了周一早上的你。"]
+    assert harness.regen_inputs == []
+    harness.corpus.score_draft.assert_not_called()
+    harness.corpus.score_unanswered_proactive_draft.assert_not_called()
+    harness.similarity_guard.assert_not_called()
+    harness.mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
+    assert harness.decisions == []
+
+
 @pytest.mark.asyncio
 async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatch):
     """A bare MUSIC tag cannot exempt a rewrite that has no selected track."""

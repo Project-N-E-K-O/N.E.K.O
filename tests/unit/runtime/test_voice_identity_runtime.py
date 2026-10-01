@@ -1950,7 +1950,21 @@ async def test_watchdog_exhaustion_emits_restore_and_detach_warnings(
 @pytest.mark.parametrize("watchdog_kind", ["attach", "restore", "detach"])
 async def test_watchdog_bounds_never_returning_manager_call(
     watchdog_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    watchdog_timeout = 0.05
+    # Generous slack for loaded CI runners; the proof comes from staying far
+    # below the per-call timeout, not from a tight wall-clock bound.
+    scheduling_margin = 5.0
+    per_call_timeout = 30.0
+    assert watchdog_timeout + scheduling_margin < per_call_timeout
+    # Only the watchdog's own deadline can end the blocked call in time.
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        per_call_timeout,
+    )
+
     class BlockingManager(_Manager):
         def __init__(self) -> None:
             super().__init__()
@@ -1958,6 +1972,15 @@ async def test_watchdog_bounds_never_returning_manager_call(
             self.block_restore = False
             self.block_detach = False
             self.call_started = asyncio.Event()
+            self.call_cancelled = asyncio.Event()
+
+        async def _block_forever(self) -> None:
+            self.call_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.call_cancelled.set()
+                raise
 
         async def set_speaker_verifier_factory(
             self,
@@ -1968,8 +1991,7 @@ async def test_watchdog_bounds_never_returning_manager_call(
             if (factory is None and self.block_detach) or (
                 factory is not None and self.block_attach
             ):
-                self.call_started.set()
-                await asyncio.Event().wait()
+                await self._block_forever()
             return await super().set_speaker_verifier_factory(
                 factory,
                 activation_generation=activation_generation,
@@ -1982,14 +2004,13 @@ async def test_watchdog_bounds_never_returning_manager_call(
             suppressed: bool,
         ) -> None:
             if not suppressed and self.block_restore:
-                self.call_started.set()
-                await asyncio.Event().wait()
+                await self._block_forever()
             await super().set_voice_input_suppressed(reason, suppressed=suppressed)
 
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
         restore_retry_interval_seconds=0.01,
-        restore_retry_timeout_seconds=0.05,
+        restore_retry_timeout_seconds=watchdog_timeout,
     )
     manager = BlockingManager()
 
@@ -2018,12 +2039,13 @@ async def test_watchdog_bounds_never_returning_manager_call(
         watchdog = registry._detach_retry_task  # type: ignore[attr-defined]
 
     assert watchdog is not None
-    await asyncio.wait_for(manager.call_started.wait(), 0.5)
+    await asyncio.wait_for(manager.call_started.wait(), scheduling_margin)
     loop = asyncio.get_running_loop()
     started_at = loop.time()
-    await asyncio.wait_for(watchdog, 0.5)
-    assert loop.time() - started_at < 0.2
+    await asyncio.wait_for(watchdog, watchdog_timeout + scheduling_margin)
+    assert loop.time() - started_at < watchdog_timeout + scheduling_margin
     assert watchdog.done()
+    assert manager.call_cancelled.is_set()
 
     manager.block_attach = False
     manager.block_restore = False
@@ -2673,10 +2695,12 @@ def test_unavailable_profile_store_never_falls_back_to_plaintext(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured_mode", ["invalid-mode", "shadow"])
 async def test_runtime_install_and_wrapper_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    configured_mode: str,
 ) -> None:
     installed: list[object] = []
     callback_configurations: list[tuple[object | None, object | None]] = []
@@ -2744,7 +2768,7 @@ async def test_runtime_install_and_wrapper_lifecycle(
             (prepare, reconcile)
         ),
     )
-    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
+    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", configured_mode)
     config = SimpleNamespace(local_state_dir=tmp_path)
 
     service = runtime_module.install_voice_identity_runtime(config)

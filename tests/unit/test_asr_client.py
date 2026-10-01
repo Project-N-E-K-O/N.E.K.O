@@ -145,6 +145,7 @@ def test_public_exports_are_frozen():
         "VoiceIdentityActivationResult",
         "create_asr_session",
         "get_asr_core_capabilities",
+        "is_local_asr_available",
     ]
     assert not hasattr(asr_client, "get_asr_worker")
     assert not hasattr(asr_client, "AsrWorkerFn")
@@ -222,6 +223,7 @@ def test_phase2_registry_routes_and_capabilities():
         "glm",
         "gemini",
         "soniox",
+        "faster_whisper",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"

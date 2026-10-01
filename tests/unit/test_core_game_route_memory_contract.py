@@ -2903,7 +2903,7 @@ async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current
         request_id="req-A",
     )
 
-    mgr._emit_turn_end.assert_awaited_once_with("req-A")
+    mgr._emit_turn_end.assert_awaited_once_with("req-A", reply_turn=None)
     mgr._finalize_turn_after_emit.assert_awaited_once()
     assert mgr._active_text_request_id is None
 
@@ -3007,6 +3007,8 @@ async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait
 
     async def stream_text(text, **kwargs):
         stream_calls.append((text, kwargs))
+        if kwargs.get("on_turn_committed"):
+            kwargs["on_turn_committed"]()
 
     offline_session.stream_text = AsyncMock(side_effect=stream_text)
     mgr.session = offline_session
@@ -4312,7 +4314,7 @@ async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
     # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
     buffer_at_turn_end = []
 
-    async def capture_emit(request_id):
+    async def capture_emit(request_id, **_kwargs):
         buffer_at_turn_end.append(mgr._current_ai_turn_text)
 
     mgr._emit_turn_end = capture_emit
@@ -4525,8 +4527,9 @@ async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("images", [[], ["cb-image-1"]])
 async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
-    monkeypatch,
+    monkeypatch, images,
 ):
     """The rollback window is the whole post-drain stretch, not just stream_text.
 
@@ -4538,7 +4541,7 @@ async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
     """
     session = _make_offline_session_for_callback_media()
     mgr = _make_callback_media_manager(session)
-    callback = _media_callback("agent finished", ["cb-image-1"])
+    callback = _media_callback("agent finished", images)
     mgr.pending_agent_callbacks = [callback]
     session.stream_text = AsyncMock()
 
@@ -4560,7 +4563,7 @@ async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
     # 这一轮从没到达 stream_text，callback 必须完好回队。
     session.stream_text.assert_not_awaited()
     assert mgr.pending_agent_callbacks == [callback]
-    assert callback["media_images"] == ["cb-image-1"]
+    assert callback["media_images"] == images
 
 
 @pytest.mark.unit

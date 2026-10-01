@@ -340,14 +340,16 @@ class LifecycleMixin:
             )
             return
         
+        status_code = None
         if message:
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
+                status_code = _parsed.get('code')
                 # Peer disconnects use the existing recovery below, which
                 # supplies CHARACTER_DISCONNECTED with the configured name.
                 # Forwarding this marker here would show the same toast twice.
-                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                if status_code != 'CHARACTER_DISCONNECTED':
                     await self.send_status(message_text)
             else:
                 # Same criteria, and the same ordering, the realtime close
@@ -365,7 +367,20 @@ class LifecycleMixin:
                     status_payload["details"] = {"msg": message_text}
                 await self.send_status(json.dumps(status_payload))
         logger.info("💥 Realtime connection recovery requested.")
-        await self.disconnected_by_server(expected_session=expected_session)
+        # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
+        # session 7.5s later. After the free service's daily quota is spent
+        # that restart is rejected every time (the server does not say when
+        # the window reopens), so end the session without it; the user's next
+        # manual start retries. Paid providers keep the restart: their quota
+        # wording also covers recoverable per-minute 429s.
+        free_quota_spent = (
+            status_code == 'API_QUOTA_TIME'
+            and getattr(self, 'core_api_type', '') == 'free'
+        )
+        await self.disconnected_by_server(
+            expected_session=expected_session,
+            announce_disconnect=not free_quota_spent,
+        )
     
     async def handle_repetition_detected(self):
         """Handle the repetition-detection callback: reset Focus state, notify the frontend"""
@@ -731,6 +746,11 @@ class LifecycleMixin:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
             elif 'HTTP 503' in error_str:
                 await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            elif classify_provider_failure_text(error_str) == 'API_QUOTA_TIME':
+                # Free servers reject a spent quota with a close frame right
+                # after the handshake, which can land inside start_session.
+                # Kept after 429 so "429 ... quota exceeded" stays a rate limit.
+                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif 'All connection attempts failed' in error_str:
                 await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
             else:
@@ -913,6 +933,7 @@ class LifecycleMixin:
         _allow_cross_mode_restart=True,
         handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
         resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+        provider_preference_override=_HANDSHAKE_OVERRIDE_UNSET,
         request_id=None,
     ):
         # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
@@ -945,6 +966,15 @@ class LifecycleMixin:
             if resource_optimization_override is _HANDSHAKE_OVERRIDE_UNSET
             else resource_optimization_override
         )
+        session_provider_preference_handshake_override = (
+            getattr(
+                self,
+                "_independent_asr_provider_preference_handshake_override",
+                None,
+            )
+            if provider_preference_override is _HANDSHAKE_OVERRIDE_UNSET
+            else provider_preference_override
+        )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
         self.session_closed_by_server = False
@@ -965,6 +995,9 @@ class LifecycleMixin:
             handshake_override=session_handshake_override,
             resource_optimization_override=(
                 session_resource_optimization_handshake_override
+            ),
+            provider_preference_override=(
+                session_provider_preference_handshake_override
             ),
         ):
             return
@@ -1060,6 +1093,9 @@ class LifecycleMixin:
                     resource_optimization_override=(
                         session_resource_optimization_handshake_override
                     ),
+                    provider_preference_override=(
+                        session_provider_preference_handshake_override
+                    ),
                 )
             else:
                 raise Exception("Session not initialized")
@@ -1099,6 +1135,7 @@ class LifecycleMixin:
         request_id,
         handshake_override,
         resource_optimization_override,
+        provider_preference_override,
     ):
         """Handle a start request that collides with an in-flight start_session.
 
@@ -1168,6 +1205,7 @@ class LifecycleMixin:
                     ),
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
                 )
                 # ``also_notify``：重跑若 fail-closed 会 revoke lease，把
                 # _voice_lease_connection_id 和 voice socket 一起清掉，本请求方
@@ -1261,6 +1299,7 @@ class LifecycleMixin:
                     request_id=request_id,
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
                 )
         else:
             logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
@@ -2409,6 +2448,7 @@ class LifecycleMixin:
         request_id=None,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
     ):
         """Post-connect activation: flip the active flags, start the message
         handler, reset the failure circuit, ack the frontend, and open the
@@ -2439,6 +2479,7 @@ class LifecycleMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            provider_preference_override=provider_preference_override,
         )
 
         # 启动成功，重置失败计数器和熔断
@@ -2648,6 +2689,13 @@ class LifecycleMixin:
             next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
             self.initial_next_session_context_snapshot_len = len(next_session_context_messages)
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
+            # Snapshot the cache the same way as next_session_context_messages
+            # above: the prompt must render the state the snapshot length was
+            # taken from. Anything appended while the memory request is in
+            # flight is picked up by the swap-time slice
+            # (``initial_cache_snapshot_len:`` below), so rendering the live
+            # cache here primes those entries twice.
+            initial_cache_snapshot = list(self.message_cache_for_new_session)
             from utils.internal_http_client import get_internal_http_client
             _hs_client = get_internal_http_client()
             try:
@@ -2664,7 +2712,7 @@ class LifecycleMixin:
             initial_prompt += (
                 resp.text
                 + self._convert_cache_to_str(next_session_context_messages)
-                + self._convert_cache_to_str(self.message_cache_for_new_session)
+                + self._convert_cache_to_str(initial_cache_snapshot)
             )
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
@@ -2849,7 +2897,7 @@ class LifecycleMixin:
         swap (same semantics as the extras ``_deferred``).
 
         The queue is NOT drained here — removal is deferred to promote
-        success via :meth:`_remove_swap_delivered_passive_cbs`. Selected
+        success via :meth:`_remove_swap_delivered_callbacks`. Selected
         entries are atomically marked provider-owned before this method
         returns, so enqueue coalescing, text drain, staleness sweeps, and the
         flood guard cannot retract them during the prime await. Every
@@ -2978,9 +3026,11 @@ class LifecycleMixin:
             if isinstance(cb, dict):
                 cb.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
 
-    def _remove_swap_delivered_passive_cbs(self, selected: list) -> list:
-        """[Hot-swap related] Dequeue prime-injected passive callbacks at
+    def _remove_swap_delivered_callbacks(self, selected: list) -> list:
+        """[Hot-swap related] Dequeue prime-injected callback objects at
         promote success; returns the actually-removed subset (ack'd True).
+
+        Also used for callbacks paired with delivered extra-reply mirrors.
 
         Identity-based removal, same as the extras counterpart: entries a
         concurrent path consumed inside the prime→promote window (text-turn
@@ -3125,6 +3175,12 @@ class LifecycleMixin:
             _prime_selected_extras: list = []
             _removed_extras: list = []
             _removed_cb_backed_ids: set = set()
+            _prime_extra_callbacks: list = []
+            _prime_extra_claimed: list = []
+            # Set by the cancellation exit: a session promoted before the cancel
+            # is about to be closed by the canceller, so its primed extras are
+            # not delivered even when the swap removed none of them.
+            _swap_cancelled = False
             # Passive callbacks riding this swap (voice pending session only).
             # Same deferred-removal bookkeeping as _prime_selected_extras:
             # queue untouched until promote succeeds. Injection goes through
@@ -3209,6 +3265,30 @@ class LifecycleMixin:
                     e for e in _selected
                     if not self._coalesce_entry_is_stale(e)
                 ]
+                # Snapshot paired objects before the provider await. A later
+                # same-id enqueue must not be acknowledged or removed for text
+                # that came from this snapshot.
+                _selected_delivery_ids = {
+                    e.get("_callback_delivery_id") for e in _selected
+                    if isinstance(e, dict) and e.get("_callback_delivery_id")
+                }
+                # Include callbacks a text turn has claimed: if that turn later
+                # fails before commit it restores them, and the swap must still
+                # be able to consume them once their mirror is delivered. Only
+                # claim (and later release) the ones nobody else holds, so the
+                # text turn's claim is never cleared from under it.
+                _prime_extra_callbacks = [
+                    cb for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                    if isinstance(cb, dict)
+                    and cb.get("_callback_delivery_id") in _selected_delivery_ids
+                    and not cb.get(DELIVERY_RETRACTED_KEY)
+                ]
+                _prime_extra_claimed = [
+                    cb for cb in _prime_extra_callbacks
+                    if not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                ]
+                for cb in _prime_extra_claimed:
+                    cb[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
                 final_prime_text += _render_pending_extra_replies_by_origin(
                     _selected,
                     lang=_lang,
@@ -3956,7 +4036,7 @@ class LifecycleMixin:
                     }
             # Passive 搭车条目的对偶出队：同样按对象身份、同样只在 promote
             # 成功后。窗口期被 drain/清扫抢先消费的条目在此 no-op。
-            _removed_passive_cbs = self._remove_swap_delivered_passive_cbs(
+            _removed_passive_cbs = self._remove_swap_delivered_callbacks(
                 _prime_selected_passive_cbs
             )
             self.response_backend = (
@@ -3979,7 +4059,11 @@ class LifecycleMixin:
                 stage="post-promote ASR reconciliation",
                 allow_promoted=True,
             )
+            replaced_speech_id = self.current_speech_id
             self.current_speech_id = str(uuid4())
+            # 换 session 不开新一轮：旧 session 里被 close() 截断、还没收尾的
+            # 回复仍是这一轮，它迟到的完成回调要能认出来（见 _carry_reply_turn）。
+            self._carry_reply_turn(replaced_speech_id)
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self.session_start_time = datetime.now()
@@ -4080,6 +4164,7 @@ class LifecycleMixin:
             
 
         except asyncio.CancelledError:
+            _swap_cancelled = True
             logger.info("Final Swap Sequence: Task cancelled.")
             self.is_hot_swap_imminent = False
             if voice_handoff_ticket is not None:
@@ -4194,17 +4279,51 @@ class LifecycleMixin:
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
+            # Keep paired objects through all failure-recovery awaits. An extra
+            # restored by an abort is still pending; a primed extra in a
+            # surviving promoted session has actually completed this delivery,
+            # whether the swap removed it or a concurrent path (a text drain)
+            # took it out of the queue inside the prime→promote window.
+            if (
+                _prime_extra_callbacks
+                and _prime_selected_extras
+                and not _swap_cancelled
+                and new_session is not None
+                and self.session is new_session
+                and not self._swap_session_is_dead(new_session)
+            ):
+                queued_extra_objects = {id(e) for e in self.pending_extra_replies}
+                delivered_ids = {
+                    e.get("_callback_delivery_id") for e in _prime_selected_extras
+                    if isinstance(e, dict) and id(e) not in queued_extra_objects
+                }
+                delivered_cbs = [
+                    cb for cb in _prime_extra_callbacks
+                    if cb.get("_callback_delivery_id") in delivered_ids
+                ]
+                queued_cb_objects = {id(cb) for cb in self.pending_agent_callbacks}
+                self._remove_swap_delivered_callbacks([
+                    cb for cb in delivered_cbs if id(cb) in queued_cb_objects
+                ])
+                # A paired callback outside the queue is held by a text turn
+                # that drained it. Retract it so a precommit failure there does
+                # not restore it (and its mirror) after the swap delivered them.
+                for cb in delivered_cbs:
+                    if id(cb) not in queued_cb_objects:
+                        cb[DELIVERY_RETRACTED_KEY] = True
+            self._release_swap_prime_passive_claims(_prime_extra_claimed)
             self._release_swap_prime_passive_claims(_passive_sel)
             self._purge_undeliverable_callbacks()
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
 
-    async def disconnected_by_server(self, *, expected_session=None):
+    async def disconnected_by_server(self, *, expected_session=None, announce_disconnect=True):
         if expected_session is not None and expected_session is not self.session:
             logger.info("⏭️ disconnected_by_server: expected_session stale, skipping")
             return
-        await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
+        if announce_disconnect:
+            await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
         await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)

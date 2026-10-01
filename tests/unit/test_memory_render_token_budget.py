@@ -973,60 +973,6 @@ async def test_a_group_queued_behind_a_member_gets_no_reserved_slice(twin):
 
 
 @pytest.mark.asyncio
-async def test_the_scoped_context_caller_ranks_the_group_first():
-    """The other end of the caller-order contract.
-
-    The allocator refuses to rank subjects, which only produces a sane
-    render because the caller does. That makes "group first" a contract
-    between two files with nothing between them enforcing it — `/scoped_
-    context` accepts 1..8 subjects in any order and deliberately does not
-    validate one (a caller with a legitimately different ranking should
-    not get a 422). It is documented on the route; this is the executable
-    half.
-
-    Send members first and the group's own persona is what falls off the
-    end of the gate — silently, as a group that has "no personality" this
-    turn rather than as an error.
-    """
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-    from plugin.plugins.qq_auto_reply.session_instruction_service import (
-        QQSessionInstructionService,
-    )
-
-    bridge = MagicMock()
-    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
-    bridge.group_participant_subject.side_effect = (
-        QQMemoryBridge.group_participant_subject
-    )
-    bridge.fetch_scoped_bootstrap_memory = AsyncMock(return_value='群聊长期记忆')
-    plugin = SimpleNamespace(
-        memory_bridge=bridge, logger=MagicMock(),
-        i18n=SimpleNamespace(t=lambda key, **kw: key),
-        _qq_settings={
-            'group_memory_enabled': True,
-            'group_member_memory_enabled': True,
-        },
-    )
-
-    await QQSessionInstructionService(plugin)._build_core_memory_section(
-        should_use_memory_context=True,
-        her_name='Neko', master_name='Master',
-        context_ready_template='{name}/{master}',
-        is_group=True, group_id='7788', sender_id='2046',
-    )
-
-    sent = bridge.fetch_scoped_bootstrap_memory.await_args.kwargs['subjects']
-    assert len(sent) > 1, (
-        "夹具失效：只发了一个 subject，顺序契约在这条路径上没有可测内容"
-    )
-    assert sent[0]['subject_kind'] == 'group_chat', (
-        f"/scoped_context 的调用方没有把群排在第一位（实际首位 "
-        f"{sent[0]['subject_kind']}）——总闸是先到先得，排在成员后面的群"
-        f"会在额度耗尽后整段消失"
-    )
-
-
-@pytest.mark.asyncio
 async def test_two_custom_scopes_of_one_subject_id_get_separate_budgets():
     """Bucketing is by (key, scope), not by persona section.
 

@@ -51,6 +51,305 @@
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
     let _jukeboxControlQueue = Promise.resolve();
+    let _computerUseStream = null;
+    let _computerUseStreamPending = null;
+    let _computerUseDisplayRequestPending = null;
+    let _computerUseStreamGeneration = 0;
+    let _computerUseStreamOwnerToken = null;
+    let _computerUseCaptureFailure = '';
+    let _agentTaskReconcileTimer = null;
+    let _agentTaskReconcileInFlight = false;
+    const _agentTaskMissingCounts = new Map();
+
+    function scheduleAgentTaskReconciliation() {
+        if (_agentTaskReconcileTimer || !window._agentTaskMap) return;
+        if (!Array.from(window._agentTaskMap.values()).some(function (task) {
+            return task.status === 'running' || task.status === 'queued';
+        })) return;
+        _agentTaskReconcileTimer = setInterval(async function () {
+            var taskMap = window._agentTaskMap;
+            if (!taskMap || !Array.from(taskMap.values()).some(function (task) {
+                return task.status === 'running' || task.status === 'queued';
+            })) {
+                clearInterval(_agentTaskReconcileTimer);
+                _agentTaskReconcileTimer = null;
+                return;
+            }
+            if (_agentTaskReconcileInFlight) return;
+            _agentTaskReconcileInFlight = true;
+            try {
+                var result = await fetch('/api/agent/tasks', { cache: 'no-store' });
+                if (!result.ok) return;
+                var body = await result.json();
+                if (!body || !Array.isArray(body.tasks)) return;
+                // A WebSocket status snapshot may replace the map while the
+                // HTTP request is in flight. Reconcile the current map only.
+                taskMap = window._agentTaskMap;
+                if (!taskMap) return;
+                var serverTasks = new Map(body.tasks.filter(function (task) {
+                    return task && task.id;
+                }).map(function (task) { return [task.id, task]; }));
+                var changed = false;
+                taskMap.forEach(function (task, id) {
+                    if (task.status !== 'running' && task.status !== 'queued') {
+                        _agentTaskMissingCounts.delete(id);
+                        return;
+                    }
+                    var current = serverTasks.get(id);
+                    if (!current) {
+                        // The server is authoritative. Allow one successful
+                        // poll for registration races, then retire a task whose
+                        // terminal event and retained record were both missed.
+                        var misses = (_agentTaskMissingCounts.get(id) || 0) + 1;
+                        if (misses >= 2) {
+                            taskMap.delete(id);
+                            _agentTaskMissingCounts.delete(id);
+                            changed = true;
+                        } else {
+                            _agentTaskMissingCounts.set(id, misses);
+                        }
+                        return;
+                    }
+                    _agentTaskMissingCounts.delete(id);
+                    if (['completed', 'failed', 'cancelled'].indexOf(current.status) === -1) return;
+                    var terminalAt = Date.now();
+                    taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
+                    changed = true;
+                    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+                    if (window._agentTaskRemoveTimers.has(id)) clearTimeout(window._agentTaskRemoveTimers.get(id));
+                    window._agentTaskRemoveTimers.set(id, setTimeout(function () {
+                        if (window._agentTaskMap.get(id)?.terminal_at === terminalAt) {
+                            window._agentTaskMap.delete(id);
+                            if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                var remaining = Array.from(window._agentTaskMap.values());
+                                window.AgentHUD.updateAgentTaskHUD({
+                                    success: true, tasks: remaining, total_count: remaining.length,
+                                    running_count: remaining.filter(function (item) { return item.status === 'running'; }).length,
+                                    queued_count: remaining.filter(function (item) { return item.status === 'queued'; }).length,
+                                    completed_count: remaining.filter(function (item) { return item.status === 'completed'; }).length,
+                                    failed_count: remaining.filter(function (item) { return item.status === 'failed'; }).length,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
+                        }
+                        window._agentTaskRemoveTimers.delete(id);
+                    }, 10000));
+                });
+                _agentTaskMissingCounts.forEach(function (_count, id) {
+                    if (!taskMap.has(id)) _agentTaskMissingCounts.delete(id);
+                });
+                if (changed && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                    var tasks = Array.from(taskMap.values());
+                    window.AgentHUD.updateAgentTaskHUD({
+                        success: true, tasks: tasks, total_count: tasks.length,
+                        running_count: tasks.filter(function (task) { return task.status === 'running'; }).length,
+                        queued_count: tasks.filter(function (task) { return task.status === 'queued'; }).length,
+                        completed_count: tasks.filter(function (task) { return task.status === 'completed'; }).length,
+                        failed_count: tasks.filter(function (task) { return task.status === 'failed'; }).length,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (_) { /* WebSocket remains primary; retry on the next tick. */ }
+            finally { _agentTaskReconcileInFlight = false; }
+        }, 5000);
+    }
+
+    window.computerUseNeedsCaptureStream = function () {
+        var provider = resolveDesktopCaptureProvider();
+        return !!(provider && provider.computerUseNeedsStream);
+    };
+    window.getComputerUseCaptureFailure = function () { return _computerUseCaptureFailure; };
+    window.computerUseNativeCaptureAvailable = async function () {
+        try {
+            var controller = new AbortController();
+            var timer = setTimeout(function () { controller.abort(); }, 1500);
+            try {
+                var response = await fetch('/api/agent/computer-use/native-capture-available', {
+                    cache: 'no-store', signal: controller.signal
+                });
+                if (!response.ok) return false;
+                var body = await response.json();
+                return body && body.success === true && body.available === true;
+            } finally { clearTimeout(timer); }
+        } catch (_) { return false; }
+    };
+
+    function releaseComputerUseCapture() {
+        _computerUseStreamGeneration += 1;
+        _computerUseStreamPending = null;
+        var provider = resolveDesktopCaptureProvider();
+        if (provider && _computerUseStreamOwnerToken
+            && typeof provider.setComputerUseStreamOwner === 'function') {
+            provider.setComputerUseStreamOwner(false, _computerUseStreamOwnerToken).catch(function () {});
+        }
+        _computerUseStreamOwnerToken = null;
+        var stream = _computerUseStream;
+        _computerUseStream = null;
+        if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
+    }
+
+    async function captureComputerUseLiveStream(provider) {
+        var stream = _computerUseStream && _computerUseStream.active
+            ? _computerUseStream : S.screenCaptureStream;
+        var videoTrack = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+        var surface = videoTrack && videoTrack.getSettings
+            ? videoTrack.getSettings().displaySurface : null;
+        var selectedScreen = stream === _computerUseStream
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('screen:'));
+        if (!stream || !stream.active || !videoTrack || videoTrack.readyState !== 'live'
+            || (surface !== 'monitor' && (surface || !selectedScreen))
+            || typeof window.captureFrameFromStream !== 'function') return null;
+        // A failed display lookup or frame read means "no reusable frame", so
+        // callers still reach their fallback instead of reporting a hard error.
+        try {
+            var displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                ? await provider.getComputerUseDisplayCount() : null;
+            if (displayCount !== 1) return null;
+            var frame = await window.captureFrameFromStream(stream, 0.8, true);
+            return frame && frame.dataUrl ? await boundCaptureBridgeRegionImage(frame.dataUrl) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    var computerUseBrokerProvider = resolveDesktopCaptureProvider();
+    if (computerUseBrokerProvider && typeof computerUseBrokerProvider.onComputerUseFrameRequest === 'function') {
+        computerUseBrokerProvider.onComputerUseFrameRequest(async function () {
+            var image = await captureComputerUseLiveStream(computerUseBrokerProvider);
+            return image ? { success: true, dataUrl: image } : { success: false };
+        });
+    }
+
+    // Called synchronously from the user's keyboard-control toggle so Chromium
+    // sees a user gesture. The portal chooser is opened once and the live stream
+    // is reused by later Agent requests.
+    window.prepareComputerUseCapture = function () {
+        var provider = resolveDesktopCaptureProvider();
+        // Only a Wayland desktop needs the authorised stream. Elsewhere the
+        // backend captures natively, so a screen-share prompt (or macOS
+        // screen-recording indicator) would be pure cost.
+        if (!provider || provider.computerUseNeedsStream !== true) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(false);
+        }
+        if (typeof provider.captureComputerUseScreen !== 'function'
+            || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia
+            || (window.screen && window.screen.isExtended === true)
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('window:'))) {
+            _computerUseCaptureFailure = 'capture_unavailable_or_window_selected';
+            return Promise.resolve(false);
+        }
+        if (_computerUseStream && _computerUseStream.active) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(true);
+        }
+        if (_computerUseStreamPending) return _computerUseStreamPending;
+        // The UI timeout cannot cancel Chromium's chooser. Wait for that
+        // request to settle before allowing another system permission prompt.
+        if (_computerUseDisplayRequestPending) {
+            _computerUseCaptureFailure = 'display_media_pending';
+            return Promise.resolve(false);
+        }
+
+        var generation = _computerUseStreamGeneration;
+        // Invoke getDisplayMedia before any await: transient user activation
+        // would otherwise be lost while querying Electron display metadata.
+        var request;
+        try {
+            request = navigator.mediaDevices.getDisplayMedia({
+                video: { displaySurface: 'monitor', frameRate: { max: 1 } },
+                audio: false
+            });
+        } catch (_) {
+            _computerUseCaptureFailure = 'display_media_request_failed';
+            return Promise.resolve(false);
+        }
+        var displayRequest = Promise.resolve(request);
+        _computerUseDisplayRequestPending = displayRequest;
+        displayRequest.then(function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        }, function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        });
+        // Chromium may leave getDisplayMedia pending without showing a portal
+        // chooser. Settle the UI, and stop any stream delivered after timeout.
+        var requestTimedOut = false;
+        var boundedRequest = new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () {
+                requestTimedOut = true;
+                resolve(null);
+            }, 5000);
+            displayRequest.then(function (stream) {
+                if (requestTimedOut) {
+                    stream.getTracks().forEach(function (track) { track.stop(); });
+                    return;
+                }
+                clearTimeout(timer);
+                resolve(stream);
+            }, function (error) {
+                if (requestTimedOut) return;
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+        var pending = boundedRequest.then(async function (stream) {
+            if (!stream) {
+                _computerUseCaptureFailure = 'display_media_timeout';
+                return false;
+            }
+            var track = stream.getVideoTracks()[0];
+            var surface = track && track.getSettings ? track.getSettings().displaySurface : null;
+            var displayCount = null;
+            try {
+                displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                    ? await provider.getComputerUseDisplayCount() : null;
+            } catch (_) { /* no trusted display mapping */ }
+            if (generation !== _computerUseStreamGeneration || !track
+                || track.readyState !== 'live'
+                || (surface && surface !== 'monitor')
+                || displayCount !== 1) {
+                _computerUseCaptureFailure = displayCount !== 1
+                    ? 'single_display_required' : 'monitor_stream_unavailable';
+                stream.getTracks().forEach(function (item) { item.stop(); });
+                return false;
+            }
+            if (typeof provider.setComputerUseStreamOwner === 'function') {
+                var ownerToken = String(generation) + ':' + Date.now();
+                var ownership;
+                try {
+                    ownership = await provider.setComputerUseStreamOwner(true, ownerToken);
+                } catch (error) {
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    throw error;
+                }
+                if (!ownership || ownership.success !== true || generation !== _computerUseStreamGeneration) {
+                    provider.setComputerUseStreamOwner(false, ownerToken).catch(function () {});
+                    _computerUseCaptureFailure = 'screen_stream_owner_unavailable';
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    return false;
+                }
+                _computerUseStreamOwnerToken = ownerToken;
+            }
+            _computerUseStream = stream;
+            _computerUseCaptureFailure = '';
+            track.addEventListener('ended', function () {
+                if (_computerUseStream === stream) releaseComputerUseCapture();
+            }, { once: true });
+            return true;
+        }).catch(function (error) {
+            _computerUseCaptureFailure = error && error.name || 'display_media_denied';
+            return false;
+        }).finally(function () {
+            if (_computerUseStreamPending === pending) _computerUseStreamPending = null;
+        });
+        _computerUseStreamPending = pending;
+        return pending;
+    };
+    window.releaseComputerUseCapture = releaseComputerUseCapture;
+    window.addEventListener('beforeunload', releaseComputerUseCapture);
     // 「顶替」世代。就地取消只够停住「已经在跑」的那条；还在队列里等着的那条尚未
     // 取到任何取消世代，轮到它时会把此刻的世代当成最新的，于是在用户最后那条指令
     // 之后又响起来——而 play 要等运行时初始化、预检、动画加载，这一响可能是好几秒。
@@ -164,7 +463,8 @@
                     getSources: !!(dc && dc.getSources),
                     captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
                     captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko),
-                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)
+                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl),
+                    captureComputerUseScreen: !!(dc && dc.captureComputerUseScreen)
                 }
             }));
             return available;
@@ -321,6 +621,7 @@
         }
         await releaseVoiceCaptureResources();
 
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
         if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
         if (typeof window.stopGameVoiceSttGate === 'function') window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
@@ -1253,7 +1554,49 @@
     // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
     // so before this was shared they showed a toast and left the hardware
     // microphone running for the whole session.
+    // Text for an independent-ASR failure. ``reason`` is the provider /
+    // runtime ASR_* code behind it (carried by ASR_LIFECYCLE_STATE blocked and
+    // by the terminal failure status), when it has its own explanation.
+    function independentAsrFailureToastText(reason) {
+        var t = window.t;
+        return independentAsrReasonToastText(reason)
+            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
+    }
+
+    // The explanation for a failure reason that has one of its own, or ''.
+    // Other reasons (e.g. a cloud ASR_CONNECT_TIMEOUT) keep the per-status
+    // messages instead of a generic "check the configuration".
+    function independentAsrReasonToastText(reason) {
+        var t = window.t;
+        if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
+            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
+            // Installed but not importable (e.g. a broken native CTranslate2
+            // build): same guidance as not installed.
+            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.';
+        }
+        if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
+            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        if (reason === 'ASR_PROVIDER_QUEUE_TIMEOUT') {
+            return t ? t('microphone.localAsrQueueTimeout') : 'Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening.';
+        }
+        return '';
+    }
+
+    // The persistent "local model preparing" notice (ASR_INDEPENDENT_PREPARING
+    // until ASR_INDEPENDENT_PREPARED); cleared on failure and teardown.
+    function clearLocalAsrPreparingNotice() {
+        if (!S.localAsrPreparingMessage) return;
+        S.localAsrPreparingMessage = null;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+    }
+
     function tearDownBlockedVoiceRoute() {
+        clearLocalAsrPreparingNotice();
 
     removeExternalAsrPreview();
     S.independentAsrActive = false;
@@ -2035,15 +2378,19 @@
      * only bypasses completed cache data; the generation fence remains a
      * defensive guard around request publication.
      */
-    function publishCoreApiCapability(provider, capability) {
+    function publishCoreApiCapability(provider, capability, localAsrAvailable) {
         var previousProvider = S.coreApiProvider || '';
         var previousCapability = S.coreApiSupportsIndependentAsr;
+        var previousLocalAsrAvailable = S.localAsrAvailable;
         S.coreApiProvider = typeof provider === 'string' ? provider : '';
         S.coreApiSupportsIndependentAsr =
             typeof capability === 'boolean' ? capability : null;
+        S.localAsrAvailable =
+            typeof localAsrAvailable === 'boolean' ? localAsrAvailable : null;
         if (
             previousProvider !== S.coreApiProvider
             || previousCapability !== S.coreApiSupportsIndependentAsr
+            || previousLocalAsrAvailable !== S.localAsrAvailable
         ) {
             try {
                 window.dispatchEvent(new CustomEvent(
@@ -2111,7 +2458,8 @@
                 typeof data.effectiveCoreApi === 'string'
                     ? data.effectiveCoreApi
                     : data.coreApi,
-                data.supportsIndependentAsr
+                data.supportsIndependentAsr,
+                data.localAsrAvailable
             );
         }).catch(function (error) {
             console.warn('[Core API] Failed to refresh ASR capability:', error);
@@ -2335,6 +2683,14 @@
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
                     }
+                    // Same authority gate for the provider choice: a boot default
+                    // 'auto' must not override a persisted 'faster_whisper'.
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrProviderPreferenceAuthoritative === true) {
+                        msg.independent_asr_provider_preference = S.independentAsrProviderPreference === 'faster_whisper'
+                            ? 'faster_whisper'
+                            : 'auto';
+                        handshakeStamped = true;
+                    }
                     if (msg && msg.action === 'start_session') {
                         var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
                             ? getExplicitConversationLanguageForCurrentCharacter()
@@ -2532,6 +2888,7 @@
                         : activeTasks;
                     window._agentTaskMap = new Map();
                     filteredTasks.forEach(function (t) { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    scheduleAgentTaskReconciliation();
                     var tasks = Array.from(window._agentTaskMap.values());
                     var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                     if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -3323,7 +3680,7 @@
                     var translatedMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMsg, 4000);
 
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
 
                     if (S.screenCaptureStream) {
                         S.screenCaptureStream.getTracks().forEach(function (track) { track.stop(); });
@@ -3462,25 +3819,27 @@
                             // BLOCKED and keep their per-code toasts below; a
                             // prefixed fatal code after BLOCKED re-shows the same
                             // fallback text, which the toast renders as one message.
+                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off') {
+                                // The transport is closed (e.g. the idle TTL expired
+                                // while a first model load was still running): no
+                                // PREPARED will follow for it. A reconnect announces
+                                // PREPARING again if the model is still not ready.
+                                clearLocalAsrPreparingNotice();
+                            }
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
+                                    // BLOCKED carries the failure reason: a recording
+                                    // window's later FAILED status can be fenced by
+                                    // its lease, so this may be the only notice it gets.
+                                    var blockedReason = statusDetails && statusDetails.reason;
                                     window.showStatusToast(
-                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
-                                        5000
+                                        independentAsrFailureToastText(blockedReason),
+                                        blockedReason ? 8000 : 5000
                                     );
                                 }
                             }
                         }
-                        return;
-                    }
-
-                    if (statusCode === 'VOICE_INPUT_READY') {
-                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
-                        return;
-                    }
-                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
-                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
                         return;
                     }
 
@@ -3539,6 +3898,14 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_INPUT_READY') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
+                        return;
+                    }
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -3570,12 +3937,34 @@
                     }
 
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var statusSessionEpoch = statusDetails && statusDetails.session_epoch;
+                        if (statusSessionEpoch != null
+                                && S.voiceSessionEpoch != null
+                                && Number(statusSessionEpoch) < Number(S.voiceSessionEpoch)) {
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_FAILED'
+                                || statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                            var statusLeaseGeneration = statusDetails && statusDetails.lease_generation;
+                            if (statusLeaseGeneration == null
+                                    || S.voiceInputCurrentLeaseGeneration == null
+                                    || Number(statusLeaseGeneration)
+                                        !== Number(S.voiceInputCurrentLeaseGeneration)) {
+                                return;
+                            }
+                        }
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
-                        if (statusDetails && statusDetails.session_epoch != null) {
-                            S.voiceSessionEpoch = statusDetails.session_epoch;
+                        if (statusSessionEpoch != null) {
+                            S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            // A (re)connected provider: whatever it still has to
+                            // prepare is announced again right after this READY,
+                            // so an older preparing notice (e.g. of a session that
+                            // ended mid-load) must not linger.
+                            clearLocalAsrPreparingNotice();
+                            var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
                             if (S.gameRouteActive === true) {
@@ -3586,7 +3975,9 @@
                                     reason: 'asr_ready'
                                 });
                             }
-                            if (typeof window.showStatusToast === 'function') {
+                            // Background reconnect/warm-idle wake only refreshes
+                            // routing. Recovery has its own VOICE_INPUT_READY toast.
+                            if (!wasIndependentAsrActive && typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
                                     3000
@@ -3609,6 +4000,34 @@
                             }
                             return;
                         }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
+                            // Connected, but the provider is still preparing (a
+                            // local model loading, or downloading on first use).
+                            // Not a failure: the route stays as it is. The notice
+                            // stays up until ASR_INDEPENDENT_PREPARED (the mic
+                            // start re-shows it over its own toast).
+                            var preparingText = statusDetails
+                                && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
+                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait. Your first sentence is recognized once the model is ready.')
+                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Loading the local speech recognition model. The first use also downloads it, which can take a few minutes. Your first sentence is recognized once the model is ready; please wait before saying more.');
+                            S.localAsrPreparingMessage = preparingText;
+                            if (typeof window.showVoicePreparingToast === 'function') {
+                                window.showVoicePreparingToast(preparingText);
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
+                            if (S.localAsrPreparingMessage) {
+                                clearLocalAsrPreparingNotice();
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready',
+                                        3000
+                                    );
+                                }
+                            }
+                            return;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
@@ -3618,6 +4037,25 @@
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
+                            // The provider's / runtime's own failure code, when it
+                            // sent one: replaces the generic text the BLOCKED
+                            // lifecycle event has just shown.
+                            var reasonToastText = independentAsrReasonToastText(
+                                statusDetails && statusDetails.reason
+                            );
+                            if (reasonToastText) {
+                                window.showStatusToast(reasonToastText, 8000);
+                                return;
+                            }
+                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.localAsrDependencyMissing')
+                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
+                                );
+                                return;
+                            }
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
                                     window.t
@@ -4193,6 +4631,7 @@
                                         console.log(window.t('console.autoRestartFailedEndSession'));
                                     }
 
+                                    S.localAsrPreparingMessage = null;
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                                     if (!isMicrophoneStartCancelled
                                             && typeof window.showStatusToast === 'function') {
@@ -4270,6 +4709,13 @@
                     window._agentStatusSnapshot = snapshot;
                     var serverOnline = snapshot.server_online !== false;
                     var flags = snapshot.flags || {};
+                    var pendingComputerUseToggle = window.agent_ui_v2_state
+                        && window.agent_ui_v2_state.pending
+                        && window.agent_ui_v2_state.pending.has('computer_use_enabled');
+                    if (flags.computer_use_enabled === false && !pendingComputerUseToggle
+                        && _computerUseStream) {
+                        releaseComputerUseCapture();
+                    }
                     if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
                         flags.agent_enabled = !!snapshot.analyzer_enabled;
                     }
@@ -4307,6 +4753,7 @@
                             }
                         });
                         window._agentTaskMap = newMap;
+                        scheduleAgentTaskReconciliation();
                         var tasks2 = Array.from(window._agentTaskMap.values());
                         if (tasks2.length > 0) {
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -4393,6 +4840,7 @@
                             }
                         }
                         var tasks3 = Array.from(window._agentTaskMap.values());
+                        scheduleAgentTaskReconciliation();
                         var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                         if (tasks3.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
@@ -4425,6 +4873,58 @@
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
+
+                // -------- capture_bridge_computer_use_request (full desktop) --------
+                } else if (response.type === 'capture_bridge_computer_use_request') {
+                    (async function () {
+                        var responseSocket = _thisSocket;
+                        var requestId = response.request_id || '';
+                        var sendResult = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_computer_use_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        try {
+                            var dc = resolveDesktopCaptureProvider();
+                            if (!dc || typeof dc.captureComputerUseScreen !== 'function') {
+                                sendResult({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var reused = await captureComputerUseLiveStream(dc);
+                            if (reused) {
+                                sendResult({ success: true, image: reused });
+                                return;
+                            }
+                            // A Linux source enumeration may reopen the desktop
+                            // portal every step. A broker reads the already-owned
+                            // stream in Chat without enumerating sources.
+                            // Only the explicit flag counts here: every bridge with
+                            // captureComputerUseScreen declares it, and inferring
+                            // from the UA would refuse a working one-shot capture.
+                            if (dc.sourceEnumerationMayPrompt === true
+                                && !(dc.computerUseSharedStreamBroker === true
+                                    && dc.computerUseNeedsStream === true)) {
+                                sendResult({ success: false, error: 'SCREEN_STREAM_REQUIRED' });
+                                return;
+                            }
+                            var frame = await window.invokeDesktopCaptureWithTimeout(
+                                dc, 'captureComputerUseScreen', [], 22000
+                            );
+                            if (!frame || frame.success !== true || !frame.dataUrl) {
+                                sendResult({ success: false, error: frame && frame.error || 'capture_failed' });
+                                return;
+                            }
+                            var boundedFrame = await boundCaptureBridgeRegionImage(frame.dataUrl);
+                            if (!boundedFrame) {
+                                sendResult({ success: false, error: 'image_too_large' });
+                                return;
+                            }
+                            sendResult({ success: true, image: boundedFrame });
+                        } catch (captureError) {
+                            sendResult({ success: false, error: captureError && captureError.code || 'capture_failed' });
+                        }
+                    })();
 
                 // -------- capture_bridge_region_request (interactive desktop selection) --------
                 } else if (response.type === 'capture_bridge_region_request') {
@@ -4797,7 +5297,7 @@
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
-                        if (typeof window.stopScreening === 'function') window.stopScreening();
+                        if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -4889,17 +5389,15 @@
                     // The session acknowledgement is the authoritative route
                     // for this session. Clear stale independent-ASR state when
                     // a new native realtime session replaces an old ASR one.
-                    if (response.input_mode !== 'text'
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
                             && (response.microphone_route === 'native'
                                 || response.microphone_route === 'independent')) {
                         S.independentAsrActive = response.microphone_route === 'independent';
-                        if (response.microphone_route === 'native') {
-                            ++S.voiceInputRecoveryGeneration;
-                            if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer);
-                            S.voiceInputRecoveryTimer = null;
-                            S.voiceInputRecoveryState = 'idle';
-                            S.voiceInputRecoverySessionEpoch = null;
-                            S.voiceInputRecoveryLeaseGeneration = null;
+                        if (response.microphone_route === 'native'
+                                && window.appAudioCapture
+                                && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                            window.appAudioCapture.resetVoiceInputRecoveryState();
                         }
                     }
                     if (_ackAnswersThisWindow) S.voiceStartPending = false;
@@ -5034,7 +5532,7 @@
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -5101,6 +5599,7 @@
                             'while pending', S._pendingSessionStartMode);
                         return;
                     }
+                    S.localAsrPreparingMessage = null;
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -5145,7 +5644,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                     stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
@@ -5177,6 +5676,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
+                    S.localAsrPreparingMessage = null;
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
 
                     // Restore UI to idle state
@@ -5537,6 +6037,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
+            S.localAsrPreparingMessage = null;
             if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
 
             // Reset button states

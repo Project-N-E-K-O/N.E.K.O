@@ -180,7 +180,7 @@ def _ngrams(text: str) -> List[str]:
     except Exception:
         # 兜底：persona 模块在某些 entrypoint（memory-only test）可能没加载。
         # 主路径的 ``_extract_keywords`` 返回 set（同一 doc 内 ngram 去重），下游
-        # bm25_score 的 ``doc.count(term)`` 因此始终是 0/1。兜底也必须维持同款
+        # bm25_score 里每篇 doc 的 TF 因此始终是 0/1。兜底也必须维持同款
         # "每 doc 至多 1 次" 语义，否则 ``bug bug bug`` 在 fallback 入口下被算
         # 成 TF=3，BM25 阈值会比主路径敏感得多——同一段文本走两条路径分数差几倍。
         return list({t for t in (text or "").split() if len(t) >= 2})
@@ -288,11 +288,12 @@ def bm25_score(
         if idf <= 0:
             continue
         term_score = 0.0
-        for tf, dl in zip(fg_counts, fg_lens):
-            if tf[term] == 0:
+        for counts, dl in zip(fg_counts, fg_lens):
+            tf = counts.get(term, 0)
+            if not tf:
                 continue
             norm = 1 - b + b * dl / avgdl
-            term_score += idf * (tf[term] * (k1 + 1)) / (tf[term] + k1 * norm)
+            term_score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
         if term_score > 0:
             per_term_total[term] = term_score
             total += term_score

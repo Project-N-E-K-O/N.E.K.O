@@ -29,6 +29,12 @@ import numpy as np
 import soxr
 
 from .delivery import delivery_evidence, log_delivery_phase
+from .warmup import (
+    provider_warmup_kind,
+    provider_warmup_reason,
+    provider_warmup_snapshot,
+)
+from .worker_failure import recorded_worker_failure
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -400,6 +406,10 @@ class _RealtimeAsrSessionImpl:
         self._closing_event = asyncio.Event()
         self._callback_close_event = asyncio.Event()
         self._connection_error_reported = False
+        # "<ASR_CODE>: <message>" of the failure that ended the session, so a
+        # failure right after "ready" still reaches connect()'s caller with
+        # its provider code instead of a generic one.
+        self._failure_error: str | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -422,6 +432,21 @@ class _RealtimeAsrSessionImpl:
         """Audio payload bytes after successful socket send, not queue admission."""
         evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
         return evidence.written_audio_bytes if evidence else 0
+
+    @property
+    def provider_warmup_kind(self) -> str:
+        """What a pending warm-up waits for (``"model"`` / ``"queue"``), or ``""``."""
+        return provider_warmup_kind(self._request_queue)
+
+    @property
+    def provider_warmup_reason(self) -> str:
+        """Why the provider is preparing (an ``ASR_*`` code), or ``""``."""
+        return provider_warmup_reason(self._request_queue)
+
+    @property
+    def provider_warmup_snapshot(self) -> tuple[bool, float | None]:
+        """``(pending, completed_at)`` taken together; see provider_warmup_snapshot()."""
+        return provider_warmup_snapshot(self._request_queue)
 
     @property
     def transport_delivery_trace_id(self) -> str | None:
@@ -500,13 +525,31 @@ class _RealtimeAsrSessionImpl:
 
             worker_task = self._worker_task
             if self._state is not _SessionState.READY or worker_task is None:
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
-            if worker_task.done():
-                await self._fail(
-                    "ASR_WORKER_FAILED",
-                    "worker exited immediately after becoming ready",
+                recorded = recorded_worker_failure(self._request_queue)
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or (f"{recorded[0]}: {recorded[1]}" if recorded else None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
                 )
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
+            if worker_task.done():
+                # The worker may have queued its own failure (e.g. a local
+                # model that failed to load) just before returning: keep that
+                # code instead of classifying the exit generically.
+                recorded = recorded_worker_failure(self._request_queue)
+                if recorded is not None:
+                    await self._fail(
+                        recorded[0] or "ASR_WORKER_FAILED",
+                        recorded[1] or "worker reported a provider error",
+                    )
+                else:
+                    await self._fail(
+                        "ASR_WORKER_FAILED",
+                        "worker exited immediately after becoming ready",
+                    )
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
+                )
             if self._voice_turn_factory is not None:
                 adapter: _VoiceTurnAdapterProtocol | None = None
                 try:
@@ -1518,6 +1561,7 @@ class _RealtimeAsrSessionImpl:
         )
         safe_message = self._sanitize_error(message)
         error = f"{safe_code}: {safe_message}"
+        self._failure_error = error
         if self._ready_future is not None and not self._ready_future.done():
             self._ready_future.set_exception(RuntimeError(error))
         if (

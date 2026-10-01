@@ -748,6 +748,86 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
 
 
 @pytest.mark.asyncio
+async def test_fetch_neko_community_feed_shuffles_card_order(monkeypatch):
+    payload = {
+        "data": {
+            "items": [
+                {"id": f"post-{n}", "title": f"卡牌{n}"} for n in range(1, 6)
+            ]
+        }
+    }
+
+    class CommunityResponse(_FakeResponse):
+        status_code = 200
+
+        async def aiter_bytes(self):
+            yield json.dumps(payload).encode()
+
+    class CommunityClient(_FakeClient):
+        def stream(self, method, url, **kwargs):
+            return _FakeCommunityStream(CommunityResponse())
+
+    # reverse 补丁让洗牌效果可断言：实现若不洗牌，返回序仍是载荷原序，测试失败。
+    monkeypatch.setattr(
+        trending_content.random, "shuffle", lambda seq: seq.reverse()
+    )
+    with patch(
+        "utils.web_scraper.trending_content.get_external_http_client",
+        return_value=CommunityClient(),
+    ), patch(
+        "utils.web_scraper.trending_content.social_base_url",
+        return_value="https://community.example.test",
+    ), patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=AsyncMock(return_value=""),
+    ):
+        result = await fetch_neko_community_feed(limit=5)
+
+    assert result["success"] is True
+    assert [post["id"] for post in result["posts"]] == [
+        f"post-{n}" for n in range(5, 0, -1)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_neko_community_feed_shuffle_keeps_whole_pool():
+    payload = {
+        "data": {
+            "items": [
+                {"id": f"post-{n}", "title": f"卡牌{n}"} for n in range(1, 6)
+            ]
+        }
+    }
+
+    class CommunityResponse(_FakeResponse):
+        status_code = 200
+
+        async def aiter_bytes(self):
+            yield json.dumps(payload).encode()
+
+    class CommunityClient(_FakeClient):
+        def stream(self, method, url, **kwargs):
+            return _FakeCommunityStream(CommunityResponse())
+
+    with patch(
+        "utils.web_scraper.trending_content.get_external_http_client",
+        return_value=CommunityClient(),
+    ), patch(
+        "utils.web_scraper.trending_content.social_base_url",
+        return_value="https://community.example.test",
+    ), patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=AsyncMock(return_value=""),
+    ):
+        result = await fetch_neko_community_feed(limit=5)
+
+    # 真实随机洗牌下顺序不定，但卡池必须一张不少（无序集合断言，不抖动）。
+    assert {post["id"] for post in result["posts"]} == {
+        f"post-{n}" for n in range(1, 6)
+    }
+
+
+@pytest.mark.asyncio
 async def test_fetch_neko_community_feed_does_not_read_oauth_for_http():
     class CommunityResponse(_FakeResponse):
         status_code = 200

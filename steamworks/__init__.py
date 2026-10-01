@@ -44,17 +44,6 @@ def _get_app_root():
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _prepend_env_path(name: str, entry: str) -> None:
-    """Prepend a runtime library search path without clobbering existing values."""
-    if not entry:
-        return
-    existing = os.environ.get(name, "")
-    parts = [part for part in existing.split(os.pathsep) if part]
-    if entry not in parts:
-        parts.insert(0, entry)
-    os.environ[name] = os.pathsep.join(parts)
-
-
 def _linux_dlopen_mode(*, global_symbols: bool = False, lazy: bool = False) -> int:
     """Build a Linux dlopen mode while staying portable to Python builds without flags."""
     mode = 0
@@ -129,14 +118,6 @@ from steamworks.interfaces.utils        import SteamUtils
 from steamworks.interfaces.workshop     import SteamWorkshop
 from steamworks.interfaces.microtxn     import SteamMicroTxn
 from steamworks.interfaces.input        import SteamInput
-
-# Linux 源码/打包模式都优先从 steamworks 包目录及应用根目录查找 Steam 依赖，
-# 但保留现有搜索路径。源码模式下 libsteam_api.so 与 SteamworksPy.so 同放在
-# steamworks/ 子目录；打包后两者落在 exe 同级目录（即 _get_app_root()）。
-if sys.platform in ('linux', 'linux2'):
-    _prepend_env_path('LD_LIBRARY_PATH', _get_app_root())
-    _prepend_env_path('LD_LIBRARY_PATH', os.path.dirname(os.path.abspath(__file__)))
-
 
 class STEAMWORKS(object):
     """

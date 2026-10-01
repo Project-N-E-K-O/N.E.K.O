@@ -149,6 +149,9 @@ def test_voice_recognition_popover_keys_match_across_all_locales() -> None:
         "voiceResourceOptimization",
         "voiceResourceOptimizationHintOn",
         "voiceResourceOptimizationHintOff",
+        "localAsr",
+        "localAsrHint",
+        "localAsrDependencyMissing",
     }
 
     key_sets: list[set[str]] = []
@@ -198,3 +201,252 @@ def test_async_asr_status_copy_uses_the_caller_provider_key() -> None:
         ):
             assert "{{providerKey}}" in microphone[key], (locale_name, key)
             assert "{{provider}}" not in microphone[key], (locale_name, key)
+
+
+def test_local_asr_preference_is_a_shared_conversation_setting() -> None:
+    state = APP_STATE.read_text(encoding="utf-8")
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    runtime = ASR_RUNTIME.read_text(encoding="utf-8")
+    reset_defaults = settings.split(
+        "function _defaultConversationSettingsForReset()",
+        maxsplit=1,
+    )[1].split("function _serverSettingsForMerge", maxsplit=1)[0]
+
+    assert "independentAsrProviderPreference: 'auto'" in state
+    assert "independentAsrProviderPreference: 'auto'" in reset_defaults
+    assert "'independentAsrProviderPreference'" in settings
+    assert (
+        "independentAsrProviderPreference: currentIndependentAsrProviderPreference"
+    ) in settings
+    # Core forwards the persisted value; the provider literal itself must
+    # stay below the Core ASR bridge (scripts/check_core_contracts.py).
+    assert '"independentAsrProviderPreference"' in runtime
+    assert "faster_whisper" not in runtime
+
+
+def test_frontend_provider_preference_values_match_the_backend_allowlist() -> None:
+    from utils.conversation_settings_constants import (
+        INDEPENDENT_ASR_PROVIDER_PREFERENCES,
+    )
+
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    body = settings.split(
+        "function _normalizeIndependentAsrProviderPreference(value)",
+        maxsplit=1,
+    )[1].split("}", maxsplit=1)[0]
+    match = re.search(r"return \[([^\]]*)\]\.indexOf\(value\)", body)
+    assert match is not None
+    values = set(re.findall(r"'([^']*)'", match.group(1)))
+    assert values == set(INDEPENDENT_ASR_PROVIDER_PREFERENCES)
+
+
+def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+    voice_panel = source.split(
+        "function openVoiceRecognitionSubwindow()", maxsplit=1
+    )[1].split("async function openMicDeviceSubwindow()", maxsplit=1)[0]
+
+    local_setting = source.split(
+        "function createLocalAsrSetting(panelBody, beforeNode)", maxsplit=1
+    )[1].split("function reconcileLocalAsrSetting()", maxsplit=1)[0]
+    offer_gate = source.split("function shouldOfferLocalAsr()", maxsplit=1)[1].split(
+        "function createLocalAsrSetting", maxsplit=1
+    )[0]
+    capability_listener = source.split(
+        "function onCoreApiCapabilityChanged()", maxsplit=1
+    )[1].split("}", maxsplit=1)[0]
+
+    assert "if (shouldOfferLocalAsr())" in voice_panel
+    assert "'microphone.localAsr'" in local_setting
+    assert "'microphone.localAsrHint'" in local_setting
+    assert "? 'faster_whisper'" in local_setting
+    assert "localAsrToggle.setDisabled(!enabled && !localAsrChosen);" in source
+    # A saved "on" choice can always be switched off.
+    assert "if (enabled && !localAsrChoiceActionable())" in local_setting
+    # Hidden unless the dependency is installed or the preference is already on.
+    assert "S.localAsrAvailable === true" in offer_gate
+    assert "|| S.independentAsrProviderPreference === 'faster_whisper'" in offer_gate
+    # A capability refresh that lands while the panel is open re-reconciles it.
+    assert "reconcileLocalAsrSetting();" in capability_listener
+    assert "localAsrAvailable: null" in APP_STATE.read_text(encoding="utf-8")
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    )
+    assert "data.localAsrAvailable" in websocket
+    assert "faster_whisper: 'faster-whisper'" in source
+
+
+def test_dependency_missing_status_has_its_own_toast() -> None:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    )
+    assert "statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING'" in websocket
+    assert "window.t('microphone.localAsrDependencyMissing')" in websocket
+
+
+def _independent_asr_status_block() -> str:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    ).replace(chr(13) + chr(10), chr(10))
+    return websocket.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)", 1
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+
+
+def test_preparing_status_informs_without_tearing_the_route_down() -> None:
+    block = _independent_asr_status_block()
+    preparing = block.split("if (statusCode === 'ASR_INDEPENDENT_PREPARING')", 1)[1]
+    preparing = preparing.split("return;", 1)[0]
+    assert "window.t('microphone.localAsrPreparing')" in preparing
+    assert "tearDownBlockedVoiceRoute" not in preparing
+    # Handled before the terminal-failure tail, which would tear it down.
+    assert block.index("'ASR_INDEPENDENT_PREPARING'") < block.index(
+        "tearDownBlockedVoiceRoute();"
+    )
+
+
+def _toast_helper(name: str) -> str:
+    websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
+        encoding="utf-8"
+    ).replace(chr(13) + chr(10), chr(10))
+    return websocket.split(f"function {name}(reason) {{", 1)[1].split(
+        chr(10) + "    }", 1
+    )[0]
+
+
+def test_failure_reasons_map_to_their_own_guidance() -> None:
+    helper = _toast_helper("independentAsrReasonToastText")
+    for reason, key in (
+        ("ASR_LOCAL_MODEL_LOAD_FAILED", "microphone.localAsrModelLoadFailed"),
+        ("ASR_LOCAL_DEPENDENCY_MISSING", "microphone.localAsrDependencyMissing"),
+        ("ASR_PROVIDER_WARMUP_TIMEOUT", "microphone.localAsrWarmupTimeout"),
+        ("ASR_PROVIDER_QUEUE_TIMEOUT", "microphone.localAsrQueueTimeout"),
+    ):
+        branch = helper.split(f"reason === '{reason}'", 1)[1].split("}", 1)[0]
+        assert f"t('{key}')" in branch, reason
+    # Other reasons have no text of their own ...
+    assert helper.rstrip().endswith("return '';")
+    # ... and where a message is always needed, fall back to the generic one.
+    wrapper = _toast_helper("independentAsrFailureToastText")
+    assert "independentAsrReasonToastText(reason)" in wrapper
+    assert "microphone.independentAsrFallback" in wrapper
+
+
+def test_terminal_failure_status_uses_its_reason_before_the_generic_text() -> None:
+    # Only a reason with guidance of its own pre-empts the per-code toasts; a
+    # cloud failure reason keeps e.g. "temporarily unavailable".
+    block = _independent_asr_status_block()
+    terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
+    assert "independentAsrReasonToastText(" in terminal
+    assert "independentAsrFailureToastText(" not in terminal
+    branch = terminal.split("if (reasonToastText) {", 1)[1].split("return;", 1)[0]
+    assert "showStatusToast(reasonToastText" in branch
+    assert terminal.index("if (reasonToastText) {") < terminal.index(
+        "microphone.independentAsrProviderUnavailable"
+    )
+
+
+def test_local_model_copy_exists_in_every_locale_and_names_hf_endpoint() -> None:
+    for locale in LOCALES:
+        microphone = json.loads(
+            (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
+        )["microphone"]
+        assert microphone.get("localAsrPreparing"), locale
+        assert microphone.get("localAsrReloading"), locale
+        assert microphone.get("localAsrReady"), locale
+        assert "HF_ENDPOINT" in microphone.get("localAsrModelLoadFailed", ""), locale
+        assert "HF_ENDPOINT" in microphone.get("localAsrWarmupTimeout", ""), locale
+        # The raw status code must never be what a user sees.
+        errors = json.loads(
+            (LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")
+        )["errors"]
+        assert "HF_ENDPOINT" in errors.get("ASR_PROVIDER_WARMUP_TIMEOUT", ""), locale
+        # A decode queued behind another session is not a model download: its
+        # text must not send the user to HF_ENDPOINT.
+        for text in (
+            microphone.get("localAsrQueueTimeout", ""),
+            errors.get("ASR_PROVIDER_QUEUE_TIMEOUT", ""),
+        ):
+            assert text, locale
+            assert "HF_ENDPOINT" not in text, locale
+
+
+def test_provider_preference_handshake_authority_mirrors_the_other_asr_keys() -> None:
+    state = APP_STATE.read_text(encoding="utf-8")
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+
+    assert "independentAsrProviderPreferenceAuthoritative: false" in state
+    # Granted by a merged server GET, an explicit local change, or an
+    # explicit cross-window change -- never by an unrelated save.
+    compact = " ".join(settings.split())
+    assert (
+        "S.voiceInputResourceOptimizationAuthoritative = true; "
+        "S.independentAsrProviderPreferenceAuthoritative = true;"
+    ) in compact
+    assert (
+        "if (_dirtySettingsKeys.has('independentAsrProviderPreference')) { "
+        "S.independentAsrProviderPreferenceAuthoritative = true;"
+    ) in compact
+    assert "providerPreferenceValueIsStale" in settings
+
+
+def test_settings_hydrated_event_fires_after_the_server_merge() -> None:
+    # The open voice panel re-decides its local-ASR switch on this event; fired
+    # before the merge it would still read the boot default preference.
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js").read_text(
+        encoding="utf-8"
+    )
+    dispatch_at = source.index("new CustomEvent('neko:conversation-settings-hydrated')")
+    # Both anchors live in the same GET-merge callback: the merge log line comes
+    # after every server value is copied into S, and the telemetry broadcast is
+    # the callback's documented "all settings merged" point.
+    merged_log_at = source.index("已从服务器合并对话设置")
+    telemetry_at = source.index("new CustomEvent('neko:telemetry-branch-resolved'")
+    assert source.count("neko:conversation-settings-hydrated") == 1
+    assert merged_log_at < dispatch_at < telemetry_at
+
+
+def test_server_authoritative_provider_preference_is_not_filtered_as_stale() -> None:
+    # A peer window's server merge carries the provider preference as a
+    # server-authoritative key (not an explicit change); discarding it as stale
+    # would pin this window to an outdated preference forever.
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("const providerPreferenceValueIsStale = !!meta")
+    stale_rule = source[start:source.index(";", start)]
+    assert "!providerPreferenceServerAuthoritative" in stale_rule
+    authoritative = source[
+        source.index("const providerPreferenceServerAuthoritative = !!meta"):start
+    ]
+    assert "meta.serverAuthoritativeKeys.indexOf(providerPreferenceKey) !== -1" in authoritative
+    assert "Number.isInteger(meta.serverRevision)" in authoritative
+
+
+def test_adopted_server_provider_preference_reconciles_the_open_panel() -> None:
+    # The adopted value gets no handshake authority, but the voice panel must
+    # still hear about it through the pending-change event.
+    source = APP_SETTINGS.read_text(encoding="utf-8")
+    candidate_start = source.index("const providerPreferenceServerCandidate =")
+    candidate = source[candidate_start:source.index(";", candidate_start)]
+    assert "providerPreferenceValueDiffers" in candidate
+    assert "providerPreferenceServerAuthoritative" in candidate
+    # Decided only after the stale / revision checks have run and the survivors
+    # were applied, so a dropped older snapshot reports nothing pending.
+    start = source.index("const providerPreferenceAdoptedFromServer =")
+    rule = source[start:source.index(";", start)]
+    assert "providerPreferenceServerCandidate" in rule
+    assert "Object.prototype.hasOwnProperty.call(incoming, providerPreferenceKey)" in rule
+    assert source.index("const changed = applySharedRuntimeSettings(incoming);") < start
+    gate_start = source.index("|| providerPreferenceAdoptedFromServer")
+    gate = source[gate_start:source.index("neko:voice-settings-pending-changed", gate_start)]
+    assert "window.dispatchEvent(new CustomEvent(" in gate
+    # No authority is granted for it.
+    authority = source[
+        source.index("if (providerPreferenceChangedByOtherWindow) {"):gate_start
+    ]
+    assert "providerPreferenceAdoptedFromServer" not in authority

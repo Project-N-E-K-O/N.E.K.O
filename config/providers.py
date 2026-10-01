@@ -78,13 +78,23 @@ EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low（开思考但取最低努力档）。
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
-# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M3 始终内部
-# 推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
+# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
+# 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
 # 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
 # 思考本就常开、无需动它；且 True 让 CoT 留在独立字段、不混进 content 被 TTS 当台词
 # 念出（与 leaks_thinking_in_content 防的是同一类问题）。
+# M3 可以关思考（thinking.type=disabled/adaptive），所以下方映射表里 M3 走
+# EXTRA_BODY_CLAUDE，凝神翻成 enabled，不用本常量。
 # 文档 https://platform.minimax.io/docs/guides/text-m3-function-call
+#      https://platform.minimax.io/docs/api-reference/text-openai-api
 EXTRA_BODY_MINIMAX = {"reasoning_split": True}
+
+# Step 的 reasoning_effort 不支持 none：三档模型只收 low / medium / high，
+# step-3.5-flash-2603 只收 low / high。flash 系列与 step-5-preview 无法关闭
+# 思考，关思考与凝神都填最低档 low，作为 none 的替代。不收录进下方
+# _THINKING_ENABLE_FORM（凝神不翻）。
+# 文档 https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
+EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
 # Agent 调用统一开关：是否加载 extra_body。
 # 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
@@ -114,6 +124,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-max": EXTRA_BODY_OPENAI,
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
+    "qwen3.8-flash": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -142,11 +153,20 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
     # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
     # 不会被这几行波及。vision-exp 是同端口同代的视觉版，方言一致。
+    # V4.1 起官方调用名是 deepseek-flash（自带视觉）；v4-flash / vision-exp
+    # 仍被接受，服务端转给 V4.1 Flash。Pro 没有 4.1 版，仍叫 deepseek-v4-pro。
+    # 文档 https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    # reasoning_effort 无 none，思考无法关闭，平时与凝神都走 low。
+    "step-5-preview": EXTRA_BODY_STEP_LOW,
+    "step-3.7-flash": EXTRA_BODY_STEP_LOW,
+    "step-3.5-flash": EXTRA_BODY_STEP_LOW,
+    "step-3.5-flash-2603": EXTRA_BODY_STEP_LOW,
     # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
     # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
     "free-model": EXTRA_BODY_CLAUDE,
@@ -199,9 +219,10 @@ def get_agent_extra_body(model: str) -> dict | None:
 
 # 凝神（thinking-on）时把各 provider 的「关思考」extra_body 翻成「开思考」形式。
 # 键 = 「关」常量的 id，值 = 对应「开」常量；按各家 API 语义一一对偶，不机械翻 bool。
-# 未收录的「关」常量（如 MiniMax 的 reasoning_split）表示「凝神保持原值不翻」；非
-# thinking 的 provider extra（如 step-2-mini 的 web_search tools）天然不在此表，在
-# MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、原样保留。
+# 未收录的「关」常量（如 MiniMax 的 reasoning_split、Step 的 reasoning_effort=low）
+# 表示「凝神保持原值不翻」；非 thinking 的 provider extra（如 step-2-mini 的
+# web_search tools）天然不在此表，在 MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、
+# 原样保留。
 _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
     id(EXTRA_BODY_OPENAI_NATIVE): EXTRA_BODY_OPENAI_NATIVE_THINKING,
@@ -213,7 +234,8 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
 }
 
 # model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会
-# 漂移）：命中对偶则取「开」形式，否则回退原值（保留 web_search / 不翻 MiniMax）。
+# 漂移）：命中对偶则取「开」形式，否则回退原值（保留 web_search / 不翻 MiniMax
+# 与 Step low）。
 # 依赖 MODELS_EXTRA_BODY_MAP 的值是模块级常量引用，故可用 id 做配对键。
 MODELS_FOCUS_EXTRA_BODY_MAP: dict[str, dict] = {
     model: _THINKING_ENABLE_FORM.get(id(body), body)
@@ -236,9 +258,11 @@ def focus_extra_body(model: str) -> dict | None:
       - reasoning.effort: none -> low                   (OpenRouter)
       - reasoning_effort: none|minimal -> low           (OpenAI native; the
         floor differs per model, low is the one both generations accept)
+      - reasoning_effort: low kept (cannot disable)     (Step flash / step-5-preview)
 
     Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
-    ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.
+    ``web_search`` tools, MiniMax's reasoning_split, or Step's always-low
+    reasoning_effort) are preserved unchanged.
     Returns ``None`` when the model has no registered extra_body."""
     if not model:
         return None
@@ -263,6 +287,9 @@ def leaks_thinking_in_content(model: str) -> bool:
     m = (model or "").lower()
     if "vl" in m:
         return False
+    # qwen3.8 is deliberately absent: on DashScope it streams reasoning via
+    # ``reasoning_content`` with a clean ``content`` (checked 2026-09-27), and
+    # the stripper would hold a clean Focus answer until the end of the stream.
     return any(tag in m for tag in ("qwen3.5", "qwen3.6", "qwen3.7"))
 
 

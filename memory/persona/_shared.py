@@ -46,6 +46,8 @@ def _extract_keywords(text: str, stop_names: list[str] | None = None) -> set[str
         seg = seg.strip()
         if not seg:
             continue
+        # 纯 ASCII 段快速路径 + 下面的 CJK 占比阈值必须与
+        # hybrid_recall._tokenize 保持一致，改一边要同步另一边。
         if seg.isascii():
             if len(seg) >= 2:
                 keywords.add(seg)

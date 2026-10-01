@@ -1596,33 +1596,21 @@ def detect_language(text: str) -> str:
     """
     if not text or not text.strip():
         return 'unknown'
-    chinese_count = 0
-    japanese_count = 0
-    korean_count = 0
-    english_count = 0
-    russian_count = 0
-    spanish_strong = False
-    portuguese_strong = False
-    for ch in text:
-        cp = ord(ch)
-        if 0x4e00 <= cp <= 0x9fff:
-            chinese_count += 1
-        elif 0x3040 <= cp <= 0x30ff:
-            japanese_count += 1
-        if 0x1100 <= cp <= 0x11ff or 0x3130 <= cp <= 0x318f or 0xac00 <= cp <= 0xd7af:
-            korean_count += 1
-        if 'a' <= ch <= 'z' or 'A' <= ch <= 'Z':
-            english_count += 1
-        if 0x0400 <= cp <= 0x04ff:
-            russian_count += 1
-        if ch in '\u00f1\u00d1\u00a1\u00bf':
-            spanish_strong = True
-        if ch in '\u00e3\u00c3\u00f5\u00d5':
-            portuguese_strong = True
+
+    # 统计各语言字符数量
+    chinese_count = len(CHINESE_PATTERN.findall(text))
+    japanese_count = len(JAPANESE_PATTERN.findall(text)) - chinese_count  # 减去汉字（因为中日共用）
+    korean_count = len(KOREAN_PATTERN.findall(text))
+    english_count = len(ENGLISH_PATTERN.findall(text))
+    russian_count = len(RUSSIAN_PATTERN.findall(text))
+    spanish_strong = SPANISH_STRONG_PATTERN.search(text) is not None
+    portuguese_strong = PORTUGUESE_STRONG_PATTERN.search(text) is not None
+
     # 如果包含日文假名，优先判断为日语
     if japanese_count > 0:
         if japanese_count >= chinese_count * 0.2:
             return 'ja'
+
     # 判断主要语言
     # 注意：如果包含假名已经在上面返回 'ja' 了，这里只需要判断中文和英文
     if korean_count >= chinese_count and korean_count >= english_count and korean_count >= russian_count and korean_count > 0:

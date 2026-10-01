@@ -21,6 +21,10 @@
     const isMobile = window.appUtils.isMobile;
     const SCREEN_SOURCE_TITLE_MATCH_ENABLED_KEY = 'screenSourceTitleMatchEnabled';
     const SCREEN_SOURCE_WINDOW_TITLE_KEY = 'selectedScreenWindowTitle';
+    // { id, screenIndex?, name? }：只在 id 与当前选中源一致时有效，漏更新的写入点
+    // 最多让设置行退回通用文案，不会显示成别的来源名称。窗口标题 name 只在开启
+    // 「记住窗口」时才写入，与 selectedScreenWindowTitle 受同一个开关约束。
+    const SCREEN_SOURCE_LABEL_KEY = 'selectedScreenSourceLabel';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
     var explicitScreenSourceSelectionGeneration = null;
@@ -138,6 +142,9 @@
         } else {
             clearRememberedWindowTitle();
         }
+        syncPersistedScreenSourceTitle();
+        // 本窗口收不到自己写入的 storage 事件，关掉开关后标题可能退回「窗口」。
+        notifyScreenSourceChanged();
         updateScreenSourceTitleMatchToggleState();
     }
 
@@ -155,8 +162,10 @@
             && typeof provider.captureSourceAsDataUrl === 'function');
     }
 
+    // 归一化逻辑在 desktop-capture-provider.js：旧版桌面端没有声明标志时按平台推断。
+    // 两个函数来自同一个脚本，没有它就不会有 provider。
     function desktopSourceEnumerationMayPrompt(provider) {
-        return !!(provider && provider.sourceEnumerationMayPrompt === true);
+        return window.desktopSourceEnumerationMayPrompt(provider) === true;
     }
 
     async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
@@ -265,6 +274,222 @@
     }
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
+    // ======================== selected source label ========================
+    // 本页知道的来源名称 { id, screenIndex, name }，按 id 分别存：来自本页的选择
+    // 和枚举，以及其他同源窗口的广播。显示时只取当前选中 id 的那一条，所以广播
+    // 和本地选择谁先到都不会互相覆盖。窗口标题未开启「记住窗口」时只存在这里，不落盘。
+    var MAX_KNOWN_SCREEN_SOURCE_META = 16;
+    var knownScreenSourceMeta = [];
+
+    function getKnownScreenSourceMeta(sourceId) {
+        if (!sourceId) return null;
+        for (var i = 0; i < knownScreenSourceMeta.length; i += 1) {
+            if (knownScreenSourceMeta[i].id === sourceId) return knownScreenSourceMeta[i];
+        }
+        return null;
+    }
+
+    function forgetKnownScreenSourceMeta(sourceId) {
+        knownScreenSourceMeta = knownScreenSourceMeta.filter(function (meta) {
+            return meta.id !== sourceId;
+        });
+    }
+
+    function addKnownScreenSourceMeta(meta) {
+        forgetKnownScreenSourceMeta(meta.id);
+        knownScreenSourceMeta.push(meta);
+        if (knownScreenSourceMeta.length > MAX_KNOWN_SCREEN_SOURCE_META) {
+            knownScreenSourceMeta.shift();
+        }
+    }
+
+    function readPersistedScreenSourceMeta() {
+        try {
+            var record = JSON.parse(localStorage.getItem(SCREEN_SOURCE_LABEL_KEY) || 'null');
+            if (record && typeof record.id === 'string') return record;
+        } catch (_) { }
+        return null;
+    }
+
+    function persistSelectedScreenSourceMeta() {
+        var meta = getKnownScreenSourceMeta(S.selectedScreenSourceId);
+        try {
+            if (!meta) {
+                localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY);
+                return;
+            }
+            var record = { id: meta.id };
+            if (typeof meta.screenIndex === 'number') record.screenIndex = meta.screenIndex;
+            // 与 storeRememberedWindowTitle 同一规则：超长标题不落盘（也不截断），
+            // 本次会话仍用内存里的完整标题显示。
+            if (meta.name && meta.name.length <= MAX_REMEMBERED_WINDOW_TITLE_LENGTH
+                && meta.id.startsWith('window:') && isScreenSourceTitleMatchEnabled()) {
+                record.name = meta.name;
+            }
+            localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify(record));
+        } catch (_) { }
+    }
+
+    // 「记住窗口」开关变化后，按新设置重写落盘记录里的窗口标题。
+    function syncPersistedScreenSourceTitle() {
+        if (getKnownScreenSourceMeta(S.selectedScreenSourceId)) {
+            persistSelectedScreenSourceMeta();
+            return;
+        }
+        if (isScreenSourceTitleMatchEnabled()) return;
+        var record = readPersistedScreenSourceMeta();
+        if (!record || !('name' in record)) return;
+        delete record.name;
+        try { localStorage.setItem(SCREEN_SOURCE_LABEL_KEY, JSON.stringify(record)); } catch (_) { }
+    }
+
+    function getSelectedScreenSourceLabel() {
+        var sourceId = S.selectedScreenSourceId;
+        if (!sourceId) return '';
+        var meta = getKnownScreenSourceMeta(sourceId) || readPersistedScreenSourceMeta();
+        var isScreen = sourceId.startsWith('screen:');
+        if (meta && meta.id === sourceId
+            && (!isScreen || typeof meta.screenIndex === 'number')) {
+            // 屏幕名称按当前语言现算，切换语言后不会残留旧语言的文案。
+            var label = getScreenSourceDisplayName(
+                { id: sourceId, name: typeof meta.name === 'string' ? meta.name : '' },
+                typeof meta.screenIndex === 'number' ? meta.screenIndex : null
+            );
+            if (label) return label;
+        }
+        // 窗口标题 / 屏幕序号未知（其他窗口、重启后、系统对话框只返回一块屏幕）：
+        // 只说是窗口或屏幕，不把某个具体名称安到可能已被复用的 id 上。
+        return getGenericScreenSourceLabel(sourceId);
+    }
+
+    // 已选中但具体名称未知时的单数兜底文案。来源列表的分组标题
+    // app.screenSource.screens / windows 是复数，不能拿来当某一个来源的名字
+    // （英文会显示成 "Windows"）。
+    function getGenericScreenSourceLabel(sourceId) {
+        if (typeof sourceId === 'string' && sourceId.startsWith('window:')) {
+            return window.t ? window.t('app.screenSource.genericWindow') : '窗口';
+        }
+        return window.t ? window.t('app.screenSource.genericScreen') : '屏幕';
+    }
+
+    function notifyScreenSourceChanged() {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                detail: {
+                    sourceId: S.selectedScreenSourceId || null,
+                    sourceLabel: getSelectedScreenSourceLabel()
+                }
+            }));
+        } catch (_) { }
+    }
+
+    function normalizeScreenSourceMeta(source, screenIndex) {
+        if (!source || typeof source.id !== 'string' || !source.id) return null;
+        return {
+            id: source.id,
+            screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
+            name: String(source.name || '')
+        };
+    }
+
+    // 同源的其他窗口（Pet / Chat）通过内存广播拿到本窗口选中的来源名称：
+    // 窗口标题在未开启「记住窗口」时不落盘，只能这样同步；每次选择都会发送，
+    // 不依赖内容变化才触发的 storage 事件。
+    var screenSourceLabelChannel = null;
+    try {
+        if (typeof BroadcastChannel === 'function') {
+            screenSourceLabelChannel = new BroadcastChannel('neko-screen-source-label');
+            screenSourceLabelChannel.onmessage = function (event) {
+                var data = event && event.data;
+                var meta = data && typeof data === 'object' && data.meta
+                    ? normalizeScreenSourceMeta(data.meta, data.meta.screenIndex)
+                    : null;
+                if (!meta) return;
+                addKnownScreenSourceMeta(meta);
+                notifyScreenSourceChanged();
+            };
+        }
+    } catch (_) {
+        screenSourceLabelChannel = null;
+    }
+
+    /**
+     * 记录当前选中源（枚举结果里的 { id, name }）并通知设置行刷新。调用方先更新
+     * S.selectedScreenSourceId；清除选择时传 null。
+     */
+    function rememberScreenSourceLabel(source, screenIndex) {
+        var meta = source && source.id
+            ? normalizeScreenSourceMeta({ id: String(source.id), name: source.name }, screenIndex)
+            : null;
+        if (meta) addKnownScreenSourceMeta(meta);
+        persistSelectedScreenSourceMeta();
+        try {
+            if (meta && screenSourceLabelChannel) {
+                screenSourceLabelChannel.postMessage({ meta: meta });
+            }
+        } catch (_) { }
+        notifyScreenSourceChanged();
+    }
+
+    /**
+     * 用本次枚举结果刷新当前选中源的名称：升级前保存的选择没有名称记录，
+     * 窗口标题也可能已经变了，以当前枚举为准。
+     */
+    function refreshSelectedScreenSourceLabelFromSources(screens, windows, options) {
+        var sourceId = S.selectedScreenSourceId;
+        if (!sourceId) return;
+        var screenIndex = screens.findIndex(function (s) { return s.id === sourceId; });
+        var source = screenIndex >= 0
+            ? screens[screenIndex]
+            : windows.find(function (s) { return s.id === sourceId; });
+        // partial：系统对话框只返回用户选中的那一项，不是完整列表——当前来源
+        // 不在里面不代表它已不存在，结果里的位置也不是物理屏幕序号。
+        var partial = !!(options && options.partial);
+        if (!source) {
+            if (partial) return;
+            // 窗口已关、屏幕已拔：这次枚举证明来源不在了，不再显示它的具体名称。
+            var persisted = readPersistedScreenSourceMeta();
+            var persistedIsThisSource = !!(persisted && persisted.id === sourceId);
+            if (getKnownScreenSourceMeta(sourceId) || persistedIsThisSource) {
+                forgetKnownScreenSourceMeta(sourceId);
+                // 只删属于这个来源的落盘记录：同源的其他窗口可能刚为新选中的
+                // 来源写入了记录，本页仍持有旧 id 时不能把它一并删掉。
+                if (persistedIsThisSource) {
+                    try { localStorage.removeItem(SCREEN_SOURCE_LABEL_KEY); } catch (_) { }
+                }
+                notifyScreenSourceChanged();
+            }
+            return;
+        }
+        var nextIndex = screenIndex >= 0 && !partial ? screenIndex : null;
+        var current = getKnownScreenSourceMeta(sourceId);
+        if (current && current.screenIndex === nextIndex
+            && current.name === String(source.name || '')) {
+            return;
+        }
+        rememberScreenSourceLabel(source, nextIndex);
+    }
+
+    // 语言切换后屏幕名称要按新语言重算。
+    window.addEventListener('localechange', notifyScreenSourceChanged);
+
+    // 延迟枚举面板里的「当前来源：<来源>」。面板开着时来源可能在别处（其他窗口、
+    // 自动回退）变化；这里只注册一个模块级监听，刷新页面上现存的摘要，
+    // 面板反复开关不会累积监听器。常驻状态行用「标签：值」的写法，不复用
+    // 描述一次事件的 toast 模板 app.screenSource.selected（西语、葡语配上
+    // 阴性名词会出现性数不一致）。
+    function renderScreenSourceSummary(summary) {
+        var currentLabel = getSelectedScreenSourceLabel();
+        summary.hidden = !currentLabel;
+        summary.textContent = !currentLabel ? '' : (window.t
+            ? window.t('app.screenSource.current', { source: currentLabel })
+            : '当前来源：' + currentLabel);
+        summary.title = currentLabel;
+    }
+    window.addEventListener('neko:screen-source-changed', function () {
+        document.querySelectorAll('.screen-source-current').forEach(renderScreenSourceSummary);
+    });
+
     // ======================== clearSelectedScreenSource ========================
     /**
      * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
@@ -286,6 +511,7 @@
                 updateScreenSourceListSelection();
             }
         } catch (_) { }
+        rememberScreenSourceLabel(null);
     }
     mod.clearSelectedScreenSource = clearSelectedScreenSource;
 
@@ -323,6 +549,7 @@
                     S.selectedScreenSourceId = titleMatches[0].id;
                     markScreenSourceSelectionChanged();
                     try { localStorage.setItem('selectedScreenSourceId', titleMatches[0].id); } catch (_) { }
+                    rememberScreenSourceLabel(titleMatches[0], null);
                     pushSelectedSourceToMain(titleMatches[0].id);
                     restartActiveCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
@@ -487,12 +714,38 @@
             updateScreenSourceTitleMatchToggleState();
             return;
         }
+        if (e.key === SCREEN_SOURCE_LABEL_KEY) {
+            // 另一个窗口写了新记录。标题未落盘时，内存里的名称由广播保持最新；
+            // 落盘记录带着不同的标题时以它为准，丢掉本页知道的那条。
+            // 记录被删（另一个窗口确认来源已消失或清除了选择）时，同样丢掉本页
+            // 缓存的当前来源名称；屏幕序号变了也以落盘记录为准。
+            var record = readPersistedScreenSourceMeta();
+            if (!record) {
+                // 只丢被删记录对应的那个来源：本页可能选着另一个仍然有效的来源。
+                var removedRecord = null;
+                try { removedRecord = JSON.parse(e.oldValue || 'null'); } catch (_) { }
+                if (removedRecord && removedRecord.id === S.selectedScreenSourceId) {
+                    forgetKnownScreenSourceMeta(removedRecord.id);
+                }
+            } else {
+                var known = getKnownScreenSourceMeta(record.id);
+                var recordScreenIndex = typeof record.screenIndex === 'number'
+                    ? record.screenIndex : null;
+                if (known && ((record.name && known.name !== record.name)
+                    || known.screenIndex !== recordScreenIndex)) {
+                    forgetKnownScreenSourceMeta(record.id);
+                }
+            }
+            notifyScreenSourceChanged();
+            return;
+        }
         if (e.key !== 'selectedScreenSourceId') return;
         var newId = e.newValue || null;
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
         markScreenSourceSelectionChanged();
+        notifyScreenSourceChanged();
         try {
             if (typeof updateScreenSourceListSelection === 'function') {
                 updateScreenSourceListSelection();
@@ -751,16 +1004,30 @@
         video.srcObject = stream;
         video.autoplay = true;
         video.muted = true;
-        try { await video.play(); } catch (e) { /* 某些情况下不需要 play() 成功也能读取帧 */ }
-        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-            await new Promise(function (resolve) {
-                video.addEventListener('loadeddata', resolve, { once: true });
-            });
+        try {
+            try {
+                var playRequest = video.play();
+                if (playRequest && typeof playRequest.catch === 'function') playRequest.catch(function () {});
+            } catch (e) { /* 某些情况下不需要 play() 成功也能读取帧 */ }
+            if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                var loaded = await new Promise(function (resolve) {
+                    var timer = setTimeout(function () {
+                        video.removeEventListener('loadeddata', onLoaded);
+                        resolve(false);
+                    }, 3000);
+                    function onLoaded() {
+                        clearTimeout(timer);
+                        resolve(true);
+                    }
+                    video.addEventListener('loadeddata', onLoaded, { once: true });
+                });
+                if (!loaded) return null;
+            }
+            return captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
+        } finally {
+            video.srcObject = null;
+            video.remove();
         }
-        var frame = captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
-        video.srcObject = null;
-        video.remove();
-        return frame; // {dataUrl, width, height} or null
     }
     mod.captureFrameFromStream = captureFrameFromStream;
 
@@ -1172,7 +1439,6 @@
             S.videoSenderInterval = null;
         }
     }
-    mod.stopScreening = stopScreening;
 
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
@@ -1228,6 +1494,7 @@
             if (stop) stop.disabled = true;
             if (reset) reset.disabled = false;
         }
+        manualScreenShareRunning = false;
         if (screen) screen.classList.remove('active');
         syncFloatingScreenButtonState(false);
     }
@@ -1596,7 +1863,9 @@
     }
 
     // ======================== getMobileCameraStream ========================
-    async function getMobileCameraStream() {
+    // isStale：调用方的启动已被取消时返回 true，此时既不再试下一个摄像头，
+    // 也不弹失败提示。
+    async function getMobileCameraStream(isStale) {
         var makeConstraints = function (facing) {
             return {
                 video: {
@@ -1623,6 +1892,7 @@
             } catch (err) {
                 console.warn(attempt.label + ' ' + (window.t('console.cameraFailed')), err);
                 lastError = err;
+                if (typeof isStale === 'function' && isStale()) throw err;
             }
         }
 
@@ -1638,13 +1908,23 @@
     // attempt 上的 cancelled 标记让“停止”可以否决尚未返回的系统授权弹窗；
     // getDisplayMedia 本身不可中断，因此晚到的流会在返回后立即释放。
     var screenSharingStartAttempt = null;
+    // 进行中的换源重启（停止、等待、重新开始）的令牌；新的选择会换掉它，
+    // 其他停止会清掉它。
+    var sourceSwitchRestart = null;
+    // 手动分享已经跑起来（启动成功后置 true，任何停止或界面复位后置 false）。
+    // 换源重启期间界面保持「共享中」，不能再用按钮状态判断分享是否在跑。
+    var manualScreenShareRunning = false;
 
     function isScreenSharingStartPending() {
         return !!screenSharingStartAttempt && !screenSharingStartAttempt.cancelled;
     }
     mod.isScreenSharingStartPending = isScreenSharingStartPending;
 
-    function cancelPendingScreenSharingStart() {
+    // startReplacement：在取消之后发起、取代这次启动的新启动（返回 promise）。
+    // 传入时原调用方跟着新启动结束并拿到它的结果，而不是在取消时立即返回，
+    // 否则按「启动结束后是否在分享」记状态的调用方（语音自动共享、开关的
+    // busy 状态）会读到半途的结果。
+    function cancelPendingScreenSharingStart(startReplacement) {
         var attempt = screenSharingStartAttempt;
         if (!attempt) return false;
 
@@ -1657,9 +1937,53 @@
         if (screenSharingStartAttempt === attempt) {
             screenSharingStartAttempt = null;
         }
-        return true;
+        var replacement = typeof startReplacement === 'function' ? startReplacement() : undefined;
+        if (typeof attempt.resolveCancelled === 'function') {
+            attempt.resolveCancelled(replacement && Promise.resolve(replacement).catch(function () { }));
+        }
+        return replacement === undefined ? true : replacement;
     }
     mod.cancelPendingScreenSharingStart = cancelPendingScreenSharingStart;
+
+    // 分享的收尾（后端报错、会话结束、goodbye）：停发送，并取消换源重启和
+    // 进行中的启动，否则授权请求返回后会在会话已结束时把分享打开。
+    // 只临时停发送、分享要继续的调用方（切换麦克风、隐私模式停主动视觉）
+    // 仍用 window.stopScreening。
+    function teardownScreenSharing() {
+        var cancelledStart = sourceSwitchRestart !== null || isScreenSharingStartPending();
+        sourceSwitchRestart = null;
+        manualScreenShareRunning = false;
+        cancelPendingScreenSharingStart();
+        stopScreening();
+        // 会话收尾时 isRecording 可能还没关（stopRecording 先收尾、后关标志），
+        // 所以这里只撤掉「共享中」的样式和停止按钮：不按录音状态重新启用按钮，
+        // 也不恢复主动视觉，其余按钮交给调用方自己的收尾。
+        if (cancelledStart) clearScreenSharingIndicators();
+    }
+
+    // 外部的 stopScreening：只停发送。启动还在进行时（例如原生捕获在等首帧）
+    // 不能推进原生代次，否则那次启动会被当成过期丢掉，而切换麦克风这类调用方
+    // 看不到它、之后也不会恢复分享；这时只停掉可能已有的发送定时器。
+    function pauseScreenFrameSender() {
+        if (isScreenSharingStartPending()) {
+            if (S.videoSenderInterval) {
+                clearInterval(S.videoSenderInterval);
+                clearTimeout(S.videoSenderInterval);
+                S.videoSenderInterval = null;
+            }
+            return;
+        }
+        stopScreening();
+    }
+
+    function clearScreenSharingIndicators() {
+        manualScreenShareRunning = false;
+        var screen = screenButton();
+        var stop = stopButton();
+        if (stop) stop.disabled = true;
+        if (screen) screen.classList.remove('active');
+        syncFloatingScreenButtonState(false);
+    }
 
     function rememberScreenSharingAttemptStream(attempt, stream) {
         if (attempt && stream && stream !== attempt.initialStream) {
@@ -1705,7 +2029,7 @@
 
     async function startScreenSharing() {
         if (isScreenSharingStartPending()) {
-            return screenSharingStartAttempt.promise;
+            return screenSharingStartAttempt.settled;
         }
         // Defensive cleanup for attempts created before immediate detaching was
         // introduced. Their own finally/cleanup still retains the attempt object.
@@ -1717,16 +2041,63 @@
             cancelled: false,
             initialStream: S.screenCaptureStream,
             acquiredStream: null,
-            promise: null
+            promise: null,
+            settled: null,
+            resolveCancelled: null
         };
+        // 取消（例如用户停止）后调用方立即继续，不再等可能永不返回的系统
+        // 授权请求；那次请求晚到的流仍由 discardCancelledScreenSharingStart 释放。
+        var cancelledSignal = new Promise(function (resolve) {
+            attempt.resolveCancelled = resolve;
+        });
         attempt.promise = startScreenSharingOnce(attempt);
+        attempt.settled = Promise.race([attempt.promise, cancelledSignal]);
         screenSharingStartAttempt = attempt;
         try {
-            return await attempt.promise;
+            return await attempt.settled;
         } finally {
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;
             }
+            releaseReusedStreamUnderPrivacy(attempt);
+        }
+    }
+
+    // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
+    // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
+    // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
+    function releaseReusedStreamUnderPrivacy(attempt) {
+        if (S.proactiveVisionEnabled !== false) return;
+        if (manualScreenShareRunning || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null) return;
+        var stream = attempt.initialStream;
+        if (!stream || S.screenCaptureStream !== stream) return;
+        try {
+            if (typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(function (track) {
+                    try { track.stop(); } catch (e) { }
+                });
+            }
+        } catch (e) { }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+    }
+
+    // 换源重启以外的启动入口（开关、按钮、恢复分享）：用当前选中的来源开始
+    // 分享，取代还没走到启动的换源重启。无论这次成败，重启都不再补一次，
+    // 否则用户在系统对话框里拒绝后会马上又弹一次。
+    async function startScreenSharingSupersedingSourceSwitch() {
+        var supersededRestart = sourceSwitchRestart !== null;
+        sourceSwitchRestart = null;
+        try {
+            return await startScreenSharing();
+        } finally {
+            // 被取代的重启让界面一直显示「共享中」；这次启动没跑起来时复位。
+            if (supersededRestart) resetControlsIfNotSharing();
         }
     }
 
@@ -1816,7 +2187,9 @@
             if (captureStream == null) {
                 if (isMobile()) {
                     // 移动端使用摄像头
-                    var tmp = await getMobileCameraStream();
+                    var tmp = await getMobileCameraStream(function () {
+                        return attempt.cancelled;
+                    });
                     if (tmp instanceof MediaStream) {
                         captureStream = rememberScreenSharingAttemptStream(attempt, tmp);
                     } else {
@@ -1839,10 +2212,13 @@
                         && isNativeFrameProvider(desktopProvider)) {
                         try {
                             var initialScreens = await desktopProvider.getSources({ types: ['screen'] });
+                            // 已取消的启动不能再改写选中的来源。
+                            if (discardCancelledScreenSharingStart(attempt)) return;
                             if (initialScreens && initialScreens.length > 0) {
                                 selectedSourceId = initialScreens[0].id;
                                 S.selectedScreenSourceId = selectedSourceId;
                                 try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                rememberScreenSourceLabel(initialScreens[0], 0);
                                 updateScreenSourceListSelection();
                             }
                         } catch (initialSourceError) {
@@ -1892,6 +2268,8 @@
                                     thumbnailSize: { width: 0, height: 0 }
                                 }]
                             );
+                            // 已取消的启动不能再按记住的标题改写选中的来源。
+                            if (discardCancelledScreenSharingStart(attempt)) return;
                             if (manualResolutionGeneration !== screenSourceSelectionGeneration
                                 || manualResolutionSourceId !== S.selectedScreenSourceId
                                 || manualResolutionTitle !== normalizeScreenSourceTitle(
@@ -1930,6 +2308,7 @@
                                     selectedSourceId = screenSources[0].id;
                                     S.selectedScreenSourceId = selectedSourceId;
                                     try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                    rememberScreenSourceLabel(screenSources[0], 0);
                                     pushSelectedSourceToMain(selectedSourceId);
                                     updateScreenSourceListSelection();
                                 } else {
@@ -1937,6 +2316,7 @@
                                     selectedSourceId = null;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    rememberScreenSourceLabel(null);
                                     pushSelectedSourceToMain(null);
                                 }
                             } else if (rememberedWindowNeedsPicker) {
@@ -2057,6 +2437,7 @@
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
                                         try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                        rememberScreenSourceLabel(fallbackSources[0], 0);
                                         pushSelectedSourceToMain(fallbackSources[0].id);
                                         window.showStatusToast(
                                             safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
@@ -2084,6 +2465,7 @@
                                     if (discardSupersededManualCapture()) return;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    rememberScreenSourceLabel(null);
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
@@ -2218,6 +2600,7 @@
 
                     stopScreening();
                     screenButton().classList.remove('active');
+                    manualScreenShareRunning = false;
                     syncFloatingScreenButtonState(false);
 
                     if (typeof captureStream.getTracks === 'function') {
@@ -2258,6 +2641,7 @@
 
             screenButton().classList.add('active');
             syncFloatingScreenButtonState(true);
+            manualScreenShareRunning = true;
 
             if (window.unlockAchievement) {
                 window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
@@ -2307,7 +2691,6 @@
             }
         }
     }
-    mod.startScreenSharing = startScreenSharing;
 
     // ======================== stopScreenSharing ========================
     /**
@@ -2315,6 +2698,17 @@
      * @param {boolean} forceRelease - 是否强制释放流。false时若主动视觉仍活跃则保留缓存流。
      */
     async function stopScreenSharing(forceRelease) {
+        // 换源重启以外的停止（用户停止、失败收尾）都取消还没走到启动的换源
+        // 重启，否则它醒来后会把刚停掉的分享重新打开。
+        sourceSwitchRestart = null;
+        releaseScreenSharing(forceRelease, false);
+    }
+
+    // forSourceSwitch：换源重启自己的停止。保留重启令牌，停完接着启动新来源；
+    // 界面保持「共享中」，停顿和重新启动期间各个开关都按「停止」处理，与显示
+    // 一致；重启没能恢复分享时由 resetControlsIfNotSharing 复位。
+    function releaseScreenSharing(forceRelease, forSourceSwitch) {
+        manualScreenShareRunning = false;
         cancelPendingScreenSharingStart();
         stopScreening();
 
@@ -2351,6 +2745,14 @@
             console.log('[屏幕分享] 主动视觉仍活跃，保留缓存流');
         }
 
+        if (!forSourceSwitch) {
+            finishScreenSharingStopped();
+        }
+    }
+    mod.stopScreenSharing = stopScreenSharing;
+
+    // 分享真正停下后的界面与主动视觉收尾。
+    function finishScreenSharingStopped() {
         // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
         resetScreenSharingControls();
 
@@ -2365,7 +2767,42 @@
             console.warn(window.t('console.resumeVoiceActiveVisionFailed'), e);
         }
     }
-    mod.stopScreenSharing = stopScreenSharing;
+
+    // 选择来源时判断「是否在分享」：看用户看到的状态（停止按钮可用）、原生
+    // 捕获和进行中的换源重启。
+    function isScreenShareRunning() {
+        var stop = stopButton();
+        // 原生捕获在等首帧时已经占了来源，但那次启动还没结束：算「启动中」，
+        // 不算在跑，换来源走「取消并用新来源重新启动」，不走停顿。
+        var nativeRunning = activeNativeCaptureSourceId !== null
+            && !isScreenSharingStartPending();
+        return nativeRunning
+            || !!(stop && !stop.disabled)
+            || sourceSwitchRestart !== null;
+    }
+
+    // 复位界面前判断分享是否真在跑或正在启动。不能看按钮：换源重启期间界面
+    // 故意保持「共享中」。按钮被别处撤掉 active 时，启动成功的标志也不再算数。
+    function isScreenShareRunningOrStarting() {
+        var screen = screenButton();
+        var markedRunning = manualScreenShareRunning
+            && !!(screen && screen.classList.contains('active'));
+        return markedRunning
+            || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null;
+    }
+
+    // 换源重启让界面一直显示「共享中」。重启被取消、被取代或启动失败后，若
+    // 分享最终没有跑起来，这里把界面复位，不会停在假的「共享中」。界面已经
+    // 复位过（例如停止分享时）就不再重复收尾。
+    function resetControlsIfNotSharing() {
+        if (isScreenShareRunningOrStarting()) return;
+        var screen = screenButton();
+        var stop = stopButton();
+        var showsSharing = !!(screen && screen.classList.contains('active'))
+            || !!(stop && !stop.disabled);
+        if (showsSharing) finishScreenSharingStopped();
+    }
 
     // ======================== switchMicCapture ========================
     window.switchMicCapture = async function () {
@@ -2386,7 +2823,7 @@
                 window.showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);
                 return;
             }
-            await startScreenSharing();
+            await startScreenSharingSupersedingSourceSwitch();
         } else {
             await stopScreenSharing();
         }
@@ -2427,10 +2864,12 @@
     mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
 
     // ======================== selectScreenSource ========================
-    async function selectScreenSource(sourceId, sourceName, displayName) {
+    // options.force：id 与当前相同也当作一次新选择，推进选择代次，让还在等待
+    // 的分享启动作废（来源 id 只是枚举快照，同一个 id 可能已换成别的窗口）。
+    async function selectScreenSource(sourceId, sourceName, displayName, screenIndex, options) {
         var previousSourceId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = sourceId;
-        if (previousSourceId !== sourceId) {
+        if (previousSourceId !== sourceId || (options && options.force === true)) {
             markScreenSourceSelectionChanged();
         }
         markCurrentScreenSourceSelectionExplicit(sourceName || '');
@@ -2447,6 +2886,7 @@
         } catch (e) {
             console.warn('[屏幕源] 无法保存到 localStorage:', e);
         }
+        rememberScreenSourceLabel(sourceId ? { id: sourceId, name: sourceName } : null, screenIndex);
 
         if (isScreenSourceTitleMatchEnabled()) {
             if (sourceId && sourceId.startsWith('window:')) {
@@ -2493,16 +2933,49 @@
         // pending interval as active so switching sources invalidates the old
         // generation before its late frame can be accepted.
         var isNativeCaptureActive = activeNativeCaptureSourceId !== null;
-        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled);
+        // 换源重启或其他启动还在进行时，分享只是还没跑起来。这次选择推进了
+        // 代次，会让那次还在等待的启动作废；如果这里不接着重启，分享就停在
+        // 那里了。
+        var isScreenSharingRunning = isScreenShareRunning();
+        var isScreenSharingActive = isScreenSharingRunning || isScreenSharingStartPending();
+
+        if (!isScreenSharingRunning && isScreenSharingActive && window.switchScreenSharing) {
+            // 分享还没跑起来，只是启动在等授权：没有要停的分享，不走停顿，
+            // 直接取消这次启动、用新来源重新启动。期间一直处于「启动中」，
+            // 开关照旧按取消处理，不会出现一段既不在启动也不显示共享的空档。
+            console.log('[屏幕源] 启动进行中换来源，改用新来源重新启动');
+            // 先让原生捕获等待中的首帧作废（推进原生代次），它不会再被当成
+            // 新来源的画面发出去。
+            stopScreening();
+            // 原调用方跟着新启动结束，拿到的是新来源的结果。
+            await cancelPendingScreenSharingStart(startScreenSharing);
+            return;
+        }
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
-            // 先停止当前分享（流已释放，forceRelease 无所谓）
-            await stopScreenSharing(true);
-            // 等待一小段时间
-            await new Promise(function (resolve) { setTimeout(resolve, 300); });
-            // 重新开始分享（使用新选择的源）
-            await startScreenSharing();
+            // 不等上一次重启：它可能卡在还没返回的授权请求上。这里的停止会
+            // 取消并脱开那次等待中的启动；上一次重启若还没走到启动，醒来时
+            // 发现已被取代就不再启动，只由最新这次启动。
+            var restartToken = {};
+            sourceSwitchRestart = restartToken;
+            try {
+                // 先停止当前分享（流已释放，forceRelease 无所谓）
+                releaseScreenSharing(true, true);
+                // 等待一小段时间
+                await new Promise(function (resolve) { setTimeout(resolve, 300); });
+                // 重新开始分享（使用新选择的源）。停顿期间用户或其他入口已经
+                // 发起过启动时令牌已被清掉，不论那次成败都不再补一次；会话在
+                // 停顿中结束（isRecording 已关）也不再启动。
+                if (sourceSwitchRestart === restartToken && S.isRecording) {
+                    await startScreenSharing();
+                }
+            } finally {
+                if (sourceSwitchRestart === restartToken) {
+                    sourceSwitchRestart = null;
+                }
+                resetControlsIfNotSharing();
+            }
         }
     }
     mod.selectScreenSource = selectScreenSource;
@@ -2576,6 +3049,100 @@
             return false;
         }
 
+        // 悬停打开时调用方传 deferEnumeration：Linux 上枚举来源可能弹出系统
+        // 分享对话框，先只放一个按钮，用户点击后再枚举。
+        if (renderOptions.deferEnumeration === true) {
+            screenPopup.innerHTML = '';
+            appendCurrentSourceSummary(screenPopup);
+            appendDeferredLoadButton(screenPopup, renderOptions);
+            return true;
+        }
+
+        // 延迟枚举时列表是空的，在按钮上方显示当前选中的来源。
+        function appendCurrentSourceSummary(targetPopup) {
+            var summary = document.createElement('div');
+            summary.className = 'screen-source-current';
+            renderScreenSourceSummary(summary);
+            Object.assign(summary.style, {
+                padding: '4px 12px 8px',
+                color: 'var(--neko-popup-text-sub)',
+                fontSize: '12px',
+                textAlign: 'center',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+            });
+            targetPopup.appendChild(summary);
+        }
+
+        // 采用系统对话框返回的唯一来源：它就是用户这次在系统层面的明确选择。
+        // 调用方不等它，所以整段都在 try 里，永远不会 reject。
+        async function adoptPortalSource(portalSource) {
+            // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
+            // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建，还在等待的
+            // 分享启动也要作废，不会把上一次选的窗口分享出去。
+            try {
+                var portalLabel = portalSource.id.startsWith('screen:')
+                    ? getGenericScreenSourceLabel(portalSource.id)
+                    : getScreenSourceDisplayName(portalSource, null);
+                await selectScreenSource(
+                    portalSource.id, portalSource.name, portalLabel, null, { force: true }
+                );
+            } catch (error) {
+                console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+            }
+        }
+
+        // 用户取消系统对话框或列来源失败：保留提示，放回当前来源摘要和按钮以便
+        // 重试——选择本身没有变，面板不应看起来像来源没了。无论这次是从延迟
+        // 按钮还是直接点击（含键盘）触发的都适用。
+        function appendRetryButtonIfRequested() {
+            if (renderOptions.retryOnFailure === true) {
+                appendCurrentSourceSummary(screenPopup);
+                appendDeferredLoadButton(screenPopup, renderOptions);
+            }
+        }
+
+        function appendDeferredLoadButton(targetPopup, deferredOptions, buttonText) {
+            var deferredLoadButton = document.createElement('button');
+            deferredLoadButton.type = 'button';
+            deferredLoadButton.className = 'screen-source-deferred-load';
+            deferredLoadButton.dataset.nekoScreenSourceDeferredLoad = '';
+            deferredLoadButton.textContent = buttonText || (window.t
+                ? window.t('app.screenSource.clickToChoose')
+                : '点击选择屏幕来源');
+            Object.assign(deferredLoadButton.style, {
+                width: '100%',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-hover)',
+                color: 'var(--neko-popup-text)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                textAlign: 'center'
+            });
+            deferredLoadButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                if (!targetPopup.isConnected || !deferredLoadButton.isConnected) return;
+                var loadOptions = Object.assign({}, deferredOptions, {
+                    deferEnumeration: false,
+                    retryOnFailure: true
+                });
+                Promise.resolve(window.renderFloatingScreenSourceList(targetPopup, loadOptions))
+                    .then(function (rendered) {
+                        if (typeof deferredOptions.onDeferredRender === 'function') {
+                            deferredOptions.onDeferredRender(rendered);
+                        }
+                    })
+                    .catch(function (error) {
+                        console.warn('[屏幕源] 加载屏幕来源失败:', error);
+                    });
+            });
+            targetPopup.appendChild(deferredLoadButton);
+            return deferredLoadButton;
+        }
+
         try {
             // 显示加载中
             screenPopup.innerHTML = '';
@@ -2594,18 +3161,38 @@
                 thumbnailSize: { width: 0, height: 0 }
             });
 
-            if (!isPopupAvailable()) return false;
+            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
+            // 来源，它在结果里的位置不是物理屏幕序号。
+            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
+                && !!sources && sources.length === 1;
+
+            if (!isPopupAvailable()) {
+                // 系统对话框期间面板被收起（例如对话框关闭后指针落回左侧菜单）。
+                // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
+                // 容器已经开始了更新的一轮渲染时交给那一轮。
+                if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
+                    adoptPortalSource(sources[0]);
+                }
+                return false;
+            }
 
             screenPopup.innerHTML = '';
 
             if (!sources || sources.length === 0) {
-                var noSourcesItem = document.createElement('div');
-                noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
-                noSourcesItem.style.padding = '12px';
-                noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
-                noSourcesItem.style.fontSize = '13px';
-                noSourcesItem.style.textAlign = 'center';
-                screenPopup.appendChild(noSourcesItem);
+                // 会弹系统对话框的桌面端返回空列表，基本就是用户取消了对话框；
+                // 这时「没有可用的屏幕源」会误导，只留当前来源和重试按钮。
+                var portalCancelled = renderOptions.retryOnFailure === true
+                    && desktopSourceEnumerationMayPrompt(desktopProvider);
+                if (!portalCancelled) {
+                    var noSourcesItem = document.createElement('div');
+                    noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
+                    noSourcesItem.style.padding = '12px';
+                    noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
+                    noSourcesItem.style.fontSize = '13px';
+                    noSourcesItem.style.textAlign = 'center';
+                    screenPopup.appendChild(noSourcesItem);
+                }
+                appendRetryButtonIfRequested();
                 return false;
             }
 
@@ -2616,7 +3203,14 @@
 
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
-            reconcileRememberedWindowSource(sources);
+            // 系统对话框的结果本身就是用户这次的明确选择，下面按新选择处理；
+            // 这里若按旧标题比对，会在换窗口时先把进行中的分享停掉。
+            if (!isPortalPick) {
+                reconcileRememberedWindowSource(sources);
+            }
+            refreshSelectedScreenSourceLabelFromSources(screens, windows, {
+                partial: isPortalPick
+            });
 
             function previewFrameStyles() {
                 return {
@@ -2719,7 +3313,11 @@
 
             // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
             function createSourceOption(source, screenIndex) {
-                var displayName = getScreenSourceDisplayName(source, screenIndex);
+                // 系统对话框只返回用户选的那一块屏幕时，它在列表里排第一不代表
+                // 它是第 1 块显示器，与副标题一样只显示「屏幕」。
+                var displayName = isPortalPick && source.id.startsWith('screen:')
+                    ? getGenericScreenSourceLabel(source.id)
+                    : getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
                 option.dataset.sourceId = source.id;
@@ -2777,7 +3375,13 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name, displayName);
+                    // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
+                    await selectScreenSource(
+                        source.id,
+                        source.name,
+                        displayName,
+                        isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
+                    );
                 });
 
                 option.addEventListener('mouseenter', function () {
@@ -2905,12 +3509,29 @@
                 screenPopup.appendChild(noWindowMatchesItem);
             }
 
+            // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
+            // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
+            // 不等采用完成就返回：分享进行中时采用要走完停止、等待、重新开始，
+            // 调用方得先拿到渲染结果去定位面板、接上悬停保持。采用期间马上再选
+            // 也安全：新选择会换掉换源重启令牌，并让还在等待的启动作废。
+            if (isPortalPick) {
+                adoptPortalSource(sources[0]);
+            }
+
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
             if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
+                // 换来源要重新枚举（Wayland 下会再次弹出系统对话框）。保留同一个
+                // 按钮，点击设置行时 _nekoOnExplicitOpen 也能找到它。
+                var chooseAgainButton = appendDeferredLoadButton(
+                    screenPopup,
+                    renderOptions,
+                    window.t ? window.t('app.screenSource.chooseAgain') : '重新选择屏幕来源'
+                );
+                chooseAgainButton.style.marginTop = '6px';
                 return true;
             }
 
@@ -2966,12 +3587,14 @@
             errorItem.style.fontSize = '13px';
             errorItem.style.textAlign = 'center';
             screenPopup.appendChild(errorItem);
+            appendRetryButtonIfRequested();
             return false;
         }
     };
 
     // ======================== getSelectedScreenSourceId ========================
     window.getSelectedScreenSourceId = function () { return S.selectedScreenSourceId; };
+    window.getSelectedScreenSourceLabel = getSelectedScreenSourceLabel;
 
     // ======================== detectScreenshotCaptureType ========================
     /**
@@ -3201,7 +3824,11 @@
     mod.getAvatarScreenPosition = getAvatarScreenPosition;
 
     // ======================== Backward-compat window exports ========================
-    window.startScreenSharing = startScreenSharing;
+    // window 与 mod 上的同名导出是同一个函数（换源重启相关的包装）。
+    mod.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
+    mod.stopScreening = pauseScreenFrameSender;
+    mod.teardownScreenSharing = teardownScreenSharing;
+    window.startScreenSharing = startScreenSharingSupersedingSourceSwitch;
     window.stopScreenSharing = stopScreenSharing;
     window.isScreenSharingStartPending = isScreenSharingStartPending;
     window.selectScreenSource = selectScreenSource;
@@ -3214,7 +3841,11 @@
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
-    window.stopScreening = stopScreening;
+    // stopScreening 只停发送（切换麦克风、隐私模式临时停用）；会话结束、
+    // 报错等真正的收尾用 teardownScreenSharing，它还会取消换源重启和
+    // 进行中的启动。
+    window.stopScreening = pauseScreenFrameSender;
+    window.teardownScreenSharing = teardownScreenSharing;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;

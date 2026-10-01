@@ -17,6 +17,7 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     mimo: 'mimo',
     vllm_omni: 'vllm_omni',
     doubao_tts: 'doubao_tts',
+    glm_tts: 'glm',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
     'qwen_intl',
@@ -31,6 +32,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['elevenlabs', 'assistApiKeyElevenlabs'],
     ['mimo', 'assistApiKeyMimo'],
     ['doubao_tts', 'assistApiKeyDoubaoTts'],
+    ['glm_tts', 'assistApiKeyGlm'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -1031,6 +1033,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'mimo': 'voice.mimoApiRequired',
         'vllm_omni': 'voice.vllmOmniNotice',
         'doubao_tts': 'voice.doubaoTtsApiRequired',
+        'glm_tts': 'voice.glmTtsApiRequired',
     };
     const fallbackMap = {
         'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
@@ -1038,6 +1041,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'mimo': '请先在 API 设置中填写 MiMo API Key',
         'vllm_omni': '本地 vLLM-Omni 服务，无需 API Key',
         'doubao_tts': 'Please save a Doubao Speech (Volcengine) API Key in the API Key Book.',
+        'glm_tts': '请先在 API 设置中填写智谱 GLM API Key',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);
@@ -1562,6 +1566,7 @@ function updateVoiceDesignHint(provider) {
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
 function isDirectLinkUnsupportedProvider(provider) {
+    // glm_tts 已支持直链（后端 /voice_clone_direct 下载音频后走两步注册），不再禁用。
     return provider === 'mimo' || provider === 'vllm_omni' || provider === 'doubao_tts';
 }
 

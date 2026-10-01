@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
+import stat
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -102,26 +107,137 @@ class PluginI18n:
 
 
 def _load_json_file(path: Path) -> dict[str, object]:
-    if not path.is_file() or path.stat().st_size > 512 * 1024:
-        return {}
+    return _load_json_file_checked(path)[0]
+
+
+def _load_json_file_checked(path: Path) -> tuple[dict[str, object], bool]:
+    """Return ``(bundle, readable)``; ``readable`` is False on an I/O error."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        if not path.is_file() or path.stat().st_size > 512 * 1024:
+            return {}, True
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError:
+        # Invalid UTF-8 is a property of the file, not a transient failure:
+        # skip this locale like malformed JSON and keep the others.
+        return {}, True
+    except OSError:
+        return {}, False
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}, True
+    return (dict(payload) if isinstance(payload, Mapping) else {}), True
+
+
+# Parsed locale bundles keyed by resolved locales dir. Each entry is validated
+# against a stat signature of the ``*.json`` files (names, type, mtime_ns,
+# ctime_ns, size), so edits and hot reload are picked up without explicit
+# invalidation. Installs and rollbacks can copy files with preserved
+# timestamps, so they also call ``clear_plugin_i18n_cache``. Callers always
+# receive fresh copies.
+_BUNDLE_CACHE_MAX_ENTRIES = 256
+_Signature = tuple[tuple[str, int, int, int, int], ...]
+_CachedBundle = tuple[dict[str, object], bool]
+_bundle_cache: OrderedDict[str, tuple[_Signature, dict[str, _CachedBundle]]] = OrderedDict()
+_bundle_cache_lock = threading.Lock()
+_IMMUTABLE_JSON_TYPES = (str, int, float, bool, type(None))
+
+
+def _scan_locale_files(locales_dir: Path) -> tuple[_Signature, list[Path]] | None:
+    """Return the stat signature and paths of ``*.json`` files, sorted like
+    ``sorted(locales_dir.glob("*.json"))``. ``None`` if the dir is unreadable."""
+    entries: list[tuple[str, Path, int, int, int, int]] = []
+    try:
+        with os.scandir(locales_dir) as it:
+            for entry in it:
+                if not os.path.normcase(entry.name).endswith(".json"):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    # Dangling symlink or file removed mid-scan: skip it like
+                    # the old glob + is_file() path did, keep other locales.
+                    continue
+                entries.append((os.path.normcase(entry.name), Path(entry.path), stat.S_IFMT(st.st_mode), st.st_mtime_ns, st.st_ctime_ns, st.st_size))
+    except OSError:
+        return None
+    entries.sort(key=lambda item: item[0])
+    signature = tuple(
+        (path.name, mode, mtime_ns, ctime_ns, size)
+        for _, path, mode, mtime_ns, ctime_ns, size in entries
+    )
+    return signature, [item[1] for item in entries]
+
+
+def _read_locale_bundles(paths: list[Path]) -> tuple[dict[str, dict[str, object]], bool]:
+    """Return ``(messages, all_readable)``."""
+    messages: dict[str, dict[str, object]] = {}
+    all_readable = True
+    for path in paths:
+        locale = path.stem.strip()
+        if not locale:
+            continue
+        bundle, readable = _load_json_file_checked(path)
+        all_readable = all_readable and readable
+        if bundle:
+            messages[locale] = bundle
+    return messages, all_readable
+
+
+def _copy_cached_bundles(cached: Mapping[str, _CachedBundle]) -> dict[str, dict[str, object]]:
+    return {
+        locale: dict(bundle) if flat else copy.deepcopy(bundle)
+        for locale, (bundle, flat) in cached.items()
+    }
+
+
+def clear_plugin_i18n_cache() -> None:
+    with _bundle_cache_lock:
+        _bundle_cache.clear()
+
+
+def _load_bundles_cached(locales_dir: Path) -> dict[str, dict[str, object]]:
+    """``locales_dir`` must already be resolved; it is used as the cache key."""
+    snapshot = _scan_locale_files(locales_dir)
+    if snapshot is None:
         return {}
-    return dict(payload) if isinstance(payload, Mapping) else {}
+    signature, paths = snapshot
+    cache_key = str(locales_dir)
+
+    with _bundle_cache_lock:
+        cached = _bundle_cache.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            _bundle_cache.move_to_end(cache_key)
+            return _copy_cached_bundles(cached[1])
+
+    # Read outside the lock. The signature was taken before reading, so a file
+    # rewritten mid-read leaves a stale signature and is reloaded next call.
+    messages, all_readable = _read_locale_bundles(paths)
+    if not all_readable:
+        # A read error (e.g. a transient permission or sharing violation) can
+        # clear up without changing the stat signature, so don't cache it.
+        return messages
+    stored: dict[str, _CachedBundle] = {
+        locale: (
+            copy.deepcopy(bundle),
+            all(isinstance(value, _IMMUTABLE_JSON_TYPES) for value in bundle.values()),
+        )
+        for locale, bundle in messages.items()
+    }
+    with _bundle_cache_lock:
+        _bundle_cache[cache_key] = (signature, stored)
+        _bundle_cache.move_to_end(cache_key)
+        while len(_bundle_cache) > _BUNDLE_CACHE_MAX_ENTRIES:
+            _bundle_cache.popitem(last=False)
+    return messages
 
 
 def load_plugin_i18n_from_dir(locales_dir: Path, *, default_locale: str = DEFAULT_LOCALE) -> PluginI18n:
-    messages: dict[str, dict[str, object]] = {}
-    if locales_dir.is_dir():
-        for path in sorted(locales_dir.glob("*.json")):
-            locale = path.stem.strip()
-            if not locale:
-                continue
-            bundle = _load_json_file(path)
-            if bundle:
-                messages[locale] = bundle
-    return PluginI18n(messages, default_locale=default_locale)
+    try:
+        resolved = locales_dir.resolve()
+    except (OSError, RuntimeError):
+        return PluginI18n(default_locale=default_locale)
+    return PluginI18n(_load_bundles_cached(resolved), default_locale=default_locale)
 
 
 def load_plugin_i18n_from_meta(plugin_meta: Mapping[str, object]) -> PluginI18n:
@@ -149,7 +265,7 @@ def load_plugin_i18n_from_meta(plugin_meta: Mapping[str, object]) -> PluginI18n:
         locales_dir.relative_to(plugin_dir)
     except Exception:
         return PluginI18n(default_locale=default_locale)
-    return load_plugin_i18n_from_dir(locales_dir, default_locale=default_locale)
+    return PluginI18n(_load_bundles_cached(locales_dir), default_locale=default_locale)
 
 
 def resolve_i18n_refs(value: object, i18n: PluginI18n, *, locale: str | None = None) -> object:
@@ -174,6 +290,7 @@ def resolve_i18n_refs(value: object, i18n: PluginI18n, *, locale: str | None = N
 __all__ = [
     "I18N_REF_KEY",
     "PluginI18n",
+    "clear_plugin_i18n_cache",
     "interpolate_text",
     "is_i18n_ref",
     "load_plugin_i18n_from_dir",
