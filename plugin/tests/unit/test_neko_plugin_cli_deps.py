@@ -45,7 +45,7 @@ def _no_host_package_index_config(monkeypatch):
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
 
 
-def _target(*, has_pip=False, in_venv=True, env=None, cwd=None):
+def _target(*, has_pip=False, in_venv=True, env=None, cwd=None, home=None):
     """What a pip-less venv target reports, seeing the test's environment."""
     from plugin.neko_plugin_cli.commands import deps_cmd
 
@@ -55,6 +55,7 @@ def _target(*, has_pip=False, in_venv=True, env=None, cwd=None):
         in_venv=in_venv,
         env=dict(os.environ) if env is None else env,
         cwd=Path.cwd() if cwd is None else cwd,
+        home=Path.home() if home is None else home,
     )
 
 
@@ -548,6 +549,7 @@ def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
         "in_venv": True,
         "env": {"PIP_INDEX_URL": "https://private/simple"},
         "cwd": str(tmp_path / "launcher-dir"),
+        "home": str(tmp_path / "target-home"),
     }
 
     def run(command, **kwargs):
@@ -563,6 +565,7 @@ def test_probe_asks_the_target_itself(tmp_path, monkeypatch):
         in_venv=True,
         env={"PIP_INDEX_URL": "https://private/simple"},
         cwd=tmp_path / "launcher-dir",
+        home=tmp_path / "target-home",
     )
 
 
@@ -581,29 +584,47 @@ def test_relative_config_bases_resolve_from_the_targets_cwd(tmp_path, monkeypatc
         config = launcher_dir / "xdg" / "pip" / "pip.conf"
     config.parent.mkdir(parents=True)
     config.write_text("[global]\nindex-url = https://private/simple\n", encoding="utf-8")
-    target = _target(env=env, cwd=launcher_dir)
+    # The target expands a relative HOME to a relative "~" as well.
+    target = _target(env=env, cwd=launcher_dir, home=Path(env.get("HOME") or env["USERPROFILE"]))
 
     assert config in real_pip_config_files(target)
     assert deps_cmd._pip_settings(target) == {"index-url": [str(config)]}
 
 
-@pytest.mark.parametrize("home", ["homepath", "none"])
-def test_windows_legacy_config_follows_pips_home_expansion(tmp_path, monkeypatch, home):
-    # pip expands "~" with ntpath.expanduser in the target's environment:
-    # USERPROFILE, else HOMEDRIVE + HOMEPATH, else a literal "~".
+def test_lock_name_accepts_an_undecodable_plugin_path(tmp_path, monkeypatch):
+    # A POSIX file name may hold bytes that decode to surrogate escapes;
+    # strict UTF-8 encoding of the identity would raise before the lock.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
-    monkeypatch.setattr(deps_cmd.sys, "platform", "win32")
-    launcher_dir = tmp_path / "launcher-dir"
-    if home == "homepath":
-        env = {"HOMEDRIVE": "", "HOMEPATH": str(tmp_path / "home")}
-        expected = tmp_path / "home" / "pip" / "pip.ini"
+    plugin_dir = tmp_path / "plugin-\udcff"
+    monkeypatch.setattr(
+        deps_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: plugin_dir
+    )
+    # Printing such a name is a separate matter (a strict UTF-8 stdout);
+    # only the lock is under test here.
+    printed = []
+    monkeypatch.setattr(deps_cmd, "print", lambda *args, **kwargs: printed.append(args), raising=False)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert any("no external dependencies" in str(args[0]) for args in printed)
+    assert list(deps_cmd._lock_dir().glob("neko-plugin-sync-*.lock"))
+
+
+def test_home_config_comes_from_the_targets_own_home(tmp_path, monkeypatch):
+    # The target expands "~" itself (a launcher may drop HOME / USERPROFILE,
+    # leaving HOMEPATH or the account record); this process's home may be
+    # another directory altogether.
+    monkeypatch.setenv("HOME", str(tmp_path / "parent-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "parent-home"))
+    home = tmp_path / "target-home"
+    if sys.platform == "win32":
+        expected = home / "pip" / "pip.ini"
     else:
-        env = {}
-        expected = launcher_dir / "~" / "pip" / "pip.ini"
-    target = _target(env=env, cwd=launcher_dir)
+        expected = home / ".pip" / "pip.conf"
+    target = _target(env={}, cwd=tmp_path / "launcher-dir", home=home)
 
     assert expected in real_pip_config_files(target)
+    assert not any("parent-home" in str(path) for path in real_pip_config_files(target))
 
 
 def test_relative_pip_config_file_resolves_from_the_targets_cwd(tmp_path, monkeypatch):

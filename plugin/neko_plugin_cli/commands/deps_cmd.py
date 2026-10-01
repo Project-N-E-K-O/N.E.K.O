@@ -78,7 +78,8 @@ def handle_sync(args: argparse.Namespace) -> int:
     # Keep a persistent OS lock file outside the plugin. Unlinking lock files
     # can let waiting processes lock different inodes for the same plugin.
     identity = os.path.normcase(str(plugin_dir.resolve()))
-    lock_name = hashlib.sha256(identity.encode()).hexdigest()
+    # fsencode: a POSIX path may hold undecodable bytes (surrogate escapes).
+    lock_name = hashlib.sha256(os.fsencode(identity)).hexdigest()
     staging_dir: Path | None = None
     try:
         # Inside the try: an unusable lock dir reports like any other OSError.
@@ -783,6 +784,9 @@ class _TargetPython:
     # or cd, before exec'ing it.
     env: dict[str, str]
     cwd: Path
+    # "~" as the target expands it (from its own HOME / USERPROFILE /
+    # HOMEPATH or account record), which is what pip's config paths use.
+    home: Path
 
 
 _TARGET_PROBE = (
@@ -792,7 +796,8 @@ _TARGET_PROBE = (
     "'prefix': sys.prefix, "
     "'in_venv': sys.prefix != sys.base_prefix, "
     "'env': dict(os.environ), "
-    "'cwd': os.getcwd()}))"
+    "'cwd': os.getcwd(), "
+    "'home': os.path.expanduser('~')}))"
 )
 
 
@@ -815,13 +820,14 @@ def _probe_target(python: str) -> _TargetPython | None:
             data = json.loads(line)
         except ValueError:
             continue
-        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env", "cwd"} <= data.keys():
+        if isinstance(data, dict) and {"has_pip", "prefix", "in_venv", "env", "cwd", "home"} <= data.keys():
             return _TargetPython(
                 has_pip=bool(data["has_pip"]),
                 prefix=Path(data["prefix"]),
                 in_venv=bool(data["in_venv"]),
                 env={str(k): str(v) for k, v in dict(data["env"]).items()},
                 cwd=Path(data["cwd"]),
+                home=Path(data["home"]),
             )
     return None
 
@@ -865,15 +871,14 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
     target's environment resolves them."""
     env = target.env
     files: list[Path] = []
+    home = target.home
     if sys.platform == "win32":
-        home = _windows_home(env)
         for base in (_env_get(env, "PROGRAMDATA"), _env_get(env, "APPDATA")):
             if base:
                 files.append(Path(base, "pip", "pip.ini"))
         files.append(home / "pip" / "pip.ini")
         site_name = "pip.ini"
     else:
-        home = Path(env.get("HOME") or Path.home())
         xdg_dirs = env.get("XDG_CONFIG_DIRS") or "/etc/xdg"
         files.extend(Path(d, "pip", "pip.conf") for d in xdg_dirs.split(os.pathsep) if d)
         files.append(Path("/etc/pip.conf"))
@@ -888,19 +893,6 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
     # pip resolves relative bases (HOME, XDG_CONFIG_HOME, XDG_CONFIG_DIRS)
     # from its own working directory; absolute paths are unchanged by this.
     return [target.cwd / path for path in files]
-
-
-def _windows_home(env: dict[str, str]) -> Path:
-    """`~` as pip expands it in the target's environment (ntpath.expanduser):
-    USERPROFILE, else HOMEDRIVE + HOMEPATH, else a literal "~" that pip then
-    resolves from its working directory."""
-    profile = _env_get(env, "USERPROFILE")
-    if profile is not None:
-        return Path(profile)
-    home_path = _env_get(env, "HOMEPATH")
-    if home_path is not None:
-        return Path((_env_get(env, "HOMEDRIVE") or "") + home_path)
-    return Path("~")
 
 
 def _config_setting_keys(path: Path) -> set[str]:
