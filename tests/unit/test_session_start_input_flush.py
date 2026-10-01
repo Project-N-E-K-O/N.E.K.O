@@ -14,7 +14,8 @@ from tests.unit.session_handoff_harness import (
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("nested_kind", ["output", "lifecycle"])
-async def test_started_ack_does_not_wait_for_queued_response_and_retirement_owns_flush(monkeypatch, nested_kind):
+@pytest.mark.parametrize("preserve_pending_input", [False, True])
+async def test_started_ack_does_not_wait_for_queued_response_and_retirement_owns_flush(monkeypatch, nested_kind, preserve_pending_input):
     manager, created, clients = await make_full_manager(monkeypatch)
     accepted = asyncio.Event()
     cancelled = asyncio.Event()
@@ -83,10 +84,15 @@ async def test_started_ack_does_not_wait_for_queued_response_and_retirement_owns
         await manager.stream_data({"input_type": "text", "data": "second input"})
         assert submissions == ["first input"]
         assert [item["data"] for item in manager.pending_input_data] == ["second input"]
-        await asyncio.wait_for(manager.end_session(by_server=True), 2)
+        await asyncio.wait_for(manager.end_session(
+            by_server=True, preserve_pending_input=preserve_pending_input,
+        ), 2)
         assert cancelled.is_set(), "retirement must cancel the actual streaming flush"
         assert all(task.done() for task in active_flushes)
-        assert manager.pending_input_data == []
+        assert [item["data"] for item in manager.pending_input_data] == (
+            ["during ack", "second input"] if preserve_pending_input else []
+        )
+        assert manager._pending_input_flush_batch == ()
         assert manager._pending_input_flush_scheduled is None
     finally:
         release_ack.set()
