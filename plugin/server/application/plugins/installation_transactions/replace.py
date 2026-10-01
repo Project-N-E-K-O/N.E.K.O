@@ -390,6 +390,7 @@ async def replace_plugin(
             preexisting_targets=preexisting_targets,
             remove_created_targets=False,
         )
+        files_restored = recovered
         if was_running:
             try:
                 await _start_plugin(plugin_id)
@@ -400,8 +401,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        if not recovered:
+        if not files_restored:
             # 旧源码没能原样恢复：留在盘上的东西不是许可当初针对的那份。
+            # 只看文件；重启失败不改变盘上是哪份源码。
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage="backup",
@@ -456,6 +458,7 @@ async def replace_plugin(
             preexisting_targets=preexisting_targets,
             remove_created_targets=True,
         )
+        files_restored = restored
         try:
             await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         except Exception as eviction_exc:
@@ -475,8 +478,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        if not restored:
+        if not files_restored:
             # 旧源码没能原样恢复：留在盘上的可能是失败的新包，不能凭旧许可自启。
+            # 只看文件；缓存清理或重启失败不改变盘上是哪份源码。
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage=stage,
