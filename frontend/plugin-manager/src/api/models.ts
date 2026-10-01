@@ -99,7 +99,7 @@ export function setModelBinding(pluginId: string, usageId: string, slotId: strin
     result => result.slot_id === slotId ? { plugin_id: pluginId, usage_id: usageId, slot_id: slotId, version: result.version } : undefined)
 }
 export function deleteModelBinding(pluginId: string, usageId: string, expectedVersion: number): Promise<{ success: boolean; version: number }> {
-  return mutateBinding(pluginId, usageId, expectedVersion, () => request.delete(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, { ...config, params: { expected_version: expectedVersion } }),
+  return mutateBinding(pluginId, usageId, expectedVersion, () => request.delete(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, { ...config, params: { expected_version: expectedVersion } as Record<string, unknown> }),
     result => result.slot_id === null ? { success: true, version: result.version } : undefined)
 }
 export function getModelUsage(filters: { plugin_id?: string; slot_id?: string; limit?: number } = {}): Promise<ModelUsageResult> {

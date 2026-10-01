@@ -4,18 +4,62 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      minor-and-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: npm
     directory: /frontend/react-neko-chat
     schedule:
       interval: monthly
+    groups:
+      minor-and-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: npm
     directory: /docs
     schedule:
       interval: monthly
+    groups:
+      minor-and-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: npm
     directory: /frontend/plugin-manager
     schedule:
       interval: monthly
+    groups:
+      minor-and-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - 'version-update:semver-major'
