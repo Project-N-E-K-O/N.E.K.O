@@ -639,8 +639,19 @@ def _pip_install_to_vendor(
         bypass_all = kind == "proxy" and any(
             (os.environ.get(name) or "").strip() for name in ("NO_PROXY", "no_proxy")
         )
-        if bypass_all or not any(_uv_env_set(uv_name) for uv_name in covers):
-            fix = f"set {' or '.join(covers)}" if covers else "no uv equivalent"
+        if kind == "proxy":
+            covered = all(
+                any(_uv_env_set(uv_name) for uv_name in scheme) for scheme in _UV_PROXY_SCHEMES
+            )
+        else:
+            covered = any(_uv_env_set(uv_name) for uv_name in covers)
+        if bypass_all or not covered:
+            if kind == "proxy":
+                fix = "set ALL_PROXY, or both HTTPS_PROXY and HTTP_PROXY, and no NO_PROXY"
+            elif covers:
+                fix = f"set {' or '.join(covers)}"
+            else:
+                fix = "no uv equivalent"
             uncovered.append(f"{name} from {', '.join(where)} ({fix})")
     if uncovered:
         print(
@@ -717,6 +728,9 @@ _PIP_HARMLESS_SETTINGS = {
     "upgrade",
     "timeout",
     "trusted-host",
+    # pip is given --no-user explicitly; uv's --target never installs to the
+    # user site either.
+    "no-user",
     "user",
     "verbose",
 }
@@ -733,10 +747,10 @@ _UV_COVERS = {
     "find-links": ("UV_FIND_LINKS",),
     # uv only reads its own variable; without it uv installs unhashed.
     "require-hashes": ("UV_REQUIRE_HASHES",),
-    # uv has no proxy option but honors the standard proxy variables;
-    # without one, uv would bypass a filtering proxy and connect directly.
-    # Package indexes are HTTPS, which HTTP_PROXY does not cover.
-    "proxy": ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
+    # uv has no proxy option but honors the standard proxy variables, per URL
+    # scheme; without them uv would bypass a filtering proxy and connect
+    # directly. Both schemes must be covered (see _UV_PROXY_SCHEMES).
+    "proxy": ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"),
     # pip's cert replaces the default CA bundle (possibly a restrictive one);
     # uv would otherwise trust its bundled roots. uv reads SSL_CERT_FILE but
     # silently ignores a path that does not exist; its default TLS backend
@@ -749,6 +763,12 @@ _UV_COVERS = {
     "other": (),
 }
 _UV_BOOLEAN_ENV = {"UV_REQUIRE_HASHES"}
+# pip's proxy applies to every URL, and an index, find-links page or direct
+# reference may be http as well as https: uv must have a proxy for each.
+_UV_PROXY_SCHEMES = (
+    ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
+    ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"),
+)
 
 
 @dataclass(frozen=True)

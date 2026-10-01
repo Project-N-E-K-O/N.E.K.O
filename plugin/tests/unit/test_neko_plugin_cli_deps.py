@@ -1235,11 +1235,14 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
     ("env", "uses_uv"),
     [
         # pip's proxy is a policy (e.g. a filtering proxy); uv honors only the
-        # standard proxy variables, so one of those must be set.
+        # standard proxy variables, per URL scheme, so both must be covered.
         ({"PIP_PROXY": "http://corp-proxy:3128"}, False),
-        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128"}, True),
         ({"PIP_PROXY": "http://corp-proxy:3128", "ALL_PROXY": "http://corp-proxy:3128"}, True),
-        # Indexes are HTTPS: HTTP_PROXY alone leaves them direct.
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
+          "HTTP_PROXY": "http://corp-proxy:3128"}, True),
+        # An http index or direct reference would go direct with HTTPS_PROXY
+        # alone, and an https one with HTTP_PROXY alone.
+        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128"}, False),
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTP_PROXY": "http://corp-proxy:3128"}, False),
         # pip's explicit proxy ignores NO_PROXY; uv would bypass the proxy for
         # the listed hosts, and which hosts uv contacts can not be listed.
@@ -1247,7 +1250,7 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
           "NO_PROXY": "*"}, False),
         ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
           "NO_PROXY": "localhost"}, False),
-        ({"PIP_PROXY": "http://corp-proxy:3128", "HTTPS_PROXY": "http://corp-proxy:3128",
+        ({"PIP_PROXY": "http://corp-proxy:3128", "ALL_PROXY": "http://corp-proxy:3128",
           "NO_PROXY": " "}, True),
         # pip's cert replaces the default CA bundle; uv would otherwise trust
         # its bundled roots, and ignores an SSL_CERT_FILE that does not exist.
@@ -1259,8 +1262,10 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"PIP_CLIENT_CERT": "/corp/client.pem"}, False),
         ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "<identity>"}, True),
         ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "/missing/client.pem"}, False),
-        # Both installers are given --target/--upgrade explicitly.
+        # Both installers are given --target/--upgrade explicitly, and pip
+        # --no-user (uv's --target never installs to the user site).
         ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
+        ({"PIP_NO_USER": "1"}, True),
     ],
 )
 def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
