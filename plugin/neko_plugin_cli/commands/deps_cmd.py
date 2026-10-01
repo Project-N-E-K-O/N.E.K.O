@@ -74,12 +74,22 @@ def handle_sync(args: argparse.Namespace) -> int:
     vendor_dir = plugin_dir / "vendor"
     # Keep a persistent OS lock file outside the plugin. Unlinking lock files
     # can let waiting processes lock different inodes for the same plugin.
-    lock_name = hashlib.sha256(_lock_identity(plugin_dir)).hexdigest()
+    plugin_identity = _lock_identity(plugin_dir)
+    lock_name = hashlib.sha256(plugin_identity).hexdigest()
     staging_dir: Path | None = None
     try:
         # Inside the try: an unusable lock dir reports like any other OSError.
         lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
         with portalocker.Lock(lock_path, timeout=0):
+            # The lock is the directory sampled above; if the path now names
+            # another one (renamed and replaced), another sync may hold its
+            # lock, so touch nothing.
+            if _lock_identity(plugin_dir) != plugin_identity:
+                print(
+                    f"[FAIL] {plugin_dir} was replaced while the sync started; retry.",
+                    file=sys.stderr,
+                )
+                return 1
             # Holding the lock means no other sync of this plugin by this user
             # is running, so this user's staging dirs were left by killed runs.
             _remove_stale_staging(plugin_dir)
@@ -154,6 +164,15 @@ def handle_sync(args: argparse.Namespace) -> int:
                 # Several plugins may link vendor/ to one target: every writer
                 # to it must hold that target's lock, not only its plugin's.
                 target = vendor_dir.stat()
+                # vendor -> .. (or a bind mount of a parent): refilling it
+                # would move the plugin itself aside and delete it.
+                if _contains_plugin(target, plugin_dir):
+                    print(
+                        f"[FAIL] {vendor_dir} leads to the plugin directory or one of "
+                        "its parents; point it at a separate directory and retry.",
+                        file=sys.stderr,
+                    )
+                    return 1
                 target_lock = hashlib.sha256(_lock_identity(vendor_dir, target)).hexdigest()
                 with portalocker.Lock(
                     _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
@@ -246,6 +265,18 @@ _HOST_PROVIDED = {"n-e-k-o"}
 # can not collide with package data or travel into vendor/.
 def _pending_marker(backup_dir: Path) -> Path:
     return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
+
+
+def _contains_plugin(target: os.stat_result, plugin_dir: Path) -> bool:
+    """Whether the directory vendor/ leads to is plugin_dir or one of its
+    parents (compared by identity: a symlink, junction or bind mount)."""
+    for directory in (plugin_dir, *plugin_dir.resolve().parents):
+        try:
+            if os.path.samestat(directory.stat(), target):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _report_vendor_changed(vendor_dir: Path) -> int:

@@ -1178,6 +1178,43 @@ def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
     assert "contains directories" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("clean", [False, True])
+@pytest.mark.parametrize("points_at", ["plugin", "parent"])
+def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypatch, capsys, clean, points_at):
+    # vendor -> .. would have the refill move the plugin aside and delete it.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    target = plugin_dir if points_at == "plugin" else tmp_path
+    link = plugin_dir / "vendor"
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                       check=True, capture_output=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(
+        deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 1
+    assert (plugin_dir / "plugin.toml").is_file()
+    assert "leads to the plugin directory" in capsys.readouterr().err
+
+
+def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    samples = iter([b"1:1", b"2:2"])
+    monkeypatch.setattr(deps_cmd, "_lock_identity", lambda path, info=None: next(samples))
+    monkeypatch.setattr(
+        deps_cmd, "_remove_stale_staging", lambda path: pytest.fail("work dirs must not be touched")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert "was replaced while the sync started" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
 def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, capsys):
     # Two plugins linking vendor/ to one target are one writer's business.
