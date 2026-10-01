@@ -1741,6 +1741,98 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "'live2d-lock-icon'" not in setup_block
     assert "'vrm-lock-icon'" not in setup_block
     assert "'mmd-lock-icon'" not in setup_block
+    # document 级 capture 事件必须过滤为窗口边界事件，否则相邻按钮边缘
+    # 移动会反复触发隐藏/显示（闪烁）
+    assert "const isWindowBoundaryMouseEvent = (event) => {" in setup_block
+    assert "return isDocTarget && !event.relatedTarget;" in setup_block
+    assert "if (!isWindowBoundaryMouseEvent(event)) return;" in setup_block
+    assert "if (isWindowBoundaryMouseEvent(event)) {" in setup_block
+    # unmarkControlsHover 必须校验 relatedTarget 仍在控件区域内再取消悬停标记
+    assert "const related = event && event.relatedTarget;" in setup_block
+    assert "buttonsContainer.contains(related)" in setup_block
+
+
+def test_pngtuber_get_stable_anchor_rect_strips_animation_transforms():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber anchor tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = "const source = " + json.dumps(source) + ";\n" + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const window = { location: { pathname: '/' }, innerWidth: 1000, innerHeight: 800,
+  lanlan_config: { model_type: 'pngtuber' } };
+const document = { body: { classList: { contains: () => false } }, getElementById: () => null };
+vm.runInNewContext(source, { window, document, console, performance: { now: () => 0 },
+  requestAnimationFrame: () => 0, cancelAnimationFrame: () => {} });
+
+const manager = new window.PNGTuberManager();
+manager.config = {
+  scale: 1, offset_x: 0, offset_y: 0,
+  mobile_scale: 1, mobile_offset_x: 0, mobile_offset_y: 0,
+  position_anchor: 'bottom_right', mirror: false,
+};
+let currentRect = null;
+manager.image = {
+  style: {},
+  getBoundingClientRect: () => ({ ...currentRect }),
+};
+manager.updateLockIconPosition = () => {};
+// 受控动画量：说话弹跳 Y=-10、挤压 scaleX=1.2/scaleY=0.9，呼吸 Y=-2
+manager.currentSpeakingBounceTransform = () => ({ y: -10, scaleX: 1.2, scaleY: 0.9 });
+manager.currentLayeredBreathingTransform = () => ({ y: -2, scaleX: 1, scaleY: 1 });
+manager.currentTalkingHopTransform = () => ({ y: 0, scaleX: 1, scaleY: 1 });
+manager.applyTransform(0);
+assert.equal(manager._appliedAnimOffsetY, -12);
+assert.equal(manager._appliedAnimScaleX, 1.2);
+assert.equal(manager._appliedAnimScaleY, 0.9);
+assert.equal(manager._appliedAnimCenterAnchored, false);
+assert.equal(manager._appliedAnimMirrored, false);
+
+// bottom_right 非镜像：缩放围绕右下角，右/底边界固定
+currentRect = { left: 100, top: 200, width: 240, height: 180, right: 340, bottom: 380 };
+let stable = manager.getStableAnchorRect();
+assert.equal(stable.width, 200);   // 240 / 1.2
+assert.equal(stable.height, 200);  // 180 / 0.9
+assert.equal(stable.right, 340);
+assert.equal(stable.bottom, 392);  // 380 - (-12)
+assert.equal(stable.left, 140);
+assert.equal(stable.top, 192);
+
+// bottom_right 镜像：finalScaleX 为负，右 bottom 原点固定的是可见矩形左边界
+manager.config.mirror = true;
+manager.applyTransform(0);
+assert.equal(manager._appliedAnimMirrored, true);
+stable = manager.getStableAnchorRect();
+assert.equal(stable.left, 100);
+assert.equal(stable.right, 300);   // 100 + 200
+assert.equal(stable.bottom, 392);
+assert.equal(stable.top, 192);
+
+// center 锚点：缩放围绕中心，镜像不影响结果
+manager.config.mirror = false;
+manager.config.position_anchor = 'center';
+manager.applyTransform(0);
+assert.equal(manager._appliedAnimCenterAnchored, true);
+stable = manager.getStableAnchorRect();
+assert.equal(stable.left, 120);    // centerX 220 - 100
+assert.equal(stable.right, 320);
+assert.equal(stable.top, 202);     // centerY 290 - (-12) - 100
+assert.equal(stable.bottom, 402);
+
+// 动画量归零时稳定矩形等于当前矩形
+manager.currentSpeakingBounceTransform = () => ({ y: 0, scaleX: 1, scaleY: 1 });
+manager.currentLayeredBreathingTransform = () => ({ y: 0, scaleX: 1, scaleY: 1 });
+manager.applyTransform(0);
+stable = manager.getStableAnchorRect();
+assert.equal(stable.left, 100);
+assert.equal(stable.top, 200);
+assert.equal(stable.width, 240);
+assert.equal(stable.height, 180);
+console.log('stable anchor rect OK');
+"""
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_apply_emotion_prefers_pngtuber_runtime_when_active():

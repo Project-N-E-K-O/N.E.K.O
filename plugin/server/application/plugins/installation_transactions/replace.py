@@ -70,6 +70,12 @@ async def _stop_plugin(plugin_id: str) -> None:
         raise
 
 
+def _revoke_hot_reload_recovery(plugin_id: str) -> None:
+    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+    revoke_hot_reload_recovery(plugin_id)
+
+
 async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
@@ -99,7 +105,9 @@ def backup_path_for(target_dir: Path, *, backup_root: Path | None = None) -> Pat
 
 async def restore_directory(backup_dir: Path, target_dir: Path) -> None:
     if not backup_dir.exists():
-        return
+        # 调用方手里有这份备份就说明旧树确实被挪走过；备份没了等于旧源码没回来，
+        # 不能当成功处理，否则回滚会被记成"代码已恢复"。
+        raise FileNotFoundError(f"plugin backup missing: {backup_dir.name}")
     await remove_directory(target_dir)
     await asyncio.to_thread(backup_dir.rename, target_dir)
 
@@ -223,6 +231,7 @@ async def _rollback_targets(
     backups: dict[Path, Path],
     preexisting_targets: frozenset[Path],
     remove_created_targets: bool,
+    failed_targets: set[Path] | None = None,
 ) -> bool:
     restored = True
     for target in reversed(targets):
@@ -233,6 +242,8 @@ async def _rollback_targets(
                     await remove_directory(target)
                 except Exception as exc:
                     restored = False
+                    if failed_targets is not None:
+                        failed_targets.add(target)
                     logger.error(
                         "plugin replacement created-target cleanup failed target={} err_type={}",
                         target.name,
@@ -244,6 +255,8 @@ async def _rollback_targets(
             await restore_directory(backup, target)
         except Exception as exc:
             restored = False
+            if failed_targets is not None:
+                failed_targets.add(target)
             logger.error(
                 "plugin replacement target rollback failed target={} err_type={}",
                 target.name,
@@ -266,10 +279,14 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
 
 def _evict_replaced_plugin_modules(plugin_id: str) -> None:
     from plugin.core.host import evict_cached_plugin_modules
+    from plugin.sdk.shared.i18n import clear_plugin_i18n_cache
 
     # 已导入的模块仍然要清：这个进程里可能残留着被换掉的那份代码。元数据扫描缓存
     # 曾经也在这里一起清，现在没有那个缓存了。
     evict_cached_plugin_modules(plugin_id)
+    # 语言包缓存按 stat 指纹校验；copy2/copytree 会保留时间戳，同尺寸替换可能骗过
+    # 指纹，所以换树之后显式清掉。
+    clear_plugin_i18n_cache()
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -374,12 +391,17 @@ async def replace_plugin(
             backups[target] = backup
     except Exception as exc:
         _notify_rollback_start(on_rollback_start)
+        failed_targets: set[Path] = set()
         recovered = await _rollback_targets(
             targets=targets,
             backups=backups,
             preexisting_targets=preexisting_targets,
             remove_created_targets=False,
+            failed_targets=failed_targets,
         )
+        # Only the plugin's own code tree decides the recovery permission; an
+        # additional (profile) target that failed to come back does not.
+        code_restored = target_dir not in failed_targets
         if was_running:
             try:
                 await _start_plugin(plugin_id)
@@ -390,6 +412,10 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        if not code_restored:
+            # 旧源码没能原样恢复：留在盘上的东西不是许可当初针对的那份。
+            # 只看插件代码目录；附带目录或重启失败不改变盘上是哪份源码。
+            _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage="backup",
             rollback_status="completed" if recovered else "incomplete",
@@ -416,6 +442,9 @@ async def replace_plugin(
         if was_running:
             stage = "restart"
             await _start_plugin(plugin_id)
+        # 新源码已就位：上一份自动热重载失败留下的恢复许可不再适用。放在提交
+        # 之后——完整回滚恢复的是旧源码，许可应当保留。
+        _revoke_hot_reload_recovery(plugin_id)
         stage = "cleanup"
         for backup in backups.values():
             try:
@@ -434,12 +463,15 @@ async def replace_plugin(
         )
     except Exception as exc:
         _notify_rollback_start(on_rollback_start)
+        failed_targets = set()
         restored = await _rollback_targets(
             targets=targets,
             backups=backups,
             preexisting_targets=preexisting_targets,
             remove_created_targets=True,
+            failed_targets=failed_targets,
         )
+        code_restored = target_dir not in failed_targets
         try:
             await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         except Exception as eviction_exc:
@@ -459,6 +491,10 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        if not code_restored:
+            # 旧源码没能原样恢复：留在盘上的可能是失败的新包，不能凭旧许可自启。
+            # 只看插件代码目录；附带目录、缓存清理或重启失败不改变盘上是哪份源码。
+            _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage=stage,
             rollback_status="completed" if restored else "incomplete",

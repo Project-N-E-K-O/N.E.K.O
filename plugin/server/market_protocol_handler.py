@@ -119,13 +119,16 @@ def _handle_install(params: dict) -> int:
     """处理 neko://install — 下载并安装插件包。"""
     url = params.get("url")
     sha256 = params.get("sha256")
+    plugin_id = params.get("id")
+    version = params.get("version")
 
-    if not url or not sha256:
-        logger.error("install requires 'url' and 'sha256' params")
+    # The bridge binds every Market install to a catalogue release, which
+    # needs the Market plugin ID and version.
+    if not url or not sha256 or not plugin_id or not version:
+        logger.error("install requires 'url', 'sha256', 'id' and 'version' params")
+        _show_notification("插件安装链接缺少必要参数，请从插件市场重新打开", "N.E.K.O")
         return 1
 
-    plugin_id = params.get("id", "unknown")
-    version = params.get("version", "")
     payload_hash = params.get("payload_hash")
     channel = params.get("channel")
     published_at = params.get("published_at")
@@ -195,6 +198,12 @@ async def _call_local_install(
 
             if res.status_code != 200:
                 logger.error("Install request failed: {} {}", res.status_code, res.text)
+                try:
+                    detail = res.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                reason = detail.get("message") if isinstance(detail, dict) else None
+                _show_notification(f"插件安装失败: {reason or res.status_code}", "N.E.K.O")
                 return 1
 
             data = res.json()

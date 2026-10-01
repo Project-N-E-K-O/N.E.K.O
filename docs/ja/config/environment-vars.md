@@ -11,6 +11,20 @@ Current code が明示的に読む変数だけがサポート対象です。`NEK
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/Tool |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
 
+## Optional Monitor service
+
+| Preferred variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能）。IPv6 は角括弧の有無どちらでも可。`::` は IPv6 のみを listen します |
+| `NEKO_MONITOR_TOKEN` | empty | 静的モデル asset を除く全 Monitor HTTP/WebSocket route 用の optional フルアクセス token。Main server が書き込む `/sync*` も含みます（`MONITOR_TOKEN` も使用可能） |
+| `NEKO_MONITOR_VIEWER_TOKEN` | empty | Viewer ページ、API、`/ws`、`/subtitle_ws` 用の optional 読み取り専用 token。`/sync*` には使えません。`NEKO_MONITOR_TOKEN` 設定時のみ有効（`MONITOR_VIEWER_TOKEN` も使用可能） |
+
+Token が空の場合は旧クライアント互換のため認証なしです。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。Main server は `NEKO_MONITOR_HOST` にそのまま接続し（wildcard は同じ family の loopback に変換: `0.0.0.0` → `127.0.0.1`、`::` → `[::1]`）、token を自動で送ります。
+
+Token を有効にした場合、native client は `Authorization: Bearer <token>`（または `X-Monitor-Token`）を送ります。Browser では viewer を一度 `http://<host>:<port>/<name>?token=<token>` で開きます。Monitor は address bar から token を除く redirect を返し、HttpOnly の `neko_monitor_session_<port>` cookie を設定します。Viewer リンクの共有には `NEKO_MONITOR_VIEWER_TOKEN` を使ってください。`NEKO_MONITOR_TOKEN` を含むリンクは `/sync*` への書き込み権限も与えるため、受け取った人は全 viewer に字幕やチャットを注入できます。
+
+Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、どちらかの token を変更すると無効になります。Browser は同じ host の全 port に cookie を送るため、他のローカルサービス（main server、plugin host）も受け取り、期限まで Monitor の viewer データ読み取りに再利用できます。全 session を取り消すには token を変更してください。TLS を終端する reverse proxy の背後では元の `Host` header を保持し（nginx: `proxy_set_header Host $http_host;`。保持しないとリアルタイム WebSocket が拒否されます）、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
+
 Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTART_ALLOWED_ORIGINS`、`NEKO_BEHIND_PROXY`、`NEKO_LOG_LEVEL`、`NEKO_MERGED` を使います。Storage root は `NEKO_STORAGE_SELECTED_ROOT` と `NEKO_STORAGE_ANCHOR_ROOT` です。
 
 Local vectors は `NEKO_VECTORS_ENABLED` と `NEKO_VECTORS_QUANTIZATION`（`auto/int8/fp32`）を受け付けます。Boolean は `1/true/yes/on` と `0/false/no/off` です。利用可能 RAM の下限は現在、固定の実行時定数 `VECTORS_MIN_RAM_GB = 4.0` であり、環境変数による上書きはありません。

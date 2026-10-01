@@ -337,8 +337,11 @@ def test_a_stale_metadata_file_that_cannot_be_removed_fails_the_build(
     assert "stale" in str(excinfo.value)
 
 
-def test_reload_counts_as_the_user_starting_a_plugin(
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_reload_counts_as_the_user_starting_a_plugin(
     monkeypatch: pytest.MonkeyPatch,
+    automatic: bool,
 ) -> None:
     """Reload is a button the user presses, and it works on a stopped plugin.
 
@@ -349,14 +352,21 @@ def test_reload_counts_as_the_user_starting_a_plugin(
 
     Mutation: drop ``persist_user_intent=True`` from ``reload_plugin``.
     """
-    import inspect
-
     from plugin.server.application.plugins import lifecycle_service
+    calls = []
 
-    source = inspect.getsource(lifecycle_service.PluginLifecycleService.reload_plugin)
-    assert "persist_user_intent=True" in source, (
-        "reload 启动插件时没有带用户意图，待批准记录不会被清掉"
-    )
+    async def start(self, plugin_id, **kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    async def stop(self, plugin_id, **kwargs):
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_service, "_plugin_is_running_sync", lambda pid: automatic)
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "start_plugin", start)
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", stop)
+    await lifecycle_service.PluginLifecycleService().reload_plugin("intent-probe", only_if_running=automatic)
+    assert calls == [{"persist_user_intent": not automatic}]
 
 
 def test_renaming_clears_the_pending_record_under_the_old_id(

@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from utils.config_manager import get_plugins_directory
+from utils.social_base import validate_http_url as _validate_http_url
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -34,18 +35,6 @@ def _get_float_env(name: str, default: float) -> float:
         return float(value)
     except Exception:
         return default
-
-
-def _validate_http_url(value: str, *, name: str, allow_empty: bool = False) -> str:
-    value = value.strip()
-    if allow_empty and not value:
-        return value
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"{name} must be a valid http(s) URL")
-    if parsed.username or parsed.password:
-        raise ValueError(f"{name} must not include credentials")
-    return value
 
 
 def _validate_market_origin(origin: str) -> str:
@@ -292,6 +281,25 @@ PLUGIN_SYNC_AUTO_START_ON_TOGGLE = _get_bool_env(
     "NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE",
     True,
 )
+
+# 插件源码热重载：监视插件目录的 ``*.py`` / ``plugin.toml`` 变更并自动 reload
+# 正在运行的插件（dev 模式注册的 source_dir 也在监视范围内）。默认关闭，
+# 主要供插件/本体开发使用；开启后每个变更的插件会经历一次 stop + start。
+# Env: NEKO_PLUGIN_HOT_RELOAD, default=False
+PLUGIN_HOT_RELOAD = _get_bool_env("NEKO_PLUGIN_HOT_RELOAD", False)
+
+# 热重载文件监视的轮询间隔（秒）
+# Env: NEKO_PLUGIN_HOT_RELOAD_INTERVAL, default=1.0
+PLUGIN_HOT_RELOAD_INTERVAL = _get_float_env("NEKO_PLUGIN_HOT_RELOAD_INTERVAL", 1.0)
+
+# 热重载防抖窗口（秒）：文件变更静默这么久后才真正触发 reload，
+# 避免编辑器多文件连写时 reload 到写了一半的代码。
+# Env: NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE, default=1.5
+PLUGIN_HOT_RELOAD_DEBOUNCE = _get_float_env("NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE", 1.5)
+
+# 轮询间隔的硬下限（非 env）。hot_reload_service 的最小 tick 也取这个值，
+# 保证「校验允许的最小间隔」与「实际休眠下限」不会各自漂移。
+PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS = 0.05
 
 # 单个插件优雅关闭的超时时间
 # Env: NEKO_PLUGIN_SHUTDOWN_TIMEOUT, default=1.5
@@ -750,6 +758,14 @@ def validate_config() -> None:
     if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT > 300:
         raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT is unreasonably large (max: 300s)")
 
+    if not math.isfinite(PLUGIN_HOT_RELOAD_INTERVAL) or not PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS <= PLUGIN_HOT_RELOAD_INTERVAL <= 60:
+        raise ValueError(
+            f"PLUGIN_HOT_RELOAD_INTERVAL must be in "
+            f"[{PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS}, 60] seconds"
+        )
+    if not math.isfinite(PLUGIN_HOT_RELOAD_DEBOUNCE) or not 0.0 <= PLUGIN_HOT_RELOAD_DEBOUNCE <= 60:
+        raise ValueError("PLUGIN_HOT_RELOAD_DEBOUNCE must be in [0, 60] seconds")
+
     if QUEUE_GET_TIMEOUT <= 0:
         raise ValueError("QUEUE_GET_TIMEOUT must be positive")
     if QUEUE_GET_TIMEOUT > 60:
@@ -894,6 +910,9 @@ __all__ = [
     "PLUGIN_STARTUP_TIMEOUT",
     "PLUGIN_SHUTDOWN_TIMEOUT",
     "PLUGIN_SHUTDOWN_TOTAL_TIMEOUT",
+    "PLUGIN_HOT_RELOAD",
+    "PLUGIN_HOT_RELOAD_INTERVAL",
+    "PLUGIN_HOT_RELOAD_DEBOUNCE",
     "QUEUE_GET_TIMEOUT",
     "BUS_SDK_POLL_INTERVAL_SECONDS",
     "STATUS_CONSUMER_SHUTDOWN_TIMEOUT",
@@ -982,6 +1001,9 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "STATUS_CONSUMER_SHUTDOWN_TIMEOUT",
     "PROCESS_SHUTDOWN_TIMEOUT",
     "PROCESS_TERMINATE_TIMEOUT",
+    "PLUGIN_HOT_RELOAD",
+    "PLUGIN_HOT_RELOAD_INTERVAL",
+    "PLUGIN_HOT_RELOAD_DEBOUNCE",
     "COMMUNICATION_THREAD_POOL_MAX_WORKERS",
     "MESSAGE_QUEUE_DEFAULT_MAX_COUNT",
     "STATUS_MESSAGE_DEFAULT_MAX_COUNT",

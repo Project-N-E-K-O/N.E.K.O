@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: '外掛套件驗證失敗。',
     downloadFailed: '外掛套件下載失敗。',
     marketListFetchFailed: '外掛市集暫時無法使用。',
+    catalogNotConfigured: '尚未設定外掛市集位址。',
+    releaseMismatch: '安裝請求與市集發布記錄不一致，請重新整理外掛市集後再試。',
     unsafeProfilePath: '記錄的套件 Profile 路徑不安全。',
     packageIdentityMismatch: '套件身分與目標外掛不一致。',
     confirmationChanged: '確認後外掛或套件已變更，請檢查新計畫後再試。',

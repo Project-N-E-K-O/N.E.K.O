@@ -374,6 +374,16 @@ class GreetingMixin:
             }
 
             current_turn_id = self.current_speech_id
+            # 本回复的快照（见 _shared._ReplyTurn）：完成回调用它自己的 meta
+            # 收尾，不去读届时可能已属于新一轮的共享字段。
+            reply_turn = self._begin_reply_turn(
+                speech_id=current_turn_id,
+                meta=self._pending_turn_meta,
+            )
+
+            async def response_done_callback() -> None:
+                await self.handle_response_complete(reply_turn=reply_turn)
+
             # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
             # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
             # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
@@ -381,10 +391,12 @@ class GreetingMixin:
             _sid_token = _proactive_expected_sid.set(current_turn_id)
             try:
                 try:
+                    reply_turn.session = self.session
                     delivered = await self.session.prompt_ephemeral(
                         instruction,
                         completion_mode="response",
                         persist_response=False,
+                        response_done_callback=response_done_callback,
                     )
                 except Exception as e:
                     logger.exception(
@@ -400,6 +412,7 @@ class GreetingMixin:
                     return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                self._end_reply_turn(reply_turn)
 
             # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
             # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，

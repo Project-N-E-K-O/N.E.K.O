@@ -257,6 +257,8 @@ export default {
     packageHashMismatch: '플러그인 패키지 검증에 실패했습니다.',
     downloadFailed: '플러그인 패키지 다운로드에 실패했습니다.',
     marketListFetchFailed: '플러그인 Market을 일시적으로 사용할 수 없습니다.',
+    catalogNotConfigured: '플러그인 Market 주소가 설정되지 않았습니다.',
+    releaseMismatch: '설치 요청이 Market 배포 기록과 일치하지 않습니다. 플러그인 Market을 새로고침한 후 다시 시도하세요.',
     unsafeProfilePath: '기록된 패키지 Profile 경로가 안전하지 않습니다.',
     packageIdentityMismatch: '패키지 ID가 대상 플러그인과 일치하지 않습니다.',
     confirmationChanged: '확인 후 플러그인 또는 패키지가 변경되었습니다. 새 계획을 확인하세요.',
