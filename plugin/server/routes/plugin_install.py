@@ -35,8 +35,10 @@ from ._install_task_store import (
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-install"])
+mutation_router = APIRouter(tags=["plugin-install"], route_class=PluginMutationGuardedRoute)
 logger = get_logger("server.plugin_install")
 run_service = RunService()
 
@@ -708,7 +710,7 @@ async def _install_stream_response(
     )
 
 
-@router.post("/plugin/{plugin_id}/ui-api/textractor/install")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/textractor/install")
 async def plugin_start_textractor_install(
     plugin_id: str,
     payload: InstallStartPayload,
@@ -749,7 +751,7 @@ async def plugin_stream_textractor_install(
 # ====== Tesseract install endpoints ======
 
 
-@router.post("/plugin/{plugin_id}/ui-api/tesseract/install")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/tesseract/install")
 async def plugin_start_tesseract_install(
     plugin_id: str,
     payload: InstallStartPayload,
@@ -795,7 +797,7 @@ async def plugin_stream_tesseract_install(
 # `${config.url}/${task_id}` so POST and GET must share the same base prefix.
 
 
-@router.post("/plugin/{plugin_id}/ui-api/rapidocr-models")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/rapidocr-models")
 async def plugin_start_rapidocr_models_download(
     plugin_id: str,
     payload: InstallStartPayload,
@@ -1111,7 +1113,7 @@ async def get_tutorial_status(plugin_id: str) -> JSONResponse:
     return JSONResponse({"ok": True, "progress": _normalize_tutorial_progress(raw)})
 
 
-@router.post("/plugin/{plugin_id}/ui-api/tutorial/progress")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/tutorial/progress")
 async def save_tutorial_progress(
     plugin_id: str,
     body: TutorialProgressPayload,
@@ -1158,3 +1160,6 @@ async def save_tutorial_progress(
             status_code=500,
         )
     return JSONResponse({"ok": True, "progress": current})
+
+
+router.include_router(mutation_router)

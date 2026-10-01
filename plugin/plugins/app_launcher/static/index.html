@@ -1028,6 +1028,21 @@
 <script>
     const PLUGIN_ID = 'app_launcher';
     const RUNS_URL = '/runs';
+    let csrfTokenPromise = null;
+    async function mutationHeaders() {
+        if (!csrfTokenPromise) {
+            csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin' })
+                .then(async (response) => {
+                    if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
+                    const data = await response.json();
+                    if (!data || typeof data.csrf_token !== 'string' || !data.csrf_token) {
+                        throw new Error('CSRF token bootstrap returned an invalid token');
+                    }
+                    return data.csrf_token;
+                });
+        }
+        return { 'X-CSRF-Token': await csrfTokenPromise };
+    }
 
     let allApps = [];
     let editingAppId = null;
@@ -1128,7 +1143,7 @@
     async function callPlugin(entry, args = {}) {
         const createResp = await fetch(RUNS_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
             body: JSON.stringify({
                 plugin_id: PLUGIN_ID,
                 entry_id: entry,

@@ -35,4 +35,16 @@ describe('Vite Market proxy', () => {
     expect(proxy).toHaveProperty('/api/documents')
     expect(proxy).not.toHaveProperty('/api')
   })
+
+  it('forwards the CSRF token bootstrap endpoint during local development', () => {
+    const proxy = (config as {
+      server?: { proxy?: Record<string, unknown> }
+    }).server?.proxy ?? {}
+
+    expect(
+      Object.keys(proxy).some((pattern) =>
+        new RegExp(pattern).test('/security/csrf-token')
+      )
+    ).toBe(true)
+  })
 })

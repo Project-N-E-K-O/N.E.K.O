@@ -861,13 +861,29 @@
             return loc.protocol + '//' + loc.host;
         }
 
+        var csrfTokenPromise = null;
+        async function mutationHeaders(baseUrl) {
+            if (!csrfTokenPromise) {
+                csrfTokenPromise = fetch(baseUrl + '/security/csrf-token', { credentials: 'same-origin' })
+                    .then(async function(response) {
+                        if (!response.ok) throw new Error('CSRF token bootstrap failed: HTTP ' + response.status);
+                        var data = await response.json();
+                        if (!data || typeof data.csrf_token !== 'string' || !data.csrf_token) {
+                            throw new Error('CSRF token bootstrap returned an invalid token');
+                        }
+                        return data.csrf_token;
+                    });
+            }
+            return { 'X-CSRF-Token': await csrfTokenPromise };
+        }
+
         // ── 调用插件入口 ──
         async function callPlugin(entryId, args) {
             try {
                 var baseUrl = getBaseUrl();
                 var resp = await fetch(baseUrl + '/runs', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: Object.assign({ 'Content-Type': 'application/json' }, await mutationHeaders(baseUrl)),
                     body: JSON.stringify({
                         plugin_id: pluginId,
                         entry_id: entryId,

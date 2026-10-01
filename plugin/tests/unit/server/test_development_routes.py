@@ -328,14 +328,16 @@ async def test_refresh_checks_revision_after_waiting_for_registration_operation(
 
 
 @pytest.mark.asyncio
-async def test_ordinary_refresh_still_allows_lan_without_development_records(app, monkeypatch):
+async def test_ordinary_refresh_rejects_lan_without_development_records(app, monkeypatch):
     monkeypatch.setattr(routes, "registration_for_plugin_sync", lambda _: None)
     monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [])
     monkeypatch.setattr(routes.registry_service, "refresh_plugin", AsyncMock(return_value={"success": True}))
     monkeypatch.setattr(routes.registry_service, "refresh_registry", AsyncMock(return_value={"success": True}))
     async with client(app, peer="192.168.1.2") as http:
-        assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
-        assert (await http.post("/plugins/refresh")).status_code == 200
+        assert (await http.post("/plugin/ordinary/refresh")).status_code == 403
+        assert (await http.post("/plugins/refresh")).status_code == 403
+    routes.registry_service.refresh_plugin.assert_not_awaited()
+    routes.registry_service.refresh_registry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -355,7 +357,7 @@ async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plu
     async with client(app, peer="192.168.1.2") as http:
         response = await http.post("/plugins/refresh")
         assert response.status_code == 403
-        assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
+        assert response.headers["X-Error-Code"] == "csrf_validation_failed"
         assert str(store._store_path()) not in response.text
         assert "ordinary" not in state.plugins
     async with client(app, headers={"X-Neko-Development": "1"}) as http:
@@ -365,7 +367,7 @@ async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plu
         assert response.json()["failed"]
         assert "ordinary" in state.plugins
     async with client(app, peer="192.168.1.2") as http:
-        assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
+        assert (await http.post("/plugin/ordinary/refresh")).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -414,6 +416,26 @@ async def test_development_denies_nonlocal_and_cross_site_requests(app, peer, ho
             assert response.status_code == 403
             assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
     assert not store.development_enabled_sync()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin,expected_status",
+    [
+        ("http://localhost:48911", 200),
+        ("http://localhost:5173", 200),
+        ("http://localhost:48912", 403),
+        ("http://127.0.0.1:65535", 403),
+        ("null", 403),
+    ],
+)
+async def test_development_origin_requires_exact_configured_port(app, origin, expected_status):
+    async with client(
+        app,
+        headers={"X-Neko-Development": "1", "Origin": origin},
+    ) as http:
+        response = await http.get("/plugins/development")
+    assert response.status_code == expected_status, response.text
 
 
 @pytest.mark.asyncio
@@ -473,7 +495,7 @@ async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("registered", [False, True])
-async def test_ordinary_bulk_reload_remains_available_remotely(app, monkeypatch, registered):
+async def test_bulk_reload_rejects_remote_mutation_requests(app, monkeypatch, registered):
     from types import SimpleNamespace
     store.set_enabled_sync(True)
     monkeypatch.setattr(routes, "list_registration_records_sync",
@@ -482,11 +504,8 @@ async def test_ordinary_bulk_reload_remains_available_remotely(app, monkeypatch,
     monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
     async with client(app, peer="192.168.1.2") as http:
         response = await http.post("/plugins/reload")
-        assert response.status_code == (403 if registered else 200)
-    if registered:
-        action.assert_not_awaited()
-    else:
-        action.assert_awaited_once()
+        assert response.status_code == 403
+    action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -525,8 +544,8 @@ async def test_remote_reload_cannot_publish_stopped_development_metadata(app, tm
 
     async with client(app, peer="192.168.1.2", headers={"X-Neko-Development": "1"}) as http:
         response = await http.post("/plugins/reload")
-    assert response.status_code == 403
-    assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
+        assert response.status_code == 403
+        assert response.headers["X-Error-Code"] == "csrf_validation_failed"
     assert state.plugins["demo"]["name"] == "Before"
     # Exercise the actual lifecycle refresh, with no host stop/start mocks.
     async with client(app, headers={"X-Neko-Development": "1"}) as http:

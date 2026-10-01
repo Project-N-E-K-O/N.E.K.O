@@ -1,6 +1,22 @@
 const pluginId = 'wechat_integration';
 const RUNS_URL = '/runs';
 const RUN_POLL_DELAY_MS = 500;
+let csrfTokenPromise = null;
+
+async function mutationHeaders() {
+    if (!csrfTokenPromise) {
+        csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin' })
+            .then(async (response) => {
+                if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
+                const data = await response.json();
+                if (!data || typeof data.csrf_token !== 'string' || !data.csrf_token) {
+                    throw new Error('CSRF token bootstrap returned an invalid token');
+                }
+                return data.csrf_token;
+            });
+    }
+    return { 'X-CSRF-Token': await csrfTokenPromise };
+}
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -18,7 +34,7 @@ function pluginErrorMessage(error) {
 async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
         body: JSON.stringify({ plugin_id: pluginId, entry_id: entry, args })
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

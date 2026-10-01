@@ -36,8 +36,10 @@ from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-ui"])
+mutation_router = APIRouter(tags=["plugin-ui"], route_class=PluginMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
 
@@ -451,7 +453,7 @@ async def plugin_ui_sse_events(plugin_id: str):
     )
 
 
-@router.post("/plugin/{plugin_id}/ui-api/push")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/push")
 async def plugin_ui_push(plugin_id: str, request: Request):
     """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
 
@@ -642,7 +644,7 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
     return JSONResponse(context)
 
 
-@router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
 async def plugin_hosted_ui_action(
     plugin_id: str,
     action_id: str,
@@ -675,7 +677,7 @@ class ChatCardActionRequest(BaseModel):
     presentation: Literal["chat", "agent"] = "chat"
 
 
-@router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
 async def plugin_chat_card_action(
     plugin_id: str, action_id: str, http_request: Request, request: ChatCardActionRequest,
 ):
@@ -696,3 +698,6 @@ async def plugin_chat_card_action(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(result)
+
+
+router.include_router(mutation_router)

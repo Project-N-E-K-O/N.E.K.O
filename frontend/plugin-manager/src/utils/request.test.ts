@@ -385,3 +385,47 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 })
+
+describe('mutation CSRF guard', () => {
+  it('bootstraps the token, attaches it, and retries one rejected mutation', async () => {
+    const tokenBootstrap = vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { csrf_token: 'csrf-test-token' },
+    } as any)
+    const sentTokens: unknown[] = []
+    let attempts = 0
+
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      const headers = config.headers as any
+      sentTokens.push(typeof headers?.get === 'function'
+        ? headers.get('X-CSRF-Token')
+        : headers?.['X-CSRF-Token'] ?? headers?.['x-csrf-token'])
+      attempts += 1
+      if (attempts === 1) {
+        throw Object.assign(new Error('CSRF rejected'), {
+          config,
+          response: {
+            status: 403,
+            data: { detail: 'Request could not be verified' },
+            headers: { 'X-Error-Code': 'csrf_validation_failed' },
+          },
+          isAxiosError: true,
+          name: 'AxiosError',
+        })
+      }
+      return {
+        data: { ok: true },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+        request: {},
+      }
+    })
+
+    await expect(request.post('/plugin/demo/stop', {}, { adapter })).resolves.toEqual({ ok: true })
+    expect(tokenBootstrap).toHaveBeenCalledTimes(2)
+    expect(adapter).toHaveBeenCalledTimes(2)
+    expect(sentTokens).toEqual(['csrf-test-token', 'csrf-test-token'])
+    tokenBootstrap.mockRestore()
+  })
+})

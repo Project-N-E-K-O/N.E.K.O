@@ -26,11 +26,13 @@ async def test_runs_create_upload_uses_relative_base_url(plugin_async_client: As
 
     response = await plugin_async_client.post(
         "/runs/run-123/uploads",
-        headers={"host": "attacker.example"},
+        # Originless loopback calls are the native/internal compatibility path.
+        # Use a loopback Host so the mutation guard does not classify this as a
+        # remote request while still exercising the relative URL contract.
+        headers={"host": "127.0.0.1:48916"},
         json={"filename": "hello.bin", "max_bytes": 1024},
     )
     assert response.status_code == 200
     assert response.json()["upload_url"].startswith("/")
     assert captured["run_id"] == "run-123"
     assert captured["base_url"] == ""
-

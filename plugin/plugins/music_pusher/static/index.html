@@ -1027,6 +1027,21 @@
 
     const PLUGIN_ID = "music_pusher";
     const RUNS_URL = "/runs";
+    let csrfTokenPromise = null;
+    async function mutationHeaders() {
+      if (!csrfTokenPromise) {
+        csrfTokenPromise = fetch("/security/csrf-token", { credentials: "same-origin" })
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
+            const data = await response.json();
+            if (!data || typeof data.csrf_token !== "string" || !data.csrf_token) {
+              throw new Error("CSRF token bootstrap returned an invalid token");
+            }
+            return data.csrf_token;
+          });
+      }
+      return { "X-CSRF-Token": await csrfTokenPromise };
+    }
     // 500MB 是浏览器安全的上限（readAsDataURL 会把文件整体加载到内存 + 约 33% base64 膨胀）
     // 大文件路径应未来迁移到 multipart/form-data 或分片上传
     const MAX_AUDIO_SIZE = 500 * 1024 * 1024;
@@ -1293,7 +1308,7 @@
     async function callEntry(entryId, args = {}, timeoutMs = 90000) {
       const createResp = await fetch(RUNS_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await mutationHeaders()) },
         body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
       });
 
