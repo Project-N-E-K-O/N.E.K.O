@@ -1109,6 +1109,11 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             details={"plugin_id": plugin_id, "error_type": "ForbiddenDeletePath"},
         )
 
+    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+    # 没在跑的插件不会走 stop_plugin；恢复许可必须在这里撤销，否则会被恢复的
+    # 同 ID 内置插件或之后重装的包继承。
+    revoke_hot_reload_recovery(plugin_id)
     was_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
     preference_snapshot = await asyncio.to_thread(
         _snapshot_runtime_preference, plugin_id

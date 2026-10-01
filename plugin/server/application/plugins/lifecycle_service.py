@@ -136,6 +136,17 @@ def plugin_needs_hot_reload_recovery(plugin_id: str) -> bool:
     return plugin_id in _hot_reload_failed
 
 
+def revoke_hot_reload_recovery(plugin_id: str) -> None:
+    """Drop the recovery permission when the plugin's source is replaced.
+
+    卸载、覆盖安装、开发关联的移除/改绑都不一定经过 stop_plugin（插件没在
+    跑时根本不会调），许可就会挂在 ID 上，被之后同 ID 的另一份源码（恢复的
+    内置插件、重装的包）继承——改一下文件就把用户从没启动过的插件拉起来。
+    调用方都在操作锁内。
+    """
+    _hot_reload_failed.discard(plugin_id)
+
+
 def _resolve_python_requirements(
     conf: Any,
     config_path: Path,
@@ -677,6 +688,33 @@ def _read_plugin_config_sync(config_path: Path) -> dict[str, object]:
     if not isinstance(raw_conf, Mapping):
         raise ValueError("plugin config root must be an object")
     return _normalize_mapping(raw_conf, context=f"plugin_config[{config_path}]")
+
+
+def effective_startup_timeout_sync(plugin_id: str, config_path: Path) -> float:
+    """Startup budget ``start_plugin`` would grant this plugin.
+
+    与 start_plugin 同一条解析链：manifest → profile overlay →
+    ``[plugin_runtime].timeout``。读不出来或不合法时退回全局
+    ``PLUGIN_STARTUP_TIMEOUT``——这里只用来估算等待预算，不做校验。
+    """
+    try:
+        conf = _read_plugin_config_sync(config_path)
+        resolved = resolve_plugin_config_from_path(
+            plugin_id,
+            config_path=config_path,
+            base_config=conf,
+            include_effective_config=True,
+            validate_schema=False,
+        )
+        effective = resolved.get("effective_config")
+        if isinstance(effective, Mapping):
+            conf = effective
+        runtime_obj = conf.get("plugin_runtime")
+        if isinstance(runtime_obj, Mapping) and "timeout" in runtime_obj:
+            return _normalize_runtime_timeout(runtime_obj.get("timeout"), plugin_id=plugin_id)
+    except Exception:
+        pass
+    return float(PLUGIN_STARTUP_TIMEOUT)
 
 
 def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) -> Path | None:

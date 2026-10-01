@@ -1226,3 +1226,24 @@ async def test_delete_plugin_cancellation_finishes_event_boundary(
 
     assert mutation_finished.is_set()
     assert [event["event_type"] for event in events] == ["plugin_deleted"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_revokes_hot_reload_recovery_of_stopped_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """A stopped plugin never reaches stop_plugin; the restored builtin must not
+    inherit the auto-reload recovery permission of the uninstalled package."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _patch_builtin_restore(monkeypatch, harness)
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    result = await uninstall_plugin("demo")
+
+    assert result.restored_builtin is True
+    assert harness.stop_calls == []
+    assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")

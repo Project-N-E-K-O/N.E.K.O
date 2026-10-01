@@ -868,3 +868,29 @@ async def test_remove_directory_propagates_cleanup_failure(
         await remove_directory(target)
 
     assert ignore_values == [False]
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_revokes_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    # The new package is a different source; a later edit must not start it.
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery("demo")

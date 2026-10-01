@@ -620,3 +620,107 @@ async def test_manual_stop_revokes_recovery_even_without_host(monkeypatch) -> No
         await service.stop_plugin("demo")
     assert not lifecycle.plugin_needs_hot_reload_recovery("demo")
     assert (await service.reload_plugin("demo", only_if_running=True))["skipped"]
+
+
+def test_preflight_skips_non_plugin_directories_and_reports_compile_errors(tmp_path: Path) -> None:
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    for excluded in ("node_modules", "vendor"):
+        (source / excluded).mkdir()
+        (source / excluded / "tool.py").write_text("print 'py2'\n", encoding="utf-8")
+    assert module._preflight_compile_sync(source) is None
+
+    (source / "bad.py").write_text("def broken(:\n", encoding="utf-8")
+    error = module._preflight_compile_sync(source)
+    assert error is not None and "bad.py" in error
+    # A source error is not a manifest error.
+    assert not error.startswith("plugin.toml")
+
+
+def test_preflight_contains_unexpected_validation_errors(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import development_service
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+
+    def explode(*_args):
+        raise RuntimeError("validator bug")
+
+    monkeypatch.setattr(development_service, "_preflight_source_sync", explode)
+    assert module._preflight_compile_sync(source) == "RuntimeError: validator bug"
+
+
+async def test_tick_drops_due_entry_when_reload_attempt_raises(tmp_path: Path, monkeypatch) -> None:
+    service = _make_service(tmp_path, _FakeLifecycleService(), monkeypatch)
+    other_root = tmp_path / "other"
+    _write_plugin_source(other_root)
+    targets = [
+        module._WatchTarget("demo", tmp_path / "demo", False),
+        module._WatchTarget("other", other_root, False),
+    ]
+    monkeypatch.setattr(service, "_collect_targets_sync", lambda: targets)
+    attempted = []
+
+    async def reload_target(target):
+        attempted.append(target.plugin_id)
+        if target.plugin_id == "demo":
+            raise RuntimeError("unexpected")
+        service._pending.pop(target.plugin_id, None)
+
+    monkeypatch.setattr(service, "_reload_target", reload_target)
+    await service._tick(asyncio.Event())  # baseline
+    service._pending = {"demo": 0.0, "other": 0.0}
+    await service._tick(asyncio.Event())
+    assert attempted == ["demo", "other"]
+    # Kept pending, the failed entry would be retried at the 50 ms minimum tick.
+    assert service._pending == {}
+    assert service._next_sleep_seconds() == module.PLUGIN_HOT_RELOAD_INTERVAL
+
+
+def test_effective_startup_timeout_follows_plugin_runtime(tmp_path: Path) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    manifest = source / "plugin.toml"
+    base = manifest.read_text(encoding="utf-8")
+    default = float(module.PLUGIN_STARTUP_TIMEOUT)
+    assert lifecycle_service.effective_startup_timeout_sync("demo", manifest) == default
+    manifest.write_text(base + "\n[plugin_runtime]\ntimeout = 120\n", encoding="utf-8")
+    assert lifecycle_service.effective_startup_timeout_sync("demo", manifest) == 120.0
+    manifest.write_text(base + "\n[plugin_runtime]\ntimeout = -1\n", encoding="utf-8")
+    assert lifecycle_service.effective_startup_timeout_sync("demo", manifest) == default
+    assert lifecycle_service.effective_startup_timeout_sync("demo", tmp_path / "missing.toml") == default
+
+
+async def test_restart_drain_covers_in_flight_plugin_startup_timeout(tmp_path: Path, monkeypatch) -> None:
+    observed = []
+
+    class _ObservingLifecycle:
+        async def reload_plugin(self, plugin_id, *, only_if_running=False):
+            observed.append(service._inflight_drain_seconds)
+            return {"success": True, "plugin_id": plugin_id}
+
+    service = _make_service(tmp_path, _ObservingLifecycle(), monkeypatch)
+    monkeypatch.setattr(module, "effective_startup_timeout_sync", lambda pid, path: 200.0)
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    assert observed == [module._RESTART_DRAIN_OVERHEAD_SECONDS + 200.0]
+    assert observed[0] > module._RESTART_DRAIN_SECONDS
+    assert service._inflight_drain_seconds is None
+
+    # A stopping generation with that reload in flight gets the larger budget.
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    service._inflight_drain_seconds = observed[0]
+    old_task = asyncio.create_task(asyncio.sleep(0))
+    service._task = old_task
+    deadlines = []
+    original_wait = asyncio.wait
+
+    async def observe_wait(tasks, *, timeout):
+        deadlines.append(timeout)
+        return await original_wait(tasks, timeout=timeout)
+
+    monkeypatch.setattr(module.asyncio, "wait", observe_wait)
+    await service.wait_for_stopped()
+    assert deadlines == [observed[0]]

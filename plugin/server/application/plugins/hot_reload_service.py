@@ -20,7 +20,7 @@ reload 复用 ``PluginLifecycleService.reload_plugin``（stop + start，杀进�
   变更被拉起来——那是把"改了代码"偷换成"改变了我的启动意图"。锁外先
   查一次做快速路径，拿到操作锁后 ``reload_plugin(only_if_running=True)``
   还会复查，兜住两次检查之间用户 Stop 的竞态。
-- reload 前先做 preflight（compile 全部 ``.py`` + 验证 manifest/entry/依赖），
+- reload 前先做 preflight（复用开发插件的 manifest/entry/依赖验证与 ``.py`` 编译），
   语法坏掉的编辑直接跳过这一轮，保住旧实例；下次变更再试。开发模式
   插件在 ``reload_plugin`` 内部另有完整 preflight，这里对普通（内置/安装）
   插件补上同等的保护。
@@ -52,6 +52,7 @@ from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
     _resolve_registered_config_path_sync,
+    effective_startup_timeout_sync,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
 )
@@ -86,16 +87,15 @@ _MIN_TICK_SECONDS = PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS
 # 为 host teardown 保留总预算；注册门闩拒绝迟到的 host。
 _STOP_TIMEOUT_SECONDS = 1.5
 # Restart has a different budget from shutdown: a healthy in-flight reload may
-# still consume the configured host start/stop and isolated metadata scan limits.
-_RESTART_DRAIN_SECONDS = (
-    PLUGIN_STARTUP_TIMEOUT + PLUGIN_SHUTDOWN_TIMEOUT
-    + PROCESS_SHUTDOWN_TIMEOUT + _DEFAULT_SCAN_TIMEOUT_SECONDS + 5.0
+# still consume the host start/stop and isolated metadata scan limits.
+_RESTART_DRAIN_OVERHEAD_SECONDS = (
+    PLUGIN_SHUTDOWN_TIMEOUT + PROCESS_SHUTDOWN_TIMEOUT
+    + _DEFAULT_SCAN_TIMEOUT_SECONDS + 5.0
 )
+_RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECONDS
 _BUSY_RETRY_SECONDS = 1.0
-# 与 dev preflight 保持一致的目录排除表：这些目录里的 .py 不是插件源码。
-_EXCLUDED_DIR_NAMES = frozenset(
-    {"vendor", ".venv", ".git", "__pycache__", "node_modules"}
-)
+# 与 dev preflight 共用的目录排除表：这些目录里的 .py 不是插件源码。
+_EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
 
 
 @dataclass(slots=True)
@@ -132,37 +132,35 @@ def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
 
 
 def _preflight_compile_sync(root: Path) -> str | None:
-    """Syntax-check a plugin source tree without importing it.
+    """Validate a plugin source tree without importing it.
 
     返回错误消息（或 ``None`` 表示通过）。stop 一个健康进程之前先确认
-    新代码至少能编译——语法坏掉的编辑不应该杀死正在运行的旧实例。
+    manifest/entry/依赖有效、插件自有 ``.py`` 都能编译——坏掉的编辑不应该
+    杀死正在运行的旧实例。
     """
     manifest_path = root / "plugin.toml"
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-        # Reuse discovery validation, including entry and dependency checks,
-        # without importing the plugin in the server process. Manifest IDs may
-        # differ from conflict-suffixed runtime IDs.
-        from plugin.server.application.plugins.development_service import (
-            _preflight_source_sync,
-        )
-
-        _preflight_source_sync(root.resolve(), manifest.get("plugin", {}).get("id"))
+        manifest_id = manifest.get("plugin", {}).get("id")
     except (
-        OSError, UnicodeDecodeError, tomllib.TOMLDecodeError,
-        ServerDomainError, ValueError, TypeError, AttributeError,
+        OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError,
     ) as exc:
         return f"plugin.toml: {exc}"
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in _EXCLUDED_DIR_NAMES]
-        for name in filenames:
-            if not name.lower().endswith(".py"):
-                continue
-            path = Path(dirpath) / name
-            try:
-                compile(path.read_bytes(), str(path), "exec")
-            except (SyntaxError, OSError) as exc:
-                return str(exc)
+    # Reuse discovery validation (entry, dependencies) and the plugin-owned
+    # ``.py`` compile pass without importing the plugin in the server process.
+    # Manifest IDs may differ from conflict-suffixed runtime IDs.
+    from plugin.server.application.plugins.development_service import (
+        _preflight_source_sync,
+    )
+
+    try:
+        _preflight_source_sync(root.resolve(), manifest_id)
+    except ServerDomainError as exc:
+        return exc.message
+    except Exception as exc:
+        # Any rejection keeps the running instance; an unexpected error type
+        # must not escape and leave the plugin pending for an immediate retry.
+        return f"{type(exc).__name__}: {exc}"
     return None
 
 
@@ -178,6 +176,8 @@ class PluginHotReloadService:
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
         self._restart_requested = False
+        # 正在进行的 reload 允许消耗的重启排空预算（按该插件的启动超时算）。
+        self._inflight_drain_seconds: float | None = None
         # plugin_id -> 上一次看到的签名。None 值表示"目录本轮不可见"。
         self._signatures: dict[str, dict[str, tuple[int, int]]] = {}
         # plugin_id -> 防抖截止时刻（monotonic）。
@@ -260,7 +260,7 @@ class PluginHotReloadService:
             self._restart_requested = False
             self.start()
 
-    async def wait_for_stopped(self, timeout: float = _RESTART_DRAIN_SECONDS) -> None:
+    async def wait_for_stopped(self, timeout: float | None = None) -> None:
         """Drain a stopping generation before reopening the server host gate.
 
         Shutdown need not spend its host cleanup budget on an in-flight reload,
@@ -269,9 +269,13 @@ class PluginHotReloadService:
         Cancelling startup itself still propagates and leaves the gate closed.
         A stalled transaction fails startup promptly instead of hanging it;
         reopening the gate while it still lives would admit an old-generation host.
+        The default budget follows the in-flight plugin's own startup timeout,
+        which ``[plugin_runtime].timeout`` may raise above the global setting.
         """
         task = self._task
         if task is not None and self._stop_event is not None and self._stop_event.is_set():
+            if timeout is None:
+                timeout = max(_RESTART_DRAIN_SECONDS, self._inflight_drain_seconds or 0.0)
             done, _pending_tasks = await asyncio.wait({task}, timeout=timeout)
             if not done:
                 raise RuntimeError(
@@ -357,7 +361,20 @@ class PluginHotReloadService:
             if target is None:
                 self._pending.pop(plugin_id, None)
                 continue
-            await self._reload_target(target)
+            try:
+                await self._reload_target(target)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Escaping here would keep the overdue entry pending and retry it
+                # at the minimum tick; drop it until the next source change.
+                self._pending.pop(plugin_id, None)
+                logger.warning(
+                    "hot-reload attempt aborted: plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(exc).__name__,
+                    exc,
+                )
 
     def _collect_targets_sync(self) -> list[_WatchTarget]:
         """Resolve watchable directories: dev source dirs + registered configs."""
@@ -443,6 +460,9 @@ class PluginHotReloadService:
                 self._pending.pop(plugin_id, None)
                 return
 
+        self._inflight_drain_seconds = _RESTART_DRAIN_OVERHEAD_SECONDS + await asyncio.to_thread(
+            effective_startup_timeout_sync, plugin_id, target.root / "plugin.toml"
+        )
         logger.info("hot-reload triggered: plugin_id={}", plugin_id)
         self._emit_event("plugin_hot_reload_triggered", plugin_id)
         try:
@@ -495,6 +515,8 @@ class PluginHotReloadService:
             )
         else:
             self._pending.pop(plugin_id, None)
+        finally:
+            self._inflight_drain_seconds = None
 
     @staticmethod
     def _emit_event(event_type: str, plugin_id: str, reason: str | None = None) -> None:

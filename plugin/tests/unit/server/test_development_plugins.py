@@ -1277,3 +1277,21 @@ async def test_websocket_stop_returns_versioned_api_error(monkeypatch, tmp_path,
     else:
         assert response["ok"] is True
         stop.assert_awaited_once_with("demo")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["remove", "disable", "rebind"])
+async def test_changing_association_revokes_hot_reload_recovery(tmp_path, monkeypatch, operation):
+    """With no host the association never reaches stop_plugin; a stopped plugin's
+    auto-reload recovery permission must still not survive its source changing."""
+    from plugin.server.application.plugins import lifecycle_service
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {record.plugin_id})
+    if operation == "remove":
+        assert (await service.remove_development(record.registration_id, record.revision))["success"]
+    elif operation == "disable":
+        await service.set_development_enabled(False)
+    else:
+        replacement = _source(tmp_path / "replacement")
+        await service.rebind_development(record.registration_id, record.revision, str(replacement))
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)
