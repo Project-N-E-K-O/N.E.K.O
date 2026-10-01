@@ -1413,7 +1413,7 @@ async def test_required_incomplete_seals_turn_after_max_endpoint_wait() -> None:
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
         coordinator=coordinator,
         on_commit=commit,
-        continuation_timeout_seconds=0.01,
+        continuation_timeout_seconds=0.1,
         smart_turn_required=True,
         max_endpoint_wait_seconds=0.035,
     )
@@ -1534,7 +1534,12 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
     adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() + 0.001
 
     await adapter._process_without_vad(
-        _AudioItem(identity=identity, pcm16=b"\x40\x00", duration_us=1_000)
+        _AudioItem(
+            identity=identity,
+            pcm16=b"\x40\x00",
+            duration_us=1_000,
+            no_vad_activity=True,
+        )
     )
     first_deadline = adapter._strict_endpoint_deadline
     assert first_deadline is not None
@@ -1542,13 +1547,18 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep() -
     retry = asyncio.create_task(adapter._strict_incomplete_wait(identity))
     await asyncio.sleep(0.04)
     await adapter._process_without_vad(
-        _AudioItem(identity=identity, pcm16=b"\x40\x00", duration_us=1_000)
+        _AudioItem(
+            identity=identity,
+            pcm16=b"\x40\x00",
+            duration_us=1_000,
+            no_vad_activity=True,
+        )
     )
     refreshed_deadline = adapter._strict_endpoint_deadline
     assert refreshed_deadline is not None
     assert refreshed_deadline >= first_deadline
-    assert adapter._no_vad_deadline_cap is not None
-    assert refreshed_deadline <= adapter._no_vad_deadline_cap
+    assert refreshed_deadline > first_deadline
+    assert adapter._no_vad_deadline_cap is None
     await asyncio.sleep(0.03)
     assert not retry.done()
     retry.cancel()
@@ -1628,6 +1638,40 @@ async def test_no_vad_above_floor_noise_cannot_starve_semantic_timeout() -> None
     await asyncio.wait_for(committed.wait(), 1)
     assert evidence.completed_reasons == ["semantic_timeout"]
     assert adapter._failed is False
+    await adapter.close()
+
+
+async def test_no_vad_rnnoise_activity_preserves_long_speech_wait() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 20),
+        on_commit=_noop_commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (50, 51, 52)
+    adapter._identity = identity
+    adapter._strict_endpoint_deadline = asyncio.get_running_loop().time() - 1
+    adapter._no_vad_deadline_cap = (
+        adapter._strict_endpoint_deadline + adapter._max_endpoint_wait_seconds
+    )
+
+    for _ in range(4):
+        await adapter._process_without_vad(
+            _AudioItem(
+                identity=identity,
+                pcm16=b"\x40\x00" * 160,
+                duration_us=10_000,
+                no_vad_activity=True,
+            )
+        )
+
+    assert adapter._strict_endpoint_deadline is not None
+    assert adapter._strict_endpoint_deadline > adapter._no_vad_deadline_cap
     await adapter.close()
 
 

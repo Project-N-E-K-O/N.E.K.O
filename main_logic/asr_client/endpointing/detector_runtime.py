@@ -79,6 +79,7 @@ class _AudioItem:
     pcm16: bytes
     duration_us: int
     detector_identity: DetectorIngressIdentity | None = None
+    no_vad_activity: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +393,7 @@ class _VoiceTurnAdapter:
         pcm16: bytes,
         sample_rate_hz: int = 16_000,
         detector_identity: DetectorIngressIdentity | None = None,
+        no_vad_activity: bool | None = None,
     ) -> None:
         if len(pcm16) % 2:
             raise ValueError("ASR_INVALID_PCM: Voice Turn requires PCM16LE")
@@ -418,6 +420,7 @@ class _VoiceTurnAdapter:
                 pcm16,
                 duration_us,
                 detector_identity,
+                no_vad_activity,
             ),
             duration_us=duration_us,
         )
@@ -589,6 +592,7 @@ class _VoiceTurnAdapter:
                 pcm16=item.pcm16,
                 duration_us=item.duration_us,
                 detector_identity=item.detector_identity,
+                no_vad_activity=item.no_vad_activity,
             )
         defers_for_evaluation = self._evaluation_task is not None
         if defers_for_evaluation:
@@ -672,27 +676,37 @@ class _VoiceTurnAdapter:
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
 
-        if self._pcm_has_no_vad_speech(item.pcm16):
+        has_activity = item.no_vad_activity
+        if has_activity is None:
+            has_activity = self._pcm_has_no_vad_speech(item.pcm16)
+        if has_activity:
             now = asyncio.get_running_loop().time()
             self._last_no_vad_audio_at = now
             if (
                 self._smart_turn_required
                 and self._strict_endpoint_deadline is not None
             ):
-                # RMS is only an activity hint when Silero is unavailable:
-                # steady HVAC or microphone self-noise can sit above the
-                # floor.  Allow speech to extend the inactivity wait, but
-                # keep a hard bound so noise cannot starve semantic_timeout.
-                cap = self._no_vad_deadline_cap
-                if cap is None:
-                    cap = (
-                        self._strict_endpoint_deadline
-                        + self._max_endpoint_wait_seconds
+                if item.no_vad_activity is None:
+                    # RMS is only an activity hint when Silero and RNNoise
+                    # are unavailable: steady HVAC or microphone self-noise
+                    # can sit above the floor. Keep this fallback bounded so
+                    # noise cannot starve semantic_timeout.
+                    cap = self._no_vad_deadline_cap
+                    if cap is None:
+                        cap = (
+                            self._strict_endpoint_deadline
+                            + self._max_endpoint_wait_seconds
+                        )
+                        self._no_vad_deadline_cap = cap
+                    self._strict_endpoint_deadline = min(
+                        now + self._max_endpoint_wait_seconds, cap
                     )
-                    self._no_vad_deadline_cap = cap
-                self._strict_endpoint_deadline = (
-                    min(now + self._max_endpoint_wait_seconds, cap)
-                )
+                else:
+                    # RNNoise has already classified this chunk as activity;
+                    # preserve the normal inactivity semantics for long speech.
+                    self._strict_endpoint_deadline = (
+                        now + self._max_endpoint_wait_seconds
+                    )
         started_now = False
         if not self._fallback_speech_started:
             self._fallback_speech_started = True
@@ -1321,6 +1335,7 @@ class _VoiceTurnAdapter:
                     pcm16=tail_item.pcm16,
                     duration_us=tail_item.duration_us,
                     detector_identity=tail_item.detector_identity,
+                    no_vad_activity=tail_item.no_vad_activity,
                 )
             )
 
@@ -2693,6 +2708,16 @@ class DetectorRuntime:
                 pcm16=pcm16,
                 sample_rate_hz=sample_rate_hz,
                 detector_identity=identity,
+                no_vad_activity=(
+                    bool(
+                        evidence.available
+                        and evidence.frame_count > 0
+                        and evidence.peak is not None
+                        and evidence.peak >= throttle.onset_threshold
+                    )
+                    if evidence.available and evidence.frame_count > 0
+                    else None
+                ),
             )
         except asyncio.QueueFull:
             self._detector_epoch += 1
