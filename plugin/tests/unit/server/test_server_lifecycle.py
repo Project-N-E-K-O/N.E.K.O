@@ -56,6 +56,64 @@ async def test_shutdown_reserves_host_budget_and_keeps_registration_gate_closed(
     assert lifecycle_service._operations_shutting_down
     assert not lifecycle_service._hot_reload_failed
 
+
+@pytest.mark.asyncio
+async def test_restart_drains_old_reload_before_reopening_host_gate(monkeypatch):
+    from plugin.server.application.plugins import hot_reload_service as hot_reload
+    from plugin.server.application.plugins import lifecycle_service
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    rejected = []
+
+    async def old_reload():
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        try:
+            lifecycle_service._register_or_replace_host_sync("old-generation", object())
+        except Exception as exc:
+            rejected.append(exc)
+
+    watcher = hot_reload.PluginHotReloadService()
+    watcher._stop_event = asyncio.Event()
+    watcher._task = asyncio.create_task(old_reload())
+    await entered.wait()
+    monkeypatch.setattr(lifecycle_service, "_operations_shutting_down", True)
+    await watcher.stop(timeout=0.01)
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(service, "_hot_reload_service", watcher)
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda payload: None)
+
+    class StartupReached(Exception):
+        pass
+
+    def reached_new_generation():
+        assert not lifecycle_service._operations_shutting_down
+        raise StartupReached
+
+    monkeypatch.setattr(service, "_clear_runtime_state", reached_new_generation)
+    startup = asyncio.create_task(service.startup())
+    try:
+        await asyncio.sleep(0.02)
+        assert not startup.done()
+        assert lifecycle_service._operations_shutting_down
+        release.set()
+        with pytest.raises(StartupReached):
+            await startup
+        assert len(rejected) == 1
+        assert rejected[0].code == "PLUGIN_OPERATION_SHUTTING_DOWN"
+        assert "old-generation" not in module.state.plugin_hosts
+    finally:
+        release.set()
+        await watcher.stop(timeout=1)
+        if not startup.done():
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+
 # Stands in for the runner the real ``_start_message_plane`` assigns. Stubs
 # must set it: ``_start_delivery_path_locked`` decides whether to bind the
 # bridges by asking whether a runner exists, so a stub that reports success

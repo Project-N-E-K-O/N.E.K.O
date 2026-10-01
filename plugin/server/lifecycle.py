@@ -463,6 +463,9 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        # A short shutdown wait may leave an old shielded reload alive. Drain it
+        # while both gates remain closed before admitting the next server run.
+        await self._hot_reload_service.wait_for_stopped()
         # Reopen the gate a previous shutdown closed: this service instance is
         # reused across a restart in the same process, and a latched-closed gate
         # would make every delivery-path start a no-op for the new run.
