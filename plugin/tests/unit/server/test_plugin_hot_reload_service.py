@@ -503,6 +503,21 @@ def test_signature_tracks_python_and_manifest_only(tmp_path: Path) -> None:
     assert set(signature.keys()) == {"plugin.toml", "__init__.py"}
 
 
+def test_signature_ignores_dependency_sync_work_dirs(tmp_path: Path) -> None:
+    # A running `neko-plugin sync` must not trigger reloads of the plugin.
+    source_dir = tmp_path / "demo"
+    _write_plugin_source(source_dir)
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        (source_dir / name / "pkg").mkdir(parents=True)
+        (source_dir / name / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
+    # A plugin's own look-alike directory is still source.
+    (source_dir / ".vendor.staging-assets").mkdir()
+    (source_dir / ".vendor.staging-assets" / "own.py").write_text("x = 1", encoding="utf-8")
+
+    signature = module._signature_sync(source_dir)
+    assert set(signature.keys()) == {"plugin.toml", "__init__.py", ".vendor.staging-assets/own.py"}
+
+
 def test_preflight_compile_sync(tmp_path: Path) -> None:
     source_dir = tmp_path / "good"
     _write_plugin_source(source_dir)

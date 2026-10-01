@@ -48,6 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.core.build_rules import is_vendor_sync_path
 from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
@@ -116,7 +117,14 @@ def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
     """
     signature: dict[str, tuple[int, int]] = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in _EXCLUDED_DIR_NAMES]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in _EXCLUDED_DIR_NAMES
+            # `neko-plugin sync` writes thousands of third-party files into
+            # its staging/backup trees at the plugin root; they are not source.
+            and not (Path(dirpath) == root and is_vendor_sync_path(Path(name)))
+        ]
         for name in filenames:
             if name != "plugin.toml" and not name.lower().endswith(".py"):
                 continue
