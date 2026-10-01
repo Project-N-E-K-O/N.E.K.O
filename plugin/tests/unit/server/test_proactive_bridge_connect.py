@@ -54,30 +54,47 @@ def test_subscription_setup_does_not_sleep(monkeypatch):
 
 def test_subscriber_recovers_when_publisher_binds_later(monkeypatch):
     """Real TCP sockets: early connect must still deliver after a late PUB bind."""
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
-    endpoint = f"tcp://127.0.0.1:{port}"
-    monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT", endpoint)
     monkeypatch.setattr(module, "_resolve_agent_push_addr", lambda: "inproc://unused-perf-regression")
-    received = threading.Event()
-    bridge = module.ProactiveBridge()
-    monkeypatch.setattr(bridge, "_dispatch", lambda payload, sock: received.set())
     publisher = zmq.Context.instance().socket(zmq.PUB)
     publisher.linger = 0
+    bridge = None
+    received = threading.Event()
     try:
-        bridge.start()
-        assert bridge.wait_until_subscribed(3)
+        # Reserve a port, let the bridge's SUB connect while it is still unbound,
+        # then bind the PUB. A parallel process can grab the released port in the
+        # gap, so retry the whole arrange on a bind conflict instead of flaking
+        # CI over something that is not the behaviour under test.
+        bound = False
+        for _ in range(5):
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            endpoint = f"tcp://127.0.0.1:{port}"
+            monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT", endpoint)
+            received = threading.Event()
+            bridge = module.ProactiveBridge()
+            monkeypatch.setattr(bridge, "_dispatch", lambda payload, sock: received.set())
+            bridge.start()
+            assert bridge.wait_until_subscribed(3)
+            try:
+                publisher.bind(endpoint)
+            except zmq.ZMQError:
+                bridge.stop()
+                bridge = None
+                continue
+            bound = True
+            break
+        assert bound, "could not bind a reserved loopback port after retries"
         # No PUB existed when readiness was signaled. Exercise reconnect, not
         # a single first packet, which PUB/SUB never guarantees to retain.
-        publisher.bind(endpoint)
         deadline = time.monotonic() + 5
         while not received.is_set() and time.monotonic() < deadline:
             publisher.send_multipart([b"messages.test", json.dumps({"payload": {"plugin_id": "test"}}).encode()])
             received.wait(.02)
         assert received.is_set()
     finally:
-        bridge.stop()
+        if bridge is not None:
+            bridge.stop()
         publisher.close(linger=0)
 
 

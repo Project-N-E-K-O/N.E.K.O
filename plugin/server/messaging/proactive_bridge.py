@@ -242,6 +242,19 @@ class ProactiveBridge:
                         pass
             return
 
+        if stop.is_set():
+            # Retired mid-setup by a stop/start cycle. ``_subscribed`` is shared
+            # with the replacement generation, so a dying thread must not certify
+            # readiness for a bridge that is already shutting down: close what we
+            # opened and leave the event for the live thread to set.
+            for sock in (sub_sock, push_sock):
+                if sock is not None:
+                    try:
+                        sock.close(linger=0)
+                    except Exception:
+                        pass
+            return
+
         # Signal readiness only once BOTH sockets exist: the SUB is subscribed
         # and the PUSH forwarder to main_server is connected. Setting this right
         # after SUBSCRIBE (before push_sock was built) let a failure in between
