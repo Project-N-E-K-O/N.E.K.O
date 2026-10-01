@@ -60,10 +60,11 @@ _QUOTES = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"', "'"
 # Every marker form carries one of these; texts without either skip the lexer.
 _LABEL_HINT = regex.compile(r"屏幕|screen", regex.IGNORECASE)
 # Always a sentence end.
-_SENTENCE_ENDS = "。！？!?…"
+_SENTENCE_ENDS = "。！？!?…～"
 # A sentence end unless an ASCII letter or digit follows ("example.com",
-# "1.5", "v2.0", "a~b"); "喵～" before the next label still ends one.
-_SOFT_SENTENCE_ENDS = ".~～"
+# "1.5", "v2.0", "a~b"), or unless what follows is the next label
+# ("today.screen comment:").
+_SOFT_SENTENCE_ENDS = ".~"
 _CLOSERS = "」』”’\"')）】》"
 # What may sit between a removed label and the prose it introduces.
 _LABEL_SEPARATORS = " \t:："
@@ -454,8 +455,13 @@ class _ScreenLexer:
             self._end_run()
 
 
-def _sentence_ends(text: str, offset: int = 0) -> set:
-    """Positions (plus ``offset``) of the characters in ``text`` that end a sentence."""
+def _sentence_ends(text: str, offset: int = 0, glued: set | None = None) -> set:
+    """Positions (plus ``offset``) of the characters in ``text`` that end a sentence.
+
+    ``glued``, when given, receives the positions of soft ends that only an
+    ASCII letter or digit follows; the tracker counts those when the next
+    character turns out to start a label.
+    """
     ends = set()
     for index, char in enumerate(text):
         if char in _SENTENCE_ENDS:
@@ -464,6 +470,8 @@ def _sentence_ends(text: str, offset: int = 0) -> set:
             following = text[index + 1:index + 2]
             if not (following.isascii() and following.isalnum()):
                 ends.add(offset + index)
+            elif glued is not None:
+                glued.add(offset + index)
     return ends
 
 
@@ -476,8 +484,9 @@ class _ChainTracker:
     complete comment, so they are cut together with the rest.
     """
 
-    def __init__(self, ends):
+    def __init__(self, ends, glued=frozenset()):
         self.ends = ends
+        self.glued = glued
         self.start = None
         self.first = None
         self.cut = None
@@ -486,6 +495,8 @@ class _ChainTracker:
 
     def accept(self, text, marker, start):
         if marker:
+            if self.length >= MIN_PROSE and start - 1 in self.glued:
+                self.complete = True
             if self.complete and self.first is None:
                 self.first, self.cut = self.start, start
             self.start, self.length, self.complete = start, 0, False
@@ -527,13 +538,14 @@ def _find_chain(texts):
     up to the point the chain was confirmed. ``None`` when there is no chain.
     """
     ends: set = set()
+    glued: set = set()
     starts = []
     offset = 0
     for text in texts:
         starts.append(offset)
-        ends |= _sentence_ends(text, offset)
+        ends |= _sentence_ends(text, offset, glued)
         offset += len(text)
-    tracker = _ChainTracker(ends)
+    tracker = _ChainTracker(ends, glued)
     tokens: list[list] = [[] for _ in texts]
     for index, token_text, marker, start in _tokens_across(texts):
         tokens[index].append((token_text, marker, start))

@@ -808,3 +808,14 @@ def test_a_short_comment_between_two_complete_ones_does_not_break_the_chain():
 ])
 def test_a_removed_label_takes_its_separator_with_it(text, expected):
     assert guard_module._dechain((text,)) == (expected,)
+
+
+@pytest.mark.parametrize("end", ["～", ".", "~"])
+def test_a_soft_sentence_end_glued_to_an_english_label_still_counts(end):
+    """A letter after "." or "~" usually means a word or number goes on, but
+    not when that letter starts the next label."""
+    text = ("screen comment: the video looks really lovely and calm today" + end
+            + "screen comment: the cat in the corner is so cute and fluffy.")
+    assert guard_module._dechain((text,)) == (
+        "the video looks really lovely and calm today" + end,
+    )
