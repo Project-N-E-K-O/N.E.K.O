@@ -1573,6 +1573,42 @@ async def test_no_vad_audio_refreshes_strict_deadline_and_keeps_retry_asleep(
     await adapter.close()
 
 
+async def test_strict_wait_exits_after_deadline_during_continuous_no_vad_activity() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_incomplete()] * 10),
+        on_commit=_noop_commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.04,
+        fallback_evaluation_interval_ms=1_000,
+    )
+    await adapter.start()
+    identity = (42, 43, 44)
+    adapter._identity = identity
+    adapter._coordinator.state = CoordinatorState.WAIT_CONTINUATION
+    adapter._strict_endpoint_deadline = (
+        asyncio.get_running_loop().time() + 0.04
+    )
+    retry = asyncio.create_task(adapter._strict_incomplete_wait(identity))
+    activity = _AudioItem(
+        identity=identity,
+        pcm16=b"\x40\x00" * 160,
+        duration_us=10_000,
+        no_vad_activity=False,
+    )
+    for _ in range(200):
+        if retry.done():
+            break
+        await adapter._process_without_vad(activity)
+        await asyncio.sleep(0.005)
+
+    assert retry.done()
+    await asyncio.wait_for(retry, 1)
+    await adapter.close()
+
+
 async def test_no_vad_silence_frames_eventually_seal_semantic_timeout() -> None:
     committed = asyncio.Event()
     evidence = _EvidenceSpy()
