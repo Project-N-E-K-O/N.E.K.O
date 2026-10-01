@@ -375,9 +375,12 @@ async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch
     try:
         await service.wait_for_stopped()
         assert old_task.done()
-        assert deadlines == [module._RESTART_DRAIN_SECONDS]
-        assert deadlines[0] > module.PLUGIN_STARTUP_TIMEOUT
-        assert deadlines[0] > module._STOP_TIMEOUT_SECONDS
+        # Waited in recheck slices against the restart budget, not the shutdown one.
+        assert deadlines == [module._DRAIN_RECHECK_SECONDS]
+        budget = service._restart_drain_budget_sync()
+        assert budget == module._RESTART_DRAIN_SECONDS
+        assert budget > module.PLUGIN_STARTUP_TIMEOUT
+        assert budget > module._STOP_TIMEOUT_SECONDS
     finally:
         release.set()
         await old_task
@@ -698,32 +701,86 @@ async def test_restart_drain_covers_in_flight_plugin_startup_timeout(tmp_path: P
 
     class _ObservingLifecycle:
         async def reload_plugin(self, plugin_id, *, only_if_running=False):
-            observed.append(service._inflight_drain_seconds)
+            observed.append(service._restart_drain_budget_sync())
             return {"success": True, "plugin_id": plugin_id}
 
     service = _make_service(tmp_path, _ObservingLifecycle(), monkeypatch)
     monkeypatch.setattr(module, "effective_startup_timeout_sync", lambda pid, path: 200.0)
+    monkeypatch.setattr(module, "active_startup_timeout", lambda pid: None)
     await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
     assert observed == [module._RESTART_DRAIN_OVERHEAD_SECONDS + 200.0]
     assert observed[0] > module._RESTART_DRAIN_SECONDS
-    assert service._inflight_drain_seconds is None
+    assert service._inflight_target is None
+    assert service._restart_drain_budget_sync() == module._RESTART_DRAIN_SECONDS
 
-    # A stopping generation with that reload in flight gets the larger budget.
+
+def test_restart_drain_prefers_timeout_start_plugin_actually_granted(tmp_path: Path, monkeypatch) -> None:
+    """The config may have been raised after the watcher's pre-lock look; the
+    timeout start_plugin recorded after reading it wins."""
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    monkeypatch.setattr(module, "effective_startup_timeout_sync", lambda pid, path: 10.0)
+    monkeypatch.setattr(module, "active_startup_timeout", lambda pid: 250.0 if pid == "demo" else None)
+    assert service._restart_drain_budget_sync() == module._RESTART_DRAIN_OVERHEAD_SECONDS + 250.0
+
+
+async def test_restart_drain_rechecks_budget_while_waiting(monkeypatch) -> None:
+    """A budget that grows mid-drain (config read after the wait began) is
+    honoured instead of failing startup on the first, smaller estimate."""
+    service = module.PluginHotReloadService(_FakeLifecycleService())
     service._stop_event = asyncio.Event()
     service._stop_event.set()
-    service._inflight_drain_seconds = observed[0]
-    old_task = asyncio.create_task(asyncio.sleep(0))
-    service._task = old_task
-    deadlines = []
-    original_wait = asyncio.wait
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service._task = task
+    budgets = []
 
-    async def observe_wait(tasks, *, timeout):
-        deadlines.append(timeout)
-        return await original_wait(tasks, timeout=timeout)
+    def budget() -> float:
+        budgets.append(None)
+        return 0.15 if len(budgets) == 1 else 5.0
 
-    monkeypatch.setattr(module.asyncio, "wait", observe_wait)
-    await service.wait_for_stopped()
-    assert deadlines == [observed[0]]
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.05)
+    monkeypatch.setattr(service, "_restart_drain_budget_sync", budget)
+    asyncio.get_running_loop().call_later(0.4, release.set)
+    try:
+        await asyncio.wait_for(service.wait_for_stopped(), 3)
+        assert task.done()
+        assert len(budgets) > 1
+    finally:
+        release.set()
+        await task
+
+
+async def test_start_plugin_records_granted_timeout_only_while_starting(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    manifest = source / "plugin.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n[plugin_runtime]\ntimeout = 120\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "_active_startup_timeouts", {})
+    monkeypatch.setattr(lifecycle, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle, "_get_plugin_host_sync", lambda pid: None)
+    monkeypatch.setattr(lifecycle, "_get_plugin_meta_sync", lambda pid: {"config_path": str(manifest)})
+    monkeypatch.setattr(lifecycle, "_registered_load_failure_error", lambda pid, meta: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "resolve_plugin_config_from_path",
+        lambda pid, **kwargs: {"effective_config": kwargs["base_config"]},
+    )
+    seen = []
+
+    def stop_after_recording(pid):
+        seen.append(lifecycle.active_startup_timeout("demo"))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(lifecycle, "get_runtime_override", stop_after_recording)
+    with pytest.raises(ServerDomainError):
+        await lifecycle.PluginLifecycleService().start_plugin("demo", refresh_registry=False)
+    # The value the drain budget reads is the one start_plugin granted, and it
+    # does not outlive the start attempt.
+    assert seen == [120.0]
+    assert lifecycle.active_startup_timeout("demo") is None
 
 
 async def test_cancelled_recovery_start_keeps_recovery_permission(monkeypatch) -> None:

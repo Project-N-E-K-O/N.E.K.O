@@ -52,6 +52,7 @@ from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
     _resolve_registered_config_path_sync,
+    active_startup_timeout,
     effective_startup_timeout_sync,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
@@ -93,6 +94,9 @@ _RESTART_DRAIN_OVERHEAD_SECONDS = (
     + _DEFAULT_SCAN_TIMEOUT_SECONDS + 5.0
 )
 _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECONDS
+# The in-flight plugin's budget is re-derived this often while draining, so a
+# timeout that start_plugin read after the watcher's estimate is still honoured.
+_DRAIN_RECHECK_SECONDS = 1.0
 _BUSY_RETRY_SECONDS = 1.0
 # 与 dev preflight 共用的目录排除表：这些目录里的 .py 不是插件源码。
 _EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
@@ -176,8 +180,8 @@ class PluginHotReloadService:
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
         self._restart_requested = False
-        # 正在进行的 reload 允许消耗的重启排空预算（按该插件的启动超时算）。
-        self._inflight_drain_seconds: float | None = None
+        # 正在进行 reload 的目标；重启排空预算按它的启动超时计算。
+        self._inflight_target: _WatchTarget | None = None
         # plugin_id -> 上一次看到的签名。None 值表示"目录本轮不可见"。
         self._signatures: dict[str, dict[str, tuple[int, int]]] = {}
         # plugin_id -> 防抖截止时刻（monotonic）。
@@ -273,15 +277,48 @@ class PluginHotReloadService:
         which ``[plugin_runtime].timeout`` may raise above the global setting.
         """
         task = self._task
-        if task is not None and self._stop_event is not None and self._stop_event.is_set():
-            if timeout is None:
-                timeout = max(_RESTART_DRAIN_SECONDS, self._inflight_drain_seconds or 0.0)
+        if task is None or self._stop_event is None or not self._stop_event.is_set():
+            return
+        if timeout is not None:
             done, _pending_tasks = await asyncio.wait({task}, timeout=timeout)
             if not done:
-                raise RuntimeError(
-                    "Previous plugin hot reload is still running; "
-                    "retry server startup after it finishes"
-                )
+                self._raise_drain_timeout()
+            return
+        started = time_module.monotonic()
+        while True:
+            budget = await asyncio.to_thread(self._restart_drain_budget_sync)
+            remaining = started + budget - time_module.monotonic()
+            if remaining <= 0:
+                self._raise_drain_timeout()
+            done, _pending_tasks = await asyncio.wait(
+                {task}, timeout=min(remaining, _DRAIN_RECHECK_SECONDS)
+            )
+            if done:
+                return
+
+    @staticmethod
+    def _raise_drain_timeout() -> None:
+        raise RuntimeError(
+            "Previous plugin hot reload is still running; "
+            "retry server startup after it finishes"
+        )
+
+    def _restart_drain_budget_sync(self) -> float:
+        """Drain budget for the in-flight reload, from its current startup timeout.
+
+        Takes the larger of the timeout start_plugin actually granted (once it
+        has read the config) and the current config estimate, so neither a
+        config edit made while the reload waited for the lock nor one made
+        before start_plugin reads it can shorten the wait below the real start.
+        """
+        target = self._inflight_target
+        if target is None:
+            return _RESTART_DRAIN_SECONDS
+        startup = max(
+            effective_startup_timeout_sync(target.plugin_id, target.root / "plugin.toml"),
+            active_startup_timeout(target.plugin_id) or 0.0,
+        )
+        return max(_RESTART_DRAIN_SECONDS, _RESTART_DRAIN_OVERHEAD_SECONDS + startup)
 
     @property
     def is_running(self) -> bool:
@@ -460,9 +497,7 @@ class PluginHotReloadService:
                 self._pending.pop(plugin_id, None)
                 return
 
-        self._inflight_drain_seconds = _RESTART_DRAIN_OVERHEAD_SECONDS + await asyncio.to_thread(
-            effective_startup_timeout_sync, plugin_id, target.root / "plugin.toml"
-        )
+        self._inflight_target = target
         logger.info("hot-reload triggered: plugin_id={}", plugin_id)
         self._emit_event("plugin_hot_reload_triggered", plugin_id)
         try:
@@ -516,7 +551,7 @@ class PluginHotReloadService:
         else:
             self._pending.pop(plugin_id, None)
         finally:
-            self._inflight_drain_seconds = None
+            self._inflight_target = None
 
     @staticmethod
     def _emit_event(event_type: str, plugin_id: str, reason: str | None = None) -> None:

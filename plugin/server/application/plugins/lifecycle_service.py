@@ -136,6 +136,18 @@ def plugin_needs_hot_reload_recovery(plugin_id: str) -> bool:
     return plugin_id in _hot_reload_failed
 
 
+# plugin_id (as passed to start_plugin) -> startup timeout that call granted,
+# recorded once the effective config has been read. The hot-reload watcher sizes
+# its restart drain from it: a pre-lock estimate can be stale if the config
+# changed while the reload waited for the operation lock.
+_active_startup_timeouts: dict[str, float] = {}
+
+
+def active_startup_timeout(plugin_id: str) -> float | None:
+    """Startup timeout granted by an in-progress start of this plugin, if any."""
+    return _active_startup_timeouts.get(plugin_id)
+
+
 def revoke_hot_reload_recovery(plugin_id: str) -> None:
     """Drop the recovery permission when the plugin's source is replaced.
 
@@ -1148,6 +1160,8 @@ class PluginLifecycleService:
                         runtime_cfg.get("startup_failure"),
                         plugin_id=current_plugin_id,
                     )
+            if startup_timeout_value is not None:
+                _active_startup_timeouts[original_plugin_id] = startup_timeout_value
             enabled_override = await asyncio.to_thread(
                 get_runtime_override,
                 current_plugin_id,
@@ -1497,6 +1511,8 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 error_type=type(exc).__name__,
             ) from exc
+        finally:
+            _active_startup_timeouts.pop(original_plugin_id, None)
 
     @serialized_plugin_operation
     async def stop_plugin(
