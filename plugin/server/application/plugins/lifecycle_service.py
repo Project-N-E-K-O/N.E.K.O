@@ -717,8 +717,14 @@ def effective_startup_timeout_sync(plugin_id: str, config_path: Path) -> float:
         runtime_obj = conf.get("plugin_runtime")
         if isinstance(runtime_obj, Mapping) and "timeout" in runtime_obj:
             return _normalize_runtime_timeout(runtime_obj.get("timeout"), plugin_id=plugin_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Only a wait-budget estimate: an unreadable or invalid manifest falls
+        # back to the global timeout, and start_plugin reports the real error.
+        logger.debug(
+            "startup timeout estimate fell back to default: plugin_id={}, err_type={}",
+            plugin_id,
+            type(exc).__name__,
+        )
     return float(PLUGIN_STARTUP_TIMEOUT)
 
 
