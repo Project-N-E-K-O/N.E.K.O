@@ -80,4 +80,4 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 
-Phase 3 已接入独立 ASR 云服务，以及用于 manual 模式判停的 Smart Turn（包括 Qwen 默认流式路由和 GLM/Gemini 分段路由）；Silero/RNNoise 提供本地语音活动与节流信号，本身不取得逻辑断句权。provider 模式仍保留云端判停。声纹和跨会话全局节流仍不在本阶段，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。
+Phase 3 已接入独立 ASR 云服务，以及用于 manual 模式判停的 Smart Turn（用于 GLM/Gemini 分段路由）；Silero/RNNoise 提供本地语音活动与节流信号，本身不取得逻辑断句权。Qwen 默认使用 provider 模式的云端判停，本地暂停只触发有界的 `session.finish` 兜底。声纹和跨会话全局节流仍不在本阶段，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+from collections import deque
 
 import pytest
 
@@ -62,6 +63,86 @@ async def test_silent_audio_preserves_pause_timer_and_finishes(monkeypatch):
         ]
     finally:
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_pause_before_provider_start_arms_fallback(monkeypatch):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    finish_sent = asyncio.Event()
+
+    async def on_send(ws, payload):
+        if json.loads(payload)["type"] == "session.finish":
+            finish_sent.set()
+
+    ws = _FakeWebSocket(on_send=on_send)
+    requests, responses = asyncio.Queue(), asyncio.Queue()
+    sender = asyncio.create_task(
+        qwen._qwen_sender(
+            ws,
+            requests,
+            responses,
+            AsrSessionConfig(endpointing_mode="provider"),
+            state,
+        )
+    )
+    receiver = asyncio.create_task(
+        qwen._qwen_receiver(
+            ws,
+            responses,
+            AsrSessionConfig(endpointing_mode="provider"),
+            state,
+        )
+    )
+    try:
+        # The local detector can report pause before the provider has emitted
+        # speech_started for the same buffered audio.
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
+        await asyncio.wait_for(requests.join(), 1)
+        assert state.pending_local_pause == (0, 0)
+        await ws.server_send(
+            {"type": "input_audio_buffer.speech_started", "item_id": "late"}
+        )
+        await _next_event(responses, "utterance_started")
+        await asyncio.wait_for(finish_sent.wait(), 1)
+    finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)
+
+
+async def test_finish_waits_for_provider_after_one_deferred_request():
+    state = _state()
+    finish_sent = asyncio.Event()
+
+    async def on_send(ws, payload):
+        if json.loads(payload)["type"] == "session.finish":
+            finish_sent.set()
+
+    ws = _FakeWebSocket(on_send=on_send)
+    requests, responses = asyncio.Queue(), asyncio.Queue()
+    deferred = deque()
+    task = asyncio.create_task(
+        qwen._qwen_finish_and_reconnect(
+            ws,
+            requests,
+            responses,
+            state,
+            deferred,
+        )
+    )
+    try:
+        await asyncio.wait_for(finish_sent.wait(), 1)
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=True))
+        await _wait_until(lambda: len(deferred) == 1)
+        assert not task.done()
+        state.finish_received.set()
+        assert await asyncio.wait_for(task, 1) == ("reconnect", None)
+        assert deferred[0].kind == "activity"
+    finally:
+        if not task.done():
+            task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
 

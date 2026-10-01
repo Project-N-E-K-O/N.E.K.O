@@ -108,6 +108,7 @@ class _QwenConnectionState:
     fallback_due: asyncio.Event = field(default_factory=asyncio.Event)
     fallback_key: _ItemKey | None = None
     fallback_timer_task: asyncio.Task[None] | None = None
+    pending_local_pause: tuple[int, int] | None = None
     provider_endpoint_utterance_ids: set[int] = field(default_factory=set)
     reconnect_after_finish: bool = False
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
@@ -205,8 +206,14 @@ def _qwen_arm_stalled_item_deadline(
         state.stalled_deadline_armed.set()
 
 
-def _qwen_cancel_provider_fallback(state: _QwenConnectionState) -> None:
+def _qwen_cancel_provider_fallback(
+    state: _QwenConnectionState,
+    *,
+    clear_pending_pause: bool = True,
+) -> None:
     state.fallback_key = None
+    if clear_pending_pause:
+        state.pending_local_pause = None
     state.fallback_due.clear()
     timer = state.fallback_timer_task
     state.fallback_timer_task = None
@@ -284,7 +291,7 @@ async def _qwen_finish_and_reconnect(
     # session.finish is one-way.  Requests arriving while the provider flushes
     # belong to the successor session and must stay in FIFO order.
     finish_task = asyncio.create_task(state.finish_received.wait())
-    queue_task = asyncio.create_task(
+    queue_task: asyncio.Task[_AsrWorkerRequest] | None = asyncio.create_task(
         _qwen_get_request(request_queue, deferred_requests)
     )
     deadline = asyncio.get_running_loop().time() + _QWEN_FINISH_TIMEOUT_SECONDS
@@ -294,13 +301,17 @@ async def _qwen_finish_and_reconnect(
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
+            waiting = {finish_task}
+            if queue_task is not None:
+                waiting.add(queue_task)
             done, _ = await asyncio.wait(
-                {finish_task, queue_task},
+                waiting,
                 timeout=remaining,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if queue_task in done:
+            if queue_task is not None and queue_task in done:
                 arrived = queue_task.result()
+                queue_task = None
                 if arrived.kind == "shutdown":
                     deferred_shutdown = arrived
                     break
@@ -309,15 +320,21 @@ async def _qwen_finish_and_reconnect(
                 deferred_requests.append(arrived)
                 if finish_task in done:
                     break
-                break
+                # Keep waiting for the provider completion without reading a
+                # second request. Later requests stay in the public queue so
+                # normal FIFO ordering and audio backpressure remain intact.
+                continue
             if finish_task in done:
                 break
             break
     finally:
         for task in (finish_task, queue_task):
-            if not task.done():
+            if task is not None and not task.done():
                 task.cancel()
-        await asyncio.gather(finish_task, queue_task, return_exceptions=True)
+        await asyncio.gather(
+            *(task for task in (finish_task, queue_task) if task is not None),
+            return_exceptions=True,
+        )
 
     # A provider may acknowledge the session without returning a final for an
     # outstanding item.  Keep the upstream lifecycle bounded in that case.
@@ -423,33 +440,31 @@ async def _qwen_sender(
             queue_task = asyncio.create_task(
                 _qwen_get_request(request_queue, deferred_requests)
             )
-            fallback_task = (
-                asyncio.create_task(state.fallback_due.wait())
-                if state.fallback_key is not None
-                else None
-            )
+            # Keep an event waiter alive even before the provider utterance ID
+            # exists. A provider speech_started event can arm the fallback
+            # while this loop is already waiting for the next request.
+            fallback_task = asyncio.create_task(state.fallback_due.wait())
             request: _AsrWorkerRequest | None = None
             try:
                 done, _ = await asyncio.wait(
-                    {queue_task, *({fallback_task} if fallback_task is not None else set())},
+                    {queue_task, fallback_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             except asyncio.CancelledError:
                 queue_task.cancel()
-                if fallback_task is not None:
-                    fallback_task.cancel()
+                fallback_task.cancel()
                 await asyncio.gather(
                     queue_task,
-                    *( [fallback_task] if fallback_task is not None else [] ),
+                    fallback_task,
                     return_exceptions=True,
                 )
                 raise
             if queue_task in done:
                 request = queue_task.result()
-                if fallback_task is not None and not fallback_task.done():
+                if not fallback_task.done():
                     fallback_task.cancel()
                     await asyncio.gather(fallback_task, return_exceptions=True)
-            elif fallback_task is not None and fallback_task in done:
+            elif fallback_task in done:
                 # Awaiting a getter after cancelling it lets a simultaneous
                 # completion win; only an actually cancelled getter requires a
                 # second queue read.
@@ -514,6 +529,15 @@ async def _qwen_sender(
                             )
                             if key[2] not in state.provider_endpoint_utterance_ids:
                                 _qwen_arm_provider_fallback(state, key)
+                        else:
+                            # The local pause can reach the worker before the
+                            # provider's speech_started event. Retain it by
+                            # generation and buffer epoch so that the later
+                            # provider utterance can arm the same fallback.
+                            state.pending_local_pause = (
+                                request.generation,
+                                request.buffer_epoch,
+                            )
                     continue
 
                 if request.kind == "commit":
@@ -718,9 +742,13 @@ async def _qwen_receiver(
                 )
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
-                _qwen_cancel_provider_fallback(state)
+                pending_pause = state.pending_local_pause
+                _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
+                state.pending_local_pause = None
                 state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
+                if pending_pause == (key[0], key[1]):
+                    _qwen_arm_provider_fallback(state, key)
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="utterance_started",
