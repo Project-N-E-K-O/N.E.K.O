@@ -17,6 +17,7 @@ Core text path (``_process_stream_data_internal`` -> ``handle_response_complete`
 on a manager double.
 """
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -613,3 +614,106 @@ async def test_a_stale_reply_skips_the_takeover_cleanup(current):
     assert mgr._clear_tts_pipeline.await_count == (1 if current else 0)
     assert mgr._current_ai_turn_text == ("" if current else "镜像台词")
     assert mgr._active_text_request_id == (None if current else "req-mirror")
+
+
+# ── A final discard that already ended the turn ─────────────────────────────
+
+async def test_a_too_long_final_discard_ends_its_turn_once():
+    """The length guard discards a runaway reply for good (repeated text past
+    the user's cap, no rerolls left), and the discard's recovery ends the turn:
+    the placeholder, the turn end, the wrap-up. The stream still runs the
+    reply's completion when it unwinds, and that completion used to end the
+    same turn again: a second turn end on both channels and a second wrap-up."""
+    client = _client([[_text("ahah" * 200), _text("", "stop")]])
+    client.enable_response_guard = True
+    client.max_response_rerolls = 0
+    mgr = _observe(_make_callback_media_manager(client))
+    mgr._get_text_guard_max_length = lambda: 30  # the user's reply cap
+    _wire(mgr, client)
+
+    await asyncio.wait_for(_text_turn(mgr, "说点什么", "req-A"), 5)
+
+    discards = [json.loads(m["message"])["code"] for m in _ws(mgr, "response_discarded")]
+    assert discards == ["RESPONSE_TOO_LONG"], "fixture must reach the too-long final discard"
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+    placeholder = client._conversation_history[-1].content
+    assert mgr._activity_tracker.ai_messages == [placeholder]
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.parametrize("message", [
+    '{"code": "RESPONSE_TOO_LONG"}',
+    '{"code": "RESPONSE_LENGTH_TRUNCATED", "text": "截断到这里。"}',
+], ids=["too_long", "length_truncated"])
+async def test_a_final_discards_recovery_leaves_its_completion_nothing_to_end(message):
+    """Both recoveries end the reply's turn themselves, and the completion that
+    follows them must not end it again."""
+    mgr = _core_manager()
+    mgr.user_language = "zh-CN"  # the too-long placeholder is localized
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-A"
+
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, message, request_id="req-A", reply_turn=reply_turn,
+    )
+    assert len(_ws(mgr, "turn end")) == 1, "fixture must let the recovery end the turn"
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+async def test_a_reply_whose_turn_already_ended_leaves_a_later_takeover_alone():
+    """A takeover that starts between the discard and the completion speaks
+    under its own turn; the completion of a reply already ended must not run
+    the takeover cleanup over it."""
+    mgr = _core_manager()
+    mgr.user_language = "zh-CN"
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-A"
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, '{"code": "RESPONSE_TOO_LONG"}',
+        request_id="req-A", reply_turn=reply_turn,
+    )
+    mgr._clear_tts_pipeline.reset_mock()
+    mgr._takeover_active = True  # the takeover starts and speaks meanwhile
+    mgr._current_ai_turn_text = "镜像台词"
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr._current_ai_turn_text == "镜像台词"
+
+
+async def test_a_final_discard_that_ended_nothing_leaves_its_completion_to_end_the_turn():
+    """Only a turn end the recovery actually sent closes the reply. On a live
+    client a newer request already holds the shared output, so the discard
+    sends nothing, and the reply's completion still ends its own turn, as an
+    interrupted reply does."""
+    mgr = _core_manager()
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-B"  # B was submitted meanwhile
+
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, '{"code": "RESPONSE_TOO_LONG"}',
+        request_id="req-A", reply_turn=reply_turn,
+    )
+    assert _ws(mgr, "turn end") == [] and _sync(mgr, "turn end") == []
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    assert mgr._active_text_request_id == "req-B"

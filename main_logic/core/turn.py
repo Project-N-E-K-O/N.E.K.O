@@ -378,7 +378,9 @@ class TurnMixin:
 
         A bound reply (``reply_turn``) carries the meta it was started with
         instead: it never takes a ``_pending_turn_meta`` another reply staged,
-        and clears the shared field only while that still holds its own."""
+        and clears the shared field only while that still holds its own. Its
+        ``turn_ended`` is set once the turn end is queued, so the completion
+        that follows a final discard does not end the turn again."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
         pending_meta = (
             self._pending_turn_meta if reply_turn is None else reply_turn.meta
@@ -390,6 +392,8 @@ class TurnMixin:
         if active_request_id:
             turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
+        if reply_turn is not None:
+            reply_turn.turn_ended = True
         # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
         # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
         # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
@@ -565,12 +569,21 @@ class TurnMixin:
         and meta rather than whatever the shared fields hold when it finally
         runs, and when a newer turn already owns the host
         (``_reply_turn_is_current``) it leaves every shared effect (TTS done,
-        turn end, AI text flush, wrap-up) to that turn. Unbound completions read
-        the shared fields as they stand: realtime clients, which guard their own
-        turn ends, and the Offline replies Core does not bind (independent-ASR
-        voice turns, whose completion runs inside ``close()`` rather than after
-        it, and proactive replies without ``on_proactive_done``).
+        turn end, AI text flush, wrap-up) to that turn. When a final discard
+        already ended its turn (``_ReplyTurn.turn_ended``) it does nothing: the
+        discard sent that turn end and has already settled the wrap-up.
+
+        Unbound completions read the shared fields as they stand: realtime
+        clients, which guard their own turn ends, and the Offline replies Core
+        does not bind (independent-ASR voice turns, whose completion runs inside
+        ``close()`` rather than after it, and proactive replies without
+        ``on_proactive_done``). An unbound reply keeps no record of a discard's
+        turn end, so after a final discard it still ends the turn a second
+        time. Skipping the completion on the client side instead would lose the
+        only close whenever the discard stood down without ending the turn.
         """
+        if reply_turn is not None and reply_turn.turn_ended:
+            return
         # 先于接管清理：已经不拥有这一轮的迟到回调也不该去清接管方自己的
         # TTS（镜像台词）和簿记。
         if reply_turn is not None and not self._reply_turn_is_current(reply_turn):

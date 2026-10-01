@@ -294,12 +294,19 @@ class _ReplyTurn:
     ``session`` is the client the reply was handed to, attached right before
     the hand-over. Identity only (``eq=False``): the manager compares its open
     reply by ``is``.
+
+    ``turn_ended`` is set once the reply's turn end has gone out. A final
+    discard (RESPONSE_TOO_LONG, or a RESPONSE_LENGTH_TRUNCATED recovery) ends
+    the turn itself, and the completion that runs after it must not end it a
+    second time. Only a turn end actually sent counts: a recovery that stood
+    down before its turn end leaves the completion to close the turn.
     """
 
     speech_id: str | None
     request_id: str | None = None
     meta: dict | None = None
     session: Any = None
+    turn_ended: bool = False
 
 
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
