@@ -1142,6 +1142,44 @@ def test_non_clean_in_place_install_reports_a_retarget_during_it(tmp_path, monke
     assert "changed during the sync" in capsys.readouterr().err
 
 
+def test_non_clean_sync_without_linux_mount_table_does_not_copy_vendor(tmp_path, monkeypatch, capsys):
+    # copytree would follow a bind mount ismount() misses into the package.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+    monkeypatch.setattr(
+        deps_cmd.shutil, "copytree", lambda *args, **kwargs: pytest.fail("vendor/ must not be copied")
+    )
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert not (vendor / "old.py").exists()
+    backup, = [p for p in plugin_dir.glob(".vendor.backup-*") if p.is_dir()]
+    assert (backup / "old.py").read_text() == "old"
+    assert "installing fresh instead" in capsys.readouterr().err
+
+
+def test_open_dir_path_has_no_retargetable_fallback(monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    def no_proc(path):
+        raise OSError(2, "no /proc")
+
+    monkeypatch.setattr(deps_cmd.os, "readlink", no_proc)
+    monkeypatch.setitem(sys.modules, "fcntl", type(sys)("fcntl"))  # no F_GETPATH
+    assert deps_cmd._open_dir_path(3) is None
+
+
 def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, monkeypatch, capsys):
     # ismount() misses a same-filesystem bind mount the cleanup would enter.
     from plugin.neko_plugin_cli.commands import deps_cmd

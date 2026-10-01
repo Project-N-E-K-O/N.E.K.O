@@ -205,7 +205,20 @@ def handle_sync(args: argparse.Namespace) -> int:
             # The vendor/ the swap will move aside; checked again right before
             # it, as another process may have replaced it during the install.
             vendor_before = vendor_dir.lstat() if vendor_dir.exists() else None
-            if not args.clean and vendor_dir.is_dir():
+            copy_old = not args.clean and vendor_dir.is_dir()
+            if copy_old and sys.platform.startswith("linux") and _linux_mount_points() is None:
+                # The copy would follow a same-filesystem bind mount that
+                # ismount() misses into staging (and so into the package).
+                # Install fresh instead; the old vendor/ stays as a backup,
+                # which is not deleted while mounts can not be ruled out.
+                print(
+                    f"[WARN] /proc/self/mountinfo is unavailable, so mounts inside {vendor_dir} "
+                    "can not be ruled out; installing fresh instead of on top of it "
+                    "(the old vendor/ is kept as a backup).",
+                    file=sys.stderr,
+                )
+                copy_old = False
+            if copy_old:
                 shutil.copytree(vendor_dir, staging_dir, symlinks=True)
             else:
                 staging_dir.mkdir()
@@ -543,7 +556,7 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
 
     fd = os.open(vendor_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        if not _is_target(identity, os.fstat(fd), _open_dir_path(fd, vendor_dir)):
+        if not _is_target(identity, os.fstat(fd), _open_dir_path(fd) or ""):
             return changed()
         try:
             staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -572,11 +585,16 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
             os.close(staging_fd)
         # The mount table is checked under the path the open handle really
         # has, so a later retarget of vendor/ can not point the check away.
-        trash_path = Path(_open_dir_path(fd, vendor_dir), trash)
-        if _mounted_inside(trash_path):
-            pass  # kept with a warning; the next in-place sync retries it
-        else:
+        opened = _open_dir_path(fd)
+        if opened is None:
+            print(
+                f"[WARN] Not removing the old contents moved to {vendor_dir / trash} yet: "
+                "mounts inside can not be checked through the open handle here.",
+                file=sys.stderr,
+            )
+        elif not _mounted_inside(Path(opened, trash)):
             shutil.rmtree(trash, dir_fd=fd)
+        # Otherwise kept with a warning; the next in-place sync retries it.
     finally:
         os.close(fd)
     return 0
@@ -608,13 +626,23 @@ def _others_staging(name: str, dir_fd: int) -> bool:
     return stat.S_ISDIR(info.st_mode) and info.st_uid != os.getuid()
 
 
-def _open_dir_path(fd: int, fallback: Path) -> str:
-    """The path an open directory handle refers to now (Linux), else the
-    resolved fallback."""
+def _open_dir_path(fd: int) -> str | None:
+    """The path an open directory handle refers to now: /proc/self/fd on
+    Linux, F_GETPATH on macOS. None where neither is available - resolving
+    the link again could name a directory it was retargeted to since."""
     try:
         return os.readlink(f"/proc/self/fd/{fd}")
     except OSError:
-        return os.path.realpath(fallback)
+        pass
+    try:
+        import fcntl
+
+        if hasattr(fcntl, "F_GETPATH"):
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+            return os.fsdecode(raw.split(b"\0", 1)[0])
+    except (ImportError, OSError):
+        pass
+    return None
 
 
 def _pin_link(path: Path):
