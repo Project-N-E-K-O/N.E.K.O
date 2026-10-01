@@ -1889,7 +1889,9 @@ class TtsRuntimeMixin:
             task for record in blocked
             if (task := self._schedule_tts_cleanup(record)) is not None
         )
-        if not cleanup_tasks:
+        # Capacity may have cleared between the handler timeout and this snapshot.
+        # Fallback still needs a consumer even when there is nothing left to await.
+        if not cleanup_tasks and fallback_stage is None:
             return
         expected_session = getattr(self, "session", None)
         expected_use_tts = getattr(self, "use_tts", None)

@@ -760,7 +760,10 @@ async def test_retirement_keeps_wakeup_until_real_queue_consumer_exits():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prepared", [False, True])
 @pytest.mark.parametrize("outcome", ["recover", "takeover", "cancel"])
-async def test_fallback_timeout_reserves_recovery_for_only_its_session(prepared, outcome):
+@pytest.mark.parametrize("exit_at_reservation", [False, True])
+async def test_fallback_timeout_reserves_recovery_for_only_its_session(
+    prepared, outcome, exit_at_reservation,
+):
     manager = Manager()
     manager._tts_capacity_limit = lambda worker=None: 2
     releases = [Event(), Event(), Event()]
@@ -804,16 +807,39 @@ async def test_fallback_timeout_reserves_recovery_for_only_its_session(prepared,
     manager._activate_configured_tts_fallback = activate
     manager._start_tts_thread = start_worker
     manager._flush_tts_pending_chunks = flush_pending
+    schedule_recovery = manager._schedule_tts_capacity_recovery
+    reservations = []
+
+    def schedule_after_boundary_exit(**kwargs):
+        if exit_at_reservation:
+            # Release after wait_for has timed out but before the reservation
+            # takes its physical-thread snapshot; no retired worker remains live.
+            for index, runtime in enumerate([first, second] if prepared else [first]):
+                releases[index].set()
+                runtime.thread.join(timeout=1)
+                assert not runtime.thread.is_alive()
+        schedule_recovery(**kwargs)
+        reservation = manager._tts_respawn_task
+        reservations.append(reservation)
+        # With capacity already free, the deferred task can finish before the
+        # caller resumes. Steer takeover/cancellation before it may run.
+        if exit_at_reservation and outcome == "takeover":
+            manager.session = object()
+        elif exit_at_reservation and outcome == "cancel" and reservation is not None:
+            reservation.cancel()
+
+    manager._schedule_tts_capacity_recovery = schedule_after_boundary_exit
     second.response_queue.put(("__ready__", False))
     handler = manager._start_tts_response_handler()
     retry = None
     try:
         await asyncio.wait_for(handler, 1)
-        retry = manager._tts_respawn_task
+        retry = reservations[0]
         assert retry is not None, "deadline must leave an owned recovery reservation"
-        assert first.thread.is_alive()
+        assert first.thread.is_alive() is not exit_at_reservation
         assert not first.cleanup_task.cancelled()
-        assert not manager.tts_ready
+        if not exit_at_reservation or outcome != "recover":
+            assert not manager.tts_ready
         if outcome == "takeover":
             manager.session = object()
         elif outcome == "cancel":
