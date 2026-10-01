@@ -25,7 +25,7 @@ token 为空时为兼容旧客户端而保持开放。默认开放监听只应�
 
 启用 token 后，原生客户端发送 `Authorization: Bearer <token>`（或 `X-Monitor-Token`）。浏览器里先用 `http://<host>:<port>/<name>?token=<token>` 打开一次 viewer：Monitor 会重定向到去掉 token 的地址，并写入 HttpOnly 的 `neko_monitor_session_<port>` cookie。分享 viewer 链接请用 `NEKO_MONITOR_VIEWER_TOKEN`：带 `NEKO_MONITOR_TOKEN` 的链接同时拥有 `/sync*` 的写权限，拿到链接的人可以向所有观看者注入字幕或聊天内容。
 
-cookie 里是 30 天有效的签名会话而不是 token，只能访问 viewer 路由（不能访问 `/sync*`）；用它发起的 WebSocket 握手必须来自同一 host 和端口；更换任一 token 后旧会话全部失效。浏览器会把 cookie 发给同一主机的所有端口，所以本机其他服务（主服务、插件宿主）也会收到它，并能在过期前用它读取 Monitor 的 viewer 数据；要立即作废所有会话，请更换 token。TLS 在反向代理终止时，请保留原始 `Host` 头（nginx：`proxy_set_header Host $host;`，否则实时 WebSocket 会被拒绝），并把代理地址加入 uvicorn 的 `FORWARDED_ALLOW_IPS`（默认 `127.0.0.1`），cookie 才会带上 `Secure`。
+cookie 里是 30 天有效的签名会话而不是 token，只能访问 viewer 路由（不能访问 `/sync*`）；用它发起的 WebSocket 握手必须来自同一 host 和端口；更换任一 token 后旧会话全部失效。浏览器会把 cookie 发给同一主机的所有端口，所以本机其他服务（主服务、插件宿主）也会收到它，并能在过期前用它读取 Monitor 的 viewer 数据；要立即作废所有会话，请更换 token。TLS 在反向代理终止时，请保留原始 `Host` 头（nginx：`proxy_set_header Host $http_host;`，否则实时 WebSocket 会被拒绝），并把代理地址加入 uvicorn 的 `FORWARDED_ALLOW_IPS`（默认 `127.0.0.1`），cookie 才会带上 `Secure`。
 
 Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优先。
 

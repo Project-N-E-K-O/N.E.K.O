@@ -23,7 +23,7 @@ Token が空の場合は旧クライアント互換のため認証なしです�
 
 Token を有効にした場合、native client は `Authorization: Bearer <token>`（または `X-Monitor-Token`）を送ります。Browser では viewer を一度 `http://<host>:<port>/<name>?token=<token>` で開きます。Monitor は address bar から token を除く redirect を返し、HttpOnly の `neko_monitor_session_<port>` cookie を設定します。Viewer リンクの共有には `NEKO_MONITOR_VIEWER_TOKEN` を使ってください。`NEKO_MONITOR_TOKEN` を含むリンクは `/sync*` への書き込み権限も与えるため、受け取った人は全 viewer に字幕やチャットを注入できます。
 
-Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、どちらかの token を変更すると無効になります。Browser は同じ host の全 port に cookie を送るため、他のローカルサービス（main server、plugin host）も受け取り、期限まで Monitor の viewer データ読み取りに再利用できます。全 session を取り消すには token を変更してください。TLS を終端する reverse proxy の背後では元の `Host` header を保持し（nginx: `proxy_set_header Host $host;`。保持しないとリアルタイム WebSocket が拒否されます）、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
+Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、どちらかの token を変更すると無効になります。Browser は同じ host の全 port に cookie を送るため、他のローカルサービス（main server、plugin host）も受け取り、期限まで Monitor の viewer データ読み取りに再利用できます。全 session を取り消すには token を変更してください。TLS を終端する reverse proxy の背後では元の `Host` header を保持し（nginx: `proxy_set_header Host $http_host;`。保持しないとリアルタイム WebSocket が拒否されます）、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
 
 Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTART_ALLOWED_ORIGINS`、`NEKO_BEHIND_PROXY`、`NEKO_LOG_LEVEL`、`NEKO_MERGED` を使います。Storage root は `NEKO_STORAGE_SELECTED_ROOT` と `NEKO_STORAGE_ANCHOR_ROOT` です。
 
