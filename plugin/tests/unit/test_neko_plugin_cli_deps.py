@@ -475,13 +475,16 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
     assert backup.exists()
 
 
-def test_symlinked_vendor_is_refused_before_any_change(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("clean", [False, True])
+def test_linked_vendor_is_synced_in_place(tmp_path, monkeypatch, capsys, clean):
+    # Renaming would turn the link to another disk into a real directory;
+    # install through it instead, as before the swap existed.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     real_vendor = tmp_path / "other_disk_vendor"
     real_vendor.mkdir()
-    (real_vendor / "old.py").write_text("keep")
+    (real_vendor / "old.py").write_text("old")
     link = plugin_dir / "vendor"
     if sys.platform == "win32":
         # Junctions need no privilege, unlike symlinks.
@@ -489,17 +492,23 @@ def test_symlinked_vendor_is_refused_before_any_change(tmp_path, monkeypatch, ca
                        check=True, capture_output=True)
     else:
         link.symlink_to(real_vendor, target_is_directory=True)
-    monkeypatch.setattr(
-        deps_cmd.subprocess,
-        "run",
-        lambda *args, **kwargs: pytest.fail("installer must not run for a symlinked vendor"),
-    )
+    targets = []
 
-    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    def install(command, **kwargs):
+        target = Path(command[command.index("--target") + 1])
+        targets.append(target)
+        (target / "fresh.py").write_text("new")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
+    assert targets == [link]
     assert os.readlink(link)
-    assert (real_vendor / "old.py").read_text() == "keep"
+    assert (real_vendor / "fresh.py").read_text() == "new"
+    assert (real_vendor / "old.py").exists() is (not clean)
     assert not list(plugin_dir.glob(".vendor.*"))
-    assert "is a symlink" in capsys.readouterr().err
+    assert "installing into it in place" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
@@ -885,28 +894,92 @@ def test_failed_install_keeps_staging_with_a_mount_inside(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("clean", [False, True])
-def test_sync_refuses_a_mounted_vendor_root(tmp_path, monkeypatch, capsys, clean):
-    # A mount point cannot be renamed to the backup name; copying it into
-    # staging would also follow it into the mounted tree.
+def test_sync_installs_into_a_mounted_vendor_root_in_place(tmp_path, monkeypatch, capsys, clean):
+    # A mount point (a Docker volume) can not be renamed; install into it.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
     vendor.mkdir()
-    (vendor / "external.dat").write_text("keep")
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+
+    def install(command, **kwargs):
+        (Path(command[command.index("--target") + 1]) / "fresh.py").write_text("new")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(
+        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)
+    ) == 0
+    assert vendor.is_dir() and not deps_cmd._is_link(vendor)
+    assert (vendor / "fresh.py").read_text() == "new"
+    assert (vendor / "old.py").exists() is (not clean)
+    assert not list(plugin_dir.glob(".vendor.*"))
+    assert "installing into it in place" in capsys.readouterr().err
+
+
+def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
+    # Emptying vendor/ recurses; a mount inside it would lose its files.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    mount = vendor / "pkg" / "mnt"
+    mount.mkdir(parents=True)
+    (mount / "external.dat").write_text("keep")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: mount)
+    monkeypatch.setattr(
+        deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (mount / "external.dat").read_text() == "keep"
+    assert "--clean would delete what it holds" in capsys.readouterr().err
+
+
+def test_failed_in_place_install_is_reported(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
     monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
     monkeypatch.setattr(
         deps_cmd.subprocess,
         "run",
-        lambda *args, **kwargs: pytest.fail("installer must not run"),
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="resolver error"),
     )
 
-    assert handle_sync(
-        TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)
-    ) == 1
-    assert (vendor / "external.dat").read_text() == "keep"
-    assert not list(plugin_dir.glob(".vendor.*"))
-    assert "is a mount point" in capsys.readouterr().err
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert vendor.is_dir()
+    assert "uv pip install failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("owner", ["mine", "theirs"])
+def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
+    # Left by a run killed between creating the marker and the rename, or by
+    # a rollback that could not delete it; nothing else would remove it.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    orphan = tmp_path / ".vendor.backup-0000abcd.pending"
+    orphan.touch()
+    live = tmp_path / ".vendor.backup-1111abcd"
+    live.mkdir()
+    live_marker = tmp_path / ".vendor.backup-1111abcd.pending"
+    live_marker.touch()
+    look_alike = tmp_path / ".vendor.backup-notes.pending"
+    look_alike.touch()
+    # Another user's marker may precede their rename right now.
+    monkeypatch.setattr(deps_cmd, "_owned_by_other_user", lambda path: owner == "theirs")
+
+    deps_cmd._remove_orphan_markers(tmp_path)
+
+    assert orphan.exists() is (owner == "theirs")
+    assert live_marker.exists()
+    assert look_alike.exists()
 
 
 def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):

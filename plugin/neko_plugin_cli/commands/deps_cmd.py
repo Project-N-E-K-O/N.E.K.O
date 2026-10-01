@@ -82,6 +82,7 @@ def handle_sync(args: argparse.Namespace) -> int:
             # Holding the lock means no other sync of this plugin by this user
             # is running, so this user's staging dirs were left by killed runs.
             _remove_stale_staging(plugin_dir)
+            _remove_orphan_markers(plugin_dir)
 
             pyproject_path = plugin_dir / "pyproject.toml"
             external_deps = (
@@ -128,13 +129,10 @@ def handle_sync(args: argparse.Namespace) -> int:
                 print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
                 return 0
 
-            # The swap renames vendor/ itself, which would replace a link to
-            # another disk with a real directory. Refuse before touching it.
-            if _is_link(vendor_dir):
+            if _is_link(vendor_dir) and not vendor_dir.is_dir():
                 print(
-                    f"[FAIL] {vendor_dir} is a symlink; sync replaces vendor/ as a "
-                    "whole and cannot keep the link. Replace it with a real "
-                    "directory and retry.",
+                    f"[FAIL] {vendor_dir} is a link that does not lead to a "
+                    "directory. Fix or remove it and retry.",
                     file=sys.stderr,
                 )
                 return 1
@@ -147,14 +145,18 @@ def handle_sync(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-            if vendor_dir.is_dir() and _is_mount_point(vendor_dir):
-                print(
-                    f"[FAIL] {vendor_dir} is a mount point; sync replaces vendor/ by "
-                    "renaming, which a mount point does not allow. Use a plain "
-                    "directory for vendor/ and retry.",
-                    file=sys.stderr,
-                )
-                return 1
+            # The swap renames vendor/ itself, which would turn a link to
+            # another disk into a real directory, and a mount point (a Docker
+            # volume) can not be renamed at all. Install into those in place,
+            # as before the swap existed, without its rollback.
+            if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
+                exit_code = _sync_in_place(vendor_dir, external_deps, args)
+                if exit_code != 0:
+                    return exit_code
+                _remove_retained_backups(plugin_dir)
+                print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
+                print(f"  vendor={vendor_dir}")
+                return 0
 
             if vendor_dir.is_dir():
                 foreign = _find_foreign_subdir(vendor_dir, junctions=not args.clean)
@@ -225,6 +227,55 @@ _HOST_PROVIDED = {"n-e-k-o"}
 # can not collide with package data or travel into vendor/.
 def _pending_marker(backup_dir: Path) -> Path:
     return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
+
+
+def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Namespace) -> int:
+    """Install straight into a linked or mounted vendor/ (no staging, no
+    rollback): a failed install may leave it half updated."""
+    print(
+        "[WARN] "
+        + _tri(
+            f"{vendor_dir} is a link or mount point; installing into it in place. "
+            "A failed install can leave it partly updated (no rollback).",
+            f"{vendor_dir} 是链接或挂载点，将直接在原处安装。"
+            "安装失败时它可能处于更新了一半的状态（无法回滚）。",
+            f"{vendor_dir} はリンクまたはマウントポイントのため、その場でインストールします。"
+            "失敗すると一部だけ更新された状態になる可能性があります（ロールバック不可）。",
+        ),
+        file=sys.stderr,
+    )
+    if args.clean:
+        # Emptying recurses: a mount inside would lose its files. (rmtree
+        # removes a nested Windows junction itself, not its target.)
+        foreign = _find_foreign_subdir(vendor_dir, junctions=False)
+        if foreign is not None:
+            print(
+                f"[FAIL] {foreign} is a mount point inside vendor/; --clean would "
+                "delete what it holds. Remove it and retry.",
+                file=sys.stderr,
+            )
+            return 1
+        _empty_directory(vendor_dir)
+    exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
+    if exit_code == 0:
+        _clean_vendor(vendor_dir)
+    return exit_code
+
+
+def _empty_directory(directory: Path) -> None:
+    """Delete what is inside directory, keeping directory itself."""
+    for child in directory.iterdir():
+        if _is_link(child):
+            # A link to a directory (or a junction) is removed with rmdir on
+            # Windows; neither form follows it.
+            try:
+                child.unlink()
+            except OSError:
+                os.rmdir(child)
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -555,6 +606,28 @@ def _remove_stale_staging(plugin_dir: Path) -> None:
             print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
 
 
+def _remove_orphan_markers(plugin_dir: Path) -> None:
+    """Delete this user's pending markers whose backup dir is gone: left when
+    a run was killed between creating the marker and the rename, or when a
+    rollback could not delete it. Nothing else would ever remove them."""
+    pattern = re.compile(
+        re.escape(VENDOR_SYNC_BACKUP_PREFIX) + r"[0-9a-f]{8}" + re.escape(VENDOR_SYNC_PENDING_SUFFIX)
+    )
+    for marker in plugin_dir.glob(f"{VENDOR_SYNC_BACKUP_PREFIX}*{VENDOR_SYNC_PENDING_SUFFIX}"):
+        if not pattern.fullmatch(marker.name) or marker.is_symlink() or not marker.is_file():
+            continue
+        backup = marker.with_name(marker.name[: -len(VENDOR_SYNC_PENDING_SUFFIX)])
+        try:
+            # Another user's marker may precede their rename right now.
+            if backup.exists() or _owned_by_other_user(marker):
+                continue
+            marker.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"[WARN] Could not remove stale recovery marker {marker}: {exc}", file=sys.stderr)
+
+
 def _retained_backups(plugin_dir: Path) -> list[Path]:
     return _sync_work_dirs(plugin_dir, VENDOR_SYNC_BACKUP_PREFIX)
 
@@ -717,10 +790,8 @@ def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
             _pending_marker(backup_dir).unlink(missing_ok=True)
         except OSError as exc:
             print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
-        # vendor/ was checked for mounts before the install, but one may have
-        # been added since; check again right before deleting.
-        if not _mounted_inside(backup_dir):
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        # The caller's _remove_retained_backups deletes the backup, checking
+        # it for mounts added since vendor/ was checked.
     return True
 
 
