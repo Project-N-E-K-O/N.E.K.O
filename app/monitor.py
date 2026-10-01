@@ -46,7 +46,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
-from utils.preferences import aload_user_preferences
+from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging
@@ -128,7 +128,7 @@ def _viewer_preferences_only(preferences):
     return [
         {k: v for k, v in entry.items() if k in _ALLOWED_VIEWER_PREFERENCE_KEYS}
         for entry in preferences
-        if isinstance(entry, dict)
+        if isinstance(entry, dict) and entry.get("model_path") != GLOBAL_CONVERSATION_KEY
     ]
 
 

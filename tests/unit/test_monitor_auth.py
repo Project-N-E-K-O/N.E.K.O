@@ -1,3 +1,5 @@
+import pytest
+
 from starlette.requests import HTTPConnection
 
 from app import monitor_auth
@@ -64,3 +66,15 @@ def test_token_scopes(monkeypatch):
     assert not monitor_auth.verify_monitor_token("viewer")
     monkeypatch.setattr(monitor_auth, "MONITOR_VIEWER_TOKEN", "")
     assert monitor_auth.monitor_token_scope("") is None
+
+
+@pytest.mark.parametrize("value", [
+    "\u00b2.abc",            # isdigit() is True but int() rejects it
+    "\u00b9\u00b2.abc",
+    "9" * 5000 + ".a",       # beyond int()'s str-digit limit
+    "99999999999.\u00e9",    # compare_digest raises on non-ASCII str
+    ".", "1.", "abc",
+])
+def test_malformed_viewer_session_is_rejected_without_raising(monkeypatch, value):
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "secret")
+    assert monitor_auth.verify_viewer_session(value, now=1) is False

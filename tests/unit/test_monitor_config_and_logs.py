@@ -40,3 +40,14 @@ def test_redaction_never_breaks_a_format_template(message, args):
     record = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, message, args, None)
     assert MonitorQueryLogFilter().filter(record)
     assert record.getMessage() == message % args
+
+
+@pytest.mark.parametrize("message, args", [
+    ("Is this ok?yes", ()),
+    ("%s - question?%s", ("127.0.0.1", "plain?text")),
+])
+def test_redaction_leaves_non_path_question_marks_alone(message, args):
+    record = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, message, args, None)
+    expected = message % args if args else message
+    assert MonitorQueryLogFilter().filter(record)
+    assert record.getMessage() == expected

@@ -239,3 +239,30 @@ def test_lifespan_installs_log_redaction_for_any_launch_mode(client):
     import logging
     for name in ("uvicorn.access", "uvicorn.error"):
         assert any(isinstance(f, monitor_auth.MonitorQueryLogFilter) for f in logging.getLogger(name).filters)
+
+
+@pytest.mark.parametrize("host", ["testserver#", "x?", "a/b"])
+def test_spoofed_host_cannot_hide_producer_route(viewer_client, host):
+    # starlette 0.46 derives url.path from the unvalidated Host header.
+    _assert_ws_rejected(viewer_client, "/sync/neko", {"host": host, "Authorization": "Bearer viewer-secret"})
+    _assert_ws_rejected(viewer_client, "/sync_binary/neko", {"host": host, **_session_headers()})
+
+
+@pytest.mark.parametrize("cookie", ["\u00b2.abc", "9" * 5000 + ".a", "99999999999.\u00e9", "\u00b9\u00b2.x", ".", "1."])
+def test_malformed_session_cookie_is_a_clean_rejection(monkeypatch, cookie):
+    monkeypatch.setattr(monitor_auth, "MONITOR_TOKEN", "route-secret")
+    header = f"{COOKIE}={cookie}".encode("latin-1")
+    with TestClient(monitor.app, raise_server_exceptions=False) as raw_client:
+        assert raw_client.get("/api/config/preferences", headers={"Cookie": header}).status_code == 401
+        _assert_ws_rejected(raw_client, "/ws/neko", {"Cookie": header})
+
+
+def test_preferences_hide_reserved_global_conversation_entry(client, monkeypatch):
+    async def preferences():
+        return [
+            {"model_path": monitor.GLOBAL_CONVERSATION_KEY, "conversation_settings": {"x": 1}},
+            {"model_path": "model", "scale": 2},
+        ]
+    monkeypatch.setattr(monitor, "aload_user_preferences", preferences)
+    response = client.get("/api/config/preferences", headers={"Authorization": "Bearer route-secret"})
+    assert response.json() == [{"model_path": "model", "scale": 2}]

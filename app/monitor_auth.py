@@ -50,11 +50,15 @@ class MonitorQueryLogFilter(logging.Filter):
     Keep the path and status useful while omitting the complete query string.
     """
 
-    @staticmethod
-    def _redact(value: object) -> object:
+    # Only a query string that follows a path ("/x?..."), so unrelated text
+    # containing "?" is left alone.
+    _PATH_QUERY = re.compile(r"(/[^\s?\"']*)\?[^\s\"']*")
+
+    @classmethod
+    def _redact(cls, value: object) -> object:
         if not isinstance(value, str):
             return value
-        return re.sub(r"\?[^\s\"']*", "", value)
+        return cls._PATH_QUERY.sub(r"\1", value)
 
     def filter(self, record: logging.LogRecord) -> bool:
         # Never rewrite a format template that still has args to apply: a
@@ -156,12 +160,17 @@ def verify_viewer_session(value: str | None, now: float | None = None) -> bool:
     if not MONITOR_TOKEN or not value:
         return False
     expires_text, _, signature = value.partition(".")
-    if not expires_text.isdigit() or not signature:
+    # Cookies arrive latin-1 decoded and attacker-controlled: "²".isdigit() is
+    # True yet int() rejects it, and compare_digest raises on non-ASCII str.
+    # Any malformed value must be a clean rejection, never a 500.
+    if not (expires_text.isascii() and expires_text.isdigit()) or len(expires_text) > 12:
+        return False
+    if not signature.isascii():
         return False
     expires_at = int(expires_text)
     if expires_at <= (now if now is not None else time.time()):
         return False
-    return hmac.compare_digest(signature, _viewer_session_signature(expires_at))
+    return hmac.compare_digest(signature.encode("ascii"), _viewer_session_signature(expires_at).encode("ascii"))
 
 
 def _same_origin(conn: HTTPConnection) -> bool:
@@ -187,7 +196,7 @@ def _exchange_query_token(conn: HTTPConnection) -> RedirectResponse:
     # Use the still-encoded raw path: ``url.path`` truncates at a decoded
     # "#"/"?" in a character name.  Collapse leading slashes so "//evil.example"
     # cannot become a protocol-relative open redirect.
-    raw_path = conn.scope.get("raw_path") or conn.url.path.encode("utf-8")
+    raw_path = conn.scope.get("raw_path") or conn.scope.get("path", "").encode("utf-8")
     path = "/" + raw_path.decode("latin-1").lstrip("/\\")
     location = path + (f"?{urlencode(remaining)}" if remaining else "")
     response = RedirectResponse(location, status_code=303, headers=_NO_STORE_HEADERS)
@@ -220,7 +229,11 @@ class MonitorAuthMiddleware:
             return
 
         conn = HTTPConnection(scope)
-        producer_route = conn.url.path.startswith(_PRODUCER_PATH_PREFIXES)
+        # Decide from scope["path"] (what the router matches), never conn.url:
+        # starlette 0.46 rebuilds url from the unvalidated Host header, so a
+        # Host containing "#", "?" or "/" would hide a /sync/* path.
+        path = scope.get("path", "")
+        producer_route = path.startswith(_PRODUCER_PATH_PREFIXES)
         token, source = extract_monitor_token(conn)
         if token is not None:
             scope_granted = monitor_token_scope(token)
@@ -235,7 +248,7 @@ class MonitorAuthMiddleware:
         if not authorized:
             if scope["type"] == "websocket":
                 # Closing before accept makes the server answer the handshake
-                # with 403, so connectors take their handshake-failure backoff.
+                # with 403; the sync connector then warns once and slows down.
                 await WebSocket(scope, receive, send).close(code=1008)
             else:
                 response = JSONResponse(
@@ -250,7 +263,7 @@ class MonitorAuthMiddleware:
             source == "query"
             and scope["type"] == "http"
             and scope.get("method") == "GET"
-            and not conn.url.path.startswith("/api/")
+            and not path.startswith("/api/")
         ):
             await _exchange_query_token(conn)(scope, receive, send)
             return
