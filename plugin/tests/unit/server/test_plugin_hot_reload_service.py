@@ -363,12 +363,12 @@ async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch
     deadlines = []
     original_wait = asyncio.wait
 
-    async def observe_wait(tasks, *, timeout):
+    async def observe_wait(tasks, *, timeout, **kwargs):
         deadlines.append(timeout)
         # Scale the normal stop budget down for a fast behavioral test.
         await asyncio.sleep(0.03)
         release.set()
-        return await original_wait(tasks, timeout=timeout)
+        return await original_wait(tasks, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(module, "_STOP_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(module.asyncio, "wait", observe_wait)
@@ -377,7 +377,7 @@ async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch
         assert old_task.done()
         # Waited in recheck slices against the restart budget, not the shutdown one.
         assert deadlines == [module._DRAIN_RECHECK_SECONDS]
-        budget = service._restart_drain_budget_sync()
+        budget = service._restart_drain_budget(0.0)
         assert budget == module._RESTART_DRAIN_SECONDS
         assert budget > module.PLUGIN_STARTUP_TIMEOUT
         assert budget > module._STOP_TIMEOUT_SECONDS
@@ -701,17 +701,16 @@ async def test_restart_drain_covers_in_flight_plugin_startup_timeout(tmp_path: P
 
     class _ObservingLifecycle:
         async def reload_plugin(self, plugin_id, *, only_if_running=False):
-            observed.append(service._restart_drain_budget_sync())
+            observed.append((service._inflight_target.plugin_id, service._restart_drain_budget(200.0)))
             return {"success": True, "plugin_id": plugin_id}
 
     service = _make_service(tmp_path, _ObservingLifecycle(), monkeypatch)
-    monkeypatch.setattr(module, "effective_startup_timeout_sync", lambda pid, path: 200.0)
     monkeypatch.setattr(module, "active_startup_timeout", lambda pid: None)
     await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
-    assert observed == [module._RESTART_DRAIN_OVERHEAD_SECONDS + 200.0]
-    assert observed[0] > module._RESTART_DRAIN_SECONDS
+    assert observed == [("demo", module._RESTART_DRAIN_OVERHEAD_SECONDS + 200.0)]
+    assert observed[0][1] > module._RESTART_DRAIN_SECONDS
     assert service._inflight_target is None
-    assert service._restart_drain_budget_sync() == module._RESTART_DRAIN_SECONDS
+    assert service._restart_drain_budget(200.0) == module._RESTART_DRAIN_SECONDS
 
 
 def test_restart_drain_prefers_timeout_start_plugin_actually_granted(tmp_path: Path, monkeypatch) -> None:
@@ -719,34 +718,70 @@ def test_restart_drain_prefers_timeout_start_plugin_actually_granted(tmp_path: P
     timeout start_plugin recorded after reading it wins."""
     service = module.PluginHotReloadService(_FakeLifecycleService())
     service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
-    monkeypatch.setattr(module, "effective_startup_timeout_sync", lambda pid, path: 10.0)
     monkeypatch.setattr(module, "active_startup_timeout", lambda pid: 250.0 if pid == "demo" else None)
-    assert service._restart_drain_budget_sync() == module._RESTART_DRAIN_OVERHEAD_SECONDS + 250.0
+    assert service._restart_drain_budget(10.0) == module._RESTART_DRAIN_OVERHEAD_SECONDS + 250.0
 
 
-async def test_restart_drain_rechecks_budget_while_waiting(monkeypatch) -> None:
-    """A budget that grows mid-drain (config read after the wait began) is
-    honoured instead of failing startup on the first, smaller estimate."""
+def _stopping_service_with_inflight(tmp_path: Path, task: asyncio.Task) -> module.PluginHotReloadService:
     service = module.PluginHotReloadService(_FakeLifecycleService())
     service._stop_event = asyncio.Event()
     service._stop_event.set()
+    service._task = task
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    return service
+
+
+async def test_restart_drain_rechecks_budget_while_waiting(tmp_path: Path, monkeypatch) -> None:
+    """A budget that grows mid-drain (config read after the wait began) is
+    honoured instead of failing startup on the first, smaller estimate."""
     release = asyncio.Event()
     task = asyncio.create_task(release.wait())
-    service._task = task
-    budgets = []
+    service = _stopping_service_with_inflight(tmp_path, task)
+    reads = []
 
-    def budget() -> float:
-        budgets.append(None)
-        return 0.15 if len(budgets) == 1 else 5.0
+    def read_config(pid, path) -> float:
+        reads.append(pid)
+        return 5.0
 
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.15)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
     monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.05)
-    monkeypatch.setattr(service, "_restart_drain_budget_sync", budget)
+    monkeypatch.setattr(module, "active_startup_timeout", lambda pid: None)
+    monkeypatch.setattr(module, "effective_startup_timeout_sync", read_config)
     asyncio.get_running_loop().call_later(0.4, release.set)
     try:
         await asyncio.wait_for(service.wait_for_stopped(), 3)
         assert task.done()
-        assert len(budgets) > 1
+        assert reads  # the larger config budget replaced the 0.15s default
     finally:
+        release.set()
+        await task
+
+
+async def test_restart_drain_deadline_holds_when_config_read_stalls(tmp_path: Path, monkeypatch) -> None:
+    """A hung config read must not hang startup: the drain falls back to the
+    known budget and still fails promptly at its deadline."""
+    import threading
+
+    unblock = threading.Event()
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service = _stopping_service_with_inflight(tmp_path, task)
+
+    def stalled_read(pid, path) -> float:
+        unblock.wait(5)
+        return 300.0
+
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.05)
+    monkeypatch.setattr(module, "active_startup_timeout", lambda pid: None)
+    monkeypatch.setattr(module, "effective_startup_timeout_sync", stalled_read)
+    try:
+        with pytest.raises(RuntimeError, match="retry server startup"):
+            await asyncio.wait_for(service.wait_for_stopped(), 2)
+    finally:
+        unblock.set()
         release.set()
         await task
 

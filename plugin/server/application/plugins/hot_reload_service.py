@@ -168,6 +168,13 @@ def _preflight_compile_sync(root: Path) -> str | None:
     return None
 
 
+def _consume_future_result(future: asyncio.Future[object]) -> None:
+    # A background budget refresh may outlive the drain; retrieve its outcome so
+    # an error is not reported as never retrieved.
+    if not future.cancelled():
+        future.exception()
+
+
 class PluginHotReloadService:
     """Watch plugin source directories and reload running plugins on change.
 
@@ -285,16 +292,42 @@ class PluginHotReloadService:
                 self._raise_drain_timeout()
             return
         started = time_module.monotonic()
+        # The config estimate is refreshed in the background: a stalled read
+        # (e.g. a development source_dir on a hung mount) must neither block
+        # observing the old task's exit nor the drain deadline. Until a read
+        # completes, the budget falls back to the global default and whatever
+        # start_plugin has recorded in memory.
+        config_startup = 0.0
+        refresh: asyncio.Future[float] | None = None
+        next_refresh_at = started
         while True:
-            budget = await asyncio.to_thread(self._restart_drain_budget_sync)
-            remaining = started + budget - time_module.monotonic()
+            now = time_module.monotonic()
+            target = self._inflight_target
+            if refresh is None and target is not None and now >= next_refresh_at:
+                refresh = asyncio.ensure_future(asyncio.to_thread(
+                    effective_startup_timeout_sync,
+                    target.plugin_id,
+                    target.root / "plugin.toml",
+                ))
+                refresh.add_done_callback(_consume_future_result)
+                next_refresh_at = now + _DRAIN_RECHECK_SECONDS
+            remaining = started + self._restart_drain_budget(config_startup) - now
             if remaining <= 0:
                 self._raise_drain_timeout()
+            waiters: set[asyncio.Future[object]] = {task}
+            if refresh is not None:
+                waiters.add(refresh)
             done, _pending_tasks = await asyncio.wait(
-                {task}, timeout=min(remaining, _DRAIN_RECHECK_SECONDS)
+                waiters,
+                timeout=min(remaining, _DRAIN_RECHECK_SECONDS),
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            if done:
+            if task in done:
                 return
+            if refresh is not None and refresh.done():
+                if not refresh.cancelled() and refresh.exception() is None:
+                    config_startup = refresh.result()
+                refresh = None
 
     @staticmethod
     def _raise_drain_timeout() -> None:
@@ -303,21 +336,19 @@ class PluginHotReloadService:
             "retry server startup after it finishes"
         )
 
-    def _restart_drain_budget_sync(self) -> float:
-        """Drain budget for the in-flight reload, from its current startup timeout.
+    def _restart_drain_budget(self, config_startup: float) -> float:
+        """Drain budget for the in-flight reload.
 
-        Takes the larger of the timeout start_plugin actually granted (once it
-        has read the config) and the current config estimate, so neither a
-        config edit made while the reload waited for the lock nor one made
-        before start_plugin reads it can shorten the wait below the real start.
+        Takes the larger of the timeout start_plugin actually granted (in
+        memory, once it has read the config) and ``config_startup``, the latest
+        estimate read from the plugin's config, so neither a config edit made
+        while the reload waited for the lock nor one made before start_plugin
+        reads it can shorten the wait below the real start.
         """
         target = self._inflight_target
         if target is None:
             return _RESTART_DRAIN_SECONDS
-        startup = max(
-            effective_startup_timeout_sync(target.plugin_id, target.root / "plugin.toml"),
-            active_startup_timeout(target.plugin_id) or 0.0,
-        )
+        startup = max(config_startup, active_startup_timeout(target.plugin_id) or 0.0)
         return max(_RESTART_DRAIN_SECONDS, _RESTART_DRAIN_OVERHEAD_SECONDS + startup)
 
     @property

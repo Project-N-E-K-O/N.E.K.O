@@ -229,6 +229,7 @@ async def _rollback_targets(
     backups: dict[Path, Path],
     preexisting_targets: frozenset[Path],
     remove_created_targets: bool,
+    failed_targets: set[Path] | None = None,
 ) -> bool:
     restored = True
     for target in reversed(targets):
@@ -239,6 +240,8 @@ async def _rollback_targets(
                     await remove_directory(target)
                 except Exception as exc:
                     restored = False
+                    if failed_targets is not None:
+                        failed_targets.add(target)
                     logger.error(
                         "plugin replacement created-target cleanup failed target={} err_type={}",
                         target.name,
@@ -250,6 +253,8 @@ async def _rollback_targets(
             await restore_directory(backup, target)
         except Exception as exc:
             restored = False
+            if failed_targets is not None:
+                failed_targets.add(target)
             logger.error(
                 "plugin replacement target rollback failed target={} err_type={}",
                 target.name,
@@ -384,13 +389,17 @@ async def replace_plugin(
             backups[target] = backup
     except Exception as exc:
         _notify_rollback_start(on_rollback_start)
+        failed_targets: set[Path] = set()
         recovered = await _rollback_targets(
             targets=targets,
             backups=backups,
             preexisting_targets=preexisting_targets,
             remove_created_targets=False,
+            failed_targets=failed_targets,
         )
-        files_restored = recovered
+        # Only the plugin's own code tree decides the recovery permission; an
+        # additional (profile) target that failed to come back does not.
+        code_restored = target_dir not in failed_targets
         if was_running:
             try:
                 await _start_plugin(plugin_id)
@@ -401,9 +410,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        if not files_restored:
+        if not code_restored:
             # 旧源码没能原样恢复：留在盘上的东西不是许可当初针对的那份。
-            # 只看文件；重启失败不改变盘上是哪份源码。
+            # 只看插件代码目录；附带目录或重启失败不改变盘上是哪份源码。
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage="backup",
@@ -452,13 +461,15 @@ async def replace_plugin(
         )
     except Exception as exc:
         _notify_rollback_start(on_rollback_start)
+        failed_targets = set()
         restored = await _rollback_targets(
             targets=targets,
             backups=backups,
             preexisting_targets=preexisting_targets,
             remove_created_targets=True,
+            failed_targets=failed_targets,
         )
-        files_restored = restored
+        code_restored = target_dir not in failed_targets
         try:
             await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         except Exception as eviction_exc:
@@ -478,9 +489,9 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        if not files_restored:
+        if not code_restored:
             # 旧源码没能原样恢复：留在盘上的可能是失败的新包，不能凭旧许可自启。
-            # 只看文件；缓存清理或重启失败不改变盘上是哪份源码。
+            # 只看插件代码目录；附带目录、缓存清理或重启失败不改变盘上是哪份源码。
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage=stage,
