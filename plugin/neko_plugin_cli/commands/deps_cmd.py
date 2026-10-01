@@ -1146,7 +1146,9 @@ def _install_to_vendor(
             "--python", os.path.abspath(python) if _looks_like_path(python) else python,
             "--target", str(vendor_dir.absolute()),
             "--upgrade",
-            *packages,
+            # uv resolves relative paths in requirements from its cwd; keep
+            # them meaning what they meant here (as pip's did on main).
+            *(_absolute_requirement(package) if cwd else package for package in packages),
         ]
         label = "uv pip install"
     else:
@@ -1176,6 +1178,26 @@ def _install_to_vendor(
             file=sys.stderr,
         )
     return 0 if result is not None and result.returncode == 0 else 1
+
+
+def _absolute_requirement(requirement: str) -> str:
+    """A requirement whose local path ("foo @ ./deps/foo", "./deps/foo") is
+    relative, with that path made absolute; anything else unchanged."""
+    spec, semicolon, marker = requirement.partition(";")
+    name, at, reference = spec.partition("@")
+    target = (reference if at else spec).strip()
+    if not target or "://" in target or target.startswith("file:"):
+        return requirement
+    if at:
+        is_relative_path = not os.path.isabs(target)
+    else:
+        # A bare requirement is a path only when written like one.
+        is_relative_path = target.startswith(("./", "../", ".\\", "..\\")) or target in {".", ".."}
+    if not is_relative_path:
+        return requirement
+    absolute = os.path.abspath(target)
+    rebuilt = f"{name.strip()} @ {absolute}" if at else absolute
+    return f"{rebuilt} ;{marker}" if semicolon else rebuilt
 
 
 def _looks_like_path(program: str) -> bool:

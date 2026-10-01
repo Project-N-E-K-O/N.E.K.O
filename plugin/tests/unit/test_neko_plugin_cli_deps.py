@@ -96,6 +96,40 @@ def test_uv_runs_in_the_neko_project_root(tmp_path, monkeypatch, has_project):
     assert command[command.index("--target") + 1] == str(elsewhere / "staging")
 
 
+def test_relative_requirements_keep_resolving_from_here(tmp_path, monkeypatch):
+    # uv runs in the N.E.K.O root; "foo @ ./deps/foo" must still mean the
+    # directory sync was run from, as with pip on main.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    root = tmp_path / "neko"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'n-e-k-o'\n", encoding="utf-8")
+    here = tmp_path / "plugin-repo"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    seen = []
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: seen.append(command) or subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+    packages = [
+        "foo @ ./deps/foo",
+        "./deps/bar",
+        "baz @ ./deps/baz ; python_version >= '3.8'",
+        "httpx>=0.27",
+        "qux @ https://example.com/qux.whl",
+    ]
+    assert deps_cmd._install_to_vendor(
+        packages, vendor_dir=tmp_path / "staging", python="python", project_root=root,
+    ) == 0
+    args = seen[-1][seen[-1].index("--upgrade") + 1:]
+    assert args[0] == f"foo @ {here / 'deps' / 'foo'}"
+    assert args[1] == str(here / "deps" / "bar")
+    assert args[2] == f"baz @ {here / 'deps' / 'baz'} ; python_version >= '3.8'"
+    assert args[3:] == ["httpx>=0.27", "qux @ https://example.com/qux.whl"]
+
+
 def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
     # `uv run` exports UV; uv may not be on PATH (pipx, `py -m uv`).
     from plugin.neko_plugin_cli.commands import deps_cmd
