@@ -805,14 +805,22 @@
 
                 // 握手被 Monitor 以 403 拒绝时浏览器只看到 close。会话过期或更换 token 后
                 // 探一次接口：401 就刷新页面，让认证失败直接显示出来，而不是静默重连到放弃。
+                // 探测限时 3 秒：代理或网络挂住请求时不能拖住下面的重连。
+                const probeAbort = new AbortController();
+                const probeTimer = setTimeout(() => probeAbort.abort(), 3000);
                 try {
-                    const probe = await fetch('/api/config/page_config', { cache: 'no-store' });
+                    const probe = await fetch('/api/config/page_config', {
+                        cache: 'no-store',
+                        signal: probeAbort.signal,
+                    });
                     if (probe.status === 401) {
                         window.location.reload();
                         return;
                     }
                 } catch (_) {
-                    // 网络不可达时按原逻辑重连
+                    // 网络不可达或探测超时时按原逻辑重连
+                } finally {
+                    clearTimeout(probeTimer);
                 }
 
                 if (reconnectAttempts < maxReconnectAttempts) {
