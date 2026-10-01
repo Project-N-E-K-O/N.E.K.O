@@ -248,17 +248,24 @@ class PluginHotReloadService:
             self._restart_requested = False
             self.start()
 
-    async def wait_for_stopped(self) -> None:
+    async def wait_for_stopped(self, timeout: float = _STOP_TIMEOUT_SECONDS) -> None:
         """Drain a stopping generation before reopening the server host gate.
 
         Shutdown need not spend its host cleanup budget on an in-flight reload,
         but startup must not let that old transaction join the new server run.
         asyncio.wait observes task completion without propagating its cancellation.
         Cancelling startup itself still propagates and leaves the gate closed.
+        A stalled transaction fails startup promptly instead of hanging it;
+        reopening the gate while it still lives would admit an old-generation host.
         """
         task = self._task
         if task is not None and self._stop_event is not None and self._stop_event.is_set():
-            await asyncio.wait({task})
+            done, _pending_tasks = await asyncio.wait({task}, timeout=timeout)
+            if not done:
+                raise RuntimeError(
+                    "Previous plugin hot reload is still running; "
+                    "retry server startup after it finishes"
+                )
 
     @property
     def is_running(self) -> bool:

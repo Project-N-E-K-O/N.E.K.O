@@ -333,6 +333,26 @@ async def test_stop_is_idempotent(
     assert not service.is_running
 
 
+async def test_restart_drain_has_deadline_and_retains_old_task() -> None:
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service._task = task
+    try:
+        with pytest.raises(RuntimeError, match="retry server startup"):
+            await asyncio.wait_for(service.wait_for_stopped(timeout=0.01), 0.5)
+        assert service._task is task
+        assert not task.done()
+        release.set()
+        await service.wait_for_stopped(timeout=0.5)
+        assert task.done()
+    finally:
+        release.set()
+        await task
+
+
 async def test_stop_timeout_keeps_task_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
