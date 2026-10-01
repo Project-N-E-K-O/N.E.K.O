@@ -146,6 +146,9 @@ class _RollbackOutcome:
     filesystem_rollback: FilesystemRollback
     runtime_restart: RuntimeRestart
     preference_restored: bool
+    # Whether the plugin's own source (install record and code) is back,
+    # independent of the package-profile restore in filesystem_rollback.
+    source_restored: bool = True
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -961,11 +964,13 @@ async def _rollback_precommit(
         source_update_attempted or staged_code is not None or staged_profile is not None
     )
     filesystem_complete = True
+    source_restored = True
     if source_update_attempted:
         try:
             await asyncio.to_thread(manager.restore_entry_for_rollback, source_entry)
         except Exception:
             filesystem_complete = False
+            source_restored = False
             logger.exception(
                 "uninstall rollback failed to restore source entry plugin_id={}",
                 plugin_id,
@@ -975,6 +980,7 @@ async def _rollback_precommit(
             await asyncio.to_thread(_restore_staged_plugin_code_sync, staged_code)
         except Exception:
             filesystem_complete = False
+            source_restored = False
             logger.exception(
                 "uninstall rollback failed to restore code plugin_id={}", plugin_id
             )
@@ -1024,6 +1030,7 @@ async def _rollback_precommit(
         filesystem_rollback=filesystem_rollback,
         runtime_restart=runtime_restart,
         preference_restored=preference_restored,
+        source_restored=source_restored,
     )
 
 
@@ -1195,8 +1202,9 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             stop_attempted=stop_attempted,
             registry_target=registry_target,
         )
-        if rollback.filesystem_rollback == "incomplete":
-            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。
+        if not rollback.source_restored:
+            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。只看插件
+            # 自己的源码；包配置目录没恢复好不改变盘上是哪份代码。
             from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
             revoke_hot_reload_recovery(plugin_id)

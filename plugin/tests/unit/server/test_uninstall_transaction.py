@@ -1285,7 +1285,7 @@ async def test_uninstall_incomplete_rollback_revokes_hot_reload_recovery(
 
     async def incomplete_rollback(**kwargs):
         outcome = await original_rollback(**kwargs)
-        return replace(outcome, filesystem_rollback="incomplete")
+        return replace(outcome, filesystem_rollback="incomplete", source_restored=False)
 
     monkeypatch.setattr(uninstall_module, "_rollback_precommit", incomplete_rollback)
 
@@ -1294,3 +1294,36 @@ async def test_uninstall_incomplete_rollback_revokes_hot_reload_recovery(
 
     assert captured.value.filesystem_rollback == "incomplete"
     assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_profile_restore_failure_keeps_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Only the plugin's own source decides: a package profile that failed to
+    come back does not change which code is on disk."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    profile_dir = harness.profiles_root / "demo_package"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "settings.toml").write_text("value = 1\n", encoding="utf-8")
+    _package_entry_fakes(monkeypatch, harness)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    def _profile_restore_fails(_staged) -> None:
+        raise PermissionError("profile is in use")
+
+    monkeypatch.setattr(
+        uninstall_module, "_restore_staged_package_profile_sync", _profile_restore_fails
+    )
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert harness.plugin_dir.is_dir()
+    assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")
