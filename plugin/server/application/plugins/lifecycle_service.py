@@ -99,6 +99,9 @@ from plugin.utils import parse_bool_config
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
+# Public alias: the hot-reload drain assumes this bound before a start has
+# recorded the timeout it actually granted.
+STARTUP_TIMEOUT_MAX_SECONDS = _PLUGIN_STARTUP_TIMEOUT_MAX
 # 被整轮预算压缩后，一步至少还能拿到这么久。
 #
 # 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
@@ -138,8 +141,7 @@ def plugin_needs_hot_reload_recovery(plugin_id: str) -> bool:
 
 # plugin_id (as passed to start_plugin) -> startup timeout that call granted,
 # recorded once the effective config has been read. The hot-reload watcher sizes
-# its restart drain from it: a pre-lock estimate can be stale if the config
-# changed while the reload waited for the operation lock.
+# its restart drain from it instead of reading config files itself.
 _active_startup_timeouts: dict[str, float] = {}
 
 
@@ -700,44 +702,6 @@ def _read_plugin_config_sync(config_path: Path) -> dict[str, object]:
     if not isinstance(raw_conf, Mapping):
         raise ValueError("plugin config root must be an object")
     return _normalize_mapping(raw_conf, context=f"plugin_config[{config_path}]")
-
-
-def effective_startup_timeout_sync(plugin_id: str, config_path: Path) -> float:
-    """Startup budget ``start_plugin`` would grant this plugin.
-
-    与 start_plugin 同一条解析链：manifest → profile overlay →
-    ``[plugin_runtime].timeout``。读不出来或不合法时退回全局
-    ``PLUGIN_STARTUP_TIMEOUT``——这里只用来估算等待预算，不做校验。
-    """
-    try:
-        conf: Mapping[str, object] = _read_plugin_config_sync(config_path)
-        try:
-            resolved = resolve_plugin_config_from_path(
-                plugin_id,
-                config_path=config_path,
-                base_config=conf,
-                include_effective_config=True,
-                validate_schema=False,
-            )
-            effective = resolved.get("effective_config")
-            if isinstance(effective, Mapping):
-                conf = effective
-        except Exception:
-            # start_plugin also carries on with the base manifest when the
-            # overlay cannot be resolved, so its timeout still applies.
-            pass
-        runtime_obj = conf.get("plugin_runtime")
-        if isinstance(runtime_obj, Mapping) and "timeout" in runtime_obj:
-            return _normalize_runtime_timeout(runtime_obj.get("timeout"), plugin_id=plugin_id)
-    except Exception as exc:
-        # Only a wait-budget estimate: an unreadable or invalid manifest falls
-        # back to the global timeout, and start_plugin reports the real error.
-        logger.debug(
-            "startup timeout estimate fell back to default: plugin_id={}, err_type={}",
-            plugin_id,
-            type(exc).__name__,
-        )
-    return float(PLUGIN_STARTUP_TIMEOUT)
 
 
 def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) -> Path | None:

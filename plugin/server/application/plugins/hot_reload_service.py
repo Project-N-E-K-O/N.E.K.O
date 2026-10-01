@@ -52,8 +52,8 @@ from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
     _resolve_registered_config_path_sync,
+    STARTUP_TIMEOUT_MAX_SECONDS,
     active_startup_timeout,
-    effective_startup_timeout_sync,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
 )
@@ -94,11 +94,9 @@ _RESTART_DRAIN_OVERHEAD_SECONDS = (
     + _DEFAULT_SCAN_TIMEOUT_SECONDS + 5.0
 )
 _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECONDS
-# The in-flight plugin's budget is re-derived this often while draining, so a
-# timeout that start_plugin read after the watcher's estimate is still honoured.
+# The in-flight plugin's budget is re-derived this often while draining, so the
+# timeout start_plugin records once it has read the config is picked up.
 _DRAIN_RECHECK_SECONDS = 1.0
-# At an expiring deadline, how long one final config read may take to extend it.
-_DRAIN_FINAL_REFRESH_SECONDS = 2.0
 _BUSY_RETRY_SECONDS = 1.0
 # 与 dev preflight 共用的目录排除表：这些目录里的 .py 不是插件源码。
 _EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
@@ -168,17 +166,6 @@ def _preflight_compile_sync(root: Path) -> str | None:
         # must not escape and leave the plugin pending for an immediate retry.
         return f"{type(exc).__name__}: {exc}"
     return None
-
-
-def _consume_future_result(future: asyncio.Future[object]) -> None:
-    # A background budget refresh may outlive the drain; retrieve its outcome so
-    # an error is not reported as never retrieved.
-    if not future.cancelled():
-        future.exception()
-
-
-def _read_succeeded(future: asyncio.Future[float]) -> bool:
-    return future.done() and not future.cancelled() and future.exception() is None
 
 
 class PluginHotReloadService:
@@ -286,8 +273,9 @@ class PluginHotReloadService:
         Cancelling startup itself still propagates and leaves the gate closed.
         A stalled transaction fails startup promptly instead of hanging it;
         reopening the gate while it still lives would admit an old-generation host.
-        The default budget follows the in-flight plugin's own startup timeout,
-        which ``[plugin_runtime].timeout`` may raise above the global setting.
+        The default budget follows the in-flight plugin's own startup timeout
+        (``[plugin_runtime].timeout`` may raise it above the global setting),
+        re-derived every recheck interval.
         """
         task = self._task
         if task is None or self._stop_event is None or not self._stop_event.is_set():
@@ -298,71 +286,15 @@ class PluginHotReloadService:
                 self._raise_drain_timeout()
             return
         started = time_module.monotonic()
-        # The config estimate is refreshed in the background: a stalled read
-        # (e.g. a development source_dir on a hung mount) must neither block
-        # observing the old task's exit nor the drain deadline. Until a read
-        # completes, the budget falls back to the global default and whatever
-        # start_plugin has recorded in memory.
-        config_startup = 0.0
-        # Start time of the read whose result config_startup holds: a read that
-        # began earlier (and may have seen an older file) never overwrites it.
-        applied_read_started = float("-inf")
-        refresh: asyncio.Future[float] | None = None
-        refresh_started = started
-        next_refresh_at = started
-        graced_budget: float | None = None
         while True:
-            now = time_module.monotonic()
-            target = self._inflight_target
-            if refresh is None and target is not None and now >= next_refresh_at:
-                refresh, refresh_started = self._start_config_read(target), now
-                next_refresh_at = now + _DRAIN_RECHECK_SECONDS
-            budget = self._restart_drain_budget(config_startup)
-            remaining = started + budget - now
+            remaining = started + self._restart_drain_budget() - time_module.monotonic()
             if remaining <= 0:
-                # At the deadline, read the config once more (bounded) before
-                # giving up, so a timeout raised just before it still extends
-                # the wait. The read is always fresh: an ordinary one already in
-                # flight may have read the file before that edit. Each budget
-                # value gets one grace, so a stalled read still fails promptly.
-                if target is None or graced_budget == budget:
-                    self._raise_drain_timeout()
-                graced_budget = budget
-                final, final_started = self._start_config_read(target), now
-                done, _pending_tasks = await asyncio.wait(
-                    {task, final},
-                    timeout=_DRAIN_FINAL_REFRESH_SECONDS,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if task in done:
-                    return
-                if _read_succeeded(final) and final_started > applied_read_started:
-                    config_startup, applied_read_started = final.result(), final_started
-                continue
-            waiters: set[asyncio.Future[object]] = {task}
-            if refresh is not None:
-                waiters.add(refresh)
+                self._raise_drain_timeout()
             done, _pending_tasks = await asyncio.wait(
-                waiters,
-                timeout=min(remaining, _DRAIN_RECHECK_SECONDS),
-                return_when=asyncio.FIRST_COMPLETED,
+                {task}, timeout=min(remaining, _DRAIN_RECHECK_SECONDS)
             )
-            if task in done:
+            if done:
                 return
-            if refresh is not None and refresh.done():
-                if _read_succeeded(refresh) and refresh_started > applied_read_started:
-                    config_startup, applied_read_started = refresh.result(), refresh_started
-                refresh = None
-
-    @staticmethod
-    def _start_config_read(target: _WatchTarget) -> asyncio.Future[float]:
-        future = asyncio.ensure_future(asyncio.to_thread(
-            effective_startup_timeout_sync,
-            target.plugin_id,
-            target.root / "plugin.toml",
-        ))
-        future.add_done_callback(_consume_future_result)
-        return future
 
     @staticmethod
     def _raise_drain_timeout() -> None:
@@ -371,19 +303,21 @@ class PluginHotReloadService:
             "retry server startup after it finishes"
         )
 
-    def _restart_drain_budget(self, config_startup: float) -> float:
-        """Drain budget for the in-flight reload.
+    def _restart_drain_budget(self) -> float:
+        """Drain budget for the in-flight reload, from in-memory state only.
 
-        Takes the larger of the timeout start_plugin actually granted (in
-        memory, once it has read the config) and ``config_startup``, the latest
-        estimate read from the plugin's config, so neither a config edit made
-        while the reload waited for the lock nor one made before start_plugin
-        reads it can shorten the wait below the real start.
+        Once start_plugin has read the effective config it records the startup
+        timeout it granted, and that exact value is used. Before then (stopping
+        the old process, waiting for the lock, reading the config) the timeout
+        is not known yet, so the largest one a plugin may configure is assumed.
+        No file is read here: a drain must never block on, or leak threads into,
+        a stalled filesystem.
         """
         target = self._inflight_target
         if target is None:
             return _RESTART_DRAIN_SECONDS
-        startup = max(config_startup, active_startup_timeout(target.plugin_id) or 0.0)
+        granted = active_startup_timeout(target.plugin_id)
+        startup = STARTUP_TIMEOUT_MAX_SECONDS if granted is None else granted
         return max(_RESTART_DRAIN_SECONDS, _RESTART_DRAIN_OVERHEAD_SECONDS + startup)
 
     @property
