@@ -658,7 +658,10 @@ def _stage_plugin_code_sync(plugin_dir: Path) -> _StagedPluginCode:
 
 
 def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
-    if staged.staged_dir.exists():
+    # staged 只在挪走成功后才存在，暂存目录没了就是旧代码回不来了，必须报失败，
+    # 否则回滚会被记成"源码已恢复"。清理照做，最后再抛。
+    staged_missing = not staged.staged_dir.exists()
+    if not staged_missing:
         staged.staged_dir.replace(staged.original_dir)
     payload_dir = staged.staged_dir.parent
     transaction_dir = payload_dir.parent
@@ -673,6 +676,8 @@ def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
         backup_root.rmdir()
     except OSError:
         pass
+    if staged_missing:
+        raise FileNotFoundError(f"staged plugin code missing: {staged.original_dir.name}")
 
 
 def _commit_staged_plugin_code_sync(

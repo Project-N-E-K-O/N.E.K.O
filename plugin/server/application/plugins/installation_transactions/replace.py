@@ -105,7 +105,9 @@ def backup_path_for(target_dir: Path, *, backup_root: Path | None = None) -> Pat
 
 async def restore_directory(backup_dir: Path, target_dir: Path) -> None:
     if not backup_dir.exists():
-        return
+        # 调用方手里有这份备份就说明旧树确实被挪走过；备份没了等于旧源码没回来，
+        # 不能当成功处理，否则回滚会被记成"代码已恢复"。
+        raise FileNotFoundError(f"plugin backup missing: {backup_dir.name}")
     await remove_directory(target_dir)
     await asyncio.to_thread(backup_dir.rename, target_dir)
 
