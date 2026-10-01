@@ -497,6 +497,9 @@ class _ChainTracker:
         if marker:
             if self.length >= MIN_PROSE and start - 1 in self.glued:
                 self.complete = True
+            # The label itself may be what completes the second comment.
+            if self.complete and self.first is not None:
+                return self.first, self.cut
             if self.complete and self.first is None:
                 self.first, self.cut = self.start, start
             self.start, self.length, self.complete = start, 0, False

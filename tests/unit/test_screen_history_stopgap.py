@@ -819,3 +819,11 @@ def test_a_soft_sentence_end_glued_to_an_english_label_still_counts(end):
     assert guard_module._dechain((text,)) == (
         "the video looks really lovely and calm today" + end,
     )
+
+
+def test_a_chain_completed_by_a_glued_label_is_reported_at_that_label():
+    """When the label after the second comment is what completes it, the
+    chain is confirmed there, even if nothing complete follows."""
+    text = ("screen comment: the video looks really lovely and calm today. "
+            "screen comment: the cat in the corner is so cute and fluffy.screen comment: ok")
+    assert guard_module._dechain((text,)) == ("the video looks really lovely and calm today.",)
