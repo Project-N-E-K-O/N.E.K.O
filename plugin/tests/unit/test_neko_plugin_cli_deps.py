@@ -463,6 +463,9 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
         ({"PIP_NO_COMPILE": "0"}, True),
         # ... but one that only silences a warning stays harmless.
         ({"PIP_NO_WARN_CONFLICTS": "false"}, False),
+        # use-pep517 defaults to unset: false is a policy (legacy builds, or
+        # refusing a declared backend) that uv would not follow.
+        ({"PIP_USE_PEP517": "false"}, True),
     ],
 )
 def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch, env, blocked):
@@ -582,6 +585,25 @@ def test_relative_config_bases_resolve_from_the_targets_cwd(tmp_path, monkeypatc
 
     assert config in real_pip_config_files(target)
     assert deps_cmd._pip_settings(target) == {"index-url": [str(config)]}
+
+
+@pytest.mark.parametrize("home", ["homepath", "none"])
+def test_windows_legacy_config_follows_pips_home_expansion(tmp_path, monkeypatch, home):
+    # pip expands "~" with ntpath.expanduser in the target's environment:
+    # USERPROFILE, else HOMEDRIVE + HOMEPATH, else a literal "~".
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.sys, "platform", "win32")
+    launcher_dir = tmp_path / "launcher-dir"
+    if home == "homepath":
+        env = {"HOMEDRIVE": "", "HOMEPATH": str(tmp_path / "home")}
+        expected = tmp_path / "home" / "pip" / "pip.ini"
+    else:
+        env = {}
+        expected = launcher_dir / "~" / "pip" / "pip.ini"
+    target = _target(env=env, cwd=launcher_dir)
+
+    assert expected in real_pip_config_files(target)
 
 
 def test_relative_pip_config_file_resolves_from_the_targets_cwd(tmp_path, monkeypatch):

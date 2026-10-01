@@ -866,7 +866,7 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
     env = target.env
     files: list[Path] = []
     if sys.platform == "win32":
-        home = Path(_env_get(env, "USERPROFILE") or Path.home())
+        home = _windows_home(env)
         for base in (_env_get(env, "PROGRAMDATA"), _env_get(env, "APPDATA")):
             if base:
                 files.append(Path(base, "pip", "pip.ini"))
@@ -888,6 +888,19 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
     # pip resolves relative bases (HOME, XDG_CONFIG_HOME, XDG_CONFIG_DIRS)
     # from its own working directory; absolute paths are unchanged by this.
     return [target.cwd / path for path in files]
+
+
+def _windows_home(env: dict[str, str]) -> Path:
+    """`~` as pip expands it in the target's environment (ntpath.expanduser):
+    USERPROFILE, else HOMEDRIVE + HOMEPATH, else a literal "~" that pip then
+    resolves from its working directory."""
+    profile = _env_get(env, "USERPROFILE")
+    if profile is not None:
+        return Path(profile)
+    home_path = _env_get(env, "HOMEPATH")
+    if home_path is not None:
+        return Path((_env_get(env, "HOMEDRIVE") or "") + home_path)
+    return Path("~")
 
 
 def _config_setting_keys(path: Path) -> set[str]:
@@ -955,7 +968,9 @@ def _client_identity_loads(path: str) -> bool:
 # 25 --help). Only these are switched off by a false value. Not listed: the
 # store_false "no-*" flags (no-build-isolation, no-compile, ...), where pip
 # assigns a configured false straight to the option and so turns the "no-"
-# behavior on; and value options, where "off" or "0" is a real value.
+# behavior on; use-pep517, whose default is unset, so false is a policy
+# (legacy builds) uv would not follow; and value options, where "off" or "0"
+# is a real value.
 _PIP_BOOLEAN_SETTINGS = {
     "break-system-packages",
     "check-build-dependencies",
@@ -980,7 +995,6 @@ _PIP_BOOLEAN_SETTINGS = {
     "require-hashes",
     "require-virtualenv",
     "upgrade",
-    "use-pep517",
     "user",
 }
 

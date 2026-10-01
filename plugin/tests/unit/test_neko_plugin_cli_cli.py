@@ -394,6 +394,35 @@ def test_validate_plugin_dir_skips_dependency_sync_work_dirs(tmp_path: Path) -> 
     assert any("own_broken.py" in message for _level, message in issues)
 
 
+def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch) -> None:
+    # A retained backup (or a venv) may hold a large tree or a mount: prune
+    # it during the walk instead of enumerating it and filtering afterwards.
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    plugin_dir = _make_plugin_dir(tmp_path)
+    for name in (".vendor.backup-0a1b2c3d", "vendor", ".venv"):
+        (plugin_dir / name / "deep").mkdir(parents=True)
+    (plugin_dir / "pkg").mkdir()
+    (plugin_dir / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    visited = []
+    real_walk = validate_cmd.os.walk
+
+    def walk(top, *args, **kwargs):
+        for entry in real_walk(top, *args, **kwargs):
+            visited.append(Path(entry[0]).relative_to(plugin_dir))
+            yield entry
+
+    monkeypatch.setattr(validate_cmd.os, "walk", walk)
+    files = validate_cmd._plugin_python_files(plugin_dir)
+
+    assert plugin_dir / "pkg" / "mod.py" in files
+    assert Path("pkg") in visited
+    assert not any(
+        path.parts and path.parts[0] in {".vendor.backup-0a1b2c3d", "vendor", ".venv"}
+        for path in visited
+    )
+
+
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
     tmp_path: Path,
 ) -> None:
