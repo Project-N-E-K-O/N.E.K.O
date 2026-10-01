@@ -188,6 +188,7 @@ class LLMSessionManager(
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         self.initial_next_session_context_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None

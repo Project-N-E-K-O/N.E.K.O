@@ -561,18 +561,19 @@ def test_feature_prose_that_names_the_label_like_prose_is_not_a_chain(text):
 
 def test_repeated_projection_reuses_the_lexer_result(monkeypatch):
     """Each provider call rebuilds the request view over unchanged history;
-    the per-message result is cached instead of re-lexed."""
-    calls = []
-    real = guard_module._dechain
-    monkeypatch.setattr(guard_module, "_dechain",
-                        lambda texts: calls.append(texts) or real(texts))
-    guard_module._cached_dechain_one.cache_clear()
-    messages = [_user("聊"), _assistant(chain()), _assistant("普通回复。"), _user("继续")]
+    both the per-message and the run results are cached instead of re-lexed."""
+    made = []
+    real = guard_module._ScreenLexer
+    monkeypatch.setattr(guard_module, "_ScreenLexer", lambda: made.append(1) or real())
+    guard_module._cached_dechain.cache_clear()
+    messages = [_user("聊"), _assistant(chain()), _assistant(_COMMENT_A), _assistant(_COMMENT_B),
+                _user("继续")]
     first = project_screen_history(messages)
-    single = [texts for texts in calls if len(texts) == 1]
+    lexed = len(made)
+    assert lexed
     for _ in range(3):
         assert [m["content"] for m in project_screen_history(messages)] == [m["content"] for m in first]
-    assert [texts for texts in calls if len(texts) == 1] == single
+    assert len(made) == lexed
 
 
 def test_text_that_never_mentions_a_screen_skips_the_lexer(monkeypatch):
@@ -580,12 +581,12 @@ def test_text_that_never_mentions_a_screen_skips_the_lexer(monkeypatch):
     made = []
     real = guard_module._ScreenLexer
     monkeypatch.setattr(guard_module, "_ScreenLexer", lambda: made.append(1) or real())
-    guard_module._cached_dechain_one.cache_clear()
+    guard_module._cached_dechain.cache_clear()
     messages = [_user("聊"), *[_assistant(f"第{i}句普通回复，说得够长够长够长了。") for i in range(5)],
                 _user("继续")]
     assert project_screen_history(messages) is messages
     assert made == []
-    assert guard_module._cached_dechain_one.cache_info().currsize == 0
+    assert guard_module._cached_dechain.cache_info().currsize == 0
 
 
 # ── Restore paths (third review round) ──────────────────────────────────────
@@ -714,17 +715,17 @@ async def test_hot_swap_cache_keeps_each_proactive_delivery_apart(monkeypatch):
     monkeypatch.delenv(SCREEN_GUARD_ENV, raising=False)
     mgr = _make_manager()
     mgr.is_preparing_new_session = True
-    mgr.current_speech_id = "s-proactive"
     mgr.message_cache_for_new_session = [{"role": "Master", "text": "陪我聊聊"}]
-    for comment in (_COMMENT_A, _COMMENT_B):
+    for sid, comment in (("s-1", _COMMENT_A), ("s-2", _COMMENT_B)):
+        mgr.current_speech_id = sid
         await LLMSessionManager.send_lanlan_response(
-            mgr, comment, is_first_chunk=True, expected_speech_id="s-proactive",
+            mgr, comment, is_first_chunk=True, expected_speech_id=sid,
         )
     cache = list(mgr.message_cache_for_new_session)
     assert cache == [
         {"role": "Master", "text": "陪我聊聊"},
-        {"role": "Lan", "text": _COMMENT_A, "source": "proactive"},
-        {"role": "Lan", "text": _COMMENT_B, "source": "proactive"},
+        {"role": "Lan", "text": _COMMENT_A, "source": "proactive", "speech_id": "s-1"},
+        {"role": "Lan", "text": _COMMENT_B, "source": "proactive", "speech_id": "s-2"},
     ]
     assert NotifyMixin._convert_cache_to_str(mgr, cache).splitlines() == [
         "Master | 陪我聊聊", f"Lan | {_COMMENT_A}", f"Lan | {_COMMENT_B}",
@@ -734,3 +735,76 @@ async def test_hot_swap_cache_keeps_each_proactive_delivery_apart(monkeypatch):
     await LLMSessionManager.send_lanlan_response(mgr, "普通回复", is_first_chunk=True)
     await LLMSessionManager.send_lanlan_response(mgr, "，接着说。")
     assert mgr.message_cache_for_new_session[-1] == {"role": "Lan", "text": "普通回复，接着说。"}
+
+
+@pytest.mark.asyncio
+async def test_hot_swap_cache_replaces_a_retried_proactive_attempt(monkeypatch):
+    """prompt_ephemeral restarts every attempt with is_first_chunk=True. The
+    discarded attempt's fragment must not stay behind as its own entry."""
+    from main_logic.core import LLMSessionManager
+    from tests.unit.test_core_game_route_memory_contract import _make_manager
+
+    mgr = _make_manager()
+    mgr.is_preparing_new_session = True
+    mgr.current_speech_id = "s-1"
+    mgr.message_cache_for_new_session = [{"role": "Master", "text": "陪我聊聊"}]
+    send = LLMSessionManager.send_lanlan_response
+    await send(mgr, "屏幕搭话：这个", is_first_chunk=True, expected_speech_id="s-1")
+    await send(mgr, "视频", expected_speech_id="s-1")
+    await send(mgr, _COMMENT_A, is_first_chunk=True, expected_speech_id="s-1")
+    assert mgr.message_cache_for_new_session[1:] == [
+        {"role": "Lan", "text": _COMMENT_A, "source": "proactive", "speech_id": "s-1"},
+    ]
+
+
+# ── Second review round on the split PR ─────────────────────────────────────
+
+def test_restored_history_that_ends_in_a_user_line_still_judges_its_run():
+    """trailing_turn must not hide the run before a history's own last user
+    line: that line is the turn the run answers."""
+    messages = [_user("你看"), _assistant(_COMMENT_A), _assistant(_COMMENT_B), _user("嗯？")]
+    assert _rewritten(messages) == [1, 2]
+    assert sorted(screen_history_rewrites(messages, trailing_turn=True)) == [1, 2]
+
+
+def test_the_cut_lands_in_the_message_holding_the_second_label():
+    """The second comment's label may sit in one message and its prose in the
+    next; the half sentence before that label is not kept, and every message
+    after the label goes."""
+    first = _COMMENT_A + "还有呀你看 屏幕搭话：右下角"
+    assert guard_module._dechain((first, "那只猫好可爱，毛茸茸的好想摸一摸。")) == (_BODY_A, None)
+    messages = [_user("聊"), _assistant(first), _assistant("那只猫好可爱，毛茸茸的好想摸一摸。"),
+                _assistant("嗯嗯，真的。"), _user("继续")]
+    assert [m["content"] for m in project_screen_history(messages)] == ["聊", _BODY_A, "继续"]
+
+
+@pytest.mark.parametrize("text", [
+    ("屏幕搭话：这个网站的地址是example.com看起来挺好的嘛，你要不要也去看看 "
+     "屏幕搭话：右下角那只猫好可爱，毛茸茸的好想摸一摸。"),
+    ("屏幕搭话：这个版本号是v2.0和1.5两个都有呢，你装的是哪一个呀 "
+     "屏幕搭话：右下角那只猫好可爱，毛茸茸的好想摸一摸。"),
+])
+def test_ascii_dots_inside_words_and_numbers_do_not_end_a_comment(text):
+    """"example.com", "v2.0" and "1.5" are not sentence ends, so a first comment
+    that only has those never counts as complete, and nothing is cut there."""
+    assert guard_module._dechain((text,)) is None
+
+
+def test_a_soft_sentence_end_before_the_next_label_still_counts():
+    text = "屏幕搭话：这个视频画面好漂亮，色调很温柔呢喵～屏幕搭话：右下角那只猫好可爱，毛茸茸的好想摸一摸。"
+    assert guard_module._dechain((text,)) == ("这个视频画面好漂亮，色调很温柔呢喵～",)
+
+
+def test_a_short_comment_between_two_complete_ones_does_not_break_the_chain():
+    text = _COMMENT_A + "屏幕搭话：短。" + _COMMENT_B
+    assert guard_module._dechain((text,)) == (_BODY_A,)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("屏幕搭话 ：" + PARTS[0] + "屏幕搭话 ：" + PARTS[1], PARTS[0]),
+    (("I'm here. screen comment: the video looks really lovely and calm today. "
+      "screen comment: the cat in the corner is so cute and fluffy."),
+     "I'm here. the video looks really lovely and calm today."),
+])
+def test_a_removed_label_takes_its_separator_with_it(text, expected):
+    assert guard_module._dechain((text,)) == (expected,)

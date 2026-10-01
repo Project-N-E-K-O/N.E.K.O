@@ -59,8 +59,14 @@ _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
 _QUOTES = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"', "'": "'"}
 # Every marker form carries one of these; texts without either skip the lexer.
 _LABEL_HINT = regex.compile(r"屏幕|screen", regex.IGNORECASE)
-_SENTENCE_ENDS = "。！？.!?～~…"
+# Always a sentence end.
+_SENTENCE_ENDS = "。！？!?…"
+# A sentence end unless an ASCII letter or digit follows ("example.com",
+# "1.5", "v2.0", "a~b"); "喵～" before the next label still ends one.
+_SOFT_SENTENCE_ENDS = ".~～"
 _CLOSERS = "」』”’\"')）】》"
+# What may sit between a removed label and the prose it introduces.
+_LABEL_SEPARATORS = " \t:："
 
 
 def screen_guard_enabled() -> bool:
@@ -148,7 +154,11 @@ def _assistant_tail_run(messages, *, trailing_turn: bool = False) -> tuple[int, 
     next thing the model sees is the user speaking, so the run at the end is
     the one that answers "the current turn".
     """
-    if trailing_turn:
+    # A restored history that already ends in a user line has its own last
+    # user turn; only one that ends elsewhere is followed by the next turn.
+    if trailing_turn and not (
+        messages and _role_and_content(messages[-1])[0] in _USER_ROLES
+    ):
         last_user = len(messages)
     else:
         last_user = next(
@@ -227,7 +237,7 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
         if role not in _ASSISTANT_ROLES or text is None:
             continue
         originals[index] = text
-        rewritten = _dechained_message(text)
+        rewritten = _dechained((text,))
         if rewritten is not None:
             rewrites[index] = rewritten[0]
             if hits is not None:
@@ -241,7 +251,7 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
         segment_start = boundary + 1
         if len(indices) < 2:
             continue
-        rewritten = _dechain(tuple(originals[index] for index in indices))
+        rewritten = _dechained(tuple(originals[index] for index in indices))
         if rewritten is None:
             continue
         # Messages before the cut carry no chain of their own (the cut is the
@@ -444,25 +454,49 @@ class _ScreenLexer:
             self._end_run()
 
 
+def _sentence_ends(text: str, offset: int = 0) -> set:
+    """Positions (plus ``offset``) of the characters in ``text`` that end a sentence."""
+    ends = set()
+    for index, char in enumerate(text):
+        if char in _SENTENCE_ENDS:
+            ends.add(offset + index)
+        elif char in _SOFT_SENTENCE_ENDS:
+            following = text[index + 1:index + 2]
+            if not (following.isascii() and following.isalnum()):
+                ends.add(offset + index)
+    return ends
+
+
 class _ChainTracker:
-    def __init__(self):
+    """Follow labelled comments and report the first chain.
+
+    A chain is a complete comment (at least ``MIN_PROSE`` characters, then a
+    sentence end) followed later by another complete one. Short comments in
+    between do not break it; the cut is the label right after the first
+    complete comment, so they are cut together with the rest.
+    """
+
+    def __init__(self, ends):
+        self.ends = ends
         self.start = None
-        self.previous_start = None
+        self.first = None
+        self.cut = None
         self.length = 0
         self.complete = False
 
     def accept(self, text, marker, start):
         if marker:
-            self.previous_start = self.start if self.complete else None
+            if self.complete and self.first is None:
+                self.first, self.cut = self.start, start
             self.start, self.length, self.complete = start, 0, False
         elif self.start is not None:
-            for char in text:
+            for offset, char in enumerate(text):
                 if self.length or not char.isspace():
                     self.length = min(MIN_PROSE, self.length + 1)
-                if char in _SENTENCE_ENDS and self.length >= MIN_PROSE:
+                if self.length >= MIN_PROSE and start + offset in self.ends:
                     self.complete = True
-            if self.complete:
-                return self.previous_start
+            if self.complete and self.first is not None:
+                return self.first, self.cut
         return None
 
 
@@ -484,25 +518,71 @@ def _tokens_across(texts):
         offset += len(text)
 
 
-def _chain_start_across(texts) -> int | None:
-    """Find a chain spread over several messages."""
-    tracker = _ChainTracker()
-    for _index, token_text, marker, start in _tokens_across(texts):
+def _find_chain(texts):
+    """Locate the first chain over ``texts``.
+
+    Returns ``(first, cut, cut_index, tokens)``: where the first complete
+    comment's label starts, where the label after it starts (global
+    offsets), the index of the text holding ``cut``, and each text's tokens
+    up to the point the chain was confirmed. ``None`` when there is no chain.
+    """
+    ends: set = set()
+    starts = []
+    offset = 0
+    for text in texts:
+        starts.append(offset)
+        ends |= _sentence_ends(text, offset)
+        offset += len(text)
+    tracker = _ChainTracker(ends)
+    tokens: list[list] = [[] for _ in texts]
+    for index, token_text, marker, start in _tokens_across(texts):
+        tokens[index].append((token_text, marker, start))
         found = tracker.accept(token_text, marker, start)
         if found is not None:
-            return found
+            first, cut = found
+            cut_index = max(i for i, begin in enumerate(starts) if begin <= cut)
+            return first, cut, cut_index, tokens
     return None
 
 
 def _through_last_sentence(text: str) -> str:
     """``text`` up to its last sentence end and the closing marks after it."""
-    end = max(text.rfind(char) for char in _SENTENCE_ENDS)
-    if end < 0:
+    ends = _sentence_ends(text)
+    if not ends:
         return ""
-    end += 1
+    end = max(ends) + 1
     while end < len(text) and text[end] in _CLOSERS:
         end += 1
     return text[:end]
+
+
+def _unlabelled(tokens, cut) -> str:
+    """The text of ``tokens`` before ``cut``, with every label removed.
+
+    The separator after a removed label (spaces, one colon) goes with it, so
+    a label written with a space before its full-width colon, or
+    "here. screen comment: the", leaves neither a stray colon nor a double
+    space.
+    """
+    kept = []
+    after_label = colon_seen = False
+    for token_text, marker, start in tokens:
+        if start >= cut:
+            break
+        if marker:
+            after_label, colon_seen = True, False
+            continue
+        for char in token_text:
+            if after_label and char in _LABEL_SEPARATORS:
+                if char in ":：":
+                    if colon_seen:
+                        after_label = False
+                        kept.append(char)
+                    colon_seen = True
+                continue
+            after_label = False
+            kept.append(char)
+    return "".join(kept)
 
 
 def _dechain(texts) -> tuple | None:
@@ -512,34 +592,26 @@ def _dechain(texts) -> tuple | None:
     or ``None`` when nothing of it is left. Returns ``None`` when ``texts``
     carry no chain.
 
-    The cut is where the label of the second complete comment begins. Before
-    it, every source label is removed and the rest is kept as is; the text
-    the cut falls in is then closed at its last sentence end, which the first
-    comment is guaranteed to have (that is what made it complete). Texts past
-    the cut are dropped.
+    Before the cut every source label is removed and the rest is kept as is;
+    the text the cut falls in is then closed at its last sentence end, which
+    the first comment is guaranteed to have (that is what made it complete).
+    Texts past the cut are dropped.
     """
     if not any(_LABEL_HINT.search(text) for text in texts):
         return None
-    tracker = _ChainTracker()
-    tokens: list[list] = [[] for _ in texts]
-    cut = cut_index = None
-    for index, token_text, marker, start in _tokens_across(texts):
-        tokens[index].append((token_text, marker, start))
-        if tracker.accept(token_text, marker, start) is not None:
-            cut, cut_index = tracker.start, index
-            break
-    if cut is None:
+    found = _find_chain(texts)
+    if found is None:
         return None
+    _first, cut, cut_index, tokens = found
     rewritten = []
     for index, text in enumerate(texts):
         if index > cut_index:
             rewritten.append(None)
             continue
-        before = [(token_text, marker) for token_text, marker, start in tokens[index] if start < cut]
-        if index < cut_index and not any(marker for _text, marker in before):
+        if index < cut_index and not any(marker for _text, marker, _start in tokens[index]):
             rewritten.append(text)
             continue
-        kept = "".join(token_text for token_text, marker in before if not marker)
+        kept = _unlabelled(tokens[index], cut)
         if index == cut_index:
             kept = _through_last_sentence(kept)
         rewritten.append(kept.strip() or None)
@@ -548,15 +620,15 @@ def _dechain(texts) -> tuple | None:
 
 # Most history never mentions a screen; skip the pure-Python lexer for it, and
 # cache only texts that do, so ordinary chat cannot evict the ones that matter.
-@lru_cache(maxsize=1024)
-def _cached_dechain_one(text: str) -> tuple | None:
-    return _dechain((text,))
+# The run is re-judged on every provider call over the same texts, so it is
+# cached the same way.
+_cached_dechain = lru_cache(maxsize=1024)(_dechain)
 
 
-def _dechained_message(text: str) -> tuple | None:
-    if not _LABEL_HINT.search(text):
+def _dechained(texts: tuple) -> tuple | None:
+    if not any(_LABEL_HINT.search(text) for text in texts):
         return None
-    return _cached_dechain_one(text)
+    return _cached_dechain(texts)
 
 
 def _is_ascii_word_char(char: str) -> bool:
@@ -569,5 +641,6 @@ def _has_ascii_letter(text: str) -> bool:
 
 
 def screen_chain_start(text: str) -> int | None:
-    """Find an entire chain in a finished transcript, including its first item."""
-    return _chain_start_across([text])
+    """Where the first chain in ``text`` starts (its first comment's label)."""
+    found = _find_chain([text])
+    return None if found is None else found[0]

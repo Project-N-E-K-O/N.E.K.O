@@ -512,3 +512,39 @@ async def test_final_swap_judges_the_increment_with_what_was_primed(monkeypatch,
     finally:
         await _drain_task(prep)
         await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_judges_the_increment_against_what_was_actually_primed(monkeypatch):
+    """A reply still streaming after preparation grows the last cache entry in
+    place. The final prime must judge its increment against the text the
+    pending session received, not that later growth: here the growth would
+    complete a chain and push the increment past its cut."""
+    mgr, pending = _manager(monkeypatch)
+    mgr.master_name = "Alice"
+    comment_a = "屏幕搭话 蓝色小车停在一棵大树旁边，树叶的影子落在了车顶上。"
+    comment_b = "屏幕搭话 远处的红色小车正在缓慢经过桥面，桥下的河水十分平静。"
+
+    async def get(*_args, **_kwargs):
+        return SimpleNamespace(is_success=True, text="MEMORY\n")
+
+    monkeypatch.setattr(
+        "utils.internal_http_client.get_internal_http_client",
+        lambda: SimpleNamespace(get=get),
+    )
+    mgr.next_session_context_messages = [{"role": "Alice", "text": "陪我聊聊"}]
+    mgr.message_cache_for_new_session = [{"role": mgr.lanlan_name, "text": comment_a}]
+    prep = asyncio.create_task(mgr._background_prepare_pending_session())
+    try:
+        await asyncio.wait_for(prep, 3)
+        assert mgr.pending_session_warmed_up_event.is_set()
+        # Growth of the primed entry that the pending session never saw.
+        mgr.message_cache_for_new_session[-1]["text"] += comment_b
+        mgr.message_cache_for_new_session.append(
+            {"role": mgr.lanlan_name, "text": "好呀，那我们继续。"},
+        )
+        content = await _swap(mgr, pending)
+        assert "好呀，那我们继续。" in content, content
+    finally:
+        await _drain_task(prep)
+        await _drain_task(mgr.message_handler_task)

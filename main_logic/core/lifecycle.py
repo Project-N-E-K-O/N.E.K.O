@@ -578,6 +578,7 @@ class LifecycleMixin:
         self._require_context_append_current_delivery = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         
         # Snapshot task refs, cancel, await completion, THEN clear.
         # This ensures CancelledError handlers (e.g. _cleanup_pending_session_resources)
@@ -2436,6 +2437,7 @@ class LifecycleMixin:
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         self.initial_next_session_context_snapshot_len = 0
         # 清空输入缓存（新对话时不需要保留旧的输入）
         async with self.input_cache_lock:
@@ -2712,13 +2714,20 @@ class LifecycleMixin:
                 raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             if not resp.is_success:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+            # Freeze exactly what is primed: a reply still streaming appends
+            # to the last cache entry in place, and the final swap must judge
+            # its increment against the text the pending session received,
+            # not against that later growth.
+            primed_context = [
+                dict(entry)
+                for entry in list(next_session_context_messages) + list(initial_cache_snapshot)
+            ]
+            self._primed_context_snapshot = primed_context
             initial_prompt += (
                 resp.text
                 # One call for both slices: a screen chain split across them
                 # is judged as one run (see _convert_cache_to_str).
-                + self._convert_cache_to_str(
-                    list(next_session_context_messages) + list(initial_cache_snapshot)
-                )
+                + self._convert_cache_to_str(primed_context)
             )
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
@@ -2761,6 +2770,7 @@ class LifecycleMixin:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
+                self._primed_context_snapshot = None
                 self.initial_next_session_context_snapshot_len = 0
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
@@ -3236,15 +3246,19 @@ class LifecycleMixin:
                 + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             )
             # What the pending session was primed with at preparation, in
-            # prime order: next-session context snapshot, then cache snapshot.
-            primed_snapshot = (
-                list(next_session_context_messages[
-                    :self.initial_next_session_context_snapshot_len
-                ])
-                + list(self.message_cache_for_new_session[
-                    :self.initial_cache_snapshot_len
-                ])
-            )
+            # prime order: next-session context snapshot, then cache snapshot,
+            # as frozen when it was rendered.
+            primed_snapshot = getattr(self, "_primed_context_snapshot", None)
+            if primed_snapshot is None:
+                primed_snapshot = (
+                    list(next_session_context_messages[
+                        :self.initial_next_session_context_snapshot_len
+                    ])
+                    + list(self.message_cache_for_new_session[
+                        :self.initial_cache_snapshot_len
+                    ])
+                )
+            primed_snapshot = list(primed_snapshot)
             # ...and everything the final prime below adds. Late context
             # (arriving while that prime awaits) is judged after all of it.
             primed_context_sequence = primed_snapshot + incremental_cache
