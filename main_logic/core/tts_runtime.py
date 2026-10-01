@@ -72,7 +72,7 @@ from ._shared import (
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
 from .tts_records import (
-    TTS_FRAME_WRITE_TIMEOUT_SECONDS, TTS_HANDLER_CANCEL_GRACE_SECONDS,
+    MAX_LIVE_TTS_RUNTIMES, TTS_FRAME_WRITE_TIMEOUT_SECONDS, TTS_HANDLER_CANCEL_GRACE_SECONDS,
     TTS_SOCKET_CLOSE_TIMEOUT_SECONDS, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime,
 )
 
@@ -1456,7 +1456,10 @@ class TtsRuntimeMixin:
         check = getattr(self, "_check_start_operation", None)
         if check:
             check()
-        if self._live_tts_runtime_count() >= self._tts_capacity_limit():
+        # Admission before retirement only enforces the total resource cap.
+        # Exclusive workers must first receive shutdown, then pass the
+        # worker-specific check below after their physical exit.
+        if self._live_tts_runtime_count() >= MAX_LIVE_TTS_RUNTIMES:
             self._tts_capacity_exhausted = True
             raise TtsCapacityError("TTS worker capacity is still occupied")
         old_runtime = self._snapshot_tts_runtime()
@@ -1536,7 +1539,7 @@ class TtsRuntimeMixin:
         if failed_provider in excluded:
             return False
 
-        if self._live_tts_runtime_count() >= self._tts_capacity_limit():
+        if self._live_tts_runtime_count() >= MAX_LIVE_TTS_RUNTIMES:
             self._tts_capacity_exhausted = True
             raise TtsCapacityError("TTS fallback cannot exceed live worker capacity")
 

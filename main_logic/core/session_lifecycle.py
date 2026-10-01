@@ -55,6 +55,17 @@ class SessionOwnershipMixin:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
         record = next((item for item in self._session_retirements if item.task is task), None)
+
+        def completed_result():
+            try:
+                return task.result()
+            except Exception as exc:
+                if record is None or not record.handoff_safe.is_set() or record.handoff_error is not None:
+                    raise
+                # Physical cleanup stays failed and owned in its resource
+                # record. A safe end-then-start caller can still proceed.
+                logger.warning("Session physical cleanup failed after safe handoff: %s", exc)
+
         if record is not None and callable(record.memory_callback):
             deadline += max(0.0, record.retry_kwargs.get("memory_settlement_timeout", 15.0))
         handoff = asyncio.create_task(record.handoff_finished.wait()) if record is not None else None
@@ -65,18 +76,18 @@ class SessionOwnershipMixin:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if task in done:
-                return task.result()  # Preserve close errors and cancellation.
+                return completed_result()
             if handoff is None or not handoff.done():
                 raise TimeoutError("Session end did not reach safe handoff")
             if record.handoff_error is not None:
                 raise RuntimeError("Session end handoff failed") from record.handoff_error
-            # Preserve prompt physical cleanup/error reporting, without making
+            # Preserve prompt physical cleanup reporting, without making
             # existing end-then-start callers depend on an uncooperative worker.
             done, _ = await asyncio.wait(
                 (task,), timeout=min(2.0, max(0, deadline - loop.time())),
             )
             if task in done:
-                return task.result()
+                return completed_result()
         finally:
             if handoff is not None:
                 handoff.cancel()
@@ -389,6 +400,13 @@ class SessionOwnershipMixin:
         operation = getattr(self, "_start_operation", None)
         if expected_session is not None and expected_session is not session:
             return self._own_cleanup_task(asyncio.sleep(0))
+        caller = asyncio.current_task()
+        if (by_server and reset_starting_count and session is None
+                and operation is not None and operation.valid
+                and not operation.finished.is_set() and operation.task is not caller):
+            # A server callback without a live target cannot retire the new
+            # start's TTS handler, pending input or producer children either.
+            return self._own_cleanup_task(asyncio.sleep(0))
         # Accept user intent even when teardown of these resources is already
         # owned by another end request. Starts waiting for that handoff must stop.
         if not by_server and reset_starting_count:
@@ -405,16 +423,18 @@ class SessionOwnershipMixin:
             ):
                 self._retry_session_retirement(previous)
                 return previous.task
-        caller = asyncio.current_task()
         # A server-side cleanup callback may be stale while a new start is
-        # still preparing. Only an explicit user end, or a server end that has
-        # a live session target, is allowed to revoke that start operation.
+        # still preparing. A user end, a server end with a live target, or
+        # startup's own failure cleanup can revoke that start operation.
         if reset_starting_count and operation is not None and (
-            not by_server or session is not None
+            not by_server or session is not None or operation.task is caller
         ):
             operation.valid = False
+        retired_operation = (
+            operation if reset_starting_count and operation is not None and not operation.valid else None
+        )
         record = Retirement(
-            self._session_generation, operation if reset_starting_count else None,
+            self._session_generation, retired_operation,
             session, getattr(self, "websocket", None),
             getattr(self, "message_handler_task", None),
             tts, caller, bool(getattr(self, "is_active", False)),

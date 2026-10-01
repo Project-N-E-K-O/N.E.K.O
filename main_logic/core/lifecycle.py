@@ -713,7 +713,7 @@ class LifecycleMixin:
                 _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
             except Exception:
                 pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
-        error_str = str(e)
+        error_str = str(e) or ("Session startup timed out" if isinstance(e, TimeoutError) else "")
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
             kw in error_str.lower() for kw in ["memory server", "记忆服务"]
@@ -740,10 +740,13 @@ class LifecycleMixin:
                     await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
                     self._check_start_operation()
             else:
-                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
+                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": error_str, "count": self.session_start_failure_count}}))
                 self._check_start_operation()
 
-            if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
+            if isinstance(e, TimeoutError):
+                await self.send_status(json.dumps({"code": "CONNECTION_TIMEOUT", "details": {"error": error_str}}))
+                self._check_start_operation()
+            elif 'WinError 10061' in error_str or 'WinError 10054' in error_str:
                 if str(self.memory_server_port) in error_str or '48912' in error_str:
                     await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
                     self._check_start_operation()
@@ -1054,8 +1057,10 @@ class LifecycleMixin:
                     # TTS is an optional output path. Keep the LLM session
                     # usable and let the normal response/respawn path recover
                     # the worker instead of turning this into session_failed.
-                    self.tts_ready = False
-                    logger.warning("TTS startup failed; continuing without audio: %s", tts_result)
+                    # The queue handler may have received a late __ready__
+                    # while gather was still waiting for the LLM connection.
+                    # Keep readiness owned by that handler and runtime.
+                    logger.warning("TTS startup wait failed; preserving handler readiness: %s", tts_result)
                 if isinstance(llm_result, BaseException):
                     raise llm_result
                 if llm_result is _START_LLM_CONCURRENT_ABORTED:

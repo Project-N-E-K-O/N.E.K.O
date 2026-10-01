@@ -118,8 +118,11 @@ async def test_close_error_finishes_retirement_bookkeeping():
     ending = manager.request_end_session(by_server=True)
     retirement = manager._session_retirements[-1]
 
+    await manager._wait_session_end(ending)
+    # The logical handoff succeeds, while the resource owner retains the
+    # physical failure for logging and later capacity admission retries.
     with pytest.raises(RuntimeError, match="provider close failed"):
-        await manager._wait_session_end(ending)
+        ending.result()
 
     assert retirement.handoff_safe.is_set()
     assert retirement.cleanup_complete.is_set()
