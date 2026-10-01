@@ -461,6 +461,8 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
         # false value turns isolation off, so the setting is active.
         ({"PIP_NO_BUILD_ISOLATION": "false"}, True),
         ({"PIP_NO_COMPILE": "0"}, True),
+        # ... but one that only silences a warning stays harmless.
+        ({"PIP_NO_WARN_CONFLICTS": "false"}, False),
     ],
 )
 def test_false_values_only_switch_off_boolean_pip_options(tmp_path, monkeypatch, env, blocked):
@@ -1253,9 +1255,9 @@ def test_uv_runs_in_the_targets_working_directory(tmp_path, monkeypatch):
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "<existing>"}, True),
         ({"PIP_CERT": "/corp/ca.pem", "SSL_CERT_FILE": "/missing/ca.pem"}, False),
         # An index may serve other packages to anonymous clients; uv ignores
-        # a missing SSL_CLIENT_CERT file with only a warning.
+        # an unusable SSL_CLIENT_CERT with only a warning.
         ({"PIP_CLIENT_CERT": "/corp/client.pem"}, False),
-        ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "<existing>"}, True),
+        ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "<identity>"}, True),
         ({"PIP_CLIENT_CERT": "/corp/client.pem", "SSL_CLIENT_CERT": "/missing/client.pem"}, False),
         # Both installers are given --target/--upgrade explicitly.
         ({"PIP_TARGET": "/elsewhere", "PIP_UPGRADE": "1"}, True),
@@ -1269,8 +1271,10 @@ def test_proxy_and_overridden_pip_settings(tmp_path, monkeypatch, env, uses_uv):
         monkeypatch.delenv(name, raising=False)
     existing = tmp_path / "ca.pem"
     existing.write_text("pem")
+    identity = _write_client_identity(tmp_path / "client.pem")
+    placeholders = {"<existing>": str(existing), "<identity>": str(identity)}
     for name, value in env.items():
-        monkeypatch.setenv(name, str(existing) if value == "<existing>" else value)
+        monkeypatch.setenv(name, placeholders.get(value, value))
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls = []
     monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
@@ -1300,6 +1304,78 @@ def test_uv_gets_paths_pinned_to_this_processes_cwd(tmp_path, monkeypatch):
     uv_command = calls[-1]
     assert uv_command[uv_command.index("--python") + 1] == str(tmp_path / relative_python)
     assert uv_command[uv_command.index("--target") + 1] == str(tmp_path / "staging")
+
+
+def _write_client_identity(
+    path: Path, *, cert: bool = True, key: str | None = "matching", encrypted: bool = False,
+) -> Path:
+    """A PEM file with a self-signed certificate and/or a private key."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    own_key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "neko-plugin test client")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(own_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(own_key, hashes.SHA256())
+    )
+    pem = b""
+    if cert:
+        pem += certificate.public_bytes(serialization.Encoding.PEM)
+    if key is not None:
+        written = own_key if key == "matching" else ec.generate_private_key(ec.SECP256R1())
+        pem += written.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"secret")
+            if encrypted
+            else serialization.NoEncryption(),
+        )
+    path.write_bytes(pem)
+    return path
+
+
+@pytest.mark.parametrize(
+    "case", ["not-pem", "cert-only", "key-only", "other-key", "encrypted-key", "directory"],
+)
+def test_unusable_client_cert_does_not_cover_pips(tmp_path, monkeypatch, case):
+    # uv warns about an identity it can not load and connects anonymously.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    path = tmp_path / "client.pem"
+    if case == "not-pem":
+        path.write_text("pem")
+    elif case == "cert-only":
+        _write_client_identity(path, key=None)
+    elif case == "key-only":
+        _write_client_identity(path, cert=False)
+    elif case == "other-key":
+        _write_client_identity(path, key="other")
+    elif case == "encrypted-key":
+        _write_client_identity(path, encrypted=True)
+    else:
+        path.mkdir()
+    monkeypatch.setenv("PIP_CLIENT_CERT", "/corp/client.pem")
+    monkeypatch.setenv("SSL_CLIENT_CERT", str(path))
+    monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    calls = []
+    monkeypatch.setattr(deps_cmd.subprocess, "run", _missing_pip_then_uv(calls))
+
+    assert deps_cmd._pip_install_to_vendor(
+        ["pkg"], vendor_dir=tmp_path / "vendor", python="target-python",
+    ) == 1
+    assert all(_cmd_name(command) != "uv" for command in calls)
 
 
 def test_uv_gets_an_absolute_client_cert(tmp_path, monkeypatch):

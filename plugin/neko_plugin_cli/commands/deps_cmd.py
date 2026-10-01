@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
@@ -705,6 +706,7 @@ _PIP_HARMLESS_SETTINGS = {
     "no-color",
     "no-input",
     "no-python-version-warning",
+    "no-warn-conflicts",
     "no-warn-script-location",
     "progress-bar",
     "quiet",
@@ -741,7 +743,8 @@ _UV_COVERS = {
     # does not read SSL_CERT_DIR at all.
     "cert": ("SSL_CERT_FILE",),
     # An index may serve different packages to anonymous clients; uv reads
-    # SSL_CLIENT_CERT but silently goes anonymous when the file is missing.
+    # SSL_CLIENT_CERT (certificate and key in one PEM file) but goes
+    # anonymous when it can not load it.
     "client-cert": ("SSL_CLIENT_CERT",),
     "other": (),
 }
@@ -892,11 +895,27 @@ def _uv_env_set(name: str) -> bool:
     value = os.environ.get(name)
     if not value:
         return False
-    if name in {"SSL_CERT_FILE", "SSL_CLIENT_CERT"}:
+    if name == "SSL_CERT_FILE":
         return Path(value).is_file()
+    if name == "SSL_CLIENT_CERT":
+        return _client_identity_loads(value)
     if name in _UV_BOOLEAN_ENV:
         # uv parses these as booleans: "0" / "false" turn them off.
         return value.strip().lower() in {"y", "yes", "t", "true", "on", "1"}
+    return True
+
+
+def _client_identity_loads(path: str) -> bool:
+    """Whether path holds a certificate with its matching private key, as uv
+    needs: uv only warns about an unreadable or unusable file and connects
+    without a client certificate."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        # An encrypted key gets an empty password instead of a terminal
+        # prompt; uv can not decrypt it either.
+        context.load_cert_chain(path, password=lambda: b"")
+    except (OSError, ValueError):  # ssl.SSLError is an OSError
+        return False
     return True
 
 
