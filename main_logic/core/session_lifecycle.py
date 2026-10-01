@@ -31,7 +31,9 @@ class SessionOwnershipMixin:
 
     def _current_start_request(self):
         operation = _start_context.get()
-        return operation if operation is not None and operation.manager is self else None
+        if operation is None or operation.manager is not self or operation.finished.is_set():
+            return None
+        return operation
 
     def _check_start_operation(self, operation=None):
         operation = operation or self._current_start_request()

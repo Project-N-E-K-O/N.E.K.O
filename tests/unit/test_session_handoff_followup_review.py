@@ -13,6 +13,118 @@ from tests.unit.test_tts_handoff_ownership import install
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
+async def test_completed_start_context_does_not_revoke_inherited_callback(monkeypatch):
+    manager, _, clients = await make_full_manager(monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+    operation, token = manager._claim_start_operation(
+        manager.websocket, "completed-start", "text", asyncio.get_running_loop().time() + 15,
+    )
+
+    async def inherited_callback():
+        assert manager._current_start_request() is operation
+        entered.set()
+        await release.wait()
+        assert manager._current_start_request() is None
+        manager._check_start_operation()
+        assert manager._current_start_deadline() > asyncio.get_running_loop().time()
+
+    callback = asyncio.create_task(inherited_callback())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        manager._finish_start_operation(operation, token)
+        token = None
+        operation.valid = False
+        operation.deadline = asyncio.get_running_loop().time() - 1
+        release.set()
+        await asyncio.wait_for(callback, 1)
+    finally:
+        release.set()
+        callback.cancel()
+        await asyncio.gather(callback, return_exceptions=True)
+        if token is not None:
+            manager._finish_start_operation(operation, token)
+        await drain_manager(manager, clients)
+
+
+@pytest.mark.parametrize("path", ["start", "fallback"])
+@pytest.mark.parametrize("live_count", [2, 5])
+async def test_tts_admission_uses_configured_capacity_with_retired_workers(monkeypatch, path, live_count):
+    from main_logic import core as core_module
+    from main_logic.core.tts_records import TtsCapacityError, tts_output_runtime
+
+    manager, _, clients = await make_full_manager(monkeypatch)
+    manager.session = object()
+    manager.is_active = True
+    manager.use_tts = True
+    releases = [Event() for _ in range(live_count)]
+    runtimes = [install(manager, release) for release in releases]
+    for runtime in runtimes[:-1]:
+        manager._retire_tts_runtime(runtime)
+
+    def worker(requests, responses, key, voice):
+        while requests.get()[0] != "__shutdown__":
+            pass
+
+    manager._resolve_tts_worker_spec = lambda: (worker, "key", "voice", "openai", False, {})
+    manager._build_tts_runtime_key = lambda: ("test",)
+    manager._tts_active_provider_key = "openai"
+    monkeypatch.setattr(core_module, "tts_provider_falls_back_on_failure", lambda provider: True)
+    monkeypatch.setattr(core_module, "tts_provider_uses_configured_preset_voice", lambda provider: False)
+    token = tts_output_runtime.set(runtimes[-1])
+    try:
+        assert manager._tts_capacity_limit() == 5
+        if live_count == 5:
+            with pytest.raises(TtsCapacityError):
+                if path == "start":
+                    manager._start_tts_thread()
+                else:
+                    manager._activate_configured_tts_fallback("test")
+            assert manager._live_tts_runtime_count() == live_count
+        else:
+            if path == "start":
+                manager._start_tts_thread()
+            else:
+                assert manager._activate_configured_tts_fallback("test")
+            assert manager._live_tts_runtime_count() == live_count + 1
+            assert all(runtime.thread.is_alive() for runtime in runtimes)
+    finally:
+        tts_output_runtime.reset(token)
+        for release in releases:
+            release.set()
+        for runtime in tuple(manager._tts_runtimes):
+            manager._retire_tts_runtime(runtime)
+        await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
+        manager.session = None
+        await drain_manager(manager, clients)
+
+
+async def test_runtime_recovery_handles_worker_specific_capacity_rejection(monkeypatch):
+    from main_logic.core.tts_records import TtsCapacityError
+    from unittest.mock import Mock
+
+    manager, _, clients = await make_full_manager(monkeypatch)
+    manager.session = object()
+    manager.is_active = True
+    manager.use_tts = True
+    release = Event()
+    runtime = install(manager, release)
+    manager._retire_tts_runtime(runtime)
+    manager._wait_tts_capacity = AsyncMock()
+    manager._start_tts_thread = Mock(side_effect=TtsCapacityError("exclusive replacement"))
+    manager._schedule_tts_capacity_recovery = Mock()
+    manager.tts_pending_chunks = [("speech", "pending")]
+    try:
+        await manager.ensure_tts_pipeline_alive()
+        assert not manager.tts_ready
+        assert manager.tts_pending_chunks == [("speech", "pending")]
+        manager._schedule_tts_capacity_recovery.assert_called_once()
+    finally:
+        release.set()
+        await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
+        manager.session = None
+        await drain_manager(manager, clients)
+
+
 async def test_retired_failure_notification_reaches_original_request_socket(monkeypatch):
     manager, _, clients = await make_full_manager(monkeypatch)
     requester = manager.websocket

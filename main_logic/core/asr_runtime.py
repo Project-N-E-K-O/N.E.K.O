@@ -5561,6 +5561,7 @@ class AsrRuntimeMixin:
         runtime = getattr(self, "_asr_runtime", None)
         capture_identity = getattr(runtime, "_capture_runtime_identity", None)
         identity = capture_identity(ingress_token=token.ingress, turn_token=token) if callable(capture_identity) else None
+        pause_owner_alive = None
         if arbiter is not None:
             def pause_owner_alive(owner):
                 lifecycle = getattr(runtime, "_asr_lifecycle", None)
@@ -5644,6 +5645,12 @@ class AsrRuntimeMixin:
             )
             return False
         finally:
+            if (
+                not preparation_succeeded
+                and arbiter is not None
+                and getattr(arbiter, "pause_owner_alive", None) is pause_owner_alive
+            ):
+                arbiter.pause_owner_alive = None
             if (
                 not preparation_succeeded
                 and self._core_asr_preview_turn_id == external_turn_id

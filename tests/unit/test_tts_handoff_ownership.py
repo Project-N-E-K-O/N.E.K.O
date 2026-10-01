@@ -23,6 +23,44 @@ class Manager(TtsRuntimeMixin, TtsLifecycleMixin):
         self._speech_output_total = 0
 
 
+@pytest.mark.asyncio
+async def test_capacity_retry_waits_for_all_workers_before_exclusive_replacement():
+    manager = Manager()
+    releases = [Event(), Event()]
+    runtimes = [install(manager, release) for release in releases]
+    for runtime in runtimes:
+        manager._retire_tts_runtime(runtime)
+
+    def exclusive_worker(*args):
+        pass
+
+    exclusive_worker.supports_runtime_overlap = False
+    manager._config_manager = object()
+    manager._resolve_tts_worker_spec = lambda: (exclusive_worker, "", "", "test", False, {})
+    manager.session = object()
+    manager.use_tts = True
+    manager.is_active = True
+    manager._last_tts_respawn_time = 0.0
+    manager._respawn_tts_worker = MagicMock()
+    manager._schedule_tts_capacity_recovery()
+    retry = manager._tts_respawn_task
+    try:
+        await asyncio.sleep(0)
+        manager._respawn_tts_worker.assert_not_called()
+        releases[0].set()
+        await asyncio.wait_for(asyncio.shield(runtimes[0].cleanup_task), 2)
+        await asyncio.sleep(0)
+        manager._respawn_tts_worker.assert_not_called()
+        releases[1].set()
+        await asyncio.wait_for(retry, 2)
+        manager._respawn_tts_worker.assert_called_once()
+    finally:
+        for release in releases:
+            release.set()
+        retry.cancel()
+        await asyncio.gather(retry, *manager._tts_cleanup_tasks, return_exceptions=True)
+
+
 def install(manager, release):
     manager.tts_request_queue = Queue()
     manager.tts_response_queue = Queue()

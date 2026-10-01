@@ -18,6 +18,33 @@ from tests.support.asr_fakes import (
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
 
 
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+@pytest.mark.parametrize("replace_probe", [False, True])
+async def test_failed_preparation_releases_only_its_own_pause_probe(failure, replace_probe):
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    arbiter = SimpleNamespace(pause_owner_alive=None)
+    runtime.session._response_arbiter = arbiter
+    newer_probe = lambda owner: True
+
+    async def prepare(**kwargs):
+        assert callable(arbiter.pause_owner_alive)
+        if replace_probe:
+            arbiter.pause_owner_alive = newer_probe
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise RuntimeError("prepare failed")
+
+    runtime.session.prepare_external_voice_turn = prepare
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._prepare_core_voice_turn(token)
+    else:
+        assert await runtime._prepare_core_voice_turn(token) is False
+    assert arbiter.pause_owner_alive is (newer_probe if replace_probe else None)
+
+
 async def test_pause_owner_probe_is_fenced_to_active_asr_runtime_and_turn():
     runtime = _Runtime()
     arbiter = SimpleNamespace()

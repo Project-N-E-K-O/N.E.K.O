@@ -1377,11 +1377,18 @@ class TtsRuntimeMixin:
                 if self.tts_handler_task is None or self.tts_handler_task.done():
                     self._start_tts_response_handler()
                 return
-            self._start_tts_thread(
-                preserve_provider_exclusions=bool(
-                    getattr(self, "_tts_excluded_provider_keys", frozenset())
+            try:
+                self._start_tts_thread(
+                    preserve_provider_exclusions=bool(
+                        getattr(self, "_tts_excluded_provider_keys", frozenset())
+                    )
                 )
-            )
+            except TtsCapacityError:
+                if not recovering:
+                    raise
+                self.tts_ready = False
+                self._schedule_tts_capacity_recovery()
+                return
         if self.tts_handler_task is None or self.tts_handler_task.done():
             self._start_tts_response_handler()
 
@@ -1449,9 +1456,9 @@ class TtsRuntimeMixin:
         check = getattr(self, "_check_start_operation", None)
         if check:
             check()
-        if self._live_tts_runtime_count() >= 2:
+        if self._live_tts_runtime_count() >= self._tts_capacity_limit():
             self._tts_capacity_exhausted = True
-            raise TtsCapacityError("Two TTS worker resources are still alive")
+            raise TtsCapacityError("TTS worker capacity is still occupied")
         old_runtime = self._snapshot_tts_runtime()
         if old_runtime is not None and not old_runtime.retired:
             self._retire_tts_runtime(old_runtime)
@@ -1529,9 +1536,9 @@ class TtsRuntimeMixin:
         if failed_provider in excluded:
             return False
 
-        if self._live_tts_runtime_count() >= 2:
+        if self._live_tts_runtime_count() >= self._tts_capacity_limit():
             self._tts_capacity_exhausted = True
-            raise TtsCapacityError("TTS fallback cannot exceed two live workers")
+            raise TtsCapacityError("TTS fallback cannot exceed live worker capacity")
 
         # The ledger is authoritative after response.done: some realtime paths
         # rotate ``current_speech_id`` before trailing TTS audio has finished.
@@ -1875,7 +1882,10 @@ class TtsRuntimeMixin:
                 # Cancellation of this retry must not cancel manager-owned
                 # cleanup or release capacity before the worker exits.
                 pending_cleanup = set(cleanup_tasks)
-                while pending_cleanup and self._live_tts_runtime_count() >= self._tts_capacity_limit():
+                while pending_cleanup:
+                    worker = self._resolve_tts_worker_spec()[0] if hasattr(self, "_config_manager") else None
+                    if self._live_tts_runtime_count() < self._tts_capacity_limit(worker):
+                        break
                     _, pending_cleanup = await asyncio.wait(
                         pending_cleanup, return_when=asyncio.FIRST_COMPLETED,
                     )
