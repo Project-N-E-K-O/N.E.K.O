@@ -77,9 +77,7 @@ def handle_sync(args: argparse.Namespace) -> int:
     vendor_dir = plugin_dir / "vendor"
     # Keep a persistent OS lock file outside the plugin. Unlinking lock files
     # can let waiting processes lock different inodes for the same plugin.
-    identity = os.path.normcase(str(plugin_dir.resolve()))
-    # fsencode: a POSIX path may hold undecodable bytes (surrogate escapes).
-    lock_name = hashlib.sha256(os.fsencode(identity)).hexdigest()
+    lock_name = hashlib.sha256(_lock_identity(plugin_dir)).hexdigest()
     staging_dir: Path | None = None
     try:
         # Inside the try: an unusable lock dir reports like any other OSError.
@@ -339,7 +337,7 @@ def _lock_dir() -> Path:
     of one user picks the same lock.
     """
     if not hasattr(os, "getuid"):
-        local = _windows_local_appdata()
+        local = _windows_known_folder(_FOLDERID_LOCAL_APPDATA)
         if local is not None:
             private = local / "neko-plugin" / "sync-locks"
             try:
@@ -363,14 +361,33 @@ def _lock_dir() -> Path:
     return fallback
 
 
-def _windows_local_appdata() -> Path | None:
-    """FOLDERID_LocalAppData from the shell, not from the LOCALAPPDATA or
-    TEMP variables, which two processes of one user may have set apart."""
+def _lock_identity(plugin_dir: Path) -> bytes:
+    """The plugin directory itself, not one of its names: two bind-mount
+    aliases (or other paths) to one directory must share one lock. The
+    resolved path is the fallback where the directory has no usable id."""
+    try:
+        info = plugin_dir.stat()
+    except OSError:
+        info = None
+    if info is not None and info.st_ino:
+        return f"{info.st_dev}:{info.st_ino}".encode()
+    # fsencode: a POSIX path may hold undecodable bytes (surrogate escapes).
+    return os.fsencode(os.path.normcase(str(plugin_dir.resolve())))
+
+
+# Windows known folders, as SHGetKnownFolderPath reports them.
+_FOLDERID_LOCAL_APPDATA = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
+_FOLDERID_ROAMING_APPDATA = "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D"
+_FOLDERID_PROGRAM_DATA = "62AB5D82-FDC1-4DC3-A9DD-070D1D495D97"
+
+
+def _windows_known_folder(folder_id: str) -> Path | None:
+    """A known folder from the shell, not from LOCALAPPDATA / APPDATA /
+    PROGRAMDATA / TEMP, which a process may have set to something else."""
     try:
         import ctypes
 
-        folder_id = uuid.UUID("F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
-        guid = (ctypes.c_ubyte * 16).from_buffer_copy(folder_id.bytes_le)
+        guid = (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(folder_id).bytes_le)
         path = ctypes.c_wchar_p()
         result = ctypes.windll.shell32.SHGetKnownFolderPath(
             ctypes.byref(guid), 0, None, ctypes.byref(path)
@@ -913,9 +930,16 @@ def _pip_config_files(target: _TargetPython) -> list[Path]:
     files: list[Path] = []
     home = target.home
     if sys.platform == "win32":
-        for base in (_env_get(env, "PROGRAMDATA"), _env_get(env, "APPDATA")):
-            if base:
-                files.append(Path(base, "pip", "pip.ini"))
+        # pip's platformdirs asks the shell for these folders; the variables
+        # are what a launcher may have changed. Scanning both only adds files.
+        bases = [
+            _env_get(env, "PROGRAMDATA"),
+            _windows_known_folder(_FOLDERID_PROGRAM_DATA),
+            _env_get(env, "APPDATA"),
+            _windows_known_folder(_FOLDERID_ROAMING_APPDATA),
+        ]
+        for base in dict.fromkeys(base for base in bases if base):
+            files.append(Path(base, "pip", "pip.ini"))
         files.append(home / "pip" / "pip.ini")
         site_name = "pip.ini"
     else:

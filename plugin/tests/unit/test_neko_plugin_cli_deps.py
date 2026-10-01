@@ -17,6 +17,7 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _lock_dir as real_lock_dir,
     _pip_config_files as real_pip_config_files,
     _probe_target as real_probe_target,
+    _windows_known_folder as real_windows_known_folder,
     _read_dependencies,
     _replace_vendor,
     handle_sync,
@@ -45,6 +46,8 @@ def _no_host_package_index_config(monkeypatch):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(deps_cmd, "_pip_config_files", lambda target: [])
     monkeypatch.setattr(deps_cmd, "_probe_target", lambda python: _target())
+    # Tests that scan real config locations must not read this machine's.
+    monkeypatch.setattr(deps_cmd, "_windows_known_folder", lambda folder_id: None)
 
 
 def _target(*, has_pip=False, in_venv=True, env=None, cwd=None, home=None):
@@ -249,6 +252,7 @@ def test_overlapping_sync_rejected_across_processes(tmp_path, monkeypatch):
 
     # The child process uses the real lock dir; so must this one.
     monkeypatch.setattr(deps_cmd, "_lock_dir", real_lock_dir)
+    monkeypatch.setattr(deps_cmd, "_windows_known_folder", real_windows_known_folder)
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     real_run = subprocess.run
     child_code = '''
@@ -2345,6 +2349,42 @@ def test_config_sections_match_pip_exactly(tmp_path):
     assert deps_cmd._config_setting_keys(config) == {"no-deps (invalid value 'maybe')"}
 
 
+def test_lock_identity_is_the_directory_not_its_name(tmp_path, monkeypatch):
+    # Two paths to one directory (bind-mount aliases) must share one lock.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    real_stat = Path.stat
+    alias = tmp_path / "alias"
+
+    def stat(path, *args, **kwargs):
+        return real_stat(plugin_dir if path == alias else path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    assert deps_cmd._lock_identity(alias) == deps_cmd._lock_identity(plugin_dir)
+    assert deps_cmd._lock_identity(other) != deps_cmd._lock_identity(plugin_dir)
+
+
+def test_windows_pip_config_includes_the_shells_folders(tmp_path, monkeypatch):
+    # pip's platformdirs asks the shell, not APPDATA / PROGRAMDATA.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    monkeypatch.setattr(deps_cmd.sys, "platform", "win32")
+    folders = {
+        deps_cmd._FOLDERID_PROGRAM_DATA: tmp_path / "shell-programdata",
+        deps_cmd._FOLDERID_ROAMING_APPDATA: tmp_path / "shell-appdata",
+    }
+    monkeypatch.setattr(deps_cmd, "_windows_known_folder", folders.get)
+    env = {"APPDATA": str(tmp_path / "env-appdata")}
+    files = real_pip_config_files(_target(env=env, cwd=tmp_path))
+
+    for base in ("shell-programdata", "shell-appdata", "env-appdata"):
+        assert tmp_path / base / "pip" / "pip.ini" in files
+
+
 def test_windows_lock_dir_ignores_per_process_temp(tmp_path, monkeypatch):
     # Two syncs by one user with different TEMP/TMP must share one lock, or
     # one could delete the other's live staging dir as stale.
@@ -2353,7 +2393,7 @@ def test_windows_lock_dir_ignores_per_process_temp(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.delattr(deps_cmd.os, "getuid", raising=False)
-    monkeypatch.setattr(deps_cmd, "_windows_local_appdata", lambda: tmp_path / "local")
+    monkeypatch.setattr(deps_cmd, "_windows_known_folder", lambda folder_id: tmp_path / "local")
     seen = []
     for temp in ("temp-a", "temp-b"):
         monkeypatch.setenv("TEMP", str(tmp_path / temp))
@@ -2369,7 +2409,7 @@ def test_windows_local_appdata_comes_from_the_shell_not_the_environment(tmp_path
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "per-process"))
-    local = deps_cmd._windows_local_appdata()
+    local = real_windows_known_folder(deps_cmd._FOLDERID_LOCAL_APPDATA)
 
     assert local is not None and local.is_dir()
     assert local != tmp_path / "per-process"
