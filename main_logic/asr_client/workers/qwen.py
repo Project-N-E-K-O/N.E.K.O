@@ -284,7 +284,9 @@ async def _qwen_finish_and_reconnect(
     # session.finish is one-way.  Requests arriving while the provider flushes
     # belong to the successor session and must stay in FIFO order.
     finish_task = asyncio.create_task(state.finish_received.wait())
-    queue_task = asyncio.create_task(request_queue.get())
+    queue_task = asyncio.create_task(
+        _qwen_get_request(request_queue, deferred_requests)
+    )
     deadline = asyncio.get_running_loop().time() + _QWEN_FINISH_TIMEOUT_SECONDS
     deferred_shutdown: _AsrWorkerRequest | None = None
     try:
@@ -958,7 +960,11 @@ async def qwen_asr_worker(
                 )
                 if sender_task in done:
                     outcome, outcome_request = await sender_task
-                if receiver_task in done and sender_task not in done:
+                if (
+                    receiver_task in done
+                    and sender_task not in done
+                    and (state.intentional_close.is_set() or state.reconnect_after_finish)
+                ):
                     try:
                         outcome, outcome_request = await asyncio.wait_for(
                             asyncio.shield(sender_task), timeout=1.0
@@ -1000,6 +1006,15 @@ async def qwen_asr_worker(
                 for task in (sender_task, receiver_task, stalled_watch_task):
                     if task is not None and not task.done():
                         task.cancel()
+                # Retire the transport before joining children: session failure
+                # and its background close can both cancel this worker. A
+                # second cancellation during gather must not skip ws.close().
+                if ws is not None:
+                    state.intentional_close.set()
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
                 pending_tasks = [
                     task
                     for task in (sender_task, receiver_task, stalled_watch_task)
@@ -1007,12 +1022,6 @@ async def qwen_asr_worker(
                 ]
                 if pending_tasks:
                     await asyncio.gather(*pending_tasks, return_exceptions=True)
-                if ws is not None:
-                    state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
 
             closed_sent = state.closed_sent.is_set()
             if outcome == "reconnect":
