@@ -986,13 +986,6 @@ class LifecycleMixin:
             asyncio.get_running_loop().time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
         )
         abandon_epoch = getattr(self, '_user_session_abandon_epoch', 0)
-        try:
-            await self._wait_session_handoff(deadline)
-        except (TimeoutError, RuntimeError):
-            await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
-            return
-        if abandon_epoch != getattr(self, '_user_session_abandon_epoch', 0):
-            return
         if self._session_start_circuit_open:
             return
         if await self._start_session_handle_inflight(
@@ -1004,10 +997,27 @@ class LifecycleMixin:
             deadline=deadline,
         ):
             return
-        operation, token = self._claim_start_operation(websocket, request_id, input_mode, deadline)
+        operation, token = self._claim_start_operation(
+            websocket, request_id, input_mode, deadline, advance_generation=False,
+        )
         diag_start = time.time()
         new_dialog_task = None
         try:
+            # Reserve admission before the first handoff await so ingress
+            # queues behind this request instead of starting another session.
+            try:
+                await self._wait_session_handoff(deadline)
+            except Exception:
+                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
+                return
+            if abandon_epoch != getattr(self, '_user_session_abandon_epoch', 0):
+                if request_id is not None:
+                    await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
+                return
+            self._check_start_operation()
+            # The reservation must not take state ownership away from the
+            # preceding retirement while its memory/input cleanup is running.
+            self._session_generation = operation.generation
             async with asyncio.timeout_at(deadline):
                 # Finish the previous conversation's state/memory boundary
                 # before mutating config, input or output state for this one.
@@ -1057,6 +1067,8 @@ class LifecycleMixin:
                     provider_preference_override=session_provider_preference_handshake_override,
                 )
         except asyncio.CancelledError:
+            if request_id is not None:
+                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
             if operation.valid:
                 self.request_end_session(by_server=True)
             # An accepted user end revoked this operation. The manager-owned

@@ -1339,12 +1339,34 @@ class TtsRuntimeMixin:
             # A live handler can still be blocked on the response queue owned
             # by a worker that was shut down for native Realtime voice. It must
             # not survive across the fresh queues created by _start_tts_thread.
-            await self._stop_tts_response_handler()
+            current_request = getattr(self, "_current_start_request", None)
+            operation = current_request() if current_request else None
+            recovering = deadline is None and (operation is None or operation.finished.is_set())
+            if recovering and runtime is not None:
+                # A turn must not wait on retired workers. Retirement retains
+                # the old handler; its fenced output cannot reach fresh queues.
+                self._retire_tts_runtime(runtime)
+                if self.tts_handler_task is runtime.handler:
+                    self.tts_handler_task = None
+                    self._tts_handler_response_queue = None
+            else:
+                await self._stop_tts_response_handler()
             check = getattr(self, "_check_start_operation", None)
+            if recovering:
+                check = None
             if check:
                 check()
             worker = self._resolve_tts_worker_spec()[0] if hasattr(self, "_config_manager") else None
-            await self._wait_tts_capacity(deadline, worker=worker)
+            try:
+                await self._wait_tts_capacity(
+                    asyncio.get_running_loop().time() if recovering else deadline,
+                    worker=worker,
+                )
+            except TtsCapacityError:
+                if not recovering:
+                    raise
+                self.tts_ready = False
+                return
             if check:
                 check()
             # Another lazy startup may have installed a healthy worker while

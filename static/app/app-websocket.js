@@ -5585,7 +5585,7 @@
                         return;
                     }
                     if (typeof clearLocalAsrPreparingNotice === 'function') {
-                        clearLocalAsrPreparingNotice();
+                        clearLocalAsrPreparingNotice({ force: true });
                     }
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -5662,7 +5662,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
-                    clearLocalAsrPreparingNotice();
+                    clearLocalAsrPreparingNotice({ force: true });
 
                     // Restore UI to idle state
                     var _mb3 = micButton();
@@ -6022,7 +6022,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
-            clearLocalAsrPreparingNotice();
+            clearLocalAsrPreparingNotice({ force: true });
 
             // Reset button states
             var _mb5 = micButton();

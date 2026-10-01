@@ -2,6 +2,8 @@
 
 import asyncio
 
+from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
+
 from .tts_records import TtsCapacityError, TtsRuntimeRecord, tts_output_runtime
 
 
@@ -90,6 +92,10 @@ class TtsLifecycleMixin:
         if runtime not in self._tts_runtimes:
             self._tts_runtimes.append(runtime)
         if stop_handler and self._tts_runtime_is_current(runtime):
+            cancel_preloads = getattr(self, "cancel_game_speech_preloads", None)
+            if cancel_preloads:
+                cancel_preloads()
+            GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
             # The completion slot belongs to the runtime at acceptance, not to
             # whichever runtime exists when a slow worker finally exits.
             cancel_completion = getattr(self, "_cancel_game_speech_completion_wait", None)

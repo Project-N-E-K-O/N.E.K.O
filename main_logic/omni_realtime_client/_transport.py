@@ -4155,6 +4155,10 @@ class _TransportMixin:
             if pair[0] is not gemini_context
         )
         gemini_close_task = self._gemini_close_task
+        if gemini_close_task is not None and gemini_close_task.done():
+            if gemini_close_task.cancelled() or gemini_close_task.exception() is not None:
+                gemini_close_task = None
+                self._gemini_close_task = None
         gemini_proactive_submit_task = getattr(
             self,
             "_gemini_proactive_submit_task",

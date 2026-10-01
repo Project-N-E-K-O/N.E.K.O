@@ -1015,7 +1015,10 @@ class _ResponseMixin:
                     # complete sentence that then never gets answered at all.
                     # Leave it queued -- the lane is serial, and this turn's
                     # own ticket is priority 0.
-                    if arbiter.has_live_response:
+                    if arbiter.has_live_response or (
+                        arbiter.current_source is not None
+                        and arbiter.current_source != "external_asr"
+                    ):
                         await arbiter.cancel_current(reason="external_asr_prepare")
                 await self.handle_interruption()
             except BaseException:
@@ -1145,13 +1148,17 @@ class _ResponseMixin:
             None,
         )
         if quarantine_task is not None and quarantine_task is not asyncio.current_task():
-            await asyncio.shield(quarantine_task)
-            if (
-                quarantine_task.done()
-                and getattr(self, "_gemini_external_quarantine_task", None)
-                is quarantine_task
-            ):
-                self._gemini_external_quarantine_task = None
+            try:
+                await asyncio.shield(quarantine_task)
+            except Exception:
+                # The retained SDK owner must close successfully before we
+                # reconnect; retry it rather than replaying the old exception.
+                await self._close_gemini()
+            finally:
+                if (quarantine_task.done() and getattr(self, "_gemini_external_quarantine_task", None) is quarantine_task):
+                    self._gemini_external_quarantine_task = None
+        if getattr(self, "_fatal_error_occurred", False) and getattr(self, "_gemini_session", None) is not None:
+            await self._close_gemini()
         if getattr(self, "_gemini_session", None) is None:
             instructions = str(getattr(self, "instructions", "") or "")
             if instructions:

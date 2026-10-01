@@ -1931,7 +1931,9 @@ async def test_partial_language_preference_response_uses_http_200(monkeypatch):
 async def test_post_init_inactive_memory_barrier_waits_outside_session_lock():
     lock_states = []
     manager = _LifecycleHarness()
-    manager._queue_session_end_memory_barrier = lambda _callback: object()
+    completion = asyncio.get_running_loop().create_future()
+    completion.set_result(None)
+    manager._queue_session_end_memory_barrier = lambda _callback: completion
 
     async def wait(_completion, _callback, *, timeout_seconds):
         assert timeout_seconds == 15.0

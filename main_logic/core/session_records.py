@@ -57,6 +57,8 @@ class Retirement:
     resets_operation: bool = True
     preparation: object = None
     swap: object = None
+    retry_kwargs: dict = field(default_factory=dict)
+    pending_inputs: tuple = ()
 
 
 def start_phase(method):

@@ -827,6 +827,9 @@ class RealtimeResponseArbiter:
                 self._queue.qsize(),
             )
             if self._turn_preparations:
+                # Expiry now owns teardown; a later pause must not cancel it.
+                if self._pause_expiry is asyncio.current_task():
+                    self._pause_expiry = None
                 # A preparation owns the barrier until its caller reaches the
                 # matching end_turn_preparation() in its finally block.
                 # Opening dispatch while that owner is still alive would let a
