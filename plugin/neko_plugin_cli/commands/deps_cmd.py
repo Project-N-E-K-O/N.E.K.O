@@ -153,11 +153,12 @@ def handle_sync(args: argparse.Namespace) -> int:
             if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
                 # Several plugins may link vendor/ to one target: every writer
                 # to it must hold that target's lock, not only its plugin's.
-                target_lock = hashlib.sha256(_lock_identity(vendor_dir)).hexdigest()
+                target = vendor_dir.stat()
+                target_lock = hashlib.sha256(_lock_identity(vendor_dir, target)).hexdigest()
                 with portalocker.Lock(
                     _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
                 ):
-                    exit_code = _sync_in_place(vendor_dir, external_deps, args)
+                    exit_code = _sync_in_place(vendor_dir, external_deps, args, target)
                 if exit_code != 0:
                     return exit_code
                 _remove_retained_backups(plugin_dir)
@@ -203,7 +204,16 @@ def handle_sync(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1  # the finally block's mount check keeps staging
-            _clean_vendor(staging_dir)
+            if sys.platform.startswith("linux") and _linux_mount_points() is None:
+                # ismount() misses a same-filesystem bind mount, and the
+                # cleanup recurses: skip it rather than reach into one.
+                print(
+                    f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {staging_dir}: "
+                    "/proc/self/mountinfo is unavailable, so mounts inside can not be ruled out.",
+                    file=sys.stderr,
+                )
+            else:
+                _clean_vendor(staging_dir)
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
             # A complete successful sync supersedes retained backups.
@@ -236,7 +246,28 @@ def _pending_marker(backup_dir: Path) -> Path:
     return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
 
 
-def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Namespace) -> int:
+def _report_vendor_changed(vendor_dir: Path) -> int:
+    print(
+        f"[FAIL] {vendor_dir} changed during the sync (retargeted, or a mount "
+        "appeared inside); not touching it further. Check it and retry.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _same_target(vendor_dir: Path, identity: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(vendor_dir.stat(), identity)
+    except OSError:
+        return False
+
+
+def _sync_in_place(
+    vendor_dir: Path,
+    external_deps: list[str],
+    args: argparse.Namespace,
+    identity: os.stat_result,
+) -> int:
     """Sync a linked or mounted vendor/ without renaming it.
 
     Without --clean the install goes straight into it, as before the swap
@@ -247,6 +278,10 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
     (the other disk a link leads to, the volume): the plugin's own disk may
     be the one without room, and refilling is then a rename, not a copy.
     Either way there is no rollback once vendor/ itself is being written.
+
+    identity is the directory vendor/ led to when its lock was taken. The
+    installer is another process that can only be given a path, so vendor/
+    is checked to still lead there before and after each step that writes.
     """
     print(
         "[WARN] "
@@ -260,12 +295,17 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
         ),
         file=sys.stderr,
     )
+    if not _same_target(vendor_dir, identity):
+        return _report_vendor_changed(vendor_dir)
     # Left inside vendor/ by a killed --clean run; it would ship with it.
     _remove_stale_staging(vendor_dir)
     if not args.clean:
         exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
         if exit_code != 0:
             return exit_code
+        if not _same_target(vendor_dir, identity):
+            # The install may have gone to the new target; say so.
+            return _report_vendor_changed(vendor_dir)
         # _clean_vendor's recursive searches would cross a mount or junction
         # inside and delete caches and bin/ in that external tree.
         if (
@@ -299,8 +339,8 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
             file=sys.stderr,
         )
         return 1
-    # The directory vendor/ leads to now; refilling must happen in it.
-    identity = vendor_dir.stat()
+    if not _same_target(vendor_dir, identity):
+        return _report_vendor_changed(vendor_dir)
     staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
     staging_dir.mkdir()
     try:
@@ -345,21 +385,12 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
     such calls; there the check runs right before the path-based deletion.)
     """
     def changed() -> int:
-        print(
-            f"[FAIL] {vendor_dir} changed during the install (retargeted, or a "
-            "mount appeared inside); not emptying it. Check it and retry.",
-            file=sys.stderr,
-        )
-        return 1
+        return _report_vendor_changed(vendor_dir)
 
     if _find_foreign_subdir(vendor_dir, junctions=False) is not None:
         return changed()
     if not _DIR_FD_OPS:
-        try:
-            current = vendor_dir.stat()
-        except OSError:
-            return changed()
-        if not os.path.samestat(current, identity) or not staging_dir.is_dir():
+        if not _same_target(vendor_dir, identity) or not staging_dir.is_dir():
             return changed()
         _empty_directory(vendor_dir, keep=staging_dir.name)
         for child in staging_dir.iterdir():
@@ -539,14 +570,15 @@ def _lock_dir() -> Path:
     return fallback
 
 
-def _lock_identity(plugin_dir: Path) -> bytes:
+def _lock_identity(plugin_dir: Path, info: os.stat_result | None = None) -> bytes:
     """The plugin directory itself, not one of its names: two bind-mount
     aliases (or other paths) to one directory must share one lock. The
     resolved path is the fallback where the directory has no usable id."""
-    try:
-        info = plugin_dir.stat()
-    except OSError:
-        info = None
+    if info is None:
+        try:
+            info = plugin_dir.stat()
+        except OSError:
+            info = None
     if info is not None and info.st_ino:
         return f"{info.st_dev}:{info.st_ino}".encode()
     # fsencode: a POSIX path may hold undecodable bytes (surrogate escapes).

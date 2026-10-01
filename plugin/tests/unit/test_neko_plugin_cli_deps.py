@@ -1054,7 +1054,67 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
         assert (plugin_dir / "moved-away" / "old.py").read_text() == "old"
     else:
         assert (vendor / "old.py").read_text() == "old"
-    assert "changed during the install" in capsys.readouterr().err
+    assert "changed during the sync" in capsys.readouterr().err
+
+
+def test_in_place_sync_refuses_a_vendor_retargeted_after_locking(tmp_path, monkeypatch, capsys):
+    # The lock was taken for one target; vendor/ now leads elsewhere.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(
+        deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
+    )
+    args = TestTransactionalDependencyInstall()._args(tmp_path, tmp_path)
+
+    assert deps_cmd._sync_in_place(vendor, ["httpx"], args, other.stat()) == 1
+    assert "changed during the sync" in capsys.readouterr().err
+
+
+def test_non_clean_in_place_install_reports_a_retarget_during_it(tmp_path, monkeypatch, capsys):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+
+    def install(command, **kwargs):
+        vendor.rename(plugin_dir / "moved-away")
+        vendor.mkdir()
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert "changed during the sync" in capsys.readouterr().err
+
+
+def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, monkeypatch, capsys):
+    # ismount() misses a same-filesystem bind mount the cleanup would enter.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+    monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(deps_cmd.os.path, "ismount", lambda p: False)
+    monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: False)
+
+    def install(command, **kwargs):
+        cache = Path(command[command.index("--target") + 1]) / "pkg" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "x.pyc").write_text("cache")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (plugin_dir / "vendor" / "pkg" / "__pycache__" / "x.pyc").exists()
+    assert "Skipped removing __pycache__" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
