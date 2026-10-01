@@ -1371,6 +1371,81 @@ def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypat
     assert len(kept) == 1 and (kept[0] / "oldpkg" / "mnt.dat").read_text() == "external"
 
 
+def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch, capsys):
+    # It holds the only copy of the old entries a failed refill moved.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    trash = vendor / ".vendor.staging-0000abcd"
+    trash.mkdir(parents=True)
+    (trash / deps_cmd._REFILL_MARKER).touch()
+    (trash / "old.py").write_text("only copy")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    monkeypatch.setattr(
+        deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)) == 1
+    assert (trash / "old.py").read_text() == "only copy"
+    assert "stopped while replacing the contents" in capsys.readouterr().err
+    deps_cmd._remove_stale_staging(vendor)
+    assert (trash / "old.py").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
+def test_refill_trash_is_marked_until_the_refill_completes(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "a.py").write_text("a")
+    (vendor / "b.py").write_text("b")
+    staging = vendor / ".vendor.staging-0000abcd"
+    staging.mkdir()
+    (staging / "new.py").write_text("new")
+    identity = deps_cmd._vendor_target(vendor)
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
+    real_rename = os.rename
+    moved = []
+
+    def rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if moved:
+            raise OSError(16, "busy")  # the second old entry can not be moved
+        moved.append(src)
+        return real_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(deps_cmd.os, "rename", rename)
+    with pytest.raises(OSError):
+        deps_cmd._refill_in_place(vendor, staging, identity)
+    trash, = [p for p in vendor.glob(".vendor.staging-*") if p != staging]
+    assert (trash / deps_cmd._REFILL_MARKER).is_file()
+    assert deps_cmd._unfinished_refills(vendor) == [trash]
+
+
+def test_swap_refuses_a_vendor_replaced_during_the_install(tmp_path, monkeypatch, capsys):
+    # Moving the replacement aside would hand it to backup cleanup.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+
+    def install(command, **kwargs):
+        vendor.rename(plugin_dir / "moved-away")
+        vendor.mkdir()
+        (vendor / "theirs.py").write_text("theirs")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
+    assert (vendor / "theirs.py").read_text() == "theirs"
+    assert not list(plugin_dir.glob(".vendor.backup-*"))
+    assert "was replaced during the install" in capsys.readouterr().err
+
+
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
     from plugin.neko_plugin_cli.commands import deps_cmd

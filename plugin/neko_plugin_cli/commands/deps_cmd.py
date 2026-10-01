@@ -202,6 +202,9 @@ def handle_sync(args: argparse.Namespace) -> int:
             # until the install succeeds. A plain mkdir (unlike mkdtemp's 0700)
             # keeps the new vendor/ readable by other users per the umask.
             staging_dir = plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+            # The vendor/ the swap will move aside; checked again right before
+            # it, as another process may have replaced it during the install.
+            vendor_before = vendor_dir.lstat() if vendor_dir.exists() else None
             if not args.clean and vendor_dir.is_dir():
                 shutil.copytree(vendor_dir, staging_dir, symlinks=True)
             else:
@@ -237,6 +240,13 @@ def handle_sync(args: argparse.Namespace) -> int:
                 _remove_installer_bin(staging_dir)
             else:
                 _clean_vendor(staging_dir)
+            if not _vendor_unchanged(vendor_dir, vendor_before):
+                print(
+                    f"[FAIL] {vendor_dir} was replaced during the install; not swapping "
+                    "it aside. Check it and retry.",
+                    file=sys.stderr,
+                )
+                return 1
             if not _replace_vendor(vendor_dir, staging_dir):
                 return 1
             # A complete successful sync supersedes retained backups.
@@ -265,6 +275,14 @@ _HOST_PROVIDED = {"n-e-k-o"}
 # A backup whose swap or rollback has not finished carries a sibling marker
 # file. Keeping it beside the backup (never inside a vendor tree) means it
 # can not collide with package data or travel into vendor/.
+def _vendor_unchanged(vendor_dir: Path, before: os.stat_result | None) -> bool:
+    try:
+        now = vendor_dir.lstat()
+    except FileNotFoundError:
+        return before is None
+    return before is not None and os.path.samestat(now, before)
+
+
 def _pending_marker(backup_dir: Path) -> Path:
     return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
 
@@ -364,6 +382,16 @@ def _sync_in_place(
     )
     if not _same_target(vendor_dir, identity):
         return _report_vendor_changed(vendor_dir)
+    unfinished = _unfinished_refills(vendor_dir)
+    if unfinished:
+        locations = ", ".join(str(path) for path in unfinished)
+        print(
+            f"[FAIL] An earlier sync stopped while replacing the contents of {vendor_dir}; "
+            f"the old files it had moved are in {locations}. Move them back into vendor/ "
+            "(or delete that dir once vendor/ is complete), then retry.",
+            file=sys.stderr,
+        )
+        return 1
     # Left inside vendor/ by a killed --clean run; it would ship with it.
     _remove_stale_staging(vendor_dir)
     if not args.clean:
@@ -509,12 +537,17 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
         os.mkdir(trash, dir_fd=fd)
         trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
+            # Until the refill is complete this dir holds the only copy of
+            # what was moved into it; the marker keeps a later sync from
+            # taking it for disposable staging.
+            os.close(os.open(_REFILL_MARKER, os.O_CREAT | os.O_WRONLY, dir_fd=trash_fd))
             for name in os.listdir(fd):
                 if name in {staging_dir.name, trash} or _others_staging(name, fd):
                     continue
                 os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
             for name in os.listdir(staging_fd):
                 os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
+            os.unlink(_REFILL_MARKER, dir_fd=trash_fd)
         finally:
             os.close(trash_fd)
             os.close(staging_fd)
@@ -531,6 +564,17 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
 
 
 _STAGING_NAME_RE = re.compile(re.escape(VENDOR_SYNC_STAGING_PREFIX) + r"[0-9a-f]{8}")
+# Inside an in-place refill's trash dir while it holds the only copy of the
+# old vendor/ entries it took (see _refill_in_place).
+_REFILL_MARKER = ".neko-sync-refill-pending"
+
+
+def _unfinished_refills(vendor_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in _sync_work_dirs(vendor_dir, VENDOR_SYNC_STAGING_PREFIX)
+        if (path / _REFILL_MARKER).is_file()
+    ]
 
 
 def _others_staging(name: str, dir_fd: int) -> bool:
@@ -920,7 +964,7 @@ def _remove_stale_staging(directory: Path) -> None:
     # own runs; another user's staging dir may belong to a live install.
     for path in _sync_work_dirs(directory, VENDOR_SYNC_STAGING_PREFIX):
         try:
-            if _owned_by_other_user(path):
+            if _owned_by_other_user(path) or (path / _REFILL_MARKER).exists():
                 continue
             if _mounted_inside(path):
                 continue
