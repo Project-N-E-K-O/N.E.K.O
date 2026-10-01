@@ -802,8 +802,19 @@ class TurnMixin:
         # 门控（#2534 合并时留的路标就是指这里）：文本请求由 websocket_router
         # 作为各自独立的后台任务分发，旧请求 A 的迟到 discard 可以落在新请求 B
         # 已经开始 publish 之后，无门控地清会连 B 的前缀一起抹掉。
+        #
+        # cross_server 的 response_discarded_clear 也是同一份共享输出，同步地
+        # 和 buffer 一起清，必须赶在任何 await 之前：下面的 recovery 会先发正文
+        # 和 turn end，再 compare-and-clear 掉 request id，等它跑完再判产权就
+        # 恒为 False，clear 永远发不出去，cross_server 会把丢弃版和恢复正文
+        # 一起写进记忆。
         if may_clear_shared_output():
             self._current_ai_turn_text = ''
+            if self.sync_message_queue:
+                self.sync_message_queue.put({
+                    'type': 'system',
+                    'data': 'response_discarded_clear'
+                })
             await self._clear_tts_pipeline()
 
         # A request-bound discard is only relevant while that request still owns
@@ -948,12 +959,6 @@ class TurnMixin:
                 # Compare-and-clear：见函数顶部 active_request_id 快照说明。
                 if self._active_text_request_id == active_request_id:
                     self._active_text_request_id = None
-
-        if self.sync_message_queue and may_clear_shared_output():
-            self.sync_message_queue.put({
-                'type': 'system',
-                'data': 'response_discarded_clear'
-            })
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。

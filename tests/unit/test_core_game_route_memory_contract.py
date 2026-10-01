@@ -2910,6 +2910,62 @@ async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_body"),
+    [
+        (
+            '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"kept sentence."}',
+            "kept sentence.",
+        ),
+        ('{"code":"RESPONSE_TOO_LONG"}', "too long notice"),
+    ],
+    ids=["length_truncated", "too_long_final"],
+)
+async def test_owned_recovery_clears_discarded_output_before_recovery_body(
+    monkeypatch, message, expected_body,
+):
+    """cross_server must drop the discarded text before the recovery body lands.
+
+    The recovery publishes its own body and turn end, and releases the request
+    id on its way out. The clear has to reach the sync queue first: otherwise
+    cross_server keeps the discarded text in its output cache and persists it
+    into memory together with the recovery body.
+    """
+    mgr = _make_manager()
+    # Drop the stub so the real publisher writes to the sync queue.
+    del mgr.send_lanlan_response
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._activity_tracker = Mock()
+    mgr.user_language = "en"
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    monkeypatch.setattr(
+        turn_module, "_get_chat_locale_text", lambda *_args: "too long notice",
+    )
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr, "discarded gibberish", is_first_chunk=True, request_id="req-A",
+    )
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr, "guard", 3, 3, False, message, request_id="req-A",
+    )
+
+    assert [
+        msg["data"] if msg["type"] == "system" else msg["data"]["text"]
+        for msg in mgr.sync_message_queue.messages
+    ] == [
+        "discarded gibberish",
+        "response_discarded_clear",
+        expected_body,
+        "turn end",
+    ]
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_unowned_discard_callback_keeps_global_clear_behavior():
     """Legacy/proactive discard callbacks still clear shared output globally."""
     mgr = _make_manager()
