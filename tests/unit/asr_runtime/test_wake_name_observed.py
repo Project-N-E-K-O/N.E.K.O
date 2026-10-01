@@ -21,7 +21,7 @@ OBSERVED_CORRECTIONS = (
     ("英语。", "悠怡。"),
     ("刘怡。", "悠怡。"),
     ("又一又一。", "悠怡悠怡。"),
-    ("优姨今天有什么安排？", "悠怡今天有什么安排？"),
+    ("优姨。", "悠怡。"),
     ("悠移。", "悠怡。"),
     ("悠移悠移。", "悠怡悠怡。"),
     ("优仪。", "悠怡。"),
@@ -31,8 +31,23 @@ OBSERVED_CORRECTIONS = (
     ("悠矣悠矣。", "悠怡悠怡。"),
 )
 
+# Derived combinations exercise the bounded rule, not new recording evidence.
+COMBINED_CORRECTIONS = (
+    ("优姨优姨。", "悠怡悠怡。"),
+    ("友谊友谊", "悠怡悠怡"),
+    ("悠移悠宜。", "悠怡悠怡。"),
+    ("优矣优矣", "悠怡悠怡"),
+    ("悠宜优仪，帮我打开灯。", "悠怡悠怡，帮我打开灯。"),
+    ("悠移优姨。", "悠怡悠怡。"),
+    ("优姨悠宜。", "悠怡悠怡。"),
+    ("忧郁～", "悠怡～"),
+    ("由于~", "悠怡~"),
+    ("英语．", "悠怡．"),
+    ("刘怡）", "悠怡）"),
+)
 
-@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS)
+
+@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS + COMBINED_CORRECTIONS)
 def test_observed_spelling_preserves_surrounding_whitespace_and_quotes(raw, expected):
     assert correct_wake_name_prefix(raw) == expected
     assert correct_wake_name_prefix(f' \t“{raw}”\n') == f' \t“{expected}”\n'
@@ -42,19 +57,12 @@ def test_observed_spelling_preserves_surrounding_whitespace_and_quotes(raw, expe
     ("欢迎优依，帮我打开灯。", "欢迎优依，帮我打开灯。"),
     ("欢迎悠怡帮我打开灯。", "欢迎悠怡帮我打开灯。"),
     ("有有有，今天有什么安排？", "有有有，今天有什么安排？"),
-    ("优姨，解释一下优姨。", "悠怡，解释一下优姨。"),
-    ("忧郁", "悠怡"),
-    ("忧郁？！", "悠怡？！"),
-    ("忧郁忧郁", "悠怡悠怡"),
-    ("忧郁忧郁？！", "悠怡悠怡？！"),
-    ("由于", "悠怡"),
-    ("由于？！", "悠怡？！"),
-    ("英语", "悠怡"),
-    ("英语？！", "悠怡？！"),
-    ("刘怡", "悠怡"),
-    ("刘怡？！", "悠怡？！"),
-    ("又一又一", "悠怡悠怡"),
-    ("又一又一？！", "悠怡悠怡？！"),
+    ("优姨，解释一下优姨。", "优姨，解释一下优姨。"),
+    ("悠宜悠移优仪。", "悠怡悠怡优仪。"),
+    ("悠宜呦呦呦。", "悠怡呦呦呦。"),
+    ("呦呦呦悠宜。", "悠怡悠怡悠宜。"),
+    ("悠宜，悠移。", "悠怡，悠移。"),
+    ("悠宜 悠移。", "悠怡 悠移。"),
 ])
 def test_known_prefix_keeps_command_and_standalone_word_allows_only_endings(raw, expected):
     assert correct_wake_name_prefix(raw) == expected
@@ -75,6 +83,11 @@ def test_known_prefix_keeps_command_and_standalone_word_allows_only_endings(raw,
     "我说又一又一。", "又一。", "又一又一、",
     "我说有有有。", "有有。", "我刚才喊了优姨。", "悠怡，欢迎优依。",
     "悠怡悠怡。", "有人吗？", "有意义。",
+    "友谊是什么？", "优姨今天来吗？", "优姨今天有什么安排？",
+    "友谊友谊，帮我打开灯。", "优姨优姨今天来吗？",
+    "悠移优姨今天来吗？", "优姨悠宜，帮我打开灯。",
+    "优姨优姨优姨。", "优依", "优依优依", "优依今天来吗？",
+    "忧郁～怎么办？", "由于~天气不好", "英语．帮我翻译。", "刘怡）是谁？",
 ])
 def test_unobserved_or_interior_words_are_preserved(text):
     assert correct_wake_name_prefix(text) == text
@@ -82,7 +95,10 @@ def test_unobserved_or_interior_words_are_preserved(text):
 
 @pytest.mark.asyncio
 @pytest.mark.runtime
-@pytest.mark.parametrize("spelling", ["有有有", "欢迎悠怡", "欢迎优依"])
+@pytest.mark.parametrize("spelling", [
+    "有有有", "欢迎悠怡", "欢迎优依", "友谊", "优姨",
+    "友谊友谊", "优姨优姨", "悠移优姨", "优姨悠宜",
+])
 @pytest.mark.parametrize("suffix", [
     "，今天有什么安排？", "帮我打开灯。", "。欢迎回来。", "？真的吗？",
     "、", "，", "；",
@@ -101,7 +117,7 @@ async def test_ambiguous_wake_spellings_preserve_following_content(spelling, suf
 
 @pytest.mark.asyncio
 @pytest.mark.runtime
-@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS)
+@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS + COMBINED_CORRECTIONS)
 async def test_only_wake_first_final_changes_history_and_model(raw, expected):
     runtime = _runtime()
     _status(runtime)
@@ -126,7 +142,7 @@ async def test_only_wake_first_final_changes_history_and_model(raw, expected):
 @pytest.mark.asyncio
 @pytest.mark.runtime
 @pytest.mark.parametrize("reason", [None, "owner_confirmed"])
-@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS)
+@pytest.mark.parametrize(("raw", "expected"), OBSERVED_CORRECTIONS + COMBINED_CORRECTIONS)
 async def test_ordinary_and_voiceprint_turns_keep_observed_text(reason, raw, expected):
     runtime = _runtime()
     if reason:
