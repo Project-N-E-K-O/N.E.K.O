@@ -78,7 +78,15 @@ def test_subscriber_recovers_when_publisher_binds_later(monkeypatch):
             assert bridge.wait_until_subscribed(3)
             try:
                 publisher.bind(endpoint)
-            except zmq.ZMQError:
+            except zmq.ZMQError as exc:
+                # Only a port race is retryable. libzmq reports EADDRINUSE with
+                # the C-runtime value (100 under MSVC), which is NOT Python's
+                # errno.EADDRINUSE (10048, the Winsock value) on Windows, so
+                # match the message -- "Address in use" on every platform -- and
+                # re-raise anything else with its real errno instead of masking
+                # it behind the generic assertion below.
+                if "address in use" not in str(exc).lower():
+                    raise
                 bridge.stop()
                 bridge = None
                 continue
