@@ -202,8 +202,10 @@ class ProactiveBridge:
         )
         agent_push_addr = _resolve_agent_push_addr()
 
-        # Brief wait for message_plane PUB to bind before we connect.
-        time.sleep(1.0)
+        # ZeroMQ connect is asynchronous and reconnects if the PUB binds later.
+        # A delay before SUBSCRIBE only postpones subscription; it does not
+        # close the PUB/SUB slow-joiner window. Server startup already probes
+        # the plane before starting this bridge and waits for _subscribed.
         if stop.is_set():
             return
 

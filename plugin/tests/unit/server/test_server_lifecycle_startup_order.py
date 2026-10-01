@@ -1,13 +1,13 @@
 """Startup order: the plane bridges come up before any plugin can push.
 
 An autostart plugin may call ``push_message()`` from its startup hook, and
-ProactiveBridge's SUB socket takes about a second to connect in its own thread.
+ProactiveBridge's SUB socket connects in its own thread.
 PUB/SUB drops for an absent subscriber, so a push inside that window is never
 spoken while ``push_message()`` has already answered ``submitted=True``.
 
-Ordering NARROWS that window rather than closing it -- the connect delay is
-still there, it just starts earlier. Closing it needs the bridge to signal SUB
-readiness (or to backfill from the store), which is a separate change.
+Startup waits for the bridge to signal that SUBSCRIBE was installed. This
+narrows the window; PUB/SUB still does not acknowledge remote subscription
+propagation, so retaining an arbitrary delay before connect cannot close it.
 
 An earlier version of this docstring also claimed the plane bridge refuses
 records before ``start_bridge()``. Measured: it does not. ``_Bridge._enabled``
@@ -189,7 +189,7 @@ def test_stopping_releases_a_waiter() -> None:
     assert bridge.wait_until_subscribed(timeout=30.0) is True
 
 
-def test_restarting_the_bridge_does_not_reuse_the_old_readiness() -> None:
+def test_restarting_the_bridge_does_not_reuse_the_old_readiness(monkeypatch) -> None:
     """``stop()`` sets the event to wake waiters; ``start()`` must clear it.
 
     Without the clear, a stop/start cycle leaves ``wait_until_subscribed()``
@@ -210,6 +210,9 @@ def test_restarting_the_bridge_does_not_reuse_the_old_readiness() -> None:
     bridge.stop()
     assert bridge._subscribed.is_set(), "前提没成立：stop 应该唤醒等待者"
 
+    # Hold socket setup: a real thread can legitimately subscribe before
+    # start() returns. Test clearing the previous generation, not scheduling.
+    monkeypatch.setattr(bridge, "_run", lambda stop: stop.wait(3))
     bridge.start()
     try:
         assert not bridge._subscribed.is_set(), (
