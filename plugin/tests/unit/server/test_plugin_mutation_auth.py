@@ -186,7 +186,7 @@ async def test_token_bootstrap_rejects_referer_only_foreign_request(app: FastAPI
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("token", [None, mutation_auth.AUTOSTART_CSRF_TOKEN])
+@pytest.mark.parametrize("token", [None, mutation_auth.AUTOSTART_CSRF_TOKEN], ids=["without-token", "with-token"])
 async def test_originless_loopback_native_call_with_optional_token_remains_supported(
     app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,3 +367,260 @@ async def test_nas_hostname_fallback_bootstrap_and_mutation(app, monkeypatch, ho
         })
         assert accepted.status_code == 200
     stop.assert_awaited_once()
+
+
+# ── Package import routes ────────────────────────────────────────────────
+#
+# Uploading or installing a package writes executable plugin code, so these
+# routes share the lifecycle contract. Unlike lifecycle routes they carry a
+# body, and FastAPI parses bodies before route dependencies, so the guard must
+# reject before the multipart/JSON body is read at all.
+
+PACKAGE_IMPORT_ROUTES = [
+    "/plugin-cli/upload",
+    "/plugin-cli/upload-and-install",
+    "/plugin-cli/upload-and-unpack",
+    "/plugin-cli/install",
+    "/plugin-cli/unpack",
+]
+_MULTIPART_ROUTES = {"/plugin-cli/upload", "/plugin-cli/upload-and-install", "/plugin-cli/upload-and-unpack"}
+_UPLOAD_RESULT = {
+    "name": "demo.neko-plugin",
+    "path": "demo.neko-plugin",
+    "size_bytes": 3,
+    "modified_at": "2026-01-01T00:00:00Z",
+}
+_INSTALL_RESULT = {
+    "package_path": "demo.neko-plugin",
+    "package_type": "plugin",
+    "package_id": "demo",
+    "plugins_root": "plugins",
+    "installed_plugins": [],
+    "metadata_found": True,
+    "conflict_strategy": "fail",
+    "installed_plugin_count": 0,
+}
+
+
+class _BodyReadTracker:
+    """Outermost ASGI wrapper that records whether the request body was read."""
+
+    def __init__(self, app: FastAPI) -> None:
+        self.app = app
+        self.body_reads = 0
+
+    async def __call__(self, scope, receive, send) -> None:
+        async def tracked_receive():
+            message = await receive()
+            if message["type"] == "http.request":
+                self.body_reads += 1
+            return message
+
+        await self.app(scope, tracked_receive, send)
+
+
+@pytest.fixture
+def package_app(monkeypatch: pytest.MonkeyPatch, tmp_path) -> _BodyReadTracker:
+    """Production plugin-cli routes; uploads land in a temporary artifacts root."""
+    import plugin.settings as plugin_settings
+    from plugin.server.routes import plugin_cli as plugin_cli_routes
+
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", tmp_path / "packages")
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(plugin_cli_routes.router)
+    app.include_router(security_router)
+    app.add_middleware(HostOriginGuardMiddleware)
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=mutation_auth.TRUSTED_PROXY_IPS)
+    return _BodyReadTracker(app)
+
+
+@pytest.fixture
+def package_actions(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
+    """Replace install side effects; uploads still write to the temp root."""
+    from plugin.server.routes import plugin_cli as plugin_cli_routes
+
+    actions = {
+        "upload_and_install": AsyncMock(return_value={"upload": _UPLOAD_RESULT, "install": _INSTALL_RESULT}),
+        "install": AsyncMock(return_value=_INSTALL_RESULT),
+    }
+    for name, action in actions.items():
+        monkeypatch.setattr(plugin_cli_routes.service, name, action)
+    return actions
+
+
+def _uploaded_packages(tmp_path) -> list[str]:
+    root = tmp_path / "packages"
+    return sorted(item.name for item in root.iterdir()) if root.exists() else []
+
+
+async def _post_package(client: httpx.AsyncClient, path: str, headers: dict[str, str] | None = None):
+    if path in _MULTIPART_ROUTES:
+        return await client.post(
+            path,
+            files={"file": ("demo.neko-plugin", b"pkg", "application/octet-stream")},
+            headers=headers,
+        )
+    return await client.post(path, json={"package": "demo.neko-plugin"}, headers=headers)
+
+
+def test_package_import_routes_use_pre_body_guard() -> None:
+    """Pin the guarded set: a new alias registered with @router.post would be open."""
+    from plugin.server.routes import plugin_cli as plugin_cli_routes
+
+    guarded = {
+        (method, route.path)
+        for route in plugin_cli_routes.router.routes
+        if isinstance(route, mutation_auth.PluginMutationGuardedRoute)
+        for method in route.methods
+    }
+    assert guarded == {("POST", path) for path in PACKAGE_IMPORT_ROUTES}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://evil.example"},
+    {"Origin": "https://evil.example", "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+    {"Origin": "null"},
+    {"Origin": "http://127.0.0.1:49999"},
+], ids=["foreign", "foreign-with-token", "null", "other-local-port"])
+async def test_cross_site_package_import_is_rejected_before_body_is_read(
+    package_app, package_actions, tmp_path, path, headers,
+) -> None:
+    async with _client(package_app, headers=headers) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "origin"
+    assert response.json()["detail"]["error_code"] == "csrf_validation_failed"
+    assert package_app.body_reads == 0
+    assert _uploaded_packages(tmp_path) == []
+    for action in package_actions.values():
+        action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/plugin-cli/install", "/plugin-cli/unpack"])
+async def test_cross_site_untyped_json_install_is_rejected(package_app, package_actions, path) -> None:
+    # fetch(url, {method: "POST", mode: "no-cors", body: new Blob([json])})
+    # sends no Content-Type and no preflight; FastAPI would parse it as JSON.
+    async with _client(package_app, headers={"Origin": "https://evil.example"}) as client:
+        response = await client.post(path, content=b'{"package": "demo.neko-plugin"}')
+    assert response.status_code == 403
+    assert package_app.body_reads == 0
+    for action in package_actions.values():
+        action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+@pytest.mark.parametrize("token", [None, "wrong", ""], ids=["missing", "wrong", "empty"])
+async def test_package_import_requires_valid_token_from_trusted_origin(
+    package_app, package_actions, tmp_path, path, token,
+) -> None:
+    headers = {"Origin": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}"}
+    if token is not None:
+        headers["X-CSRF-Token"] = token
+    async with _client(package_app, headers=headers) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "token"
+    assert response.json()["detail"]["csrf_failure"] == "token"
+    assert package_app.body_reads == 0
+    assert _uploaded_packages(tmp_path) == []
+    for action in package_actions.values():
+        action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+async def test_trusted_origin_with_token_imports_package(package_app, package_actions, tmp_path, path) -> None:
+    async with _client(package_app, headers=_valid_headers()) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 200, response.text
+    assert package_app.body_reads > 0
+    if path == "/plugin-cli/upload":
+        assert _uploaded_packages(tmp_path) == ["demo.neko-plugin"]
+    elif path in _MULTIPART_ROUTES:
+        assert _uploaded_packages(tmp_path) == ["demo.neko-plugin"]
+        package_actions["upload_and_install"].assert_awaited_once()
+    else:
+        package_actions["install"].assert_awaited_once()
+        assert package_actions["install"].await_args.kwargs["package"] == "demo.neko-plugin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+@pytest.mark.parametrize("token", [None, "valid"], ids=["without-token", "with-token"])
+async def test_originless_loopback_native_package_import_remains_supported(
+    package_app, package_actions, path, token,
+) -> None:
+    headers = {} if token is None else {"X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN}
+    async with _client(package_app, headers=headers) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+@pytest.mark.parametrize("headers", [
+    {"Sec-Fetch-Site": "cross-site"},
+    {"Referer": "https://evil.example/page"},
+    {"X-CSRF-Token": "wrong"},
+], ids=["fetch-metadata", "referer", "wrong-token"])
+async def test_originless_package_import_rejects_browser_metadata_and_bad_token(
+    package_app, package_actions, tmp_path, path, headers,
+) -> None:
+    async with _client(package_app, headers=headers) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 403
+    assert package_app.body_reads == 0
+    assert _uploaded_packages(tmp_path) == []
+    for action in package_actions.values():
+        action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme,host,peer,forwarded", [
+    ("http", "192.168.1.5:48911", "192.168.1.10", False),
+    ("http", "192.168.1.5:1081", "127.0.0.1", True),
+    ("https", "192.168.1.5:48912", "127.0.0.1", True),
+    ("https", "[fd00::5]:8443", "::1", True),
+])
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+async def test_nas_package_import_without_extra_configuration(
+    package_app, package_actions, scheme, host, peer, forwarded, path,
+) -> None:
+    headers = {"Referer": f"{scheme}://{host}/ui/plugins"}
+    if forwarded:
+        headers.update({"X-Forwarded-Proto": scheme, "X-Forwarded-For": "192.168.1.10"})
+    async with _client(package_app, host=host, peer=peer, headers=headers) as client:
+        bootstrap = await client.get("/security/csrf-token")
+        assert bootstrap.status_code == 200, bootstrap.text
+        denied = await _post_package(client, path, headers={"Origin": f"{scheme}://{host}"})
+        assert denied.status_code == 403
+        assert denied.headers["X-CSRF-Failure"] == "token"
+        assert package_app.body_reads == 0
+        accepted = await _post_package(client, path, headers={
+            "Origin": f"{scheme}://{host}", "X-CSRF-Token": bootstrap.json()["csrf_token"],
+        })
+    assert accepted.status_code == 200, accepted.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", PACKAGE_IMPORT_ROUTES)
+@pytest.mark.parametrize("headers", [
+    {},
+    {"X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+    {"Origin": "http://192.168.1.6:9999", "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+], ids=["originless", "originless-with-token", "foreign-lan-origin"])
+async def test_nas_rejects_originless_or_foreign_package_import(
+    package_app, package_actions, tmp_path, path, headers,
+) -> None:
+    async with _client(package_app, host="192.168.1.5:48911", peer="192.168.1.10", headers=headers) as client:
+        response = await _post_package(client, path)
+    assert response.status_code == 403
+    assert package_app.body_reads == 0
+    assert _uploaded_packages(tmp_path) == []
+    for action in package_actions.values():
+        action.assert_not_awaited()

@@ -168,14 +168,21 @@ function requestPath(url: unknown): string {
   }
 }
 
-/** Only the plugin lifecycle routes are protected by this PR's CSRF contract. */
-function isPluginLifecycleMutation(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
+/**
+ * Mirrors the plugin server routes guarded by require_plugin_mutation_access:
+ * lifecycle actions plus package upload/install (including legacy aliases).
+ * Keep it in lockstep with the server; a guarded route missing here fails
+ * with a token 403 that is never refreshed or retried.
+ */
+function isCsrfProtectedPluginMutation(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
   if (!isMutationMethod(config.method)) return false
   const path = requestPath(config.url)
   const method = config.method?.toLowerCase()
   if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path)
   return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
     || /^\/plugins\/(?:refresh|reload)$/.test(path)
+    || (method === 'post'
+      && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack)$/.test(path))
 }
 
 /** Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts apply after it. */
@@ -262,10 +269,10 @@ const service: AxiosInstance = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    if (isPluginLifecycleMutation(config)) {
-      // Lifecycle calls are fail-closed: bootstrap failure means the original
+    if (isCsrfProtectedPluginMutation(config)) {
+      // Protected calls are fail-closed: bootstrap failure means the original
       // state-changing request is never sent. Other mutation APIs are outside
-      // this PR's contract and must not depend on the lifecycle token service.
+      // this contract and must not depend on the plugin token service.
       let token: string
       try {
         token = await loadCsrfToken()
@@ -274,7 +281,7 @@ service.interceptors.request.use(
         // for each caller instead of mutating its shared config/display policy.
         const source = axios.isAxiosError(cause) ? cause : undefined
         const failureConfig = { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig
-        // The lifecycle operation has not been sent. Its domain timeout label
+        // The protected operation has not been sent. Its domain timeout label
         // would incorrectly imply that the plugin itself timed out.
         delete (failureConfig as ErrorDisplayRequestConfig).timeoutErrorMessageKey
         const error = new RequestAxiosError(
@@ -318,7 +325,7 @@ service.interceptors.response.use(
     if (
       isCsrfValidationFailure(error)
       && requestConfig
-      && isPluginLifecycleMutation(requestConfig)
+      && isCsrfProtectedPluginMutation(requestConfig)
       && !requestConfig.csrfBootstrapFailed
       && !requestConfig.csrfRetryAttempted
     ) {

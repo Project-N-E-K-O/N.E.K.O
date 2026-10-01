@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import axios from 'axios'
+import axios, { AxiosHeaders } from 'axios'
 import type { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
 
 const requestMocks = vi.hoisted(() => ({
@@ -540,6 +540,156 @@ describe('CSRF bootstrap error policy', () => {
     await expect(fresh.post('/plugin/demo/stop', {}, { adapter })).rejects.toThrow('Origin rejected')
     expect(adapter).toHaveBeenCalledTimes(1)
     expect(bootstrap).toHaveBeenCalledTimes(1)
+    bootstrap.mockRestore()
+  })
+})
+
+describe('package import CSRF contract', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    requestMocks.errorMessage.mockClear()
+  })
+
+  function readSent(config: InternalAxiosRequestConfig) {
+    // dispatchRequest normalizes headers to AxiosHeaders before the adapter.
+    const headers = AxiosHeaders.from(config.headers)
+    return {
+      url: config.url,
+      method: config.method,
+      token: headers.get('X-CSRF-Token') ?? null,
+      contentType: headers.get('Content-Type'),
+      timeout: config.timeout,
+      form: config.data instanceof FormData ? config.data : null,
+    }
+  }
+
+  function packageForm(): FormData {
+    const form = new FormData()
+    form.append('file', new File(['pkg'], 'demo.neko-plugin'))
+    return form
+  }
+
+  const tokenFailure = (config: InternalAxiosRequestConfig) => Object.assign(new Error('CSRF rejected'), {
+    config,
+    isAxiosError: true,
+    name: 'AxiosError',
+    response: {
+      status: 403,
+      data: { detail: { error_code: 'csrf_validation_failed', csrf_failure: 'token' } },
+      headers: { 'X-Error-Code': 'csrf_validation_failed', 'X-CSRF-Failure': 'token' },
+    },
+  })
+
+  const ok = (config: InternalAxiosRequestConfig) => ({
+    data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config, request: {},
+  })
+
+  it('attaches the token to the multipart upload used by the import dialog', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: { csrf_token: 'tok-1' } } as never)
+    const sent: ReturnType<typeof readSent>[] = []
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      sent.push(readSent(config))
+      return ok(config)
+    })
+    const form = packageForm()
+
+    await expect(fresh.post('/plugin-cli/upload', form, {
+      adapter, timeout: 300_000, suppressErrorMessage: true,
+    } as AxiosRequestConfig)).resolves.toEqual({ ok: true })
+
+    expect(bootstrap).toHaveBeenCalledWith('/security/csrf-token', expect.anything())
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ token: 'tok-1', form, timeout: 300_000 })
+    expect(String(sent[0]!.contentType ?? '')).not.toContain('application/json')
+    bootstrap.mockRestore()
+  })
+
+  it('retries a multipart token failure once with a fresh token and the same FormData', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({ data: { csrf_token: 'stale' } } as never)
+      .mockResolvedValueOnce({ data: { csrf_token: 'rotated' } } as never)
+    const sent: ReturnType<typeof readSent>[] = []
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      sent.push(readSent(config))
+      if (sent.length === 1) throw tokenFailure(config)
+      return ok(config)
+    })
+    const form = packageForm()
+
+    await expect(fresh.post('/plugin-cli/upload-and-install?on_conflict=fail', form, {
+      adapter, timeout: 300_000, suppressErrorMessage: true,
+    } as AxiosRequestConfig)).resolves.toEqual({ ok: true })
+
+    expect(bootstrap).toHaveBeenCalledTimes(2)
+    expect(sent.map((item) => item.token)).toEqual(['stale', 'rotated'])
+    expect(sent.every((item) => item.form === form && item.timeout === 300_000)).toBe(true)
+    expect(sent.every((item) => !String(item.contentType ?? '').includes('application/json'))).toBe(true)
+    bootstrap.mockRestore()
+  })
+
+  it('stops after the single retry without a toast for silenced callers', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: { csrf_token: 'tok' } } as never)
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => { throw tokenFailure(config) })
+
+    await expect(fresh.post('/plugin-cli/install', { package: 'demo.neko-plugin' }, {
+      adapter, suppressErrorMessage: true,
+    } as AxiosRequestConfig)).rejects.toMatchObject({ response: { status: 403 } })
+    expect(adapter).toHaveBeenCalledTimes(2)
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    bootstrap.mockRestore()
+  })
+
+  it('never sends the package when token bootstrap fails', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('bootstrap 403'), {
+      isAxiosError: true,
+      response: { status: 403, data: { detail: { error_code: 'csrf_validation_failed', csrf_failure: 'origin' } }, headers: {} },
+      config: { url: '/security/csrf-token', method: 'get' },
+    }))
+    const adapter = vi.fn()
+
+    await expect(fresh.post('/plugin-cli/upload', packageForm(), {
+      adapter, suppressErrorMessage: true,
+    } as AxiosRequestConfig)).rejects.toMatchObject({ config: { csrfBootstrapFailed: true } })
+    expect(adapter).not.toHaveBeenCalled()
+    bootstrap.mockRestore()
+  })
+
+  it('covers exactly the server-guarded package routes', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: { csrf_token: 'tok' } } as never)
+    const sent: ReturnType<typeof readSent>[] = []
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      sent.push(readSent(config))
+      return ok(config)
+    })
+
+    for (const url of [
+      '/plugin-cli/upload',
+      '/plugin-cli/upload-and-install',
+      '/plugin-cli/upload-and-unpack',
+      '/plugin-cli/install',
+      '/plugin-cli/unpack',
+      '/plugin-cli/install-plan',
+      '/plugin-cli/build',
+    ]) {
+      await fresh.post(url, {}, { adapter })
+    }
+    await fresh.delete('/plugin-cli/upload?package=demo.neko-plugin', { adapter })
+
+    expect(sent.map((item) => [item.method, item.url, item.token])).toEqual([
+      ['post', '/plugin-cli/upload', 'tok'],
+      ['post', '/plugin-cli/upload-and-install', 'tok'],
+      ['post', '/plugin-cli/upload-and-unpack', 'tok'],
+      ['post', '/plugin-cli/install', 'tok'],
+      ['post', '/plugin-cli/unpack', 'tok'],
+      ['post', '/plugin-cli/install-plan', null],
+      ['post', '/plugin-cli/build', null],
+      ['delete', '/plugin-cli/upload?package=demo.neko-plugin', null],
+    ])
     bootstrap.mockRestore()
   })
 })

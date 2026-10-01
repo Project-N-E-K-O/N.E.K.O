@@ -2,8 +2,8 @@
 
 The plugin manager may use desktop loopback or NAS/Docker same-origin access.
 CORS does not prevent simple cross-origin POSTs from executing, so browser
-lifecycle mutations require both trusted provenance and the instance token.
-HostOriginGuard rejects DNS-rebinding hosts before these route dependencies.
+lifecycle and package-import mutations require both trusted provenance and the
+instance token. HostOriginGuard rejects DNS-rebinding hosts before these guards.
 """
 
 from __future__ import annotations
@@ -12,9 +12,12 @@ import ipaddress
 import logging
 import os
 import secrets
+from collections.abc import Callable, Coroutine
+from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
+from fastapi.routing import APIRoute
 from utils.host_origin_guard import _canonicalize_hostname
 
 from config.network import (
@@ -183,6 +186,26 @@ def require_plugin_mutation_access(request: Request) -> None:
     if _CSRF_HEADER.lower() in request.headers and not _valid_token(request):
         _deny(token_invalid=True)
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
+
+
+class PluginMutationGuardedRoute(APIRoute):
+    """Apply ``require_plugin_mutation_access`` before the body is read.
+
+    FastAPI parses JSON and multipart bodies before it solves route
+    dependencies, so a dependency would still spool a rejected package upload.
+    Routes that accept plugin packages use this class to reject from headers
+    alone; the guard, failure response and native compatibility path are the
+    same as the lifecycle dependency.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def guarded_handler(request: Request) -> Response:
+            require_plugin_mutation_access(request)
+            return await handler(request)
+
+        return guarded_handler
 
 
 def require_plugin_token_bootstrap_access(request: Request) -> None:

@@ -4,11 +4,11 @@
 
 ## 威胁边界
 
-浏览器可以从任意站点向 localhost 发请求，因此“只监听本地地址”并不足够。浏览器变更端点需要同时验证应用签发的 CSRF token 与请求来源语义。主服务的非浏览器本地调用方必须显式取得并携带 token；插件生命周期路由另有一个为既有本地原生调用保留的兼容路径，见下文。
+浏览器可以从任意站点向 localhost 发请求，因此“只监听本地地址”并不足够。浏览器变更端点需要同时验证应用签发的 CSRF token 与请求来源语义。主服务的非浏览器本地调用方必须显式取得并携带 token；插件生命周期与插件包导入路由另有一个为既有本地原生调用保留的兼容路径，见下文。
 
 主服务共享实现位于 `main_routers/system_router/_shared.py`，包括允许的本地 Origin、token 提取、常量时间比较和统一错误响应。前端调用方应从已有配置/状态端点取得 token，并通过 `X-CSRF-Token` 发送；兼容 body token 只按当前 helper 支持范围使用。
 
-插件服务器保护七个插件生命周期路由和 `GET /security/csrf-token` 引导路由。带 `Origin` 的浏览器变更请求必须同时通过可信来源和 token 校验。桌面与 NAS/Docker 都是支持场景；正常页面自动获取并携带 token，普通 NAS 用户无需新增来源白名单或手动配置 token。
+插件服务器保护七个插件生命周期路由、五个插件包导入路由和 `GET /security/csrf-token` 引导路由。插件包导入路由是 `POST /plugin-cli/upload`、`/plugin-cli/upload-and-install`、`/plugin-cli/install`，以及 legacy alias `/plugin-cli/upload-and-unpack`、`/plugin-cli/unpack`；它们会写入或安装可执行插件代码。带 `Origin` 的浏览器变更请求必须同时通过可信来源和 token 校验。桌面与 NAS/Docker 都是支持场景；正常页面自动获取并携带 token，普通 NAS 用户无需新增来源白名单或手动配置 token。
 
 为兼容现有本地原生脚本，暂时保留无 `Origin` 的 loopback 路径：客户端和 Host 必须是 loopback，且不能携带 Referer 或 Fetch Metadata；没有 token 时仍可调用，但显式提供空值或错误 token 必须拒绝。该例外只用于本地原生调用，不适用于远程脚本，也不是对恶意本地进程的身份认证。强制所有原生调用带 token 需要另行评估调用方迁移。
 
@@ -29,9 +29,13 @@
 
 这是明确接受的信任取舍：同一 NAS hostname 的其他协议或端口也通过来源校验，可能读取共享 token；不能把此实现描述为隔离同机其他应用的严格 origin 防护。不同 hostname 仍拒绝，loopback 桌面保留完整来源规则，5173 仍需显式允许。
 
-token 引导允许可信 Origin、可信完整 Referer（忽略页面路径），以及无 Origin/Referer 但带 `Sec-Fetch-Site: same-origin` 的请求。仅 `same-site` 不足以授权，因为同一 NAS 的不同端口可能属于其他应用。没有任何浏览器来源信息的请求只允许本机原生调用。七个生命周期以外的 mutation 不依赖 token bootstrap，仍需分别评估安全性。
+token 引导允许可信 Origin、可信完整 Referer（忽略页面路径），以及无 Origin/Referer 但带 `Sec-Fetch-Site: same-origin` 的请求。仅 `same-site` 不足以授权，因为同一 NAS 的不同端口可能属于其他应用。没有任何浏览器来源信息的请求只允许本机原生调用。上述生命周期与插件包导入路由以外的 mutation 不依赖 token bootstrap，仍需分别评估安全性。
 
-后续安全覆盖应优先审计插件包上传/安装（含 legacy alias）等可执行内容入口。现有 `require_admin` 是兼容占位，不提供身份认证；multipart/form-data 请求可能无需 CORS 预检即可产生副作用，因此不能依靠 CORS 拦截响应来保护这些路由。本次未保护全部插件变更接口。统一 mutation 校验需要一起审计网页、原生 CLI、上传与代理调用，并同步前端 token 发送范围，保留 NAS 零新增配置合同。
+现有 `require_admin` 是兼容占位，不提供身份认证；multipart/form-data 请求可能无需 CORS 预检即可产生副作用，缺少 `Content-Type` 的 JSON 请求也会被 FastAPI 按 JSON 解析，因此不能依靠 CORS 预检或拦截响应来保护变更路由。插件包导入路由必须连同两步链路一起保护：只保护 `upload-and-install` 时，`/plugin-cli/upload` 加 `/plugin-cli/install` 仍可完成安装；legacy alias 以普通函数调用目标处理器，必须单独注册守卫。
+
+FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此带请求体的插件包导入路由使用 `PluginMutationGuardedRoute`：在读取请求体之前调用同一个 `require_plugin_mutation_access`，失败响应、token 规则和本机原生兼容路径与生命周期路由一致，被拒绝的上传不会落盘或进入临时文件。
+
+本次仍未保护全部插件变更接口，例如 `DELETE /plugin-cli/upload`、`/plugin-cli/build`（及 `/pack`）、`POST /runs`、配置写入和插件 UI 安装动作。统一 mutation 校验需要一起审计网页、原生 CLI、上传与代理调用，并同步前端 token 发送范围，保留 NAS 零新增配置合同。
 
 这套保护防止跨站网页借用浏览器执行插件操作，不是远程访问登录认证。公网访问的身份认证、网络隔离、防火墙仍属于部署层责任；这些措施不能替代应用的 CSRF 校验。安全修复不得通过禁用官方 NAS/Docker 访问来规避兼容问题。
 
@@ -45,7 +49,7 @@ token 引导允许可信 Origin、可信完整 Referer（忽略页面路径）�
 
 ## 前端调用模式
 
-插件短操作仅在收到 token 失败标记时刷新一次并重试；来源拒绝不刷新重试。token 引导使用独立的 API_TIMEOUT（30 秒），失败时保持调用方的静默配置；引导超时使用通用请求超时提示，不套用“插件操作超时”，因为原变更请求尚未发送。生命周期请求自身的超时提示配置保持有效。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
+前端 `request.ts` 中的受保护路由匹配必须与后端守卫范围保持一致；后端新增受保护路由而前端漏配时，页面请求会以不重试的 token 失败告终。插件短操作与插件包上传/安装仅在收到 token 失败标记时刷新一次并重试（multipart 重试复用同一 FormData）；来源拒绝不刷新重试。token 引导使用独立的 API_TIMEOUT（30 秒），失败时保持调用方的静默配置；引导超时使用通用请求超时提示，不套用“插件操作超时”，因为原变更请求尚未发送。生命周期请求自身的超时提示配置保持有效。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
 
 命令行调试应使用项目环境读取 JSON 并显式传 header，例如先保存响应再用：
 
@@ -58,7 +62,7 @@ uv run python -c "import json,sys; print(json.load(sys.stdin)['autostart_csrf_to
 ## 新端点接入
 
 1. 确认它会改变本地状态；
-2. 在处理 payload 前调用共享守卫；
+2. 在处理 payload 前调用共享守卫；带请求体的插件服务器路由使用 `PluginMutationGuardedRoute`，不要只用路由依赖（依赖在请求体解析之后执行），legacy alias 也要单独注册；
 3. 前端统一注入 token；
 4. 测试合法请求、缺 token、错 token、恶意 Origin 和允许的本地 Origin；
 5. 确认失败不会先执行部分副作用。
@@ -67,5 +71,5 @@ uv run python -c "import json,sys; print(json.load(sys.stdin)['autostart_csrf_to
 
 ```bash
 uv run pytest tests/unit/test_uncovered_endpoints_csrf.py tests/unit/test_activity_signal_router.py tests/unit/test_card_assist_csrf.py -q
-uv run pytest plugin/tests/unit/server/test_plugin_mutation_auth.py plugin/tests/unit/server/test_development_routes.py plugin/tests/unit/server/test_docker_plugin_proxy.py -q
+uv run pytest plugin/tests/unit/server/test_plugin_mutation_auth.py plugin/tests/unit/server/test_plugin_cli_route.py plugin/tests/unit/server/test_development_routes.py plugin/tests/unit/server/test_docker_plugin_proxy.py -q
 ```
