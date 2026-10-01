@@ -897,3 +897,43 @@ async def test_restart_drain_deadline_grace_is_bounded(tmp_path: Path, monkeypat
     finally:
         release.set()
         await task
+
+
+async def test_restart_drain_deadline_read_is_fresh_despite_stale_in_flight_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An ordinary read that began before a timeout edit and returns after the
+    deadline must neither consume the deadline grace nor overwrite the fresh
+    result."""
+    import threading
+
+    stale_may_return = threading.Event()
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service = _stopping_service_with_inflight(tmp_path, task)
+    calls = []
+
+    def read_config(pid, path) -> float:
+        calls.append(pid)
+        if len(calls) == 1:  # began before the edit; returns the old value late
+            stale_may_return.wait(5)
+            return 0.0
+        return 5.0
+
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 10.0)
+    monkeypatch.setattr(module, "_DRAIN_FINAL_REFRESH_SECONDS", 1.0)
+    monkeypatch.setattr(module, "active_startup_timeout", lambda pid: None)
+    monkeypatch.setattr(module, "effective_startup_timeout_sync", read_config)
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.35, stale_may_return.set)
+    loop.call_later(0.7, release.set)
+    try:
+        await asyncio.wait_for(service.wait_for_stopped(), 3)
+        assert task.done()
+        assert len(calls) >= 2
+    finally:
+        stale_may_return.set()
+        release.set()
+        await task
