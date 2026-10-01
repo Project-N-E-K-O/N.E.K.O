@@ -429,6 +429,9 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
         def observed_join(*args):
             assert threading.get_ident() != loop_thread, "probe wait ran on the event-loop thread"
             loop.call_soon_threadsafe(join_entered.set)
+            # Start the real join budget only after the test releases the
+            # probe; scheduler delays cannot finish warming before that gate.
+            release.wait()
             return original_join(*args)
 
         monkeypatch.setattr(probe, "join_ip_probe", observed_join)
