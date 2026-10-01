@@ -79,3 +79,45 @@ def test_subscriber_recovers_when_publisher_binds_later(monkeypatch):
     finally:
         bridge.stop()
         publisher.close(linger=0)
+
+
+def test_socket_setup_failure_does_not_signal_ready(monkeypatch):
+    """A failure building the delivery (PUSH) socket must leave the bridge not-ready.
+
+    Regression guard: ``_subscribed`` used to be set right after SUBSCRIBE,
+    before ``push_sock`` existed. An exception in between (e.g. EMFILE on
+    ``ctx.socket``) left the thread dead with ``_subscribed`` set, so
+    ``wait_for_proactive_subscriber`` returned True and startup latched a bridge
+    that could receive but never forward -- the exact silent non-delivery the
+    readiness signal exists to prevent.
+    """
+    stop = threading.Event()
+
+    class SubSocket:
+        linger = 0
+
+        def setsockopt(self, *args):
+            pass
+
+        def connect(self, endpoint):
+            pass
+
+        def setsockopt_string(self, option, topic):
+            pass
+
+        def close(self, **kwargs):
+            pass
+
+    def fake_socket(kind):
+        if kind == zmq.SUB:
+            return SubSocket()
+        raise zmq.ZMQError("simulated fd exhaustion on the PUSH socket")
+
+    context = SimpleNamespace(socket=fake_socket)
+    monkeypatch.setattr(module.zmq.Context, "instance", lambda: context)
+
+    bridge = module.ProactiveBridge()
+    bridge._run(stop)  # guarded setup catches, closes sub_sock, returns
+    assert not bridge._subscribed.is_set(), (
+        "readiness signalled despite a dead forwarder"
+    )

@@ -214,16 +214,39 @@ class ProactiveBridge:
             return
 
         ctx = zmq.Context.instance()
-        sub_sock = ctx.socket(zmq.SUB)
-        sub_sock.linger = 0
-        sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
-        sub_sock.connect(pub_endpoint)
-        sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
-        self._subscribed.set()
+        sub_sock = None
+        push_sock = None
+        try:
+            sub_sock = ctx.socket(zmq.SUB)
+            sub_sock.linger = 0
+            sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
+            sub_sock.connect(pub_endpoint)
+            sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
 
-        push_sock = ctx.socket(zmq.PUSH)
-        push_sock.linger = 1000
-        push_sock.connect(agent_push_addr)
+            push_sock = ctx.socket(zmq.PUSH)
+            push_sock.linger = 1000
+            push_sock.connect(agent_push_addr)
+        except Exception as exc:
+            # Socket setup failed. Do NOT signal readiness: a bridge that dies
+            # here must report not-alive so startup's wait_for_proactive_subscriber
+            # falls through to the proactive_bridge_is_alive() check and marks the
+            # delivery path incomplete. Signalling ready with a dead forwarder is
+            # the silent non-delivery this whole mechanism exists to prevent --
+            # push_message() would keep answering submitted=True.
+            logger.warning("proactive bridge socket setup failed: {}", exc)
+            for sock in (sub_sock, push_sock):
+                if sock is not None:
+                    try:
+                        sock.close(linger=0)
+                    except Exception:
+                        pass
+            return
+
+        # Signal readiness only once BOTH sockets exist: the SUB is subscribed
+        # and the PUSH forwarder to main_server is connected. Setting this right
+        # after SUBSCRIBE (before push_sock was built) let a failure in between
+        # latch the bridge as ready while it could receive but never forward.
+        self._subscribed.set()
 
         logger.info(
             "proactive bridge connected: sub={} push={}",
