@@ -724,3 +724,20 @@ async def test_restart_drain_covers_in_flight_plugin_startup_timeout(tmp_path: P
     monkeypatch.setattr(module.asyncio, "wait", observe_wait)
     await service.wait_for_stopped()
     assert deadlines == [observed[0]]
+
+
+async def test_cancelled_recovery_start_keeps_recovery_permission(monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    monkeypatch.setattr(lifecycle, "_hot_reload_failed", {"demo"})
+    monkeypatch.setattr(lifecycle, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle, "_plugin_is_running_sync", lambda pid: False)
+
+    async def start(self, pid, **kwargs):
+        lifecycle._hot_reload_failed.discard(pid)  # as the real start_plugin does on entry
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(lifecycle.PluginLifecycleService, "start_plugin", start)
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle.PluginLifecycleService().reload_plugin("demo", only_if_running=True)
+    assert lifecycle.plugin_needs_hot_reload_recovery("demo")

@@ -1696,7 +1696,9 @@ class PluginLifecycleService:
             if development_snapshot is not None:
                 await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             result = await self.start_plugin(plugin_id, persist_user_intent=not only_if_running)
-        except Exception:
+        except BaseException:
+            # start_plugin already dropped the permission on entry; restore it
+            # even when cancellation lands after the stop half has run.
             if only_if_running and not _operations_shutting_down:
                 _hot_reload_failed.add(plugin_id)
             raise
