@@ -253,9 +253,21 @@ def _sync_in_place(vendor_dir: Path, external_deps: list[str], args: argparse.Na
     )
     if not args.clean:
         exit_code = _install_to_vendor(external_deps, vendor_dir=vendor_dir, python=args.python)
-        if exit_code == 0:
+        if exit_code != 0:
+            return exit_code
+        # _clean_vendor's recursive searches would cross a mount or junction
+        # inside and delete caches and bin/ in that external tree.
+        if (
+            sys.platform.startswith("linux") and _linux_mount_points() is None
+        ) or _find_foreign_subdir(vendor_dir, junctions=True) is not None:
+            print(
+                f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {vendor_dir}: "
+                "a mount point or junction inside it can not be ruled out.",
+                file=sys.stderr,
+            )
+        else:
             _clean_vendor(vendor_dir)
-        return exit_code
+        return 0
 
     # Emptying recurses: a mount inside would lose its files. (rmtree
     # removes a nested Windows junction itself, not its target.) Without

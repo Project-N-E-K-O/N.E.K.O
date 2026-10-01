@@ -944,6 +944,33 @@ def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
     assert "--clean would delete what it holds" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("reason", ["nested", "no-mount-table"])
+def test_in_place_cleanup_skips_a_tree_with_a_mount_inside(tmp_path, monkeypatch, capsys, reason):
+    # Removing caches recurses; it must not reach into a mount inside vendor/.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    mount = vendor / "pkg" / "mnt"
+    (mount / "__pycache__").mkdir(parents=True)
+    (mount / "__pycache__" / "x.pyc").write_text("external")
+    monkeypatch.setattr(deps_cmd, "_is_mount_point", lambda p: Path(p) == vendor)
+    if reason == "nested":
+        monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: mount)
+    else:
+        monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
+        monkeypatch.setattr(deps_cmd, "_linux_mount_points", lambda: None)
+    monkeypatch.setattr(
+        deps_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 0
+    assert (mount / "__pycache__" / "x.pyc").read_text() == "external"
+    assert "Skipped removing __pycache__" in capsys.readouterr().err
+
+
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
     from plugin.neko_plugin_cli.commands import deps_cmd
