@@ -1213,6 +1213,28 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
     assert "already in progress" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
+def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypatch, capsys):
+    # A mount added under vendor/ while the install ran must not be deleted:
+    # the old contents are moved aside and checked right before deletion.
+    from plugin.neko_plugin_cli.commands import deps_cmd
+
+    vendor = tmp_path / "vendor"
+    (vendor / "oldpkg").mkdir(parents=True)
+    (vendor / "oldpkg" / "mnt.dat").write_text("external")
+    staging = vendor / ".vendor.staging-0000abcd"
+    staging.mkdir()
+    (staging / "new.py").write_text("new")
+    identity = vendor.stat()
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
+    monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: True)
+
+    assert deps_cmd._refill_in_place(vendor, staging, identity) == 0
+    assert (vendor / "new.py").read_text() == "new"
+    kept = [p for p in vendor.glob(".vendor.staging-*") if p != staging]
+    assert len(kept) == 1 and (kept[0] / "oldpkg" / "mnt.dat").read_text() == "external"
+
+
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
     from plugin.neko_plugin_cli.commands import deps_cmd

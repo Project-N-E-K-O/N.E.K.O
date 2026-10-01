@@ -427,21 +427,40 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: os.stat_resu
             staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         except OSError:
             return changed()
+        # Move the old contents aside by rename (no recursion), refill, and
+        # only then delete them: the mount check right before that deletion
+        # sees a mount added while the install ran, as for a swapped backup.
+        trash = f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+        os.mkdir(trash, dir_fd=fd)
+        trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
-            for entry in list(os.scandir(fd)):
-                if entry.name == staging_dir.name:
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    shutil.rmtree(entry.name, dir_fd=fd)
-                else:
-                    os.unlink(entry.name, dir_fd=fd)
+            for name in os.listdir(fd):
+                if name not in {staging_dir.name, trash}:
+                    os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
             for name in os.listdir(staging_fd):
                 os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
         finally:
+            os.close(trash_fd)
             os.close(staging_fd)
+        # The mount table is checked under the path the open handle really
+        # has, so a later retarget of vendor/ can not point the check away.
+        trash_path = Path(_open_dir_path(fd, vendor_dir), trash)
+        if _mounted_inside(trash_path):
+            pass  # kept with a warning; the next in-place sync retries it
+        else:
+            shutil.rmtree(trash, dir_fd=fd)
     finally:
         os.close(fd)
     return 0
+
+
+def _open_dir_path(fd: int, fallback: Path) -> str:
+    """The path an open directory handle refers to now (Linux), else the
+    resolved fallback."""
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return os.path.realpath(fallback)
 
 
 def _empty_directory(directory: Path, *, keep: str) -> None:
