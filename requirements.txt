@@ -5,9 +5,9 @@
     # via n-e-k-o
 aiofiles==25.1.0
     # via bubus
-aiohappyeyeballs==2.6.1
+aiohappyeyeballs==2.7.1
     # via aiohttp
-aiohttp==3.13.3
+aiohttp==3.14.3
     # via
     #   aiotieba
     #   browser-use
@@ -17,17 +17,17 @@ aiosignal==1.4.0
     # via aiohttp
 aiotieba==4.7.1
     # via n-e-k-o
-annotated-doc==0.0.4
+annotated-doc==0.0.5
     # via typer
-annotated-types==0.7.0
+annotated-types==0.8.0
     # via pydantic
 ansicon==1.89.0 ; sys_platform == 'win32'
     # via jinxed
-anthropic==0.75.0
+anthropic==0.125.0
     # via
     #   browser-use
     #   n-e-k-o
-anyio==4.10.0
+anyio==4.15.1
     # via
     #   anthropic
     #   bilibili-api-dev
@@ -40,18 +40,18 @@ anyio==4.10.0
     #   openai
     #   sse-starlette
     #   starlette
-apscheduler==3.11.2
+apscheduler==3.11.3
     # via bilibili-api-dev
-attrs==25.3.0
+attrs==25.4.0
     # via
     #   aiohttp
     #   jsonschema
     #   referencing
-audiolab==0.4.5 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+audiolab==0.5.2 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via pyrnnoise
-authlib==1.6.8
+authlib==1.8.0
     # via browser-use
-av==16.0.1
+av==16.1.0
     # via
     #   audiolab
     #   n-e-k-o
@@ -59,7 +59,7 @@ backoff==2.2.1
     # via
     #   n-e-k-o
     #   posthog
-beautifulsoup4==4.14.3
+beautifulsoup4==4.15.0
     # via
     #   aiotieba
     #   bilibili-api-dev
@@ -68,23 +68,23 @@ beautifulsoup4==4.14.3
     #   translatepy
 bilibili-api-dev==18.0.0a1
     # via n-e-k-o
-blessed==1.25.0
+blessed==1.50.0
     # via inquirer
 brotli==1.2.0
     # via bilibili-api-dev
-browser-use==0.11.9
+browser-use==0.13.10
     # via n-e-k-o
 browser-use-sdk==2.0.15
     # via browser-use
 bubus==1.5.6
     # via browser-use
-cachetools==6.2.2
+cachetools==6.2.6
     # via
     #   google-auth
     #   n-e-k-o
-cdp-use==1.4.4
+cdp-use==1.4.5
     # via browser-use
-certifi==2025.8.3
+certifi==2025.11.12
     # via
     #   dashscope
     #   httpcore
@@ -95,13 +95,13 @@ cffi==1.17.1 ; implementation_name == 'pypy' or platform_machine != 'x86_64' or 
     #   cryptography
     #   pyzmq
     #   soundfile
-charset-normalizer==3.4.3
+charset-normalizer==3.5.1
     # via
     #   reportlab
     #   requests
 chompjs==1.4.1
     # via bilibili-api-dev
-click==8.2.1
+click==8.5.0
     # via
     #   audiolab
     #   browser-use
@@ -118,7 +118,7 @@ colorama==0.4.6
     #   tqdm
 coloredlogs==15.0.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via onnxruntime
-comtypes==1.4.11 ; sys_platform == 'win32'
+comtypes==1.4.17 ; sys_platform == 'win32'
     # via
     #   dxcam
     #   pywinauto
@@ -133,9 +133,9 @@ cryptography==45.0.6
     #   pyjwt
 cycler==0.12.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via matplotlib
-cython==3.2.4 ; platform_system != 'darwin' and sys_platform == 'darwin'
+cython==3.3.0 ; platform_system != 'darwin' and sys_platform == 'darwin'
     # via screeninfo
-dashscope==1.25.4
+dashscope==1.27.7
     # via n-e-k-o
 distro==1.9.0
     # via
@@ -144,35 +144,35 @@ distro==1.9.0
     #   groq
     #   openai
     #   posthog
-docstring-parser==0.17.0
+docstring-parser==0.18.0
     # via anthropic
 dxcam==0.3.0 ; sys_platform == 'win32'
     # via n-e-k-o
-editor==1.6.6
+editor==1.8.0
     # via inquirer
-fastapi==0.115.14
+fastapi==0.141.1
     # via n-e-k-o
-filelock==3.29.0
+filelock==3.32.7
     # via huggingface-hub
 flatbuffers==25.12.19
     # via onnxruntime
-fonttools==4.61.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+fonttools==4.66.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via matplotlib
 frozendict==2.4.7
     # via bilibili-api-dev
-frozenlist==1.7.0
+frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
-fsspec==2026.3.0
+fsspec==2026.9.0
     # via huggingface-hub
-google-api-core==2.29.0
+google-api-core==2.39.0
     # via
     #   browser-use
     #   google-api-python-client
-google-api-python-client==2.190.0
+google-api-python-client==2.200.0
     # via browser-use
-google-auth==2.45.0
+google-auth==2.58.1
     # via
     #   browser-use
     #   google-api-core
@@ -180,37 +180,37 @@ google-auth==2.45.0
     #   google-auth-httplib2
     #   google-auth-oauthlib
     #   google-genai
-google-auth-httplib2==0.3.0
+google-auth-httplib2==0.4.2
     # via google-api-python-client
-google-auth-oauthlib==1.2.2
+google-auth-oauthlib==1.4.1
     # via browser-use
-google-genai==1.56.0
+google-genai==1.75.0
     # via
     #   browser-use
     #   n-e-k-o
-googleapis-common-protos==1.72.0
+googleapis-common-protos==1.75.4
     # via google-api-core
 googletrans==4.0.2
     # via n-e-k-o
-greenlet==3.2.4
+greenlet==3.5.6
     # via
     #   playwright
     #   sqlalchemy
-groq==1.0.0
+groq==1.7.0
     # via browser-use
 h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
-h2==4.3.0
+h2==4.4.1
     # via httpx
-hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
-hpack==4.1.0
+hpack==4.2.0
     # via h2
 httpcore==1.0.9
     # via httpx
-httplib2==0.31.2
+httplib2==0.32.0
     # via
     #   google-api-python-client
     #   google-auth-httplib2
@@ -231,15 +231,15 @@ httpx==0.28.1
     #   pyncm-async
 httpx-sse==0.4.3
     # via mcp
-huggingface-hub==1.12.0
+huggingface-hub==1.33.0
     # via tokenizers
 humanfriendly==10.0 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via coloredlogs
-humanize==4.14.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+humanize==4.16.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via audiolab
 hyperframe==6.1.0
     # via h2
-idna==3.10
+idna==3.20
     # via
     #   anyio
     #   httpx
@@ -255,9 +255,9 @@ jinja2==3.1.6
     # via
     #   audiolab
     #   n-e-k-o
-jinxed==1.3.0 ; sys_platform == 'win32'
+jinxed==1.4.0 ; sys_platform == 'win32'
     # via blessed
-jiter==0.10.0
+jiter==0.17.0
     # via
     #   anthropic
     #   openai
@@ -267,32 +267,32 @@ jsonschema==4.26.0
     # via mcp
 jsonschema-specifications==2025.9.1
     # via jsonschema
-kiwisolver==1.4.9 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+kiwisolver==1.5.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via matplotlib
-lxml==6.0.2
+lxml==6.1.3
     # via
     #   aiotieba
     #   bilibili-api-dev
     #   python-docx
-markdown-it-py==4.0.0
+markdown-it-py==4.2.0
     # via rich
-markdownify==1.2.2
+markdownify==1.2.3
     # via browser-use
-markupsafe==3.0.2
+markupsafe==3.0.3
     # via jinja2
-matplotlib==3.10.7 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+matplotlib==3.11.2 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via pyrnnoise
-mcp==1.26.0
+mcp==1.30.0
     # via browser-use
 mdurl==0.1.2
     # via markdown-it-py
 mouseinfo==0.1.3
     # via pyautogui
-mpmath==1.3.0 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
+mpmath==1.4.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via sympy
 mss==10.2.0
     # via n-e-k-o
-multidict==6.6.4
+multidict==6.9.1
     # via
     #   aiohttp
     #   yarl
@@ -311,17 +311,17 @@ numpy==1.26.4
     #   soxr
 oauthlib==3.3.1
     # via requests-oauthlib
-ollama==0.6.1
+ollama==0.6.2
     # via browser-use
 onnxruntime==1.23.2 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via n-e-k-o
 onnxruntime==1.25.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via n-e-k-o
-openai==2.8.1
+openai==2.54.0
     # via
     #   browser-use
     #   n-e-k-o
-orjson==3.11.8
+orjson==3.12.0
     # via n-e-k-o
 ormsgpack==1.12.2
     # via n-e-k-o
@@ -345,24 +345,24 @@ pillow==11.3.0
     #   pytesseract
     #   qrcode-terminal
     #   reportlab
-playwright==1.58.0
+playwright==1.63.0
     # via n-e-k-o
 portalocker==2.10.1
     # via
     #   browser-use
     #   bubus
     #   n-e-k-o
-posthog==7.8.6
+posthog==7.60.1
     # via browser-use
-prompt-toolkit==3.0.52
+prompt-toolkit==3.0.53
     # via inquirerpy
-propcache==0.3.2
+propcache==0.5.4
     # via
     #   aiohttp
     #   yarl
-proto-plus==1.27.1
+proto-plus==1.28.4
     # via google-api-core
-protobuf==6.33.5
+protobuf==6.33.6
     # via
     #   aiotieba
     #   google-api-core
@@ -373,7 +373,7 @@ psutil==7.2.2
     # via
     #   browser-use
     #   n-e-k-o
-pyasn1==0.6.1
+pyasn1==0.6.4
     # via
     #   pyasn1-modules
     #   rsa
@@ -381,11 +381,11 @@ pyasn1-modules==0.4.2
     # via google-auth
 pyautogui==0.9.54
     # via n-e-k-o
-pycparser==2.22 ; implementation_name == 'pypy' or platform_machine != 'x86_64' or platform_python_implementation != 'PyPy' or sys_platform != 'darwin'
+pycparser==2.23 ; implementation_name == 'pypy' or platform_machine != 'x86_64' or platform_python_implementation != 'PyPy' or sys_platform != 'darwin'
     # via cffi
 pycryptodomex==3.23.0
     # via bilibili-api-dev
-pydantic==2.11.7
+pydantic==2.13.5
     # via
     #   anthropic
     #   browser-use
@@ -398,11 +398,11 @@ pydantic==2.11.7
     #   ollama
     #   openai
     #   pydantic-settings
-pydantic-core==2.33.2
+pydantic-core==2.49.0
     # via
     #   browser-use-sdk
     #   pydantic
-pydantic-settings==2.12.0
+pydantic-settings==2.15.0
     # via mcp
 pyee==13.0.1
     # via playwright
@@ -410,9 +410,9 @@ pygetwindow==0.0.9
     # via
     #   n-e-k-o
     #   pyautogui
-pygments==2.19.2
+pygments==2.21.0
     # via rich
-pyjwt==2.11.0
+pyjwt==2.15.0
     # via
     #   bilibili-api-dev
     #   mcp
@@ -1130,15 +1130,15 @@ pyobjc-framework-vision==11.1 ; (platform_release >= '17.0' and platform_system 
     # via pyobjc
 pyobjc-framework-webkit==11.1 ; platform_system == 'darwin' or sys_platform == 'darwin'
     # via pyobjc
-pyotp==2.9.0
+pyotp==2.10.0
     # via browser-use
-pyparsing==3.2.5
+pyparsing==3.3.3
     # via
     #   httplib2
     #   matplotlib
-pypdf==6.7.0
+pypdf==6.19.0
     # via browser-use
-pyperclip==1.9.0
+pyperclip==1.11.0
     # via mouseinfo
 pyrect==0.2.0
     # via pygetwindow
@@ -1154,7 +1154,7 @@ python-dateutil==2.9.0.post0
     #   posthog
 python-docx==1.2.0
     # via browser-use
-python-dotenv==1.2.1
+python-dotenv==1.2.3
     # via
     #   browser-use
     #   n-e-k-o
@@ -1187,12 +1187,12 @@ pywin32==311 ; sys_platform == 'win32'
     #   pywinauto
 pywinauto==0.6.9 ; sys_platform == 'win32'
     # via n-e-k-o
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via
     #   bilibili-api-dev
     #   huggingface-hub
     #   n-e-k-o
-pyzmq==27.1.0
+pyzmq==27.2.0
     # via n-e-k-o
 qrcode==8.2
     # via
@@ -1201,19 +1201,19 @@ qrcode==8.2
     #   qrcode-terminal
 qrcode-terminal==0.8
     # via bilibili-api-dev
-readchar==4.2.1
+readchar==4.2.2
     # via inquirer
 referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
-regex==2026.2.28
+regex==2026.9.10
     # via
     #   n-e-k-o
     #   tiktoken
-reportlab==4.4.10
+reportlab==4.5.1
     # via browser-use
-requests==2.32.5
+requests==2.34.2
     # via
     #   browser-use
     #   dashscope
@@ -1227,7 +1227,7 @@ requests==2.32.5
     #   translatepy
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
-rich==14.3.2
+rich==14.3.4
     # via
     #   browser-use
     #   typer
@@ -1237,9 +1237,9 @@ rpds-py==0.30.0
     #   referencing
 rsa==4.9.1
     # via google-auth
-rubicon-objc==0.5.2 ; sys_platform == 'darwin'
+rubicon-objc==0.5.6 ; sys_platform == 'darwin'
     # via mouseinfo
-runs==1.2.2
+runs==1.3.0
     # via editor
 safeio==1.2
     # via translatepy
@@ -1256,7 +1256,7 @@ six==1.17.0
     #   python-dateutil
     #   python-xlib
     #   pywinauto
-smart-open==7.5.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+smart-open==7.7.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via audiolab
 sniffio==1.3.1
     # via
@@ -1267,48 +1267,48 @@ sniffio==1.3.1
     #   openai
 socksio==1.0.0
     # via httpx
-soundfile==0.13.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+soundfile==0.14.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via audiolab
-soupsieve==2.8
+soupsieve==2.10
     # via beautifulsoup4
 soxr==0.5.0.post1
     # via n-e-k-o
-sqlalchemy==2.0.48
+sqlalchemy==2.1.1
     # via n-e-k-o
-sse-starlette==3.0.3
+sse-starlette==3.4.11
     # via mcp
-starlette==0.46.2
+starlette==0.52.1
     # via
     #   fastapi
     #   mcp
 sympy==1.14.0 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via onnxruntime
-tenacity==9.1.2
+tenacity==9.1.4
     # via google-genai
-tiktoken==0.12.0
+tiktoken==0.14.0
     # via n-e-k-o
-tokenizers==0.22.2
+tokenizers==0.23.2
     # via n-e-k-o
 toml==0.10.2
     # via n-e-k-o
-tomli==2.4.0
+tomli==2.4.1
     # via n-e-k-o
 tomli-w==1.2.0
     # via n-e-k-o
 tornado==6.5.4
     # via n-e-k-o
-tqdm==4.67.1
+tqdm==4.70.1
     # via
     #   huggingface-hub
     #   openai
     #   pyrnnoise
 translatepy==2.3
     # via n-e-k-o
-twitchio==3.2.2
+twitchio==3.3.2
     # via n-e-k-o
-typer==0.24.2
+typer==0.27.2
     # via huggingface-hub
-typing-extensions==4.14.1
+typing-extensions==4.16.0
     # via
     #   aiosignal
     #   anthropic
@@ -1331,32 +1331,32 @@ typing-extensions==4.14.1
     #   referencing
     #   sqlalchemy
     #   typing-inspection
-typing-inspection==0.4.1
+typing-inspection==0.4.4
     # via
     #   mcp
     #   pydantic
     #   pydantic-settings
 tzdata==2025.3 ; sys_platform == 'win32'
     # via tzlocal
-tzlocal==5.3.1
+tzlocal==5.4.4
     # via apscheduler
 uritemplate==4.2.0
     # via google-api-python-client
-urllib3==2.5.0
+urllib3==2.8.0
     # via requests
 uuid7==0.1.0
     # via
     #   browser-use
     #   bubus
-uvicorn==0.38.0
+uvicorn==0.54.0
     # via
     #   mcp
     #   n-e-k-o
-wcwidth==0.2.14
+wcwidth==0.9.1
     # via
     #   blessed
     #   prompt-toolkit
-websocket-client==1.8.0
+websocket-client==1.9.2
     # via
     #   dashscope
     #   n-e-k-o
@@ -1365,13 +1365,13 @@ websockets==15.0.1
     #   cdp-use
     #   google-genai
     #   n-e-k-o
-wrapt==2.0.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+wrapt==2.5.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via smart-open
-xmod==1.8.1
+xmod==1.10.0
     # via
     #   editor
     #   runs
-yarl==1.20.1
+yarl==1.25.1
     # via
     #   aiohttp
     #   bilibili-api-dev
