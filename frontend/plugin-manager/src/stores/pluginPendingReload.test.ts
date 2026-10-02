@@ -256,4 +256,27 @@ describe('plugin store reload bookkeeping', () => {
 
     expect(hasPendingReload('demo')).toBe(true)
   })
+
+  it('does not recreate a cleared flag from a stale pending response', async () => {
+    setPendingReload('demo', true)
+    let releaseReload!: () => void
+    vi.mocked(reloadPlugin).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = () => resolve({ success: true, plugin_id: 'demo', message: '' })
+        })
+    )
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'pending',
+    })
+    const store = usePluginStore()
+
+    const reloading = store.reload('demo', { refresh: false })
+    setPendingReload('demo', false)
+    releaseReload()
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
 })

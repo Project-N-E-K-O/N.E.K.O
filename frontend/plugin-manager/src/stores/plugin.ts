@@ -376,7 +376,7 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     const pending = state.config_state === 'pending' || state.config_state === 'unknown'
     if (pending) {
-      if (!hasPendingReload(pluginId)) setPendingReload(pluginId, true)
+      if (!hasPendingReload(pluginId)) setPendingReload(pluginId, true, expectedRevision)
     } else {
       // A save that landed while this query was in flight wins over an older
       // matched response, just like the previous local revision guard.
