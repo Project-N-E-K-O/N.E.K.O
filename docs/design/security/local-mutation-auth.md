@@ -14,7 +14,7 @@
 
 **拍板：优先保障市场中已发布的插件继续可用。** 已发布插件的静态页面直接向 `/runs`、`/uploads`、`ui-api`、配置等路由发写请求，且不带 `X-CSRF-Token`。插件页面路由因此默认只校验来源：可信 `Origin` 即放行，跨站页面仍被拒绝；请求若带了 token，则必须正确，空值或错误值一律拒绝；无 `Origin` 的请求仍只允许本机原生调用。
 
-对完全匹配或已配置的来源而言，它们本来就能从 `/security/csrf-token` 读到 token，强制 token 不增加实际边界，只会让存量插件失效。NAS 的 hostname 兜底是例外：同一 NAS 上其他端口的页面能通过来源校验，却因 CORS 读不到 token。因此不带 token、且只靠 hostname 兜底通过的请求，还必须带 `Sec-Fetch-Site: same-origin`（不发送该头的旧浏览器按兼容放行）；市场插件页面与插件服务同源，不受影响，跨端口页面会以可重试的 token 失败被拒。token 只作为**公网部署者的可选项**：设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，插件页面路由也要求 token，尚未适配的插件页面会收到 403。
+对完全匹配或已配置的来源而言，它们本来就能从 `/security/csrf-token` 读到 token，强制 token 不增加实际边界，只会让存量插件失效。NAS 的 hostname 兜底是例外：同一 NAS 上其他端口的页面能通过来源校验，却因 CORS 读不到 token。因此不带 token、且只靠 hostname 兜底通过的请求，必须显式带 `Sec-Fetch-Site: same-origin`；缺少该头也拒绝，因为浏览器对纯 HTTP 的局域网来源不发送 Fetch Metadata。市场插件页面不受影响：经官方 Nginx 访问时 Host 原样保留，页面 Origin 精确匹配；外层 HTTPS 终结时浏览器会发送该头。改写 Host 的自建代理可把页面来源写进 `AUTOSTART_ALLOWED_ORIGINS` 走精确匹配。跨端口页面会以可重试的 token 失败被拒。token 只作为**公网部署者的可选项**：设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，插件页面路由也要求 token，尚未适配的插件页面会收到 403。
 
 从本版 SDK（`SDK_VERSION` 0.1.0 所在的本次发布）起，[插件最佳实践](/plugins/best-practices)通知插件作者在页面写请求中携带 token，逐步完成安全适配。在市场中仍有插件未携带 token 时，不得把 token 改为默认必需；收紧前需先确认市场插件已完成迁移。
 

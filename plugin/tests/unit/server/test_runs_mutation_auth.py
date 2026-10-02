@@ -259,20 +259,54 @@ async def test_other_port_on_same_nas_hostname_needs_the_token(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fetch_site", ["same-origin", None], ids=["same-origin", "legacy-browser"])
 async def test_tokenless_page_behind_outer_tls_proxy_keeps_working(
-    app: FastAPI, monkeypatch: pytest.MonkeyPatch, fetch_site: str | None,
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Outer TLS termination changes scheme/port, so only the hostname matches;
-    # the market plugin page is still same-origin from the browser's view.
+    # over HTTPS the browser reports the market plugin page as same-origin.
     monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
     create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
     monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
-    headers = {"Origin": "https://192.168.1.5"}
-    if fetch_site:
-        headers["Sec-Fetch-Site"] = fetch_site
+    headers = {"Origin": "https://192.168.1.5", "Sec-Fetch-Site": "same-origin"}
 
     async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=headers) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 200, response.text
+    create_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_cross_port_page_without_fetch_metadata_is_rejected(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Browsers omit Sec-Fetch-Site for plain-HTTP LAN origins, so a missing
+    # header must not count as same-origin on the hostname-only fallback.
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    create_run = AsyncMock()
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+
+    async with _client(
+        app, peer="192.168.1.10", host="192.168.1.5:48916", headers={"Origin": "http://192.168.1.5:8080"},
+    ) as client:
+        response = await client.post("/runs", content=b'{"plugin_id": "demo", "entry_id": "run", "args": {}}')
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "token"
+    create_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicitly_allowed_proxy_origin_needs_no_fetch_metadata(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A custom proxy that rewrites Host can list the page origin explicitly.
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    monkeypatch.setenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", "http://192.168.1.5:8080")
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+
+    async with _client(
+        app, peer="192.168.1.10", host="192.168.1.5:48916", headers={"Origin": "http://192.168.1.5:8080"},
+    ) as client:
         response = await client.post("/runs", json=_RUN_PAYLOAD)
     assert response.status_code == 200, response.text
     create_run.assert_awaited_once()

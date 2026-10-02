@@ -211,10 +211,13 @@ def require_plugin_page_mutation_access(request: Request) -> None:
     token anyway, so it adds no boundary for them. The NAS hostname-only
     fallback is different: another port on the same NAS passes it but cannot
     read the token (CORS), so a tokenless request that only matched that
-    fallback must also carry ``Sec-Fetch-Site: same-origin``. Market plugin
-    pages are same-origin with the plugin server and still pass. A supplied
-    token must be valid, and originless requests keep the native loopback
-    rules.
+    fallback must carry an explicit ``Sec-Fetch-Site: same-origin``; a
+    missing header is rejected because browsers omit it on plain-HTTP LAN
+    origins. Market plugin pages still pass: behind the official Nginx their
+    Origin matches the preserved Host exactly, and behind outer HTTPS
+    termination the browser sends the header. Other proxies can list the
+    page origin in ``AUTOSTART_ALLOWED_ORIGINS``. A supplied token must be
+    valid, and originless requests keep the native loopback rules.
 
     Public deployments may opt in to requiring the token with
     ``NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1``; this breaks plugin pages
@@ -237,9 +240,11 @@ def _authorize_mutation(request: Request, *, browser_token_required: bool) -> No
         if (
             not token_supplied
             and not _exactly_trusted_origin(request, origin)
-            and request.headers.get("sec-fetch-site", "same-origin") != "same-origin"
+            and request.headers.get("sec-fetch-site") != "same-origin"
         ):
-            # Another port on the same NAS hostname: a token would authorize it.
+            # Hostname-only match: maybe another port on the same NAS. Browsers
+            # omit Sec-Fetch-Site on plain-HTTP LAN origins, so a missing header
+            # proves nothing here; a token would authorize the request.
             _deny(token_invalid=True)
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer
