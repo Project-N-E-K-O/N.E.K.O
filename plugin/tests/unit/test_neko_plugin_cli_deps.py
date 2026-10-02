@@ -119,6 +119,13 @@ def test_relative_requirements_keep_resolving_from_here(tmp_path, monkeypatch):
         "baz @ ./deps/baz ; python_version >= '3.8'",
         "httpx>=0.27",
         "qux @ https://example.com/qux.whl",
+        "corge @ file:./deps/corge#subdirectory=pkg",
+        "file:../shared/grault",
+        "garply @ file:///opt/garply",
+        # The "@" of a revision is not the "name @ url" separator.
+        "git+https://github.com/astral-sh/ruff@v0.2.0",
+        "git+ssh://git@github.com/astral-sh/ruff@v0.2.0",
+        "ruff @ git+ssh://git@github.com/astral-sh/ruff@v0.2.0",
     ]
     assert deps_cmd._install_to_vendor(
         packages, vendor_dir=tmp_path / "staging", python="python", project_root=root,
@@ -127,7 +134,10 @@ def test_relative_requirements_keep_resolving_from_here(tmp_path, monkeypatch):
     assert args[0] == f"foo @ {here / 'deps' / 'foo'}"
     assert args[1] == str(here / "deps" / "bar")
     assert args[2] == f"baz @ {here / 'deps' / 'baz'} ; python_version >= '3.8'"
-    assert args[3:] == ["httpx>=0.27", "qux @ https://example.com/qux.whl"]
+    assert args[3:5] == ["httpx>=0.27", "qux @ https://example.com/qux.whl"]
+    assert args[5] == f"corge @ {(here / 'deps' / 'corge').as_uri()}#subdirectory=pkg"
+    assert args[6] == (tmp_path / "shared" / "grault").as_uri()
+    assert args[7:] == packages[7:]
 
 
 def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):

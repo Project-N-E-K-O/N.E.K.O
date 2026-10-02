@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from tempfile import gettempdir
 from typing import NamedTuple
+from urllib.parse import unquote
 
 import portalocker
 
@@ -633,7 +634,7 @@ def _open_dir_path(fd: int) -> str | None:
     try:
         return os.readlink(f"/proc/self/fd/{fd}")
     except OSError:
-        pass
+        pass  # no /proc (not Linux, or not mounted); try F_GETPATH
     try:
         import fcntl
 
@@ -641,7 +642,7 @@ def _open_dir_path(fd: int) -> str | None:
             raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
             return os.fsdecode(raw.split(b"\0", 1)[0])
     except (ImportError, OSError):
-        pass
+        pass  # no fcntl (Windows) or the call failed: no path to report
     return None
 
 
@@ -653,9 +654,9 @@ def _pin_link(path: Path):
     but a Windows link there is nothing to pin."""
     if sys.platform != "win32" or not _is_link(path):
         return lambda: None
-    import ctypes
-    from ctypes import wintypes
+    import ctypes.wintypes
 
+    wintypes = ctypes.wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.CreateFileW.argtypes = [
@@ -1180,14 +1181,29 @@ def _install_to_vendor(
     return 0 if result is not None and result.returncode == 0 else 1
 
 
+# A PEP 508 name, with optional extras: what precedes "@" in "name @ url".
+_REQUIREMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\s*(\[[^\]]*\])?")
+
+
 def _absolute_requirement(requirement: str) -> str:
-    """A requirement whose local path ("foo @ ./deps/foo", "./deps/foo") is
-    relative, with that path made absolute; anything else unchanged."""
+    """A requirement whose local path ("foo @ ./deps/foo", "./deps/foo",
+    "foo @ file:./deps/foo") is relative, with that path made absolute;
+    anything else unchanged."""
     spec, semicolon, marker = requirement.partition(";")
     name, at, reference = spec.partition("@")
+    if at and not _REQUIREMENT_NAME_RE.fullmatch(name.strip()):
+        # The "@" belongs to a bare URL or path ("git+https://host/x@v1").
+        name, at, reference = "", "", spec
     target = (reference if at else spec).strip()
-    if not target or "://" in target or target.startswith("file:"):
+    if not target or "://" in target:
         return requirement
+    if target.startswith("file:"):
+        path, fragment_mark, fragment = target[len("file:"):].partition("#")
+        if not path or path.startswith("/") or os.path.isabs(path):
+            return requirement
+        absolute = Path(os.path.abspath(unquote(path))).as_uri() + fragment_mark + fragment
+        rebuilt = f"{name.strip()} @ {absolute}" if at else absolute
+        return f"{rebuilt} ;{marker}" if semicolon else rebuilt
     if at:
         is_relative_path = not os.path.isabs(target)
     else:
