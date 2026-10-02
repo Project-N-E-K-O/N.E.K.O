@@ -4,17 +4,19 @@ import { effectScope, ref, type EffectScope } from 'vue'
 import {
   deletePluginProfileConfig,
   getPluginConfig,
+  getPluginConfigApplicationState,
   getPluginEffectiveBaseConfig,
   getPluginProfileConfig,
   getPluginProfilesState,
   upsertPluginProfileConfig,
 } from '@/api/config'
 import { usePluginConfigDrafts } from './usePluginConfigDrafts'
-import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
+import { hasPendingReload, pendingReloadRevision, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/api/config', () => ({
   getPluginEffectiveBaseConfig: vi.fn(),
   getPluginConfig: vi.fn(),
+  getPluginConfigApplicationState: vi.fn(),
   getPluginProfilesState: vi.fn(),
   getPluginProfileConfig: vi.fn(),
   upsertPluginProfileConfig: vi.fn(),
@@ -51,6 +53,9 @@ beforeEach(() => {
     config: { cache: { ttl: 1 } },
   } as never)
   vi.mocked(getPluginConfig).mockResolvedValue({ plugin_id: 'x', config: {} } as never)
+  // Simulate an older server by default; the editor must retain its in-memory
+  // fallback when the application-state endpoint is unavailable.
+  vi.mocked(getPluginConfigApplicationState).mockRejectedValue({ response: { status: 404 } })
   vi.mocked(getPluginProfilesState).mockImplementation(async (pluginId: string) =>
     emptyState(pluginId)
   )
@@ -494,6 +499,145 @@ describe('config draft lifecycle', () => {
     abandoned.resolve({ config: { cache: { ttl: 99 } } })
     await settle()
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
+  })
+})
+
+describe('server application state', () => {
+  it('fences both pre-save lifecycle responses as soon as an active save succeeds', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    // Both lifecycle queries were dispatched before the profile write.
+    const firstOldRevision = pendingReloadRevision('alpha')
+    const secondOldRevision = pendingReloadRevision('alpha')
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState).mockReturnValueOnce(response.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(setPendingReload('alpha', false, firstOldRevision)).toBe(false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await saving
+    expect(setPendingReload('alpha', false, secondOldRevision)).toBe(false)
+
+    expect(drafts.applicationStateKnown.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1)
+  })
+
+  it.each(['pending', 'matched'] as const)(
+    're-queries a rejected save response and respects the fresh %s state', async (freshState) => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState).mockReturnValueOnce(response.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    // A newer lifecycle response clears the hint after loadAll captured R.
+    setPendingReload('alpha', false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: freshState,
+    })
+    await saving
+
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2)
+    expect(drafts.applicationState.value?.config_state).toBe(freshState)
+    expect(drafts.applicationStateKnown.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(freshState === 'pending')
+    expect(drafts.pendingApplication.value).toBe(freshState === 'pending')
+  })
+
+  it('does not override a newer reload when the one-time retry also loses its revision race', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    const retry = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState)
+      .mockReturnValueOnce(response.promise)
+      .mockReturnValueOnce(retry.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    setPendingReload('alpha', false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2))
+    setPendingReload('alpha', false)
+    retry.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await saving
+
+    expect(drafts.applicationStateKnown.value).toBe(false)
+    expect(hasPendingReload('alpha')).toBe(false)
+    expect(drafts.pendingApplication.value).toBe(false)
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2)
+  })
+
+  it('restores a pending state after loading the configuration page', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'pending',
+      persisted_fingerprint: 'sha256:new',
+      applied_fingerprint: 'sha256:old',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.applicationState.value?.config_state).toBe('pending')
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
+  })
+
+  it('clears the local hint only when the server confirms a match', async () => {
+    setPendingReload('alpha', true)
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'matched',
+      persisted_fingerprint: 'sha256:same',
+      applied_fingerprint: 'sha256:same',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.pendingApplication.value).toBe(false)
+    expect(hasPendingReload('alpha')).toBe(false)
+  })
+
+  it('keeps the warning for an uncertain server state', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'unknown',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
   })
 })
 

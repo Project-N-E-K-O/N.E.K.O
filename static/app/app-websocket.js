@@ -621,7 +621,6 @@
         }
         await releaseVoiceCaptureResources();
 
-        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
         if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
         if (typeof window.stopGameVoiceSttGate === 'function') window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
@@ -1554,26 +1553,12 @@
     // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
     // so before this was shared they showed a toast and left the hardware
     // microphone running for the whole session.
-    // Text for an independent-ASR failure. ``reason`` is the provider /
-    // runtime ASR_* code behind it (carried by ASR_LIFECYCLE_STATE blocked and
-    // by the terminal failure status), when it has its own explanation.
-    function independentAsrFailureToastText(reason) {
-        var t = window.t;
-        return independentAsrReasonToastText(reason)
-            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
-    }
-
-    // The explanation for a failure reason that has one of its own, or ''.
-    // Other reasons (e.g. a cloud ASR_CONNECT_TIMEOUT) keep the per-status
-    // messages instead of a generic "check the configuration".
     function independentAsrReasonToastText(reason) {
         var t = window.t;
         if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
             return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
         }
         if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
-            // Installed but not importable (e.g. a broken native CTranslate2
-            // build): same guidance as not installed.
             return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.';
         }
         if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
@@ -1585,19 +1570,29 @@
         return '';
     }
 
-    // The persistent "local model preparing" notice (ASR_INDEPENDENT_PREPARING
-    // until ASR_INDEPENDENT_PREPARED); cleared on failure and teardown.
-    function clearLocalAsrPreparingNotice() {
-        if (!S.localAsrPreparingMessage) return;
+    function independentAsrFailureToastText(reason) {
+        var t = window.t;
+        return independentAsrReasonToastText(reason)
+            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
+    }
+
+    function clearLocalAsrPreparingNotice(options) {
+        var hadLocalNotice = Boolean(S.localAsrPreparingMessage);
         S.localAsrPreparingMessage = null;
+        if (!hadLocalNotice && !(options && options.force)) {
+            return;
+        }
+        if (options && options.preserveVoiceToast
+                && (S.voiceStartPending === true || S._pendingSessionStartMode)) {
+            return;
+        }
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
     }
 
     function tearDownBlockedVoiceRoute() {
-        clearLocalAsrPreparingNotice();
-
+    clearLocalAsrPreparingNotice({ force: true });
     removeExternalAsrPreview();
     S.independentAsrActive = false;
     // Set the sticky bit before publishing. The host bridge reacts
@@ -2683,12 +2678,11 @@
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
                     }
-                    // Same authority gate for the provider choice: a boot default
-                    // 'auto' must not override a persisted 'faster_whisper'.
-                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrProviderPreferenceAuthoritative === true) {
-                        msg.independent_asr_provider_preference = S.independentAsrProviderPreference === 'faster_whisper'
-                            ? 'faster_whisper'
-                            : 'auto';
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true
+                            && S.independentAsrProviderPreferenceAuthoritative === true) {
+                        msg.independent_asr_provider_preference =
+                            S.independentAsrProviderPreference === 'faster_whisper'
+                                ? 'faster_whisper' : 'auto';
                         handshakeStamped = true;
                     }
                     if (msg && msg.action === 'start_session') {
@@ -3819,25 +3813,19 @@
                             // BLOCKED and keep their per-code toasts below; a
                             // prefixed fatal code after BLOCKED re-shows the same
                             // fallback text, which the toast renders as one message.
-                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off') {
-                                // The transport is closed (e.g. the idle TTL expired
-                                // while a first model load was still running): no
-                                // PREPARED will follow for it. A reconnect announces
-                                // PREPARING again if the model is still not ready.
-                                clearLocalAsrPreparingNotice();
-                            }
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
-                                    // BLOCKED carries the failure reason: a recording
-                                    // window's later FAILED status can be fenced by
-                                    // its lease, so this may be the only notice it gets.
                                     var blockedReason = statusDetails && statusDetails.reason;
                                     window.showStatusToast(
                                         independentAsrFailureToastText(blockedReason),
                                         blockedReason ? 8000 : 5000
                                     );
                                 }
+                            }
+                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off'
+                                    || lifecycleState === 'warm_idle') {
+                                clearLocalAsrPreparingNotice();
                             }
                         }
                         return;
@@ -3959,11 +3947,7 @@
                             S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
-                            // A (re)connected provider: whatever it still has to
-                            // prepare is announced again right after this READY,
-                            // so an older preparing notice (e.g. of a session that
-                            // ended mid-load) must not linger.
-                            clearLocalAsrPreparingNotice();
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
                             var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
@@ -4000,16 +3984,14 @@
                             }
                             return;
                         }
+                        if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            return;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
-                            // Connected, but the provider is still preparing (a
-                            // local model loading, or downloading on first use).
-                            // Not a failure: the route stays as it is. The notice
-                            // stays up until ASR_INDEPENDENT_PREPARED (the mic
-                            // start re-shows it over its own toast).
                             var preparingText = statusDetails
                                 && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
-                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait. Your first sentence is recognized once the model is ready.')
-                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Loading the local speech recognition model. The first use also downloads it, which can take a few minutes. Your first sentence is recognized once the model is ready; please wait before saying more.');
+                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait.')
+                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Preparing local speech recognition. Please wait.');
                             S.localAsrPreparingMessage = preparingText;
                             if (typeof window.showVoicePreparingToast === 'function') {
                                 window.showVoicePreparingToast(preparingText);
@@ -4017,18 +3999,24 @@
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
-                            if (S.localAsrPreparingMessage) {
-                                clearLocalAsrPreparingNotice();
-                                if (typeof window.showStatusToast === 'function') {
-                                    window.showStatusToast(
-                                        window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready',
-                                        3000
-                                    );
-                                }
+                            var hadPreparingNotice = Boolean(S.localAsrPreparingMessage);
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
+                            if (hadPreparingNotice && typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',
+                                    3000
+                                );
                             }
                             return;
                         }
-                        if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                        if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
+                            tearDownBlockedVoiceRoute();
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
+                                );
+                            }
                             return;
                         }
                         // Terminal startup failure. Same fail-closed state as a
@@ -4037,23 +4025,11 @@
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
-                            // The provider's / runtime's own failure code, when it
-                            // sent one: replaces the generic text the BLOCKED
-                            // lifecycle event has just shown.
                             var reasonToastText = independentAsrReasonToastText(
                                 statusDetails && statusDetails.reason
                             );
                             if (reasonToastText) {
                                 window.showStatusToast(reasonToastText, 8000);
-                                return;
-                            }
-                            if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
-                                window.showStatusToast(
-                                    window.t
-                                        ? window.t('microphone.localAsrDependencyMissing')
-                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
-                                    5000
-                                );
                                 return;
                             }
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
@@ -4631,7 +4607,6 @@
                                         console.log(window.t('console.autoRestartFailedEndSession'));
                                     }
 
-                                    S.localAsrPreparingMessage = null;
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                                     if (!isMicrophoneStartCancelled
                                             && typeof window.showStatusToast === 'function') {
@@ -4899,9 +4874,6 @@
                             // A Linux source enumeration may reopen the desktop
                             // portal every step. A broker reads the already-owned
                             // stream in Chat without enumerating sources.
-                            // Only the explicit flag counts here: every bridge with
-                            // captureComputerUseScreen declares it, and inferring
-                            // from the UA would refuse a working one-shot capture.
                             if (dc.sourceEnumerationMayPrompt === true
                                 && !(dc.computerUseSharedStreamBroker === true
                                     && dc.computerUseNeedsStream === true)) {
@@ -5280,6 +5252,8 @@
 
                 // -------- session_preparing --------
                 } else if (response.type === 'session_preparing') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
                         if (typeof window.isNekoGoodbyeModeActive === 'function'
@@ -5293,6 +5267,7 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (window.sessionStartNotificationIsRetired(response)) return;
                     if (response.input_mode !== 'text'
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
@@ -5363,9 +5338,8 @@
                     //
                     // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
                     // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
-                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
-                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
-                    // pending 启动的情形本就由上面的模式守卫负责。
+                    // 内部路径没有请求标识时仍同步会话 UI，但不能收口本窗口
+                    // 在途的用户请求：同模式的旧内部启动也可能迟到。
                     //
                     // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
                     // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
@@ -5527,12 +5501,16 @@
                     // acknowledged the text session at all (Codex P2). Resolve
                     // only if the slot still holds the very start we acked.
                     var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
+                    var _ackedClaimSeq = window.sessionStartClaimSeq();
                     setTimeout(function () {
                         // Not gated on the resolver: a window with no pending
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
+                                && typeof window.hideVoicePreparingToast === 'function') {
+                            window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        }
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -5584,6 +5562,8 @@
 
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
                     // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发
@@ -5599,8 +5579,9 @@
                             'while pending', S._pendingSessionStartMode);
                         return;
                     }
-                    S.localAsrPreparingMessage = null;
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    if (typeof clearLocalAsrPreparingNotice === 'function') {
+                        clearLocalAsrPreparingNotice({ force: true });
+                    }
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
@@ -5676,8 +5657,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
-                    S.localAsrPreparingMessage = null;
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    clearLocalAsrPreparingNotice({ force: true });
 
                     // Restore UI to idle state
                     var _mb3 = micButton();
@@ -6037,8 +6017,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
-            S.localAsrPreparingMessage = null;
-            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+            clearLocalAsrPreparingNotice({ force: true });
 
             // Reset button states
             var _mb5 = micButton();

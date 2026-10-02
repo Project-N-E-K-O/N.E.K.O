@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from pathlib import Path
 
 from fastapi import HTTPException
 
+from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins.development import registration_for_plugin_sync
 from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_profiles import (
     get_profile_config as infrastructure_get_profile_config,
 )
@@ -19,6 +23,7 @@ from plugin.server.infrastructure.config_profiles import (
 from plugin.server.infrastructure.config_queries import (
     load_plugin_base_config as infrastructure_load_plugin_base_config,
 )
+from plugin.utils.time_utils import now_iso
 from plugin.server.infrastructure.config_queries import (
     load_plugin_config as infrastructure_load_plugin_config,
 )
@@ -118,6 +123,88 @@ def _normalize_profile_name(profile_name: object) -> str:
     return profile_name.strip()
 
 
+def _application_state_sync(
+    *,
+    plugin_id: str,
+    persisted_fingerprint: str | None,
+) -> dict[str, object]:
+    """Compare a persisted identity with the current, owned host."""
+    observed_at = now_iso()
+    current_config_path = _current_owner_config_path_sync(plugin_id)
+
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+        host_path_obj = getattr(host, "config_path", None) if host is not None else None
+        try:
+            host_path = Path(host_path_obj).resolve() if host_path_obj is not None else None
+        except (OSError, RuntimeError, ValueError, TypeError):
+            host_path = None
+        owner_matches = current_config_path is not None and host_path == current_config_path
+        alive: bool | None = False
+        if host is not None:
+            try:
+                alive = bool(host.is_alive())
+            except Exception:
+                alive = None
+        applied_fingerprint = (
+            getattr(host, "applied_config_fingerprint", None)
+            if owner_matches and alive
+            else None
+        )
+
+    if alive is False:
+        config_state = "not_running"
+        lifecycle_status = "not_running"
+    elif alive is None or not owner_matches:
+        # Ownership failure fences the fingerprint, not the live process. It
+        # must not clear a reload hint as though the process had stopped.
+        config_state = "unknown"
+        lifecycle_status = "running" if alive else "unknown"
+    elif not isinstance(applied_fingerprint, str) or not applied_fingerprint:
+        config_state = "unknown"
+        lifecycle_status = "running"
+    elif not isinstance(persisted_fingerprint, str) or not persisted_fingerprint:
+        config_state = "unknown"
+        lifecycle_status = "running"
+    else:
+        config_state = "matched" if persisted_fingerprint == applied_fingerprint else "pending"
+        lifecycle_status = "running"
+
+    return {
+        "plugin_id": plugin_id,
+        "lifecycle_status": lifecycle_status,
+        "config_state": config_state,
+        "persisted_fingerprint": persisted_fingerprint,
+        "applied_fingerprint": applied_fingerprint,
+        "observed_at": observed_at,
+    }
+
+
+def _current_owner_config_path_sync(plugin_id: str) -> Path | None:
+    """Resolve the current registry owner without consulting the host itself."""
+    try:
+        registration = registration_for_plugin_sync(plugin_id)
+    except Exception:
+        # A stale development registration must fence the old host out of
+        # application-state comparisons. Ordinary plugins return ``None`` from
+        # the registration helper and continue through registry metadata.
+        return None
+    if registration is not None:
+        return (registration.source_dir / "plugin.toml").resolve()
+
+    with state.acquire_plugins_read_lock():
+        metadata = state.plugins.get(plugin_id)
+    candidate = metadata.get("config_path") if isinstance(metadata, Mapping) else None
+    if isinstance(candidate, str) and candidate:
+        try:
+            return Path(candidate).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+    # If there is no registry owner, treating a host as current would allow a
+    # stale host left by uninstall/rebind to report a false match.
+    return None
+
+
 class ConfigQueryService:
     async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
         try:
@@ -139,6 +226,44 @@ class ConfigQueryService:
             raise ServerDomainError(
                 code="PLUGIN_CONFIG_QUERY_FAILED",
                 message="Failed to load plugin config",
+                status_code=500,
+                details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
+            ) from exc
+
+    async def get_plugin_config_application_state(self, *, plugin_id: str) -> dict[str, object]:
+        try:
+            # State queries only need the effective snapshot identity, not the
+            # editor schema, schema validation, or its warning logs.
+            persisted = await asyncio.to_thread(
+                resolve_plugin_config,
+                plugin_id,
+                include_effective_config=True,
+                validate_schema=False,
+            )
+            normalized = _normalize_payload(persisted, context="resolve_plugin_config")
+            fingerprint_obj = normalized.get("config_fingerprint")
+            persisted_fingerprint = fingerprint_obj if isinstance(fingerprint_obj, str) else None
+            return await asyncio.to_thread(
+                _application_state_sync,
+                plugin_id=plugin_id,
+                persisted_fingerprint=persisted_fingerprint,
+            )
+        except HTTPException as exc:
+            raise _from_http_exception(
+                exc,
+                code="PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED",
+                fallback_message="Failed to load plugin config application state",
+            ) from exc
+        except RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_plugin_config_application_state failed: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED",
+                message="Failed to load plugin config application state",
                 status_code=500,
                 details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
             ) from exc

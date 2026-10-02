@@ -352,7 +352,14 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
     _arbiter = SimpleNamespace(
         enqueue=_fake_enqueue,
         resume_dispatch=lambda: None,
-        pause_dispatch=lambda: None,
+        pause_dispatch=lambda owner=None: None,
+        begin_turn_preparation=lambda owner=None: None,
+        end_turn_preparation=lambda _token=None: None,
+        # These turns are about visual delivery, not barge-in policy: keep the
+        # double reporting a live reply so prepare still cancels, as it did
+        # unconditionally when these expectations were written.
+        has_live_response=True,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_ticket=AsyncMock(),
         cancel_current=AsyncMock(),
     )
@@ -415,8 +422,12 @@ async def test_lost_ownership_downgrades_before_the_oversize_check_fails_the_tur
     _arbiter = SimpleNamespace(
         enqueue=_fake_enqueue,
         resume_dispatch=lambda: None,
-        pause_dispatch=lambda: None,
+        pause_dispatch=lambda owner=None: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda owner=None: None,
+        end_turn_preparation=lambda _token=None: None,
+        has_live_response=True,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
     client._ensure_response_arbiter = lambda: _arbiter
@@ -465,6 +476,9 @@ async def test_send_event_downgrades_inside_the_transport_critical_section():
     class _Sock:
         async def send(self, payload):
             written.append(payload)
+
+        async def close(self):
+            pass
 
     client.ws = _Sock()
 
@@ -537,8 +551,12 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     _arbiter = SimpleNamespace(
         enqueue=_fake_enqueue,
         resume_dispatch=lambda: None,
-        pause_dispatch=lambda: None,
+        pause_dispatch=lambda owner=None: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda owner=None: None,
+        end_turn_preparation=lambda _token=None: None,
+        has_live_response=True,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
     client._ensure_response_arbiter = lambda: _arbiter
@@ -568,6 +586,9 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     class _Sock:
         async def send(self, payload):
             written.append(payload)
+
+        async def close(self):
+            pass
 
     client.ws = _Sock()
     await sender({
@@ -2015,8 +2036,12 @@ def _fake_arbiter(captured: list, *, sent_cancelled: bool = False):
     return SimpleNamespace(
         enqueue=_enqueue,
         resume_dispatch=lambda: None,
-        pause_dispatch=lambda: None,
+        pause_dispatch=lambda owner=None: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda owner=None: None,
+        end_turn_preparation=lambda _token=None: None,
+        has_live_response=True,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
 

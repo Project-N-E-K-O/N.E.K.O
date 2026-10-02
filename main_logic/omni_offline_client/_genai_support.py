@@ -421,7 +421,7 @@ class _GenaiMixin:
         for tool_iter in range(self.max_tool_iterations):
             self._ensure_genai_client()
             system_instruction, contents = _genai_messages_to_contents(
-                _slop_reduced_for_genai(messages)
+                _slop_reduced_for_genai(self._dialog_messages_for_provider(messages))
             )
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
@@ -795,7 +795,7 @@ class _GenaiMixin:
         # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
         final_system_instruction, final_contents = _genai_messages_to_contents(
-            _slop_reduced_for_genai(messages)
+            _slop_reduced_for_genai(self._dialog_messages_for_provider(messages))
         )
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction

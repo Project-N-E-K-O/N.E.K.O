@@ -11,6 +11,8 @@ import {
   reloadPlugin,
   startPlugin,
 } from '@/api/plugins'
+import { getPluginConfigApplicationState } from '@/api/config'
+import type { PluginConfigApplicationState } from '@/api/config'
 import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/i18n', () => ({
@@ -30,6 +32,10 @@ vi.mock('@/api/plugins', () => ({
   refreshPluginsRegistry: vi.fn(),
 }))
 
+vi.mock('@/api/config', () => ({
+  getPluginConfigApplicationState: vi.fn(),
+}))
+
 describe('plugin store reload bookkeeping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -37,6 +43,10 @@ describe('plugin store reload bookkeeping', () => {
     localStorage.clear()
     vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(getPluginStatus).mockResolvedValue({} as never)
+    vi.mocked(getPluginConfigApplicationState).mockImplementation(async (pluginId: string) => ({
+      plugin_id: pluginId,
+      config_state: 'matched',
+    }))
     vi.mocked(reloadPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
   })
 
@@ -207,6 +217,61 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(true)
   })
 
+  it('does not let a legacy bulk reload clear a flag created after its baseline', async () => {
+    let releaseReload!: (result: {
+      success: boolean
+      reloaded: string[]
+      failed: { plugin_id: string; error: string }[]
+      skipped: string[]
+      message: string
+    }) => void
+    vi.mocked(reloadAllPlugins).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = resolve
+        })
+    )
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue({ response: { status: 404 } })
+    const store = usePluginStore()
+
+    const reloading = store.reloadAll({ refresh: false })
+    // This plugin was absent from the bulk baseline. A save that lands while the
+    // request is in flight must not be cleared by an old server's 404 fallback.
+    setPendingReload('demo', true)
+    releaseReload({ success: true, reloaded: ['demo'], failed: [], skipped: [], message: '' })
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('does not clear an unknown plugin from an old matched response after a save', async () => {
+    let releaseReload!: (result: {
+      success: boolean
+      reloaded: string[]
+      failed: { plugin_id: string; error: string }[]
+      skipped: string[]
+      message: string
+    }) => void
+    vi.mocked(reloadAllPlugins).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = resolve
+        })
+    )
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'matched',
+    })
+    const store = usePluginStore()
+
+    const reloading = store.reloadAll({ refresh: false })
+    setPendingReload('demo', true)
+    releaseReload({ success: true, reloaded: ['demo'], failed: [], skipped: [], message: '' })
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
   it('keeps the flag when the server reports the plugin was already running', async () => {
     // That response does not restart the host or re-read the saved configuration,
     // so the new configuration is still not applied.
@@ -217,10 +282,137 @@ describe('plugin store reload bookkeeping', () => {
       already_running: true,
       message: 'Plugin is already running',
     })
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'pending',
+    })
     const store = usePluginStore()
 
     await store.start('demo')
 
     expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('clears the flag after a successful reload on an older server', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue({ response: { status: 404 } })
+    const store = usePluginStore()
+
+    await store.reload('demo')
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
+
+  it('keeps the flag when application-state fails for a non-compatibility reason', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue(new Error('network failure'))
+    const store = usePluginStore()
+
+    await store.reload('demo')
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it.each([
+    { data: { detail: { code: 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } } },
+    { data: { code: 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } },
+    { headers: { 'x-error-code': 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } },
+  ])('retains single and bulk reload hints for a domain 404: %j', async (response) => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue({
+      response: { status: 404, ...response },
+    })
+    vi.mocked(reloadAllPlugins).mockResolvedValue({
+      success: true, reloaded: ['demo'], failed: [], skipped: [], message: '',
+    })
+    const store = usePluginStore()
+
+    await store.reload('demo', { refresh: false })
+    expect(hasPendingReload('demo')).toBe(true)
+    await store.reloadAll({ refresh: false })
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('does not recreate a cleared flag from a stale pending response', async () => {
+    setPendingReload('demo', true)
+    let releaseReload!: () => void
+    vi.mocked(reloadPlugin).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = () => resolve({ success: true, plugin_id: 'demo', message: '' })
+        })
+    )
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'pending',
+    })
+    const store = usePluginStore()
+
+    const reloading = store.reload('demo', { refresh: false })
+    setPendingReload('demo', false)
+    releaseReload()
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
+
+  it('ignores an older matched response after a newer pending response', async () => {
+    setPendingReload('demo', true)
+    let resolveFirst!: (value: PluginConfigApplicationState) => void
+    let resolveSecond!: (value: PluginConfigApplicationState) => void
+    vi.mocked(getPluginConfigApplicationState)
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((resolve) => {
+          resolveFirst = resolve
+        })
+      )
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((resolve) => {
+          resolveSecond = resolve
+        })
+      )
+    const store = usePluginStore()
+
+    const first = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(1))
+    const second = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(2))
+
+    resolveSecond({ plugin_id: 'demo', config_state: 'pending' })
+    await second
+    resolveFirst({ plugin_id: 'demo', config_state: 'matched' })
+    await first
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('keeps an older matched response when the newer query fails', async () => {
+    setPendingReload('demo', true)
+    let resolveFirst!: (value: PluginConfigApplicationState) => void
+    let rejectSecond!: (reason?: unknown) => void
+    vi.mocked(getPluginConfigApplicationState)
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((resolve) => {
+          resolveFirst = resolve
+        })
+      )
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((_resolve, reject) => {
+          rejectSecond = reject
+        })
+      )
+    const store = usePluginStore()
+
+    const first = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(1))
+    const second = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(2))
+
+    rejectSecond(new Error('network failure'))
+    await second
+    resolveFirst({ plugin_id: 'demo', config_state: 'matched' })
+    await first
+
+    expect(hasPendingReload('demo')).toBe(false)
   })
 })

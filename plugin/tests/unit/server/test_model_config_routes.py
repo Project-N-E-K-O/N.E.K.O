@@ -16,6 +16,7 @@ from plugin.server.domain.model_config import SECRET_MASK
 from plugin.server.infrastructure.model_config_store import CONFIG_FILENAME, ModelConfigStore
 from plugin.server.routes import model_config
 from utils.file_utils import atomic_write_json
+from tests.fastapi_routes import iter_routes
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -223,7 +224,7 @@ async def test_model_config_routes_are_included_in_plugin_app():
     from plugin.server.http_app import build_plugin_server_app
 
     app = build_plugin_server_app()
-    paths = {route.path for route in app.routes}
+    paths = {route.path for route in iter_routes(app.routes)}
     assert f"{PREFIX}/slots" in paths
     assert f"{PREFIX}/plugins/{{plugin_id}}/bindings/{{usage_id}}" in paths
 

@@ -315,6 +315,11 @@ class ProactiveMixin:
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                logger.info("[%s] prepare_proactive_delivery: session start cancelled", self.lanlan_name)
+                return False
             except Exception as e:
                 logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
                 return False
@@ -546,6 +551,7 @@ class ProactiveMixin:
                 history_text = full_text
                 additional_kwargs = {
                     "anti_repeat_response_id": str(commit_sid),
+                    "dialog_source": "proactive",
                 }
                 if action_note:
                     note = action_note.strip()
@@ -1548,7 +1554,7 @@ class ProactiveMixin:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, re-queueing for later", self.lanlan_name)
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
                     callbacks_snapshot[:] = []
-        except Exception as e:
+        except (asyncio.CancelledError, Exception) as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             # Filter into a local before extending: filter_deliverable_callbacks
             # rebinds self.pending_agent_callbacks, and Python binds ``.extend``
@@ -1556,6 +1562,8 @@ class ProactiveMixin:
             # extending inline would append the survivors to an orphaned list.
             _requeue = self.filter_deliverable_callbacks(callbacks_snapshot)
             self.pending_agent_callbacks.extend(_requeue)
+            if isinstance(e, asyncio.CancelledError) and not self._consume_start_retirement_cancellation(e):
+                raise
         finally:
             # Runs after the except-path restore above, so the deferred tail
             # lands behind the prefix it was split from either way.
@@ -1813,6 +1821,18 @@ class ProactiveMixin:
                 ack_resolved = True
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
+                if delivered:
+                    # Publish the commit before prompt_ephemeral's remaining
+                    # awaits: cancellation must not restore this batch.
+                    delivered_ids = {
+                        cb.get("_callback_delivery_id") for cb in active_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id") not in delivered_ids
+                    ]
+                    callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend

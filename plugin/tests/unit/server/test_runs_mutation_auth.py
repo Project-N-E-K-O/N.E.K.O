@@ -222,14 +222,19 @@ def test_page_and_strict_guards_cover_the_intended_routes() -> None:
     """Pin which routers stay market-compatible and which require the token."""
     from plugin.server.routes import config, model_config, plugin_cli, plugin_install, plugin_ui
 
+    from tests.fastapi_routes import iter_routes
+
+    def guarded_routes(router):
+        # FastAPI >=0.141 nests included routers; inspect routes as served.
+        routes = (getattr(item, "route", item) for item in iter_routes(router.routes))
+        return [route for route in routes if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
+
     page_modules = (runs_route_module, config, model_config, plugin_install, plugin_ui)
     for module in page_modules:
-        guarded = [route for route in module.router.routes
-                   if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
+        guarded = guarded_routes(module.router)
         assert guarded, module.__name__
         assert all(isinstance(route, mutation_auth.PluginPageMutationGuardedRoute) for route in guarded), module.__name__
-    cli_guarded = [route for route in plugin_cli.router.routes
-                   if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
+    cli_guarded = guarded_routes(plugin_cli.router)
     assert cli_guarded
     assert not any(isinstance(route, mutation_auth.PluginPageMutationGuardedRoute) for route in cli_guarded)
 

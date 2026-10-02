@@ -495,13 +495,20 @@ async def _post_package(client: httpx.AsyncClient, path: str, headers: dict[str,
     return await client.post(path, json={"package": "demo.neko-plugin"}, headers=headers)
 
 
+def _effective_routes(router):
+    """Routes as served, across FastAPI's flat and included-router tree layouts."""
+    from tests.fastapi_routes import iter_routes
+
+    return [getattr(item, "route", item) for item in iter_routes(router.routes)]
+
+
 def test_package_import_routes_use_pre_body_guard() -> None:
     """Pin the guarded set: a new alias registered with @router.post would be open."""
     from plugin.server.routes import plugin_cli as plugin_cli_routes
 
     guarded = {
         (method, route.path)
-        for route in plugin_cli_routes.router.routes
+        for route in _effective_routes(plugin_cli_routes.router)
         if isinstance(route, mutation_auth.PluginMutationGuardedRoute)
         for method in route.methods
     }
