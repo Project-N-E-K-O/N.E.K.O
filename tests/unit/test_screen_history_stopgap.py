@@ -175,6 +175,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "Could you share the screen content/layout you see?",
     # Label-like path segments and reference-style links.
     "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
+    "截图放在 /tmp/屏幕搭话：a.png、/屏幕搭话 b.png 和 C:\\tmp\\螢幕搭話：c.png 里了。",
     "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
     # A label-like path segment inside a URL or a Markdown link target.
     "链接 https://host/屏幕搭话 打开，还有[图](https://host/【屏幕画面】/a.png)和[图2](/屏幕画面/b.png)。",
@@ -213,6 +214,8 @@ def test_a_label_inside_a_url_is_neither_removed_nor_a_chain_marker():
             "看 https://host/屏幕搭话：右下角那只猫好可爱 毛茸茸的呢。")
     messages = [_user("聊"), _assistant(text), _user("继续")]
     assert project_screen_history(messages)[1]["content"] == text[len("屏幕搭话："):]
+    query = "屏幕搭话：看看这个链接里面的内容吧 https://host/search?q=value 屏幕搭话：" + PARTS[1]
+    assert screen_chain_start(query) is None, "a ? inside a URL ends no comment"
 
 
 @pytest.mark.parametrize("address", ["//localhost:8080/a.png", "10.0.0.2/a.png", "https://host/a.png"])

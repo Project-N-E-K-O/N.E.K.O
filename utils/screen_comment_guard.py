@@ -83,7 +83,7 @@ _LABEL_STRIP = regex.compile(
     rf"{_OPENING_BRACKET}[ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}[ \t]*(?:[:：][ \t]*)?"
     rf"|(?:^|(?<=[{_SLASH_OPENERS}]))[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
     r"[ \t]*(?:[:：][ \t]*)?"
-    r"|(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])[ \t]*(?:[:：][ \t]*)?"
+    r"|(?<![/\\])(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])[ \t]*(?:[:：][ \t]*)?"
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
@@ -709,7 +709,8 @@ class _ScreenLexer:
                 self.quote = _QUOTES[char]
         elif char in "/／" and self.previous and self.previous not in _SLASH_OPENERS:
             pass
-        elif char in "【[" and self.previous in ("/", "\\"):
+        elif char in "【[屏螢" and self.previous in ("/", "\\"):
+            # A path segment ("/tmp/屏幕搭话：a.png", "C:\\tmp\\[屏幕画面]\\").
             pass
         elif char in "/／屏螢当當【[sScC":
             # An ASCII word character before a marker blocks it only when the
@@ -954,5 +955,5 @@ def _has_ascii_letter(text: str) -> bool:
 
 def screen_chain_start(text: str) -> int | None:
     """Where the first chain in ``text`` starts (its first comment's label)."""
-    found = _find_chain([text])
+    found = _find_chain([_masked(text)[0]])
     return None if found is None else found[0]
