@@ -515,3 +515,16 @@ async def test_participant_must_be_the_logs_own_peer(tmp_path):
         record["done_steps"] = []
 
     await _damaged_log(tmp_path, swap)
+
+
+async def test_subjects_must_stay_on_the_visit_platform(tmp_path):
+    # qq:<pair> 能通过 pair 校验，但会被 /scoped_forget 按平台前缀删掉 QQ 记忆
+    def to_qq(record):
+        for s in record["subjects"]:
+            if s["subject_kind"] == "group_chat":
+                s["subject_id"] = "qq:" + s["subject_id"].split(":", 1)[1]
+        from main_logic.visit.forget import build_steps
+        record["steps"] = build_steps(record["subjects"])
+        record["done_steps"] = []
+
+    await _damaged_log(tmp_path, to_qq)

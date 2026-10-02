@@ -914,7 +914,7 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
     elif t == "hello":
         caps = raw.get("caps")
         if isinstance(caps, dict) and _is_int(caps.get("proto")) and caps["proto"] != VISIT_WIRE_PROTO:
-            if not _is_u32(raw.get("seq")):
+            if not _is_seq(raw.get("seq")):
                 raise ValueError("hello with malformed seq")
             v = raw.get("v")
             return {

@@ -930,3 +930,10 @@ def test_stalled_line_ignores_late_pieces_but_accepts_its_text():
     assert asm.render("g:7") is None
     closed = asm.close(_text_msg("一。", ln="g:7"))
     assert closed == "一。" and asm.render("g:7") == "一。"
+
+
+def test_mismatched_protocol_hello_still_requires_a_positive_seq():
+    future = {"t": "hello", "v": 1, "seq": 0, "caps": {"proto": 99}}
+    with pytest.raises(ValueError):
+        vw.decode_msg(json.dumps(future), cmd=1)
+    assert vw.decode_msg(json.dumps(dict(future, seq=1)), cmd=1)["seq"] == 1

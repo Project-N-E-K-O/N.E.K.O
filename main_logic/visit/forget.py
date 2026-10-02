@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config.visit_settings import VISIT_REVOCATIONS_DIRNAME
+from config.visit_settings import VISIT_MEMORY_PLATFORM, VISIT_REVOCATIONS_DIRNAME
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -218,6 +218,10 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     pair_ids = record["pair_ids"]
     if not all(isinstance(p, str) and p for p in pair_ids):
         raise ValueError("revocation log pair_ids must be non-empty strings")
+    # 撤销日志只清串门记忆：subject 必须在 neko_visit 平台下，否则 qq:<pair> 之类的
+    # 会被转发给 /scoped_forget，按平台前缀删掉别处的记忆
+    if any(s["subject_id"].split(":", 1)[0] != VISIT_MEMORY_PLATFORM for s in subjects):
+        raise ValueError("revocation log subjects must belong to the visit platform")
     subject_pairs = set()
     for subject in subjects:
         if subject["subject_kind"] in ("group_chat", "group_participant"):
