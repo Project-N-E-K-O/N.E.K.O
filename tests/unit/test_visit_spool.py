@@ -731,3 +731,4 @@ async def test_unreadable_state_grace_uses_the_state_files_own_age(tmp_path, mon
     monkeypatch.setattr(spool_mod, "_read_state_file", locked)
     await VisitSpool.sweep(tmp_path, NOW)
     assert sp.state_path.exists()
+    assert sp.jsonl_path.exists()      # 整场一起保留，不只是 state.json
