@@ -98,6 +98,9 @@ def pet_window():
         return False
 
     full = [w for w in found if near_full(w)]
+    if len(full) > 1:
+        # e.g. a maximized Chat window is also near monitor-sized: refuse to guess which one is the Pet
+        raise SystemExit("ambiguous Pet window: %d monitor-sized Electron windows %s" % (len(full), [w["title"] for w in full]))
     return (full[0] if full else None), found
 
 

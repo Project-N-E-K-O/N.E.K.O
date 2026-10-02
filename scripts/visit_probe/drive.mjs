@@ -37,6 +37,14 @@ const save = () => fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stri
 const RUN_ID = new Date().toISOString();
 results.runs = results.runs || {};
 let currentPhase = null;
+// Sections loaded from a results.json written before run stamps existed: attribute them explicitly instead of
+// leaving them unattributed next to a freshly stamped rerun phase.
+const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace' };
+for (const [ph, key] of Object.entries(SECTION_OF)) {
+  if (results[key] !== undefined && !results.runs[ph]) {
+    results.runs[ph] = { runId: 'unstamped-legacy', status: 'ok', dataFromRunId: 'unstamped-legacy', note: 'written before run stamps; see git history of this file' };
+  }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -213,7 +221,7 @@ async function phaseT1(c, targets) {
 async function measureWindow(c, ms) {
   const s0 = await c.eval(`return { rtc: await window.__visitProbe.fp('guest').rtcStats(), hook: Object.assign({}, window.__visitProbe.stat), t: performance.now() };`);
   await sleep(ms);
-  const s1 = await c.eval(`return { rtc: await window.__visitProbe.fp('guest').rtcStats(), hook: Object.assign({}, window.__visitProbe.stat), t: performance.now(), env: window.__visitProbe.env(), trace: (window.__probeTrace || []).map((c) => c.fn + '(' + c.args.join(',') + ') <- ' + c.stack.split(' | ')[0]) };`);
+  const s1 = await c.eval(`return { rtc: await window.__visitProbe.fp('guest').rtcStats(), hook: Object.assign({}, window.__visitProbe.stat), t: performance.now(), env: window.__visitProbe.env(), trace: (window.__probeTrace || []).map((c) => (c.fn || 'ticker.start') + '(' + (c.args || []).join(',') + ') <- ' + String(c.stack || '').split(' | ')[0]) };`);
   const dt = (s1.t - s0.t) / 1000;
   const o0 = s0.rtc.outbound || {}, o1 = s1.rtc.outbound || {};
   const i0 = s0.rtc.inbound || {}, i1 = s1.rtc.inbound || {};
