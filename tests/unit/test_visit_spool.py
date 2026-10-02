@@ -667,3 +667,23 @@ async def test_sweep_keeps_a_half_committed_diary_past_retention(tmp_path):
     await VisitSpool.sweep(tmp_path, NOW)
     assert sp.state_path.exists()
     assert not other.state_path.exists()
+
+
+async def test_sweep_keeps_a_visit_whose_state_is_temporarily_unreadable(tmp_path, monkeypatch):
+    sp = VisitSpool(tmp_path, vid(11))
+    await sp.write_state(state_for())
+    old = NOW - 30 * 86400
+    os.utime(sp.state_path, (old, old))
+    real = spool_mod._read_state_file
+
+    def locked(path):
+        if path.name == sp.state_path.name:
+            raise PermissionError("locked")
+        return real(path)
+
+    monkeypatch.setattr(spool_mod, "_read_state_file", locked)
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert sp.state_path.exists()
+    monkeypatch.undo()
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert not sp.state_path.exists()

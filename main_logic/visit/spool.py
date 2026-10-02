@@ -490,6 +490,25 @@ def _read_state_file(path: Path) -> dict | None:
     return validate_state(data)
 
 
+def _retention_exempt(state_path: Path) -> bool:
+    """Whether a visit's files must survive the 7-day expiry this round.
+
+    True for an in-flight diary commit (``committing:diary``) and, as a
+    precaution, when ``state.json`` exists but cannot be read right now
+    (``OSError``, e.g. locked by antivirus or backup): the next sweep decides.
+    A missing or corrupt (schema-invalid) state follows the normal expiry.
+    """
+    try:
+        state = _read_state_file(state_path)
+    except ValueError:
+        return False
+    except OSError as exc:
+        logger.warning("visit spool: state %s unreadable, keeping visit this sweep: %s",
+                       state_path.name, exc)
+        return True
+    return bool(state and state.get("debrief_choice") == "committing:diary")
+
+
 def _try_read_state(path: Path) -> dict | None:
     try:
         return _read_state_file(path)
@@ -1033,9 +1052,8 @@ class VisitSpool:
                 # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
                 # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
                 if visit_id not in committing:
-                    st_doc = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
-                    committing[visit_id] = bool(
-                        st_doc and st_doc.get("debrief_choice") == "committing:diary"
+                    committing[visit_id] = _retention_exempt(
+                        visit_path(spool_dir, visit_id, STATE_SUFFIX)
                     )
                 if committing[visit_id]:
                     remaining.append((visit_id, suffix, path, st))
