@@ -36,6 +36,7 @@ const save = () => fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stri
 // Reruns under the same label merge into one results.json; stamp each phase with the run that produced it.
 const RUN_ID = new Date().toISOString();
 results.runs = results.runs || {};
+let currentPhase = null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -193,6 +194,8 @@ async function phaseT1(c, targets) {
   } finally {
     echo.close();
     if (chat) chat.close();
+    // early failures (no Chat target, no socket) happen after the guest iframe exists
+    try { await c.eval(`window.__visitProbe.removeFrame('guest'); return true;`); } catch (_) {}
     if (hijackAttempted) {
       // The positive control clobbered the Pet's _activeWs (and closed the Chat proxy); reload both windows
       // even when a later step threw, otherwise the app stays disconnected after the probe exits.
@@ -548,7 +551,12 @@ async function phaseT4(c) {
   await inject(cdp);
   for (const ph of PHASES) {
     log('== phase', ph, 'label', LABEL);
-    results.runs[ph] = { runId: RUN_ID, startedAt: new Date().toISOString() };
+    // status: running -> ok | failed. dataFromRunId names the run whose data the section actually holds:
+    // a failed rerun leaves the previous successful run's data in place, and must not be attributed to this run.
+    const prevRun = results.runs[ph];
+    const prevData = prevRun ? (prevRun.status === 'ok' ? prevRun.runId : prevRun.dataFromRunId || null) : null;
+    results.runs[ph] = { runId: RUN_ID, startedAt: new Date().toISOString(), status: 'running', dataFromRunId: prevData };
+    currentPhase = ph;
     if (ph === 'env') await phaseEnv(cdp);
     else if (ph === 't1') {
       await phaseT1(cdp, targets);
@@ -568,10 +576,16 @@ async function phaseT4(c) {
       results.modeTrace = out;
       log('trace', JSON.stringify(out, null, 1));
     }
-    results.runs[ph].finishedAt = new Date().toISOString();
+    Object.assign(results.runs[ph], { finishedAt: new Date().toISOString(), status: 'ok', dataFromRunId: RUN_ID });
+    currentPhase = null;
     save();
   }
   cdp.close();
   log('done ->', path.join(outDir, 'results.json'));
   process.exit(0);
-})().catch((e) => { console.error(e); save(); process.exit(1); });
+})().catch((e) => {
+  console.error(e);
+  if (currentPhase && results.runs[currentPhase]) Object.assign(results.runs[currentPhase], { status: 'failed', error: String(e && e.message || e).slice(0, 300) });
+  save();
+  process.exit(1);
+});
