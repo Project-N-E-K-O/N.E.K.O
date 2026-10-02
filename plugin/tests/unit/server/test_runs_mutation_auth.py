@@ -276,22 +276,29 @@ async def test_tokenless_page_behind_outer_tls_proxy_keeps_working(
 
 
 @pytest.mark.asyncio
-async def test_http_cross_port_page_without_fetch_metadata_is_rejected(
+async def test_http_hostname_fallback_without_fetch_metadata_stays_compatible(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Browsers omit Sec-Fetch-Site for plain-HTTP LAN origins, so a missing
-    # header must not count as same-origin on the hostname-only fallback.
+    # Browsers omit Sec-Fetch-Site on plain-HTTP LAN origins. A market plugin
+    # page behind a port-rewriting outer proxy is indistinguishable from
+    # another app on the same NAS host; market plugins win by default and the
+    # strict opt-in closes the gap.
     monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
-    create_run = AsyncMock()
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
     monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+    headers = {"Origin": "http://192.168.1.5:8080"}
 
-    async with _client(
-        app, peer="192.168.1.10", host="192.168.1.5:48916", headers={"Origin": "http://192.168.1.5:8080"},
-    ) as client:
-        response = await client.post("/runs", content=b'{"plugin_id": "demo", "entry_id": "run", "args": {}}')
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=headers) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 200, response.text
+    create_run.assert_awaited_once()
+
+    monkeypatch.setenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, "1")
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=headers) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
     assert response.status_code == 403
     assert response.headers.get("X-CSRF-Failure") == "token"
-    create_run.assert_not_awaited()
+    create_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio

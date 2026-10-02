@@ -211,12 +211,14 @@ def require_plugin_page_mutation_access(request: Request) -> None:
     token anyway, so it adds no boundary for them. The NAS hostname-only
     fallback is different: another port on the same NAS passes it but cannot
     read the token (CORS), so a tokenless request that only matched that
-    fallback must carry an explicit ``Sec-Fetch-Site: same-origin``; a
-    missing header is rejected because browsers omit it on plain-HTTP LAN
-    origins. Market plugin pages still pass: behind the official Nginx their
-    Origin matches the preserved Host exactly, and behind outer HTTPS
-    termination the browser sends the header. Other proxies can list the
-    page origin in ``AUTOSTART_ALLOWED_ORIGINS``. A supplied token must be
+    fallback is rejected when the browser marks it ``same-site`` or
+    ``cross-site``. Browsers omit ``Sec-Fetch-Site`` on plain-HTTP LAN
+    origins, and there a market plugin page behind an outer proxy that
+    rewrites the port looks exactly like another app on the same NAS host.
+    Market plugins win that tie (owner decision), so a missing header stays
+    allowed; this is the same-NAS-host trade-off already accepted for the
+    hostname fallback. Deployments that need to close it set
+    ``NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1``. A supplied token must be
     valid, and originless requests keep the native loopback rules.
 
     Public deployments may opt in to requiring the token with
@@ -240,11 +242,12 @@ def _authorize_mutation(request: Request, *, browser_token_required: bool) -> No
         if (
             not token_supplied
             and not _exactly_trusted_origin(request, origin)
-            and request.headers.get("sec-fetch-site") != "same-origin"
+            and request.headers.get("sec-fetch-site", "same-origin") != "same-origin"
         ):
-            # Hostname-only match: maybe another port on the same NAS. Browsers
-            # omit Sec-Fetch-Site on plain-HTTP LAN origins, so a missing header
-            # proves nothing here; a token would authorize the request.
+            # Hostname-only match that the browser marks as another origin
+            # (another port on the same NAS): a token would authorize it. A
+            # missing header stays compatible on purpose; see the docstring of
+            # require_plugin_page_mutation_access.
             _deny(token_invalid=True)
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer
