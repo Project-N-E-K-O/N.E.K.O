@@ -341,11 +341,12 @@ def _parse_entries(payload: Any) -> list[BlockEntry]:
         raise ValueError("blocklist must be {blocked: [...]}")
     by_uid: dict[str, BlockEntry] = {}
     for row in payload["blocked"]:
+        # 任一行坏了就整体不可用：丢掉那一行恰好会放进被拉黑的那个人
         if not isinstance(row, dict):
-            continue
+            raise ValueError("blocklist row is not an object")
         uid = _norm_uid(row.get("visit_uid"))
         if not uid:
-            continue
+            raise ValueError("blocklist row has no visit_uid")
         name = row.get("display_name_at_block")
         blocked_at = row.get("blocked_at")
         reason = row.get("reason")

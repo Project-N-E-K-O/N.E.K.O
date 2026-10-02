@@ -355,6 +355,8 @@ async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
     {"steps": []},
     {"done_steps": ["forget:participant:neko_visit:nobody"]},
     {"subjects": []},
+    {"pair_ids": []},
+    {"pair_ids": [7]},
 ])
 async def test_parseable_but_inconsistent_log_fails_closed(tmp_path, corrupt):
     # steps:[] 之类的日志若被放行，重放会什么都不清就删掉日志
@@ -403,3 +405,18 @@ async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path
                              forget_subject=FakeMemoryServer().forget)
     record = await log.load(rev_id)
     assert record is not None and "wipe_spool" not in record["done_steps"]
+
+
+async def test_a_malformed_extra_pair_id_also_fails_closed(tmp_path):
+    from main_logic.visit.forget import RevocationLogUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    path = log.path_for(rev_id)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["pair_ids"] = record["pair_ids"] + [7]
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable):
+        await log.list_open()

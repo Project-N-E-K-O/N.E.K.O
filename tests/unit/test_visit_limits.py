@@ -264,16 +264,23 @@ async def test_async_unreadable_file_fails_closed_then_recovers(tmp_path):
     assert (await Blocklist.aload(tmp_path)).available is True
 
 
-def test_malformed_rows_are_skipped_and_deduplicated(tmp_path):
+def test_duplicate_rows_are_merged(tmp_path):
     (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text(json.dumps({"blocked": [
         {"visit_uid": UID, "display_name_at_block": "a", "blocked_at": 1},
         {"visit_uid": UID.upper(), "display_name_at_block": "b", "blocked_at": 2},
-        {"visit_uid": ""},
-        "junk",
-        {"display_name_at_block": "no uid"},
     ]}), encoding="utf-8")
     bl = Blocklist.load(tmp_path)
-    assert len(bl) == 1 and bl.get(UID).display_name_at_block == "b"
+    assert bl.available and len(bl) == 1 and bl.get(UID).display_name_at_block == "b"
+
+
+@pytest.mark.parametrize("bad_row", [{"visit_uid": ""}, "junk", {"display_name_at_block": "x"},
+                                     {"visit_uid": 123}])
+def test_any_malformed_row_makes_the_list_unavailable(tmp_path, bad_row):
+    # 丢掉坏行恰好会放进被拉黑的那个人：任一行坏就整体 fail closed
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text(json.dumps({"blocked": [
+        {"visit_uid": UID, "display_name_at_block": "a", "blocked_at": 1}, bad_row,
+    ]}), encoding="utf-8")
+    assert Blocklist.load(tmp_path).available is False
 
 
 def test_blocklist_is_not_partitioned_by_account(tmp_path):

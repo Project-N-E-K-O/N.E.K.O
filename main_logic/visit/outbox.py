@@ -1048,6 +1048,8 @@ class InboxResult:
     ``leave_gap_filled``: this call closed the gap before a pending
     ``leave`` (call ``VisitLiveness.on_gap_filled``). ``violation``: the
     reorder buffer overflowed (``'peer_protocol_violation'``, sticky).
+    ``rejected``: a ``line_delta`` / ``line_abort`` whose ``ln`` does not
+    carry the authenticated sender's prefix was dropped (count an anomaly).
     """
 
     deliver: list[dict] = field(default_factory=list)
@@ -1056,6 +1058,7 @@ class InboxResult:
     leave: Optional[dict] = None
     leave_gap_filled: bool = False
     violation: Optional[str] = None
+    rejected: bool = False
 
 
 _SEQUENCED_PLACEHOLDER_TYPES = frozenset({"_unknown", "_invalid"})
@@ -1101,6 +1104,7 @@ class InboxSequencer:
         self.unknown_consumed = 0
         self.invalid_consumed = 0
         self.duplicates = 0
+        self.prefix_rejected = 0
 
     @property
     def contiguous_seq(self) -> int:
@@ -1141,6 +1145,12 @@ class InboxSequencer:
         seq = m.get("seq")
         sequenced = (t in RELIABLE_TYPES or t in _SEQUENCED_PLACEHOLDER_TYPES) and _is_int(seq)
         if not sequenced:
+            if (self._prefix is not None and t in ("line_delta", "line_abort")
+                    and not str(m.get("ln")).startswith(self._prefix)):
+                # 不经序号的行事件同样要绑定发送方：否则对端能用本侧的 ln 覆盖 / 掐断本侧字幕
+                self.prefix_rejected += 1
+                res.rejected = True
+                return res
             res.deliver.append(m)
             return res
 

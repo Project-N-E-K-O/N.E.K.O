@@ -339,10 +339,12 @@ class PeerRoster:
             node = node[key]
             if not isinstance(node, dict):
                 raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
-        if not isinstance(node.get("pairs", []), list):
-            raise RosterCorruptError(f"{self.path.name}: pairs is not a list")
-        if not isinstance(node.get("chars", {}), dict):
-            raise RosterCorruptError(f"{self.path.name}: chars is not an object")
+        pairs = node.get("pairs", [])
+        if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
+            raise RosterCorruptError(f"{self.path.name}: pairs is not a list of ids")
+        chars = node.get("chars", {})
+        if not isinstance(chars, dict) or not all(isinstance(c, str) and c for c in chars):
+            raise RosterCorruptError(f"{self.path.name}: chars is not an object keyed by ids")
         return node
 
     def _mutate(self, fn) -> Any:

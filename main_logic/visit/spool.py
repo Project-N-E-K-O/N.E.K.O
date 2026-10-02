@@ -513,7 +513,7 @@ def _read_header(path: Path) -> dict | None:
     return header if isinstance(header, dict) else None
 
 
-def _rewrite_header(path: Path, mutate) -> bool:
+def _rewrite_header(path: Path, mutate, *, strict: bool = False) -> bool:
     """Atomically rewrite the first line of a spool file; return whether it changed.
 
     Raises :class:`SpoolBusy` when the file is still open for appends in this
@@ -524,22 +524,27 @@ def _rewrite_header(path: Path, mutate) -> bool:
     with _OPEN_SPOOLS_LOCK:
         if _spool_key(path) in _OPEN_SPOOLS:
             raise SpoolBusy(f"spool {path.name} is still being written")
-        return _rewrite_header_locked(path, mutate)
+        return _rewrite_header_locked(path, mutate, strict)
 
 
-def _rewrite_header_locked(path: Path, mutate) -> bool:
+def _rewrite_header_locked(path: Path, mutate, strict: bool) -> bool:
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return False
     idx = data.find(b"\n")
-    if idx < 0:
+    header: Any = None
+    if idx >= 0:
+        try:
+            header = json.loads(data[:idx])
+        except ValueError:
+            header = None
+    if not isinstance(header, dict):
+        if strict:
+            # 清除路径：头行坏了就不能当作「已抹掉」，留给重放（文件 7 天后被 sweep 回收）
+            raise SpoolStateUnreadable([path.name])
         return False
-    try:
-        header = json.loads(data[:idx])
-    except ValueError:
-        return False
-    if not isinstance(header, dict) or not mutate(header):
+    if not mutate(header):
         return False
     atomic_write_bytes(path, _encode_line(header) + data[idx + 1:])
     return True
@@ -854,7 +859,7 @@ class VisitSpool:
             return changed
 
         with path_lock(self.jsonl_path):
-            _rewrite_header(self.jsonl_path, clear_header)
+            _rewrite_header(self.jsonl_path, clear_header, strict=True)
         with path_lock(self.state_path):
             state = _read_state_file(self.state_path)
             if state is not None and any(state[n] is not None for n in _PEER_IDENTITY_FIELDS):
@@ -1022,7 +1027,19 @@ class VisitSpool:
         spool_dir = _spool_dir(config_dir).resolve()
         deleted: list[Path] = []
         remaining = []
+        committing: dict[str, bool] = {}
         for visit_id, suffix, path, st in _scan(spool_dir):
+            if now - st.st_mtime > _RETENTION_S and suffix not in _UPLOAD_SUFFIXES:
+                # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
+                # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
+                if visit_id not in committing:
+                    st_doc = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
+                    committing[visit_id] = bool(
+                        st_doc and st_doc.get("debrief_choice") == "committing:diary"
+                    )
+                if committing[visit_id]:
+                    remaining.append((visit_id, suffix, path, st))
+                    continue
             if now - st.st_mtime > _RETENTION_S:
                 if _unlink(path):
                     deleted.append(path)
@@ -1064,7 +1081,9 @@ class VisitSpool:
         """Reclaim spool directory space; return the deleted paths.
 
         1. Every file older than ``VISIT_SPOOL_RETENTION_DAYS`` (by mtime) is
-           deleted, pending uploads included (their seven-day limit).
+           deleted, pending uploads included (their seven-day limit), except
+           the files of a visit whose diary commit is in flight
+           (``committing:diary``): those stay until both writes finish.
         2. If the directory still exceeds ``VISIT_SPOOL_DIR_CAP_BYTES``, only
            settled visits (digest and last summary done, debrief final) are
            reclaimed, oldest first, until it fits. Unsettled visits, however

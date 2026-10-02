@@ -764,3 +764,19 @@ def test_unsent_leave_gives_up_after_twice_the_grace(tmp_path):
     assert tx.due(1.0) == []
     assert not tx.leave_done(9.9)
     assert tx.leave_done(10.0)
+
+
+def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
+    # line_delta / line_abort 不经序号，也必须绑定已认证发送方的 ln 前缀
+    rx = InboxSequencer(peer_ln_prefix="g:")
+    spoof = decode_msg({"t": "line_delta", "ln": "h:3", "i": 0, "lp": 5, "txt": "x",
+                        "sp": "c", "ad": "hc", "rt": "", "wu": False})
+    res = rx.accept(spoof, 0.0)
+    assert res.rejected and res.deliver == []
+    abort = decode_msg({"t": "line_abort", "ln": "h:3", "lp": 5, "i_done": 0,
+                        "reason": "human_interrupt"})
+    assert rx.accept(abort, 0.0).rejected
+    ok = decode_msg({"t": "line_delta", "ln": "g:3", "i": 0, "lp": 5, "txt": "x",
+                     "sp": "c", "ad": "hc", "rt": "", "wu": False})
+    assert rx.accept(ok, 0.0).deliver
+    assert rx.prefix_rejected == 2

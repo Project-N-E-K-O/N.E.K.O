@@ -200,6 +200,16 @@ def _validate_record(record: Any, rev_id: str) -> dict:
         raise ValueError("revocation log steps do not match its subjects")
     if not all(isinstance(step, str) and step in record["steps"] for step in record["done_steps"]):
         raise ValueError("revocation log done_steps are not a subset of its steps")
+    # pair_ids 驱动 wipe_spool 找场次：必须是非空字符串，且覆盖每个按 pair 存的 subject，
+    # 否则 pair_ids:[] 之类的日志会清完记忆却漏抹 spool 里的对端字段
+    pair_ids = record["pair_ids"]
+    if not all(isinstance(p, str) and p for p in pair_ids):
+        raise ValueError("revocation log pair_ids must be non-empty strings")
+    for subject in subjects:
+        if subject["subject_kind"] in ("group_chat", "group_participant"):
+            parts = subject["subject_id"].split(":")
+            if len(parts) < 2 or parts[1] not in pair_ids:
+                raise ValueError("revocation log pair_ids do not cover its pair subjects")
     return record
 
 

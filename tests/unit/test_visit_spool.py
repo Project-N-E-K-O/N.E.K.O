@@ -637,3 +637,33 @@ async def test_cancelled_open_releases_fd_and_registration(tmp_path, monkeypatch
         await asyncio.sleep(0.01)
     assert not is_spool_open(sp.jsonl_path)
     os.remove(sp.jsonl_path)   # fd 已关：Windows 上能删掉
+
+
+async def test_forget_keeps_pending_when_the_spool_header_is_malformed(tmp_path):
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    sp = await open_spool(tmp_path, vid(8))
+    await sp.write_state(state_for())
+    await sp.close()
+    data = sp.jsonl_path.read_bytes()
+    sp.jsonl_path.write_bytes(b"{broken" + data[data.index(b"\x7d") + 1:])
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool(tmp_path, vid(8)).delete_peer_fields()
+
+
+async def test_sweep_keeps_a_half_committed_diary_past_retention(tmp_path):
+    # committing:diary 是不可撤回的半截写入：state.json 是补写的唯一依据，不受 7 天约束
+    sp = VisitSpool(tmp_path, vid(9))
+    state = state_for()
+    state["debrief_choice"] = "committing:diary"
+    state["debrief_pending"] = {"diary": "d", "facts": []}
+    state["debrief_writes"] = {"facts": True, "cache": False}
+    await sp.write_state(state)
+    old = NOW - 30 * 86400
+    os.utime(sp.state_path, (old, old))
+    other = VisitSpool(tmp_path, vid(10))
+    await other.write_state(state_for())
+    os.utime(other.state_path, (old, old))
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert sp.state_path.exists()
+    assert not other.state_path.exists()
