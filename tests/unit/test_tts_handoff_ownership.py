@@ -24,7 +24,8 @@ class Manager(TtsRuntimeMixin, TtsLifecycleMixin):
 
 
 @pytest.mark.asyncio
-async def test_interrupt_during_retired_fallback_clears_pending_speech():
+@pytest.mark.parametrize("replace_while_clear_waits", [False, True])
+async def test_interrupt_during_retired_fallback_clears_pending_speech(replace_while_clear_waits):
     manager = Manager()
     releases = [Event(), Event()]
     old = install(manager, releases[0])
@@ -53,9 +54,19 @@ async def test_interrupt_during_retired_fallback_clears_pending_speech():
     token = tts_output_runtime.set(old)
     task = asyncio.create_task(manager._activate_configured_tts_fallback_after_capacity("test", old))
     tts_output_runtime.reset(token)
+    clearing = None
     try:
         await asyncio.wait_for(waiting.wait(), 1)
-        await manager._clear_tts_pipeline()
+        if replace_while_clear_waits:
+            await manager.tts_cache_lock.acquire()
+            clearing = asyncio.create_task(manager._clear_tts_pipeline())
+            await asyncio.sleep(0)
+            releases[0].set()
+            assert await asyncio.wait_for(task, 2)
+            manager.tts_cache_lock.release()
+            await clearing
+        else:
+            await manager._clear_tts_pipeline()
         assert manager.tts_pending_chunks == []
         assert not manager._tts_done_pending_until_ready
         manager._cancel_game_speech_completion_wait.assert_called()
@@ -65,10 +76,14 @@ async def test_interrupt_during_retired_fallback_clears_pending_speech():
         await manager._flush_tts_pending_chunks()
         manager._enqueue_tts_text_chunk.assert_not_called()
     finally:
+        if manager.tts_cache_lock.locked():
+            manager.tts_cache_lock.release()
         for release in releases:
             release.set()
         manager._retire_tts_runtime(manager._snapshot_tts_runtime())
         await asyncio.gather(task, *(r.cleanup_task for r in manager._tts_runtimes if r.cleanup_task), return_exceptions=True)
+        if clearing is not None:
+            await asyncio.gather(clearing, return_exceptions=True)
 
 
 @pytest.mark.asyncio

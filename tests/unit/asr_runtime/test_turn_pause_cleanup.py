@@ -64,6 +64,16 @@ async def test_pause_owner_probe_is_fenced_to_active_asr_runtime_and_turn():
     assert not arbiter.pause_owner_alive(owner)
 
 
+async def test_gemini_preparation_does_not_install_unused_pause_probe():
+    runtime = _Runtime()
+    arbiter = SimpleNamespace(pause_owner_alive=None)
+    runtime.session._response_arbiter = arbiter
+    runtime.session._is_gemini = True
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    assert arbiter.pause_owner_alive is None
+
+
 @pytest.mark.parametrize("probe_kind", ["owned", "newer", "connection"])
 async def test_successful_turn_releases_only_matching_pause_probe(probe_kind):
     runtime = _Runtime()

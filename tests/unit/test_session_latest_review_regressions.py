@@ -3,14 +3,105 @@
 import asyncio
 import json
 from unittest.mock import AsyncMock, Mock
+from threading import Event
 
 import pytest
 
 from main_logic.core import lifecycle, streaming
+from main_logic.core.tts_records import TtsCapacityError
 from tests.unit.session_handoff_harness import ConnectedSocket, drain_manager, make_full_manager
 from tests.unit.test_session_handoff_lifecycle import make_manager
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+async def test_settled_start_does_not_spin_scheduled_flush():
+    manager = make_manager()
+    manager._bg_tasks = set()
+    manager.pending_input_data = [{"input_type": "text", "data": "retain"}]
+    operation, context = manager._claim_start_operation(manager.websocket, "settled", "text", asyncio.get_running_loop().time() + 1)
+    record = manager._register_connection(manager.session)
+    manager._finish_start_operation(operation, context)
+    operation.finished.wait = AsyncMock(side_effect=AssertionError("finished wait cannot yield"))
+    manager._starting_session_count = 1  # A non-start promotion holds the counter.
+    reservation = manager._pending_input_flush_scheduled = object()
+    await asyncio.wait_for(manager._schedule_session_input_flush(reservation), 0.2)
+    operation.finished.wait.assert_not_awaited()
+    assert not record.callbacks
+    assert manager.pending_input_data == [{"input_type": "text", "data": "retain"}]
+
+
+@pytest.mark.parametrize("callback", ["handle_text_data", "handle_output_transcript"])
+async def test_first_reply_chunk_retries_retired_live_tts_worker(monkeypatch, callback):
+    from tests.unit.test_tts_handoff_ownership import install
+
+    manager, _, clients = await make_full_manager(monkeypatch)
+    release = Event()
+    old = install(manager, release)
+    manager._retire_tts_runtime(old)
+    manager.use_tts = True
+    manager.tts_ready = False
+    manager.current_speech_id = "new reply"
+    manager.send_lanlan_response = AsyncMock()
+    manager._respawn_tts_worker = Mock()
+    try:
+        await getattr(manager, callback)("kept text", is_first_chunk=True)
+        manager._respawn_tts_worker.assert_called_once()
+        assert manager.tts_pending_chunks == [("new reply", "kept text")]
+    finally:
+        release.set()
+        await drain_manager(manager, clients)
+        await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, TtsCapacityError])
+async def test_failed_startup_tts_recovers_after_worker_exit_without_new_reply(monkeypatch, failure):
+    from tests.unit.test_tts_handoff_ownership import install
+
+    manager, created, clients = await make_full_manager(monkeypatch)
+    manager._config_manager.core["DISABLE_TTS"] = False
+    monkeypatch.setattr(manager, "_resolve_session_use_tts", lambda *args: True)
+    release = Event()
+    loop = asyncio.get_running_loop()
+    spoken = asyncio.Queue()
+    old = None
+
+    async def fail_tts():
+        nonlocal old
+        old = install(manager, release)
+        old.supports_runtime_overlap = False
+        manager._retire_tts_runtime(old)
+        manager._tts_capacity_exhausted = True
+        raise failure("optional TTS wait failed")
+
+    def worker(requests, responses, *_):
+        responses.put(("__ready__", True))
+        while True:
+            sid, text = requests.get()
+            if sid == "__shutdown__":
+                return
+            if sid == "saved":
+                loop.call_soon_threadsafe(spoken.put_nowait, text)
+
+    worker.supports_runtime_overlap = False
+    monkeypatch.setattr(manager, "_start_session_start_tts_if_needed", fail_tts)
+    monkeypatch.setattr(lifecycle._core_facade, "get_tts_worker", lambda **kwargs: (worker, "key", "qwen"))
+    starting = asyncio.create_task(manager.start_session(manager.websocket, request_id="recover-output"))
+    try:
+        client = await asyncio.wait_for(created.get(), 2)
+        client.allow_connect.set()
+        await asyncio.wait_for(starting, 2)
+        assert manager.is_active and manager.session is client
+        assert manager._tts_respawn_task is not None
+        assert not manager._tts_capacity_exhausted
+        manager.tts_pending_chunks = [("saved", "retained output")]
+        release.set()
+        assert await asyncio.wait_for(spoken.get(), 2) == "retained output"
+        assert manager._tts_runtime is not old and manager.tts_ready
+    finally:
+        release.set()
+        await drain_manager(manager, clients, starting)
+        await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
 
 
 @pytest.mark.parametrize("active", [False, True])
@@ -160,10 +251,12 @@ async def test_completed_flush_retains_retry_when_a_new_owner_claims_gate(monkey
 
 
 @pytest.mark.parametrize("explicit_target", [False, True])
-async def test_predecessor_server_end_does_not_revoke_replacement_start(monkeypatch, explicit_target):
+@pytest.mark.parametrize("via_cleanup", [False, True])
+async def test_predecessor_server_end_does_not_revoke_replacement_start(monkeypatch, explicit_target, via_cleanup):
     manager, created, clients = await make_full_manager(monkeypatch)
     first = asyncio.create_task(manager.start_session(manager.websocket, request_id="predecessor"))
     starting = None
+    cleaning = None
     entered, release = asyncio.Event(), asyncio.Event()
     original_retire = manager._retire_session_resources_owned
     try:
@@ -184,19 +277,27 @@ async def test_predecessor_server_end_does_not_revoke_replacement_start(monkeypa
         retirement = manager._session_retirements[-1]
         assert manager.session is predecessor
         kwargs = {"expected_session": predecessor} if explicit_target else {}
-        delayed_end = manager.request_end_session(by_server=True, **kwargs)
+        if via_cleanup:
+            cleaning = asyncio.create_task(manager.cleanup(**kwargs))
+            await asyncio.sleep(0)
+        else:
+            delayed_end = manager.request_end_session(by_server=True, **kwargs)
+            assert delayed_end is retirement.task
         assert operation.valid, "a delayed predecessor end must not revoke the replacement"
-        assert delayed_end is retirement.task
         release.set()
         successor = await asyncio.wait_for(created.get(), 2)
         successor.allow_connect.set()
         await asyncio.wait_for(starting, 2)
+        if cleaning is not None:
+            await asyncio.wait_for(cleaning, 2)
         assert manager.session is successor and manager.is_active
         assert predecessor.closed.is_set()
         assert not any(message.get("type") == "session_failed" for message in manager.websocket.messages)
     finally:
         release.set()
         await drain_manager(manager, clients, first, *([starting] if starting else []))
+        if cleaning is not None:
+            await asyncio.gather(cleaning, return_exceptions=True)
 
 
 async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
@@ -255,7 +356,8 @@ async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
         await asyncio.gather(*manager._tts_cleanup_tasks, return_exceptions=True)
 
 
-async def test_server_end_without_target_preserves_pending_start(monkeypatch):
+@pytest.mark.parametrize("via_cleanup", [False, True])
+async def test_server_end_without_target_preserves_pending_start(monkeypatch, via_cleanup):
     manager, created, clients = await make_full_manager(monkeypatch)
     manager._config_manager.core["DISABLE_TTS"] = False
     monkeypatch.setattr(manager, "_resolve_session_use_tts", lambda *args: True)
@@ -277,7 +379,7 @@ async def test_server_end_without_target_preserves_pending_start(monkeypatch):
                 await asyncio.sleep(0)
         runtime = manager._tts_runtime
         handler = manager.tts_handler_task
-        await asyncio.wait_for(manager.end_session(by_server=True), 2)
+        await asyncio.wait_for(manager.cleanup() if via_cleanup else manager.end_session(by_server=True), 2)
         assert operation.valid and not starting.done()
         assert manager._starting_session_count == 1
         assert not client.closed.is_set()

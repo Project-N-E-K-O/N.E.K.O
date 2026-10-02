@@ -1212,6 +1212,9 @@ class TtsRuntimeMixin:
         runtime = self._snapshot_tts_runtime()
         request_queue = self.tts_request_queue
         response_queue = self.tts_response_queue
+        pending_chunks = self.tts_pending_chunks
+        session = getattr(self, "session", None)
+        speech_id = getattr(self, "current_speech_id", None)
         # A retired installed runtime can still own fallback replay. Clear
         # that conversation output, but never accept a stale worker callback.
         if not self._tts_output_is_current():
@@ -1250,8 +1253,18 @@ class TtsRuntimeMixin:
             await asyncio.sleep(0.02)
             clear_responses()
         async with self.tts_cache_lock:
-            if (runtime is not getattr(self, "_tts_runtime", None)
-                    or response_queue is not self.tts_response_queue
+            owns_queues = (runtime is getattr(self, "_tts_runtime", None)
+                           and response_queue is self.tts_response_queue)
+            owns_transferred_replay = (
+                runtime is not None and runtime.retired
+                and self.tts_pending_chunks is pending_chunks
+                and getattr(self, "session", None) is session
+                and getattr(self, "current_speech_id", None) == speech_id
+            )
+            # Fallback can install its successor while this interrupt waits
+            # for the cache lock. Follow only the unchanged turn's transferred
+            # replay list; a replacement cache still belongs to its new owner.
+            if (not (owns_queues or owns_transferred_replay)
                     or not self._tts_output_is_current()):
                 return
             self.tts_pending_chunks.clear()
@@ -1356,7 +1369,7 @@ class TtsRuntimeMixin:
             # not survive across the fresh queues created by _start_tts_thread.
             current_request = getattr(self, "_current_start_request", None)
             operation = current_request() if current_request else None
-            recovering = deadline is None and (operation is None or operation.finished.is_set())
+            recovering = deadline is None and operation is None
             if recovering and runtime is not None:
                 # A turn must not wait on retired workers. Retirement retains
                 # the old handler; its fenced output cannot reach fresh queues.

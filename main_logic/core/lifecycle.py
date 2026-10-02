@@ -1073,6 +1073,13 @@ class LifecycleMixin:
                     resource_optimization_override=session_resource_override,
                     provider_preference_override=session_provider_preference_handshake_override,
                 )
+                if (isinstance(tts_result, BaseException) and self.use_tts
+                        and not (self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                                 and self.is_tts_pipeline_ready)):
+                    # Publication fixes recovery ownership to the new session.
+                    # Retired live workers retain capacity until physical exit.
+                    self._tts_capacity_exhausted = False
+                    self._schedule_tts_capacity_recovery()
         except asyncio.CancelledError:
             await self._discard_start_reservation_inputs(operation)
             if request_id is not None:
@@ -4400,8 +4407,15 @@ class LifecycleMixin:
         if expected_session is not None and self.session is not expected_session:
             return
         operation = self._start_operation
+        preserve_replacement = (
+            expected_websocket is None and operation is not None
+            and operation.valid and not operation.finished.is_set()
+            and operation.task is not asyncio.current_task()
+            and (self.session is None or self.session is operation.previous_session)
+        )
         if (reset_starting_count and operation is not None
-                and operation.websocket is socket and not operation.finished.is_set()):
+                and operation.websocket is socket and not operation.finished.is_set()
+                and not preserve_replacement):
             # Disconnect is terminal intent for this requester, unlike a
             # targetless server-side config cleanup. Revoke before the first
             # await so retirement owns its startup children and TTS resources.
@@ -4419,7 +4433,8 @@ class LifecycleMixin:
         # disconnected transport may unbind the chat socket, after rechecking
         # both the connection and conversation ownership behind the lock.
         def unbind():
-            if self._session_generation == generation and self.websocket is socket:
+            if (not preserve_replacement and self._session_generation == generation
+                    and self.websocket is socket):
                 self.websocket = None
         if getattr(self, 'websocket_lock', None):
             async with self.websocket_lock:

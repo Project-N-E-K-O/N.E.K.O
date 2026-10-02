@@ -196,7 +196,8 @@ class SessionOwnershipMixin:
             while self.session is session and not record.retired:
                 if getattr(self, '_starting_session_count', 0) > 0:
                     operation = record.operation
-                    if operation is self._start_operation and operation is not None and operation.valid:
+                    if (operation is self._start_operation and operation is not None
+                            and operation.valid and not operation.finished.is_set()):
                         await operation.finished.wait()
                         continue
                     return  # The replacement owns the queued suffix.

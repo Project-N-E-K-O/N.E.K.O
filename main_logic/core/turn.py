@@ -266,7 +266,10 @@ class TurnMixin:
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
-                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
+                    if is_first_chunk and self.tts_thread and (
+                        not self.tts_thread.is_alive()
+                        or not self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                    ):
                         self._respawn_tts_worker()
 
     def _set_conversation_turn_language(self, language: str | None) -> None:
@@ -1793,7 +1796,10 @@ class TurnMixin:
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
-                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
+                    if is_first_chunk and self.tts_thread and (
+                        not self.tts_thread.is_alive()
+                        or not self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                    ):
                         self._respawn_tts_worker()
 
     async def send_lanlan_response(

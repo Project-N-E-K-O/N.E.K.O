@@ -5562,7 +5562,7 @@ class AsrRuntimeMixin:
         capture_identity = getattr(runtime, "_capture_runtime_identity", None)
         identity = capture_identity(ingress_token=token.ingress, turn_token=token) if callable(capture_identity) else None
         pause_owner_alive = None
-        if arbiter is not None:
+        if arbiter is not None and not getattr(session_ref, "_is_gemini", False):
             def pause_owner_alive(owner):
                 lifecycle = getattr(runtime, "_asr_lifecycle", None)
                 return bool(
