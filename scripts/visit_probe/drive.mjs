@@ -219,6 +219,9 @@ async function phaseT1(c, targets) {
     log('t1 verdict', JSON.stringify(r.verdict));
     await c.eval(`window.__visitProbe.removeFrame('guest'); return true;`);
     results.t1 = r;
+    // the section now holds this run's data even if the reload/reconnect afterwards fails (status may still
+    // end up 'failed', but provenance must not keep pointing at the previous run)
+    if (results.runs.t1) results.runs.t1.dataFromRunId = RUN_ID;
     save();
     log('t1', JSON.stringify(r, null, 1));
   } finally {
