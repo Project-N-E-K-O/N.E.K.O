@@ -414,7 +414,10 @@ function createPopup(manager, prefix, buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
-        popup.style.minWidth = '400px';
+        popup.style.minWidth = '220px';
+        popup.style.width = '220px';
+        popup.style.maxWidth = '220px';
+        popup.style.boxSizing = 'border-box';
         popup.style.maxHeight = '420px';
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
