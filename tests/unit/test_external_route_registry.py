@@ -278,3 +278,50 @@ async def test_independent_asr_consumer_is_unavailable_without_a_route(empty_reg
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
     assert consumer.is_available() is False
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_final_reaches_a_non_game_route_that_accepts_voice(empty_registry):
+    # Mutation: prepare_turn requiring a game identity turns this red.
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler)
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _voice_token(turn_id=2)
+
+    assert consumer.is_available() is True
+    assert await consumer.prepare_turn(token) is True
+    await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
+
+    handler.assert_awaited_once_with("Lan", "hi", request_id="asr-5-2")
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_final_is_not_rerouted_after_the_route_changes(empty_registry):
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler)
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _voice_token(turn_id=3)
+    assert await consumer.prepare_turn(token) is True
+
+    other = AsyncMock(return_value=True)
+    registry.register_external_route_kind(_kind("visit", active=False))
+    registry.register_external_route_kind(
+        _kind("other", active=True, route_voice_transcript=other)
+    )
+    with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
+        await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
+
+    handler.assert_not_awaited()
+    other.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_does_not_prepare_for_a_route_without_a_voice_handler(empty_registry):
+    registry.register_external_route_kind(_kind("visit", active=True))
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert await consumer.prepare_turn(_voice_token(turn_id=4)) is False
