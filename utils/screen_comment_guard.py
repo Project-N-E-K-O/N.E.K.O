@@ -296,7 +296,10 @@ def _split_over(texts, text):
         core = label_free.strip()
         # The part keeps its own indentation and trailing whitespace.
         lead = label_free[:len(label_free) - len(label_free.lstrip())]
-        if not remaining or not core:
+        if not core:
+            # Spacing between images, or a part that held only a label.
+            pieces.append(label_free)
+        elif not remaining:
             pieces.append("")
         elif remaining.startswith(core):
             pieces.append(label_free)

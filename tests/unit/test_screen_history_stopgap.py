@@ -345,6 +345,10 @@ def test_text_parts_split_by_an_image_each_keep_their_slot():
     chained = [text("屏幕搭话：" + PARTS[0]), image, text("屏幕搭话：" + PARTS[1])]
     content = project_screen_history([_assistant_parts(chained), _user("继续")])[0]["content"]
     assert content[1:] == [image]
+    gapped = [text("屏幕搭话：看这张。"), image, text("\n\n"), image, text("挺好的。"), image, text("\n")]
+    assert project_screen_history([_assistant_parts(gapped), _user("继续")])[0]["content"] == [
+        text("看这张。"), image, text("\n\n"), image, text("挺好的。"), image, text("\n"),
+    ]
     _assert_cut_to_first_comment(content[0]["text"])
 
 
