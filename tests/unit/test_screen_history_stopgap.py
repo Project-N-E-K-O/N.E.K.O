@@ -183,6 +183,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "本机地址是 https://[::1]/屏幕搭话：file.png 和 http://[fe80::1]:8080/【屏幕画面】/a.png 哦。",
     "全角链接【图】(/屏幕搭话：file.png)和【图2】(/tmp/【屏幕画面】/b.png)也一样。",
     "没写协议的 //cdn.example.com/屏幕搭话：a.png 和 www.example.com/【屏幕画面】/b.png 也是地址。",
+    "本地的 //192.168.1.10/屏幕搭话：a.png、//[::1]/【屏幕画面】/b.png、//localhost:8080/屏幕搭话：c.png 和 10.0.0.2/屏幕搭话：d.png。",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
