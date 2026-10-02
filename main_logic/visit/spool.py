@@ -490,22 +490,26 @@ def _read_state_file(path: Path) -> dict | None:
     return validate_state(data)
 
 
-def _retention_exempt(state_path: Path) -> bool:
+def _retention_exempt(state_path: Path, age_s: float) -> bool:
     """Whether a visit's files must survive the 7-day expiry this round.
 
-    True for an in-flight diary commit (``committing:diary``) and, as a
-    precaution, when ``state.json`` exists but cannot be read right now
-    (``OSError``, e.g. locked by antivirus or backup): the next sweep decides.
-    A missing or corrupt (schema-invalid) state follows the normal expiry.
+    True for an in-flight diary commit (``committing:diary``). When
+    ``state.json`` exists but cannot be read (``OSError``, e.g. locked by
+    antivirus or backup) the visit is kept for at most one more retention
+    period (``age_s`` below twice the retention), so a transient lock never
+    deletes a half-committed diary while a permanently unreadable state
+    cannot pin its files forever. A missing or corrupt (schema-invalid)
+    state follows the normal expiry.
     """
     try:
         state = _read_state_file(state_path)
     except ValueError:
         return False
     except OSError as exc:
-        logger.warning("visit spool: state %s unreadable, keeping visit this sweep: %s",
-                       state_path.name, exc)
-        return True
+        keep = age_s < 2 * _RETENTION_S
+        logger.warning("visit spool: state %s unreadable (%s); %s",
+                       state_path.name, exc, "keeping it this sweep" if keep else "reclaiming")
+        return keep
     return bool(state and state.get("debrief_choice") == "committing:diary")
 
 
@@ -1053,7 +1057,7 @@ class VisitSpool:
                 # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
                 if visit_id not in committing:
                     committing[visit_id] = _retention_exempt(
-                        visit_path(spool_dir, visit_id, STATE_SUFFIX)
+                        visit_path(spool_dir, visit_id, STATE_SUFFIX), now - st.st_mtime,
                     )
                 if committing[visit_id]:
                     remaining.append((visit_id, suffix, path, st))

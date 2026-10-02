@@ -672,7 +672,7 @@ async def test_sweep_keeps_a_half_committed_diary_past_retention(tmp_path):
 async def test_sweep_keeps_a_visit_whose_state_is_temporarily_unreadable(tmp_path, monkeypatch):
     sp = VisitSpool(tmp_path, vid(11))
     await sp.write_state(state_for())
-    old = NOW - 30 * 86400
+    old = NOW - 10 * 86400            # 已过 7 天保留期，但在 2× 宽限内
     os.utime(sp.state_path, (old, old))
     real = spool_mod._read_state_file
 
@@ -685,5 +685,25 @@ async def test_sweep_keeps_a_visit_whose_state_is_temporarily_unreadable(tmp_pat
     await VisitSpool.sweep(tmp_path, NOW)
     assert sp.state_path.exists()
     monkeypatch.undo()
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert not sp.state_path.exists()
+
+
+async def test_a_permanently_unreadable_state_is_reclaimed_after_twice_the_retention(
+        tmp_path, monkeypatch):
+    # 一直读不了也不能永久占盘：最多多留一个保留期
+    sp = VisitSpool(tmp_path, vid(12))
+    await sp.write_state(state_for())
+
+    def locked(path):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(spool_mod, "_read_state_file", locked)
+    ten_days = NOW - 10 * 86400
+    os.utime(sp.state_path, (ten_days, ten_days))
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert sp.state_path.exists()
+    fifteen_days = NOW - 15 * 86400
+    os.utime(sp.state_path, (fifteen_days, fifteen_days))
     await VisitSpool.sweep(tmp_path, NOW)
     assert not sp.state_path.exists()
