@@ -100,6 +100,11 @@ class GameVoiceInputConsumer:
         route_identity = self._prepared_routes.pop(token, None)
         if route_identity is None:
             raise RuntimeError("GAME_VOICE_TURN_NOT_PREPARED")
+        # A game turn may only reach a game route: if another kind took over
+        # since prepare, the registry would hand the stale game utterance to it.
+        active_route = get_active_external_route(self.lanlan_name())
+        if active_route is not None and active_route.kind != "game":
+            raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
         game_type, session_id, route_instance_id = route_identity
         route_kwargs = {
             "request_id": request_id,

@@ -359,3 +359,27 @@ async def test_independent_asr_does_not_prepare_for_a_route_without_an_instance_
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
     assert await consumer.prepare_turn(_voice_token(turn_id=6)) is False
+
+
+@pytest.mark.asyncio
+async def test_prepared_game_final_is_not_delivered_to_a_route_that_took_over(
+    empty_registry, monkeypatch,
+):
+    # Mutation: dispatching game finals without checking the active kind turns
+    # this red -- the stale game utterance would reach the new route.
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("soccer", "match-1", ""),
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _voice_token(turn_id=7)
+    assert await consumer.prepare_turn(token) is True
+
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler, instance="visit-1")
+    )
+    with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
+        await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="shoot"))
+
+    handler.assert_not_awaited()
