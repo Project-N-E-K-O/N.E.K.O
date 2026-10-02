@@ -194,13 +194,14 @@ def test_stopping_releases_a_waiter() -> None:
 
     bridge.stop()
 
-    assert bridge.wait_until_subscribed(timeout=30.0) is True
+    assert bridge._startup_finished.is_set()
+    assert bridge.wait_until_subscribed(timeout=30.0) is False
 
 
 def test_restarting_the_bridge_does_not_reuse_the_old_readiness(monkeypatch) -> None:
-    """``stop()`` sets the event to wake waiters; ``start()`` must clear it.
+    """Each generation owns independent readiness and startup-result events.
 
-    Without the clear, a stop/start cycle leaves ``wait_until_subscribed()``
+    Reusing readiness across a stop/start cycle leaves ``wait_until_subscribed()``
     answering True off the previous life, and the startup wait becomes a no-op
     — the original window, back, with a green test on top of it.
     """
@@ -216,14 +217,20 @@ def test_restarting_the_bridge_does_not_reuse_the_old_readiness(monkeypatch) -> 
     bridge = ProactiveBridge()
     bridge._thread = _LiveThread()
     bridge.stop()
-    assert bridge._subscribed.is_set(), "前提没成立：stop 应该唤醒等待者"
+    assert bridge._startup_finished.is_set(), "前提没成立：stop 应该唤醒等待者"
+    retired_subscribed = bridge._subscribed
+    retired_finished = bridge._startup_finished
 
     # Hold socket setup: without the old pre-connect delay a real thread can
     # legitimately subscribe before start() returns, so pin _run to keep this
-    # test about clearing the previous generation's event, not about scheduling.
-    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed: stop.wait(3))
+    # test about independent generation events, not about scheduling.
+    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed, finished: stop.wait(3))
     bridge.start()
     try:
+        retired_subscribed.set()
+        retired_finished.set()
+        assert bridge._startup_finished is not retired_finished
+        assert not bridge._startup_finished.is_set()
         assert not bridge._subscribed.is_set(), (
             "重启后还带着上一条命的就绪位——等它等于没等"
         )
