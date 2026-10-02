@@ -111,6 +111,7 @@ class VisitLiveness:
         self.wait_deadline: float = now + wait
         self.peer_last_seen: Optional[float] = None
         self.ready_deadline: Optional[float] = None
+        self.ready_received = False
         self.last_sent_at: Optional[float] = None
         self.self_disconnected_at: Optional[float] = None
         self.page_lost_at: Optional[float] = None
@@ -153,12 +154,18 @@ class VisitLiveness:
             self.peer_last_seen = now
 
     def on_hello_acked(self, now: float) -> None:
-        """Guest: the host acked our ``hello``; start the 85 s wait for ``ready``."""
-        if self.side == "guest" and self.ready_deadline is None:
+        """Guest: the host acked our ``hello``; start the 85 s wait for ``ready``.
+
+        Ignored once ``ready`` already arrived: the first ack may be lost and
+        a later cumulative ack (triggered by a retransmitted ``hello``) must
+        not re-arm the wait of an already active visit.
+        """
+        if self.side == "guest" and self.ready_deadline is None and not self.ready_received:
             self.ready_deadline = now + self._ready_wait_s
 
     def on_ready(self, now: float) -> None:
-        """Guest: ``ready`` arrived; stop the ``ready`` wait."""
+        """Guest: ``ready`` arrived; stop the ``ready`` wait for good."""
+        self.ready_received = True
         self.ready_deadline = None
 
     # ------------------------------------------------------------------

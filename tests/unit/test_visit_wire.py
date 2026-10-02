@@ -12,6 +12,7 @@ from config.visit_settings import (
     VISIT_CLAUSE_MAX_MS,
     VISIT_DELTA_TEXT_MAX_BYTES,
     VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES,
+    VISIT_REORDER_BUFFER_MAX,
     VISIT_LP_MAX,
     VISIT_PIECE_MAX_BYTES,
     VISIT_PIECES_MAX,
@@ -889,3 +890,23 @@ def test_late_pieces_of_a_retired_line_still_land():
     assert asm.anomalies == 1
     assert asm.feed(_delta_msg("新二", i=1, ln="g:2", lp=5))
     assert asm.render("g:2") == "新一新二"
+
+
+def test_unclosed_retired_lines_are_bounded():
+    """A peer that only ever sends first pieces cannot grow the assembler forever."""
+    asm = vw.LineDeltaAssembler()
+    for n in range(1, 400):
+        assert asm.feed(_delta_msg("x", ln=f"g:{n}", lp=n))
+    assert len(asm._lines) <= VISIT_REORDER_BUFFER_MAX + 1
+    assert asm.render("g:399") == "x"
+    assert asm.anomalies == 0
+
+
+def test_leave_watermark_must_be_the_previous_seq():
+    """A low ``last_seq`` would let the receiver skip the gap wait; such a leave
+    is consumed as ``_invalid`` (its ``seq`` still advances the window)."""
+    ok = {"t": "leave", "v": 1, "seq": 10, "last_seq": 9, "reason": "home"}
+    assert vw.decode_msg(json.dumps(ok), cmd=1)["t"] == "leave"
+    low = dict(ok, last_seq=3)
+    bad = vw.decode_msg(json.dumps(low), cmd=1)
+    assert bad["t"] == "_invalid" and bad["seq"] == 10

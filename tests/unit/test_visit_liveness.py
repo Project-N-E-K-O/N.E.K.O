@@ -261,3 +261,14 @@ def test_verification_clears_a_departure_left_over_from_the_wait():
     assert lv.tick(171.0) is None
     assert lv.tick(199.0) is None
     assert lv.tick(201.0) == "peer_lost"
+
+
+def test_late_hello_ack_after_ready_does_not_rearm_the_wait():
+    # 首个 hello 的 ack 丢了、ready 先到；之后重传 hello 触发的累计 ack 不能再开 85 s 期限
+    lv = VisitLiveness("guest", 0.0)
+    lv.on_peer_verified(1.0)
+    lv.on_ready(5.0)
+    lv.on_hello_acked(6.0)
+    assert lv.ready_deadline is None
+    feed(lv, 6.0, 200.0)
+    assert lv.tick(200.0) is None

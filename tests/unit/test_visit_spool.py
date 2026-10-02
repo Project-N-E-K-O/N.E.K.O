@@ -604,3 +604,36 @@ async def test_failed_open_leaves_no_registration(tmp_path):
     with pytest.raises(FileExistsError):
         await again.open(header(vid(5)), now=NOW)
     assert not is_spool_open(again.jsonl_path)
+
+
+async def test_cancelled_open_releases_fd_and_registration(tmp_path, monkeypatch):
+    # open 被取消时 worker 已在打开文件：fd 要关掉、在写登记要撤销
+    import threading
+
+    from main_logic.visit.spool import is_spool_open
+
+    started = threading.Event()
+    release = threading.Event()
+    real_open_sync = VisitSpool._open_sync
+
+    def slow_open(self, data):
+        fd = real_open_sync(self, data)
+        started.set()
+        release.wait(5)
+        return fd
+
+    monkeypatch.setattr(VisitSpool, "_open_sync", slow_open)
+    sp = VisitSpool(tmp_path, vid(6))
+    task = asyncio.create_task(sp.open(header(vid(6)), now=NOW))
+    await asyncio.to_thread(started.wait, 5)
+    assert is_spool_open(sp.jsonl_path)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    for _ in range(100):
+        if not is_spool_open(sp.jsonl_path):
+            break
+        await asyncio.sleep(0.01)
+    assert not is_spool_open(sp.jsonl_path)
+    os.remove(sp.jsonl_path)   # fd 已关：Windows 上能删掉

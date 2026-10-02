@@ -299,12 +299,15 @@ async def test_mark_done_rejects_unknown_step(tmp_path):
         await log.mark_done(rev_id, "forget:group_chat:nope")
 
 
-async def test_corrupt_log_is_skipped_from_listing(tmp_path):
+async def test_schema_invalid_log_also_fails_closed(tmp_path):
+    from main_logic.visit.forget import RevocationLogUnreadable
+
     directory = tmp_path / "visit_revocations"
     directory.mkdir()
     bogus = revocation_id(OWN_A, PEER_Y, CHAR_UID_A)
     (directory / f"{bogus}.json").write_text(json.dumps({"id": "x"}), encoding="utf-8")
-    assert await RevocationLog.list_all_open(tmp_path) == []
+    with pytest.raises(RevocationLogUnreadable):
+        await RevocationLog.list_all_open(tmp_path)
 
 
 async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
@@ -329,3 +332,20 @@ async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
     assert not any(step.startswith("forget:") for step in record["done_steps"])
     assert await roster.get_char_entry(PEER_X, "A") is not None
     assert len(calls) == 1
+
+
+async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
+    # 读不出的撤销日志不能被静默跳过：补录与建房闸都靠列表判断「有没有清除在进行」
+    from main_logic.visit.forget import RevocationLogUnreadable, revocation_id
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    broken = revocation_id(OWN_B, PEER_X, CHAR_UID_A)
+    (log.path_for(rev_id).parent / f"{broken}.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable) as ei:
+        await RevocationLog.list_all_open(tmp_path)
+    assert ei.value.ids == [broken]
+    with pytest.raises(RevocationLogUnreadable):
+        await log.list_open()

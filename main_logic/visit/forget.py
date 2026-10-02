@@ -313,6 +313,7 @@ class RevocationLog:
     @staticmethod
     def _list_dir_sync(directory: Path, own_uid: str | None) -> list[dict]:
         out = []
+        unreadable: list[str] = []
         try:
             names = sorted(os.listdir(directory))
         except FileNotFoundError:
@@ -330,9 +331,14 @@ class RevocationLog:
                 continue
             except (OSError, ValueError) as exc:
                 logger.error("visit revocation log %s unreadable, cannot replay: %s", name, exc)
+                unreadable.append(rev_id)
                 continue
             if own_uid is None or record["own_uid"] == own_uid:
                 out.append(record)
+        if unreadable:
+            # 读不出来的日志不能当作「没有未完成的清除」：补录与建房闸都靠这份列表，
+            # 跳过它等于放任新记忆写进正在清除的范围。属于哪个账号也读不出，一律上抛
+            raise RevocationLogUnreadable(unreadable)
         return out
 
     # ── 公开 API ──
@@ -394,17 +400,38 @@ class RevocationLog:
         return await asyncio.to_thread(self._close_sync, rev_id)
 
     async def list_open(self) -> list[dict]:
-        """Return this account's unfinished logs."""
+        """Return this account's unfinished logs.
+
+        Raises :class:`RevocationLogUnreadable` when any log file exists but
+        cannot be read (fail closed).
+        """
         return await asyncio.to_thread(self._list_dir_sync, self.dir, self.own_uid)
 
     @classmethod
     async def list_all_open(cls, config_dir: str | Path) -> list[dict]:
-        """Return every unfinished log of every account (startup replay, admission gates)."""
+        """Return every unfinished log of every account (startup replay, admission gates).
+
+        Raises :class:`RevocationLogUnreadable` when any log file exists but
+        cannot be read (fail closed).
+        """
         directory = Path(config_dir) / VISIT_REVOCATIONS_DIRNAME
         return await asyncio.to_thread(cls._list_dir_sync, directory, None)
 
 
 ForgetSubject = Callable[[dict], Awaitable[bool]]
+
+
+class RevocationLogUnreadable(RuntimeError):
+    """A revocation log exists but cannot be read; callers must fail closed.
+
+    Raised by the listing methods (startup replay and the admission gates
+    read them), so an unreadable pending erase blocks new visits instead of
+    silently disappearing. ``ids`` names the affected log ids.
+    """
+
+    def __init__(self, ids: list[str]) -> None:
+        self.ids = list(ids)
+        super().__init__(f"unreadable visit revocation logs: {', '.join(self.ids)}")
 
 
 class ForgetStepFailed(RuntimeError):

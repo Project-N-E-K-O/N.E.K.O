@@ -657,6 +657,17 @@ class VisitSpool:
                 with _OPEN_SPOOLS_LOCK:
                     _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
+    def _discard_orphan_open(self, fut: "concurrent.futures.Future[int]") -> None:
+        """Close the fd of an ``_open_sync`` whose awaiting ``open`` was cancelled."""
+        if fut.cancelled() or fut.exception() is not None:
+            return
+        try:
+            os.close(fut.result())
+        except OSError:
+            pass
+        with _OPEN_SPOOLS_LOCK:
+            _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
+
     async def open(self, header: Mapping[str, Any], *, now: float | None = None) -> None:
         """Create ``<visit_id>.jsonl`` (``O_EXCL``, ``0o600``) and write the header line.
 
@@ -675,9 +686,14 @@ class VisitSpool:
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=f"visit-spool-{self.visit_id[:6]}"
         )
+        fut = executor.submit(self._open_sync, data)
         try:
-            self._fd = await asyncio.wrap_future(executor.submit(self._open_sync, data))
+            self._fd = await asyncio.wrap_future(fut)
         except BaseException:
+            # 取消时 worker 可能已经在跑 _open_sync：它返回的 fd 没人接，
+            # 也已登记成「在写」。等它结束后关掉 fd、撤销登记，免得之后的
+            # 清除 / 改名一直报 SpoolBusy
+            fut.add_done_callback(self._discard_orphan_open)
             executor.shutdown(wait=False)
             raise
         self._executor = executor

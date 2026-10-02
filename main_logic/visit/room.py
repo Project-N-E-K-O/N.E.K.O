@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 from config.visit_settings import (
+    VISIT_REORDER_BUFFER_MAX,
     VISIT_ANOMALY_FINALIZE_COUNT,
     VISIT_CLAUSE_MAX_MS,
     VISIT_CROP_DEFAULT,
@@ -265,6 +266,9 @@ class _PeerLine:
     lp: int = 0
 
 
+_GOODBYE_ONLY_REASON = "quiet"   # 只收到告别行（没有 begin / propose）时的收尾原因
+
+
 class VisitRoom:
     """Pure per-side state machine of one visit (see the module docstring)."""
 
@@ -323,6 +327,9 @@ class VisitRoom:
         self.peer_cat_lines_total = 0
         self.own_line_starts: deque[float] = deque()
         self._last_human_key: Optional[tuple[int, int]] = None
+        # 已计入的猫娘行的排序键：人类行可能晚于更新的猫娘行收口，
+        # 「最近一次人类插话之后的猫娘句数」要按 Lamport 序重算，不能直接清零
+        self._cat_line_keys: list[tuple[int, int]] = []
 
         # Lamport 钟
         self.own_lp = 0
@@ -499,11 +506,14 @@ class VisitRoom:
 
     def _note_human(self, ref: LineRef) -> None:
         key = self.sort_key(ref)
-        if self._last_human_key is None or key > self._last_human_key:
-            self._last_human_key = key
-        self.cat_turns_since_human = 0
+        if self._last_human_key is not None and key <= self._last_human_key:
+            # 同一条人类行的收口（首片已记过）或更旧的人类行：不动计数
+            return
+        self._last_human_key = key
+        self.cat_turns_since_human = sum(1 for k in self._cat_line_keys if k > key)
 
     def _count_cat_line(self, ref: LineRef, eff: RoomEffects) -> None:
+        self._cat_line_keys.append(self.sort_key(ref))
         if self._after_last_human(ref):
             self.cat_turns_since_human += 1
         if self.own_lines_total + self.peer_cat_lines_total > self._max_lines:
@@ -619,6 +629,12 @@ class VisitRoom:
                 return eff
         self._peer_meta[ln] = _PeerLine(ev.speaker, ev.addressee_side, ev.addressee_kind,
                                         ev.reply_to, ev.goodbye, ev.ref.lp)
+        # 只开口不收口的行有上限（同 LineDeltaAssembler）：丢最旧的元数据，它的 text
+        # 若真的晚到，按「没见过首片」处理
+        while len(self._peer_meta) > VISIT_REORDER_BUFFER_MAX + 1:
+            oldest = next(iter(self._peer_meta))
+            del self._peer_meta[oldest]
+            self._peer_open.discard(oldest)
         self._peer_open.add(ln)
         self._on_new_peer_line(ln)
         if ev.speaker == "human":
@@ -637,8 +653,10 @@ class VisitRoom:
     def _on_peer_goodbye_seen(self, eff: RoomEffects, now: float) -> None:
         """A peer goodbye line started (first ``wu`` piece, ``speaking``, or its ``text``)."""
         if self._phase == "active":
+            # begin / propose 丢了、只见到告别行：reason 必须是协议合法值，
+            # 否则本侧随后的 wrap_up{speaking} 编码不出来
             self._enter_wrap_up(eff, now, initiated_by=self.peer_side,
-                                reason=self._wrap.reason or "")
+                                reason=self._wrap.reason or _GOODBYE_ONLY_REASON)
         self._peer_goodbye_started(now)
         if self.side == "guest":
             # begin 丢了也不卡死：guest 见到 host 的告别行就自己告别一句

@@ -73,6 +73,7 @@ from pydantic import (
 )
 
 from config.visit_settings import (
+    VISIT_REORDER_BUFFER_MAX,
     VISIT_ACK_COALESCE_MS,
     VISIT_CJK_MS_PER_CHAR,
     VISIT_CLAUSE_MAX_MS,
@@ -681,6 +682,13 @@ class _Leave(_Msg):
     seq: _U32
     last_seq: _U32
     reason: Annotated[str, Field(min_length=1), _utf8_cap(_LEAVE_REASON_MAX_BYTES)]
+
+    @model_validator(mode="after")
+    def _watermark_is_previous_seq(self) -> "_Leave":
+        # last_seq 必须恰是 seq - 1：低水位会让接收方跳过缺口等待、立刻结束
+        if self.last_seq != self.seq - 1:
+            raise ValueError("leave.last_seq must equal seq - 1")
+        return self
 
 
 class _LineDelta(_Msg):
@@ -1571,7 +1579,15 @@ class LineDeltaAssembler:
         if self._open != ln:
             self._open = ln
             self._open_lp = lp if _is_int(lp) else None
+            self._bound_unclosed()
         return True
+
+    def _bound_unclosed(self) -> None:
+        # 被替下、text 迟迟不来的旧行有上限：诚实对端排在 seq 缺口后的 text 最多
+        # VISIT_REORDER_BUFFER_MAX 条，再多就是只发首片不收口的对端，丢最旧的
+        while len(self._lines) > VISIT_REORDER_BUFFER_MAX + 1:
+            oldest = next(k for k in self._lines if k != self._open)
+            del self._lines[oldest]
 
     def close(self, msg: Mapping[str, Any]) -> str:
         """Close a line with its ``text`` message; the full ``txt`` replaces the pieces."""

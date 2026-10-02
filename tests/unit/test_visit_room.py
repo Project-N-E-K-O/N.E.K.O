@@ -853,3 +853,65 @@ def test_a_line_keeps_the_lp_of_its_first_piece():
     assert room.observe_lp(12, ln="g:1") == "lp_changed"
     assert room.observe_lp(9, ln="g:1", is_retransmit=True) == "lp_changed"
     assert room.anomalies_total == 2
+
+
+def test_older_human_line_closing_late_keeps_the_newer_cat_count():
+    room = make_room("host")
+    peer = Peer(room)
+    human = peer.new_ref()
+    peer.start(human, 0.0, speaker="human")
+    peer.line(1.0)                                   # 更新的猫娘行
+    assert room.cat_turns_since_human == 1
+    peer.done(human, 5.0, speaker="human")           # 旧人类行晚收口
+    assert room.cat_turns_since_human == 1
+
+
+def test_whole_line_older_human_recounts_cat_lines_after_it():
+    room = make_room("host")
+    peer = Peer(room)
+    human = peer.new_ref()                           # 整句模式：没有首片
+    cat = peer.new_ref()
+    peer.start(cat, 0.5)
+    peer.done(cat, 2.0)
+    assert room.cat_turns_since_human == 1
+    peer.done(human, 3.0, speaker="human")
+    assert room.cat_turns_since_human == 1           # 它之后的那句猫娘行仍算数
+
+
+def test_goodbye_only_wrap_up_uses_a_valid_reason():
+    # begin 丢了、只见到 host 的告别行：guest 随后发的 wrap_up{speaking} 必须编码得出来
+    from utils.visit_wire import encode_msg
+
+    room = make_room("guest")
+    peer = Peer(room)
+    peer.start(peer.new_ref(), 0.0, goodbye=True)
+    own = Own(room)
+    eff = room.on_local_line_started(own.new_ref(), None, True, 1.0)
+    wu = eff.wrap_up
+    assert wu.action == "speaking" and wu.reason in {"quiet", "budget", "recall", "time_up"}
+    encode_msg({"t": "wrap_up", "seq": 1, "lp": 5, "ph": "speaking", "ln": wu.ln,
+                "reason": wu.reason, "initiated_by": "host"})
+
+
+def test_an_older_human_line_never_moves_the_human_mark_back():
+    room = make_room("host")
+    peer = Peer(room)
+    a = peer.new_ref()
+    peer.start(a, 0.0, speaker="human")
+    peer.line(1.0)                                   # 夹在两条人类行之间的猫娘行
+    b = peer.new_ref()
+    peer.start(b, 2.0, speaker="human")
+    peer.line(3.0)                                   # b 之后的猫娘行
+    assert room.cat_turns_since_human == 1
+    peer.done(a, 6.0, speaker="human")
+    assert room.cat_turns_since_human == 1
+
+
+def test_unclosed_peer_lines_are_bounded():
+    from config.visit_settings import VISIT_REORDER_BUFFER_MAX
+
+    room = make_room("host")
+    peer = Peer(room)
+    for n in range(400):
+        peer.start(peer.new_ref(), float(n))
+    assert len(room._peer_meta) <= VISIT_REORDER_BUFFER_MAX + 1
