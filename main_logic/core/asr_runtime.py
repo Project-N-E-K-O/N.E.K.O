@@ -5577,6 +5577,7 @@ class AsrRuntimeMixin:
                     and runtime._asr_turn_prepared
                 )
 
+            pause_owner_alive.pause_owner = external_turn_id
             arbiter.pause_owner_alive = pause_owner_alive
         preparation_succeeded = False
         try:

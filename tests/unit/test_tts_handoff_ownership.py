@@ -658,6 +658,7 @@ async def test_native_start_retires_orphan_tts_without_waiting_for_thread_exit()
     runtime = install(manager, release)
     manager.use_tts = False
     manager._check_start_operation = lambda: None
+    manager._current_start_deadline = lambda: asyncio.get_running_loop().time() + 1
     try:
         assert await LifecycleMixin._start_session_start_tts_if_needed(manager)
         assert runtime.retired

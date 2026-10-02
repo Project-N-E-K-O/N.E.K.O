@@ -1278,7 +1278,7 @@ class TtsRuntimeMixin:
             and self.tts_ready
         )
 
-    async def _stop_tts_response_handler(self) -> None:
+    async def _stop_tts_response_handler(self, *, deadline=None) -> None:
         """Stop the handler bound to the current response queue.
 
         ``tts_response_handler`` captures ``tts_response_queue`` when its task
@@ -1287,23 +1287,32 @@ class TtsRuntimeMixin:
         """
         handler_task = self.tts_handler_task
         handler_queue = getattr(self, "_tts_handler_response_queue", None)
+        runtime = self._snapshot_tts_runtime()
         if handler_task is not None and not handler_task.done():
             if handler_queue is self.tts_response_queue:
                 GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
-            handler_task.cancel()
+            if not handler_task.cancelling():
+                handler_task.cancel()
+            timeout = (
+                TTS_FRAME_WRITE_TIMEOUT_SECONDS
+                + TTS_SOCKET_CLOSE_TIMEOUT_SECONDS
+                + TTS_HANDLER_CANCEL_GRACE_SECONDS
+            )
+            if deadline is not None:
+                timeout = min(timeout, max(0, deadline - asyncio.get_running_loop().time()))
             try:
                 await asyncio.wait_for(
                     asyncio.shield(handler_task),
-                    timeout=(
-                        TTS_FRAME_WRITE_TIMEOUT_SECONDS
-                        + TTS_SOCKET_CLOSE_TIMEOUT_SECONDS
-                        + TTS_HANDLER_CANCEL_GRACE_SECONDS
-                    ),
+                    timeout=timeout,
                 )
             except asyncio.CancelledError:
                 if not handler_task.done() or asyncio.current_task().cancelling():
                     raise
             except asyncio.TimeoutError:
+                if runtime is not None and runtime.handler is handler_task:
+                    # Fence output and retain physical cleanup after the
+                    # optional startup wait has exhausted its own budget.
+                    self._retire_tts_runtime(runtime)
                 raise TimeoutError("TTS response handler did not stop before handoff")
         if self.tts_handler_task is handler_task:
             self.tts_handler_task = None
@@ -1352,7 +1361,7 @@ class TtsRuntimeMixin:
                     self.tts_handler_task = None
                     self._tts_handler_response_queue = None
             else:
-                await self._stop_tts_response_handler()
+                await self._stop_tts_response_handler(deadline=deadline)
             check = getattr(self, "_check_start_operation", None)
             if recovering:
                 check = None

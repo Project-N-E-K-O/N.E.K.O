@@ -113,7 +113,7 @@ class TtsLifecycleMixin:
             if runtime.request_queue is not None:
                 runtime.request_queue.put(("__shutdown__", None))
         handler = runtime.handler
-        if handler is not None and not handler.done():
+        if handler is not None and not handler.done() and not handler.cancelling():
             handler.cancel()
         self._schedule_tts_cleanup(runtime)
         return runtime

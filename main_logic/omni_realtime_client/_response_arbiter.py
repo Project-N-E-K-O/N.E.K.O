@@ -871,6 +871,11 @@ class RealtimeResponseArbiter:
         self._pause_expiry = None
         if expiry is not None and expiry is not asyncio.current_task():
             expiry.cancel()
+        # Turn-scoped ASR probes retain a runtime until their matching pause
+        # settles. Preserve connection-wide probes and a newer turn's probe.
+        probe = self.pause_owner_alive
+        if self._pause_owner is not None and getattr(probe, "pause_owner", None) == self._pause_owner:
+            self.pause_owner_alive = None
         self._pause_owner = None
         if not self._connection_available:
             return

@@ -1487,19 +1487,19 @@ class LifecycleMixin:
     async def _start_session_start_tts_if_needed(self):
         """Wait for an owned, healthy runtime within the shared startup budget."""
         self._check_start_operation()
+        loop = asyncio.get_running_loop()
+        start_deadline = self._current_start_deadline()
+        deadline = min(start_deadline - 0.1, loop.time() + 5.0)
         if not self.use_tts:
             runtime = self._snapshot_tts_runtime()
             if runtime is not None and not runtime.retired:
                 self._retire_tts_runtime(runtime)
-                await self._stop_tts_response_handler()
+                await self._stop_tts_response_handler(deadline=deadline)
                 self._check_start_operation()
             return True
-        loop = asyncio.get_running_loop()
-        start_deadline = self._current_start_deadline()
         # TTS is a recoverable output dependency. Reserve a small tail of the
         # shared startup budget for LLM publication, and cap a slow TTS
         # provider so it cannot turn a healthy session into session_failed.
-        deadline = min(start_deadline - 0.1, loop.time() + 5.0)
         if deadline <= loop.time():
             return False
         runtime = self._snapshot_tts_runtime()

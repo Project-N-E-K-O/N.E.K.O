@@ -12,6 +12,55 @@ from tests.unit.test_tts_audio_done_forward import _RecordingWebsocket
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("startup_path", ["ensure", "native"])
+async def test_startup_handler_stop_respects_deadline_and_retains_cleanup(startup_path):
+    from main_logic.core.lifecycle import LifecycleMixin
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    manager = Manager()
+    release_worker = Event()
+    runtime = install(manager, release_worker)
+    release_worker.set()
+    await asyncio.to_thread(runtime.thread.join)
+
+    async def handler():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(handler())
+    manager.tts_handler_task = runtime.handler = task
+    manager._tts_handler_response_queue = runtime.response_queue
+    await entered.wait()
+    deadline = asyncio.get_running_loop().time() + 0.13
+    manager.use_tts = False
+    manager._check_start_operation = lambda: None
+    manager._current_start_deadline = lambda: deadline + 0.1
+    try:
+        starting = (
+            manager.ensure_tts_pipeline_alive(deadline=deadline)
+            if startup_path == "ensure"
+            else LifecycleMixin._start_session_start_tts_if_needed(manager)
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(starting, 0.5)
+        assert asyncio.get_running_loop().time() < deadline + 0.15
+        assert runtime.retired
+        assert not task.done()
+        assert runtime.cleanup_task is not None
+        release.set()
+        await asyncio.wait_for(runtime.cleanup_task, 1)
+        assert runtime.cleanup_complete.is_set()
+    finally:
+        release.set()
+        manager._retire_tts_runtime(runtime)
+        await asyncio.gather(task, runtime.cleanup_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("blocked_part", ["header", "payload"])
 async def test_stalled_frame_closes_only_captured_socket_and_releases_lock(monkeypatch, blocked_part):
     entered = asyncio.Event()

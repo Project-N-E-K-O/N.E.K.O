@@ -5,6 +5,7 @@ import pytest
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import VoiceTurnToken
 from main_logic.voice_turn.contracts import AsrFailureEvent, VoiceTranscriptEvent
+from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 
 from tests.support.core_asr_harness import (
     _install_ready_lifecycle,
@@ -61,6 +62,26 @@ async def test_pause_owner_probe_is_fenced_to_active_asr_runtime_and_turn():
     assert arbiter.pause_owner_alive(owner)
     component._asr_turn_prepared = False
     assert not arbiter.pause_owner_alive(owner)
+
+
+@pytest.mark.parametrize("probe_kind", ["owned", "newer", "connection"])
+async def test_successful_turn_releases_only_matching_pause_probe(probe_kind):
+    runtime = _Runtime()
+    arbiter = RealtimeResponseArbiter(AsyncMock())
+    runtime.session._response_arbiter = arbiter
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    owner = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+    probe = arbiter.pause_owner_alive
+    if probe_kind != "owned":
+        probe = lambda owner: True
+        if probe_kind == "newer":
+            probe.pause_owner = "newer turn"
+        arbiter.pause_owner_alive = probe
+    arbiter._ensure_worker = lambda: None
+    arbiter.pause_dispatch(owner)
+    arbiter.resume_dispatch()
+    assert arbiter.pause_owner_alive is (None if probe_kind == "owned" else probe)
 
 
 async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:
