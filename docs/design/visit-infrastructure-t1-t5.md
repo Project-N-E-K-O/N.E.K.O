@@ -81,6 +81,7 @@
 
 - 接收端 2 px / `opacity:0.01` 的 `<video>` 上 rVFC 为 23~29 次/s（解码 29.3~29.9），T7 时复核掉帧原因。原始数据里 H.264 档的 52~54 次/s 是脚本假象：该档在同一个 iframe 里重建了环回，旧 video 的回调重新挂到了新 video 上，循环变成两份（已修正，`transport.js` 把 rVFC 循环绑定到各自的 video）。
 - `encoderImplementation` 在 Electron 41 下取不到（undefined）。T6 要记编码器实现的话，得改用 `chrome://webrtc-internals`。
+- **`getModelScreenBounds()` 不按视口裁剪。** 本机模型有一半挂在屏幕外（bounds 右下超出 1920×1080），按设计稿 3.4.1 比例算出的上半身框有 773 px 落在画布下方，所以 T4「真实模型」那张图里访客只占顶部一小条。这不影响本页结论：T4 的数值来自图案合成，T5 的参考与打包用同一裁剪框。但 PR-10 取景必须先与视口 / 画布求交、只用屏幕内可见部分再按比例构框（实测脚本已这样改）。
 - 环回起播头几秒 `qualityLimitationReason=bandwidth`，分辨率被压到 160×448 / 240×672，之后回到 320×896。这和 §3.4.5 预计的「QP 缩放器降分辨率」是一类现象，留给 T6/T8 测稳态。
 
 ## 待补测

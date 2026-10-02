@@ -37,6 +37,10 @@ const save = () => fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stri
 const RUN_ID = new Date().toISOString();
 results.runs = results.runs || {};
 let currentPhase = null;
+// Screenshots of this run go to their own directory, so a failed rerun never overwrites files that the
+// retained (previous successful) phase data still points to. Stored paths are relative to outDir.
+const SHOT_DIR = path.join(outDir, 'shots', RUN_ID.replace(/[:.]/g, '-'));
+const rel = (p) => path.relative(outDir, p).split(path.sep).join('/');
 // Sections loaded from a results.json written before run stamps existed: attribute them explicitly instead of
 // leaving them unattributed next to a freshly stamped rerun phase.
 const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace' };
@@ -394,12 +398,13 @@ async function shotTriple(geo, name, rectPhys, showFn, hideFn) {
   for (let attempt = 0; attempt < 3; attempt++) {
     await hideFn(); await sleep(400);
     const guard = () => { if (!backdropGuard) throw new Error('screenshots are only allowed inside withBackdrop'); backdropGuard(); };
-    guard(); const bg = path.join(outDir, `${name}-bg.png`); os('shot', bg, ...rectPhys);
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    guard(); const bg = path.join(SHOT_DIR, `${name}-bg.png`); os('shot', bg, ...rectPhys);
     await showFn(); await sleep(700);
-    guard(); const fg = path.join(outDir, `${name}-fg.png`); os('shot', fg, ...rectPhys);
+    guard(); const fg = path.join(SHOT_DIR, `${name}-fg.png`); os('shot', fg, ...rectPhys);
     await hideFn(); await sleep(400);
-    guard(); const bg2 = path.join(outDir, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
-    last = { bg: path.basename(bg), fg: path.basename(fg), bg2: path.basename(bg2), cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
+    guard(); const bg2 = path.join(SHOT_DIR, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
+    last = { bg: rel(bg), fg: rel(fg), bg2: rel(bg2), cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
     if (last.cmp.bgStable_pixelsOver8 < last.cmp.pixels * 0.002) return last;
     log(name, 'background changed between shots, retrying');
   }
@@ -540,7 +545,8 @@ async function phaseT4(c) {
       // pack PNG for the expected composite
       await show(); await sleep(300);
       const dataUrl = await c.eval(`return window.__visitProbe.fp('host').packDataURL();`);
-      const packPng = path.join(outDir, `t4-pack-${kind}.png`);
+      fs.mkdirSync(SHOT_DIR, { recursive: true });
+      const packPng = path.join(SHOT_DIR, `t4-pack-${kind}.png`);
       fs.writeFileSync(packPng, Buffer.from(dataUrl.split(',')[1], 'base64'));
       await hide();
       r[`direct_${kind}`] = { shots, composite: os('composite', path.join(outDir, shots.bg), path.join(outDir, shots.fg), packPng, rp[2], rp[3]) };
@@ -554,7 +560,7 @@ async function phaseT4(c) {
     await showV();
     const stats = await c.eval(`return await window.__visitProbe.fp('host').rtcStats();`);
     await hide();
-    r.video_2d = { shots: shotsV, composite: os('composite', path.join(outDir, shotsV.bg), path.join(outDir, shotsV.fg), path.join(outDir, 't4-pack-2d.png'), rp[2], rp[3]), rtc: stats };
+    r.video_2d = { shots: shotsV, composite: os('composite', path.join(outDir, shotsV.bg), path.join(outDir, shotsV.fg), path.join(SHOT_DIR, 't4-pack-2d.png'), rp[2], rp[3]), rtc: stats };
     log('t4 video', JSON.stringify(r.video_2d.composite), JSON.stringify(stats && stats.stat));
     // Live model through the full chain, for a visual record only
     const showL = () => c.eval(`await window.__visitProbe.makeFrame('host', 'host', window.__visitProbe.hostStyle(${rectJs}));

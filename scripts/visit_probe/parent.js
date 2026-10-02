@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 14) return;
-  const P = (window.__visitProbe = { version: 14 });
+  if (window.__visitProbe && window.__visitProbe.version === 15) return;
+  const P = (window.__visitProbe = { version: 15 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -111,8 +111,14 @@
     const canvas = lm.pixi_app.view;
     const css = canvas.getBoundingClientRect();
     const sx = canvas.width / css.width, sy = canvas.height / css.height;
-    const b = lm.getModelScreenBounds();
-    if (!b) return null;
+    const raw = lm.getModelScreenBounds();
+    if (!raw) return null;
+    // getModelScreenBounds() is not clipped to the viewport: a model hanging off-screen would put most of the
+    // crop outside the canvas (transparent padding). Frame from the on-screen part only.
+    const vl = Math.max(0, raw.left), vt = Math.max(0, raw.top);
+    const vr = Math.min(window.innerWidth, raw.left + raw.width), vb = Math.min(window.innerHeight, raw.top + raw.height);
+    if (vr <= vl || vb <= vt) return null;
+    const b = { left: vl, top: vt, width: vr - vl, height: vb - vt };
     // upper-body box per §3.4.1 ratios (approx: top 64% of bounds, widened to crop aspect)
     const aspect = cropW / cropH;
     let h = b.height * 0.64;
@@ -121,9 +127,15 @@
     w = h * aspect;
     const cx = b.left + b.width / 2;
     const top = b.top;
-    const rect = [Math.round((cx - w / 2 - css.left) * sx), Math.round((top - css.top) * sy), Math.round(w * sx), Math.round(h * sy)];
+    let rect = [(cx - w / 2 - css.left) * sx, (top - css.top) * sy, w * sx, h * sy];
+    // keep the source rect inside the backing canvas: shrink (aspect kept) if larger, then shift in
+    const k = Math.min(1, canvas.width / rect[2], canvas.height / rect[3]);
+    if (k < 1) { const ncx = rect[0] + rect[2] / 2; rect[2] *= k; rect[3] *= k; rect[0] = ncx - rect[2] / 2; }
+    rect[0] = Math.min(Math.max(0, rect[0]), canvas.width - rect[2]);
+    rect[1] = Math.min(Math.max(0, rect[1]), canvas.height - rect[3]);
+    rect = rect.map(Math.round);
     P.rectPx = rect;
-    return { rect, bounds: b, scale: [sx, sy] };
+    return { rect, bounds: b, rawBounds: raw, scale: [sx, sy] };
   };
 
   // ---------------------------------------------------------------- postrender hook (§3.3.5)
