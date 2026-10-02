@@ -181,6 +181,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "[图](https://host/a_(1)/屏幕搭话：b.png) 和 [图2](/tmp/a_(2)/【屏幕画面】/c.png) 都在这里。",
     "[图](https://host/a_((1))/屏幕搭话：b.png) 和 https://host/x_(a(b))/【屏幕画面】/c.png 都在这里。",
     "本机地址是 https://[::1]/屏幕搭话：file.png 和 http://[fe80::1]:8080/【屏幕画面】/a.png 哦。",
+    "全角链接【图】(/屏幕搭话：file.png)和【图2】(/tmp/【屏幕画面】/b.png)也一样。",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",

@@ -93,7 +93,7 @@ _LABEL_STRIP = regex.compile(
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 _PROTECTED = regex.compile(
     r"[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
-    r"|(?<=\]\()(?:[^()\s]|(?&paren))+"
+    r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
 )
 # Stand in for a protected and a thinking character (Unicode private use).
