@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import os
 import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -26,6 +27,7 @@ from plugin.sdk.shared.core.push_message_schema import (
     format_push_message_v1_static_diagnostic,
 )
 
+from ..core.build_rules import is_vendor_sync_path, reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -816,12 +818,30 @@ def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: st
     return None
 
 
+_SKIPPED_SOURCE_DIRS = {"__pycache__", ".venv", "venv", "vendor"}
+
+
+def _plugin_python_files(plugin_dir: Path) -> list[Path]:
+    """The plugin's own .py files. Skipped directories are pruned during the
+    walk, not filtered afterwards: a retained sync backup or a venv may hold
+    a large tree or a mount."""
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(plugin_dir, onerror=reraise_walk_error):
+        base = Path(dirpath)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in _SKIPPED_SOURCE_DIRS
+            and not is_vendor_sync_path((base / name).relative_to(plugin_dir))
+        ]
+        found.extend(base / name for name in filenames if name.endswith(".py"))
+    return sorted(found)
+
+
 def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
     seen_ids: dict[str, str] = {}
-    for path in sorted(plugin_dir.rglob("*.py")):
+    for path in _plugin_python_files(plugin_dir):
         relative = path.relative_to(plugin_dir)
-        if any(part in {"__pycache__", ".venv", "venv", "vendor"} for part in relative.parts):
-            continue
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:
             continue

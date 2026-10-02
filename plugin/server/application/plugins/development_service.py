@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from plugin.core.state import state
+from plugin.neko_plugin_cli.core.build_rules import is_vendor_sync_path
 from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -110,7 +111,14 @@ def _preflight_source_sync(source_dir: Path, plugin_id: str) -> None:
         raise store._error(str(exc)) from exc
 
     for root, directories, files in os.walk(source_dir, onerror=walk_error, followlinks=False):
-        directories[:] = [name for name in directories if name not in store.SOURCE_EXCLUDED_DIR_NAMES]
+        directories[:] = [
+            name
+            for name in directories
+            if name not in store.SOURCE_EXCLUDED_DIR_NAMES
+            # `neko-plugin sync` staging/backup trees at the plugin root hold
+            # (possibly half-written) third-party code, like vendor/.
+            and not (Path(root) == source_dir and is_vendor_sync_path(Path(name)))
+        ]
         for name in files:
             if not name.lower().endswith(".py"):
                 continue

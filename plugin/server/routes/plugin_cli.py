@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal, TypeVar
 
 import asyncio
 
@@ -13,10 +14,33 @@ from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter()
 logger = get_logger("server.routes.plugin_cli")
 service = PluginCliService()
+_Endpoint = TypeVar("_Endpoint", bound=Callable[..., Any])
+
+
+def _package_import_post(path: str, **kwargs: Any) -> Callable[[_Endpoint], _Endpoint]:
+    """Register a POST that uploads or installs plugin code.
+
+    These routes use the lifecycle CSRF guard, applied before FastAPI reads
+    the multipart or JSON body. Legacy aliases call their target handler as a
+    plain function, so each alias must be registered through this helper too.
+    """
+
+    def decorator(endpoint: _Endpoint) -> _Endpoint:
+        router.add_api_route(
+            path,
+            endpoint,
+            methods=["POST"],
+            route_class_override=PluginMutationGuardedRoute,
+            **kwargs,
+        )
+        return endpoint
+
+    return decorator
 
 
 class PluginCliPluginRef(BaseModel):
@@ -361,7 +385,7 @@ async def plugin_cli_verify(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
+@_package_import_post("/plugin-cli/install", response_model=PluginCliInstallResponse)
 async def plugin_cli_install(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
@@ -417,7 +441,7 @@ async def plugin_cli_analyze(
 # ── Upload & Download ──────────────────────────────────────────────────
 
 
-@router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
+@_package_import_post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
 async def plugin_cli_upload(
     file: UploadFile = File(...),
     _: str = require_admin,
@@ -452,7 +476,7 @@ async def plugin_cli_discard_upload(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
+@_package_import_post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
 async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),
@@ -519,7 +543,7 @@ async def plugin_cli_pack_legacy(
     return result
 
 
-@router.post("/plugin-cli/unpack", include_in_schema=False)
+@_package_import_post("/plugin-cli/unpack", include_in_schema=False)
 async def plugin_cli_unpack_legacy(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
@@ -537,7 +561,7 @@ async def plugin_cli_unpack_legacy(
     return result
 
 
-@router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
+@_package_import_post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),

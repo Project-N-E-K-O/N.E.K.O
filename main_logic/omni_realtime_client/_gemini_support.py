@@ -533,20 +533,44 @@ class _GeminiMixin:
         """
         if (
             not self._gemini_context_manager
+            and not self._gemini_close_retry_contexts
             and getattr(self, "_gemini_proactive_submit_task", None) is None
             and getattr(self, "_gemini_external_submit_task", None) is None
         ):
             return
+        # A completed close task may have failed while the SDK context was
+        # still retained for a physical-close retry.  Do not keep awaiting the
+        # same failed task forever; the next caller must get a fresh attempt.
+        close_task = getattr(self, "_gemini_close_task", None)
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            if (close_error is not None or self._gemini_context_manager is not None
+                    or self._gemini_close_retry_contexts):
+                self._gemini_close_task = None
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
+
+    async def _retry_gemini_contexts(self, contexts) -> None:
+        """Retry captured retired SDK owners, never reread a replacement."""
+        for context, session in contexts:
+            retained = self._gemini_close_retry_contexts.get(id(context))
+            if retained is not None and retained[0] is context:
+                await self._close_gemini_context(context, session)
 
     def _detach_for_gemini_close(self):
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
         tool_tasks = self._advance_tool_scope()
-        return self._close_gemini_context(
+        return self._close_gemini_with_retries(
             self._gemini_context_manager,
             self._gemini_session,
             tool_tasks,
+            retired_contexts=tuple(
+                pair for pair in self._gemini_close_retry_contexts.values()
+                if pair[0] is not self._gemini_context_manager
+            ),
             proactive_submit_task=getattr(
                 self, "_gemini_proactive_submit_task", None
             ),
@@ -554,6 +578,14 @@ class _GeminiMixin:
                 self, "_gemini_external_submit_task", None
             ),
         )
+
+    async def _close_gemini_with_retries(
+        self, context, session, tool_tasks, *, retired_contexts, **submit_tasks,
+    ) -> None:
+        # All owners were captured before spawning this shielded teardown.
+        # A connection attaching during either await is never ours to close.
+        await self._close_gemini_context(context, session, tool_tasks, **submit_tasks)
+        await self._retry_gemini_contexts(retired_contexts)
 
     async def _cancel_gemini_submit_tasks(
         self,
@@ -652,12 +684,55 @@ class _GeminiMixin:
         await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
+        context_key = id(context)
+        retry_transport = context_key in self._gemini_close_retry_contexts
+        close_error = None
         try:
             await context.__aexit__(None, None, None)
         except Exception as e:
-            # A raised exit is still an exit that ran to its own conclusion —
-            # the references are dropped below either way, as before.
+            # A raised exit does not prove that the SDK transport physically
+            # exited. Retain that uncertainty for the session registry instead
+            # of acknowledging a safe handoff.
+            close_error = e
             logger.error(f"Error closing Gemini session: {e}")
+
+        if close_error is not None or retry_transport:
+            # google-genai's asynccontextmanager can be exhausted after a
+            # failed __aexit__; a second exit may return without touching its
+            # WebSocket. The retained AsyncSession owns the actual socket, so
+            # use its close() as the physical-release confirmation.
+            session_close = getattr(session, "close", None)
+            if not callable(session_close):
+                if close_error is None:
+                    close_error = RuntimeError(
+                        "Gemini session has no retryable close operation"
+                    )
+            else:
+                try:
+                    await session_close()
+                except Exception as e:
+                    logger.error(f"Error closing Gemini transport: {e}")
+                    if close_error is None:
+                        close_error = e
+                else:
+                    self._gemini_close_retry_contexts.pop(context_key, None)
+                    # The SDK context reported an error, but the retained
+                    # session has now confirmed the underlying transport is
+                    # closed, which is the ownership condition we need.
+                    close_error = None
+
+        if close_error is not None:
+            # Keep strong references even if a replacement overwrote the
+            # current fields while this exit awaited. A later retirement can
+            # retry the authoritative SDK transport close. The
+            # connection registry will keep its capacity slot occupied until
+            # one such retry completes successfully.
+            if self._gemini_context_manager is context:
+                logger.warning(
+                    "Gemini close failed; retaining the context for a later retry"
+                )
+            self._gemini_close_retry_contexts[context_key] = (context, session)
+            raise close_error
 
         if self._gemini_context_manager is not context:
             # A replacement session attached while the SDK exit ran. Its

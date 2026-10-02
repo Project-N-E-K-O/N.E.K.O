@@ -10,6 +10,7 @@ from pathlib import Path
 from .models import PackResult, PayloadBuildResult, PluginSource
 from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
 from ..core.build import _settle_staged_metadata
+from ..core.build_rules import walk_plugin_tree
 from ..core.metadata_probe import write_packaged_metadata
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
@@ -256,7 +257,7 @@ class PluginPacker:
         rules: PackRuleSet,
     ) -> list[Path]:
         copied: list[Path] = []
-        for path in sorted(source_dir.rglob("*")):
+        for path in walk_plugin_tree(source_dir):
             relative = path.relative_to(source_dir)
             if self.should_skip(relative, is_dir=path.is_dir(), rules=rules):
                 continue

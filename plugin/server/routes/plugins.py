@@ -3,7 +3,7 @@
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import asyncio
 from plugin.server.routes.development import router as development_router
 from plugin.server.application.plugins.development import registration_for_plugin_sync, list_registration_records_sync
@@ -18,6 +18,7 @@ from plugin.server.application.plugins import (
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
+from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     bounded_operation_wait,
@@ -146,6 +147,7 @@ async def _dispatch_refresh(request: Request, plugin_id: str | None = None,
 
 @router.post("/plugin/{plugin_id}/start")
 async def start_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                __: None = Depends(require_plugin_mutation_access),
                                 registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
@@ -176,6 +178,7 @@ async def start_plugin_endpoint(plugin_id: str, request: Request, _: str = requi
 
 @router.post("/plugin/{plugin_id}/refresh")
 async def refresh_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                  __: None = Depends(require_plugin_mutation_access),
                                   registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
@@ -188,6 +191,7 @@ async def refresh_plugin_endpoint(plugin_id: str, request: Request, _: str = req
 
 @router.post("/plugin/{plugin_id}/stop")
 async def stop_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                               __: None = Depends(require_plugin_mutation_access),
                                registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
@@ -199,7 +203,8 @@ async def stop_plugin_endpoint(plugin_id: str, request: Request, _: str = requir
 
 
 @router.delete("/plugin/{plugin_id}")
-async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin,
+                                 __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
             return await lifecycle_service.delete_plugin(plugin_id)
@@ -210,7 +215,8 @@ async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict
 
 
 @router.post("/plugins/refresh")
-async def refresh_plugins_endpoint(request: Request, _: str = require_admin) -> dict[str, object]:
+async def refresh_plugins_endpoint(request: Request, _: str = require_admin,
+                                   __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
             return await _dispatch_refresh(request)
@@ -222,6 +228,7 @@ async def refresh_plugins_endpoint(request: Request, _: str = require_admin) -> 
 
 @router.post("/plugin/{plugin_id}/reload")
 async def reload_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                 __: None = Depends(require_plugin_mutation_access),
                                  registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
@@ -233,7 +240,8 @@ async def reload_plugin_endpoint(plugin_id: str, request: Request, _: str = requ
 
 
 @router.post("/plugins/reload")
-async def reload_all_plugins_endpoint(request: Request, _: str = require_admin) -> dict[str, object]:
+async def reload_all_plugins_endpoint(request: Request, _: str = require_admin,
+                                      __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
     """
     重载所有插件
     

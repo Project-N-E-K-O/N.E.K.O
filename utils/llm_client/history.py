@@ -26,6 +26,8 @@ from .messages import BaseMessage
 _PERSISTED_ADDITIONAL_KWARGS = (
     "anti_repeat_response_id",
     "anti_repeat_visible_text_length",
+    # Independent-delivery marker read by utils.screen_comment_guard.
+    "dialog_source",
 )
 
 

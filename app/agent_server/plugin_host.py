@@ -153,6 +153,7 @@ async def _start_embedded_user_plugin_server() -> None:
 
     try:
         from plugin.server.http_app import build_plugin_server_app
+        from plugin.server.infrastructure.mutation_auth import TRUSTED_PROXY_IPS
         import uvicorn
     except Exception as exc:
         raise RuntimeError(f"failed to import embedded user plugin server: {exc}") from exc
@@ -168,7 +169,9 @@ async def _start_embedded_user_plugin_server() -> None:
         backlog=4096,
         timeout_keep_alive=30,
         proxy_headers=True,
-        forwarded_allow_ips="*",
+        # Official Docker Nginx connects over loopback and overwrites these
+        # headers. Never trust forwarded client/scheme values from every peer.
+        forwarded_allow_ips=TRUSTED_PROXY_IPS,
     )
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None

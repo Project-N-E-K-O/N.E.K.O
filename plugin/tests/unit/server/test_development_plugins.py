@@ -61,6 +61,7 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     import httpx
     from plugin.server.application.plugins import registry_service
     from plugin.server.routes import plugins as routes
+    from plugin.server.infrastructure.mutation_auth import AUTOSTART_CSRF_TOKEN
 
     record = _register(tmp_path)
     registry = registry_service.PluginRegistryService()
@@ -75,8 +76,14 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     monkeypatch.setattr(routes, "ensure_plugin_messaging_started", AsyncMock(return_value=True))
     app = FastAPI()
     app.include_router(routes.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
-                                 base_url="http://127.0.0.1") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
+        base_url="http://192.168.1.10:8080",
+        headers={
+            "Origin": "http://192.168.1.10:8080",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    ) as http:
         response = await http.post(f"/plugin/{record.plugin_id}/{action}")
     assert response.status_code == 409, response.text
     assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
@@ -905,6 +912,24 @@ def test_preflight_prunes_dependency_directories_before_visiting(monkeypatch, tm
         return original(path)
     monkeypatch.setattr(os, "scandir", checked_scandir)
     service.preflight_development_sync(record)
+
+
+def test_preflight_skips_dependency_sync_work_dirs(tmp_path):
+    # Staging/backup trees of `neko-plugin sync` hold third-party code (maybe
+    # half-written, maybe Python 2), like vendor/; a look-alike plugin dir and
+    # a nested one are still plugin source.
+    record = _register(tmp_path)
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        legacy = record.source_dir / name / "oldpkg"
+        legacy.mkdir(parents=True)
+        (legacy / "legacy.py").write_text('print "x"\n', encoding="utf-8")
+    service.preflight_development_sync(record)
+
+    own = record.source_dir / ".vendor.backup-notes"
+    own.mkdir()
+    (own / "mine.py").write_text("broken syntax !", encoding="utf-8")
+    with pytest.raises(ServerDomainError, match="invalid syntax"):
+        service.preflight_development_sync(record)
 
 
 def test_preflight_still_checks_runtime_source_excluded_from_packaging(tmp_path):

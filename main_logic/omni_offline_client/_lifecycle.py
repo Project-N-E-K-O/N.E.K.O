@@ -754,7 +754,14 @@ class _LifecycleMixin:
                     except Exception:
                         logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
-                self._conversation_history.append(AIMessage(content=assistant_message))
+                # Greetings, agent/topic callbacks and voice nudges answer an
+                # instruction, not the user. Mark them like finish_proactive_
+                # delivery does so the screen-history guard never joins them
+                # with the reply to the user's turn (utils/screen_comment_guard).
+                self._conversation_history.append(AIMessage(
+                    content=assistant_message,
+                    additional_kwargs={"dialog_source": "proactive"},
+                ))
             # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
             # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
             # 条，那一轮的打分必须已经看得到刚提交的这句；而落盘那个 await 一旦被取消
