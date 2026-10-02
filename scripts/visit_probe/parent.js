@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 12) return;
-  const P = (window.__visitProbe = { version: 12 });
+  if (window.__visitProbe && window.__visitProbe.version === 13) return;
+  const P = (window.__visitProbe = { version: 13 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -49,7 +49,13 @@
       f.onload = () => {
         clearTimeout(timer);
         const cw = f.contentWindow;
-        const wait = () => (cw.__probe && cw.__probe.ready ? resolve(true) : setTimeout(wait, 20));
+        // keep a deadline: if transport.js throws before setting ready, fail instead of hanging forever
+        const deadline = performance.now() + 5000;
+        const wait = () => {
+          if (cw.__probe && cw.__probe.ready) resolve(true);
+          else if (performance.now() > deadline) reject(new Error('iframe loaded but transport.js never became ready'));
+          else setTimeout(wait, 20);
+        };
         wait();
       };
       document.body.appendChild(f);

@@ -424,13 +424,17 @@
       setTimeout(res, 3000);
     });
     dc.send('hello');
+    // Bind the loop to its own video: a pending callback of a replaced video must not re-arm on the new one
+    // (that doubled the rVFC count when a loopback was rebuilt in the same iframe).
+    const myVideo = rv;
     const rvfcLoop = (now, meta) => {
+      if (rv !== myVideo) return;
       stat.rvfc++;
       stat.lastRvfcPresented = meta && meta.presentedFrames;
-      if (displaySource === 'video') drawUnpack(rv);
-      if (rv) rv.requestVideoFrameCallback(rvfcLoop);
+      if (displaySource === 'video') drawUnpack(myVideo);
+      myVideo.requestVideoFrameCallback(rvfcLoop);
     };
-    rv.requestVideoFrameCallback(rvfcLoop);
+    myVideo.requestVideoFrameCallback(rvfcLoop);
     return { ok: true, dcState: dc.readyState };
   };
   probe.stopLoopback = async function () {

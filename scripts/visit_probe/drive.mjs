@@ -375,6 +375,16 @@ async function withBackdrop(rp, fn) {
       if (w && w.rect && w.rect[0] <= rp[0] && w.rect[1] <= rp[1] && w.rect[0] + w.rect[2] >= rp[0] + rp[2] && w.rect[1] + w.rect[3] >= rp[1] + rp[3]) found = w;
     }
     if (!found) throw new Error('backdrop window did not appear over the probe region; aborting before any screenshot');
+    // z-order: at 5 points of the region the topmost window must be the backdrop or the (click-through) Pet,
+    // otherwise another always-on-top / foreground window overlaps the region and would end up in the shots.
+    const pet = os('pet').pet;
+    const pts = [[0.05, 0.05], [0.95, 0.05], [0.5, 0.5], [0.05, 0.95], [0.95, 0.95]].map(([fx, fy]) => [Math.round(rp[0] + rp[2] * fx), Math.round(rp[1] + rp[3] * fy)]);
+    for (const [x, y] of pts) {
+      const t = os('topat', x, y);
+      if (t.hwnd !== found.hwnd && !(pet && t.hwnd === pet.hwnd)) {
+        throw new Error(`window "${t.title}" (${t.process}) overlaps the probe region at ${x},${y}; aborting before any screenshot`);
+      }
+    }
     await sleep(500);
     return await fn();
   } finally { try { execFileSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }

@@ -5,6 +5,7 @@ Subcommands (all coordinates are physical pixels, the process is per-monitor DPI
   shot OUT.png X Y W H           -> screenshot of the region (+40 px margin) only
   pet                            -> JSON {hwnd, rect, exstyle} of the Electron Pet window (full-monitor top-level window)
   hit X Y [WAIT_S]               -> move the cursor to (X, Y), wait, report Pet WS_EX_TRANSPARENT (click-through) state
+  topat X Y                      -> {hwnd, title, process} of the top-level window under (X, Y)
   findwin TITLE                  -> {hwnd, rect} of a visible top-level window with that title, or null
   cursor                         -> current cursor position
   setcursor X Y                  -> move the cursor
@@ -107,6 +108,16 @@ def find_window(title):
     r = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
     return {"hwnd": int(hwnd), "rect": [r.left, r.top, r.right - r.left, r.bottom - r.top]}
+
+
+def top_at(x, y):
+    """Title and process of the top-level window that would receive a click at (x, y)."""
+    import os
+
+    root = user32.GetAncestor(user32.WindowFromPoint(wt.POINT(x, y)), 2)
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetWindowTextW(root, buf, 256)
+    return {"hwnd": int(root or 0), "title": buf.value, "process": os.path.basename(_proc_name(_window_pid(root)))}
 
 
 def exstyle(hwnd):
@@ -250,6 +261,8 @@ def main(argv):
         r = {"pet": p, "electronWindows": allw}
     elif cmd == "hit":
         r = hit(int(argv[2]), int(argv[3]), float(argv[4]) if len(argv) > 4 else 1.2)
+    elif cmd == "topat":
+        r = top_at(int(argv[2]), int(argv[3]))
     elif cmd == "findwin":
         r = find_window(argv[2])
     elif cmd == "cursor":
