@@ -503,7 +503,8 @@ describe('config draft lifecycle', () => {
 })
 
 describe('server application state', () => {
-  it('falls back after a pending response loses its revision race during an active save', async () => {
+  it.each(['pending', 'matched'] as const)(
+    're-queries a rejected save response and respects the fresh %s state', async (freshState) => {
     vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
       plugin_id: 'alpha', config_state: 'matched',
     })
@@ -520,12 +521,46 @@ describe('server application state', () => {
     // A pre-save lifecycle response clears the hint after loadAll captured R.
     setPendingReload('alpha', false)
     response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: freshState,
+    })
     await saving
 
-    expect(drafts.applicationState.value?.config_state).toBe('pending')
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2)
+    expect(drafts.applicationState.value?.config_state).toBe(freshState)
+    expect(drafts.applicationStateKnown.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(freshState === 'pending')
+    expect(drafts.pendingApplication.value).toBe(freshState === 'pending')
+  })
+
+  it('does not override a newer reload when the one-time retry also loses its revision race', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    const retry = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState)
+      .mockReturnValueOnce(response.promise)
+      .mockReturnValueOnce(retry.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    setPendingReload('alpha', false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2))
+    setPendingReload('alpha', false)
+    retry.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await saving
+
     expect(drafts.applicationStateKnown.value).toBe(false)
-    expect(hasPendingReload('alpha')).toBe(true)
-    expect(drafts.pendingApplication.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(false)
+    expect(drafts.pendingApplication.value).toBe(false)
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 2)
   })
 
   it('restores a pending state after loading the configuration page', async () => {

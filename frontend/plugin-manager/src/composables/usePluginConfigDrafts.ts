@@ -304,15 +304,27 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Storing the virtual default creates the first profile; either way the server
       // activates it when none was active. Reflect that before the fallible refresh.
       recordStoredProfile(name)
+      let fallbackRevision: number | undefined
       await loadAll()
+      if (valid(id, epoch) && !applicationStateKnown.value && applicationState.value) {
+        // A supported response lost its revision race. Re-query once to tell a
+        // pre-save lifecycle response from a reload that actually applied this
+        // save; neither case can be inferred from the local flag alone.
+        fallbackRevision = pendingReloadRevision(id)
+        const retryVersion = loadVersion
+        const state = await loadApplicationState(id)
+        if (valid(id, epoch) && retryVersion === loadVersion)
+          applyApplicationState(state, id, fallbackRevision)
+      }
       // Only the active profile changes what the running host should be using. When
       // the refresh worked it is authoritative; otherwise the pre-request snapshot is
       // the only evidence left.
       const refreshed = valid(id, epoch) && ready.value && !error.value
       // A supported server response is authoritative, including `matched` or
-      // `not_running`; only older servers need the legacy in-memory fallback.
+      // `not_running`. An unavailable retry uses its captured revision, while
+      // older servers retain the conservative arrival-order fallback.
       if (!applicationStateKnown.value && (refreshed ? name === active.value : wasActive || mayBecomeActive))
-        setPendingApplication(true, id)
+        setPendingApplication(true, id, fallbackRevision)
       return valid(id, epoch) ? name : null
     } catch (err) {
       if (valid(id, epoch)) error.value = message(err)
