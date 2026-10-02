@@ -45,8 +45,9 @@ _CN_LABEL = (
 )
 _EN_LABEL = r"(?:current[ \t]{1,8})?screen[ \t]{1,8}(?:comment|observation|content|display|image)"
 _LABEL = rf"{_CN_LABEL}|{_EN_LABEL}"
-# A "]" followed by "(" closes Markdown link text ("[屏幕截图](url)"), not a label.
-_CLOSING_BRACKET = r"(?:】|\](?!\())"
+# A bracket followed by "(" closes link text ("[屏幕截图](url)", and the
+# full-width "【屏幕截图】(url)" a model may write the same way), not a label.
+_CLOSING_BRACKET = r"[】\]](?!\()"
 # Match only through the first separator. No unbounded whitespace lookahead.
 # The lexer checks the preceding character; complete and partial matches use
 # the same engine (re and regex disagree about Unicode combining characters).
@@ -440,7 +441,7 @@ class _ScreenLexer:
                     return []
                 if self.pending_kind == "tag":
                     self.thinking = not candidate.startswith("</")
-                elif candidate.endswith("]"):
+                elif candidate.endswith(("]", "】")):
                     self.pending, self.pending_closed = candidate, True
                     return []
                 return [self._emit(candidate, self.pending_kind == "marker")]
