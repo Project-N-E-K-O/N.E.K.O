@@ -97,7 +97,8 @@ _LABEL_STRIP = regex.compile(
 # domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"), and a
 # drive path written with forward slashes ("C:/a.png") is one too. A
 # Markdown reference definition's target may also be a path ("[1]: /a.png",
-# "./a.png", "../a.png") or anything in angle brackets ("[1]: <a.png>"). A
+# "./a.png", "../a.png") or anything in angle brackets ("[1]: <a.png>", also
+# "](<a b.png>)"). A
 # few well-known schemes need no slashes ("mailto:a@b.c", "data:text/plain,").
 _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?&userinfo)?(?:\[[0-9A-Fa-f:.]+\])?"
@@ -107,6 +108,7 @@ _PROTECTED = regex.compile(
     r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/)"
     r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})(?:\.{1,2})?(?=/))"
     r"(?:[^\s<>\"'()\]】）」』，。！？；、…～]|(?&paren))+"
+    r"|(?<=[\]】]\()<[^<>\n]*>"
     r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
     r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})<[^<>\n]*>"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\))"
