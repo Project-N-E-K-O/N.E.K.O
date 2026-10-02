@@ -1368,6 +1368,24 @@ class TurnMixin:
         # has not reached ``stream_text`` yet.
         self._discard_request_staged_images(request_id)
         self._mark_magic_command_image_drop_request(request_id)
+        # Another external route (not a mini-game) holding this character would
+        # make the game's /route/start refuse the slot after its window opened,
+        # so say why instead of opening it -- and before any of the steps below,
+        # which would cut off what that route is still saying. The turn end
+        # settles this request on the frontend. A mini-game replacing another
+        # one is handled by the game route's own supersede logic.
+        if is_external_route_locked(self.lanlan_name, exclude_kind="game"):
+            await self.send_status(json.dumps({
+                "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
+                "details": {"game_type": game_type},
+            }))
+            await self._emit_agent_callback_turn_end(request_id)
+            logger.info(
+                "[%s] mini-game magic command not launched, external route active: %s",
+                self.lanlan_name,
+                game_type,
+            )
+            return True
         if isinstance(self.session, OmniOfflineClient):
             # The command never reaches stream_text, so a staged proactive
             # screenshot or plugin ``read`` image would otherwise leak into the
@@ -1410,21 +1428,6 @@ class TurnMixin:
             request_id=request_id,
         )
         await self._emit_agent_callback_turn_end(request_id)
-        # Another external route (not a mini-game) holding this character would
-        # make the game's /route/start refuse the slot after its window opened,
-        # so say why instead of opening it. A mini-game replacing another one is
-        # handled by the game route's own supersede logic.
-        if is_external_route_locked(self.lanlan_name, exclude_kind="game"):
-            await self.send_status(json.dumps({
-                "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
-                "details": {"game_type": game_type},
-            }))
-            logger.info(
-                "[%s] mini-game magic command not launched, external route active: %s",
-                self.lanlan_name,
-                game_type,
-            )
-            return True
         await self._push_mini_game_magic_command_launch(game_type)
         logger.info(
             "[%s] text input sent mini-game magic command: %s",

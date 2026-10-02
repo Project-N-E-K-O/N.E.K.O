@@ -39,6 +39,7 @@ def _kind(
     route_stream_message=_unclaimed,
     on_page_signal=None,
     route_voice_transcript=None,
+    instance=None,
 ) -> ExternalRouteKind:
     return ExternalRouteKind(
         kind=kind,
@@ -50,6 +51,7 @@ def _kind(
         on_page_signal=on_page_signal,
         is_locked=None if locked is None else (lambda _name: locked),
         has_background_tasks=None if background is None else (lambda _name: background),
+        current_instance=None if instance is None else (lambda _name: instance),
     )
 
 
@@ -285,7 +287,7 @@ async def test_independent_asr_final_reaches_a_non_game_route_that_accepts_voice
     # Mutation: prepare_turn requiring a game identity turns this red.
     handler = AsyncMock(return_value=True)
     registry.register_external_route_kind(
-        _kind("visit", active=True, route_voice_transcript=handler)
+        _kind("visit", active=True, route_voice_transcript=handler, instance="visit-1")
     )
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
     token = _voice_token(turn_id=2)
@@ -294,14 +296,14 @@ async def test_independent_asr_final_reaches_a_non_game_route_that_accepts_voice
     assert await consumer.prepare_turn(token) is True
     await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
 
-    handler.assert_awaited_once_with("Lan", "hi", request_id="asr-5-2")
+    handler.assert_awaited_once_with("Lan", "hi", request_id="asr-5-2", route_instance="visit-1")
 
 
 @pytest.mark.asyncio
 async def test_independent_asr_final_is_not_rerouted_after_the_route_changes(empty_registry):
     handler = AsyncMock(return_value=True)
     registry.register_external_route_kind(
-        _kind("visit", active=True, route_voice_transcript=handler)
+        _kind("visit", active=True, route_voice_transcript=handler, instance="visit-1")
     )
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
     token = _voice_token(turn_id=3)
@@ -310,7 +312,7 @@ async def test_independent_asr_final_is_not_rerouted_after_the_route_changes(emp
     other = AsyncMock(return_value=True)
     registry.register_external_route_kind(_kind("visit", active=False))
     registry.register_external_route_kind(
-        _kind("other", active=True, route_voice_transcript=other)
+        _kind("other", active=True, route_voice_transcript=other, instance="other-1")
     )
     with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
         await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
@@ -320,8 +322,40 @@ async def test_independent_asr_final_is_not_rerouted_after_the_route_changes(emp
 
 
 @pytest.mark.asyncio
+async def test_independent_asr_final_is_not_delivered_to_the_next_instance_of_the_kind(empty_registry):
+    # Mutation: pinning only the kind turns this red -- the previous visit's
+    # utterance would reach the next visit.
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler, instance="visit-1")
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _voice_token(turn_id=5)
+    assert await consumer.prepare_turn(token) is True
+
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler, instance="visit-2")
+    )
+    with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
+        await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
+
+    handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_independent_asr_does_not_prepare_for_a_route_without_a_voice_handler(empty_registry):
-    registry.register_external_route_kind(_kind("visit", active=True))
+    registry.register_external_route_kind(_kind("visit", active=True, instance="visit-1"))
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
     assert await consumer.prepare_turn(_voice_token(turn_id=4)) is False
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_does_not_prepare_for_a_route_without_an_instance_id(empty_registry):
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("visit", active=True, route_voice_transcript=handler)
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert await consumer.prepare_turn(_voice_token(turn_id=6)) is False

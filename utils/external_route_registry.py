@@ -48,7 +48,11 @@ class ExternalRouteKind:
 
     ``route_voice_transcript`` receives ``(lanlan_name, transcript, **route_kwargs)``
     exactly as the independent ASR consumer passes them, so a kind can register
-    its pre-existing handler object unchanged. ``is_locked`` defaults to
+    its pre-existing handler object unchanged. ``current_instance`` returns an
+    opaque id of the route instance currently active for the character (e.g. a
+    session id); a non-game kind must provide it to receive independent-ASR
+    transcripts, so an utterance captured for one instance is never delivered
+    to the next instance of the same kind. ``is_locked`` defaults to
     ``is_active``; ``has_background_tasks`` defaults to "never".
     """
 
@@ -61,6 +65,7 @@ class ExternalRouteKind:
     on_page_signal: Callable[[str, dict], Awaitable[bool]] | None = None
     is_locked: Callable[[str], bool] | None = None
     has_background_tasks: Callable[[str], bool] | None = None
+    current_instance: Callable[[str], str | None] | None = None
 
 
 # Registration order is lookup order. Kinds are expected to be mutually

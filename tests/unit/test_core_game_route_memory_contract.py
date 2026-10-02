@@ -5042,10 +5042,21 @@ async def test_mini_game_magic_command_is_not_launched_over_another_external_rou
     mgr.start_session.assert_not_awaited()
     mgr._process_stream_data_internal.assert_not_awaited()
     sent_types = [payload.get("type") for payload in mgr.websocket.sent]
+    # Either way the request is settled on the frontend.
+    assert {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"} in mgr.websocket.sent
     if launched:
         assert "mini_game_invite_resolved" in sent_types
         mgr.send_status.assert_not_awaited()
+        mgr._clear_tts_pipeline.assert_awaited_once()
     else:
+        # Refused before the interrupt steps: whatever the owning route is
+        # still saying keeps playing. Mutation: checking the lock after the
+        # interrupt (the first version) turns this red.
+        mgr._clear_tts_pipeline.assert_not_awaited()
+        assert mgr.user_activity == []
+        assert mgr.sync_message_queue.messages == [
+            {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"},
+        ]
         assert "mini_game_invite_resolved" not in sent_types
         mgr.send_status.assert_awaited_once()
         status = json.loads(mgr.send_status.await_args.args[0])

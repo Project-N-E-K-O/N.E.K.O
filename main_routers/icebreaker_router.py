@@ -279,18 +279,19 @@ async def icebreaker_route_start(request: Request):
     session_id = str(data.get("session_id") or "")
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
-    _absorb_request_language(data, lanlan_name)
 
     async with _get_icebreaker_route_lock(lanlan_name):
         # Another kind of external route occupies this character (until its
         # exit flow finishes). The icebreaker is not a registered kind itself,
-        # so excluding it only matters once it is.
+        # so excluding it only matters once it is. A refused start must not
+        # change the shared session language the owning route is using.
         if is_external_route_locked(lanlan_name, exclude_kind="icebreaker"):
             logger.info(
                 "icebreaker route/start refused: external route owns lanlan=%s",
                 lanlan_name,
             )
             return {"ok": False, "reason": "route_owned_by_external"}
+        _absorb_request_language(data, lanlan_name)
         state = activate_icebreaker_route(lanlan_name, session_id)
     return {"ok": True, "state": _public_icebreaker_route_state(state)}
 

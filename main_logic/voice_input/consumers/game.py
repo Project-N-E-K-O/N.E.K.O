@@ -26,8 +26,9 @@ class GameVoiceInputConsumer:
 
     A game route is pinned by its ``(game_type, session_id, route instance)``
     identity, exactly as before the registry existed. Any other registered
-    route kind that accepts voice transcripts is pinned by its kind; the final
-    is delivered only if that kind still owns the character.
+    route kind that accepts voice transcripts and reports ``current_instance``
+    is pinned by ``(kind, instance)``; the final is delivered only if that same
+    instance still owns the character.
     """
 
     lanlan_name: Callable[[], str]
@@ -36,7 +37,7 @@ class GameVoiceInputConsumer:
         init=False,
         repr=False,
     )
-    _prepared_external_kinds: dict[VoiceTurnToken, str] = field(
+    _prepared_external_kinds: dict[VoiceTurnToken, tuple[str, str]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -56,9 +57,17 @@ class GameVoiceInputConsumer:
             self._prepared_routes[token] = identity
             return True
         route = get_active_external_route(lanlan_name)
-        if route is None or route.kind == "game" or route.route_voice_transcript is None:
+        if (
+            route is None
+            or route.kind == "game"
+            or route.route_voice_transcript is None
+            or route.current_instance is None
+        ):
             return False
-        self._prepared_external_kinds[token] = route.kind
+        instance = route.current_instance(lanlan_name)
+        if not instance:
+            return False
+        self._prepared_external_kinds[token] = (route.kind, str(instance))
         return True
 
     async def on_partial(self, event: VoicePartialEvent) -> None:
@@ -67,15 +76,23 @@ class GameVoiceInputConsumer:
     async def on_final(self, event: VoiceTranscriptEvent) -> None:
         token = event.turn_token
         request_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
-        external_kind = self._prepared_external_kinds.pop(token, None)
-        if external_kind is not None:
-            route = get_active_external_route(self.lanlan_name())
-            if route is None or route.kind != external_kind:
+        external_route = self._prepared_external_kinds.pop(token, None)
+        if external_route is not None:
+            external_kind, external_instance = external_route
+            lanlan_name = self.lanlan_name()
+            route = get_active_external_route(lanlan_name)
+            if (
+                route is None
+                or route.kind != external_kind
+                or route.current_instance is None
+                or str(route.current_instance(lanlan_name) or "") != external_instance
+            ):
                 raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
             routed = await route_external_voice_transcript(
-                self.lanlan_name(),
+                lanlan_name,
                 event.text,
                 request_id=request_id,
+                route_instance=external_instance,
             )
             if not routed:
                 raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")

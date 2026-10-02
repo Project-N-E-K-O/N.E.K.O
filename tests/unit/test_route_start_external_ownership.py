@@ -205,6 +205,53 @@ async def test_icebreaker_route_start_refuses_a_character_owned_by_another_route
     assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is None
 
 
+class _LanguageManager:
+    def __init__(self):
+        self.user_language = "zh-CN"
+        self._user_language_explicit = True
+        self.language_updates = []
+        self.render_updates = []
+
+    def set_user_language(self, language):
+        self.language_updates.append(language)
+
+    def set_render_language(self, language):
+        self.render_updates.append(language)
+
+
+@pytest.mark.asyncio
+async def test_refused_icebreaker_start_does_not_change_the_session_language(
+    _icebreaker_clean, monkeypatch,
+):
+    # Mutation: absorbing the request language before the ownership check turns
+    # this red -- a refused start would switch the owning route's language.
+    manager = _LanguageManager()
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+    _register_visit(active=True)
+
+    result = await icebreaker_router.icebreaker_route_start(_FakeRequest({
+        "lanlan_name": "Lan",
+        "session_id": "icebreaker-day1",
+        "i18n_language": "ja",
+        "render_language": "ja",
+    }))
+
+    assert result == {"ok": False, "reason": "route_owned_by_external"}
+    assert manager.language_updates == []
+    assert manager.render_updates == []
+
+    _register_visit(active=False, locked=False)
+    result = await icebreaker_router.icebreaker_route_start(_FakeRequest({
+        "lanlan_name": "Lan",
+        "session_id": "icebreaker-day1",
+        "i18n_language": "ja",
+        "render_language": "ja",
+    }))
+    assert result["ok"] is True
+    assert manager.language_updates == ["ja"]
+    assert manager.render_updates == ["ja"]
+
+
 @pytest.mark.asyncio
 async def test_icebreaker_route_start_is_unchanged_without_another_route(_icebreaker_clean):
     _register_visit(active=False, locked=False)
