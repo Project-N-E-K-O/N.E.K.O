@@ -166,6 +166,11 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "打开设置/屏幕画面选项看看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
+    # Markdown link text is not a label, neither for removal nor for chains.
+    "看这张[屏幕截图](https://example.com/a.png)就知道了。",
+    "![screen image](a.png)",
+    "这是[屏幕画面](https://example.com/a.png)，这个视频画面好漂亮，色调很温柔呢。"
+    "再看[屏幕画面](https://example.com/b.png)，右下角那只猫好可爱，毛茸茸的呢。",
 ])
 def test_words_and_prose_that_only_contain_a_label_stay(text):
     messages = [_assistant(text), _user("继续")]

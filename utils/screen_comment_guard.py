@@ -45,6 +45,8 @@ _CN_LABEL = (
 )
 _EN_LABEL = r"(?:current[ \t]{1,8})?screen[ \t]{1,8}(?:comment|observation|content|display|image)"
 _LABEL = rf"{_CN_LABEL}|{_EN_LABEL}"
+# A "]" followed by "(" closes Markdown link text ("[屏幕截图](url)"), not a label.
+_CLOSING_BRACKET = r"(?:】|\](?!\())"
 # Match only through the first separator. No unbounded whitespace lookahead.
 # The lexer checks the preceding character; complete and partial matches use
 # the same engine (re and regex disagree about Unicode combining characters).
@@ -56,7 +58,7 @@ _LABEL = rf"{_CN_LABEL}|{_EN_LABEL}"
 _MARKER = regex.compile(
     rf"(?:[/／][ \t]{{0,8}}(?:{_LABEL})[\s:：/／]"
     rf"|(?:{_LABEL})[ \t]{{0,8}}[/／]"
-    rf"|[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[】\]]"
+    rf"|[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}"
     r"|(?:屏幕|螢幕)(?:搭话|搭話)[\s:：]"
     r"|screen[ \t]{1,8}comment[:：])",
     regex.IGNORECASE,
@@ -68,7 +70,7 @@ _NOT_AFTER_WORD = r"(?<![A-Za-z0-9_])"
 # the request copy of the model's own replies is touched. An English label
 # glued to an ASCII word stays ("screenshot", "keyboard/screen display").
 _LABEL_STRIP = regex.compile(
-    rf"[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[】\]][ \t]*(?:[:：][ \t]*)?"
+    rf"[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}[ \t]*(?:[:：][ \t]*)?"
     rf"|(?:[/／][ \t]{{0,8}}(?:{_CN_LABEL})|{_NOT_AFTER_WORD}[/／][ \t]{{0,8}}(?:{_EN_LABEL}))"
     r"(?=[\s:：/／])[ \t]*(?:[/／:：][ \t]*)?"
     rf"|(?:(?:{_CN_LABEL})|{_NOT_AFTER_WORD}(?:{_EN_LABEL}))[ \t]{{0,8}}[/／][ \t]*"
@@ -371,6 +373,9 @@ class _ScreenLexer:
         self.pending = ""
         self.pending_kind = ""
         self.pending_after_word = False
+        # A complete bracket marker waits one character: "(" makes it
+        # Markdown link text.
+        self.pending_closed = False
         self.quote = ""
         self.escaped = False
         self.thinking = False
@@ -411,6 +416,14 @@ class _ScreenLexer:
         self.run = ""
 
     def _accept(self, char):
+        if self.pending_closed:
+            held, self.pending, self.pending_closed = self.pending, "", False
+            if char != "(":
+                return [self._emit(held, True), *self._accept(char)]
+            result = [self._emit(held[0])]
+            for rest in held[1:] + char:
+                result.extend(self._accept(rest))
+            return result
         if self.pending:
             candidate = self.pending + char
             pattern = _MARKER if self.pending_kind == "marker" else _THINK_TAG
@@ -427,6 +440,9 @@ class _ScreenLexer:
                     return []
                 if self.pending_kind == "tag":
                     self.thinking = not candidate.startswith("</")
+                elif candidate.endswith("]"):
+                    self.pending, self.pending_closed = candidate, True
+                    return []
                 return [self._emit(candidate, self.pending_kind == "marker")]
             self.pending = ""
             result = [self._emit(candidate[0])]
@@ -504,8 +520,9 @@ class _ScreenLexer:
 
     def finalize(self):
         pending, self.pending = self.pending, ""
+        closed, self.pending_closed = self.pending_closed, False
         if pending:
-            yield self._emit(pending)
+            yield self._emit(pending, closed)
         if self.run:
             self._end_run()
 
