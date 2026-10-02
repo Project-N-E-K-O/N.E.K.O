@@ -3,8 +3,8 @@
 Subcommands (all coordinates are physical pixels, the process is per-monitor DPI aware):
   monitors                       -> JSON list of monitors
   shot OUT.png X Y W H           -> screenshot of the region (+40 px margin) only
-  pet                            -> JSON {hwnd, rect, exstyle} of the Electron Pet window (full-monitor top-level window)
-  hit X Y [WAIT_S]               -> move the cursor to (X, Y), wait, report Pet WS_EX_TRANSPARENT (click-through) state
+  pet [TITLE]                    -> JSON {hwnd, rect, exstyle} of the Electron Pet window (monitor-sized, title match)
+  hit X Y [WAIT_S] [TITLE]               -> move the cursor to (X, Y), wait, report Pet WS_EX_TRANSPARENT (click-through) state
   topgrid X Y W H                -> distinct windows on an 8x8 grid over the saved shot range (rect + margin)
   topat X Y                      -> {hwnd, title, process} of the top-level window under (X, Y)
   findwin TITLE                  -> {hwnd, rect} of a visible top-level window with that title, or null
@@ -69,7 +69,7 @@ def _proc_name(pid):
     return buf.value
 
 
-def pet_window():
+def pet_window(title=None):
     mons = [m["rect"] for m in monitors()]
     found = []
     WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
@@ -98,6 +98,10 @@ def pet_window():
         return False
 
     full = [w for w in found if near_full(w)]
+    if title:
+        # the CDP Pet page's document.title is the BrowserWindow title: other monitor-sized Electron windows
+        # (a maximized Chat window, a second display) are excluded instead of making the probe fail
+        full = [w for w in full if w["title"] == title]
     if len(full) > 1:
         # e.g. a maximized Chat window is also near monitor-sized: refuse to guess which one is the Pet
         raise SystemExit("ambiguous Pet window: %d monitor-sized Electron windows %s" % (len(full), [w["title"] for w in full]))
@@ -170,8 +174,8 @@ def cursor():
     return [p.x, p.y]
 
 
-def hit(x, y, wait_s=1.2):
-    pet, _ = pet_window()
+def hit(x, y, wait_s=1.2, title=None):
+    pet, _ = pet_window(title)
     if not pet:
         return {"err": "pet window not found"}
     # wiggle with injected input so the page sees real mouse moves at the target point
@@ -273,10 +277,10 @@ def main(argv):
     elif cmd == "shot":
         r = shot(argv[2], *map(int, argv[3:7]))
     elif cmd == "pet":
-        p, allw = pet_window()
+        p, allw = pet_window(argv[2] if len(argv) > 2 else None)
         r = {"pet": p, "electronWindows": allw}
     elif cmd == "hit":
-        r = hit(int(argv[2]), int(argv[3]), float(argv[4]) if len(argv) > 4 else 1.2)
+        r = hit(int(argv[2]), int(argv[3]), float(argv[4]) if len(argv) > 4 else 1.2, argv[5] if len(argv) > 5 else None)
     elif cmd == "topgrid":
         # region given like shot (probe rect); the grid covers the saved range, i.e. rect + SHOT_MARGIN
         x, y, w, h = map(int, argv[2:6])

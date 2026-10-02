@@ -118,6 +118,8 @@ async function inject(c) {
   await c.eval(fs.readFileSync(path.join(HERE, 'parent.js'), 'utf8') + '\nreturn true;');
 }
 
+// Pet BrowserWindow title (= the Pet page's document.title), used to pick the right HWND.
+let PET_TITLE = '';
 function os(...a) {
   const out = execFileSync('uv', ['run', '--no-sync', 'python', path.join(HERE, 'osprobe.py'), ...a.map(String)], { cwd: MAIN_REPO, encoding: 'utf8' });
   return JSON.parse(out.trim().split(/\r?\n/).pop());
@@ -125,7 +127,8 @@ function os(...a) {
 
 async function petGeometry(c) {
   const env = await c.eval('return window.__visitProbe.env();');
-  const pet = os('pet').pet;
+  PET_TITLE = await c.eval('return document.title;');
+  const pet = os('pet', PET_TITLE).pet;
   const sx = pet.rect[2] / env.inner[0], sy = pet.rect[3] / env.inner[1];
   return { env, pet, toPhys: (x, y) => [Math.round(pet.rect[0] + x * sx), Math.round(pet.rect[1] + y * sy)], scale: [sx, sy] };
 }
@@ -139,7 +142,8 @@ function physRect(geo, r) {
 // ------------------------------------------------------------------ phases
 async function phaseEnv(c) {
   const env = await c.eval('return window.__visitProbe.env();');
-  results.env = { env, monitors: os('monitors'), pet: os('pet'), at: new Date().toISOString() };
+  PET_TITLE = await c.eval('return document.title;');
+  results.env = { env, petTitle: PET_TITLE, monitors: os('monitors'), pet: os('pet', PET_TITLE), at: new Date().toISOString() };
   log('env', JSON.stringify(env));
 }
 
@@ -406,7 +410,7 @@ async function withBackdrop(rp, fn) {
     if (!found) throw new Error('backdrop window did not appear over the probe region; aborting before any screenshot');
     // z-order guard over the whole saved range (rect + 40 px margin, 8x8 grid): only the backdrop or the
     // (click-through) Pet may be on top. shotTriple re-runs it right before every screenshot.
-    const pet = os('pet').pet;
+    const pet = os('pet', PET_TITLE).pet;
     backdropGuard = () => {
       for (const t of os('topgrid', ...rp)) {
         if (t.hwnd !== found.hwnd && !(pet && t.hwnd === pet.hwnd)) {
@@ -484,9 +488,9 @@ async function phaseT3(c) {
       const samples = [];
       for (let k = 0; k < 3; k++) {
         // come from the model each time so a stale "not click-through" state has to be undone
-        const onModel = os('hit', mx, my, 1.0);
+        const onModel = os('hit', mx, my, 1.0, PET_TITLE);
         r.modelPositiveControl.push({ clickThrough: onModel.clickThrough, wsExTransparent: onModel.wsExTransparent });
-        const at = os('hit', tx, ty, 1.2);
+        const at = os('hit', tx, ty, 1.2, PET_TITLE);
         samples.push({ clickThrough: at.clickThrough, wsExTransparent: at.wsExTransparent });
       }
       const el = await c.eval(`return window.__visitProbe.elementAt(${tcx}, ${tcy});`);
