@@ -56,6 +56,8 @@ function _nekoShouldSelfHealLive2D() {
             return false;
         }
         if (window.location && String(window.location.pathname || '').includes('model_manager')) return false;
+        // 小游戏 / 卡片导出页自己挂载模型，空 cubism4Model 是正常态（与 vrm-init / mmd-init 的跳过一致）。
+        if (window._cardExportPage) return false;
         const mt = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
         const sub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
         if (mt === 'pngtuber' || mt === 'vrm') return false;
