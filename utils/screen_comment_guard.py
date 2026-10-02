@@ -87,9 +87,9 @@ _LABEL_STRIP = regex.compile(
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
-# Spans no label is looked for in: a URL up to whitespace or closing
-# punctuation, and a Markdown link target "](...)". Paths in them may name a
-# label ("https://host/屏幕搭话：a.png").
+# Spans no label is looked for in: a URL up to whitespace, closing punctuation
+# or a sentence end ("…", "～"), and a Markdown link target "](...)". Paths in
+# them may name a label ("https://host/屏幕搭话：a.png").
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 # A URL may also come without its scheme: protocol-relative with any host
 # ("//cdn.host/", "//192.168.1.10/", "//[::1]/", "//localhost/") or a bare
@@ -98,7 +98,7 @@ _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
     r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=/)"
     r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/))"
-    r"(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
+    r"(?:[^\s<>\"'()\]】）」』，。！？；、…～]|(?&paren))+"
     r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
 )

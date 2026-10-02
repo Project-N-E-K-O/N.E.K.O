@@ -214,6 +214,14 @@ def test_a_label_inside_a_url_is_neither_removed_nor_a_chain_marker():
     assert project_screen_history(messages)[1]["content"] == text[len("屏幕搭话："):]
 
 
+@pytest.mark.parametrize("address", ["//localhost:8080/a.png", "10.0.0.2/a.png", "https://host/a.png"])
+@pytest.mark.parametrize("stop", ["～", "…"])
+def test_a_url_ends_at_sentence_punctuation_before_the_next_label(address, stop):
+    text = "屏幕搭话：" + PARTS[0] + address + stop + "屏幕搭话：" + PARTS[1]
+    messages = [_user("聊"), _assistant(text), _user("继续")]
+    assert project_screen_history(messages)[1]["content"] == PARTS[0] + address + stop
+
+
 def test_a_chain_cut_keeps_the_whitespace_around_what_stays():
     messages = [_user("聊"), _assistant("\n\n" + chain("屏幕搭话：")), _user("继续")]
     assert project_screen_history(messages)[1]["content"] == "\n\n" + FIRST
