@@ -844,3 +844,15 @@ def test_unknown_trunc_reason_is_forward_compatible():
     too_long = dict(msg, trunc_reason="x" * 33)
     bad = vw.decode_msg(json.dumps(too_long), cmd=2)
     assert bad["t"] == "_invalid" and bad["seq"] == msg["seq"]
+
+
+def test_inbound_delta_is_measured_in_its_escaped_wire_form():
+    """A peer delta whose compact JSON fits 900 B but whose envelope-escaped form
+    does not is rejected, so every accepted delta really is one piece."""
+    msg = _delta_msg('"' * 380, i=1)
+    compact = json.dumps(msg, ensure_ascii=False, separators=(",", ":"))
+    assert len(compact.encode("utf-8")) <= 900
+    with pytest.raises(ValueError):
+        vw.decode_msg(compact, cmd=2)
+    ok = _delta_msg("好" * 200, i=1)
+    assert vw.decode_msg(json.dumps(ok, ensure_ascii=False), cmd=2)["t"] == "line_delta"

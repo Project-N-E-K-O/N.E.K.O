@@ -915,7 +915,9 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
             soft.append("tail_ms")
     elif t == "line_delta":
         try:
-            size = len(_dumps(raw).encode("utf-8"))
+            # 与 encode_msg / line_delta_encoded_len 同一口径：payload JSON 再作为信封 p
+            # 转义一次后的字节；只量 JSON 会放过引号 / 反斜杠密集、实际要分多片的 delta
+            size = _esc_len(_dumps(raw))
         except (ValueError, TypeError, UnicodeEncodeError):
             size = VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES + 1
         if size > VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES:

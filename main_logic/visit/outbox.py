@@ -395,7 +395,12 @@ class VisitOutbox:
         return line.next_i if line is not None else 0
 
     def line_i_done(self, ln: str) -> int:
-        """Pieces of ``ln`` transmitted plus still queued: the ``i_done`` a ``text`` sent now gets."""
+        """Pieces of ``ln`` transmitted plus still queued (an upper bound for ``i_done``).
+
+        The ``text`` gets this value when queued; the authoritative value is
+        written when the ``text`` is first transmitted (queued pieces of the
+        line may still be dropped as stale before then).
+        """
         line = self._lines.get(ln)
         return (line.next_i + line.queued) if line is not None else 0
 
@@ -590,8 +595,9 @@ class VisitOutbox:
             prev.payload["txt"] = prev.payload["txt"] + txt
             prev.last_release = now
             return
-        if line.next_i + line.queued > VISIT_LINE_DELTA_MAX_I:
-            # 一行最多放出 256 片，之后的内容只进 text{final}
+        if line.next_i + line.queued >= VISIT_LINE_DELTA_MAX_I:
+            # 一行最多放出 255 片（i 取 0..254），i_done 才落在 schema 的 ≤255 内；
+            # 之后的内容只进 text{final}
             self.dropped_lossy += 1
             return
         line.queued += 1
@@ -618,8 +624,9 @@ class VisitOutbox:
 
     def _droppable(self, item: _Item) -> bool:
         if item.t == "line_delta":
-            line = self._lines.get(str(item.ln))
-            return line is not None and not line.closed
+            # 已收口的行同样可以作废积压的字幕片：本行 text 的 i_done 在它首次
+            # 真正发出时才按已发出片数定（见 due()），作废不会让 i_done 失真
+            return str(item.ln) in self._lines
         return item.cmd == cmd_of("typing")
 
     def _drop(self, item: _Item) -> None:
@@ -773,6 +780,18 @@ class VisitOutbox:
             return []
         out: list[OutboundFrame] = []
 
+        # ⓪ leave 一入队就最先发：5 s 宽限从入队起算，排在重传或首发队列后面
+        # 可能宽限耗尽了 leave 自己都没发出去
+        leave = self._unacked.get(self._leave_seq) if self._leave_seq is not None else None
+        if leave is not None and leave.emitted == 0:
+            if not self._fits(leave):
+                return out
+            self._charge(leave)
+            if leave in self._queue:
+                self._queue.remove(leave)
+            self._transmitted(leave, now)
+            out.append(self._frame(leave, retransmit=False))
+
         # ① 立即重发：已确认 hello 的按需重发 + leave / 恢复 / 重载重排的未确认项
         while self._oneshot:
             item = self._oneshot[0]
@@ -843,6 +862,9 @@ class VisitOutbox:
                 line.queued -= 1
                 line.last_emit = now
             elif item.seq:
+                if item.t == "text" and item.emitted == 0:
+                    # 同行 delta 都排在 text 之前（FIFO），此刻它们要么已发出、要么已作废
+                    item.payload["i_done"] = self._lines[str(item.ln)].next_i
                 self._transmitted(item, now)
             out.append(self._frame(item, retransmit=False))
         self._queue = remaining

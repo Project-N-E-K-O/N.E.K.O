@@ -707,3 +707,39 @@ def test_frame_to_ws_shape(tmp_path):
     assert ws["type"] == "send" and ws["cmd"] == 2 and ws["payload"]["seq"] == 1
     ws["payload"]["txt"] = "mutated"
     assert tx.due(1.0)[0].payload["txt"] == "hello"
+
+
+def test_a_line_emits_at_most_255_pieces_so_i_done_fits_the_schema(tmp_path):
+    tx = make_outbox(tmp_path, delivery_timeout_s=10_000)
+    sent = 0
+    t = 0.0
+    for n in range(300):
+        tx.send(delta("h:1", f"{n},", first=(n == 0)), now=t, final_piece=True)
+        sent += sum(1 for f in tx.due(t) if f.t == "line_delta")
+        t += 0.3
+    assert tx.send(text(1, txt="x"), now=t) == 1     # 不会因 i_done=256 抛错
+    frames = [f for f in tx.due(t) if f.t == "text"]
+    assert sent == 255
+    assert frames and frames[0].payload["i_done"] == 255
+
+
+def test_stale_deltas_of_a_closed_line_are_dropped_and_i_done_follows(tmp_path):
+    # 暂停期间整行（delta + text）都排进队列，恢复时已超 10 s：字幕片作废，
+    # text 不被旧字幕堵住，i_done 等于实际发出的 0 片
+    tx = make_outbox(tmp_path, peer_present=False)
+    for n in range(6):
+        tx.send(delta("h:1", f"part{n}", first=(n == 0)), now=0.0 + n * 0.3, final_piece=True)
+    tx.send(text(1, txt="part0part1part2part3part4part5"), now=2.0)
+    tx.resume(15.0, PAUSE_PEER_ABSENT)
+    frames = tx.due(15.0)
+    assert [f.t for f in frames] == ["text"]
+    assert frames[0].payload["i_done"] == 0
+
+
+def test_leave_is_sent_first_even_behind_queued_traffic(tmp_path):
+    tx = make_outbox(tmp_path, delivery_timeout_s=10_000)
+    for n in range(1, 4):
+        tx.send(text(n, txt="好" * 1300), now=0.0)
+    tx.send({"t": "leave", "reason": "ended"}, now=0.0)
+    frames = tx.due(0.0)
+    assert frames and frames[0].t == "leave"
