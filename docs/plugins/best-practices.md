@@ -198,8 +198,9 @@ async function csrfHeaders() {
   try {
     return { 'X-CSRF-Token': await tokenPromise }
   } catch (error) {
+    // Tokenless page writes are accepted by default: keep working, retry later.
     tokenPromise = null
-    throw error
+    return {}
   }
 }
 
@@ -212,6 +213,7 @@ await fetch('/runs', {
 
 - Pages that do not send the token keep working by default: the host only checks that the request comes from a trusted origin. Published market plugins are not broken by this change.
 - The token is an option for public deployments. When a deployer sets `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`, pages without it get `403` with `csrf_validation_failed`.
+- If fetching the token fails, send the request without it (as in the example) instead of blocking the action; the host accepts it by default.
 - A token you send must be valid. On a `403` whose `detail.csrf_failure` is `"token"`, clear the cached token, fetch it again and retry once.
 - Hosted TSX surfaces call actions through `props.api`, which already sends the token.
 

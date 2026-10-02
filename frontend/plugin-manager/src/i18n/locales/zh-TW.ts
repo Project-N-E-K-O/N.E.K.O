@@ -823,6 +823,7 @@ export default {
     serviceUnavailable: '服務不可用',
     networkError: '網路錯誤，請檢查網路連線',
     requestTimeout: '請求逾時，請稍後重試',
+    csrfBootstrapFailed: '無法取得安全權杖。如使用反向代理，請確認已將 /security/csrf-token 轉發到外掛服務。',
     pluginLifecycleTimeout: '外掛啟動或重載逾時，請查看外掛日誌'
   },
   welcome: {

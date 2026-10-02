@@ -196,8 +196,9 @@ async function csrfHeaders() {
   try {
     return { 'X-CSRF-Token': await tokenPromise }
   } catch (error) {
+    // Tokenless page writes are accepted by default: keep working, retry later.
     tokenPromise = null
-    throw error
+    return {}
   }
 }
 
@@ -210,6 +211,7 @@ await fetch('/runs', {
 
 - トークンを送らないページも既定では引き続き動作します。ホストはリクエストが信頼できるオリジンから来たかだけを確認します。マーケットで公開済みのプラグインがこの変更で動かなくなることはありません。
 - トークンは公開環境にデプロイする人向けのオプションです。`NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` を設定すると、トークンを送らないページは `403`（`csrf_validation_failed`）になります。
+- トークンの取得に失敗した場合は、例のようにトークンなしでリクエストを送り、操作を止めないでください。ホストは既定で受け付けます。
 - 送るトークンは正しい値でなければなりません。`detail.csrf_failure` が `"token"` の `403` を受け取ったら、キャッシュしたトークンを破棄して取り直し、1 回だけ再試行してください。
 - Hosted TSX の画面は `props.api` 経由でアクションを呼ぶため、トークンは自動で付きます。
 

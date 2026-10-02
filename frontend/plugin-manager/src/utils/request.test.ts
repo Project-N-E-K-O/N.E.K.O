@@ -516,7 +516,7 @@ describe('CSRF bootstrap error policy', () => {
     bootstrap.mockRestore()
   })
 
-  it('uses the existing translated failure message for invalid bootstrap data', async () => {
+  it('explains an invalid bootstrap response instead of a generic failure', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockResolvedValue({ data: {} } as any)
     const adapter = vi.fn()
@@ -524,7 +524,60 @@ describe('CSRF bootstrap error policy', () => {
       message: 'messages.requestFailed', config: { csrfBootstrapFailed: true },
     })
     expect(adapter).not.toHaveBeenCalled()
-    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.requestFailed')
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.csrfBootstrapFailed')
+    bootstrap.mockRestore()
+  })
+
+  it('explains a missing bootstrap route instead of failing silently', async () => {
+    // A self-hosted proxy that does not forward /security/csrf-token answers 404.
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('Not Found'), {
+      isAxiosError: true, request: {},
+      response: { status: 404, data: {}, headers: {} },
+      config: { url: '/security/csrf-token', method: 'get' },
+    }))
+    const adapter = vi.fn()
+    await expect(fresh.post('/plugin/demo/stop', {}, { adapter })).rejects.toMatchObject({
+      config: { csrfBootstrapFailed: true },
+    })
+    expect(adapter).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.csrfBootstrapFailed')
+    bootstrap.mockRestore()
+  })
+
+  it('still sends mutations that do not require the token when bootstrap fails', async () => {
+    // Read-only POSTs and plugin-page routes are accepted without a token by
+    // default; a failed bootstrap must not block them.
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap down'))
+    const sentTokens: unknown[] = []
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      sentTokens.push(AxiosHeaders.from(config.headers).get('X-CSRF-Token') ?? null)
+      return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config, request: {} }
+    })
+    for (const url of ['/plugin/demo/config/parse_toml', '/api/model-config/slots', '/runs']) {
+      await expect(fresh.post(url, {}, { adapter })).resolves.toEqual({ ok: true })
+    }
+    expect(sentTokens).toEqual([null, null, null])
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    bootstrap.mockRestore()
+  })
+
+  it('explains a token rejection of a tokenless request after bootstrap failed', async () => {
+    // Strict deployments (NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN) reject the
+    // tokenless request; the user should learn why.
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap down'))
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      throw Object.assign(new Error('CSRF rejected'), {
+        config, isAxiosError: true,
+        response: { status: 403, data: { detail: { error_code: 'csrf_validation_failed', csrf_failure: 'token' } },
+          headers: { 'X-Error-Code': 'csrf_validation_failed', 'X-CSRF-Failure': 'token' } },
+      })
+    })
+    await expect(fresh.post('/runs', {}, { adapter })).rejects.toMatchObject({ response: { status: 403 } })
+    expect(adapter).toHaveBeenCalledTimes(2)
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.csrfBootstrapFailed')
     bootstrap.mockRestore()
   })
 

@@ -1043,8 +1043,12 @@
       try {
         return { "X-CSRF-Token": await csrfTokenPromise };
       } catch (error) {
+        // The server accepts tokenless plugin-page writes by default, so a
+        // missing bootstrap (e.g. a proxy without /security/csrf-token)
+        // must not block the request. Retry the bootstrap next time.
         csrfTokenPromise = null;
-        throw error;
+        console.warn("CSRF token unavailable; sending without it:", error);
+        return {};
       }
     }
     // 500MB 是浏览器安全的上限（readAsDataURL 会把文件整体加载到内存 + 约 33% base64 膨胀）

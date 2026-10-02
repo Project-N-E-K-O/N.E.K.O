@@ -22,6 +22,8 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   csrfRetryAttempted?: boolean
   /** Bootstrap errors carry caller display options but cannot retry a mutation. */
   csrfBootstrapFailed?: boolean
+  /** A best-effort mutation was sent without a token because bootstrap failed. */
+  csrfTokenUnavailable?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -159,14 +161,42 @@ function isMutationMethod(method: unknown): boolean {
   return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
 }
 
+function requestPath(url: unknown): string {
+  if (typeof url !== 'string') return ''
+  try {
+    return new URL(url, API_BASE_URL || 'http://localhost').pathname
+  } catch {
+    return url.split(/[?#]/, 1)[0] ?? ''
+  }
+}
+
+/**
+ * Mirrors the plugin server routes that always require the token
+ * (PluginMutationGuardedRoute / require_plugin_mutation_access): lifecycle
+ * actions and plugin-cli package build/import, including legacy aliases.
+ * Without a token the server rejects these, so a failed bootstrap stops them
+ * before the request (and any package body) is sent.
+ */
+function requiresCsrfToken(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
+  if (!isMutationMethod(config.method)) return false
+  const path = requestPath(config.url)
+  const method = config.method?.toLowerCase()
+  if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path) || path === '/plugin-cli/upload'
+  return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
+    || /^\/plugins\/(?:refresh|reload)$/.test(path)
+    || (method === 'post'
+      && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack|build|pack)$/.test(path))
+}
+
 /**
  * Fetch the per-process mutation token once, sharing concurrent callers.
  *
- * The plugin server guards its state-changing routes (lifecycle, package
- * import, config, model config, runs/uploads, plugin UI actions). Every
- * mutation carries the token so a newly guarded route cannot miss it;
- * read-only POSTs ignore the header. Shared bootstrap has its own
- * API_TIMEOUT; lifecycle timeouts apply after it.
+ * Every mutation carries the token when it is available, so deployments that
+ * set NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN keep working. Only the routes in
+ * requiresCsrfToken() fail closed on a bootstrap failure; other mutations
+ * (plugin-page routes, read-only POSTs) are sent without it and the server
+ * decides. Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts
+ * apply after it.
  */
 function loadCsrfToken(): Promise<string> {
   if (csrfToken) return Promise.resolve(csrfToken)
@@ -252,12 +282,17 @@ const service: AxiosInstance = axios.create({
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     if (isMutationMethod(config.method)) {
-      // Mutations are fail-closed: bootstrap failure means the original
-      // state-changing request is never sent.
       let token: string
       try {
         token = await loadCsrfToken()
       } catch (cause) {
+        if (!requiresCsrfToken(config)) {
+          // The server does not require the token here by default; send the
+          // request and let a later token rejection explain the bootstrap.
+          ;(config as ErrorDisplayRequestConfig).csrfTokenUnavailable = true
+          return stripJsonContentTypeForFormData(config)
+        }
+        // Token-required calls are fail-closed: the original request is never sent.
         // Bootstrap is shared by concurrent callers. Create a separate error
         // for each caller instead of mutating its shared config/display policy.
         const source = axios.isAxiosError(cause) ? cause : undefined
@@ -329,7 +364,19 @@ service.interceptors.response.use(
 
     let message = i18n.global.t('messages.requestFailed')
     let confirmedDisconnected = false
-    
+
+    // A failed token bootstrap (404 from a proxy without the route, 403,
+    // invalid body) is not the original operation's status: say so instead
+    // of the generic or silent 403/404 handling. Timeouts keep their message.
+    const tokenRejectedAfterBootstrapFailure = Boolean(requestConfig?.csrfTokenUnavailable)
+      && error.response?.status === 403 && readErrorCode(error) === 'csrf_validation_failed'
+    if ((requestConfig?.csrfBootstrapFailed && !isRequestTimeout(error)) || tokenRejectedAfterBootstrapFailure) {
+      if (!suppressErrorMessage) {
+        ElMessage.error(i18n.global.t('messages.csrfBootstrapFailed'))
+      }
+      return Promise.reject(error)
+    }
+
     if (error.response) {
       try {
         const connectionStore = useConnectionStore()

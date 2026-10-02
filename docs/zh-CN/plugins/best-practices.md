@@ -197,8 +197,9 @@ async function csrfHeaders() {
   try {
     return { 'X-CSRF-Token': await tokenPromise }
   } catch (error) {
+    // Tokenless page writes are accepted by default: keep working, retry later.
     tokenPromise = null
-    throw error
+    return {}
   }
 }
 
@@ -211,6 +212,7 @@ await fetch('/runs', {
 
 - 默认情况下，不带 token 的页面仍可正常使用：宿主只校验请求是否来自可信来源。市场中已发布的插件不会因此失效。
 - token 是公网部署者的可选项。部署者设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，不带 token 的页面会收到 `403`（`csrf_validation_failed`）。
+- 获取 token 失败时，像示例那样不带 token 照常发请求，不要拦下操作；宿主默认接受。
 - 一旦发送 token，就必须正确。收到 `403` 且 `detail.csrf_failure` 为 `"token"` 时，清掉缓存的 token，重新获取后重试一次。
 - Hosted TSX 界面通过 `props.api` 调用动作，已自动携带 token，无需额外处理。
 

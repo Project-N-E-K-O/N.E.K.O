@@ -18,8 +18,12 @@ async function mutationHeaders() {
     try {
         return { 'X-CSRF-Token': await csrfTokenPromise };
     } catch (error) {
+        // The server accepts tokenless plugin-page writes by default, so a
+        // missing bootstrap (e.g. a proxy without /security/csrf-token)
+        // must not block the request. Retry the bootstrap next time.
         csrfTokenPromise = null;
-        throw error;
+        console.warn('CSRF token unavailable; sending without it:', error);
+        return {};
     }
 }
 

@@ -823,6 +823,7 @@ export default {
     serviceUnavailable: '서비스를 사용할 수 없습니다',
     networkError: '네트워크 오류. 연결을 확인하세요.',
     requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    csrfBootstrapFailed: '보안 토큰을 가져올 수 없습니다. 리버스 프록시를 사용하는 경우 /security/csrf-token이 플러그인 서버로 전달되는지 확인하세요.',
     pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {

@@ -823,6 +823,7 @@ export default {
     serviceUnavailable: '服务不可用',
     networkError: '网络错误，请检查网络连接',
     requestTimeout: '请求超时，请稍后重试',
+    csrfBootstrapFailed: '无法获取安全令牌。如使用反向代理，请确认已将 /security/csrf-token 转发到插件服务。',
     pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {
