@@ -170,9 +170,10 @@ async function phaseT1(c, targets) {
       r.chatObserver = await chat.eval(`
         const s = window.appState && window.appState.socket;
         if (!s) throw new Error('Chat window has no appState.socket to observe');
+        // reset on every run: a failed earlier attempt in the same Chat page may have left counts behind
+        window.__probeConnecting = 0;
         if (!s.__probeWrapped) {
           const orig = s._handleConnecting;
-          window.__probeConnecting = 0;
           s._handleConnecting = function () { window.__probeConnecting++; return orig && orig.apply(this, arguments); };
           s.__probeWrapped = true;
         }
@@ -264,7 +265,9 @@ async function measureWindow(c, ms) {
     frame: [o1.frameWidth, o1.frameHeight],
     codec: o1.codec, encoderImplementation: o1.encoderImplementation, qualityLimitationReason: o1.qualityLimitationReason,
     kbps: +(((o1.bytesSent - o0.bytesSent) * 8) / dt / 1000).toFixed(1),
-    packMsAvg: s1.rtc.stat.packMsAvg, packMsMax: +s1.rtc.stat.packMsMax.toFixed(2),
+    // per-window packing cost (the sink stats are cumulative across modes in the same iframe)
+    packMsAvg: (s1.rtc.stat.onFrame - s0.rtc.stat.onFrame) > 0 ? +((s1.rtc.stat.packMsSum - s0.rtc.stat.packMsSum) / (s1.rtc.stat.onFrame - s0.rtc.stat.onFrame)).toFixed(3) : null,
+    packMsAvgCumulative: s1.rtc.stat.packMsAvg, packMsMaxCumulative: +s1.rtc.stat.packMsMax.toFixed(2),
     guardedStage: s1.hook.guardedStage - s0.hook.guardedStage, guardedRT: s1.hook.guardedRT - s0.hook.guardedRT,
     modeChanges: s1.trace,
     mode: { idleTickMode: s1.env.idleTickMode, idleTickFps: s1.env.idleTickFps, tickerStarted: s1.env.tickerStarted, tickerMaxFPS: s1.env.tickerMaxFPS, refreshHz: s1.env.refreshHz },
