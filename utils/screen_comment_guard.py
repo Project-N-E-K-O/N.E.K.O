@@ -243,24 +243,55 @@ def _non_text_parts(message) -> list:
     return [part for part in content if not _is_text_part(part)]
 
 
+def _split_over(texts, text):
+    """``text`` split back over the text parts it came from, or ``None``.
+
+    A rewrite removes labels and may cut the joined text at a sentence end,
+    so it is a prefix of the parts with their labels removed. Anything else
+    (``None``) falls back to one text slot.
+    """
+    remaining, pieces = text, []
+    for original in texts:
+        if pieces:
+            remaining = remaining.lstrip("\n")
+        core = _strip_labels(original).strip()
+        if not remaining or not core:
+            pieces.append("")
+        elif remaining.startswith(core):
+            pieces.append(core)
+            remaining = remaining[len(core):]
+        elif core.startswith(remaining):
+            pieces.append(remaining)
+            remaining = ""
+        else:
+            return None
+    return pieces if not remaining.strip() else None
+
+
 def _with_text(message, text):
     """``message`` showing ``text``; non-text parts of list content stay.
 
-    The text takes the slot of the first text part, so the order of text and
-    images is kept.
+    Text keeps its slots among images: each text part gets its share of the
+    rewrite, or, when the rewrite cannot be split back, the first text slot
+    takes all of it.
     """
     if not _non_text_parts(message):
         return _with_content(message, text)
     _, content = _role_and_content(message)
-    parts, placed = [], False
+    texts = [part["text"] for part in content if _is_text_part(part)]
+    pieces = _split_over(texts, text) if text else [""] * len(texts)
+    if pieces is None:
+        pieces = [text] + [""] * (len(texts) - 1)
+    pieces = iter(pieces)
+    parts = []
     for part in content:
         if not _is_text_part(part):
             parts.append(part)
-        elif not placed:
-            placed = True
-            if text:
-                parts.append({**part, "text": text})
-    if text and not placed:
+        else:
+            piece = next(pieces)
+            if piece:
+                parts.append({**part, "text": piece})
+    if text and not texts:
         parts.insert(0, {"type": "text", "text": text})
     return _with_content(message, parts)
 

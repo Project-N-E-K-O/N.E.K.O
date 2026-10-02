@@ -210,6 +210,43 @@ def test_a_rewritten_text_part_keeps_its_place_among_images():
     assert content == [image, {"type": "text", "text": PARTS[0]}, later]
 
 
+def test_text_parts_split_by_an_image_each_keep_their_slot():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+
+    def text(value):
+        return {"type": "text", "text": value}
+
+    labelled = [text("屏幕搭话：看这张。"), image, text("屏幕搭话：再看这张，挺好的。")]
+    assert project_screen_history([_assistant_parts(labelled), _user("继续")])[0]["content"] == [
+        text("看这张。"), image, text("再看这张，挺好的。"),
+    ]
+    chained = [text("屏幕搭话：" + PARTS[0]), image, text("屏幕搭话：" + PARTS[1])]
+    content = project_screen_history([_assistant_parts(chained), _user("继续")])[0]["content"]
+    assert content[1:] == [image]
+    _assert_cut_to_first_comment(content[0]["text"])
+
+
+def _assistant_parts(parts):
+    return {"role": "assistant", "content": parts}
+
+
+def test_a_cache_with_equal_display_names_is_rendered_unchanged(monkeypatch):
+    """The cache keys lines by display name (its writers even merge
+    neighbouring lines by it). When the user's equals the character's,
+    every line reads as the user's, so nothing is cut: the guard fails open
+    there, as with the operator switch off."""
+    from types import SimpleNamespace
+
+    from main_logic.core.notify import NotifyMixin
+
+    monkeypatch.delenv(SCREEN_GUARD_ENV, raising=False)
+    owner = SimpleNamespace(lanlan_name="YUI", master_name="YUI", user_language="zh")
+    cache = [{"role": "YUI", "text": "陪我聊聊"}, {"role": "YUI", "text": _COMMENT_A + _COMMENT_B}]
+    assert NotifyMixin._convert_cache_to_str(owner, cache).splitlines() == [
+        "YUI | 陪我聊聊", f"YUI | {_COMMENT_A + _COMMENT_B}",
+    ]
+
+
 def test_label_removal_is_idempotent_and_reported():
     hits = {}
     once = project_screen_history(
