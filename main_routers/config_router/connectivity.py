@@ -35,6 +35,15 @@ _MIMO_TOKEN_PLAN_HOSTS = {
 }
 
 
+def _is_mimo_token_plan_url(url: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    # Token Plan 的 Key 不能走明文：主机名对上但不是 https 的地址同样拒绝。
+    return parts.scheme.lower() == "https" and (parts.hostname or "").lower() in _MIMO_TOKEN_PLAN_HOSTS
+
+
 # ---------------------------------------------------------------------------
 # Connectivity Test Models & Endpoint
 # ---------------------------------------------------------------------------
@@ -904,8 +913,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
         elif req.url and req.url.strip():
             override_url = req.url.strip()
-            override_host = (urllib.parse.urlsplit(override_url).hostname or "").lower()
-            if scope != "assist" or provider_key != "mimo" or override_host not in _MIMO_TOKEN_PLAN_HOSTS:
+            if scope != "assist" or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
                 return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
             url_stripped = override_url
             url_candidates = [url_stripped]

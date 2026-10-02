@@ -62,10 +62,10 @@
 
 設定 UI は mask された key しか持たないため、保存済み key はこの endpoint が解決します。制約は 2 つです：
 
-- Built-in provider：endpoint は常に `config/api_providers.json` から取ります（MiMo の Token Plan node への切り替えのみ可）。`api_key` が mask または空なら、API Key Book の該当 provider の key を使います。
+- Built-in provider：endpoint は常に `config/api_providers.json` から取ります（MiMo の Token Plan node への切り替えのみ可、HTTPS 限定）。`api_key` が mask または空なら、API Key Book の該当 provider の key を使います。
 - Custom endpoint：HTTP(S) URL のみ受け付けます。`api_key` が mask の場合、`url` がその slot に保存済みの endpoint と一致するときだけ保存済み `<model_type>ModelApiKey` を再利用し、それ以外は `key_required` を返します。
 
-成功時は `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}` を id 順で返し、`name` は upstream が名前を返した場合のみ含まれます。失敗時は HTTP `200` と `success: false` に加え、`unsupported`（無料版・固定モデル provider・WebSocket endpoint・`/models` なし）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` などの `error_code` を返します。
+成功時は `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}` を id 順で返し、`name` は upstream が名前を返した場合のみ含まれます。`models/` prefix を外すのは Gemini の endpoint のみで、他の id はそのまま返します。失敗時は HTTP `200` と `success: false` に加え、`unsupported`（無料版・固定モデル provider・WebSocket endpoint・`/models` なし）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` などの `error_code` を返します。
 
 ### Core provider
 

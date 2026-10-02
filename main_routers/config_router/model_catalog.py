@@ -17,11 +17,11 @@
 
 from ._shared import logger, router
 from .connectivity import (
-    _MIMO_TOKEN_PLAN_HOSTS,
     _classify_anthropic_error,
     _classify_openai_error,
     _get_save_provider_api_key,
     _identify_provider_label,
+    _is_mimo_token_plan_url,
     _normalize_provider_type,
     _normalize_provider_url_candidates,
 )
@@ -38,7 +38,8 @@ from utils.http.url import same_endpoint
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
 # OpenRouter 一类聚合平台有数百个模型，前端下拉只需要 id，封顶防止响应失控。
 _MODEL_LIST_MAX_ITEMS = 2000
-# Gemini 的 OpenAI 兼容层列表 id 形如 models/gemini-2.5-flash，而请求体只认裸名。
+# Gemini 的 OpenAI 兼容层列表 id 形如 models/gemini-2.5-flash，请求时用裸名；别家端点的 id 原样保留。
+_GEMINI_OPENAI_HOST = "generativelanguage.googleapis.com"
 _GEMINI_MODEL_ID_PREFIX = "models/"
 
 
@@ -71,6 +72,13 @@ def _is_http_url(url: str) -> bool:
         return False
 
 
+def _is_gemini_openai_url(url: str) -> bool:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower() == _GEMINI_OPENAI_HOST
+    except Exception:
+        return False
+
+
 def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: dict) -> dict[str, Any]:
     """Resolve urls/key/protocol for a built-in assist provider."""
     provider_key = (req.provider_key or "").strip()
@@ -84,13 +92,11 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
     resolved_url_key = f"assist:{provider_key}"
     use_token_plan = False
     override_url = (req.url or "").strip()
-    if override_url:
-        override_host = (urllib.parse.urlsplit(override_url).hostname or "").lower()
-        # 前端只能把 MiMo 切到 Token Plan 节点；其他服务商的地址一律以 api_providers.json 为准。
-        if provider_key == "mimo" and override_host in _MIMO_TOKEN_PLAN_HOSTS:
-            urls = [override_url]
-            use_token_plan = True
-            resolved_url_key = "assist:mimo_token_plan"
+    # 前端只能把 MiMo 切到 HTTPS 的 Token Plan 节点；其他服务商的地址一律以 api_providers.json 为准。
+    if override_url and provider_key == "mimo" and _is_mimo_token_plan_url(override_url):
+        urls = [override_url]
+        use_token_plan = True
+        resolved_url_key = "assist:mimo_token_plan"
 
     resolved_urls = core_cfg.get("resolvedProviderUrls")
     saved_url = (
@@ -150,12 +156,14 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
     }
 
 
-def _normalize_model_entries(raw_models: list[dict[str, str]]) -> list[dict[str, str]]:
+def _normalize_model_entries(
+    raw_models: list[dict[str, str]], *, strip_gemini_prefix: bool
+) -> list[dict[str, str]]:
     """Strip, de-duplicate and sort the upstream entries by id."""
     entries: dict[str, dict[str, str]] = {}
     for item in raw_models:
         model_id = str(item.get("id") or "").strip()
-        if model_id.startswith(_GEMINI_MODEL_ID_PREFIX):
+        if strip_gemini_prefix and model_id.startswith(_GEMINI_MODEL_ID_PREFIX):
             model_id = model_id[len(_GEMINI_MODEL_ID_PREFIX):]
         if not model_id or model_id in entries:
             continue
@@ -206,7 +214,7 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     except Exception as exc:
         return _classify_model_list_error(exc, provider_type)
 
-    models = _normalize_model_entries(raw_models)
+    models = _normalize_model_entries(raw_models, strip_gemini_prefix=_is_gemini_openai_url(url))
     if not models:
         return _failure("empty", "上游没有返回任何模型")
     return {"success": True, "models": models, "resolved_url": url}

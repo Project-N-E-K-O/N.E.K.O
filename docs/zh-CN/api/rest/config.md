@@ -62,10 +62,10 @@
 
 设置页只持有掩码后的密钥，因此由该接口自行解析已保存的密钥，并有两条限制：
 
-- 内置 provider：端点只取自 `config/api_providers.json`（仅 MiMo 可切换到 Token Plan 节点）；`api_key` 为掩码或为空时，使用 API 管理簿中该 provider 的 Key。
+- 内置 provider：端点只取自 `config/api_providers.json`（仅 MiMo 可切换到 Token Plan 节点，且必须是 HTTPS）；`api_key` 为掩码或为空时，使用 API 管理簿中该 provider 的 Key。
 - 自定义端点：只接受 HTTP(S) URL；`api_key` 为掩码时，只有 `url` 与该槽位已保存的端点一致，才会复用已保存的 `<model_type>ModelApiKey`，否则返回 `key_required`。
 
-成功时返回 `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}`，按 id 排序；上游提供名称时才有 `name`。失败时返回 HTTP `200` 加 `success: false`，`error_code` 可能为 `unsupported`（免费版、固定模型 provider、WebSocket 端点或上游没有 `/models`）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` 等。
+成功时返回 `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}`，按 id 排序；上游提供名称时才有 `name`。只有 Gemini 端点会去掉 `models/` 前缀，其他端点的 id 原样返回。失败时返回 HTTP `200` 加 `success: false`，`error_code` 可能为 `unsupported`（免费版、固定模型 provider、WebSocket 端点或上游没有 `/models`）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` 等。
 
 ### 核心 provider
 

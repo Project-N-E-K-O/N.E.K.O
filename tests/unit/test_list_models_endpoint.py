@@ -182,6 +182,23 @@ class TestBuiltinProvider:
         assert fetch_calls[0]['api_key'] == 'tp-mimo'
 
     @pytest.mark.unit
+    def test_plain_http_token_plan_url_never_gets_the_token_plan_key(self, config_manager, model_catalog, fetch_calls):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-mimo',
+            'assistApiKeyMimoTokenPlan': 'tp-mimo',
+            'useMimoTokenPlan': True,
+        })
+
+        _run(model_catalog, provider_key='mimo', url='http://token-plan-cn.xiaomimimo.com/v1', api_key=_SENTINEL)
+
+        assert len(fetch_calls) == 1
+        assert fetch_calls[0]['url'].startswith('https://')
+        assert 'token-plan' not in fetch_calls[0]['url']
+        assert fetch_calls[0]['api_key'] == 'sk-mimo'
+
+    @pytest.mark.unit
     def test_anthropic_provider_keeps_its_protocol(self, config_manager, model_catalog, fetch_calls):
         _write_core_config(config_manager, {'coreApi': 'qwen', 'assistApi': 'claude'})
 
@@ -273,13 +290,21 @@ class TestNormalization:
             {'id': '  Zeta-Model  ', 'name': 'Zeta-Model'},
             {'id': 'alpha', 'name': ''},
             {'id': '   ', 'name': 'blank'},
-        ])
+        ], strip_gemini_prefix=True)
 
         assert entries == [
             {'id': 'alpha'},
             {'id': 'gemini-2.5-flash', 'name': 'Gemini 2.5 Flash'},
             {'id': 'Zeta-Model'},
         ]
+
+    @pytest.mark.unit
+    def test_models_prefix_is_kept_unless_asked_to_strip(self, model_catalog):
+        entries = model_catalog._normalize_model_entries(
+            [{'id': 'models/example'}, {'id': 'example'}], strip_gemini_prefix=False,
+        )
+
+        assert entries == [{'id': 'example'}, {'id': 'models/example'}]
 
 
 class _FakeCatalogClient:
@@ -325,6 +350,17 @@ class TestFetchModels:
         assert client.closed is True
         assert client.kwargs['max_retries'] == 0
         assert client.kwargs['timeout'] > 0
+
+    @pytest.mark.unit
+    def test_only_the_gemini_endpoint_drops_the_models_prefix(self, model_catalog, monkeypatch):
+        _patch_client(monkeypatch, 'ChatOpenAI', raw_models=[{'id': 'models/gemini-2.5-flash'}])
+
+        gemini = asyncio.run(model_catalog._fetch_models(
+            'https://generativelanguage.googleapis.com/v1beta/openai/', 'sk', 'openai_compatible'))
+        other = asyncio.run(model_catalog._fetch_models('https://x.example.test/v1', 'sk', 'openai_compatible'))
+
+        assert gemini['models'] == [{'id': 'gemini-2.5-flash'}]
+        assert other['models'] == [{'id': 'models/gemini-2.5-flash'}]
 
     @pytest.mark.unit
     def test_anthropic_fetch_uses_the_anthropic_client(self, model_catalog, monkeypatch):
