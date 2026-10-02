@@ -197,6 +197,19 @@ def test_non_text_parts_of_a_rewritten_message_stay():
     assert label_only["content"] == [image]
 
 
+def test_a_rewritten_text_part_keeps_its_place_among_images():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    later = {"type": "image_url", "image_url": {"url": "data:image/png;base64,BB=="}}
+    messages = [
+        {"role": "assistant", "content": [
+            image, {"type": "text", "text": "屏幕搭话：" + PARTS[0]}, later,
+        ]},
+        _user("继续"),
+    ]
+    content = project_screen_history(messages)[0]["content"]
+    assert content == [image, {"type": "text", "text": PARTS[0]}, later]
+
+
 def test_label_removal_is_idempotent_and_reported():
     hits = {}
     once = project_screen_history(

@@ -231,23 +231,38 @@ def _with_content(message, content):
     return message
 
 
+def _is_text_part(part) -> bool:
+    return (isinstance(part, dict) and part.get("type") == "text"
+            and isinstance(part.get("text"), str))
+
+
 def _non_text_parts(message) -> list:
     _, content = _role_and_content(message)
     if not isinstance(content, list):
         return []
-    return [
-        part for part in content
-        if not (isinstance(part, dict) and part.get("type") == "text"
-                and isinstance(part.get("text"), str))
-    ]
+    return [part for part in content if not _is_text_part(part)]
 
 
 def _with_text(message, text):
-    """``message`` showing ``text``; non-text parts of list content stay."""
-    others = _non_text_parts(message)
-    if not others:
+    """``message`` showing ``text``; non-text parts of list content stay.
+
+    The text takes the slot of the first text part, so the order of text and
+    images is kept.
+    """
+    if not _non_text_parts(message):
         return _with_content(message, text)
-    return _with_content(message, ([{"type": "text", "text": text}] if text else []) + others)
+    _, content = _role_and_content(message)
+    parts, placed = [], False
+    for part in content:
+        if not _is_text_part(part):
+            parts.append(part)
+        elif not placed:
+            placed = True
+            if text:
+                parts.append({**part, "text": text})
+    if text and not placed:
+        parts.insert(0, {"type": "text", "text": text})
+    return _with_content(message, parts)
 
 
 def screen_history_rewrites(messages, *, trailing_turn: bool = False,
