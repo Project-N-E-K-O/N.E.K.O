@@ -560,7 +560,9 @@ def _read_header_strict(path: Path) -> dict | None:
     header = json.loads(first)
     if not isinstance(header, dict):
         raise ValueError(f"spool header of {path.name} is not an object")
-    return header
+    # 完整 schema 校验（peer 字段允许被「清除这个人」置空）：{} 之类缺字段的头行
+    # 不能被当作「不是这一对」
+    return validate_header(header)
 
 
 def _rewrite_header(path: Path, mutate, *, strict: bool = False) -> bool:
@@ -798,12 +800,18 @@ class VisitSpool:
             raise
 
     async def close(self) -> None:
-        """Fsync and close the spool (the finalize fsync); idempotent."""
+        """Fsync and close the spool (the finalize fsync); idempotent.
+
+        Cancelling the caller does not cancel the close itself: the worker
+        task may still be queued behind an append, and dropping it would leak
+        the fd and leave the path registered as in flight (later forget /
+        rename would report ``SpoolBusy`` until restart).
+        """
         executor = self._executor
         if executor is None:
             return
         try:
-            await asyncio.wrap_future(executor.submit(self._close_sync))
+            await asyncio.shield(asyncio.wrap_future(executor.submit(self._close_sync)))
         finally:
             self._executor = None
             executor.shutdown(wait=False)

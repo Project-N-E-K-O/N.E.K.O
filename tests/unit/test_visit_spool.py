@@ -732,3 +732,34 @@ async def test_unreadable_state_grace_uses_the_state_files_own_age(tmp_path, mon
     await VisitSpool.sweep(tmp_path, NOW)
     assert sp.state_path.exists()
     assert sp.jsonl_path.exists()      # 整场一起保留，不只是 state.json
+
+
+async def test_cancelled_close_still_closes_the_fd(tmp_path, monkeypatch):
+    # close 被取消时，排在 append 之后的关闭任务不能被一并取消：否则 fd 泄漏、登记残留
+    import threading
+
+    from main_logic.visit.spool import is_spool_open
+
+    sp = await open_spool(tmp_path, vid(14))
+    gate = threading.Event()
+    real_append = VisitSpool._append_sync
+
+    def slow_append(self, data):
+        gate.wait(5)
+        return real_append(self, data)
+
+    monkeypatch.setattr(VisitSpool, "_append_sync", slow_append)
+    appending = asyncio.create_task(sp.append(line(1)))
+    await asyncio.sleep(0.05)
+    closing = asyncio.create_task(sp.close())
+    await asyncio.sleep(0.05)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    gate.set()
+    await appending
+    for _ in range(100):
+        if not is_spool_open(sp.jsonl_path):
+            break
+        await asyncio.sleep(0.01)
+    assert not is_spool_open(sp.jsonl_path)

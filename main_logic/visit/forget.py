@@ -198,8 +198,11 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     subjects = [_clean_subject(s) if isinstance(s, Mapping) else _bad_subject() for s in record["subjects"]]
     if record["steps"] != build_steps(subjects):
         raise ValueError("revocation log steps do not match its subjects")
-    if not all(isinstance(step, str) and step in record["steps"] for step in record["done_steps"]):
-        raise ValueError("revocation log done_steps are not a subset of its steps")
+    # 执行器严格按序记完成、合并只撤掉尾部标记，所以 done_steps 必是 steps 的无重复前缀；
+    # 只查成员关系会放过 ["wipe_spool"] 之类不可能的进度，重放时跳过真正没做的步骤
+    done = record["done_steps"]
+    if done != record["steps"][: len(done)]:
+        raise ValueError("revocation log done_steps are not a prefix of its steps")
     # pair_ids 驱动 wipe_spool 找场次：必须是非空字符串，且覆盖每个按 pair 存的 subject，
     # 否则 pair_ids:[] 之类的日志会清完记忆却漏抹 spool 里的对端字段
     pair_ids = record["pair_ids"]

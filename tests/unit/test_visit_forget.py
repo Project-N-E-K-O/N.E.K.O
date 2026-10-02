@@ -357,6 +357,8 @@ async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
     {"subjects": []},
     {"pair_ids": []},
     {"pair_ids": [7]},
+    {"done_steps": ["wipe_spool"]},
+    {"done_steps": ["clear_last_summary", "clear_last_summary"]},
 ])
 async def test_parseable_but_inconsistent_log_fails_closed(tmp_path, corrupt):
     # steps:[] 之类的日志若被放行，重放会什么都不清就删掉日志
@@ -429,5 +431,15 @@ async def test_discovery_fails_closed_on_a_malformed_jsonl_header(tmp_path):
     spool_dir = tmp_path / "visit_spool"
     spool_dir.mkdir()
     (spool_dir / "visit00000000000000077.jsonl").write_bytes(b'{"v":1,"visit_id":"trunc')
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, ["p" * 24])
+
+
+async def test_discovery_rejects_a_schema_damaged_header(tmp_path):
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    (spool_dir / "visit00000000000000078.jsonl").write_bytes(b"{}" + bytes([10]))
     with pytest.raises(SpoolStateUnreadable):
         await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, ["p" * 24])
