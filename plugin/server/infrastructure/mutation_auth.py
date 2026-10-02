@@ -137,14 +137,25 @@ def _trusted_origin(request: Request, origin: str) -> bool:
     and port mapping. This deliberately trusts other ports on the same NAS;
     loopback desktop frontends retain their explicit origin allowlist.
     """
-    target = _normalize_origin(f"{request.url.scheme}://{request.headers.get('host', '')}")
-    if not origin or not target:
-        return False
-    nas_hostname_match = (
-        not _is_loopback(request.url.hostname)
+    if _exactly_trusted_origin(request, origin):
+        return True
+    target = _request_origin(request)
+    return bool(
+        origin and target
+        and not _is_loopback(request.url.hostname)
         and urlsplit(origin).hostname == urlsplit(target).hostname
     )
-    return origin == target or nas_hostname_match or origin in _explicit_origins() or (
+
+
+def _request_origin(request: Request) -> str:
+    return _normalize_origin(f"{request.url.scheme}://{request.headers.get('host', '')}")
+
+
+def _exactly_trusted_origin(request: Request, origin: str) -> bool:
+    """Trust without the NAS hostname-only fallback of ``_trusted_origin``."""
+    if not origin:
+        return False
+    return origin == _request_origin(request) or origin in _explicit_origins() or (
         _is_loopback(request.url.hostname) and origin in _configured_origins()
     )
 
@@ -195,11 +206,15 @@ def require_plugin_page_mutation_access(request: Request) -> None:
     Compatibility contract (owner decision): published market plugins must
     keep working. Their static pages post to ``/runs``, ``/uploads``,
     ``ui-api``, config and hosted/chat-card routes without ``X-CSRF-Token``,
-    so a trusted Origin alone authorizes a browser request here. That still
-    rejects cross-site pages; every origin trusted here can also read the
-    token from ``/security/csrf-token``, so the token adds no boundary in the
-    default deployment. A supplied token must be valid, and originless
-    requests keep the native loopback rules.
+    so a trusted Origin alone authorizes a browser request here. Cross-site
+    pages are still rejected. The exact and configured origins can read the
+    token anyway, so it adds no boundary for them. The NAS hostname-only
+    fallback is different: another port on the same NAS passes it but cannot
+    read the token (CORS), so a tokenless request that only matched that
+    fallback must also carry ``Sec-Fetch-Site: same-origin``. Market plugin
+    pages are same-origin with the plugin server and still pass. A supplied
+    token must be valid, and originless requests keep the native loopback
+    rules.
 
     Public deployments may opt in to requiring the token with
     ``NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1``; this breaks plugin pages
@@ -218,6 +233,13 @@ def _authorize_mutation(request: Request, *, browser_token_required: bool) -> No
             _deny()
         token_supplied = _CSRF_HEADER.lower() in request.headers
         if (browser_token_required or token_supplied) and not _valid_token(request):
+            _deny(token_invalid=True)
+        if (
+            not token_supplied
+            and not _exactly_trusted_origin(request, origin)
+            and request.headers.get("sec-fetch-site", "same-origin") != "same-origin"
+        ):
+            # Another port on the same NAS hostname: a token would authorize it.
             _deny(token_invalid=True)
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer

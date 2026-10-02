@@ -1041,12 +1041,12 @@
                     return data.csrf_token;
                 });
         }
-            try {
-                return { 'X-CSRF-Token': await csrfTokenPromise };
-            } catch (error) {
-                csrfTokenPromise = null;
-                throw error;
-            }
+        try {
+            return { 'X-CSRF-Token': await csrfTokenPromise };
+        } catch (error) {
+            csrfTokenPromise = null;
+            throw error;
+        }
     }
 
     let allApps = [];

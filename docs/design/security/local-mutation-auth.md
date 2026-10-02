@@ -14,7 +14,7 @@
 
 **拍板：优先保障市场中已发布的插件继续可用。** 已发布插件的静态页面直接向 `/runs`、`/uploads`、`ui-api`、配置等路由发写请求，且不带 `X-CSRF-Token`。插件页面路由因此默认只校验来源：可信 `Origin` 即放行，跨站页面仍被拒绝；请求若带了 token，则必须正确，空值或错误值一律拒绝；无 `Origin` 的请求仍只允许本机原生调用。
 
-默认部署中，凡是这里信任的来源本来就能从 `/security/csrf-token` 读到 token，所以对这些路由强制 token 不增加实际边界，只会让存量插件失效。token 只作为**公网部署者的可选项**：设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，插件页面路由也要求 token，尚未适配的插件页面会收到 403。
+对完全匹配或已配置的来源而言，它们本来就能从 `/security/csrf-token` 读到 token，强制 token 不增加实际边界，只会让存量插件失效。NAS 的 hostname 兜底是例外：同一 NAS 上其他端口的页面能通过来源校验，却因 CORS 读不到 token。因此不带 token、且只靠 hostname 兜底通过的请求，还必须带 `Sec-Fetch-Site: same-origin`（不发送该头的旧浏览器按兼容放行）；市场插件页面与插件服务同源，不受影响，跨端口页面会以可重试的 token 失败被拒。token 只作为**公网部署者的可选项**：设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，插件页面路由也要求 token，尚未适配的插件页面会收到 403。
 
 从本版 SDK（`SDK_VERSION` 0.1.0 所在的本次发布）起，[插件最佳实践](/plugins/best-practices)通知插件作者在页面写请求中携带 token，逐步完成安全适配。在市场中仍有插件未携带 token 时，不得把 token 改为默认必需；收紧前需先确认市场插件已完成迁移。
 
@@ -41,7 +41,7 @@ token 引导允许可信 Origin、可信完整 Referer（忽略页面路径）�
 
 现有 `require_admin` 是兼容占位，不提供身份认证；multipart/form-data 请求可能无需 CORS 预检即可产生副作用，缺少 `Content-Type` 的 JSON 请求也会被 FastAPI 按 JSON 解析，因此不能依靠 CORS 预检或拦截响应来保护变更路由。插件包导入路由必须连同两步链路一起保护：只保护 `upload-and-install` 时，`/plugin-cli/upload` 加 `/plugin-cli/install` 仍可完成安装；legacy alias 以普通函数调用目标处理器，必须单独注册守卫。
 
-FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此带请求体的插件服务器变更路由使用 `PluginMutationGuardedRoute`（各路由模块以 `mutation_router` 注册）：在读取请求体之前调用同一个 `require_plugin_mutation_access`，失败响应、token 规则和本机原生兼容路径与生命周期路由一致，被拒绝的上传不会落盘或进入临时文件。
+FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此带请求体的插件服务器变更路由使用 route class 守卫（各路由模块以 `mutation_router` 注册）。`PluginMutationGuardedRoute` 与 `PluginPageMutationGuardedRoute` 都在读取请求体之前校验，差别只在 token 是否必需；被拒绝的上传不会落盘或进入临时文件。档位按调用方选择，不按是否带请求体选择。
 
 开发插件（带 `registration_id` 或已登记开发目录）的生命周期与配置写入先通过上述共享守卫，再由处理器执行 `require_development_access`；两者都要满足。开发访问的 Origin 只接受精确的 scheme/host/port 集合（主服务、插件服务与 Vite 默认端口，可由 `NEKO_DEVELOPMENT_ALLOWED_ORIGINS` 整体替换），不再接受任意 loopback 端口。
 
@@ -70,7 +70,7 @@ uv run python -c "import json,sys; print(json.load(sys.stdin)['autostart_csrf_to
 ## 新端点接入
 
 1. 确认它会改变本地状态；
-2. 选对守卫档位：插件页面会直接调用的路由用 `PluginPageMutationGuardedRoute`（市场兼容，token 可选），只给插件管理器/CLI 用、会改变可执行代码或进程生命周期的路由用 `PluginMutationGuardedRoute`；在处理 payload 前调用共享守卫；带请求体的插件服务器路由使用 `PluginMutationGuardedRoute`，不要只用路由依赖（依赖在请求体解析之后执行），legacy alias 也要单独注册；
+2. 按调用方选守卫档位：插件页面会直接调用的路由用 `PluginPageMutationGuardedRoute`（市场兼容，token 可选），只给插件管理器/CLI 用、会改变可执行代码或进程生命周期的路由用 `PluginMutationGuardedRoute`。两者都在读取请求体前校验；带请求体的路由必须用这两个 route class 之一，不要只用路由依赖（依赖在请求体解析之后执行），legacy alias 也要单独注册；
 3. 前端统一注入 token；
 4. 测试合法请求、缺 token、错 token、恶意 Origin 和允许的本地 Origin；
 5. 确认失败不会先执行部分副作用。

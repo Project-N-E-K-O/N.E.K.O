@@ -2126,7 +2126,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 206343,
+  "source_bytes": 206319,
   "source_files": [
     "README.md",
     "__init__.py",
@@ -2142,5 +2142,5 @@
     "plugin.toml",
     "static/index.html"
   ],
-  "source_sha256": "304fdc07be5dc3979aad1c7565ca42164bc53275f2db0cf4a795c820e859149a"
+  "source_sha256": "b5409fd891f82969e5efa56d38f73aeac51fb2d8cb6b864eff93b2141485ad6f"
 }

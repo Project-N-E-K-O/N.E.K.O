@@ -96,6 +96,19 @@ async def setup_probe(monkeypatch):
         await executor.aclose()
 
 
+async def test_probe_rejects_foreign_origin_before_upstream(setup_probe):
+    app, _, _, seen, _ = setup_probe()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+        headers={"Origin": "https://evil.example"},
+    ) as client:
+        response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
+    assert response.status_code == 403
+    assert response.headers["X-Error-Code"] == "csrf_validation_failed"
+    assert not seen
+
+
 @pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
 async def test_probe_uses_saved_credentials_and_shared_accounting(setup_probe, protocol):
     app, store, recorder, seen, clients = setup_probe(protocol=protocol)

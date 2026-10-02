@@ -232,3 +232,47 @@ def test_page_and_strict_guards_cover_the_intended_routes() -> None:
                    if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
     assert cli_guarded
     assert not any(isinstance(route, mutation_auth.PluginPageMutationGuardedRoute) for route in cli_guarded)
+
+
+@pytest.mark.asyncio
+async def test_other_port_on_same_nas_hostname_needs_the_token(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Another app on the NAS passes the hostname-only fallback but cannot read
+    # the token cross-origin, so tokenless writes from it must stay rejected.
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+    other_port = {"Origin": "http://192.168.1.5:8080", "Sec-Fetch-Site": "same-site"}
+
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=other_port) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "token"
+    create_run.assert_not_awaited()
+
+    with_token = {**other_port, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN}
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=with_token) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 200
+    create_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_site", ["same-origin", None], ids=["same-origin", "legacy-browser"])
+async def test_tokenless_page_behind_outer_tls_proxy_keeps_working(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, fetch_site: str | None,
+) -> None:
+    # Outer TLS termination changes scheme/port, so only the hostname matches;
+    # the market plugin page is still same-origin from the browser's view.
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+    headers = {"Origin": "https://192.168.1.5"}
+    if fetch_site:
+        headers["Sec-Fetch-Site"] = fetch_site
+
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=headers) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 200, response.text
+    create_run.assert_awaited_once()
