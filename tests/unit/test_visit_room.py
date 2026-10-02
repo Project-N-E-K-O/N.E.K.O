@@ -431,6 +431,24 @@ def test_17_overlapping_lines_from_one_sender_are_a_counted_anomaly():
     assert room.anomalies_total == 1
 
 
+def test_newer_line_closing_before_an_older_open_line_is_overlap():
+    # 正常 lp 递增的交叠：旧行还没收口，新行就收口了 → 收口时计一次异常
+    room = make_room("host")
+    peer = Peer(room)
+    a = peer.new_ref()
+    peer.start(a, 0.0)
+    b = peer.new_ref()
+    assert peer.start(b, 1.0).violation is None
+    eff = peer.done(b, 2.0)
+    assert eff.violation == "line_overlap"
+    assert eff.finalize_reason is None
+    assert room.anomalies_total == 1
+    # 同一条旧行不重复计数；它的 text 晚到仍照常处理
+    peer.done(peer.new_ref(), 3.0, to_kind="human")
+    assert room.anomalies_total == 1
+    assert room.on_incoming_done(IncomingLineDone(a, False, 0, False), 4.0).violation is None
+
+
 def test_newer_line_start_while_previous_text_waits_behind_a_gap_is_not_overlap():
     # 上一行 text 在 seq 缺口后排队、新行首片先到：正常乱序，不是交叠
     room = make_room("host")

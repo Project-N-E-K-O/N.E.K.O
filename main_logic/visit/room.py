@@ -349,6 +349,7 @@ class VisitRoom:
         # 已收口的对端行里排序最大的那条：同一发送方的 text 按收口先后发，
         # 先开口的行可能更晚收口（人类插话行常见），晚到的旧行不能盖掉新行的回复
         self._latest_peer_done: Optional[tuple[int, int]] = None
+        self._overlap_reported: set[str] = set()
 
         # 异常计数（§4.1）
         self.violation_streak = 0
@@ -664,6 +665,17 @@ class VisitRoom:
             return eff
         opened = self._peer_meta.pop(ln, None)
         self._peer_open.discard(ln)
+        # 交叠在收口时判：同一发送方的 text 按 seq 有序，诚实的对端总是先收口旧行
+        # 再开新行。较新的行先收口、较旧的已开口行还没收到 text，才是真交叠
+        # （开口时分不清「旧行 text 排在缺口后」与「交叠」，见 on_incoming_start）
+        overlapped = [o for o, m in self._peer_meta.items()
+                      if m.lp < ev.ref.lp and o not in self._overlap_reported]
+        if overlapped:
+            self._overlap_reported.update(overlapped)
+            kind = self._count_anomaly("line_overlap")
+            if eff.violation is None:
+                eff.violation = kind
+            self._maybe_finalize_anomalies(eff)
         speaker = ev.speaker or (opened.speaker if opened else "cat")
         ad_side = ev.addressee_side or (opened.addressee_side if opened else None)
         ad_kind = ev.addressee_kind or (opened.addressee_kind if opened else None)

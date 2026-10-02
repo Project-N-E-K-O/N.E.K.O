@@ -736,10 +736,30 @@ def test_stale_deltas_of_a_closed_line_are_dropped_and_i_done_follows(tmp_path):
     assert frames[0].payload["i_done"] == 0
 
 
-def test_leave_is_sent_first_even_behind_queued_traffic(tmp_path):
+def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path):
+    # 桶紧时 leave 排在已入队的 text 之后发出；宽限从 leave 真正发出起算，
+    # 所以接收方的补齐窗口不会在那几条 text 发出之前开始
     tx = make_outbox(tmp_path, delivery_timeout_s=10_000)
     for n in range(1, 4):
         tx.send(text(n, txt="好" * 1300), now=0.0)
     tx.send({"t": "leave", "reason": "ended"}, now=0.0)
-    frames = tx.due(0.0)
-    assert frames and frames[0].t == "leave"
+    order: list[str] = []
+    leave_at = None
+    for t in ticks(0.0, 12.0):
+        for f in tx.due(t):
+            if not f.retransmit:
+                order.append(f.t)
+                if f.t == "leave":
+                    leave_at = t
+    assert order == ["text", "text", "text", "leave"]
+    assert leave_at is not None and leave_at > 0.0
+    assert not tx.leave_done(leave_at + 4.9)
+    assert tx.leave_done(leave_at + 5.0)
+
+
+def test_unsent_leave_gives_up_after_twice_the_grace(tmp_path):
+    tx = make_outbox(tmp_path, peer_present=False)
+    tx.send({"t": "leave", "reason": "ended"}, now=0.0)
+    assert tx.due(1.0) == []
+    assert not tx.leave_done(9.9)
+    assert tx.leave_done(10.0)

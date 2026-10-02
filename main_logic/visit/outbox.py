@@ -149,6 +149,7 @@ PAUSE_PEER_ABSENT = "peer_absent"        # 对端尚未入房（host 等客）
 PAUSE_PEER_AWAY = "peer_away"            # 对端暂定离开、处在 35 s 重入宽限
 
 # ── 本模块私有常量（visit_settings 里没有的细节）──────────────────────
+_LEAVE_UNSENT_CAP_FACTOR = 2   # leave 入队后最多等 2×VISIT_LEAVE_GAP_GRACE_S 发出
 _LEAVE_RESEND_INTERVAL_S = 1.0   # leave 发出后每 1 s 重传 leave 与未确认项（§4.2 leave）
 _QUEUE_MAX_ITEMS = 200           # 出站队列条数上限，超出先作废可丢类（§4.3 send 同值）
 _COALESCED_TYPES = frozenset({"ack", "hb", "state"})   # 队列里只留最新一条（下一条覆盖）
@@ -319,6 +320,7 @@ class VisitOutbox:
         self.failed_seq: Optional[int] = None
         self._leave_seq: Optional[int] = None
         self._leave_started: Optional[float] = None
+        self._leave_sent_at: Optional[float] = None
         self._leave_acked = False
         self._drain_deadline: Optional[float] = None
         self.dropped_lossy = 0
@@ -685,11 +687,25 @@ class VisitOutbox:
                 self._urgent.append(seq)
 
     def leave_done(self, now: Optional[float] = None) -> bool:
-        """True once ``leave`` was sent and either acked or ``VISIT_LEAVE_GAP_GRACE_S`` passed."""
+        """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was sent.
+
+        The grace starts when the ``leave`` frame is first transmitted (it is
+        queued behind every earlier reliable first send, so the receiver's
+        gap window never opens before those are on the wire). A ``leave``
+        still unsent ``2 × grace`` after it was queued (peer absent, bucket
+        starved) ends the outbox anyway.
+        """
         if self._leave_started is None:
             return False
         now = self._now(now)
-        return self._leave_acked or now - self._leave_started >= self._leave_grace_s
+        if self._leave_acked:
+            return True
+        if self._leave_sent_at is not None:
+            # 宽限从 leave 真正发出时起算：它按 FIFO 排在此前已入队的必达消息之后，
+            # 接收方的补齐窗口也就不会在那些消息发出之前开始
+            return now - self._leave_sent_at >= self._leave_grace_s
+        # 兜底：入队后 2×宽限仍没发出去（对端不在、桶一直满），不再等
+        return now - self._leave_started >= _LEAVE_UNSENT_CAP_FACTOR * self._leave_grace_s
 
     def begin_drain(self, now: Optional[float] = None) -> float:
         """Start the pre-``leave`` drain of a normal finalize; return its deadline.
@@ -730,6 +746,8 @@ class VisitOutbox:
         """Book-keeping after a reliable item went on the wire."""
         if item.emitted == 0:
             item.first_active = self.active_time(now)
+            if item.seq == self._leave_seq:
+                self._leave_sent_at = now
         item.emitted += 1
         if self._leave_started is not None:
             item.next_due = now + _LEAVE_RESEND_INTERVAL_S
@@ -761,7 +779,10 @@ class VisitOutbox:
 
         Order: immediate resends (``leave`` / resume / reload) and the
         in-memory ``hello`` resend, then retransmissions whose backoff
-        expired (earliest due first, ties by ``seq``), then first sends in FIFO order.
+        expired (earliest due first, ties by ``seq``), then first sends in FIFO
+        order. Once ``leave`` is queued the last two swap, so the first sends
+        queued before it and the ``leave`` itself go out before the 1 s leave
+        retransmissions can starve them.
         Retransmissions are released only while both buckets have room
         (otherwise everything waits; nothing is dropped). A ``line_delta``
         is held until ``VISIT_DELTA_MIN_INTERVAL_MS`` after the previous
@@ -779,18 +800,6 @@ class VisitOutbox:
         if self._pause_reasons:
             return []
         out: list[OutboundFrame] = []
-
-        # ⓪ leave 一入队就最先发：5 s 宽限从入队起算，排在重传或首发队列后面
-        # 可能宽限耗尽了 leave 自己都没发出去
-        leave = self._unacked.get(self._leave_seq) if self._leave_seq is not None else None
-        if leave is not None and leave.emitted == 0:
-            if not self._fits(leave):
-                return out
-            self._charge(leave)
-            if leave in self._queue:
-                self._queue.remove(leave)
-            self._transmitted(leave, now)
-            out.append(self._frame(leave, retransmit=False))
 
         # ① 立即重发：已确认 hello 的按需重发 + leave / 恢复 / 重载重排的未确认项
         while self._oneshot:
@@ -812,17 +821,34 @@ class VisitOutbox:
             self._transmitted(item, now)
             out.append(self._frame(item, retransmit=True))
 
+        # ②③ 平时：到期重传在前（outbox 到期项排在队首）、首发在后。leave 入队后
+        # 反过来：此前已入队的首发与 leave 本身先发出去——leave 模式下已发项每 1 s
+        # 重传一次，若仍排在首发前面，几条大 text 的重传就能把桶吃满、leave 永远
+        # 轮不到（宽限从 leave 真正发出起算，见 leave_done）。
+        if self._leave_started is None:
+            if self._release_retransmits(now, out):
+                self._release_first_sends(now, out)
+        else:
+            if self._release_first_sends(now, out):
+                self._release_retransmits(now, out)
+        return out
+
+    def _release_retransmits(self, now: float, out: list[OutboundFrame]) -> bool:
+        """Release retransmissions whose backoff expired; False when the buckets ran dry."""
         # ② 到期重传（outbox 到期项排在队首）；按到期先后（同时到期按 seq）——
         # 只按 seq 排的话，桶长期偏紧时低 seq 每次都先到期、高 seq 会被饿死
         due_items = sorted((x for x in self._unacked.values() if x.emitted and x.next_due <= now),
                            key=lambda x: (x.next_due, x.seq))
         for item in due_items:
             if not self._fits(item):  # retransmit-only-with-room
-                return out
+                return False
             self._charge(item)
             self._transmitted(item, now)
             out.append(self._frame(item, retransmit=True))
+        return True
 
+    def _release_first_sends(self, now: float, out: list[OutboundFrame]) -> bool:
+        """Release first sends in FIFO order; False when the buckets ran dry."""
         # ③ 首发（FIFO）
         self._maintain_backlog(now)
         blocked_lines: set[str] = set()
@@ -868,7 +894,7 @@ class VisitOutbox:
                 self._transmitted(item, now)
             out.append(self._frame(item, retransmit=False))
         self._queue = remaining
-        return out
+        return not stop
 
     def _prepare_delta(self, item: _Item, line: _Line) -> None:
         """Fix ``i`` (and the ``i == 0`` extras) of a piece about to be transmitted."""

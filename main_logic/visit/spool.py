@@ -509,10 +509,17 @@ def _rewrite_header(path: Path, mutate) -> bool:
     """Atomically rewrite the first line of a spool file; return whether it changed.
 
     Raises :class:`SpoolBusy` when the file is still open for appends in this
-    process (an in-flight visit).
+    process (an in-flight visit). The check and the replacement run under
+    the same lock as the writer's register-then-open, so a spool cannot be
+    opened in between.
     """
-    if is_spool_open(path):
-        raise SpoolBusy(f"spool {path.name} is still being written")
+    with _OPEN_SPOOLS_LOCK:
+        if _spool_key(path) in _OPEN_SPOOLS:
+            raise SpoolBusy(f"spool {path.name} is still being written")
+        return _rewrite_header_locked(path, mutate)
+
+
+def _rewrite_header_locked(path: Path, mutate) -> bool:
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -602,15 +609,24 @@ class VisitSpool:
     def _open_sync(self, data: bytes) -> int:
         self.spool_dir.mkdir(parents=True, exist_ok=True)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | _O_BINARY
-        fd = os.open(self.jsonl_path, flags, 0o600)
+        key = _spool_key(self.jsonl_path)
+        # 先登记再打开、与头行改写同一把锁：改写方要么看到登记而报 SpoolBusy，
+        # 要么在登记之前就已替换完文件（此时 O_EXCL 打开会失败）
+        with _OPEN_SPOOLS_LOCK:
+            _OPEN_SPOOLS.add(key)
+            try:
+                fd = os.open(self.jsonl_path, flags, 0o600)
+            except BaseException:
+                _OPEN_SPOOLS.discard(key)
+                raise
         try:
             self._write_all(fd, data)
             os.fsync(fd)
         except BaseException:
             os.close(fd)
+            with _OPEN_SPOOLS_LOCK:
+                _OPEN_SPOOLS.discard(key)
             raise
-        with _OPEN_SPOOLS_LOCK:
-            _OPEN_SPOOLS.add(_spool_key(self.jsonl_path))
         return fd
 
     @staticmethod

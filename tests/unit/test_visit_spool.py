@@ -572,3 +572,35 @@ async def test_header_rewrite_refuses_an_in_flight_spool_of_another_instance(tmp
     contents = await other.read_back()
     assert [ln["lp"] for ln in contents.lines] == [1, 2]
     assert contents.header["peer_uid"] is None
+
+
+async def test_spool_is_registered_before_its_file_is_opened(tmp_path, monkeypatch):
+    # 登记必须先于 os.open：否则改写方可能在「已打开、未登记」的窗口里替换掉文件
+    from main_logic.visit.spool import is_spool_open
+
+    seen: list[bool] = []
+    real_open = os.open
+
+    def spy_open(path, flags, mode=0o777):
+        seen.append(is_spool_open_unlocked(path))
+        return real_open(path, flags, mode)
+
+    def is_spool_open_unlocked(path):
+        return spool_mod._spool_key(path) in spool_mod._OPEN_SPOOLS
+
+    monkeypatch.setattr(spool_mod.os, "open", spy_open)
+    sp = await open_spool(tmp_path, vid(4))
+    assert seen == [True]
+    await sp.close()
+    assert not is_spool_open(sp.jsonl_path)
+
+
+async def test_failed_open_leaves_no_registration(tmp_path):
+    from main_logic.visit.spool import is_spool_open
+
+    first = await open_spool(tmp_path, vid(5))
+    await first.close()
+    again = VisitSpool(tmp_path, vid(5))
+    with pytest.raises(FileExistsError):
+        await again.open(header(vid(5)), now=NOW)
+    assert not is_spool_open(again.jsonl_path)
