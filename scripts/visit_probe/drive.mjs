@@ -127,11 +127,12 @@ async function phaseT1(c, targets) {
   const echo = new (WebSocket.Server || WebSocket.WebSocketServer)({ host: '127.0.0.1', port: 48990 });
   echo.on('connection', (s) => s.on('message', (m) => s.send('echo:' + m)));
   const r = { };
+  let chat = null;
+  let hijackAttempted = false;
   try {
     await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE); return true;`);
     r.probe = await c.eval(`return window.__visitProbe.fp('guest').t1Probe();`);
     // Chat window observer: count CONNECTING deliveries reaching its WSProxy (pet-websocket-bridge.js:348 -> chat-websocket-bridge.js:72).
-    let chat = null;
     if (targets.chat) {
       chat = new Cdp(targets.chat.webSocketDebuggerUrl);
       await chat.open();
@@ -156,6 +157,8 @@ async function phaseT1(c, targets) {
     };
     r.before = before;
     // Positive control: the same connect from the parent realm goes through PetWebSocket and hijacks _activeWs.
+    // From here on the app's own connection may be broken, so the finally block must reload Pet + Chat.
+    hijackAttempted = true;
     r.parentControl = await c.eval(`
       return await new Promise((resolve) => {
         const ws = new WebSocket('ws://127.0.0.1:48990/');
@@ -169,20 +172,25 @@ async function phaseT1(c, targets) {
       chatConnectingCount: chat ? await chat.eval('return window.__probeConnecting;') : null,
       chatSocketState: chat ? await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;') : null,
     };
-    if (chat) chat.close();
     await c.eval(`window.__visitProbe.removeFrame('guest'); return true;`);
+    results.t1 = r;
+    save();
+    log('t1', JSON.stringify(r, null, 1));
   } finally {
     echo.close();
+    if (chat) chat.close();
+    if (hijackAttempted) {
+      // The positive control clobbered the Pet's _activeWs (and closed the Chat proxy); reload both windows
+      // even when a later step threw, otherwise the app stays disconnected after the probe exits.
+      log('reloading Pet + Chat to undo the positive control');
+      try { await c.send('Page.reload', { ignoreCache: false }); } catch (e) { log('Pet reload failed:', e.message); }
+      try {
+        const t = await findTargets();
+        if (t.chat) { const cc = new Cdp(t.chat.webSocketDebuggerUrl); await cc.open(); await cc.send('Page.reload', {}); cc.close(); }
+      } catch (e) { log('Chat reload failed:', e.message); }
+    }
+    c.close();
   }
-  results.t1 = r;
-  save();
-  log('t1', JSON.stringify(r, null, 1));
-  // The positive control clobbered the Pet's _activeWs; reload Pet + Chat to restore the app.
-  log('reloading Pet window to undo the positive control');
-  await c.send('Page.reload', { ignoreCache: false });
-  c.close();
-  const t = await findTargets();
-  if (t.chat) { const cc = new Cdp(t.chat.webSocketDebuggerUrl); await cc.open(); await cc.send('Page.reload', {}); cc.close(); }
 }
 
 async function measureWindow(c, ms) {
@@ -344,8 +352,18 @@ import { spawn } from 'node:child_process';
 async function withBackdrop(rp, fn) {
   const m = 60;
   const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'backdrop.ps1'), rp[0] - m, rp[1] - m, rp[2] + 2 * m, rp[3] + 2 * m].map(String), { stdio: 'ignore' });
-  await sleep(4000);
-  try { return await fn(); } finally { try { execFileSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }
+  try {
+    // Never screenshot without a verified backdrop: otherwise the region shots would capture the user's own windows.
+    let found = null;
+    for (let i = 0; i < 20 && !found; i++) {
+      await sleep(500);
+      const w = os('findwin', 'visit-probe-backdrop');
+      if (w && w.rect && w.rect[0] <= rp[0] && w.rect[1] <= rp[1] && w.rect[0] + w.rect[2] >= rp[0] + rp[2] && w.rect[1] + w.rect[3] >= rp[1] + rp[3]) found = w;
+    }
+    if (!found) throw new Error('backdrop window did not appear over the probe region; aborting before any screenshot');
+    await sleep(500);
+    return await fn();
+  } finally { try { execFileSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }
 }
 
 async function phaseT3(c) {
