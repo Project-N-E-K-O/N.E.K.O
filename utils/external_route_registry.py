@@ -1,0 +1,222 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Registry of external routes that can take over a character's input.
+
+An external route is a controller outside the ordinary chat session (today
+only the mini-game route) that, while active, owns the character's typed and
+spoken input. Before this registry every hijack point imported the game
+router directly; a second kind of controller would have had to copy each of
+those branches. Hijack points now ask the registry instead:
+
+- input hijack (``websocket_router`` stream_data / start_session, the
+  auto-start gate in ``main_logic/core/streaming.py``, the independent ASR
+  voice consumer) and the proactive / context-prompt gates look only at
+  ``is_active``;
+- slot checks (a new route asking whether it may start) and the character
+  rename / delete guard look at ``is_locked``, which a kind can keep true
+  while its exit flow is still running after ``is_active`` has turned false.
+
+The registry stores callables only. It lives in ``utils/`` so that
+``main_logic/`` can consult it without importing ``main_routers/``; route
+owners register themselves when their module is imported.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Dict
+
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ExternalRouteKind:
+    """Callables one kind of external route plugs into the shared hijack points.
+
+    ``route_voice_transcript`` receives ``(lanlan_name, transcript, **route_kwargs)``
+    exactly as the independent ASR consumer passes them, so a kind can register
+    its pre-existing handler object unchanged. ``is_locked`` defaults to
+    ``is_active``; ``has_background_tasks`` defaults to "never".
+    """
+
+    kind: str
+    is_active: Callable[[str], bool]
+    route_stream_message: Callable[[str, dict], Awaitable[bool]]
+    on_start_session: Callable[[str, dict], Awaitable[bool]] | None
+    finalize_for_character: Callable[[str], Awaitable[int]]
+    route_voice_transcript: Callable[..., Awaitable[bool]] | None = None
+    on_page_signal: Callable[[str, dict], Awaitable[bool]] | None = None
+    is_locked: Callable[[str], bool] | None = None
+    has_background_tasks: Callable[[str], bool] | None = None
+
+
+# Registration order is lookup order. Kinds are expected to be mutually
+# exclusive per character (each refuses to start while another is locked), so
+# the order only matters as a deterministic tie-break.
+_kinds: Dict[str, ExternalRouteKind] = {}
+
+
+def register_external_route_kind(spec: ExternalRouteKind) -> None:
+    """Register (or replace, e.g. on module reload) one route kind."""
+    if not isinstance(spec, ExternalRouteKind):
+        raise TypeError("spec must be an ExternalRouteKind")
+    if not isinstance(spec.kind, str) or not spec.kind.strip():
+        raise ValueError("ExternalRouteKind.kind must be a non-empty string")
+    _kinds[spec.kind] = spec
+
+
+def _registered_kinds() -> tuple[ExternalRouteKind, ...]:
+    return tuple(_kinds.values())
+
+
+def _kind_is_locked(spec: ExternalRouteKind, lanlan_name: str) -> bool:
+    predicate = spec.is_locked if spec.is_locked is not None else spec.is_active
+    return bool(predicate(lanlan_name))
+
+
+def get_active_external_route(lanlan_name: str) -> ExternalRouteKind | None:
+    """Return the kind whose route currently owns ``lanlan_name``'s input."""
+    for spec in _registered_kinds():
+        if spec.is_active(lanlan_name):
+            return spec
+    return None
+
+
+def is_external_route_active(lanlan_name: str) -> bool:
+    """True iff some registered kind currently owns ``lanlan_name``'s input."""
+    return get_active_external_route(lanlan_name) is not None
+
+
+def is_external_route_locked(
+    lanlan_name: str,
+    *,
+    exclude_kind: str | None = None,
+) -> bool:
+    """True iff any kind other than ``exclude_kind`` occupies the character slot.
+
+    A kind without ``is_locked`` is locked exactly while it is active. Callers
+    starting a route pass their own kind: a same-kind predecessor is replaced
+    by that kind's own supersede logic (e.g. one mini-game opening over
+    another), so it must not block the start.
+    """
+    for spec in _registered_kinds():
+        if exclude_kind is not None and spec.kind == exclude_kind:
+            continue
+        if _kind_is_locked(spec, lanlan_name):
+            return True
+    return False
+
+
+def is_character_lifecycle_locked(lanlan_name: str) -> bool:
+    """Guard for character rename / delete.
+
+    Besides an occupied slot, a kind may still be writing data keyed to this
+    character in the background after its route ended. Those tasks block
+    rename / delete but never block starting a new route.
+    """
+    if is_external_route_locked(lanlan_name):
+        return True
+    for spec in _registered_kinds():
+        if spec.has_background_tasks is not None and spec.has_background_tasks(lanlan_name):
+            return True
+    return False
+
+
+async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
+    """Offer a main-socket ``stream_data`` message to the active route.
+
+    Returns True when the route consumed it (the caller must then skip the
+    ordinary chat path).
+    """
+    spec = get_active_external_route(lanlan_name)
+    if spec is None:
+        return False
+    return bool(await spec.route_stream_message(lanlan_name, message))
+
+
+async def route_external_start_session(lanlan_name: str, message: dict) -> bool:
+    """Let the active route claim a session start; False when nobody claims it."""
+    spec = get_active_external_route(lanlan_name)
+    if spec is None or spec.on_start_session is None:
+        return False
+    return bool(await spec.on_start_session(lanlan_name, message))
+
+
+async def route_external_voice_transcript(
+    lanlan_name: str,
+    transcript: str,
+    **route_kwargs: Any,
+) -> bool:
+    """Deliver an independent-ASR final transcript to the active route."""
+    spec = get_active_external_route(lanlan_name)
+    if spec is None or spec.route_voice_transcript is None:
+        return False
+    return bool(await spec.route_voice_transcript(lanlan_name, transcript, **route_kwargs))
+
+
+async def route_external_page_signal(lanlan_name: str, message: dict) -> bool:
+    """Deliver a page signal (e.g. speech progress) to whichever kind claims it.
+
+    The active route is asked first. Signals can also outlive a route (speech
+    that keeps playing after the route ended), so every other kind with a
+    handler is asked next; the first one that returns True wins.
+    """
+    active = get_active_external_route(lanlan_name)
+    candidates = []
+    if active is not None:
+        candidates.append(active)
+    candidates.extend(spec for spec in _registered_kinds() if spec is not active)
+    for spec in candidates:
+        if spec.on_page_signal is None:
+            continue
+        if await spec.on_page_signal(lanlan_name, message):
+            return True
+    return False
+
+
+async def finalize_external_routes_for_character(lanlan_name: str) -> int:
+    """Finalize every kind's routes for ``lanlan_name`` (character switch).
+
+    Each kind only waits for its own state flip, not for its whole exit flow.
+    A failing kind is logged and skipped so the remaining kinds still run.
+    Returns the total number of routes finalized.
+    """
+    total = 0
+    for spec in _registered_kinds():
+        try:
+            total += int(await spec.finalize_for_character(lanlan_name) or 0)
+        except Exception as exc:
+            logger.warning(
+                "external route finalize failed: kind=%s lanlan=%s err=%s",
+                spec.kind,
+                lanlan_name,
+                exc,
+                exc_info=True,
+            )
+    return total
+
+
+def _snapshot_for_tests() -> Dict[str, ExternalRouteKind]:
+    return dict(_kinds)
+
+
+def _restore_for_tests(snapshot: Dict[str, ExternalRouteKind]) -> None:
+    _kinds.clear()
+    _kinds.update(snapshot)
+
+
+def _reset_for_tests() -> None:
+    _kinds.clear()

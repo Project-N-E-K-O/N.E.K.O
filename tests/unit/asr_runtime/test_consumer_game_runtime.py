@@ -89,7 +89,7 @@ async def test_game_consumer_reuses_smart_turn_asr_without_core(
     runtime = _Runtime()
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(
@@ -149,7 +149,7 @@ async def test_game_takeover_pre_abort_window_rejects_stale_core_turn(
     runtime = _Runtime()
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(
@@ -357,7 +357,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
     runtime.is_active = True
     runtime.is_hot_swap_imminent = False
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(
@@ -415,7 +415,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
 async def test_game_consumer_submit_preserves_owner_identity(monkeypatch) -> None:
     runtime = _Runtime()
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     assert (
@@ -464,7 +464,7 @@ async def test_game_consumer_failure_never_falls_back_to_core(
     runtime = _Runtime()
     route_transcript = AsyncMock(side_effect=RuntimeError("consumer failed"))
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(

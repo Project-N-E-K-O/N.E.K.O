@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "ゲーム LLM が有効な出力を返しませんでした（{{error}}）",
         "GAME_ROUTE_MEDIA_SKIPPED": "ゲーム中は画面/カメラフレームをスキップしました",
         "GAME_VOICE_STT_GATE_ACTIVE": "ゲーム音声テイクオーバーが有効です",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "別のアクティビティが進行中のため、今はミニゲームを開けません",
         "INTERNAL_IMPORT_ERROR": "内部コンポーネントの読み込みに失敗しました: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "ローカルキャラクター設定の構造が無効です",
         "MEMORY_SERVER_RELEASE_FAILED": "キャラクター記憶ハンドルの解放に失敗しました。後ほど再試行してください",

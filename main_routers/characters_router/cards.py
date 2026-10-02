@@ -61,7 +61,10 @@ from ..shared_state import (
     get_init_one_catgirl,
 )
 from utils.config_manager import (
+    assign_new_character_uid,
+    get_character_uid,
     get_reserved,
+    set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
@@ -248,6 +251,13 @@ async def _save_character_card_serialized(data: dict):
             if k != '档案名' and k != 'name':
                 if v:  # 只保存非空字段
                     catgirl_data[k] = v
+
+        # 稳定 id：覆盖已有角色时沿用它原来的 id，新建角色生成新的（卡里不带 id）。
+        previous_uid = get_character_uid(previous_catgirl_data)
+        if previous_uid:
+            set_reserved(catgirl_data, 'character_uid', previous_uid)
+        else:
+            assign_new_character_uid(catgirl_data)
 
         # 更新或创建猫娘数据
         characters['猫娘'][chara_name] = catgirl_data
@@ -1027,6 +1037,8 @@ async def import_character_card(
 
             # 移除档案名键（因为已经用作字典键）
             chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+            # 导入的角色是新角色：卡里若带着别处的稳定 id 一律丢弃，重新生成。
+            assign_new_character_uid(chara_data_to_save)
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
@@ -1520,6 +1532,8 @@ async def export_catgirl_with_portrait(
                         continue
                     if key == '_reserved' and isinstance(value, dict):
                         reserved_copy = copy.deepcopy(value)
+                        # 稳定 id 只属于本机这个角色，不随角色卡导出。
+                        reserved_copy.pop('character_uid', None)
                         avatar = reserved_copy.get('avatar', {})
                         if not keep_model_paths:
                             for model_type in ('live2d', 'vrm', 'mmd', 'live3d'):

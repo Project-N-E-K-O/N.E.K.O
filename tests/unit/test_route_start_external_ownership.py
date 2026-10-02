@@ -1,0 +1,217 @@
+"""Route start ownership checks and takeover tokens on the game / icebreaker
+routes (design doc §5 PR-02 / OD-24)."""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from main_routers import icebreaker_router
+from main_routers.game_router import runtime as gr_runtime
+from main_routers.game_router.route_lifecycle import (
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _TAKEOVER_TOKEN_KEY,
+)
+from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from utils import external_route_registry as registry
+from utils import icebreaker_route_state
+from utils.external_route_registry import ExternalRouteKind
+
+from .game_route_test_helpers import (
+    TakeoverManagerDouble,
+    gr_patch_all,
+    reset_game_route_state,
+)
+
+
+class _FakeRequest:
+    def __init__(self, payload):
+        self._payload = payload
+        self.base_url = "http://127.0.0.1:8000/"
+        self.url = SimpleNamespace(path="/api/test")
+        self.method = "POST"
+        self.headers = {
+            "origin": "http://127.0.0.1:8000",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        }
+
+    async def json(self):
+        return self._payload
+
+
+async def _no_routes(_name: str) -> int:
+    return 0
+
+
+async def _unclaimed(_name: str, _message: dict) -> bool:
+    return False
+
+
+def _register_visit(*, active: bool, locked: bool | None = None) -> None:
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda name: active and name == "Lan",
+        route_stream_message=_unclaimed,
+        on_start_session=None,
+        finalize_for_character=_no_routes,
+        is_locked=None if locked is None else (lambda name: locked and name == "Lan"),
+    ))
+
+
+async def _start(game_type: str = "drawing_guess", session_id: str = "dg-1"):
+    return await gr_runtime.game_route_start(
+        game_type, _FakeRequest({"lanlan_name": "Lan", "session_id": session_id}),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "locked"),
+    [(True, None), (False, True)],
+    ids=["active", "still-finishing"],
+)
+async def test_game_route_start_refuses_a_character_owned_by_another_route(monkeypatch, active, locked):
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    _register_visit(active=active, locked=locked)
+    with reset_game_route_state():
+        result = await _start()
+
+        assert result == {"ok": False, "reason": "route_owned_by_external"}
+        assert gr_runtime._get_active_game_route_state("Lan") is None
+        assert manager.takeover_owner() is None
+
+
+@pytest.mark.asyncio
+async def test_game_route_start_refuses_while_another_owner_holds_the_takeover(monkeypatch):
+    manager = TakeoverManagerDouble()
+    sink = AsyncMock()
+    manager.acquire_takeover("visit", AsyncMock(), callback_sink=sink)
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    with reset_game_route_state():
+        result = await _start()
+
+        assert result == {"ok": False, "reason": "route_owned_by_external"}
+        assert gr_runtime._get_active_game_route_state("Lan") is None
+        assert manager.takeover_owner() == "visit"
+        assert manager._takeover_callback_sink is sink
+
+
+@pytest.mark.asyncio
+async def test_game_route_start_ignores_kinds_that_are_neither_active_nor_locked(monkeypatch):
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    _register_visit(active=False, locked=False)
+    with reset_game_route_state():
+        result = await _start()
+
+        assert result["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        assert state[_TAKEOVER_TOKEN_KEY].owner == "game"
+        assert manager.takeover_owner() == "game"
+        # The inbox sink went in through the route's own token.
+        assert manager._takeover_callback_sink.__self__ is state[_TAKEOVER_CALLBACK_INBOX_KEY]
+
+
+@pytest.mark.asyncio
+async def test_route_exit_releases_the_takeover_and_clears_all_three_attributes(monkeypatch):
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", AsyncMock())
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+
+        await gr_runtime._finalize_game_route_state(state, reason="test_end")
+
+        assert manager._takeover_active is False
+        assert manager._takeover_input_dispatcher is None
+        assert manager._takeover_callback_sink is None
+        assert manager.takeover_owner() is None
+        assert _TAKEOVER_TOKEN_KEY not in state
+
+
+@pytest.mark.asyncio
+async def test_route_exit_leaves_a_takeover_another_owner_holds_by_then(monkeypatch):
+    # Mutation: postgame clearing the attributes unconditionally (the old
+    # behavior) turns this red -- a finished game would unmute a visit.
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", AsyncMock())
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        manager.release_takeover(state[_TAKEOVER_TOKEN_KEY])
+        visit_sink = AsyncMock()
+        manager.acquire_takeover("visit", AsyncMock(), callback_sink=visit_sink)
+
+        await gr_runtime._finalize_game_route_state(state, reason="test_end")
+
+        assert manager.takeover_owner() == "visit"
+        assert manager._takeover_active is True
+        assert manager._takeover_callback_sink is visit_sink
+
+
+@pytest.mark.asyncio
+async def test_a_mini_game_still_replaces_another_mini_game(monkeypatch):
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", AsyncMock())
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    with reset_game_route_state():
+        assert (await _start(session_id="dg-old"))["ok"] is True
+        old_state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+
+        result = await _start(session_id="dg-new")
+
+        assert result["ok"] is True
+        new_state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        assert new_state is not old_state
+        assert old_state["game_route_active"] is False
+        assert manager.takeover_owner() == "game"
+        assert manager._takeover_active is True
+        assert new_state[_TAKEOVER_TOKEN_KEY] is not old_state.get(_TAKEOVER_TOKEN_KEY)
+
+
+@pytest.fixture
+def _icebreaker_clean(monkeypatch):
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {})
+    states = dict(icebreaker_route_state._icebreaker_route_states)
+    icebreaker_route_state._icebreaker_route_states.clear()
+    yield
+    icebreaker_route_state._icebreaker_route_states.clear()
+    icebreaker_route_state._icebreaker_route_states.update(states)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "locked"),
+    [(True, None), (False, True)],
+    ids=["active", "still-finishing"],
+)
+async def test_icebreaker_route_start_refuses_a_character_owned_by_another_route(
+    _icebreaker_clean, active, locked,
+):
+    _register_visit(active=active, locked=locked)
+
+    result = await icebreaker_router.icebreaker_route_start(
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+    )
+
+    assert result == {"ok": False, "reason": "route_owned_by_external"}
+    assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is None
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_route_start_is_unchanged_without_another_route(_icebreaker_clean):
+    _register_visit(active=False, locked=False)
+
+    result = await icebreaker_router.icebreaker_route_start(
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+    )
+
+    assert result["ok"] is True
+    assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is not None

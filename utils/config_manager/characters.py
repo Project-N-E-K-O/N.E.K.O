@@ -31,7 +31,11 @@ from .persona_payload import (
     _build_effective_character_payload,
     _resolve_effective_character_prompt,
 )
-from .reserved_schema import migrate_catgirl_reserved, validate_reserved_schema
+from .reserved_schema import (
+    ensure_character_uids,
+    migrate_catgirl_reserved,
+    validate_reserved_schema,
+)
 
 
 class CharactersMixin:
@@ -165,6 +169,33 @@ class CharactersMixin:
             character_json_path,
             bypass_write_fence=bypass_write_fence,
         )
+
+    def backfill_character_uids(self) -> bool:
+        """Give every stored character a stable ``_reserved.character_uid`` once.
+
+        Runs as an explicit startup step after cloudsave bootstrap/import, never
+        from ``load_characters``: a load-time write would make a freshly seeded
+        characters.json look user-modified and stop the legacy-root import.
+        Only an existing runtime characters.json is touched, and it is written
+        (atomically) only when some character lacked a valid id. Returns
+        whether anything was written. Raises what ``save_characters`` raises
+        (e.g. the cloudsave write fence in maintenance mode).
+        """
+        character_json_path = str(self.get_runtime_config_path('characters.json'))
+        if not os.path.isfile(character_json_path):
+            return False
+        character_data = self.load_characters(character_json_path=character_json_path)
+        if not isinstance(character_data, dict):
+            return False
+        if not ensure_character_uids(character_data.get('猫娘')):
+            return False
+        self.save_characters(character_data, character_json_path=character_json_path)
+        logger.info("已为缺少稳定 id 的角色补发 character_uid。")
+        return True
+
+    async def abackfill_character_uids(self) -> bool:
+        """Async wrapper for ``backfill_character_uids`` (file IO off the event loop)."""
+        return await asyncio.to_thread(self.backfill_character_uids)
 
     # --- Character metadata helpers ---
 

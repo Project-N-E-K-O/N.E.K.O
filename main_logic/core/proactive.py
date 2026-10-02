@@ -2178,16 +2178,26 @@ class ProactiveMixin:
         # A takeover controller that can speak on its own (e.g. a media scene
         # filling gaps) receives respond cues directly; ordinary chat output is
         # muted for the whole takeover, so queuing here would only let them age out.
+        # A callback hold (``hold_callbacks``) parks cues after the takeover was
+        # released, until its owner hands them back for ordinary delivery. The
+        # takeover sink, while installed, is asked first.
+        sinks = []
         sink = getattr(self, "_takeover_callback_sink", None)
         if getattr(self, "_takeover_active", False) and callable(sink):
+            sinks.append(("takeover", sink))
+        hold_sink = getattr(self, "_callback_hold_sink", None)
+        if callable(hold_sink):
+            sinks.append(("hold", hold_sink))
+        for sink_label, candidate_sink in sinks:
             # The sink only sees the dict; carry the caller's priority like the key above.
             callback.setdefault("priority", priority)
             try:
-                consumed = bool(sink(callback))
+                consumed = bool(candidate_sink(callback))
             except Exception as exc:
                 consumed = False
                 logger.warning(
-                    "[%s] takeover callback sink failed: %s", self.lanlan_name, type(exc).__name__,
+                    "[%s] %s callback sink failed: %s",
+                    self.lanlan_name, sink_label, type(exc).__name__,
                 )
             if consumed:
                 return

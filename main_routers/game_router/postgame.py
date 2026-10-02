@@ -55,6 +55,7 @@ from .route_lifecycle import (
     _cancel_game_context_organizer_before_disabled_archive,
     _push_game_speech_cancel,
     _push_game_window_state_change,
+    _TAKEOVER_TOKEN_KEY,
     _close_takeover_callback_inbox,
     _settle_game_context_organizer_before_archive,
 )
@@ -1272,11 +1273,11 @@ async def _finalize_game_route_state_inner(
     )
     # Release the SessionManager-level takeover so ordinary chat handlers come
     # back online; chat LLM may produce auto-replies again, but the player has
-    # exited the game so that's the desired behavior.
+    # exited the game so that's the desired behavior. Only this route's own
+    # token releases it: a takeover another owner (or a newer route) holds by
+    # now stays in place.
     if mgr is not None:
-        mgr._takeover_active = False
-        mgr._takeover_input_dispatcher = None
-        mgr._takeover_callback_sink = None
+        mgr.release_takeover(state.pop(_TAKEOVER_TOKEN_KEY, None))
     _close_takeover_callback_inbox(state, mgr)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore

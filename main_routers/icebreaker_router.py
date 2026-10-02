@@ -27,6 +27,7 @@ from config import (
 )
 from config.prompts.prompts_icebreaker import build_icebreaker_free_text_prompts
 from main_logic.mirror_meta import build_mirror_meta
+from utils.external_route_registry import is_external_route_locked
 from utils.icebreaker_free_text import (
     normalize_icebreaker_free_text_derail_streak,
     normalize_icebreaker_free_text_options,
@@ -281,6 +282,15 @@ async def icebreaker_route_start(request: Request):
     _absorb_request_language(data, lanlan_name)
 
     async with _get_icebreaker_route_lock(lanlan_name):
+        # Another kind of external route occupies this character (until its
+        # exit flow finishes). The icebreaker is not a registered kind itself,
+        # so excluding it only matters once it is.
+        if is_external_route_locked(lanlan_name, exclude_kind="icebreaker"):
+            logger.info(
+                "icebreaker route/start refused: external route owns lanlan=%s",
+                lanlan_name,
+            )
+            return {"ok": False, "reason": "route_owned_by_external"}
         state = activate_icebreaker_route(lanlan_name, session_id)
     return {"ok": True, "state": _public_icebreaker_route_state(state)}
 

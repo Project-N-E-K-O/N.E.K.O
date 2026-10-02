@@ -914,6 +914,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                 except Exception as e:
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
+            # 存量角色一次性补发稳定 id（character_uid）：放在 cloudsave 引导 /
+            # 启动导入之后，引导期的 seed 文件不能被改写；失败只记日志，不挡启动。
+            try:
+                from utils.character_memory import character_config_mutation_lock
+
+                async with character_config_mutation_lock:
+                    await _config_manager.abackfill_character_uids()
+            except Exception as e:
+                logger.warning("角色稳定 id 补发失败，下次启动重试: %s", e)
+
             await initialize_character_data()
             await _sync_memory_server_after_startup_import(import_result)
 

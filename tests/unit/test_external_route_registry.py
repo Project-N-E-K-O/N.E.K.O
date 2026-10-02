@@ -1,0 +1,280 @@
+"""External-route registry: lookup semantics, the game registration, and the
+hijack points that now go through it (design doc §5 PR-01)."""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+
+from main_logic.voice_input.consumers.game import GameVoiceInputConsumer
+from main_logic.voice_turn.contracts import (
+    VoiceIngressToken,
+    VoiceTranscriptEvent,
+    VoiceTurnToken,
+)
+from main_routers import game_router
+from main_routers.game_router import runtime as gr_runtime
+from utils import external_route_registry as registry
+from utils.external_route_registry import ExternalRouteKind
+
+from .game_route_test_helpers import gr_patch_all, reset_game_route_state
+
+
+async def _no_routes(_name: str) -> int:
+    return 0
+
+
+async def _unclaimed(_name: str, _message: dict) -> bool:
+    return False
+
+
+def _kind(
+    kind: str,
+    *,
+    active: bool = False,
+    locked: bool | None = None,
+    background: bool | None = None,
+    on_start_session=None,
+    finalize=_no_routes,
+    route_stream_message=_unclaimed,
+    on_page_signal=None,
+    route_voice_transcript=None,
+) -> ExternalRouteKind:
+    return ExternalRouteKind(
+        kind=kind,
+        is_active=lambda _name: active,
+        route_stream_message=route_stream_message,
+        on_start_session=on_start_session,
+        finalize_for_character=finalize,
+        route_voice_transcript=route_voice_transcript,
+        on_page_signal=on_page_signal,
+        is_locked=None if locked is None else (lambda _name: locked),
+        has_background_tasks=None if background is None else (lambda _name: background),
+    )
+
+
+@pytest.fixture
+def empty_registry():
+    # conftest restores the import-time registrations after the test.
+    registry._reset_for_tests()
+    yield registry
+
+
+def test_lookup_returns_the_active_kind_and_none_otherwise(empty_registry):
+    assert registry.get_active_external_route("Lan") is None
+    assert registry.is_external_route_active("Lan") is False
+
+    idle = _kind("idle")
+    busy = _kind("busy", active=True)
+    registry.register_external_route_kind(idle)
+    registry.register_external_route_kind(busy)
+
+    assert registry.get_active_external_route("Lan") is busy
+    assert registry.is_external_route_active("Lan") is True
+
+
+def test_reregistering_a_kind_replaces_it(empty_registry):
+    registry.register_external_route_kind(_kind("visit", active=True))
+    replacement = _kind("visit", active=False)
+    registry.register_external_route_kind(replacement)
+
+    assert registry._snapshot_for_tests() == {"visit": replacement}
+    assert registry.get_active_external_route("Lan") is None
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_kind_without_is_locked_is_locked_exactly_while_active(empty_registry, active):
+    registry.register_external_route_kind(_kind("game", active=active))
+
+    assert registry.is_external_route_locked("Lan") is active
+    assert registry.is_external_route_locked("Lan") is registry.is_external_route_active("Lan")
+
+
+def test_locked_but_inactive_kind_holds_the_slot_without_hijacking_input(empty_registry):
+    # A kind still running its exit flow: input is back to ordinary chat, the
+    # slot is still taken. Mutation: is_external_route_locked only checking
+    # is_active turns this red.
+    registry.register_external_route_kind(_kind("visit", active=False, locked=True))
+
+    assert registry.get_active_external_route("Lan") is None
+    assert registry.is_external_route_active("Lan") is False
+    assert registry.is_external_route_locked("Lan") is True
+
+
+def test_background_tasks_lock_the_character_lifecycle_but_not_the_slot(empty_registry):
+    # Mutation: folding has_background_tasks into is_external_route_locked turns
+    # this red (a pending summary write would then refuse a new route start).
+    registry.register_external_route_kind(
+        _kind("visit", active=False, locked=False, background=True)
+    )
+
+    assert registry.is_external_route_locked("Lan") is False
+    assert registry.is_character_lifecycle_locked("Lan") is True
+
+
+def test_lifecycle_lock_follows_the_slot_lock(empty_registry):
+    registry.register_external_route_kind(_kind("visit", locked=True))
+    assert registry.is_character_lifecycle_locked("Lan") is True
+
+    registry.register_external_route_kind(_kind("visit", locked=False))
+    assert registry.is_character_lifecycle_locked("Lan") is False
+
+
+def test_exclude_kind_skips_only_the_callers_own_kind(empty_registry):
+    # Mutation: ignoring exclude_kind turns this red (a mini-game could no
+    # longer replace another mini-game).
+    registry.register_external_route_kind(_kind("game", active=True))
+    assert registry.is_external_route_locked("Lan", exclude_kind="game") is False
+    assert registry.is_external_route_locked("Lan") is True
+
+    # Another kind still finishing its exit flow blocks both.
+    registry.register_external_route_kind(_kind("game", active=False))
+    registry.register_external_route_kind(_kind("visit", active=False, locked=True))
+    assert registry.is_external_route_locked("Lan", exclude_kind="game") is True
+    assert registry.is_external_route_locked("Lan") is True
+
+
+@pytest.mark.asyncio
+async def test_start_session_claims_need_an_active_route_with_a_handler(empty_registry):
+    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is False
+
+    registry.register_external_route_kind(_kind("game", active=True))
+    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is False
+
+    claim = AsyncMock(return_value=True)
+    registry.register_external_route_kind(_kind("visit", active=True, on_start_session=claim))
+    registry.register_external_route_kind(_kind("game", active=False))
+    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is True
+    claim.assert_awaited_once_with("Lan", {"input_type": "audio"})
+
+
+@pytest.mark.asyncio
+async def test_stream_message_goes_to_the_active_route_only(empty_registry):
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is False
+
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("game", active=True, route_stream_message=handler)
+    )
+    message = {"input_type": "text", "data": "hi"}
+
+    assert await registry.route_external_stream_message("Lan", message) is True
+    handler.assert_awaited_once_with("Lan", message)
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_passes_route_kwargs_through(empty_registry):
+    assert await registry.route_external_voice_transcript("Lan", "hi") is False
+
+    registry.register_external_route_kind(_kind("visit", active=True))
+    assert await registry.route_external_voice_transcript("Lan", "hi") is False
+
+    handler = AsyncMock(return_value=True)
+    registry.register_external_route_kind(
+        _kind("game", active=True, route_voice_transcript=handler)
+    )
+    registry.register_external_route_kind(_kind("visit", active=False))
+    assert await registry.route_external_voice_transcript(
+        "Lan", "hi", request_id="r", game_type="soccer", session_id="s",
+    ) is True
+    handler.assert_awaited_once_with(
+        "Lan", "hi", request_id="r", game_type="soccer", session_id="s",
+    )
+
+
+@pytest.mark.asyncio
+async def test_page_signal_prefers_the_active_route_then_any_claimant(empty_registry):
+    assert await registry.route_external_page_signal("Lan", {"speech_id": "a"}) is False
+
+    # The active kind has no handler (game): an inactive kind that still owns
+    # the signal (speech playing after its route ended) gets it.
+    claimant = AsyncMock(return_value=True)
+    registry.register_external_route_kind(_kind("game", active=True))
+    registry.register_external_route_kind(_kind("visit", on_page_signal=claimant))
+    assert await registry.route_external_page_signal("Lan", {"speech_id": "a"}) is True
+    claimant.assert_awaited_once_with("Lan", {"speech_id": "a"})
+
+    declined = AsyncMock(return_value=False)
+    registry.register_external_route_kind(_kind("visit", on_page_signal=declined))
+    assert await registry.route_external_page_signal("Lan", {"speech_id": "b"}) is False
+
+
+@pytest.mark.asyncio
+async def test_finalize_sums_every_kind_and_survives_a_failing_one(empty_registry):
+    async def _two(_name):
+        return 2
+
+    async def _boom(_name):
+        raise RuntimeError("finalize failed")
+
+    async def _one(_name):
+        return 1
+
+    registry.register_external_route_kind(_kind("a", finalize=_two))
+    registry.register_external_route_kind(_kind("b", finalize=_boom))
+    registry.register_external_route_kind(_kind("c", finalize=_one))
+
+    assert await registry.finalize_external_routes_for_character("Lan") == 3
+
+
+def test_register_rejects_a_blank_kind(empty_registry):
+    with pytest.raises(ValueError):
+        registry.register_external_route_kind(_kind("  "))
+
+
+def test_game_router_registers_its_original_handlers():
+    spec = registry._snapshot_for_tests()["game"]
+
+    assert spec.is_active is game_router.is_game_route_active
+    assert spec.route_stream_message is game_router.route_external_stream_message
+    assert spec.finalize_for_character is game_router.finalize_game_routes_for_character
+    # Mutation: dropping route_voice_transcript from the registration makes
+    # independent-ASR game voice fail with GAME_VOICE_TRANSCRIPT_NOT_ROUTED.
+    assert spec.route_voice_transcript is game_router.route_external_voice_transcript
+    assert spec.on_start_session is None
+    assert spec.is_locked is None
+    assert spec.has_background_tasks is None
+    assert spec.on_page_signal is None
+
+
+def _voice_token(turn_id: int = 1) -> VoiceTurnToken:
+    return VoiceTurnToken(
+        ingress=VoiceIngressToken(
+            connection_id="connection",
+            lease_generation=1,
+            route_generation=1,
+            audio_generation=1,
+            session_epoch=5,
+        ),
+        turn_id=turn_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_final_reaches_an_active_game_through_the_registry(monkeypatch):
+    delivered = AsyncMock(return_value=True)
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    gr_patch_all(monkeypatch, "_route_external_transcript_to_game", delivered)
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("soccer", "match-1", "Lan")
+        consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+        token = _voice_token()
+
+        assert consumer.is_available() is True
+        assert await consumer.prepare_turn(token) is True
+        # Raises GAME_VOICE_TRANSCRIPT_NOT_ROUTED if the registry cannot deliver.
+        await consumer.on_final(
+            VoiceTranscriptEvent(turn_token=token, provider="qwen", text="shoot")
+        )
+
+    delivered.assert_awaited_once()
+    args, kwargs = delivered.await_args
+    assert args[:3] == ("Lan", state, "shoot")
+    assert kwargs["mode"] == "voice"
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_consumer_is_unavailable_without_a_route(empty_registry):
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert consumer.is_available() is False

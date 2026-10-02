@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections import deque
 import queue
@@ -4979,3 +4980,135 @@ async def test_a_reconnect_while_queued_for_the_frame_lock_drops_the_frame():
     # The swap really happened and the second call really did pin the old socket,
     # so the assertion above cannot pass by the probe never racing at all.
     assert mgr.websocket is replacement
+
+
+async def _external_route_no_routes(_name):
+    return 0
+
+
+async def _external_route_unclaimed(_name, _message):
+    return False
+
+
+def _register_external_route_kind(kind, *, active, locked=None, on_start_session=None):
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    # The autouse registry fixture in conftest restores the registry afterwards.
+    register_external_route_kind(ExternalRouteKind(
+        kind=kind,
+        is_active=lambda _name: active,
+        route_stream_message=_external_route_unclaimed,
+        on_start_session=on_start_session,
+        finalize_for_character=_external_route_no_routes,
+        is_locked=None if locked is None else (lambda _name: locked),
+    ))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "active", "locked", "launched"),
+    [
+        ("visit", True, None, False),
+        ("visit", False, True, False),
+        ("game", True, None, True),
+        ("visit", False, False, True),
+    ],
+    ids=["other-route-active", "other-route-finishing", "game-replaces-game", "idle-kind"],
+)
+async def test_mini_game_magic_command_is_not_launched_over_another_external_route(
+    kind, active, locked, launched,
+):
+    """The game's /route/start would refuse the slot, so the window must not open."""
+    _register_external_route_kind(kind, active=active, locked=locked)
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.start_session = AsyncMock()
+    mgr._process_stream_data_internal = AsyncMock()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session = None
+    mgr.session_ready = False
+    mgr.is_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+    sent_types = [payload.get("type") for payload in mgr.websocket.sent]
+    if launched:
+        assert "mini_game_invite_resolved" in sent_types
+        mgr.send_status.assert_not_awaited()
+    else:
+        assert "mini_game_invite_resolved" not in sent_types
+        mgr.send_status.assert_awaited_once()
+        status = json.loads(mgr.send_status.await_args.args[0])
+        assert status == {
+            "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
+            "details": {"game_type": "watch-together"},
+        }
+
+
+def _make_auto_start_manager():
+    mgr = _make_transcript_manager()
+    mgr.session = None
+    mgr.is_active = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.start_session = AsyncMock()
+    mgr._process_stream_data_internal = AsyncMock()
+    return mgr
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_is_claimed_by_an_external_route():
+    """Voice reaching an idle manager must not start ordinary realtime under a route that claims it."""
+    claim = AsyncMock(return_value=True)
+    _register_external_route_kind("visit", active=True, on_start_session=claim)
+    mgr = _make_auto_start_manager()
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    claim.assert_awaited_once_with("Lan", {"input_type": "audio"})
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_type", "data", "with_claimant"),
+    [
+        ("audio", [0, 1, 2], False),
+        ("text", "hello", True),
+    ],
+    ids=["no-claimant", "text-is-never-claimed"],
+)
+async def test_auto_start_is_unchanged_when_no_route_claims_it(input_type, data, with_claimant):
+    claim = AsyncMock(return_value=True)
+    if with_claimant:
+        _register_external_route_kind("visit", active=True, on_start_session=claim)
+    else:
+        # The game kind registers no on_start_session: the gate returns False.
+        _register_external_route_kind("game", active=True)
+    mgr = _make_auto_start_manager()
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": input_type, "data": data},
+    )
+
+    claim.assert_not_awaited()
+    mgr.start_session.assert_awaited_once()

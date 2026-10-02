@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "Game LLM did not produce a valid output ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "Screen/camera frames are skipped during the game",
         "GAME_VOICE_STT_GATE_ACTIVE": "Game voice takeover is active",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "Another activity is in progress, so the mini-game can't be opened right now",
         "INTERNAL_IMPORT_ERROR": "Internal component failed to load: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "Local character config is invalid",
         "MEMORY_SERVER_RELEASE_FAILED": "Failed to release character memory handle, please retry later",

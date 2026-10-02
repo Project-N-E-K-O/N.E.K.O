@@ -67,6 +67,9 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _GAME_WINDOW_STATE_CHANGE_PUSH_TIMEOUT_SECONDS = 2.0
 # Route-state slot for the inbox behind SessionManager._takeover_callback_sink.
 _TAKEOVER_CALLBACK_INBOX_KEY = "_takeover_callback_inbox"
+# Route-state slot for the SessionManager.acquire_takeover token; every exit
+# path releases exactly this token (a stale token releases nothing).
+_TAKEOVER_TOKEN_KEY = "_takeover_token"
 
 
 def _close_takeover_callback_inbox(state: dict, mgr=None) -> None:

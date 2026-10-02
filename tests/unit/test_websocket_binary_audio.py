@@ -4,11 +4,13 @@ import asyncio
 import json
 import re
 import struct
+from unittest.mock import AsyncMock
 from pathlib import Path
 
 import pytest
 
 import main_routers.websocket_router as websocket_router
+from utils import external_route_registry
 from main_routers.websocket_router import _decode_binary_audio_frame
 
 
@@ -189,17 +191,22 @@ def _install_protocol_endpoint(
         "get_session_id",
         lambda: session_ids,
     )
-    monkeypatch.setattr(
-        websocket_router,
-        "is_game_route_active",
-        lambda _name: game_active,
-    )
-    monkeypatch.setattr(
-        websocket_router,
-        "route_external_stream_message",
-        _route_external,
+    # Replace the real ``game`` kind; the autouse registry fixture in
+    # conftest restores the import-time registration afterwards.
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: game_active,
+            route_stream_message=_route_external,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+        )
     )
     return session_ids, route_external_calls
+
+
+async def _finalize_none(_name: str) -> int:
+    return 0
 
 
 def test_binary_audio_frame_decodes_pcm_and_sample_rate() -> None:
@@ -1934,3 +1941,72 @@ async def test_bad_frame_uses_voice_identity_and_stale_terminal_notice(monkeypat
     assert socket.closed is (not owns_voice)
     notices = [item for item in socket.sent_text if 'CHARACTER_SWITCHING_TERMINAL' in item]
     assert bool(notices) is (not owns_voice)
+
+
+@pytest.mark.asyncio
+async def test_empty_external_route_registry_never_hijacks_main_socket_input(
+    monkeypatch,
+) -> None:
+    """With no registered kind, start_session and stream_data take the ordinary path."""
+    manager = _ProtocolManager()
+    text_message = {"action": "stream_data", "input_type": "text", "data": "hi"}
+    websocket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "audio"},
+            dict(_PCM_MESSAGE),
+            text_message,
+        ]
+    )
+    _session_ids, route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+        game_active=True,
+    )
+    # Drop every kind (including the fake one just installed); conftest
+    # restores the import-time registrations afterwards.
+    external_route_registry._reset_for_tests()
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    names = [name for name, _payload in manager.calls]
+    assert route_external_calls == []
+    assert "authorize" in names
+    streamed = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert any(payload.get("data") == "hi" for payload in streamed)
+
+
+@pytest.mark.asyncio
+async def test_route_with_on_start_session_decides_the_session_start(monkeypatch) -> None:
+    """A kind that registers on_start_session replaces the game-only branch."""
+    claimed: list[dict] = []
+
+    async def _claim(_name: str, message: dict) -> bool:
+        claimed.append(message)
+        return True
+
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _session_ids, route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_claim,
+            finalize_for_character=_finalize_none,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert claimed == [{"input_type": "audio", "request_id": "req-1"}]
+    names = [name for name, _payload in manager.calls]
+    assert "start_session" not in names
+    assert route_external_calls == []

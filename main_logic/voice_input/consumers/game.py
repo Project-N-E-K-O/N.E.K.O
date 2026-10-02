@@ -10,10 +10,12 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
+from utils.external_route_registry import (
+    is_external_route_active,
+    route_external_voice_transcript,
+)
 from utils.game_route_state import (
     get_active_game_route_generation_identity as get_active_game_route_identity,
-    is_game_route_active,
-    route_external_voice_transcript,
 )
 
 
@@ -29,7 +31,7 @@ class GameVoiceInputConsumer:
     )
 
     def is_available(self) -> bool:
-        return is_game_route_active(self.lanlan_name())
+        return is_external_route_active(self.lanlan_name())
 
     async def prepare_turn(self, token: VoiceTurnToken) -> bool:
         if token in self._prepared_routes:

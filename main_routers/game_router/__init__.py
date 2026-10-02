@@ -272,6 +272,7 @@ from .route_lifecycle import (  # noqa: F401
     _GAME_ROUTE_ACTIVATION_LOG_LIMIT,
     _push_game_window_state_change,
     _TAKEOVER_CALLBACK_INBOX_KEY,
+    _TAKEOVER_TOKEN_KEY,
     _close_takeover_callback_inbox,
     _GAME_ROUTE_OUTPUT_LIMIT,
     _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
@@ -410,3 +411,30 @@ from .runtime import (  # noqa: F401
     game_character,
     cleanup_expired_sessions,
 )
+
+# Plug the game route into the shared external-route hijack points. The
+# handlers are the original function objects, so the registered ``game`` kind
+# behaves exactly like the former direct imports. The game route has no
+# separate lock state (``is_locked`` falls back to ``is_active``), no
+# ``on_start_session`` (websocket_router keeps its own game start branch) and
+# no page signals.
+from utils.external_route_registry import (  # noqa: E402
+    ExternalRouteKind,
+    register_external_route_kind,
+)
+
+
+
+def _register_external_route_kind() -> None:
+    """Register the ``game`` kind (import time; tests re-run it after restoring the registry)."""
+    register_external_route_kind(ExternalRouteKind(
+        kind="game",
+        is_active=is_game_route_active,
+        route_stream_message=route_external_stream_message,
+        on_start_session=None,
+        finalize_for_character=finalize_game_routes_for_character,
+        route_voice_transcript=route_external_voice_transcript,
+    ))
+
+
+_register_external_route_kind()
