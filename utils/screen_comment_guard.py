@@ -92,14 +92,14 @@ _LABEL_STRIP = regex.compile(
 # them may name a label ("https://host/屏幕搭话：a.png").
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 # A URL may also come without its scheme: protocol-relative with any host
-# ("//cdn.host/", "//192.168.1.10/", "//[::1]/", "//localhost/") or a bare
+# ("//cdn.host/", "//192.168.1.10/", "//[::1]/", "//localhost:8080?a=b") or a bare
 # domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"), and a
 # drive path written with forward slashes ("C:/a.png") is one too. A
 # Markdown reference definition's target may also be a path ("[1]: /a.png",
 # "./a.png", "../a.png").
 _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
-    r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=/)"
+    r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=[/?#])"
     r"|(?<![\w:/.@])[A-Za-z]:(?=/)"
     r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/)"
     r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})(?:\.{1,2})?(?=/))"

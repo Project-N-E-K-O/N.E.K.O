@@ -186,6 +186,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "全角链接【图】(/屏幕搭话：file.png)和【图2】(/tmp/【屏幕画面】/b.png)也一样。",
     "没写协议的 //cdn.example.com/屏幕搭话：a.png 和 www.example.com/【屏幕画面】/b.png 也是地址。",
     "本地的 //192.168.1.10/屏幕搭话：a.png、//[::1]/【屏幕画面】/b.png、//localhost:8080/屏幕搭话：c.png 和 10.0.0.2/屏幕搭话：d.png。",
+    "只有查询的 //localhost:8080?file=屏幕搭话：a.png 和 //host#屏幕搭话：b 也是地址。",
     "见下图[shot][1]和[shot2][2]。\n\n[1]: /assets/屏幕搭话：a.png\n  [2]: ../img/【屏幕画面】/b.png",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
