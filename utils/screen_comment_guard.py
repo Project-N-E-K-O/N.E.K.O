@@ -96,15 +96,18 @@ _LABEL_STRIP = regex.compile(
 # domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"), and a
 # drive path written with forward slashes ("C:/a.png") is one too. A
 # Markdown reference definition's target may also be a path ("[1]: /a.png",
-# "./a.png", "../a.png").
+# "./a.png", "../a.png") or anything in angle brackets ("[1]: <a.png>"). A
+# few well-known schemes need no slashes ("mailto:a@b.c", "data:text/plain,").
 _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
     r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=[/?#])"
     r"|(?<![\w:/.@])[A-Za-z]:(?=/)"
+    r"|(?<![\w:/.@])(?i:mailto|data|tel|sms|urn|magnet|geo|xmpp):(?=\S)"
     r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/)"
     r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})(?:\.{1,2})?(?=/))"
     r"(?:[^\s<>\"'()\]】）」』，。！？；、…～]|(?&paren))+"
     r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
+    r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})<[^<>\n]*>"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
 )
 # Stand in for a protected and a thinking character (Unicode private use).
@@ -407,12 +410,15 @@ def _masked(text: str) -> tuple[str, str]:
     reasoning never completes a visible comment). Offsets hold; the second
     value holds the hidden characters in order for ``_unmasked``.
     """
+    spans = [(m.start(), m.end(), _MASK) for m in _PROTECTED.finditer(text)]
+    spans += [(m.start(), m.end(), _THINK_MASK) for m in _THINK_BLOCK.finditer(text)]
     if _MASK in text or _THINK_MASK in text:
-        return text, ""
-    spans = sorted(
-        [(m.start(), m.end(), _MASK) for m in _PROTECTED.finditer(text)]
-        + [(m.start(), m.end(), _THINK_MASK) for m in _THINK_BLOCK.finditer(text)]
-    )
+        # A stand-in already in the text is hidden too, so every one in the
+        # masked text is put back in order.
+        spans += [(i, i + 1, _MASK) for i, char in enumerate(text)
+                  if char in (_MASK, _THINK_MASK)]
+    # The longer of two spans starting together wins.
+    spans.sort(key=lambda span: (span[0], -span[1]))
     masked, hidden, position = [], [], 0
     for start, end, mask in spans:
         if start < position:
