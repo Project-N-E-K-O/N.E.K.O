@@ -15,7 +15,6 @@ import uuid
 from pathlib import Path
 from tempfile import gettempdir
 from typing import NamedTuple
-from urllib.parse import unquote
 
 import portalocker
 
@@ -1126,9 +1125,11 @@ def _install_to_vendor(
     reads another configuration and resolves differently.
 
     uv pip finds project configuration (uv.toml, [tool.uv]) from its working
-    directory, and `uv run --project` does not pass the project on: run it in
-    the N.E.K.O project root, with paths made absolute first, so a plugin
-    repository outside N.E.K.O uses the same indexes as N.E.K.O itself.
+    directory, and `uv run --project` does not pass the project on: name the
+    N.E.K.O project with --project, so a plugin repository outside N.E.K.O
+    uses the same indexes as N.E.K.O itself. The working directory stays the
+    caller's, so relative paths (requirements, --python, PATH entries, UV_*
+    settings) keep meaning what they mean here.
     """
     if not packages:
         return 0
@@ -1136,20 +1137,15 @@ def _install_to_vendor(
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
     uv = _find_uv()
-    cwd: Path | None = None
     if uv is not None:
-        if project_root is not None and (project_root / "pyproject.toml").is_file():
-            cwd = project_root
+        has_project = project_root is not None and (project_root / "pyproject.toml").is_file()
         command = [
             uv, "pip", "install",
-            # A bare name is uv's own interpreter lookup; a path must keep
-            # meaning what it means here.
-            "--python", os.path.abspath(python) if _looks_like_path(python) else python,
-            "--target", str(vendor_dir.absolute()),
+            *(["--project", str(project_root)] if has_project else []),
+            "--python", python,
+            "--target", str(vendor_dir),
             "--upgrade",
-            # uv resolves relative paths in requirements from its cwd; keep
-            # them meaning what they meant here (as pip's did on main).
-            *(_absolute_requirement(package) if cwd else package for package in packages),
+            *packages,
         ]
         label = "uv pip install"
     else:
@@ -1162,7 +1158,7 @@ def _install_to_vendor(
             *packages,
         ]
         label = "pip install"
-    result = _run_installer(command, label=label, cwd=cwd)
+    result = _run_installer(command, label=label)
     if result is not None and result.returncode != 0:
         print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
@@ -1181,48 +1177,7 @@ def _install_to_vendor(
     return 0 if result is not None and result.returncode == 0 else 1
 
 
-# A PEP 508 name, with optional extras: what precedes "@" in "name @ url".
-_REQUIREMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\s*(\[[^\]]*\])?")
-
-
-def _absolute_requirement(requirement: str) -> str:
-    """A requirement whose local path ("foo @ ./deps/foo", "./deps/foo",
-    "foo @ file:./deps/foo") is relative, with that path made absolute;
-    anything else unchanged."""
-    spec, semicolon, marker = requirement.partition(";")
-    name, at, reference = spec.partition("@")
-    if at and not _REQUIREMENT_NAME_RE.fullmatch(name.strip()):
-        # The "@" belongs to a bare URL or path ("git+https://host/x@v1").
-        name, at, reference = "", "", spec
-    target = (reference if at else spec).strip()
-    if not target or "://" in target:
-        return requirement
-    if target.startswith("file:"):
-        path, fragment_mark, fragment = target[len("file:"):].partition("#")
-        if not path or path.startswith("/") or os.path.isabs(path):
-            return requirement
-        absolute = Path(os.path.abspath(unquote(path))).as_uri() + fragment_mark + fragment
-        rebuilt = f"{name.strip()} @ {absolute}" if at else absolute
-        return f"{rebuilt} ;{marker}" if semicolon else rebuilt
-    if at:
-        is_relative_path = not os.path.isabs(target)
-    else:
-        # A bare requirement is a path only when written like one.
-        is_relative_path = target.startswith(("./", "../", ".\\", "..\\")) or target in {".", ".."}
-    if not is_relative_path:
-        return requirement
-    absolute = os.path.abspath(target)
-    rebuilt = f"{name.strip()} @ {absolute}" if at else absolute
-    return f"{rebuilt} ;{marker}" if semicolon else rebuilt
-
-
-def _looks_like_path(program: str) -> bool:
-    return any(sep and sep in program for sep in (os.sep, os.altsep))
-
-
-def _run_installer(
-    cmd: list[str], *, label: str, cwd: Path | None = None,
-) -> subprocess.CompletedProcess[str] | None:
+def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
     print(f"  running: {' '.join(cmd)}")
     try:
         return subprocess.run(
@@ -1230,7 +1185,6 @@ def _run_installer(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=cwd,
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

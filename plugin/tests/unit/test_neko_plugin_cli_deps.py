@@ -67,18 +67,17 @@ def test_installer_start_failure_is_reported(tmp_path, monkeypatch, capsys, uv_f
 
 
 @pytest.mark.parametrize("has_project", [True, False])
-def test_uv_runs_in_the_neko_project_root(tmp_path, monkeypatch, has_project):
+def test_uv_reads_the_neko_project_without_leaving_this_directory(tmp_path, monkeypatch, has_project):
     # uv pip finds uv.toml / [tool.uv] from its cwd; a plugin repo outside
     # N.E.K.O (`uv run --project <N.E.K.O>`) must still use N.E.K.O's indexes.
+    # --project names it while relative paths (requirements, --python, PATH
+    # entries, UV_CONFIG_FILE) keep resolving from here, as on main.
     from plugin.neko_plugin_cli.commands import deps_cmd
 
     root = tmp_path / "neko"
     root.mkdir()
     if has_project:
         (root / "pyproject.toml").write_text("[project]\nname = 'n-e-k-o'\n", encoding="utf-8")
-    elsewhere = tmp_path / "plugin-repo"
-    elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
     seen = []
 
     def run(command, **kwargs):
@@ -86,58 +85,19 @@ def test_uv_runs_in_the_neko_project_root(tmp_path, monkeypatch, has_project):
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
     monkeypatch.setattr(deps_cmd.subprocess, "run", run)
+    packages = ["foo @ ./deps/foo", "corge @ file:./deps/corge", "httpx>=0.27"]
     relative_python = os.path.join("env", "bin", "python")
     assert deps_cmd._install_to_vendor(
-        ["pkg"], vendor_dir=Path("staging"), python=relative_python, project_root=root,
+        packages, vendor_dir=Path("staging"), python=relative_python, project_root=root,
     ) == 0
     command, kwargs = seen[-1]
-    assert kwargs["cwd"] == (root if has_project else None)
-    assert command[command.index("--python") + 1] == str(elsewhere / relative_python)
-    assert command[command.index("--target") + 1] == str(elsewhere / "staging")
-
-
-def test_relative_requirements_keep_resolving_from_here(tmp_path, monkeypatch):
-    # uv runs in the N.E.K.O root; "foo @ ./deps/foo" must still mean the
-    # directory sync was run from, as with pip on main.
-    from plugin.neko_plugin_cli.commands import deps_cmd
-
-    root = tmp_path / "neko"
-    root.mkdir()
-    (root / "pyproject.toml").write_text("[project]\nname = 'n-e-k-o'\n", encoding="utf-8")
-    here = tmp_path / "plugin-repo"
-    here.mkdir()
-    monkeypatch.chdir(here)
-    seen = []
-    monkeypatch.setattr(
-        deps_cmd.subprocess,
-        "run",
-        lambda command, **kwargs: seen.append(command) or subprocess.CompletedProcess(command, 0, stdout="ok"),
-    )
-    packages = [
-        "foo @ ./deps/foo",
-        "./deps/bar",
-        "baz @ ./deps/baz ; python_version >= '3.8'",
-        "httpx>=0.27",
-        "qux @ https://example.com/qux.whl",
-        "corge @ file:./deps/corge#subdirectory=pkg",
-        "file:../shared/grault",
-        "garply @ file:///opt/garply",
-        # The "@" of a revision is not the "name @ url" separator.
-        "git+https://github.com/astral-sh/ruff@v0.2.0",
-        "git+ssh://git@github.com/astral-sh/ruff@v0.2.0",
-        "ruff @ git+ssh://git@github.com/astral-sh/ruff@v0.2.0",
-    ]
-    assert deps_cmd._install_to_vendor(
-        packages, vendor_dir=tmp_path / "staging", python="python", project_root=root,
-    ) == 0
-    args = seen[-1][seen[-1].index("--upgrade") + 1:]
-    assert args[0] == f"foo @ {here / 'deps' / 'foo'}"
-    assert args[1] == str(here / "deps" / "bar")
-    assert args[2] == f"baz @ {here / 'deps' / 'baz'} ; python_version >= '3.8'"
-    assert args[3:5] == ["httpx>=0.27", "qux @ https://example.com/qux.whl"]
-    assert args[5] == f"corge @ {(here / 'deps' / 'corge').as_uri()}#subdirectory=pkg"
-    assert args[6] == (tmp_path / "shared" / "grault").as_uri()
-    assert args[7:] == packages[7:]
+    assert kwargs.get("cwd") is None
+    if has_project:
+        assert command[command.index("--project") + 1] == str(root)
+    else:
+        assert "--project" not in command
+    assert command[command.index("--python") + 1] == relative_python
+    assert command[command.index("--upgrade") + 1:] == packages
 
 
 def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
