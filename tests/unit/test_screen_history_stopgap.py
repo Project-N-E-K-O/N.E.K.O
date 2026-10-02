@@ -227,9 +227,10 @@ def test_hidden_thinking_never_completes_a_visible_comment():
     assert cut["content"] == "<think>想一想。</think>" + PARTS[0]
 
 
-async def test_recent_history_is_summarised_from_the_guarded_view(monkeypatch):
-    """The compression summary is stored as a system memo the guard does not
-    rewrite, so it must be made from the guarded replies."""
+async def test_recent_history_is_summarised_without_labels_but_uncut(monkeypatch):
+    """The compression summary replaces the raw messages and is stored as a
+    system memo the guard does not rewrite: it is made from the replies
+    without labels, but no comment the user saw is cut from it."""
     from memory.recent import CompressedRecentHistoryManager
     from utils.llm_client import AIMessage, HumanMessage
 
@@ -248,7 +249,7 @@ async def test_recent_history_is_summarised_from_the_guarded_view(monkeypatch):
         await manager.compress_history(
             [HumanMessage(content="聊"), AIMessage(content=chain("屏幕搭话："))], "Neko",
         )
-    assert rendered == [["聊", FIRST]]
+    assert rendered == [["聊", PREFIX + "".join(PARTS)]]
 
 
 def test_whitespace_around_a_removed_label_stays():
