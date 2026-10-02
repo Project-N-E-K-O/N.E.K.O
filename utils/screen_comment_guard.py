@@ -450,14 +450,18 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
     return projected
 
 
-def strip_screen_labels(messages):
+def strip_screen_labels(messages, *, guard_enabled: bool | None = None):
     """Remove source labels from assistant texts and cut nothing else.
 
     For text the user has already seen this turn (the tool loop's assistant
     turns): the model keeps every comment it streamed, so it does not say one
     again, but not the labelled format. Returns ``messages`` itself when no
-    label is found.
+    label is found, or when the operator switch turns the guard off.
     """
+    if guard_enabled is None:
+        guard_enabled = screen_guard_enabled()
+    if not guard_enabled:
+        return messages
     projected = None
     for index, message in enumerate(messages):
         role, content = _role_and_content(message)

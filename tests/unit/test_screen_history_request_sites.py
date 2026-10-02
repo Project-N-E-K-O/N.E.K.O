@@ -217,3 +217,16 @@ async def test_text_streamed_this_turn_reaches_the_next_tool_round_uncut():
     assert "屏幕搭话" not in json.dumps(client.requests[1], ensure_ascii=False, default=repr)
     history = client.requests[1][:-3]
     assert not [m for m in history if "红色小车" in json.dumps(m, ensure_ascii=False, default=repr)]
+
+
+async def test_the_operator_switch_also_leaves_this_turns_text_alone(monkeypatch):
+    monkeypatch.setenv("NEKO_SCREEN_HISTORY_GUARD", "0")
+    client = _client(handler=_noop_tool)
+    _poisoned(client)
+    client.script = [[_text(_COMMENT_A + _COMMENT_B), _tool_calls("c1")],
+                     [_text("好"), _text("", "stop")]]
+    await client.stream_text("继续")
+
+    assert len(client.requests) == 2
+    current_turn = json.dumps(client.requests[1][-2:], ensure_ascii=False, default=repr)
+    assert _COMMENT_A + _COMMENT_B in current_turn, current_turn
