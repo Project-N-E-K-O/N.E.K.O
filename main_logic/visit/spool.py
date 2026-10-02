@@ -1051,13 +1051,17 @@ class VisitSpool:
         deleted: list[Path] = []
         remaining = []
         committing: dict[str, bool] = {}
-        for visit_id, suffix, path, st in _scan(spool_dir):
+        scanned = _scan(spool_dir)
+        # 豁免宽限按 state.json 自己的年龄算：同场较旧的 .jsonl 可能先被扫到
+        state_age = {v: now - st.st_mtime for v, sfx, _p, st in scanned if sfx == STATE_SUFFIX}
+        for visit_id, suffix, path, st in scanned:
             if now - st.st_mtime > _RETENTION_S and suffix not in _UPLOAD_SUFFIXES:
                 # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
                 # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
                 if visit_id not in committing:
                     committing[visit_id] = _retention_exempt(
-                        visit_path(spool_dir, visit_id, STATE_SUFFIX), now - st.st_mtime,
+                        visit_path(spool_dir, visit_id, STATE_SUFFIX),
+                        state_age.get(visit_id, now - st.st_mtime),
                     )
                 if committing[visit_id]:
                     remaining.append((visit_id, suffix, path, st))

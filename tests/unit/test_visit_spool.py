@@ -707,3 +707,27 @@ async def test_a_permanently_unreadable_state_is_reclaimed_after_twice_the_reten
     os.utime(sp.state_path, (fifteen_days, fifteen_days))
     await VisitSpool.sweep(tmp_path, NOW)
     assert not sp.state_path.exists()
+
+
+async def test_unreadable_state_grace_uses_the_state_files_own_age(tmp_path, monkeypatch):
+    # 同场较旧的 .jsonl 先被扫到：宽限仍按 state.json 自己的年龄算
+    sp = await open_spool(tmp_path, vid(13))
+    await sp.close()
+    await sp.write_state(state_for())
+    fifteen = NOW - 15 * 86400
+    eight = NOW - 8 * 86400
+    os.utime(sp.jsonl_path, (fifteen, fifteen))
+    os.utime(sp.state_path, (eight, eight))
+    real_scan = spool_mod._scan
+
+    def jsonl_first(spool_dir):
+        rows = real_scan(spool_dir)
+        return sorted(rows, key=lambda r: 0 if r[1] == spool_mod.SPOOL_SUFFIX else 1)
+
+    def locked(path):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(spool_mod, "_scan", jsonl_first)
+    monkeypatch.setattr(spool_mod, "_read_state_file", locked)
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert sp.state_path.exists()
