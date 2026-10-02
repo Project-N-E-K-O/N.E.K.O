@@ -867,7 +867,8 @@ def test_newer_line_piece_overtaking_a_delayed_text_is_not_overlap():
     assert asm.feed(_delta_msg("新行", ln="g:2", lp=5))
     assert asm.anomalies == 0
     assert asm.render("g:1") == "旧行"
-    assert asm.close(_text_msg("旧行全文", ln="g:1")) == "旧行全文"
+    closed = asm.close(_text_msg("旧行全文", ln="g:1"))
+    assert closed == "旧行全文"
     assert asm.feed(_delta_msg("续", i=1, ln="g:2", lp=5))
     assert asm.render("g:2") == "新行续"
     assert not asm.feed(_delta_msg("同 lp", ln="g:3", lp=5))
