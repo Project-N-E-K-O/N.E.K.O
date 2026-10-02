@@ -503,6 +503,31 @@ describe('config draft lifecycle', () => {
 })
 
 describe('server application state', () => {
+  it('falls back after a pending response loses its revision race during an active save', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState).mockReturnValueOnce(response.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    // A pre-save lifecycle response clears the hint after loadAll captured R.
+    setPendingReload('alpha', false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await saving
+
+    expect(drafts.applicationState.value?.config_state).toBe('pending')
+    expect(drafts.applicationStateKnown.value).toBe(false)
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(drafts.pendingApplication.value).toBe(true)
+  })
+
   it('restores a pending state after loading the configuration page', async () => {
     vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
       plugin_id: 'alpha',

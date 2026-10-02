@@ -1068,9 +1068,10 @@ def _plugin_process_runner(
                 config_path=Path(config_path),
             )
             resolved_effective_cfg = resolved_config["effective_config"]
-            if isinstance(resolved_effective_cfg, dict):
-                effective_cfg = resolved_effective_cfg
-                ctx._set_effective_config_cache(effective_cfg)
+            if not isinstance(resolved_effective_cfg, dict):
+                raise TypeError("Startup effective config must be a mapping")
+            effective_cfg = resolved_effective_cfg
+            ctx._set_effective_config_cache(effective_cfg)
             # Keep the applied identity in the child, where the effective
             # configuration is actually resolved immediately before startup.
             # The parent must not hash its earlier pre-spawn snapshot.
@@ -1078,9 +1079,24 @@ def _plugin_process_runner(
 
             startup_config_fingerprint = fingerprint_config(effective_cfg)
         except Exception as e:
-            logger.debug("[Plugin Process] Could not resolve startup config: {}", e)
+            logger.debug("[Plugin Process] Could not resolve startup config: {}", type(e).__name__)
 
         instance = cls(ctx)
+
+        if startup_config_fingerprint is None:
+            # Retain the SDK read fallback when child-side resolution fails.
+            # Only a successful read can establish the loaded identity.
+            try:
+                fallback_cfg = asyncio.run(instance.config.dump(timeout=3.0))
+                if not isinstance(fallback_cfg, dict):
+                    raise TypeError("Startup effective config must be a mapping")
+                effective_cfg = fallback_cfg
+                ctx._set_effective_config_cache(effective_cfg)
+                from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+                startup_config_fingerprint = fingerprint_config(effective_cfg)
+            except Exception as e:
+                logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         # 配置覆盖实例默认值；保留旧 checkpoint 配置的回退顺序。
         freezable_keys = getattr(instance, "__freezable__", []) or []
@@ -1377,7 +1393,7 @@ def _plugin_process_runner(
                 startup_data: dict[str, Any] = {
                     "status": "ready" if startup_success else "failed",
                 }
-                if startup_success and startup_config_fingerprint:
+                if startup_config_fingerprint:
                     startup_data["config_fingerprint"] = startup_config_fingerprint
                 if startup_error is not None:
                     startup_data["startup_error"] = startup_error
@@ -2316,13 +2332,19 @@ class PluginHost:
 
                 # The child owns the effective configuration it actually
                 # loaded.  Record it only after the handshake succeeds and a
-                # second liveness check passes; a timeout, startup warning,
-                # or process that dies immediately must never advance this
-                # identity.
+                # second liveness check passes. A tolerated startup warning
+                # does not change which configuration the child loaded.
+                # Timeouts and dead processes must not advance this identity.
                 if (
                     isinstance(startup_result, dict)
-                    and startup_result.get("status") == "ready"
-                    and not startup_result.get("startup_error")
+                    and (
+                        startup_result.get("status") == "ready"
+                        or (
+                            startup_failure_policy != "fail"
+                            and startup_result.get("status") == "failed"
+                            and startup_result.get("startup_error")
+                        )
+                    )
                     and self.process.is_alive()
                 ):
                     fingerprint = startup_result.get("config_fingerprint")

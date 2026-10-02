@@ -3,6 +3,8 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import type { AxiosError } from 'axios'
+import { readErrorCode } from '@/utils/request'
 import {
   getPlugins,
   getPlugin,
@@ -369,7 +371,11 @@ export const usePluginStore = defineStore('plugin', () => {
       // Older plugin servers do not expose application-state. A successful
       // lifecycle operation is the only compatibility evidence available there;
       // network errors remain conservative and keep the hint visible.
-      if (legacyLifecycleApplied && (status === 404 || status === 405)) {
+      if (
+        legacyLifecycleApplied &&
+        (status === 404 || status === 405) &&
+        !readErrorCode(error as AxiosError)
+      ) {
         if (!canApplyResponse()) return false
         return setPendingReload(pluginId, false, expectedRevision)
       }

@@ -104,6 +104,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   ) {
     const applied = setPendingReload(forPluginId, pending, expectedRevision)
     if (applied && forPluginId === pluginId.value) pendingApplication.value = pending
+    return applied
   }
 
   function applyApplicationState(
@@ -119,12 +120,12 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       return false
     }
     applicationState.value = state
-    applicationStateKnown.value = true
     // `unknown` is intentionally conservative: an uncertain lifecycle result
     // must keep the reload affordance visible rather than claim success.
     const pending = state.config_state === 'pending' || state.config_state === 'unknown'
-    setPendingApplication(pending, forPluginId, expectedRevision)
-    return true
+    const applied = setPendingApplication(pending, forPluginId, expectedRevision)
+    applicationStateKnown.value = applied
+    return applied
   }
 
   async function loadApplicationState(forPluginId: string): Promise<api.PluginConfigApplicationState | null> {

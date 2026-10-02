@@ -223,9 +223,13 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize("startup_warning", [False, True])
+@pytest.mark.parametrize("resolve_failure", [False, True])
 def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    startup_warning: bool,
+    resolve_failure: bool,
 ) -> None:
     order: list[str] = []
     payloads: list[dict[str, object]] = []
@@ -244,6 +248,8 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
     async def _startup() -> None:
         order.append("startup")
+        if startup_warning:
+            raise RuntimeError("startup warning")
 
     async def _auto_custom() -> None:
         order.append("auto_custom")
@@ -258,7 +264,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
             async def dump(timeout: float = 3.0) -> dict[str, object]:
                 del timeout
-                return {}
+                return {"plugin_state": {"persist_mode": "manual"}}
 
             self.config = SimpleNamespace(dump=dump)
 
@@ -325,6 +331,13 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
     monkeypatch.setattr(host_module.threading, "Thread", _ImmediateThread)
+    if resolve_failure:
+        from plugin.server.infrastructure import config_resolver
+
+        def _failed_resolve(*_args, **_kwargs):
+            raise RuntimeError("child resolver unavailable")
+
+        monkeypatch.setattr(config_resolver, "resolve_plugin_config_from_path", _failed_resolve)
 
     host_module._plugin_process_runner(
         plugin_id="demo",
@@ -342,10 +355,17 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         "lifecycle.command_loop_start",
     ]
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
-    assert startup_payload["success"] is True
+    assert startup_payload["success"] is (not startup_warning)
     assert startup_payload["data"]["config_fingerprint"]
-    assert isinstance(effective_configs[0], dict)
-    assert effective_configs[0]["plugin"]["id"] == "demo"
+    if resolve_failure:
+        from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+        assert startup_payload["data"]["config_fingerprint"] == fingerprint_config(
+            {"plugin_state": {"persist_mode": "manual"}},
+        )
+    else:
+        assert isinstance(effective_configs[0], dict)
+        assert effective_configs[0]["plugin"]["id"] == "demo"
 
 
 @pytest.mark.plugin_unit
@@ -393,9 +413,11 @@ async def test_plugin_host_records_applied_config_only_after_ready_handshake(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_plugin_host_does_not_record_applied_config_for_startup_warning(
+@pytest.mark.parametrize("policy", ["warn", "ignore"])
+async def test_plugin_host_records_loaded_config_for_tolerated_startup_warning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    policy: str,
 ) -> None:
     class _WarningCommManager(_StartupErrorCommManager):
         async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> dict[str, object]:
@@ -403,7 +425,7 @@ async def test_plugin_host_does_not_record_applied_config_for_startup_warning(
             return {
                 "status": "failed",
                 "startup_error": "lifecycle.startup failed",
-                "config_fingerprint": "sha256:must-not-apply",
+                "config_fingerprint": "sha256:loaded",
             }
 
     comm_manager = _WarningCommManager()
@@ -428,11 +450,11 @@ async def test_plugin_host_does_not_record_applied_config_for_startup_warning(
         config_path=tmp_path / "demo" / "plugin.toml",
     )
 
-    startup_result = await plugin_host.start(startup_timeout=1.0)
+    startup_result = await plugin_host.start(startup_timeout=1.0, startup_failure=policy)
 
     assert startup_result["startup_error"] == "lifecycle.startup failed"
-    assert plugin_host.applied_config_fingerprint is None
-    assert plugin_host.applied_config_loaded_at is None
+    assert plugin_host.applied_config_fingerprint == "sha256:loaded"
+    assert plugin_host.applied_config_loaded_at
 
 
 @pytest.mark.plugin_unit

@@ -139,21 +139,26 @@ def _application_state_sync(
         except (OSError, RuntimeError, ValueError, TypeError):
             host_path = None
         owner_matches = current_config_path is not None and host_path == current_config_path
-        alive = False
-        if owner_matches and host is not None:
+        alive: bool | None = False
+        if host is not None:
             try:
                 alive = bool(host.is_alive())
             except Exception:
-                alive = False
+                alive = None
         applied_fingerprint = (
             getattr(host, "applied_config_fingerprint", None)
             if owner_matches and alive
             else None
         )
 
-    if not alive:
+    if alive is False:
         config_state = "not_running"
         lifecycle_status = "not_running"
+    elif alive is None or not owner_matches:
+        # Ownership failure fences the fingerprint, not the live process. It
+        # must not clear a reload hint as though the process had stopped.
+        config_state = "unknown"
+        lifecycle_status = "running" if alive else "unknown"
     elif not isinstance(applied_fingerprint, str) or not applied_fingerprint:
         config_state = "unknown"
         lifecycle_status = "running"

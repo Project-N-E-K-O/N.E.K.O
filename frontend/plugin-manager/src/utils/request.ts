@@ -93,7 +93,7 @@ export function formatHttpError(error: unknown): string {
   return !anyError?.response && error instanceof Error ? error.message : ''
 }
 
-function readErrorCode(error: AxiosError): string {
+export function readErrorCode(error: AxiosError): string {
   const headers = error.response?.headers
   if (headers && typeof headers.get === 'function') {
     const value = headers.get('X-Error-Code')

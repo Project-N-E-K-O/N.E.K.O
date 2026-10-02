@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_config_path
 from plugin.server.infrastructure.config_profiles import (
     get_profile_config,
     get_profiles_state,
@@ -162,7 +162,7 @@ def upsert_profile_config(
 
     lock = _get_plugin_lock(plugin_id)
     config_path = get_plugin_config_path(plugin_id)
-    with lock, plugin_config_file_lock(config_path):
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         base_dir = config_path.parent
         profiles_path = base_dir / "profiles.toml"
 
@@ -224,7 +224,7 @@ def delete_profile_config(
 
     lock = _get_plugin_lock(plugin_id)
     config_path = get_plugin_config_path(plugin_id)
-    with lock, plugin_config_file_lock(config_path):
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             return {
@@ -274,7 +274,7 @@ def set_active_profile(
 
     lock = _get_plugin_lock(plugin_id)
     config_path = get_plugin_config_path(plugin_id)
-    with lock, plugin_config_file_lock(config_path):
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             raise HTTPException(status_code=404, detail="profiles.toml not found")

@@ -313,6 +313,26 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(true)
   })
 
+  it.each([
+    { data: { detail: { code: 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } } },
+    { data: { code: 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } },
+    { headers: { 'x-error-code': 'PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED' } },
+  ])('retains single and bulk reload hints for a domain 404: %j', async (response) => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue({
+      response: { status: 404, ...response },
+    })
+    vi.mocked(reloadAllPlugins).mockResolvedValue({
+      success: true, reloaded: ['demo'], failed: [], skipped: [], message: '',
+    })
+    const store = usePluginStore()
+
+    await store.reload('demo', { refresh: false })
+    expect(hasPendingReload('demo')).toBe(true)
+    await store.reloadAll({ refresh: false })
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
   it('does not recreate a cleared flag from a stale pending response', async () => {
     setPendingReload('demo', true)
     let releaseReload!: () => void

@@ -207,15 +207,26 @@ def test_application_state_classifies_host_identity(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize("owner", ["different", "missing", "registration_error"])
 def test_application_state_is_conservative_for_stale_or_missing_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    owner: str,
 ) -> None:
     plugin_id = "demo"
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir()
     config_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(query_service_module, "_current_owner_config_path_sync", lambda _plugin_id: config_path)
+    if owner == "registration_error":
+        def _registration_error(_plugin_id: str):
+            raise RuntimeError("stale registration")
+
+        monkeypatch.setattr(query_service_module, "registration_for_plugin_sync", _registration_error)
+    else:
+        monkeypatch.setattr(
+            query_service_module, "_current_owner_config_path_sync",
+            lambda _plugin_id: None if owner == "missing" else config_path,
+        )
 
     class _StaleHost:
         config_path = tmp_path / "other" / "plugin.toml"
@@ -232,8 +243,15 @@ def test_application_state_is_conservative_for_stale_or_missing_host(
             plugin_id=plugin_id,
             persisted_fingerprint="sha256:applied",
         )
-        assert stale["config_state"] == "not_running"
+        assert stale["config_state"] == "unknown"
+        assert stale["lifecycle_status"] == "running"
         assert stale["applied_fingerprint"] is None
+        with query_service_module.state.acquire_plugin_hosts_write_lock():
+            query_service_module.state.plugin_hosts.pop(plugin_id, None)
+        missing = query_service_module._application_state_sync(
+            plugin_id=plugin_id, persisted_fingerprint="sha256:applied",
+        )
+        assert missing["config_state"] == "not_running"
     finally:
         with query_service_module.state.acquire_plugin_hosts_write_lock():
             if previous is None:
