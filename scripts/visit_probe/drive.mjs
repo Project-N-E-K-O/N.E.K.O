@@ -33,6 +33,9 @@ const outDir = path.join(OUT, LABEL);
 fs.mkdirSync(outDir, { recursive: true });
 const results = fs.existsSync(path.join(outDir, 'results.json')) ? JSON.parse(fs.readFileSync(path.join(outDir, 'results.json'), 'utf8')) : {};
 const save = () => fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify(results, null, 2));
+// Reruns under the same label merge into one results.json; stamp each phase with the run that produced it.
+const RUN_ID = new Date().toISOString();
+results.runs = results.runs || {};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -141,12 +144,15 @@ async function phaseT1(c, targets) {
     await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE); return true;`);
     r.probe = await c.eval(`return window.__visitProbe.fp('guest').t1Probe();`);
     // Chat window observer: count CONNECTING deliveries reaching its WSProxy (pet-websocket-bridge.js:348 -> chat-websocket-bridge.js:72).
-    if (targets.chat) {
+    // The Chat window's CONNECTING counter is T1's acceptance signal; without it T1 proves nothing.
+    for (let i = 0; i < 20 && !targets.chat; i++) { await sleep(500); targets = await findTargets(); }
+    if (!targets.chat) throw new Error('T1 needs the Chat window (CDP target /chat) to observe CONNECTING; not found');
+    {
       chat = new Cdp(targets.chat.webSocketDebuggerUrl);
       await chat.open();
       r.chatObserver = await chat.eval(`
         const s = window.appState && window.appState.socket;
-        if (!s) return { err: 'no appState.socket', wsName: window.WebSocket && window.WebSocket.name };
+        if (!s) throw new Error('Chat window has no appState.socket to observe');
         if (!s.__probeWrapped) {
           const orig = s._handleConnecting;
           window.__probeConnecting = 0;
@@ -365,10 +371,10 @@ async function shotTriple(geo, name, rectPhys, showFn, hideFn) {
     await hideFn(); await sleep(400);
     guard(); const bg2 = path.join(outDir, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
     last = { bg: path.basename(bg), fg: path.basename(fg), bg2: path.basename(bg2), cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
-    if (last.cmp.bgStable_pixelsOver8 < last.cmp.pixels * 0.002) break;
+    if (last.cmp.bgStable_pixelsOver8 < last.cmp.pixels * 0.002) return last;
     log(name, 'background changed between shots, retrying');
   }
-  return last;
+  throw new Error(`${name}: background still unstable after 3 attempts (bg vs bg2 pixels>8: ${last.cmp.bgStable_pixelsOver8}); refusing to use these shots`);
 }
 
 import { spawn } from 'node:child_process';
@@ -542,6 +548,7 @@ async function phaseT4(c) {
   await inject(cdp);
   for (const ph of PHASES) {
     log('== phase', ph, 'label', LABEL);
+    results.runs[ph] = { runId: RUN_ID, startedAt: new Date().toISOString() };
     if (ph === 'env') await phaseEnv(cdp);
     else if (ph === 't1') {
       await phaseT1(cdp, targets);
@@ -561,6 +568,7 @@ async function phaseT4(c) {
       results.modeTrace = out;
       log('trace', JSON.stringify(out, null, 1));
     }
+    results.runs[ph].finishedAt = new Date().toISOString();
     save();
   }
   cdp.close();
