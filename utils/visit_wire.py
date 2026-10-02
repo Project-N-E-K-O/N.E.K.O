@@ -1553,7 +1553,8 @@ class LineDeltaAssembler:
         if ln in self._final:
             return False
         lp = msg.get("lp")
-        if self._open is not None and ln != self._open:
+        retired = ln in self._lines and ln != self._open
+        if self._open is not None and ln != self._open and not retired:
             if not (_is_int(lp) and self._open_lp is not None and lp > self._open_lp):
                 self.anomalies += 1
                 return False
@@ -1564,6 +1565,9 @@ class LineDeltaAssembler:
             self.anomalies += 1
             return False
         clauses[i] = txt
+        if retired:
+            # 已被较新行替下、text 尚未到的旧行：晚到的分片照常落位，不抢回「打开」
+            return True
         if self._open != ln:
             self._open = ln
             self._open_lp = lp if _is_int(lp) else None

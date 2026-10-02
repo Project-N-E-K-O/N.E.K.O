@@ -872,3 +872,19 @@ def test_newer_line_piece_overtaking_a_delayed_text_is_not_overlap():
     assert asm.render("g:2") == "新行续"
     assert not asm.feed(_delta_msg("同 lp", ln="g:3", lp=5))
     assert asm.anomalies == 1
+
+
+def test_late_pieces_of_a_retired_line_still_land():
+    """Once a newer line retired the open one, the old line's late pieces are
+    placed normally (no anomaly) and do not take the open slot back."""
+    asm = vw.LineDeltaAssembler()
+    assert asm.feed(_delta_msg("旧一", ln="g:1", lp=3))
+    assert asm.feed(_delta_msg("新一", ln="g:2", lp=5))
+    assert asm.feed(_delta_msg("旧二", i=1, ln="g:1", lp=3))
+    assert asm.render("g:1") == "旧一旧二"
+    assert asm.anomalies == 0
+    # 打开位仍是新行（lp=5）：lp 介于两者之间的第三行依然算交叠
+    assert not asm.feed(_delta_msg("插", ln="g:3", lp=4))
+    assert asm.anomalies == 1
+    assert asm.feed(_delta_msg("新二", i=1, ln="g:2", lp=5))
+    assert asm.render("g:2") == "新一新二"
