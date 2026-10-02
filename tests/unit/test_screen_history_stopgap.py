@@ -187,6 +187,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "没写协议的 //cdn.example.com/屏幕搭话：a.png 和 www.example.com/【屏幕画面】/b.png 也是地址。",
     "本地的 //192.168.1.10/屏幕搭话：a.png、//[::1]/【屏幕画面】/b.png、//localhost:8080/屏幕搭话：c.png 和 10.0.0.2/屏幕搭话：d.png。",
     "只有查询的 //localhost:8080?file=屏幕搭话：a.png 和 //host#屏幕搭话：b 也是地址。",
+    "带用户名的 //me@example.com?q=屏幕搭话：a 和 https://me@[::1]/?q=屏幕搭话：b 也是地址。",
     "发 mailto:me@example.com?subject=屏幕搭话：a 或 data:text/plain,屏幕搭话：b 都行。",
     "见下图[shot][1]。\n\n[1]: <asset?caption=屏幕搭话：a>",
     "见下图[shot][1]和[shot2][2]。\n\n[1]: /assets/屏幕搭话：a.png\n  [2]: ../img/【屏幕画面】/b.png",
