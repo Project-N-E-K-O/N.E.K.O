@@ -505,3 +505,38 @@ async def test_rename_char_fails_on_any_malformed_partition(tmp_path, damage):
     roster.path.write_text(_json.dumps(data), encoding="utf-8")
     with pytest.raises(RosterCorruptError):
         await roster.rename_char("A", "A2")
+
+
+async def test_upsert_refuses_a_malformed_pairs_list(tmp_path):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["pairs"] = "p" * 24
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                            char_tag="f" * 32, char_display_name="cat", now=2.0)
+    assert roster.path.read_text(encoding="utf-8") == before
+
+
+async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A2"] = "damaged"
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.rename_char("A", "A2")
+    assert roster.path.read_text(encoding="utf-8") == before

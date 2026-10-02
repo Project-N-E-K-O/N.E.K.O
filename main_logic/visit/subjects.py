@@ -415,10 +415,10 @@ class PeerRoster:
             peer["last_seen"] = max(now, peer.get("last_seen") or 0)
             by_char = _dict_at(peer, "by_char")
             entry = _dict_at(by_char, own_char)
-            pairs = entry.get("pairs")
-            if not isinstance(pairs, list):
-                pairs = []
-                entry["pairs"] = pairs
+            if "pairs" in entry and not isinstance(entry["pairs"], list):
+                # 坏掉的 pairs 不能重建成 []：历史 pair 一丢，清除就再也展开不到它们
+                raise RosterCorruptError(f"{self.path.name}: pairs is not a list")
+            pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
                 pairs.append(pair_id)
             chars = _dict_at(entry, "chars")
@@ -601,11 +601,13 @@ class PeerRoster:
                     by_char = peer["by_char"]
                     if old not in by_char:
                         continue
-                    entry = by_char.pop(old)
-                    if isinstance(by_char.get(new), dict) and isinstance(entry, dict):
-                        by_char[new] = _merge_char_entries(by_char[new], entry)
-                    else:
-                        by_char[new] = entry
+                    entry = by_char[old]
+                    target = by_char.get(new)
+                    if not isinstance(entry, dict) or (new in by_char and not isinstance(target, dict)):
+                        # 源或目标条目坏了：覆盖会丢掉可恢复的数据，改名事务保留标记
+                        raise RosterCorruptError(f"{self.path.name}: by_char entry is not an object")
+                    del by_char[old]
+                    by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1
             return moved, moved > 0
 

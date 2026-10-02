@@ -884,10 +884,13 @@ class VisitSpool:
         return await asyncio.to_thread(self._update_state_sync, mutate)
 
     def _delete_if_settled_sync(self) -> bool:
-        state = _read_state_file(self.state_path)
-        if state is None or not visit_settled(state):
-            return False
-        return _unlink(self.jsonl_path)
+        # 与头行改写同一套逐路径锁（先 jsonl 后 state）：改写方读完转录、还没替换时
+        # 这里删掉，它随后的原子替换会把刚判定可删的转录复活
+        with path_lock(self.jsonl_path), path_lock(self.state_path):
+            state = _read_state_file(self.state_path)
+            if state is None or not visit_settled(state):
+                return False
+            return _unlink(self.jsonl_path)
 
     async def delete_if_settled(self) -> bool:
         """Delete ``.jsonl`` once the region is settled and the debrief is final.

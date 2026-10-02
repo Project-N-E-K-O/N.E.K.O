@@ -904,3 +904,43 @@ def test_retirement_waits_for_an_in_progress_state_update(tmp_path):
     t.join(5)
     r.join(5)
     assert done.is_set() and not sp.state_path.exists()
+
+
+def test_settled_deletion_waits_for_an_in_progress_header_rewrite(tmp_path):
+    # 删已结清的转录与头行改写同一把锁：改写方不会在删除后把转录换回来
+    import threading
+
+    from main_logic.visit.subjects import path_lock
+
+    async def setup():
+        sp = await open_spool(tmp_path, vid(19))
+        await sp.close()
+        await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+        return sp
+
+    sp = asyncio.run(setup())
+    held = threading.Event()
+    release = threading.Event()
+
+    def rewriter():
+        with path_lock(sp.jsonl_path):
+            held.set()
+            release.wait(5)
+            assert sp.jsonl_path.exists()
+
+    t = threading.Thread(target=rewriter)
+    t.start()
+    held.wait(5)
+    done = threading.Event()
+
+    def delete():
+        asyncio.run(VisitSpool(tmp_path, vid(19)).delete_if_settled())
+        done.set()
+
+    d = threading.Thread(target=delete)
+    d.start()
+    assert not done.wait(0.3)
+    release.set()
+    t.join(5)
+    d.join(5)
+    assert done.is_set() and not sp.jsonl_path.exists()

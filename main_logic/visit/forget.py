@@ -248,6 +248,12 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     for pair in pair_ids:
         if group_chat_subject(pair) not in subjects:
             raise ValueError("revocation log lacks the group subject of a recorded pair")
+        # 名册里每个 pair 至少关联一只对方猫娘（upsert 必带 peer_char_id），所以每个 pair
+        # 都必须有 group_participant；一只都没有的日志会把对方猫娘的记忆留下
+        prefix = group_chat_subject(pair)["subject_id"] + ":"
+        if not any(s["subject_kind"] == "group_participant" and s["subject_id"].startswith(prefix)
+                   for s in subjects):
+            raise ValueError("revocation log lacks the participant subjects of a recorded pair")
     for subject in subjects:
         if subject["subject_kind"] == "participant" and subject != own_person:
             raise ValueError("revocation log participant does not belong to its peer")

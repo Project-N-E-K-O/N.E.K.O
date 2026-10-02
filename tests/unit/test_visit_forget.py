@@ -550,3 +550,14 @@ async def test_a_recorded_pair_without_its_group_subject_fails_closed(tmp_path):
         record["done_steps"] = []
 
     await _damaged_log(tmp_path, drop_group)
+
+
+async def test_a_recorded_pair_without_participant_subjects_fails_closed(tmp_path):
+    def drop_participants(record):
+        record["subjects"] = [s for s in record["subjects"]
+                              if s["subject_kind"] != "group_participant"]
+        from main_logic.visit.forget import build_steps
+        record["steps"] = build_steps(record["subjects"])
+        record["done_steps"] = []
+
+    await _damaged_log(tmp_path, drop_participants)
