@@ -90,9 +90,10 @@ _LABEL_STRIP = regex.compile(
 # Spans no label is looked for in: a URL up to whitespace or closing
 # punctuation, and a Markdown link target "](...)". Paths in them may name a
 # label ("https://host/屏幕搭话：a.png").
+# One level of balanced parentheses is part of either ("a_(1)/b.png").
 _PROTECTED = regex.compile(
-    r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s<>\"')\]】）」』，。！？；、]+"
-    r"|(?<=\]\()[^)\s]+"
+    r"[A-Za-z][A-Za-z0-9+.\-]*://(?:[^\s<>\"'()\]】）」』，。！？；、]|\([^\s()]*\))+"
+    r"|(?<=\]\()(?:[^()\s]|\([^()\s]*\))+"
 )
 # Stands in for a protected character (Unicode private use area).
 _MASK = "\ue000"
