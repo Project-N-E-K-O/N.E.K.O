@@ -337,4 +337,34 @@ describe('plugin store reload bookkeeping', () => {
 
     expect(hasPendingReload('demo')).toBe(true)
   })
+
+  it('keeps an older matched response when the newer query fails', async () => {
+    setPendingReload('demo', true)
+    let resolveFirst!: (value: PluginConfigApplicationState) => void
+    let rejectSecond!: (reason?: unknown) => void
+    vi.mocked(getPluginConfigApplicationState)
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((resolve) => {
+          resolveFirst = resolve
+        })
+      )
+      .mockImplementationOnce(
+        () => new Promise<PluginConfigApplicationState>((_resolve, reject) => {
+          rejectSecond = reject
+        })
+      )
+    const store = usePluginStore()
+
+    const first = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(1))
+    const second = store.reload('demo', { refresh: false })
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(2))
+
+    rejectSecond(new Error('network failure'))
+    await second
+    resolveFirst({ plugin_id: 'demo', config_state: 'matched' })
+    await first
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
 })

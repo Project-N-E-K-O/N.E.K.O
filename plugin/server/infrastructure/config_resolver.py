@@ -12,7 +12,7 @@ from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_conf
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles, get_profiles_state
 from plugin.server.infrastructure.config_toml import load_toml_from_file
 from plugin.server.infrastructure.config_fingerprint import fingerprint_config
-from plugin.server.infrastructure.config_locking import get_plugin_update_lock
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock, plugin_config_file_lock
 
 logger = get_logger("server.infrastructure.config_resolver")
 
@@ -134,16 +134,17 @@ def resolve_plugin_config_from_path(
         manifest_path = config_path.resolve(strict=False)
         manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
         runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
-        runtime_config = load_toml_from_file(runtime_config_path)
-        return _resolve_plugin_config_core(
-            plugin_id,
-            config_path=runtime_config_path,
-            manifest_path=manifest_path,
-            manifest_config=manifest_config,
-            base_config=runtime_config,
-            include_effective_config=include_effective_config,
-            validate_schema=validate_schema,
-        )
+        with plugin_config_file_lock(runtime_config_path):
+            runtime_config = load_toml_from_file(runtime_config_path)
+            return _resolve_plugin_config_core(
+                plugin_id,
+                config_path=runtime_config_path,
+                manifest_path=manifest_path,
+                manifest_config=manifest_config,
+                base_config=runtime_config,
+                include_effective_config=include_effective_config,
+                validate_schema=validate_schema,
+            )
 
 
 def resolve_plugin_config(

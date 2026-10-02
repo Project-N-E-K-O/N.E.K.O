@@ -229,6 +229,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 ) -> None:
     order: list[str] = []
     payloads: list[dict[str, object]] = []
+    effective_configs: list[dict[str, object] | None] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
@@ -253,6 +254,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
+            effective_configs.append(ctx._effective_config)
 
             async def dump(timeout: float = 3.0) -> dict[str, object]:
                 del timeout
@@ -342,6 +344,8 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
     assert startup_payload["success"] is True
     assert startup_payload["data"]["config_fingerprint"]
+    assert isinstance(effective_configs[0], dict)
+    assert effective_configs[0]["plugin"]["id"] == "demo"
 
 
 @pytest.mark.plugin_unit

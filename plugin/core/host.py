@@ -1058,16 +1058,8 @@ def _plugin_process_runner(
                 pass
             return
 
-        instance = cls(ctx)
-
-        # 获取 freezable 属性列表和持久化模式
-        freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
-        persist_mode = getattr(instance, "__persist_mode__", None)
-        if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
-        # 从 effective config 读取 persist_mode（包含 profile 覆写）
         startup_config_fingerprint: str | None = None
+        effective_cfg: dict[str, object] = {}
         try:
             from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 
@@ -1075,7 +1067,10 @@ def _plugin_process_runner(
                 plugin_id,
                 config_path=Path(config_path),
             )
-            effective_cfg = resolved_config["effective_config"]
+            resolved_effective_cfg = resolved_config["effective_config"]
+            if isinstance(resolved_effective_cfg, dict):
+                effective_cfg = resolved_effective_cfg
+                ctx._set_effective_config_cache(effective_cfg)
             # Keep the applied identity in the child, where the effective
             # configuration is actually resolved immediately before startup.
             # The parent must not hash its earlier pre-spawn snapshot.
@@ -1099,6 +1094,16 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
             logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+
+        instance = cls(ctx)
+
+        # 获取 freezable 属性列表和持久化模式
+        freezable_keys = getattr(instance, "__freezable__", []) or []
+        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
+        persist_mode = getattr(instance, "__persist_mode__", None)
+        if persist_mode is None:
+            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
+        # 从 effective config 读取 persist_mode（包含 profile 覆写）
         # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
         ctx._restored_from_freeze = False
         

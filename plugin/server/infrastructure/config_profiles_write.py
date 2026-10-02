@@ -14,7 +14,7 @@ from plugin.server.infrastructure.config_profiles import (
     get_profiles_state,
     resolve_profile_path,
 )
-from plugin.server.infrastructure.config_locking import get_plugin_update_lock
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock, plugin_config_file_lock
 
 logger = get_logger("server.infrastructure.config_profiles_write")
 
@@ -161,8 +161,8 @@ def upsert_profile_config(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(config_path):
         base_dir = config_path.parent
         profiles_path = base_dir / "profiles.toml"
 
@@ -223,8 +223,8 @@ def delete_profile_config(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(config_path):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             return {
@@ -273,8 +273,8 @@ def set_active_profile(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(config_path):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             raise HTTPException(status_code=404, detail="profiles.toml not found")
