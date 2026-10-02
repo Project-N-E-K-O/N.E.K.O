@@ -176,6 +176,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     # Label-like path segments and reference-style links.
     "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
     "截图放在 /tmp/屏幕搭话：a.png、/屏幕搭话 b.png 和 C:\\tmp\\螢幕搭話：c.png 里了。",
+    "还有 /tmp/screen comment:a.png、C:\\tmp\\Screen Comment:b.png 和 C:/屏幕画面/c.png 也是路径。",
     "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
     # A label-like path segment inside a URL or a Markdown link target.
     "链接 https://host/屏幕搭话 打开，还有[图](https://host/【屏幕画面】/a.png)和[图2](/屏幕画面/b.png)。",

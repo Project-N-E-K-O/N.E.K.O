@@ -84,7 +84,7 @@ _LABEL_STRIP = regex.compile(
     rf"|(?:^|(?<=[{_SLASH_OPENERS}]))[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
     r"[ \t]*(?:[:：][ \t]*)?"
     r"|(?<![/\\])(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])[ \t]*(?:[:：][ \t]*)?"
-    rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
+    rf"|{_NOT_AFTER_WORD}(?<![/\\])screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
 # Spans no label is looked for in: a URL up to whitespace, closing punctuation
@@ -93,12 +93,14 @@ _LABEL_STRIP = regex.compile(
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 # A URL may also come without its scheme: protocol-relative with any host
 # ("//cdn.host/", "//192.168.1.10/", "//[::1]/", "//localhost/") or a bare
-# domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"). A
+# domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"), and a
+# drive path written with forward slashes ("C:/a.png") is one too. A
 # Markdown reference definition's target may also be a path ("[1]: /a.png",
 # "./a.png", "../a.png").
 _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
     r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=/)"
+    r"|(?<![\w:/.@])[A-Za-z]:(?=/)"
     r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/)"
     r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})(?:\.{1,2})?(?=/))"
     r"(?:[^\s<>\"'()\]】）」』，。！？；、…～]|(?&paren))+"
@@ -709,8 +711,9 @@ class _ScreenLexer:
                 self.quote = _QUOTES[char]
         elif char in "/／" and self.previous and self.previous not in _SLASH_OPENERS:
             pass
-        elif char in "【[屏螢" and self.previous in ("/", "\\"):
-            # A path segment ("/tmp/屏幕搭话：a.png", "C:\\tmp\\[屏幕画面]\\").
+        elif char in "【[屏螢sS" and self.previous in ("/", "\\"):
+            # A path segment ("/tmp/屏幕搭话：a.png", "C:\\tmp\\[屏幕画面]\\",
+            # "/tmp/screen comment:a.png").
             pass
         elif char in "/／屏螢当當【[sScC":
             # An ASCII word character before a marker blocks it only when the
