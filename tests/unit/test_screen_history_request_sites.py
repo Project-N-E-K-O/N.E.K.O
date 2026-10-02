@@ -200,18 +200,20 @@ async def test_persisted_ephemeral_replies_are_marked_as_independent_deliveries(
     assert projected[-3:] == [_BODY_A, _COMMENT_B[len("屏幕搭话 "):], "继续"]
 
 
-async def test_text_streamed_this_turn_reaches_the_next_tool_round_as_is():
+async def test_text_streamed_this_turn_reaches_the_next_tool_round_uncut():
     """The tool loop appends this turn's streamed text with its tool calls;
-    the user already saw it, so the next request carries it unchanged while
-    older history is still rewritten."""
+    the user already saw every comment in it, so the next request keeps them
+    all (no cut, or the model says one again) and only drops the labels,
+    while older history is still cut."""
     client = _client(handler=_noop_tool)
     _poisoned(client)
-    streamed = _COMMENT_A + _COMMENT_B
-    client.script = [[_text(streamed), _tool_calls("c1")], [_text("好"), _text("", "stop")]]
+    client.script = [[_text(_COMMENT_A + _COMMENT_B), _tool_calls("c1")],
+                     [_text("好"), _text("", "stop")]]
     await client.stream_text("继续")
 
     assert len(client.requests) == 2
-    current_turn = json.dumps(client.requests[1][-3:], ensure_ascii=False, default=repr)
-    assert streamed in current_turn, current_turn
+    current_turn = json.dumps(client.requests[1][-2:], ensure_ascii=False, default=repr)
+    assert _BODY_A in current_turn and _COMMENT_B[len("屏幕搭话 "):] in current_turn, current_turn
+    assert "屏幕搭话" not in json.dumps(client.requests[1], ensure_ascii=False, default=repr)
     history = client.requests[1][:-3]
     assert not [m for m in history if "红色小车" in json.dumps(m, ensure_ascii=False, default=repr)]

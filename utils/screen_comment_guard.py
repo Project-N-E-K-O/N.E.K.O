@@ -61,7 +61,7 @@ _CLOSING_BRACKET = r"[】\]](?!\()"
 # proactive tag-leak stripper also knows) and must open a phrase: after the
 # start, whitespace or punctuation (``_SLASH_OPENERS``, checked by the lexer).
 # "屏幕截图/照片" and "照片/屏幕截图 给我" are ordinary either-or wording.
-_SLASH_OPENERS = " \t\r\n。！？!?…～.~，,、：:；;"
+_SLASH_OPENERS = " \t\r\n。！？!?…～.~，,、：:；;“「『‘\"'（(【[《〈"
 _MARKER = regex.compile(
     rf"(?:[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
     rf"|[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}"
@@ -83,6 +83,8 @@ _LABEL_STRIP = regex.compile(
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
+# What a message that held only a label shows when it must stay in the view.
+_NOTHING_SAID = "…"
 _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
 _QUOTES = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"', "'": "'"}
 # Every marker form carries one of these; texts without either skip the lexer.
@@ -408,7 +410,8 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
     with nothing is dropped from the view, unless it carries ``tool_calls``,
     in which case it stays with empty content so tool-result pairing holds,
     or unless no assistant turn is kept on either side of it, in which case
-    it stays as it was so user and assistant turns still alternate.
+    it stays as ``_NOTHING_SAID`` so user and assistant turns still
+    alternate.
     Non-text parts of list content (images and the like) are kept.
     Role, ``tool_calls`` and every other key are preserved. Only the copy is
     touched; ``messages`` is never mutated, and ``messages`` itself is
@@ -437,9 +440,35 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
                   or (_role_is_assistant(messages[index + 1] if index + 1 < len(messages) else None)
                       and rewrites.get(index + 1, "") is not None)):
             # Leaving it out would put two user turns side by side, which
-            # some chat templates reject; a lone label is kept as it was.
-            projected.append(message)
+            # some chat templates reject; an empty text part is rejected by
+            # others. A lone label becomes a neutral ellipsis.
+            projected.append(_with_text(message, _NOTHING_SAID))
     return projected
+
+
+def strip_screen_labels(messages):
+    """Remove source labels from assistant texts and cut nothing else.
+
+    For text the user has already seen this turn (the tool loop's assistant
+    turns): the model keeps every comment it streamed, so it does not say one
+    again, but not the labelled format. Returns ``messages`` itself when no
+    label is found.
+    """
+    projected = None
+    for index, message in enumerate(messages):
+        role, content = _role_and_content(message)
+        if role not in _ASSISTANT_ROLES:
+            continue
+        text = _text_of(content)
+        if text is None:
+            continue
+        stripped = _strip_labels(text)
+        if stripped == text:
+            continue
+        if projected is None:
+            projected = list(messages)
+        projected[index] = _with_text(message, stripped.strip())
+    return messages if projected is None else projected
 
 
 class _ScreenLexer:

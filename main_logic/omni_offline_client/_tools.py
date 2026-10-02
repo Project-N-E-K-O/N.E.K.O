@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from utils.screen_comment_guard import project_screen_history
+from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
 from ._shared import (
     _same_route,
@@ -75,8 +75,9 @@ class _ToolingMixin:
 
         Only history up to the current turn's user message is projected. What
         this turn added after it (text already streamed to the user with its
-        tool calls, tool results, tool images) goes as it is, so the model
-        sees what it really said; a retry re-sends those messages too.
+        tool calls, tool results, tool images) is not cut, so the model sees
+        every comment it really said and does not repeat one; only the source
+        labels are removed from it. A retry re-sends those messages too.
         """
         turn_start = next(
             (index + 1 for index in range(len(messages) - 1, -1, -1)
@@ -87,9 +88,13 @@ class _ToolingMixin:
         if turn_start < len(messages):
             head = messages[:turn_start]
             projected_head = project_screen_history(head, hits=hits)
+            tail = messages[turn_start:]
+            projected_tail = strip_screen_labels(tail)
+            if projected_tail is not tail:
+                hits["label"] = hits.get("label", 0) + 1
             projected = (
-                messages if projected_head is head
-                else list(projected_head) + list(messages[turn_start:])
+                messages if projected_head is head and projected_tail is tail
+                else list(projected_head) + list(projected_tail)
             )
         else:
             projected = project_screen_history(messages, hits=hits)

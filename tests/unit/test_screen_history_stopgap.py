@@ -151,6 +151,8 @@ def test_labels_go_even_without_a_chain(text, expected):
     ("[屏幕画面] 今天天气不错。", "今天天气不错。"),
     ("螢幕搭話：今天天氣不錯。", "今天天氣不錯。"),
     ("/螢幕畫面/ 今天天氣不錯。", "今天天氣不錯。"),
+    ("“/屏幕画面/今天天气不错。”", "“今天天气不错。”"),
+    ("（/屏幕画面/ 今天天气不错。）", "（今天天气不错。）"),
 ])
 def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expected):
     """Removal is stateless: the lexer's quote and code exemptions guard chain
@@ -201,9 +203,13 @@ def test_a_message_that_was_only_a_label_leaves_the_view():
 
 
 def test_a_lone_label_between_user_turns_stays_so_turns_alternate():
+    """Without a neighbouring assistant turn the label-only message stays,
+    as a neutral ellipsis: no label, and no empty text part either."""
     for first in (_user("聊"), None):
         messages = [m for m in (first, _assistant("屏幕搭话："), _user("继续")) if m]
-        assert [m["role"] for m in project_screen_history(messages)] == [m["role"] for m in messages]
+        projected = project_screen_history(messages)
+        assert [m["role"] for m in projected] == [m["role"] for m in messages]
+        assert [m["content"] for m in projected if m["role"] == "assistant"] == ["…"]
 
 
 def test_non_text_parts_of_a_rewritten_message_stay():
