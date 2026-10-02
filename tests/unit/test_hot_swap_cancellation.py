@@ -320,8 +320,14 @@ async def test_final_swap_does_not_emit_prime_context(monkeypatch, capsys):
     mgr.pending_session = new_session
     mgr.is_hot_swap_imminent = True
     mgr.message_handler_task = None
-    mgr.message_cache_for_new_session = [object()]
-    mgr._convert_cache_to_str = lambda _cache: sentinel
+    mgr.message_cache_for_new_session = [{"role": mgr.lanlan_name, "text": "hi"}]
+    rendered = []
+
+    def _render(_cache, **_kwargs):
+        rendered.append(_cache)
+        return sentinel
+
+    mgr._convert_cache_to_str = _render
 
     logged = []
 
@@ -336,6 +342,7 @@ async def test_final_swap_does_not_emit_prime_context(monkeypatch, capsys):
         await mgr._perform_final_swap_sequence()
         captured = capsys.readouterr()
         emitted = captured.out + captured.err + "\n".join(logged)
+        assert rendered, "the final prime path must be reached"
         assert sentinel not in emitted
     finally:
         await _drain_task(mgr.message_handler_task)

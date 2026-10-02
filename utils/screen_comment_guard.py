@@ -56,9 +56,14 @@ _CLOSING_BRACKET = r"[】\]](?!\()"
 # a colon, the recorded shape; a reply that itself opens two sentences with
 # that shape is lexically the same and gets the same verdict (design doc,
 # section 7.1.3, item 5).
+#
+# A slash form needs a slash on both sides ("/屏幕画面/", the shape the
+# proactive tag-leak stripper also knows) and must open a phrase: after the
+# start, whitespace or punctuation (``_SLASH_OPENERS``, checked by the lexer).
+# "屏幕截图/照片" and "照片/屏幕截图 给我" are ordinary either-or wording.
+_SLASH_OPENERS = " \t\r\n。！？!?…～.~，,、：:；;"
 _MARKER = regex.compile(
-    rf"(?:[/／][ \t]{{0,8}}(?:{_LABEL})[\s:：/／]"
-    rf"|(?:{_LABEL})[ \t]{{0,8}}[/／]"
+    rf"(?:[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
     rf"|[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}"
     r"|(?:屏幕|螢幕)(?:搭话|搭話)[\s:：]"
     r"|screen[ \t]{1,8}comment[:：])",
@@ -72,10 +77,9 @@ _NOT_AFTER_WORD = r"(?<![A-Za-z0-9_])"
 # glued to an ASCII word stays ("screenshot", "keyboard/screen display").
 _LABEL_STRIP = regex.compile(
     rf"[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}[ \t]*(?:[:：][ \t]*)?"
-    rf"|(?:[/／][ \t]{{0,8}}(?:{_CN_LABEL})|{_NOT_AFTER_WORD}[/／][ \t]{{0,8}}(?:{_EN_LABEL}))"
-    r"(?=[\s:：/／])[ \t]*(?:[/／:：][ \t]*)?"
-    rf"|(?:(?:{_CN_LABEL})|{_NOT_AFTER_WORD}(?:{_EN_LABEL}))[ \t]{{0,8}}[/／][ \t]*"
-    r"|(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])\s*(?:[:：][ \t]*)?"
+    rf"|(?:^|(?<=[{_SLASH_OPENERS}]))[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
+    r"[ \t]*(?:[:：][ \t]*)?"
+    r"|(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])[ \t]*(?:[:：][ \t]*)?"
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
@@ -221,6 +225,10 @@ def _has_tool_calls(message) -> bool:
     if isinstance(message, dict):
         return bool(message.get("tool_calls"))
     return bool(getattr(message, "tool_calls", None))
+
+
+def _role_is_assistant(message) -> bool:
+    return message is not None and _role_and_content(message)[0] in _ASSISTANT_ROLES
 
 
 def _with_content(message, content):
@@ -396,7 +404,9 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
     the first comment of it, with every source label removed, closed at that
     comment's sentence end. The rest of the chain is dropped. A message left
     with nothing is dropped from the view, unless it carries ``tool_calls``,
-    in which case it stays with empty content so tool-result pairing holds.
+    in which case it stays with empty content so tool-result pairing holds,
+    or unless no assistant turn is kept on either side of it, in which case
+    it stays as it was so user and assistant turns still alternate.
     Non-text parts of list content (images and the like) are kept.
     Role, ``tool_calls`` and every other key are preserved. Only the copy is
     touched; ``messages`` is never mutated, and ``messages`` itself is
@@ -421,6 +431,12 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
             projected.append(_with_text(message, rewrites[index]))
         elif _has_tool_calls(message) or _non_text_parts(message):
             projected.append(_with_text(message, ""))
+        elif not (_role_is_assistant(projected[-1] if projected else None)
+                  or (_role_is_assistant(messages[index + 1] if index + 1 < len(messages) else None)
+                      and rewrites.get(index + 1, "") is not None)):
+            # Leaving it out would put two user turns side by side, which
+            # some chat templates reject; a lone label is kept as it was.
+            projected.append(message)
     return projected
 
 
@@ -571,6 +587,8 @@ class _ScreenLexer:
             attached = self.previous.isalnum() or self.previous == "_"
             if not ((char == '"' and self.previous.isdigit()) or (char == "'" and attached)):
                 self.quote = _QUOTES[char]
+        elif char in "/／" and self.previous and self.previous not in _SLASH_OPENERS:
+            pass
         elif char in "/／屏螢当當【[sScC":
             # An ASCII word character before a marker blocks it only when the
             # label is English (checked once the marker is complete). A

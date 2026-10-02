@@ -72,9 +72,27 @@ class _ToolingMixin:
         Screen-comment chains in assistant history are cut back to their first
         comment, without source labels (``utils.screen_comment_guard``). No
         user wording restores the removed comments.
+
+        Only history up to the current turn's user message is projected. What
+        this turn added after it (text already streamed to the user with its
+        tool calls, tool results, tool images) goes as it is, so the model
+        sees what it really said; a retry re-sends those messages too.
         """
+        turn_start = next(
+            (index + 1 for index in range(len(messages) - 1, -1, -1)
+             if getattr(messages[index], "type", None) == "human"),
+            len(messages),
+        )
         hits: dict = {}
-        projected = project_screen_history(messages, hits=hits)
+        if turn_start < len(messages):
+            head = messages[:turn_start]
+            projected_head = project_screen_history(head, hits=hits)
+            projected = (
+                messages if projected_head is head
+                else list(projected_head) + list(messages[turn_start:])
+            )
+        else:
+            projected = project_screen_history(messages, hits=hits)
         if projected is not messages:
             # The history is re-projected on every provider call; log a
             # rewrite once, not on every later request that repeats it.

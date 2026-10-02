@@ -198,3 +198,20 @@ async def test_persisted_ephemeral_replies_are_marked_as_independent_deliveries(
     # Never cut as one chain: each delivery keeps its comment, unlabelled.
     projected = [m.content for m in project_screen_history(messages)]
     assert projected[-3:] == [_BODY_A, _COMMENT_B[len("屏幕搭话 "):], "继续"]
+
+
+async def test_text_streamed_this_turn_reaches_the_next_tool_round_as_is():
+    """The tool loop appends this turn's streamed text with its tool calls;
+    the user already saw it, so the next request carries it unchanged while
+    older history is still rewritten."""
+    client = _client(handler=_noop_tool)
+    _poisoned(client)
+    streamed = _COMMENT_A + _COMMENT_B
+    client.script = [[_text(streamed), _tool_calls("c1")], [_text("好"), _text("", "stop")]]
+    await client.stream_text("继续")
+
+    assert len(client.requests) == 2
+    current_turn = json.dumps(client.requests[1][-3:], ensure_ascii=False, default=repr)
+    assert streamed in current_turn, current_turn
+    history = client.requests[1][:-3]
+    assert not [m for m in history if "红色小车" in json.dumps(m, ensure_ascii=False, default=repr)]

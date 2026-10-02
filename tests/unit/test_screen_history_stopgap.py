@@ -164,6 +164,13 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "Scroll down to the screen comment section of the page.",
     "Check the keyboard/screen display first.",
     "打开设置/屏幕画面选项看看。",
+    # Either-or wording with a slash is not a label, chained or not.
+    "你可以发屏幕截图/照片给我，我帮你看看哪里出了问题呀。"
+    "如果不方便的话，也可以描述一下屏幕显示/报错的具体内容哦，我会尽量帮你分析。",
+    "The screen display / layout looks off on my side, sorry about that. "
+    "Try the screen content / settings panel and tell me what you see there.",
+    "照片/屏幕截图 都可以发给我，我帮你看看哪里出了问题呀。照片/屏幕截图/视频也行，我会尽量帮你分析。",
+    "Could you share the screen content/layout you see?",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
     # Markdown link text is not a label, neither for removal nor for chains.
@@ -178,9 +185,23 @@ def test_words_and_prose_that_only_contain_a_label_stay(text):
     assert project_screen_history(messages) is messages
 
 
+def test_a_bare_label_does_not_join_paragraphs():
+    messages = [_assistant("我最喜欢的功能是屏幕搭话\n\n还有语音聊天哦。"), _user("继续")]
+    assert project_screen_history(messages)[0]["content"] == "我最喜欢的功能是\n\n还有语音聊天哦。"
+
+
 def test_a_message_that_was_only_a_label_leaves_the_view():
-    messages = [_user("聊"), _assistant("屏幕搭话："), _assistant("好呀。"), _user("继续")]
-    assert [m["content"] for m in project_screen_history(messages)] == ["聊", "好呀。", "继续"]
+    for messages in (
+        [_user("聊"), _assistant("好呀。"), _assistant("屏幕搭话："), _user("继续")],
+        [_user("聊"), _assistant("屏幕搭话："), _assistant("好呀。"), _user("继续")],
+    ):
+        assert [m["content"] for m in project_screen_history(messages)] == ["聊", "好呀。", "继续"]
+
+
+def test_a_lone_label_between_user_turns_stays_so_turns_alternate():
+    for first in (_user("聊"), None):
+        messages = [m for m in (first, _assistant("屏幕搭话："), _user("继续")) if m]
+        assert [m["role"] for m in project_screen_history(messages)] == [m["role"] for m in messages]
 
 
 def test_non_text_parts_of_a_rewritten_message_stay():
@@ -258,8 +279,8 @@ def test_label_removal_is_idempotent_and_reported():
 
 
 @pytest.mark.parametrize("label", [
-    "屏幕搭话 ", "屏幕搭话：", "屏幕画面/", "/屏幕画面 ", "／屏幕内容／",
-    "screen comment: ", "Screen comment：", "screen observation/", "/ screen comment ",
+    "屏幕搭话 ", "屏幕搭话：", "/屏幕画面/", "／屏幕内容／ ", "/ 螢幕畫面 /：",
+    "screen comment: ", "Screen comment：", "/screen observation/", "/ screen comment / ",
 ])
 def test_every_supported_label_form_is_cut_and_removed(label):
     messages = [{"role": "assistant", "content": chain(label)}]
@@ -641,10 +662,10 @@ def test_a_label_glued_to_the_previous_chinese_sentence_is_a_marker(glue):
     assert text == "你这波推进打得很稳，坦克卡位也非常漂亮。" + tail
 
 
-@pytest.mark.parametrize("label", ["屏幕搭话 ", "屏幕搭话：", "屏幕画面/", "/屏幕画面 ", "／屏幕内容／"])
+@pytest.mark.parametrize("label", ["屏幕搭话 ", "屏幕搭话：", "【屏幕画面】"])
 def test_a_chinese_label_after_an_ascii_word_is_a_marker(label):
-    """Every Chinese label form, slash-delimited ones included, counts right
-    after an ASCII letter or digit."""
+    """A bare or bracketed Chinese label counts right after an ASCII letter
+    or digit. (A slash form must open a phrase; see the either-or test.)"""
     text = "好耶233" + label + PARTS[0] + "OK" + label + PARTS[1]
     assert screen_chain_start(text) == len("好耶233")
 
