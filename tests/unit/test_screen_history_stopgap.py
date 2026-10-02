@@ -176,7 +176,8 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     # Label-like path segments and reference-style links.
     "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
     "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
-    # A label-like path segment inside a URL.
+    # A label-like path segment inside a URL or a Markdown link target.
+    "链接 https://host/屏幕搭话 打开，还有[图](https://host/【屏幕画面】/a.png)和[图2](/屏幕画面/b.png)。",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
@@ -198,6 +199,13 @@ def test_a_label_named_like_a_reference_definition_is_still_removed():
     text = "屏幕截图 这个视频画面好漂亮，色调很温柔呢。\n\n[屏幕截图]: https://host/a.png"
     messages = [_assistant("[" + text.replace(" ", "] ", 1)), _user("继续")]
     assert "[屏幕截图]" not in project_screen_history(messages)[0]["content"]
+
+
+def test_a_label_inside_a_url_is_neither_removed_nor_a_chain_marker():
+    text = ("屏幕搭话：这个视频画面好漂亮，色调很温柔呢。"
+            "看 https://host/屏幕搭话：右下角那只猫好可爱 毛茸茸的呢。")
+    messages = [_user("聊"), _assistant(text), _user("继续")]
+    assert project_screen_history(messages)[1]["content"] == text[len("屏幕搭话："):]
 
 
 def test_whitespace_around_a_removed_label_stays():

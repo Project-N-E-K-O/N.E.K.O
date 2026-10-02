@@ -87,6 +87,15 @@ _LABEL_STRIP = regex.compile(
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
+# Spans no label is looked for in: a URL up to whitespace or closing
+# punctuation, and a Markdown link target "](...)". Paths in them may name a
+# label ("https://host/屏幕搭话：a.png").
+_PROTECTED = regex.compile(
+    r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s<>\"')\]】）」』，。！？；、]+"
+    r"|(?<=\]\()[^)\s]+"
+)
+# Stands in for a protected character (Unicode private use area).
+_MASK = "\ue000"
 # What a message that held only a label shows when it must stay in the view.
 _NOTHING_SAID = "…"
 _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
@@ -350,10 +359,42 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
 
 
 def _strip_labels(text: str) -> str:
-    """``text`` without any source label (see ``_LABEL_STRIP``)."""
+    """``text`` without any source label (see ``_LABEL_STRIP``).
+
+    URLs and Markdown link targets (``_PROTECTED``) are left as they are.
+    """
     if not _LABEL_HINT.search(text):
         return text
-    return _LABEL_STRIP.sub("", text)
+    kept, position = [], 0
+    for match in _PROTECTED.finditer(text):
+        kept.append(_LABEL_STRIP.sub("", text[position:match.start()]))
+        kept.append(match.group())
+        position = match.end()
+    kept.append(_LABEL_STRIP.sub("", text[position:]))
+    return "".join(kept)
+
+
+def _masked(text: str) -> tuple[str, str]:
+    """``text`` with ``_PROTECTED`` spans hidden from the chain lexer.
+
+    Every protected character becomes ``_MASK``, so offsets hold; the second
+    value holds the hidden characters in order for ``_unmasked``.
+    """
+    if _MASK in text:
+        return text, ""
+    hidden = "".join(match.group() for match in _PROTECTED.finditer(text))
+    if not hidden:
+        return text, ""
+    return _PROTECTED.sub(lambda match: _MASK * len(match.group()), text), hidden
+
+
+def _unmasked(text: str, hidden: str) -> str:
+    """Put hidden characters back. A rewrite only drops markers (never
+    masked) and cuts the end, so masks keep their order from the start."""
+    if not hidden or _MASK not in text:
+        return text
+    characters = iter(hidden)
+    return "".join(next(characters) if char == _MASK else char for char in text)
 
 
 def _chain_rewrites(messages, *, trailing_turn: bool = False,
@@ -842,7 +883,15 @@ _cached_dechain = lru_cache(maxsize=1024)(_dechain)
 def _dechained(texts: tuple) -> tuple | None:
     if not any(_LABEL_HINT.search(text) for text in texts):
         return None
-    return _cached_dechain(texts)
+    pairs = [_masked(text) for text in texts]
+    masked = tuple(text for text, _hidden in pairs)
+    result = _cached_dechain(masked)
+    if result is None or masked == texts:
+        return result
+    return tuple(
+        None if text is None else _unmasked(text, hidden)
+        for text, (_masked_text, hidden) in zip(result, pairs)
+    )
 
 
 def _is_ascii_word_char(char: str) -> bool:
