@@ -3,13 +3,16 @@ const RUNS_URL = '/runs';
 const RUN_POLL_DELAY_MS = 500;
 let csrfTokenPromise = null;
 const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000;
+// After a token rejection the deployment requires the token (strict mode),
+// so the retry waits longer for a slow but valid bootstrap.
+const CSRF_BOOTSTRAP_RETRY_TIMEOUT_MS = 30000;
 
-async function mutationHeaders() {
+async function mutationHeaders(timeoutMs = CSRF_BOOTSTRAP_TIMEOUT_MS) {
     if (!csrfTokenPromise) {
         // A hung bootstrap must not block the action: abort it so the
         // tokenless fallback below runs.
         const bootstrapAbort = new AbortController();
-        const bootstrapTimer = setTimeout(() => bootstrapAbort.abort(), CSRF_BOOTSTRAP_TIMEOUT_MS);
+        const bootstrapTimer = setTimeout(() => bootstrapAbort.abort(), timeoutMs);
         csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin', signal: bootstrapAbort.signal })
             .then(async (response) => {
                 if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
@@ -49,7 +52,10 @@ async function postWithCsrfRetry(url, body) {
     for (let attempt = 0; ; attempt += 1) {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(await mutationHeaders(attempt === 0 ? CSRF_BOOTSTRAP_TIMEOUT_MS : CSRF_BOOTSTRAP_RETRY_TIMEOUT_MS)),
+            },
             body,
         });
         if (attempt > 0 || response.status !== 403 || !(await isCsrfTokenFailure(response))) return response;
