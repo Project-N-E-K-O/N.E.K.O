@@ -285,3 +285,27 @@ def test_blocklist_is_not_partitioned_by_account(tmp_path):
 def test_empty_uid_rejected(tmp_path):
     with pytest.raises(ValueError):
         Blocklist.load(tmp_path).block("  ", display_name_at_block="x")
+
+
+def test_missing_file_is_an_empty_available_list(tmp_path):
+    bl = Blocklist.load(tmp_path)
+    assert bl.available is True and len(bl) == 0
+    assert not bl.is_blocked(UID)
+
+
+async def test_permission_error_fails_closed_instead_of_empty(tmp_path, monkeypatch):
+    # 读不了（被杀毒 / 备份锁住）≠ 不存在：只有 FileNotFoundError 才是空表
+    from main_logic.visit import limits
+
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text('{"blocked": []}', encoding="utf-8")
+
+    def locked(*_a, **_k):
+        raise PermissionError("locked by another process")
+
+    async def alocked(*_a, **_k):
+        raise PermissionError("locked by another process")
+
+    monkeypatch.setattr(limits, "read_json", locked)
+    monkeypatch.setattr(limits, "read_json_async", alocked)
+    assert Blocklist.load(tmp_path).available is False
+    assert (await Blocklist.aload(tmp_path)).available is False

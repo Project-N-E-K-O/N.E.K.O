@@ -399,10 +399,12 @@ class Blocklist:
     def load(cls, config_dir: str | os.PathLike[str]) -> "Blocklist":
         """Synchronously load the blocklist (do not call on the event loop)."""
         path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
-        if not path.exists():
-            return cls(config_dir)
+        # 不先 exists()：权限错误会从 exists() 直接抛出、符号链接环会被当成「不存在」，
+        # 都绕过 fail closed。只有确认文件不存在才是空表
         try:
             return cls._from_payload(config_dir, read_json(path))
+        except FileNotFoundError:
+            return cls(config_dir)
         except (OSError, ValueError) as exc:
             return cls._unavailable(config_dir, exc)
 
@@ -410,11 +412,11 @@ class Blocklist:
     async def aload(cls, config_dir: str | os.PathLike[str]) -> "Blocklist":
         """Async twin of :meth:`load`."""
         path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
-        if not await asyncio.to_thread(path.exists):
-            return cls(config_dir)
         try:
             payload = await read_json_async(path)
             return cls._from_payload(config_dir, payload)
+        except FileNotFoundError:
+            return cls(config_dir)
         except (OSError, ValueError) as exc:
             return cls._unavailable(config_dir, exc)
 
