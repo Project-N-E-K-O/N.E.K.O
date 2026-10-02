@@ -66,10 +66,12 @@ from plugin.server.application.plugins.metadata_scanner import (
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
     entries_config_digest,
+    packaged_metadata_needs_rebuild,
     read_packaged_metadata,
     refresh_stale_packaged_metadata,
     snapshot_source_tree,
     stale_packaged_schema_version,
+    write_local_packaged_metadata,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -233,14 +235,21 @@ def _read_packaged_isolated_metadata(
     )
 
 
-def _snapshot_stale_package_tree(config_path: Path) -> SourceTreeSnapshot | None:
-    """Fingerprint the tree before the scan imports it, if an upgrade is in prospect.
+def _snapshot_package_tree_for_rebuild(config_path: Path) -> SourceTreeSnapshot | None:
+    """Fingerprint the tree before the scan imports it, if a rewrite is in prospect.
 
-    Only a stale-schema package can be upgraded, so only that case pays for
-    the snapshot; every other start skips this entirely.
+    Only a package whose ``plugin.meta.json`` is worth rewriting pays for the
+    snapshot — schema-stale, **or built in a different environment** (see
+    ``packaged_metadata_needs_rebuild``); every other start skips this entirely.
+
+    env 不匹配那条以前是没有出口的：市场分发的包带着**作者机器**的 ``build_env``，
+    而安装只是逐字节解出、既不校验也不重写，所以用户换了 Python 小版本之后，读取方
+    每次启动都拒绝它、而没有任何东西会把它改写成"本机的答案"——每次启动白付一个
+    2.5–4.2s 的隔离子进程，永久，而且 INFO 以上什么都不记。现在这次扫描的结果会被
+    写回（带上本机 ``build_environment()``），下次启动就走快路径。
     """
     plugin_dir = Path(config_path).parent
-    if stale_packaged_schema_version(plugin_dir) is None:
+    if not packaged_metadata_needs_rebuild(plugin_dir):
         return None
     return snapshot_source_tree(plugin_dir)
 
@@ -254,7 +263,11 @@ def _upgrade_stale_packaged_metadata(
     conf: object,
     pdata: object,
 ) -> None:
-    """Turn the scan a stale package forced into the package's next fast path.
+    """Turn the scan a refused package forced into the next start's fast path.
+
+    两种"被拒"，两种落盘位置（见函数末尾的分派）：schema 过期 → 就地改写包内那份；
+    ``build_env`` 不是本机的 → 写本机 sidecar ``plugin.meta.local.json``，发行产物
+    字节不动。两者的自愈性质相同：写成功之后下次启动直接命中，不再扫描。
 
     Only when the effective ``entries`` table is the manifest's own: the file
     describes the package, and an active profile or runtime override that
@@ -287,8 +300,19 @@ def _upgrade_stale_packaged_metadata(
             plugin_id,
         )
         return
-    refresh_stale_packaged_metadata(
-        plugin_dir,
+    # 两条写路径共用上面那些守卫（运行时 id 与 manifest id 一致、生效的 entries 表
+    # 就是 manifest 自己那份），只在「写到哪」上分岔：
+    #
+    #   schema 过期      → 就地改写包内那份。这是既有行为，不动：那份文件本来就与本机
+    #                      schema 不兼容，改写它是唯一出路。
+    #   build_env 异环境 → 写本机 sidecar（plugin.meta.local.json），**发行产物字节不
+    #                      动**。这种包没坏，只是"答案不是本机的"；改写它会动到已安装
+    #                      包的字节，进而动到 manual takeover 的树哈希复核，以及"盘上
+    #                      这份就是市场发布的那份"这个可核对性。
+    #
+    # 判据用 stale_packaged_schema_version 而不是反过来判 env：两者同时成立时走既有的
+    # schema 路径，保证这次改动不改变任何已有行为。
+    write_kwargs = dict(
         before_scan=before_scan,
         entries=scanned.entries_preview,
         handlers=scanned.handlers,
@@ -296,6 +320,10 @@ def _upgrade_stale_packaged_metadata(
         conf=manifest,
         pdata=manifest_pdata,
     )
+    if stale_packaged_schema_version(plugin_dir) is not None:
+        refresh_stale_packaged_metadata(plugin_dir, **write_kwargs)
+    else:
+        write_local_packaged_metadata(plugin_dir, **write_kwargs)
 
 
 def _clamp_step_timeout(

@@ -56,6 +56,30 @@ logger = get_logger("server.infrastructure.packaged_metadata")
 
 
 PACKAGED_METADATA_FILENAME = "plugin.meta.json"
+# 本机旁挂元数据（sidecar）。
+#
+# 为什么需要它：``plugin.meta.json`` 是**发行产物**，里面记着作者机器的
+# ``build_env``（os / python 小版本 / arch），而市场安装只是把它逐字节解出来
+# （``neko_plugin_cli/core/install.py`` 的 ``extract_member`` = ``shutil.copyfileobj``），
+# 既不校验也不重写。读取方按 build_env 精确比对，于是用户换了 Python 小版本之后，
+# 这份包**没坏**、只是"答案不是本机的"，却要在每次启动付一个 2.5–4.2s 的隔离
+# metadata worker，而且没有任何路径能修——``refresh_stale_packaged_metadata`` 只认
+# schema 过期。
+#
+# 修法不是改写发行产物（那会动到已安装包的字节，进而动到 manual takeover 的树哈希、
+# 以及"包内容等于市场发布内容"这个可核对性），而是把**本机扫描的结果**写在旁边，
+# 读取时优先用它、通不过任何一道校验就静默回落到包内那份。
+#
+# ⚠️ 它必须和 ``PACKAGED_METADATA_FILENAME`` 一样被排除在源树指纹之外（见
+# ``_iter_source_files``）：否则写出这个文件本身就改变了 ``source_files`` 清单和
+# ``source_sha256``，**反过来让包内那份 plugin.meta.json 判定失配而失效**——修一个
+# 慢路径却弄坏了另一个快路径。
+LOCAL_PACKAGED_METADATA_FILENAME = "plugin.meta.local.json"
+# 插件目录**根部**这两份是生成物，不参与源树指纹（见 _iter_source_files 里的注释：
+# 只排除根部那一份，插件自己带的 data/plugin.meta.json 之类仍算源文件）。
+_GENERATED_METADATA_NAMES = frozenset(
+    {PACKAGED_METADATA_FILENAME, LOCAL_PACKAGED_METADATA_FILENAME}
+)
 # 2：加入了必需的 source_files。留在 1 而对缺字段的元数据"跳过检查"是错的——
 # schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
 # 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
@@ -243,13 +267,18 @@ def _iter_source_files(
                         dirs.append(entry.path)
                     continue
                 if (
-                    entry.name == PACKAGED_METADATA_FILENAME
+                    entry.name in _GENERATED_METADATA_NAMES
                     and current == str(plugin_dir)
                 ):
-                    # 生成物不参与它自己的新鲜度判定——但只有根部那一份是生成物。
+                    # 生成物不参与它自己的新鲜度判定——但只有根部那两份是生成物。
                     # 按文件名一刀切会把插件自己带的 data/plugin.meta.json 这种运行
                     # 时文件也排除掉，而打包管线照样把它放进包里：改它的内容不会让
                     # 任何指纹变化（codex）。
+                    #
+                    # sidecar 同样必须排除，而且理由更硬：它是我们**自己**在启动路径
+                    # 上写出来的，不排除的话写出它就改变了 source_files 清单和
+                    # source_sha256 —— 包内那份 plugin.meta.json 会立刻判定失配而失效，
+                    # 等于修好一条慢路径的同时弄坏了另一条快路径。
                     continue
                 if not entry.is_file(follow_symlinks=False):
                     # ⚠️ 只收普通文件。FIFO、socket、设备节点都能通过 stat()，而摘要
@@ -568,6 +597,59 @@ def snapshot_source_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
         return None
 
 
+def packaged_metadata_env_mismatched(plugin_dir: Path) -> bool:
+    """``plugin.meta.json`` 在、也能读，但它是**别的环境**里 import 出来的。
+
+    故意做得便宜：只读那一个 JSON，不做 stat walk、不做哈希。它唯一的用途是让启动
+    路径决定"扫描之前要不要先给这棵树拍指纹"，好在扫描之后按本机环境把文件重写
+    （见 :func:`refresh_stale_packaged_metadata`）。
+
+    ⚠️ 这里**不**放宽比对精度。:func:`build_environment` 的 docstring 说明了原因：
+    插件完全可以按 ``sys.version_info`` 决定注册哪些 entry，而 Python 小版本之间
+    C 扩展 ABI 也不兼容——把 ``3.11`` 的元数据当成 ``3.13`` 的权威答案，等于让插件
+    在本机暴露一批它在本机根本不会注册的入口。要消除的是"永远修不好"，不是"判得严"。
+    """
+    path = plugin_dir / PACKAGED_METADATA_FILENAME
+    try:
+        raw = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        # 文件不在 / 读不了 / 不是合法 JSON —— 都不是"环境不匹配"，交给各自的既有路径。
+        return False
+    if not isinstance(raw, dict):
+        return False
+    version = raw.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return False
+    if version != PACKAGED_METADATA_SCHEMA_VERSION:
+        # 更旧的由 stale_packaged_schema_version 负责；更新的我们无权改写（那是降级）。
+        return False
+    return not _environment_matches(raw.get("build_env"))
+
+
+def packaged_metadata_needs_rebuild(plugin_dir: Path) -> bool:
+    """这份 ``plugin.meta.json`` 值不值得在下次扫描之后按本机重写。
+
+    下面两种情况都会让插件**每次启动**白付一次隔离 metadata worker（实测 2.5–4.2s
+    的一次性子进程），而启动路径刚刚已经把这棵树完整 import 过一遍——它学到的正是
+    打包器当初会写下的东西：
+
+    * **schema 过期**：作者不再维护的插件就永远停在旧 schema；
+    * **build_env 不是本机的**：市场分发的包带着**作者机器**的 build_env，而安装只是
+      逐字节把它解出来（``neko_plugin_cli/core/install.py`` 的 ``extract_member`` 就是
+      ``shutil.copyfileobj``），既不校验也不重写。用户换了 Python 小版本之后，这个插件
+      就永久走慢路径——而且没有任何东西会红：注册表**发现**接受 env 不匹配的 entries
+      做 UI 预览（``registry_service`` 从不检查 ``built_in_this_environment``），只有
+      **启动**拒绝它，于是插件在列表里看起来完全正常。
+
+    重写之后 ``build_env`` 就是本机的，下次启动走快路径，本判定自动变回 False ——
+    所以它是自愈的，不会每次启动都去拍指纹。（拍不成也退化不到更糟：只读安装原本
+    就在每次启动付那次扫描。）
+    """
+    if stale_packaged_schema_version(plugin_dir) is not None:
+        return True
+    return packaged_metadata_env_mismatched(plugin_dir)
+
+
 def refresh_stale_packaged_metadata(
     plugin_dir: Path,
     *,
@@ -587,6 +669,13 @@ def refresh_stale_packaged_metadata(
     packager would have written, so write it, once, and the next start takes
     the fast path again.
 
+    A package built in a **different environment** is deliberately *not* handled
+    here. Its ``plugin.meta.json`` is a distributed artifact and stays
+    byte-identical — rewriting it would change the bytes of an installed package,
+    which feeds the manual-takeover tree hash and the "what is on disk is what
+    the market published" property. That case gets a machine-local sidecar
+    instead: :func:`write_local_packaged_metadata`.
+
     The same refusals the packager applies (``metadata_probe``) apply here: a
     tree with symlinks, empty directories or names that change under NFC
     cannot be described by a fingerprint, and a tree the import itself changed
@@ -604,6 +693,54 @@ def refresh_stale_packaged_metadata(
     stale = stale_packaged_schema_version(plugin_dir)
     if stale is None or before_scan is None:
         return False
+    if not _write_scanned_packaged_metadata(
+        plugin_dir / PACKAGED_METADATA_FILENAME,
+        plugin_dir,
+        before_scan=before_scan,
+        entries=entries,
+        handlers=handlers,
+        entry_methods=entry_methods,
+        conf=conf,
+        pdata=pdata,
+        subject="stale packaged metadata",
+    ):
+        return False
+    logger.info(
+        "packaged metadata upgraded in place from schema {} to {}: path={}",
+        stale,
+        PACKAGED_METADATA_SCHEMA_VERSION,
+        plugin_dir,
+    )
+    return True
+
+
+def _write_scanned_packaged_metadata(
+    target: Path,
+    plugin_dir: Path,
+    *,
+    before_scan: SourceTreeSnapshot,
+    entries: list[dict[str, object]],
+    handlers: dict[str, dict[str, object]],
+    entry_methods: dict[str, str],
+    conf: object,
+    pdata: object,
+    subject: str,
+) -> bool:
+    """把一次扫描的结果按打包器的格式写到 ``target``。返回是否真的写了。
+
+    两条写路径共用这一段——改写包内那份 schema 过期的（:func:`refresh_stale_packaged_metadata`），
+    以及写本机 sidecar（:func:`write_local_packaged_metadata`）。**拒绝理由必须共用**：
+    读取方对两份文件跑的是同一套校验，一边写得出去另一边读不进来，就等于白写。
+
+    与打包器 ``metadata_probe`` 同样的拒绝：带软链、空目录、或名字在 NFC 下会变的树
+    没法用指纹描述；import 自己改动过的树（``before_scan`` 对不上）则是 handler 与
+    指纹描述了两个不同状态。两种都不写。调用方负责保证生效的 ``entries`` 表就是
+    manifest 自己那份——文件描述的是包，不是某台机器的覆盖。
+
+    写失败不是错误：源文件可能在枚举和哈希之间消失，目录可能只读，而插件没有这份
+    文件也照样起来了。超过读取方尺寸上限的也不写：那样它会"schema 当前且超大"，
+    之后没有任何路径能再修它（codex）。
+    """
     try:
         summary = source_stat_summary(plugin_dir)
         if (
@@ -612,15 +749,17 @@ def refresh_stale_packaged_metadata(
             or unicode_renamed_source_files(plugin_dir)
         ):
             logger.info(
-                "stale packaged metadata left as is; the tree cannot be fingerprinted: path={}",
+                "{} left as is; the tree cannot be fingerprinted: path={}",
+                subject,
                 plugin_dir,
             )
             return False
         after_scan = snapshot_source_tree(plugin_dir)
         if after_scan != before_scan:
             logger.info(
-                "stale packaged metadata left as is; importing the plugin changed "
-                "its tree, so the scan and the fingerprint describe different states: path={}",
+                "{} left as is; importing the plugin changed its tree, so the "
+                "scan and the fingerprint describe different states: path={}",
+                subject,
                 plugin_dir,
             )
             return False
@@ -641,43 +780,126 @@ def refresh_stale_packaged_metadata(
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         if len(encoded) > MAX_PACKAGED_METADATA_BYTES:
             logger.info(
-                "stale packaged metadata left as is; the upgraded file would exceed "
-                "the reader's size cap: path={}, bytes={}, cap={}",
+                "{} left as is; the file would exceed the reader's size cap: "
+                "path={}, bytes={}, cap={}",
+                subject,
                 plugin_dir,
                 len(encoded),
                 MAX_PACKAGED_METADATA_BYTES,
             )
             return False
-        atomic_write_bytes(plugin_dir / PACKAGED_METADATA_FILENAME, encoded)
+        atomic_write_bytes(target, encoded)
     except (OSError, PackagedMetadataError) as exc:
         # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
         # ValueError); an optional optimisation must not turn that into a
         # failed start (greptile).
         logger.info(
-            "stale packaged metadata could not be rewritten; the plugin will rescan "
-            "on every start until it is repackaged: path={}, err_type={}, err={}",
+            "{} could not be written; the plugin will rescan on every start until "
+            "this succeeds: path={}, target={}, err_type={}, err={}",
+            subject,
             plugin_dir,
+            target.name,
             type(exc).__name__,
             str(exc),
         )
         return False
+    return True
+
+
+def write_local_packaged_metadata(
+    plugin_dir: Path,
+    *,
+    before_scan: SourceTreeSnapshot | None,
+    entries: list[dict[str, object]],
+    handlers: dict[str, dict[str, object]],
+    entry_methods: dict[str, str],
+    conf: object,
+    pdata: object,
+) -> bool:
+    """为**异环境打包**的插件写一份本机 sidecar，让它下次启动走快路径。
+
+    只处理这一种情况：``plugin.meta.json`` 在、schema 是当前版、树指纹也对得上，
+    但 ``build_env`` 不是本机的——典型来源是市场分发的包带着**作者机器**的
+    os/python 小版本/arch，而安装只是逐字节解出、不校验也不重写。这种包没坏，
+    只是"答案不是本机的"，然而读取方据此拒绝它，于是每次启动都要付一个
+    2.5–4.2s 的隔离 metadata worker，而且原本没有任何路径能修。
+
+    为什么不直接改写包内那份：它是**发行产物**。改写会动到已安装包的字节，进而动到
+    manual takeover 的树哈希复核，以及"盘上这份就是市场发布的那份"这个可核对性。
+    写在旁边、读取时优先，两全其美（见 :func:`read_packaged_metadata`）。
+
+    前置条件由调用方保证（``_upgrade_stale_packaged_metadata``）：生效的 ``entries``
+    表就是 manifest 自己那份、运行时 id 与 manifest id 一致。
+
+    自愈：写成功之后 ``build_env`` 就是本机的，下次启动 ``read_packaged_metadata``
+    直接命中 sidecar → 不再扫描 → 也就不会再走到这里。写不成功则退化回原样（每次
+    启动扫一次），不会更糟。
+
+    ``plugin.meta.json`` 根本不存在时**不写**：手工放入或 dev 模式的插件从来没有过
+    这份文件，不该因为启动了一次就长出一份来。
+    """
+    if before_scan is None:
+        return False
+    if not packaged_metadata_env_mismatched(plugin_dir):
+        # 不是"异环境"这一种情况就不归这里管：schema 过期走
+        # refresh_stale_packaged_metadata，本机包压根不需要写，缺文件则见上。
+        return False
+    if not _write_scanned_packaged_metadata(
+        plugin_dir / LOCAL_PACKAGED_METADATA_FILENAME,
+        plugin_dir,
+        before_scan=before_scan,
+        entries=entries,
+        handlers=handlers,
+        entry_methods=entry_methods,
+        conf=conf,
+        pdata=pdata,
+        subject="local packaged metadata sidecar",
+    ):
+        return False
     logger.info(
-        "packaged metadata upgraded in place from schema {} to {}: path={}",
-        stale,
-        PACKAGED_METADATA_SCHEMA_VERSION,
+        "local packaged metadata sidecar written for this environment "
+        "(build_env={}); the packaged file is left untouched: path={}",
+        build_environment(),
         plugin_dir,
     )
     return True
 
 
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
-    """Load and validate ``plugin.meta.json``, or ``None`` if unusable.
+    """Load and validate the packaged metadata for ``plugin_dir``, or ``None``.
+
+    先试本机 sidecar（``plugin.meta.local.json``），再回落到包内那份
+    ``plugin.meta.json``。sidecar 只有在**它自己**通过全部校验（schema / SDK 大版本 /
+    表结构 / 树可信度 / 摘要 / 文件清单 / 时间戳 / entries 摘要）、并且 ``build_env``
+    确实是本机的时候才会被采用；否则静默回落，行为与"没有 sidecar"完全一致。
+
+    sidecar 存在的唯一理由，是救"包是在别的 Python 小版本 / OS / arch 上打的"这种
+    情况：那种包没坏，只是答案不是本机的，而**发行产物不该被改写**（理由见
+    ``LOCAL_PACKAGED_METADATA_FILENAME`` 的注释）。
 
     ``None`` means "fall back to whatever the manifest declares statically, and
     placeholder the rest". Every rejection path logs why, because a silently
     ignored metadata file looks exactly like a plugin that declares no entries.
     """
-    meta_path = plugin_dir / PACKAGED_METADATA_FILENAME
+    local = _read_packaged_metadata_from(
+        plugin_dir / LOCAL_PACKAGED_METADATA_FILENAME, plugin_dir
+    )
+    if local is not None and local.built_in_this_environment:
+        return local
+    return _read_packaged_metadata_from(
+        plugin_dir / PACKAGED_METADATA_FILENAME, plugin_dir
+    )
+
+
+def _read_packaged_metadata_from(
+    meta_path: Path,
+    plugin_dir: Path,
+) -> PackagedPluginMetadata | None:
+    """Load and validate one metadata file — the packaged copy or the local sidecar.
+
+    与拆分前逐字相同的校验链，只是文件路径变成了参数。``meta_path`` 不存在时安静
+    返回 ``None``（sidecar 是可选的，绝大多数插件没有它，不该为"没有"刷日志）。
+    """
     try:
         meta_stat = meta_path.stat()
     except OSError:
