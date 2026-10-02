@@ -167,10 +167,10 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "Check the keyboard/screen display first.",
     "打开设置/屏幕画面选项看看。",
     # Either-or wording with a slash is not a label, chained or not.
-    "你可以发屏幕截图/照片给我，我帮你看看哪里出了问题呀。"
-    "如果不方便的话，也可以描述一下屏幕显示/报错的具体内容哦，我会尽量帮你分析。",
-    "The screen display / layout looks off on my side, sorry about that. "
-    "Try the screen content / settings panel and tell me what you see there.",
+    ("你可以发屏幕截图/照片给我，我帮你看看哪里出了问题呀。"
+     "如果不方便的话，也可以描述一下屏幕显示/报错的具体内容哦，我会尽量帮你分析。"),
+    ("The screen display / layout looks off on my side, sorry about that. "
+     "Try the screen content / settings panel and tell me what you see there."),
     "照片/屏幕截图 都可以发给我，我帮你看看哪里出了问题呀。照片/屏幕截图/视频也行，我会尽量帮你分析。",
     "Could you share the screen content/layout you see?",
     # Label-like path segments and reference-style links.
