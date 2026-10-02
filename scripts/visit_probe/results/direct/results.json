@@ -1,0 +1,1614 @@
+{
+  "env": {
+    "env": {
+      "href": "http://localhost:48911/",
+      "multiWindow": true,
+      "wsName": "PetWebSocket",
+      "dpr": 1,
+      "inner": [
+        1919,
+        1079
+      ],
+      "screenXY": [
+        1,
+        1
+      ],
+      "screen": [
+        1920,
+        1080
+      ],
+      "hasLive2d": true,
+      "canvasWH": [
+        1920,
+        1080
+      ],
+      "refreshHz": 60,
+      "targetFrameRate": 60,
+      "idleTickMode": true,
+      "idleTickFps": 30,
+      "tickerStarted": false,
+      "tickerMaxFPS": 0,
+      "pixiVersion": "7.4.3",
+      "modelBounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "chatSocketState": 1
+    },
+    "monitors": [
+      {
+        "rect": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "scale": 1
+      }
+    ],
+    "pet": {
+      "pet": {
+        "hwnd": 3608006,
+        "rect": [
+          1,
+          1,
+          1919,
+          1079
+        ],
+        "exstyle": 2621480,
+        "title": "Project N.E.K.O.",
+        "fullMonitor": false
+      },
+      "electronWindows": [
+        {
+          "hwnd": 10488396,
+          "rect": [
+            4,
+            0,
+            744,
+            931
+          ],
+          "exstyle": 2097160,
+          "title": "棍母 Terminal - Project N.E.K.O.",
+          "fullMonitor": false
+        },
+        {
+          "hwnd": 3608006,
+          "rect": [
+            1,
+            1,
+            1919,
+            1079
+          ],
+          "exstyle": 2621480,
+          "title": "Project N.E.K.O.",
+          "fullMonitor": false
+        }
+      ]
+    },
+    "at": "2026-10-02T13:38:18.937Z"
+  },
+  "t1": {
+    "probe": {
+      "wsName": "WebSocket",
+      "wsNative": true,
+      "wsProtoNative": true,
+      "wsSendNative": true,
+      "sameAsParentWS": false,
+      "parentWsName": "PetWebSocket",
+      "parentWsNative": false,
+      "rtcName": "RTCPeerConnection",
+      "rtcNative": true,
+      "captureStreamNative": true,
+      "rvfcNative": true,
+      "isSecureContext": true,
+      "ownGlobals": {
+        "electronScreen": false,
+        "__NEKO_MULTI_WINDOW__": false,
+        "nekoFramePacing": false,
+        "appState": false,
+        "live2dManager": false,
+        "require": "undefined",
+        "process": "undefined"
+      },
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) N.E.K.O/0.9.0 Chrome/146.0.7680.179 Electron/41.2.0 Safari/537.36"
+    },
+    "chatObserver": {
+      "ok": true,
+      "ctor": "WSProxy",
+      "readyState": 1,
+      "wsName": "WSProxy"
+    },
+    "iframeConnect": {
+      "ok": true,
+      "echo": "echo:ping-from-iframe",
+      "ms": 2,
+      "ctorName": "WebSocket"
+    },
+    "afterIframe": {
+      "petSocketState": 1,
+      "chatConnectingCount": 0,
+      "chatSocketState": 1
+    },
+    "before": {
+      "petSocketState": 1
+    },
+    "parentControl": {
+      "ok": true,
+      "echo": "echo:ping-from-parent",
+      "ctorName": "WebSocket",
+      "parentWsName": "PetWebSocket"
+    },
+    "afterParentControl": {
+      "chatConnectingCount": 1,
+      "chatSocketState": 3
+    }
+  },
+  "t2": {
+    "blank": [
+      {
+        "label": "timer30-sync",
+        "framesChecked": 302,
+        "blankFrames": 0,
+        "minAlphaSum": 791962,
+        "maxAlphaSum": 837994,
+        "packMsAvg": 4.526,
+        "packMsMax": 21.2,
+        "hook": {
+          "postrender": 311,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 302,
+          "asyncCaptures": 0,
+          "renderFpsLast": 31,
+          "accMax": 0.9768790719847522,
+          "startedAt": 7863.9000000059605
+        }
+      },
+      {
+        "label": "raf-vsync-sync",
+        "framesChecked": 310,
+        "blankFrames": 0,
+        "minAlphaSum": 796520,
+        "maxAlphaSum": 832330,
+        "packMsAvg": 5.154,
+        "packMsMax": 5.9,
+        "hook": {
+          "postrender": 584,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 310,
+          "asyncCaptures": 0,
+          "renderFpsLast": 60,
+          "accMax": 0.9966720860716326,
+          "startedAt": 18920.10000000894
+        }
+      },
+      {
+        "label": "timer60-sync",
+        "framesChecked": 310,
+        "blankFrames": 0,
+        "minAlphaSum": 783686,
+        "maxAlphaSum": 839968,
+        "packMsAvg": 5.683,
+        "packMsMax": 9.4,
+        "hook": {
+          "postrender": 573,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 311,
+          "asyncCaptures": 0,
+          "renderFpsLast": 59,
+          "accMax": 0.9998674181083071,
+          "startedAt": 29468.5
+        }
+      },
+      {
+        "label": "timer60-async-control",
+        "framesChecked": 311,
+        "blankFrames": 223,
+        "minAlphaSum": 0,
+        "maxAlphaSum": 835060,
+        "packMsAvg": 5.297,
+        "packMsMax": 6.8,
+        "hook": {
+          "postrender": 574,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 0,
+          "asyncCaptures": 311,
+          "renderFpsLast": 59,
+          "accMax": 0.9998674181083071,
+          "startedAt": 39205.40000000596
+        }
+      }
+    ],
+    "fps": [
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 60.06,
+        "capturesPerSec": 29.78,
+        "requestFramePerSec": 29.78,
+        "framesEncodedPerSec": 29.68,
+        "framesSentPerSec": 29.68,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.68,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.48,
+        "frame": [
+          240,
+          672
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "bandwidth",
+        "kbps": 447.6,
+        "packMsAvg": 0.119,
+        "packMsMax": 0.3,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerStarted": true,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "raf-vsync(60Hz)",
+        "appliedMode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 58.6,
+        "capturesPerSec": 29.65,
+        "requestFramePerSec": 29.65,
+        "framesEncodedPerSec": 29.25,
+        "framesSentPerSec": 29.25,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.25,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 25.85,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 562.2,
+        "packMsAvg": 0.122,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerStarted": true,
+          "tickerMaxFPS": 60,
+          "refreshHz": 60
+        },
+        "name": "raf-cap60",
+        "appliedMode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerMaxFPS": 60
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 30.27,
+        "capturesPerSec": 29.27,
+        "requestFramePerSec": 29.27,
+        "framesEncodedPerSec": 29.27,
+        "framesSentPerSec": 29.27,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.27,
+        "inboundFramesPerSecond": 29,
+        "rvfcPerSec": 28.87,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 567.3,
+        "packMsAvg": 0.119,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer30",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 45.51,
+        "capturesPerSec": 29.64,
+        "requestFramePerSec": 29.64,
+        "framesEncodedPerSec": 29.54,
+        "framesSentPerSec": 29.54,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.64,
+        "inboundFramesPerSecond": 29,
+        "rvfcPerSec": 25.05,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 558,
+        "packMsAvg": 0.117,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 45,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer45",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 45,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 58.83,
+        "capturesPerSec": 29.97,
+        "requestFramePerSec": 29.97,
+        "framesEncodedPerSec": 29.87,
+        "framesSentPerSec": 29.87,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.87,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.87,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 558,
+        "packMsAvg": 0.114,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 76.92,
+        "capturesPerSec": 29.87,
+        "requestFramePerSec": 29.87,
+        "framesEncodedPerSec": 29.97,
+        "framesSentPerSec": 29.97,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.97,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 29.87,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 559.7,
+        "packMsAvg": 0.112,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 75,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer75(sim 75Hz)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 75,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10,
+        "postrenderPerSec": 142.85,
+        "capturesPerSec": 29.99,
+        "requestFramePerSec": 29.99,
+        "framesEncodedPerSec": 29.99,
+        "framesSentPerSec": 29.99,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.89,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.29,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 558.9,
+        "packMsAvg": 0.11,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 144,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer144(sim 144Hz)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 144,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 23.87,
+        "capturesPerSec": 23.87,
+        "requestFramePerSec": 23.87,
+        "framesEncodedPerSec": 23.77,
+        "framesSentPerSec": 23.77,
+        "outboundFramesPerSecond": 23,
+        "framesDecodedPerSec": 23.77,
+        "inboundFramesPerSecond": 24,
+        "rvfcPerSec": 23.27,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 557.8,
+        "packMsAvg": 0.111,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 24,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer24(<30 source)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 24,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10,
+        "postrenderPerSec": 58.88,
+        "capturesPerSec": 29.89,
+        "requestFramePerSec": 29.89,
+        "framesEncodedPerSec": 29.89,
+        "framesSentPerSec": 29.89,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.89,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 53.18,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/H264",
+        "qualityLimitationReason": "none",
+        "kbps": 547.2,
+        "packMsAvg": 0.113,
+        "packMsMax": 0.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60-h264"
+      },
+      {
+        "seconds": 10,
+        "postrenderPerSec": 58.77,
+        "capturesPerSec": 29.89,
+        "requestFramePerSec": 29.89,
+        "framesEncodedPerSec": 29.89,
+        "framesSentPerSec": 29.89,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.79,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.69,
+        "frame": [
+          240,
+          672
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "bandwidth",
+        "kbps": 465.6,
+        "packMsAvg": 0.134,
+        "packMsMax": 0.6,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60-webgl-packer"
+      }
+    ],
+    "crop": {
+      "rect": [
+        1296,
+        637,
+        869,
+        1216
+      ],
+      "bounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "scale": [
+        1,
+        1
+      ]
+    },
+    "refreshHz": 60
+  },
+  "t5": {
+    "synthetic2dSource": {
+      "kind": "2d",
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "whiteBandSpots2d": [
+        {
+          "x": 0,
+          "expectedAlpha": 0,
+          "packBottom": 0,
+          "packTop": 0
+        },
+        {
+          "x": 1,
+          "expectedAlpha": 1,
+          "packBottom": 1,
+          "packTop": 1
+        },
+        {
+          "x": 2,
+          "expectedAlpha": 2,
+          "packBottom": 2,
+          "packTop": 2
+        },
+        {
+          "x": 64,
+          "expectedAlpha": 51,
+          "packBottom": 51,
+          "packTop": 51
+        },
+        {
+          "x": 128,
+          "expectedAlpha": 102,
+          "packBottom": 102,
+          "packTop": 102
+        },
+        {
+          "x": 191,
+          "expectedAlpha": 153,
+          "packBottom": 153,
+          "packTop": 153
+        },
+        {
+          "x": 254,
+          "expectedAlpha": 203,
+          "packBottom": 203,
+          "packTop": 203
+        },
+        {
+          "x": 319,
+          "expectedAlpha": 255,
+          "packBottom": 255,
+          "packTop": 255
+        }
+      ]
+    },
+    "syntheticWebglSource": {
+      "kind": "gl",
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "whiteBandSpots2d": [
+        {
+          "x": 0,
+          "expectedAlpha": 0,
+          "packBottom": 0,
+          "packTop": 0
+        },
+        {
+          "x": 1,
+          "expectedAlpha": 1,
+          "packBottom": 1,
+          "packTop": 1
+        },
+        {
+          "x": 2,
+          "expectedAlpha": 2,
+          "packBottom": 2,
+          "packTop": 2
+        },
+        {
+          "x": 64,
+          "expectedAlpha": 51,
+          "packBottom": 51,
+          "packTop": 51
+        },
+        {
+          "x": 128,
+          "expectedAlpha": 102,
+          "packBottom": 102,
+          "packTop": 102
+        },
+        {
+          "x": 191,
+          "expectedAlpha": 153,
+          "packBottom": 153,
+          "packTop": 153
+        },
+        {
+          "x": 254,
+          "expectedAlpha": 203,
+          "packBottom": 203,
+          "packTop": 203
+        },
+        {
+          "x": 319,
+          "expectedAlpha": 255,
+          "packBottom": 255,
+          "packTop": 255
+        }
+      ]
+    },
+    "crop": {
+      "rect": [
+        1296,
+        637,
+        869,
+        1216
+      ],
+      "bounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "scale": [
+        1,
+        1
+      ]
+    },
+    "live2dFrames": [
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13436,
+          "distinctAlphaValues": 245,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13436,
+          "distinctAlphaValues": 245,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13397,
+          "distinctAlphaValues": 248,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13397,
+          "distinctAlphaValues": 248,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13446,
+          "distinctAlphaValues": 246,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13446,
+          "distinctAlphaValues": 246,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0024,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13263,
+          "distinctAlphaValues": 243,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0023,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13263,
+          "distinctAlphaValues": 243,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0023,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13191,
+          "distinctAlphaValues": 235,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0023,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13191,
+          "distinctAlphaValues": 235,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0023,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      }
+    ],
+    "live2dFullBody": {
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 8517,
+        "distinctAlphaValues": 229,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0015,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 8517,
+        "distinctAlphaValues": 229,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0015,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "rect": [
+        1296,
+        637,
+        869,
+        1901
+      ],
+      "srcW": 1920,
+      "srcH": 1080
+    }
+  },
+  "t3": {
+    "direct": {
+      "geometry": {
+        "pet": {
+          "hwnd": 3608006,
+          "rect": [
+            1,
+            1,
+            1919,
+            1079
+          ],
+          "exstyle": 2621480,
+          "title": "悠怡 Terminal - Project N.E.K.O.",
+          "fullMonitor": false
+        },
+        "scale": [
+          1,
+          1
+        ],
+        "env": {
+          "href": "http://localhost:48911/",
+          "multiWindow": true,
+          "wsName": "PetWebSocket",
+          "dpr": 1,
+          "inner": [
+            1919,
+            1079
+          ],
+          "screenXY": [
+            1,
+            1
+          ],
+          "screen": [
+            1920,
+            1080
+          ],
+          "hasLive2d": true,
+          "canvasWH": [
+            1920,
+            1080
+          ],
+          "refreshHz": 60,
+          "targetFrameRate": 60,
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "pixiVersion": "7.4.3",
+          "modelBounds": {
+            "left": 1313.125919257545,
+            "right": 2148.5799457446938,
+            "top": 636.8390239616078,
+            "bottom": 1806.4746610436157,
+            "width": 835.4540264871487,
+            "height": 1169.6356370820079,
+            "centerX": 1730.8529325011195,
+            "centerY": 1221.6568425026117
+          },
+          "chatSocketState": 1
+        }
+      },
+      "rectCss": {
+        "left": 657,
+        "top": 208,
+        "width": 616,
+        "height": 863
+      },
+      "rectPhys": [
+        658,
+        209,
+        616,
+        863
+      ],
+      "emptyFrameShots": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-empty-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-empty-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-empty-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0.022855186528419436,
+          "bgStable_pixelsOver8": 114,
+          "fg_vs_bg_meanAbs": 0.02409670283366691,
+          "fg_vs_bg_max": 56,
+          "fg_vs_bg_pixelsOver8": 166,
+          "fg_mean_rgb": [
+            143.8170512859099,
+            136.12588034792554,
+            141.54226986802306
+          ],
+          "bg_mean_rgb": [
+            143.82319302945027,
+            136.1246407127056,
+            141.53994296549337
+          ],
+          "pixels": 531608
+        }
+      },
+      "idleTransportShots": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-idle-canvas-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-idle-canvas-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t3-idle-canvas-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0.03111691321424809,
+          "bgStable_pixelsOver8": 1,
+          "fg_vs_bg_meanAbs": 0.030024002648568117,
+          "fg_vs_bg_max": 39,
+          "fg_vs_bg_pixelsOver8": 118,
+          "fg_mean_rgb": [
+            143.85198868339077,
+            136.1358952461212,
+            141.5333666912462
+          ],
+          "bg_mean_rgb": [
+            143.84296323606867,
+            136.131817053167,
+            141.534896013604
+          ],
+          "pixels": 531608
+        }
+      },
+      "modelPointCss": [
+        1730.8529325011195,
+        835.6770822655492
+      ],
+      "hit": [
+        {
+          "variant": "no-iframe",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z9 pe-none+class (design as written)",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z9 neither",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z11 pe-none+class",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z11 pe-none only",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z11 class only (pe auto)",
+          "elementFromPoint": {
+            "tag": "IFRAME",
+            "id": null,
+            "cls": "transparent-overlay",
+            "probe": "host"
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            }
+          ]
+        },
+        {
+          "variant": "z11 neither (negative control)",
+          "elementFromPoint": {
+            "tag": "IFRAME",
+            "id": null,
+            "cls": null,
+            "probe": "host"
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": false,
+              "wsExTransparent": false
+            }
+          ]
+        }
+      ],
+      "modelPositiveControl": [
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        }
+      ]
+    }
+  },
+  "t4": {
+    "direct": {
+      "rectCss": {
+        "left": 657,
+        "top": 208,
+        "width": 616,
+        "height": 863
+      },
+      "rectPhys": [
+        658,
+        209,
+        616,
+        863
+      ],
+      "direct_2d": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-direct-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-direct-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-direct-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0.005989375630163579,
+            "bgStable_pixelsOver8": 0,
+            "fg_vs_bg_meanAbs": 70.70060081864833,
+            "fg_vs_bg_max": 229,
+            "fg_vs_bg_pixelsOver8": 480048,
+            "fg_mean_rgb": [
+              137.49790823313418,
+              129.6489800755444,
+              146.74449594438008
+            ],
+            "bg_mean_rgb": [
+              143.8664880889678,
+              136.14052459707153,
+              141.52981332109374
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 0.4509225704551963,
+          "p99AbsErr": 0.4980392156862763,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 574,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 70.53786942632516,
+          "alpha0_region_meanAbsDiffFromBg": 1.5599766627771294
+        }
+      },
+      "direct_gl": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-gl-direct-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-gl-direct-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-gl-direct-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0.02054333268122376,
+            "bgStable_pixelsOver8": 121,
+            "fg_vs_bg_meanAbs": 70.70356540909843,
+            "fg_vs_bg_max": 228,
+            "fg_vs_bg_pixelsOver8": 480048,
+            "fg_mean_rgb": [
+              137.495959428752,
+              129.6484007012686,
+              146.74504145912024
+            ],
+            "bg_mean_rgb": [
+              143.87709176686582,
+              136.14311673263006,
+              141.52651389745827
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 0.45135671331485755,
+          "p99AbsErr": 0.4980392156862763,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 589,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 70.54087648487862,
+          "alpha0_region_meanAbsDiffFromBg": 1.5599766627771294
+        }
+      },
+      "video_2d": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-video-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-video-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-pattern-2d-video-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0.05532083791064092,
+            "bgStable_pixelsOver8": 758,
+            "fg_vs_bg_meanAbs": 67.65537952777234,
+            "fg_vs_bg_max": 217,
+            "fg_vs_bg_pixelsOver8": 479372,
+            "fg_mean_rgb": [
+              137.16992031722623,
+              131.003000331071,
+              146.5873293855623
+            ],
+            "bg_mean_rgb": [
+              143.82771515853787,
+              136.12747738935457,
+              141.5390061850085
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 8.647508321996666,
+          "p99AbsErr": 75.78294117647044,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 197638,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 67.58873883352143,
+          "alpha0_region_meanAbsDiffFromBg": 1.6148191365227538
+        },
+        "rtc": {
+          "outbound": {
+            "framesEncoded": 72,
+            "framesSent": 72,
+            "framesPerSecond": 30,
+            "frameWidth": 160,
+            "frameHeight": 448,
+            "qualityLimitationReason": "bandwidth",
+            "bytesSent": 33430,
+            "targetBitrate": 560000,
+            "scalabilityMode": "L1T1",
+            "codecId": "COT01_96",
+            "totalEncodeTime": 0.052,
+            "codec": "video/VP8"
+          },
+          "inbound": {
+            "framesDecoded": 72,
+            "framesPerSecond": 30,
+            "frameWidth": 160,
+            "frameHeight": 448,
+            "framesDropped": 0
+          },
+          "dcRecv": 1,
+          "videoWH": [
+            160,
+            448
+          ],
+          "stat": {
+            "onFrame": 76,
+            "requestFrame": 76,
+            "blank": 0,
+            "verified": 0,
+            "minAlphaSum": null,
+            "maxAlphaSum": 0,
+            "packMsSum": 8.700000032782555,
+            "packMsMax": 0.29999999701976776,
+            "rvfc": 71,
+            "lastRvfcPresented": 72,
+            "unpackDraws": 71,
+            "packMsAvg": 0.114
+          },
+          "t": 2559.699999988079
+        }
+      },
+      "live_video": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-live2d-video-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-live2d-video-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\direct\\t4-live2d-video-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0.06035462220282614,
+          "bgStable_pixelsOver8": 189,
+          "fg_vs_bg_meanAbs": 7.751521798016584,
+          "fg_vs_bg_max": 161,
+          "fg_vs_bg_pixelsOver8": 50867,
+          "fg_mean_rgb": [
+            146.2660870415795,
+            138.2465388030278,
+            141.28533618756677
+          ],
+          "bg_mean_rgb": [
+            143.80639869979385,
+            136.12184165776287,
+            141.54505951753924
+          ],
+          "pixels": 531608
+        }
+      }
+    }
+  }
+}

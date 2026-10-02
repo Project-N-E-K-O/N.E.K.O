@@ -1,0 +1,1669 @@
+{
+  "env": {
+    "env": {
+      "href": "http://localhost:48911/",
+      "multiWindow": true,
+      "wsName": "PetWebSocket",
+      "dpr": 1,
+      "inner": [
+        1919,
+        1079
+      ],
+      "screenXY": [
+        1,
+        1
+      ],
+      "screen": [
+        1920,
+        1080
+      ],
+      "hasLive2d": true,
+      "canvasWH": [
+        1920,
+        1080
+      ],
+      "refreshHz": 60,
+      "targetFrameRate": 60,
+      "idleTickMode": false,
+      "idleTickFps": null,
+      "tickerStarted": true,
+      "tickerMaxFPS": 60,
+      "pixiVersion": "7.4.3",
+      "modelBounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "chatSocketState": 1
+    },
+    "monitors": [
+      {
+        "rect": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "scale": 1
+      }
+    ],
+    "pet": {
+      "pet": null,
+      "electronWindows": [
+        {
+          "hwnd": 2363678,
+          "rect": [
+            8,
+            474,
+            795,
+            606
+          ],
+          "exstyle": 524296,
+          "title": "棍母 Terminal - Project N.E.K.O.",
+          "fullMonitor": false
+        },
+        {
+          "hwnd": 1184048,
+          "rect": [
+            1,
+            1,
+            1919,
+            1079
+          ],
+          "exstyle": 524328,
+          "title": "Project N.E.K.O.",
+          "fullMonitor": false
+        }
+      ]
+    },
+    "at": "2026-10-02T12:14:30.197Z"
+  },
+  "t1": {
+    "probe": {
+      "wsName": "WebSocket",
+      "wsNative": true,
+      "wsProtoNative": true,
+      "wsSendNative": true,
+      "sameAsParentWS": false,
+      "parentWsName": "PetWebSocket",
+      "parentWsNative": false,
+      "rtcName": "RTCPeerConnection",
+      "rtcNative": true,
+      "captureStreamNative": true,
+      "rvfcNative": true,
+      "isSecureContext": true,
+      "ownGlobals": {
+        "electronScreen": false,
+        "__NEKO_MULTI_WINDOW__": false,
+        "nekoFramePacing": false,
+        "appState": false,
+        "live2dManager": false,
+        "require": "undefined",
+        "process": "undefined"
+      },
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) N.E.K.O/0.9.0 Chrome/146.0.7680.179 Electron/41.2.0 Safari/537.36"
+    },
+    "chatObserver": {
+      "ok": true,
+      "ctor": "WSProxy",
+      "readyState": 1,
+      "wsName": "WSProxy"
+    },
+    "iframeConnect": {
+      "ok": true,
+      "echo": "echo:ping-from-iframe",
+      "ms": 4,
+      "ctorName": "WebSocket"
+    },
+    "afterIframe": {
+      "petSocketState": 1,
+      "chatConnectingCount": 0,
+      "chatSocketState": 1
+    },
+    "before": {
+      "petSocketState": 1
+    },
+    "parentControl": {
+      "ok": true,
+      "echo": "echo:ping-from-parent",
+      "ctorName": "WebSocket",
+      "parentWsName": "PetWebSocket"
+    },
+    "afterParentControl": {
+      "chatConnectingCount": 1,
+      "chatSocketState": 3
+    }
+  },
+  "t2": {
+    "blank": [
+      {
+        "label": "timer30-sync",
+        "framesChecked": 303,
+        "blankFrames": 0,
+        "minAlphaSum": 790192,
+        "maxAlphaSum": 833557,
+        "packMsAvg": 8.54,
+        "packMsMax": 10.8,
+        "hook": {
+          "postrender": 313,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 303,
+          "asyncCaptures": 0,
+          "renderFpsLast": 31,
+          "accMax": 0.9768790719847531,
+          "startedAt": 1119359.199999988
+        }
+      },
+      {
+        "label": "raf-vsync-sync",
+        "framesChecked": 311,
+        "blankFrames": 0,
+        "minAlphaSum": 787374,
+        "maxAlphaSum": 834851,
+        "packMsAvg": 8.331,
+        "packMsMax": 11,
+        "hook": {
+          "postrender": 587,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 311,
+          "asyncCaptures": 0,
+          "renderFpsLast": 61,
+          "accMax": 0.9966720860716354,
+          "startedAt": 1130482.299999997
+        }
+      },
+      {
+        "label": "timer60-sync",
+        "framesChecked": 312,
+        "blankFrames": 0,
+        "minAlphaSum": 789263,
+        "maxAlphaSum": 840948,
+        "packMsAvg": 8.366,
+        "packMsMax": 10.3,
+        "hook": {
+          "postrender": 576,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 312,
+          "asyncCaptures": 0,
+          "renderFpsLast": 59,
+          "accMax": 0.9998674181083058,
+          "startedAt": 1141082.099999994
+        }
+      },
+      {
+        "label": "timer60-async-control",
+        "framesChecked": 311,
+        "blankFrames": 264,
+        "minAlphaSum": 0,
+        "maxAlphaSum": 830469,
+        "packMsAvg": 8.017,
+        "packMsMax": 10.4,
+        "hook": {
+          "postrender": 575,
+          "guardedRT": 0,
+          "guardedStage": 0,
+          "captures": 0,
+          "asyncCaptures": 311,
+          "renderFpsLast": 59,
+          "accMax": 0.9998674181083058,
+          "startedAt": 1150875.599999994
+        }
+      }
+    ],
+    "fps": [
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 60.03,
+        "capturesPerSec": 29.66,
+        "requestFramePerSec": 29.66,
+        "framesEncodedPerSec": 29.76,
+        "framesSentPerSec": 29.76,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.76,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 29.07,
+        "frame": [
+          240,
+          672
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "bandwidth",
+        "kbps": 448.6,
+        "packMsAvg": 7.885,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_exitIdleTickMode() <- at P.setMode (<anonymous>:215:10)"
+        ],
+        "mode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerStarted": true,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "raf-vsync(60Hz)",
+        "appliedMode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 58.69,
+        "capturesPerSec": 29.65,
+        "requestFramePerSec": 29.65,
+        "framesEncodedPerSec": 29.45,
+        "framesSentPerSec": 29.45,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.35,
+        "inboundFramesPerSecond": 28,
+        "rvfcPerSec": 28.25,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 570.1,
+        "packMsAvg": 7.85,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_exitIdleTickMode() <- at P.setMode (<anonymous>:215:10)"
+        ],
+        "mode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerStarted": true,
+          "tickerMaxFPS": 60,
+          "refreshHz": 60
+        },
+        "name": "raf-cap60",
+        "appliedMode": {
+          "idleTickMode": false,
+          "idleTickFps": null,
+          "tickerMaxFPS": 60
+        }
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 30.25,
+        "capturesPerSec": 29.35,
+        "requestFramePerSec": 29.35,
+        "framesEncodedPerSec": 29.45,
+        "framesSentPerSec": 29.45,
+        "outboundFramesPerSecond": 29,
+        "framesDecodedPerSec": 29.45,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 28.25,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 567.6,
+        "packMsAvg": 7.832,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(30) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer30",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.03,
+        "postrenderPerSec": 45.48,
+        "capturesPerSec": 29.72,
+        "requestFramePerSec": 29.72,
+        "framesEncodedPerSec": 29.62,
+        "framesSentPerSec": 29.62,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.62,
+        "inboundFramesPerSecond": 29,
+        "rvfcPerSec": 23.64,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 565.2,
+        "packMsAvg": 7.77,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(45) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 45,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer45",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 45,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 58.86,
+        "capturesPerSec": 29.88,
+        "requestFramePerSec": 29.88,
+        "framesEncodedPerSec": 29.98,
+        "framesSentPerSec": 29.98,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.98,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.28,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 559.2,
+        "packMsAvg": 7.792,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(60) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.03,
+        "postrenderPerSec": 76.9,
+        "capturesPerSec": 29.92,
+        "requestFramePerSec": 29.92,
+        "framesEncodedPerSec": 29.92,
+        "framesSentPerSec": 29.92,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.92,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.73,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 559.9,
+        "packMsAvg": 7.791,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(75) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 75,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer75(sim 75Hz)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 75,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 117.64,
+        "capturesPerSec": 29.93,
+        "requestFramePerSec": 29.93,
+        "framesEncodedPerSec": 29.93,
+        "framesSentPerSec": 29.93,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.93,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 26.04,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 557.6,
+        "packMsAvg": 7.82,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(144) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 144,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer144(sim 144Hz)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 144,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.01,
+        "postrenderPerSec": 23.78,
+        "capturesPerSec": 23.78,
+        "requestFramePerSec": 23.78,
+        "framesEncodedPerSec": 23.78,
+        "framesSentPerSec": 23.78,
+        "outboundFramesPerSecond": 23,
+        "framesDecodedPerSec": 23.68,
+        "inboundFramesPerSecond": 23,
+        "rvfcPerSec": 22.98,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "none",
+        "kbps": 565.6,
+        "packMsAvg": 7.808,
+        "packMsMax": 10.2,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(24) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 24,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer24(<30 source)",
+        "appliedMode": {
+          "idleTickMode": true,
+          "idleTickFps": 24,
+          "tickerMaxFPS": 0
+        }
+      },
+      {
+        "seconds": 10.03,
+        "postrenderPerSec": 58.82,
+        "capturesPerSec": 29.91,
+        "requestFramePerSec": 29.91,
+        "framesEncodedPerSec": 29.91,
+        "framesSentPerSec": 29.91,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.91,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 52.04,
+        "frame": [
+          320,
+          896
+        ],
+        "codec": "video/H264",
+        "qualityLimitationReason": "none",
+        "kbps": 455.3,
+        "packMsAvg": 7.829,
+        "packMsMax": 10.4,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(60) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60-h264"
+      },
+      {
+        "seconds": 10.02,
+        "postrenderPerSec": 58.85,
+        "capturesPerSec": 29.93,
+        "requestFramePerSec": 29.93,
+        "framesEncodedPerSec": 29.73,
+        "framesSentPerSec": 29.73,
+        "outboundFramesPerSecond": 30,
+        "framesDecodedPerSec": 29.73,
+        "inboundFramesPerSecond": 30,
+        "rvfcPerSec": 25.74,
+        "frame": [
+          240,
+          672
+        ],
+        "codec": "video/VP8",
+        "qualityLimitationReason": "bandwidth",
+        "kbps": 453.9,
+        "packMsAvg": 8.052,
+        "packMsMax": 10.5,
+        "guardedStage": 0,
+        "guardedRT": 0,
+        "modeChanges": [
+          "_enterIdleTickMode(60) <- at P.setMode (<anonymous>:218:10)"
+        ],
+        "mode": {
+          "idleTickMode": true,
+          "idleTickFps": 60,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "refreshHz": 60
+        },
+        "name": "timer60-webgl-packer"
+      }
+    ],
+    "crop": {
+      "rect": [
+        1296,
+        637,
+        869,
+        1216
+      ],
+      "bounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "scale": [
+        1,
+        1
+      ]
+    },
+    "refreshHz": 60
+  },
+  "modeTrace": {
+    "idle": true,
+    "fps": 60,
+    "calls": [
+      {
+        "fn": "_startIdleFpsGovernor",
+        "args": [],
+        "at": 712356,
+        "stack": "at P.restoreFps (<anonymous>:174:26) | at <anonymous>:3:29"
+      },
+      {
+        "fn": "_exitIdleTickMode",
+        "args": [],
+        "at": 712357,
+        "stack": "at Live2DManager._stopIdleFpsGovernor (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:1093:14) | at Live2DManager._startIdleFpsGovernor (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:1047:14) | at lm.<computed> [as _startIdleFpsGovernor] (<anonymous>:202:23) | at P.restoreFps (<anonymous>:174:26)"
+      },
+      {
+        "fn": "boostInteractiveFPS",
+        "args": [],
+        "at": 712357,
+        "stack": "at Live2DManager._startIdleFpsGovernor (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:1051:14) | at lm.<computed> [as _startIdleFpsGovernor] (<anonymous>:202:23) | at P.restoreFps (<anonymous>:174:26) | at <anonymous>:3:29"
+      },
+      {
+        "fn": "_exitIdleTickMode",
+        "args": [],
+        "at": 712357,
+        "stack": "at Live2DManager.boostInteractiveFPS (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:855:18) | at lm.<computed> [as boostInteractiveFPS] (<anonymous>:202:23) | at Live2DManager._startIdleFpsGovernor (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:1051:14) | at lm.<computed> [as _startIdleFpsGovernor] (<anonymous>:202:23)"
+      },
+      {
+        "fn": "setTargetFPS",
+        "args": [
+          60
+        ],
+        "at": 712357,
+        "stack": "at P.restoreFps (<anonymous>:175:26) | at <anonymous>:3:29"
+      },
+      {
+        "fn": "_enterIdleTickMode",
+        "args": [
+          30
+        ],
+        "at": 712357,
+        "stack": "at Live2DManager.setTargetFPS (http://localhost:48911/static/live2d/live2d-core.js?v=0.9.0-1790942291:776:18) | at lm.<computed> [as setTargetFPS] (<anonymous>:202:23) | at P.restoreFps (<anonymous>:175:26) | at <anonymous>:3:29"
+      }
+    ]
+  },
+  "t5": {
+    "synthetic2dSource": {
+      "kind": "2d",
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "whiteBandSpots2d": [
+        {
+          "x": 0,
+          "expectedAlpha": 0,
+          "packBottom": 0,
+          "packTop": 0
+        },
+        {
+          "x": 1,
+          "expectedAlpha": 1,
+          "packBottom": 1,
+          "packTop": 1
+        },
+        {
+          "x": 2,
+          "expectedAlpha": 2,
+          "packBottom": 2,
+          "packTop": 2
+        },
+        {
+          "x": 64,
+          "expectedAlpha": 51,
+          "packBottom": 51,
+          "packTop": 51
+        },
+        {
+          "x": 128,
+          "expectedAlpha": 102,
+          "packBottom": 102,
+          "packTop": 102
+        },
+        {
+          "x": 191,
+          "expectedAlpha": 153,
+          "packBottom": 153,
+          "packTop": 153
+        },
+        {
+          "x": 254,
+          "expectedAlpha": 203,
+          "packBottom": 203,
+          "packTop": 203
+        },
+        {
+          "x": 319,
+          "expectedAlpha": 255,
+          "packBottom": 255,
+          "packTop": 255
+        }
+      ]
+    },
+    "syntheticWebglSource": {
+      "kind": "gl",
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 142912,
+        "distinctAlphaValues": 256,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.5,
+        "colorMeanErr": 0.0539,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "whiteBandSpots2d": [
+        {
+          "x": 0,
+          "expectedAlpha": 0,
+          "packBottom": 0,
+          "packTop": 0
+        },
+        {
+          "x": 1,
+          "expectedAlpha": 1,
+          "packBottom": 1,
+          "packTop": 1
+        },
+        {
+          "x": 2,
+          "expectedAlpha": 2,
+          "packBottom": 2,
+          "packTop": 2
+        },
+        {
+          "x": 64,
+          "expectedAlpha": 51,
+          "packBottom": 51,
+          "packTop": 51
+        },
+        {
+          "x": 128,
+          "expectedAlpha": 102,
+          "packBottom": 102,
+          "packTop": 102
+        },
+        {
+          "x": 191,
+          "expectedAlpha": 153,
+          "packBottom": 153,
+          "packTop": 153
+        },
+        {
+          "x": 254,
+          "expectedAlpha": 203,
+          "packBottom": 203,
+          "packTop": 203
+        },
+        {
+          "x": 319,
+          "expectedAlpha": 255,
+          "packBottom": 255,
+          "packTop": 255
+        }
+      ]
+    },
+    "crop": {
+      "rect": [
+        1296,
+        637,
+        869,
+        1216
+      ],
+      "bounds": {
+        "left": 1313.125919257545,
+        "right": 2148.5799457446938,
+        "top": 636.8390239616078,
+        "bottom": 1806.4746610436157,
+        "width": 835.4540264871487,
+        "height": 1169.6356370820079,
+        "centerX": 1730.8529325011195,
+        "centerY": 1221.6568425026117
+      },
+      "scale": [
+        1,
+        1
+      ]
+    },
+    "live2dFrames": [
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13402,
+          "distinctAlphaValues": 247,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.5,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13402,
+          "distinctAlphaValues": 247,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.5,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13444,
+          "distinctAlphaValues": 243,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13444,
+          "distinctAlphaValues": 243,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13417,
+          "distinctAlphaValues": 249,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.5,
+          "colorMeanErr": 0.0026,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13417,
+          "distinctAlphaValues": 249,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.5,
+          "colorMeanErr": 0.0026,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13410,
+          "distinctAlphaValues": 250,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0026,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13410,
+          "distinctAlphaValues": 250,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0026,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      },
+      {
+        "2d": {
+          "pixels": 143360,
+          "coveredPixels": 13406,
+          "distinctAlphaValues": 246,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "webgl": {
+          "pixels": 143360,
+          "coveredPixels": 13406,
+          "distinctAlphaValues": 246,
+          "alphaMaxErr": 0,
+          "alphaMeanErr": 0,
+          "alphaPixelsErrOver2": 0,
+          "colorMaxErr": 0.49,
+          "colorMeanErr": 0.0027,
+          "colorPixelsErrOver2_5": 0,
+          "transparentPixelsWithNonBlackTop": 0
+        },
+        "rect": [
+          1296,
+          637,
+          869,
+          1216
+        ],
+        "srcW": 1920,
+        "srcH": 1080
+      }
+    ],
+    "live2dFullBody": {
+      "2d": {
+        "pixels": 143360,
+        "coveredPixels": 8496,
+        "distinctAlphaValues": 235,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.49,
+        "colorMeanErr": 0.0017,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "webgl": {
+        "pixels": 143360,
+        "coveredPixels": 8496,
+        "distinctAlphaValues": 235,
+        "alphaMaxErr": 0,
+        "alphaMeanErr": 0,
+        "alphaPixelsErrOver2": 0,
+        "colorMaxErr": 0.49,
+        "colorMeanErr": 0.0017,
+        "colorPixelsErrOver2_5": 0,
+        "transparentPixelsWithNonBlackTop": 0
+      },
+      "rect": [
+        1296,
+        637,
+        869,
+        1901
+      ],
+      "srcW": 1920,
+      "srcH": 1080
+    }
+  },
+  "t3": {
+    "compat": {
+      "geometry": {
+        "pet": {
+          "hwnd": 1184048,
+          "rect": [
+            1,
+            1,
+            1919,
+            1079
+          ],
+          "exstyle": 524328,
+          "title": "悠怡 Terminal - Project N.E.K.O.",
+          "fullMonitor": false
+        },
+        "scale": [
+          1,
+          1
+        ],
+        "env": {
+          "href": "http://localhost:48911/",
+          "multiWindow": true,
+          "wsName": "PetWebSocket",
+          "dpr": 1,
+          "inner": [
+            1919,
+            1079
+          ],
+          "screenXY": [
+            1,
+            1
+          ],
+          "screen": [
+            1920,
+            1080
+          ],
+          "hasLive2d": true,
+          "canvasWH": [
+            1920,
+            1080
+          ],
+          "refreshHz": 60,
+          "targetFrameRate": 60,
+          "idleTickMode": true,
+          "idleTickFps": 30,
+          "tickerStarted": false,
+          "tickerMaxFPS": 0,
+          "pixiVersion": "7.4.3",
+          "modelBounds": {
+            "left": 1313.125919257545,
+            "right": 2148.5799457446938,
+            "top": 636.8390239616078,
+            "bottom": 1806.4746610436157,
+            "width": 835.4540264871487,
+            "height": 1169.6356370820079,
+            "centerX": 1730.8529325011195,
+            "centerY": 1221.6568425026117
+          },
+          "chatSocketState": 1
+        }
+      },
+      "rectCss": {
+        "left": 657,
+        "top": 208,
+        "width": 616,
+        "height": 863
+      },
+      "rectPhys": [
+        658,
+        209,
+        616,
+        863
+      ],
+      "emptyFrameShots": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0,
+          "bgStable_pixelsOver8": 0,
+          "fg_vs_bg_meanAbs": 0,
+          "fg_vs_bg_max": 0,
+          "fg_vs_bg_pixelsOver8": 0,
+          "fg_mean_rgb": [
+            142.75292696874388,
+            134.21268679177138,
+            138.69373861943387
+          ],
+          "bg_mean_rgb": [
+            142.75292696874388,
+            134.21268679177138,
+            138.69373861943387
+          ],
+          "pixels": 531608
+        }
+      },
+      "idleTransportShots": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0,
+          "bgStable_pixelsOver8": 0,
+          "fg_vs_bg_meanAbs": 0,
+          "fg_vs_bg_max": 0,
+          "fg_vs_bg_pixelsOver8": 0,
+          "fg_mean_rgb": [
+            142.75292696874388,
+            134.21268679177138,
+            138.69373861943387
+          ],
+          "bg_mean_rgb": [
+            142.75292696874388,
+            134.21268679177138,
+            138.69373861943387
+          ],
+          "pixels": 531608
+        }
+      },
+      "modelPointCss": [
+        1730.8529325011195,
+        835.6770822655492
+      ],
+      "hit": [
+        {
+          "variant": "no-iframe",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z9 pe-none+class (design as written)",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            }
+          ]
+        },
+        {
+          "variant": "z9 neither",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            }
+          ]
+        },
+        {
+          "variant": "z11 pe-none+class",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            }
+          ]
+        },
+        {
+          "variant": "z11 pe-none only",
+          "elementFromPoint": {
+            "tag": "CANVAS",
+            "id": "live2d-canvas",
+            "cls": null,
+            "probe": null
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            }
+          ]
+        },
+        {
+          "variant": "z11 class only (pe auto)",
+          "elementFromPoint": {
+            "tag": "IFRAME",
+            "id": null,
+            "cls": "transparent-overlay",
+            "probe": "host"
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": true
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            }
+          ]
+        },
+        {
+          "variant": "z11 neither (negative control)",
+          "elementFromPoint": {
+            "tag": "IFRAME",
+            "id": null,
+            "cls": null,
+            "probe": "host"
+          },
+          "clickThroughSamples": [
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            },
+            {
+              "clickThrough": true,
+              "wsExTransparent": false
+            }
+          ]
+        }
+      ],
+      "modelPositiveControl": [
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        },
+        {
+          "clickThrough": false,
+          "wsExTransparent": false
+        }
+      ]
+    }
+  },
+  "t4": {
+    "compat": {
+      "rectCss": {
+        "left": 657,
+        "top": 208,
+        "width": 616,
+        "height": 863
+      },
+      "rectPhys": [
+        658,
+        209,
+        616,
+        863
+      ],
+      "direct_2d": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0,
+            "bgStable_pixelsOver8": 0,
+            "fg_vs_bg_meanAbs": 69.32996493656981,
+            "fg_vs_bg_max": 217,
+            "fg_vs_bg_pixelsOver8": 479612,
+            "fg_mean_rgb": [
+              137.20898293479405,
+              129.17444808956975,
+              146.08963935832418
+            ],
+            "bg_mean_rgb": [
+              142.75292696874388,
+              134.21268679177138,
+              138.69373861943387
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 0.4493466965377122,
+          "p99AbsErr": 0.4980392156862763,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 574,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 69.16099431872526,
+          "alpha0_region_meanAbsDiffFromBg": 1.5599766627771294
+        }
+      },
+      "direct_gl": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0,
+            "bgStable_pixelsOver8": 0,
+            "fg_vs_bg_meanAbs": 69.32996493656981,
+            "fg_vs_bg_max": 217,
+            "fg_vs_bg_pixelsOver8": 479612,
+            "fg_mean_rgb": [
+              137.20898293479405,
+              129.17444808956975,
+              146.08963935832418
+            ],
+            "bg_mean_rgb": [
+              142.75292696874388,
+              134.21268679177138,
+              138.69373861943387
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 0.4493466965377122,
+          "p99AbsErr": 0.4980392156862763,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 574,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 69.16099431872526,
+          "alpha0_region_meanAbsDiffFromBg": 1.5599766627771294
+        }
+      },
+      "video_2d": {
+        "shots": {
+          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-bg.png",
+          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-fg.png",
+          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-bg2.png",
+          "cmp": {
+            "region": [
+              40,
+              40,
+              616,
+              863
+            ],
+            "bgStable_meanAbs": 0,
+            "bgStable_pixelsOver8": 0,
+            "fg_vs_bg_meanAbs": 68.40432423891288,
+            "fg_vs_bg_max": 216,
+            "fg_vs_bg_pixelsOver8": 479528,
+            "fg_mean_rgb": [
+              136.8710421965057,
+              129.61185685693218,
+              145.4734842214564
+            ],
+            "bg_mean_rgb": [
+              142.75292696874388,
+              134.21268679177138,
+              138.69373861943387
+            ],
+            "pixels": 531608
+          }
+        },
+        "composite": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "meanAbsErr": 3.35655837100033,
+          "p99AbsErr": 62.176470588235304,
+          "maxAbsErr": 127,
+          "pixelsErrOver8": 24900,
+          "pixels": 522770,
+          "overlayVisible_meanAbsDiff": 68.32800275455746,
+          "alpha0_region_meanAbsDiffFromBg": 1.4179696616102684
+        },
+        "rtc": {
+          "outbound": {
+            "framesEncoded": 73,
+            "framesSent": 73,
+            "framesPerSecond": 30,
+            "frameWidth": 160,
+            "frameHeight": 448,
+            "qualityLimitationReason": "bandwidth",
+            "bytesSent": 32449,
+            "targetBitrate": 560000,
+            "scalabilityMode": "L1T1",
+            "codecId": "COT01_96",
+            "totalEncodeTime": 0.052,
+            "codec": "video/VP8"
+          },
+          "inbound": {
+            "framesDecoded": 72,
+            "framesPerSecond": 29,
+            "frameWidth": 160,
+            "frameHeight": 448,
+            "framesDropped": 0
+          },
+          "dcRecv": 1,
+          "videoWH": [
+            160,
+            448
+          ],
+          "stat": {
+            "onFrame": 76,
+            "requestFrame": 76,
+            "blank": 0,
+            "verified": 0,
+            "minAlphaSum": null,
+            "maxAlphaSum": 0,
+            "packMsSum": 27.800000071525574,
+            "packMsMax": 0.7000000029802322,
+            "rvfc": 72,
+            "lastRvfcPresented": 72,
+            "unpackDraws": 72,
+            "packMsAvg": 0.366
+          },
+          "t": 2554.0999999940395
+        }
+      },
+      "live_video": {
+        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-bg.png",
+        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-fg.png",
+        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-bg2.png",
+        "cmp": {
+          "region": [
+            40,
+            40,
+            616,
+            863
+          ],
+          "bgStable_meanAbs": 0,
+          "bgStable_pixelsOver8": 0,
+          "fg_vs_bg_meanAbs": 7.6969609185715795,
+          "fg_vs_bg_max": 163,
+          "fg_vs_bg_pixelsOver8": 50567,
+          "fg_mean_rgb": [
+            145.0776022934192,
+            136.39776865660411,
+            138.3055841898542
+          ],
+          "bg_mean_rgb": [
+            142.75292696874388,
+            134.21268679177138,
+            138.69373861943387
+          ],
+          "pixels": 531608
+        }
+      }
+    }
+  }
+}
