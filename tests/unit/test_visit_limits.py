@@ -316,3 +316,33 @@ async def test_permission_error_fails_closed_instead_of_empty(tmp_path, monkeypa
     monkeypatch.setattr(limits, "read_json_async", alocked)
     assert Blocklist.load(tmp_path).available is False
     assert (await Blocklist.aload(tmp_path)).available is False
+
+
+async def test_cancelled_ablock_still_lands_in_memory_and_on_disk(tmp_path, monkeypatch):
+    # 写盘途中调用方被取消：事务照常做完，内存与磁盘一致
+    import asyncio
+    import threading
+
+    from main_logic.visit import limits
+
+    bl = Blocklist.load(tmp_path)
+    gate = threading.Event()
+    real = limits.atomic_write_json_async
+
+    async def slow_write(path, payload):
+        await asyncio.to_thread(gate.wait, 5)
+        await real(path, payload)
+
+    monkeypatch.setattr(limits, "atomic_write_json_async", slow_write)
+    task = asyncio.create_task(bl.ablock(UID, display_name_at_block="Mimi"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    gate.set()
+    for _ in range(200):
+        if bl.is_blocked(UID):
+            break
+        await asyncio.sleep(0.01)
+    assert bl.is_blocked(UID)
+    assert Blocklist.load(tmp_path).is_blocked(UID)

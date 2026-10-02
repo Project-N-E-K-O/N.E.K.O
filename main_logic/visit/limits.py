@@ -503,9 +503,19 @@ class Blocklist:
         self, visit_uid: str, *, display_name_at_block: str, reason: str | None = None,
         now: float | None = None,
     ) -> bool:
-        """Async twin of :meth:`block` (serialised by an asyncio lock)."""
+        """Async twin of :meth:`block` (serialised by an asyncio lock).
+
+        Cancellation-safe: the write-then-swap transaction runs shielded, so a
+        cancelled caller never leaves the file and the in-memory list apart.
+        """
+        return await asyncio.shield(self._locked_txn(
+            lambda: self._with_block(visit_uid, display_name_at_block, reason, now)))
+
+    async def _locked_txn(self, build) -> bool:
+        # 写盘与切内存是一个事务：若调用方在写盘途中被取消，事务照常做完（shield），
+        # 锁也一直持有到内存与磁盘一致，免得已拉黑的人在内存里还没生效、或被后续写入冲掉
         async with self._lock:
-            entries = self._with_block(visit_uid, display_name_at_block, reason, now)
+            entries = build()
             if entries is None:
                 return False
             await atomic_write_json_async(self._path, self._payload(entries))
@@ -522,14 +532,8 @@ class Blocklist:
         return True
 
     async def aunblock(self, visit_uid: str) -> bool:
-        """Async twin of :meth:`unblock`."""
-        async with self._lock:
-            entries = self._without(visit_uid)
-            if entries is None:
-                return False
-            await atomic_write_json_async(self._path, self._payload(entries))
-            self._entries = entries
-            return True
+        """Async twin of :meth:`unblock` (cancellation-safe like :meth:`ablock`)."""
+        return await asyncio.shield(self._locked_txn(lambda: self._without(visit_uid)))
 
 
 __all__ = [

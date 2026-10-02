@@ -965,7 +965,16 @@ class VisitSpool:
         header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX),
                                      validate=False)
         if header is not None:
-            return header.get("own_char_uid"), header.get("own_char")
+            uid = header.get("own_char_uid")
+            name = header.get("own_char")
+            # 旧版本头行可以没有 own_char_uid（按名字回退），但有就必须是非空字符串；
+            # own_char 也必须是非空字符串——坏值既匹配不上 uid 也走不了名字回退，
+            # 退役会「成功」结束而把这个角色的转录留在磁盘上
+            if "own_char_uid" in header and (not isinstance(uid, str) or not uid):
+                raise ValueError(f"spool header of {visit_id} has a malformed own_char_uid")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"spool header of {visit_id} has a malformed own_char")
+            return uid, name
         return None, None
 
     @classmethod

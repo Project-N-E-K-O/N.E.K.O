@@ -825,3 +825,17 @@ async def test_a_second_open_of_the_same_visit_keeps_the_first_registration(tmp_
     with pytest.raises(SpoolBusy):
         await VisitSpool(tmp_path, vid(16)).delete_peer_fields()
     await first.close()
+
+
+@pytest.mark.parametrize("bad", [{"own_char_uid": 7}, {"own_char_uid": ""}, {"own_char": None}])
+async def test_retire_char_rejects_malformed_ownership_in_a_legacy_header(tmp_path, bad):
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    legacy = header(vid(1), own_char="B")
+    del legacy["own_char_uid"]
+    legacy.update(bad)
+    (spool_dir / f"{vid(1)}.jsonl").write_text(json.dumps(legacy) + chr(10), encoding="utf-8")
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool.retire_char(tmp_path, "uid_b", legacy_name="B")
