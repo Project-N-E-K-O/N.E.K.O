@@ -4034,17 +4034,18 @@ def is_game_route_locked(lanlan_name: str) -> bool:
 
     The exit flow flips ``game_route_active`` off first and releases the
     session takeover only after cancelling route speech and pushing the window
-    close, so the slot stays occupied until the game's takeover token is gone.
+    close, so the slot stays occupied while a route state still carries its
+    takeover token. The token lives on the route state (popped exactly at the
+    release point), not on the manager, so a manager replaced mid-teardown
+    cannot unlock the slot early.
     """
     if _get_active_game_route_state(lanlan_name) is not None:
         return True
-    try:
-        mgr = get_session_manager().get(lanlan_name)
-    except RuntimeError:
-        # Shared state not initialised (no main_server): no manager holds a takeover.
-        return False
-    takeover_owner = getattr(mgr, "takeover_owner", None)
-    return callable(takeover_owner) and takeover_owner() == "game"
+    target = str(lanlan_name or "")
+    return any(
+        str(state.get("lanlan_name") or "") == target and _TAKEOVER_TOKEN_KEY in state
+        for state in list(_game_route_states.values())
+    )
 
 
 async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:

@@ -1276,8 +1276,11 @@ async def _finalize_game_route_state_inner(
     # exited the game so that's the desired behavior. Only this route's own
     # token releases it: a takeover another owner (or a newer route) holds by
     # now stays in place.
+    # The token leaves the route state here even without a manager: its
+    # presence is what keeps the game slot locked (``is_game_route_locked``).
+    takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
     if mgr is not None:
-        mgr.release_takeover(state.pop(_TAKEOVER_TOKEN_KEY, None))
+        mgr.release_takeover(takeover_token)
     _close_takeover_callback_inbox(state, mgr)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore

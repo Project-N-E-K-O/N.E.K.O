@@ -312,3 +312,47 @@ async def test_game_slot_stays_locked_until_its_exit_flow_releases_the_takeover(
             _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
         )
         assert accepted["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_game_slot_lock_survives_a_manager_replaced_mid_teardown(
+    _icebreaker_clean, monkeypatch,
+):
+    """The lock follows the route's token, not whichever manager is current.
+
+    Mutation: deriving the lock from the current manager's takeover owner turns
+    this red -- the replacement manager owns nothing, so the slot opened early.
+    """
+    import asyncio
+
+    managers = {"Lan": TakeoverManagerDouble()}
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: managers)
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: managers)
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_window_close(*_args, action="", **_kwargs):
+        if action != "closed":
+            return
+        entered.set()
+        await release.wait()
+
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", _slow_window_close)
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        finalize = asyncio.create_task(
+            gr_runtime._finalize_game_route_state(state, reason="test_end")
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        managers["Lan"] = TakeoverManagerDouble()  # profile refresh replaced the manager
+
+        refused = await icebreaker_router.icebreaker_route_start(
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+        )
+        assert refused == {"ok": False, "reason": "route_owned_by_external"}
+
+        release.set()
+        await asyncio.wait_for(finalize, timeout=5)
+        assert gr_runtime.is_game_route_locked("Lan") is False
