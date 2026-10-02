@@ -585,6 +585,39 @@ describe('CSRF bootstrap error policy', () => {
     }
   })
 
+  it('waits for a slow bootstrap when a strict deployment rejects the tokenless request', async () => {
+    // NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN: the first attempt goes out
+    // without a token after the short wait; the retry must wait for the token.
+    vi.useFakeTimers()
+    try {
+      const fresh = (await import('./request')).default
+      const bootstrap = vi.spyOn(axios, 'get').mockImplementation(() => new Promise((resolve) => {
+        setTimeout(() => resolve({ data: { csrf_token: 'slow-token' } }), 5000)
+      }) as never)
+      const sentTokens: unknown[] = []
+      const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+        const token = AxiosHeaders.from(config.headers).get('X-CSRF-Token') ?? null
+        sentTokens.push(token)
+        if (!token) {
+          throw Object.assign(new Error('CSRF rejected'), {
+            config, isAxiosError: true,
+            response: { status: 403, data: { detail: { error_code: 'csrf_validation_failed', csrf_failure: 'token' } },
+              headers: { 'X-Error-Code': 'csrf_validation_failed', 'X-CSRF-Failure': 'token' } },
+          })
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config, request: {} }
+      })
+      const pending = fresh.post('/runs', {}, { adapter })
+      await vi.advanceTimersByTimeAsync(5000)
+      await expect(pending).resolves.toEqual({ ok: true })
+      expect(sentTokens).toEqual([null, 'slow-token'])
+      expect(bootstrap).toHaveBeenCalledTimes(1)
+      bootstrap.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not blame the bootstrap for an Origin rejection', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap down'))

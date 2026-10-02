@@ -309,8 +309,12 @@ service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     if (isMutationMethod(config.method) && !requiresCsrfToken(config)) {
       // The server does not require the token here by default; send the
-      // request without it and let a later token rejection explain why.
-      const token = await loadCsrfTokenBestEffort()
+      // request without it and let a later token rejection explain why. A
+      // retry after a token rejection means this deployment does require it,
+      // so wait for the full bootstrap, ignoring the short cap and cooldown.
+      const token = (config as ErrorDisplayRequestConfig).csrfRetryAttempted
+        ? await loadCsrfToken().catch(() => null)
+        : await loadCsrfTokenBestEffort()
       if (token) {
         if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
         writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
