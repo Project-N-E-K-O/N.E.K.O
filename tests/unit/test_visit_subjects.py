@@ -355,3 +355,41 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
     with pytest.raises(RosterCorruptError):
         await roster.get_char_entry("peer_x", "A", strict=True)
     assert await roster.get_char_entry("peer_x", "A") is None   # 展示用途仍宽松
+
+
+@pytest.mark.parametrize("damage", [
+    lambda d: d.__setitem__("accounts", []),
+    lambda d: d["accounts"].__setitem__("own_a", "x"),
+    lambda d: d["accounts"]["own_a"].__setitem__("peers", 3),
+    lambda d: d["accounts"]["own_a"]["peers"].__setitem__("peer_x", []),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"].__setitem__("by_char", "x"),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"].__setitem__("A", 1),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("pairs", "p"),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("chars", []),
+])
+async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
+    # JSON 合法但结构坏了：严格读不能把它当成「没有条目」
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    damage(data)
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.expand_subjects("peer_x", "A")
+    with pytest.raises(RosterCorruptError):
+        await roster.get_char_entry("peer_x", "A", strict=True)
+
+
+async def test_strict_reads_treat_missing_keys_as_absent(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    assert await roster.get_char_entry("peer_y", "A", strict=True) is None
+    assert await roster.get_char_entry("peer_x", "B", strict=True) is None
+    other = PeerRoster(tmp_path, own_uid="own_b")
+    assert await other.get_char_entry("peer_x", "A", strict=True) is None

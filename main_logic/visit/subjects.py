@@ -324,6 +324,27 @@ class PeerRoster:
         entry = by_char.get(own_char)
         return entry if isinstance(entry, dict) else None
 
+    def _char_view_strict(self, data: dict, peer_uid: str, own_char: str) -> dict | None:
+        """Like :meth:`_char_view`, but a damaged structure raises instead of reading as absent.
+
+        A missing key means "no entry"; a present key of the wrong type
+        (``accounts`` / account / ``peers`` / peer / ``by_char`` / entry not
+        an object, ``pairs`` not a list, ``chars`` not an object) raises
+        :class:`RosterCorruptError`.
+        """
+        node: Any = data
+        for key in ("accounts", self.own_uid, "peers", peer_uid, "by_char", own_char):
+            if key not in node:
+                return None
+            node = node[key]
+            if not isinstance(node, dict):
+                raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
+        if not isinstance(node.get("pairs", []), list):
+            raise RosterCorruptError(f"{self.path.name}: pairs is not a list")
+        if not isinstance(node.get("chars", {}), dict):
+            raise RosterCorruptError(f"{self.path.name}: chars is not an object")
+        return node
+
     def _mutate(self, fn) -> Any:
         with path_lock(self.path):
             data = self._load(strict=True)
@@ -430,7 +451,8 @@ class PeerRoster:
         """
 
         def fn(data: dict):
-            entry = self._char_view(data, peer_uid, own_char)
+            view = self._char_view_strict if strict else self._char_view
+            entry = view(data, peer_uid, own_char)
             return copy.deepcopy(entry) if entry is not None else None
 
         return await asyncio.to_thread(self._read, fn, strict)
@@ -478,7 +500,7 @@ class PeerRoster:
         _require_str(peer_uid, "peer_uid")
 
         def fn(data: dict):
-            entry = self._char_view(data, peer_uid, own_char) or {}
+            entry = self._char_view_strict(data, peer_uid, own_char) or {}
             pairs = [p for p in entry.get("pairs") or [] if isinstance(p, str) and p]
             chars_map = entry.get("chars")
             chars = [
