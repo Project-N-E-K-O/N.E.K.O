@@ -290,11 +290,72 @@ async def test_imported_card_gets_a_new_id_and_drops_the_one_it_carries():
     assert uid != carried_uid
 
 
-def test_card_export_does_not_carry_the_id():
-    source = (Path(__file__).resolve().parents[2] / "main_routers" / "characters_router" / "cards.py")
-    text = source.read_text(encoding="utf-8")
-    # The only export path that copies _reserved strips the id from its copy.
-    assert "reserved_copy.pop('character_uid', None)" in text
+def _character_json_from_card(png: bytes) -> dict:
+    import io
+    import struct
+    import zipfile
+
+    assert png[1:4] == b"PNG"
+    offset = 8
+    while offset < len(png):
+        (length,) = struct.unpack(">I", png[offset:offset + 4])
+        chunk_type = png[offset + 4:offset + 8]
+        data = png[offset + 8:offset + 8 + length]
+        if chunk_type == b"neKo":
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                return json.loads(zf.read("character.json").decode("utf-8"))
+        offset += 12 + length
+    raise AssertionError("card has no neKo chunk")
+
+
+def _export_config(tmp_path, uid):
+    config_manager = MagicMock()
+    config_manager.aload_characters = AsyncMock(return_value={"猫娘": {
+        "Exported": {
+            "昵称": "Exported",
+            "_reserved": {"character_uid": uid, "avatar": {"model_type": "pngtuber"}},
+        },
+    }})
+    config_manager.card_faces_dir = tmp_path
+    return config_manager
+
+
+@pytest.mark.asyncio
+async def test_card_export_does_not_carry_the_id(tmp_path):
+    # Mutation: dropping the strip from the plain export turns this red.
+    from main_routers.characters_router import cards
+
+    uid = new_character_uid()
+    with patch.object(cards, "get_config_manager", return_value=_export_config(tmp_path, uid)):
+        response = await cards.export_catgirl_card("Exported")
+
+    exported = _character_json_from_card(bytes(response.body))
+    assert exported["昵称"] == "Exported"
+    assert "character_uid" not in exported.get("_reserved", {})
+    assert uid not in json.dumps(exported)
+
+
+@pytest.mark.asyncio
+async def test_portrait_card_export_does_not_carry_the_id(tmp_path):
+    import io
+
+    from PIL import Image
+
+    from main_routers.characters_router import cards
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), color="#ffffff").save(buffer, format="PNG")
+    uid = new_character_uid()
+    with patch.object(cards, "get_config_manager", return_value=_export_config(tmp_path, uid)):
+        response = await cards.export_catgirl_with_portrait(
+            "Exported",
+            portrait=_FakeUpload("portrait.png", buffer.getvalue()),
+            include_model=False,
+        )
+
+    exported = _character_json_from_card(bytes(response.body))
+    assert exported["昵称"] == "Exported"
+    assert uid not in json.dumps(exported)
 
 
 async def _noop(*_args, **_kwargs):

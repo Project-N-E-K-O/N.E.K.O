@@ -78,6 +78,19 @@ from config import (
 )
 
 
+def _strip_local_character_identity(character_payload: dict) -> dict:
+    """Drop the stable local character id from an exported character payload.
+
+    ``_reserved.character_uid`` identifies this character on this machine only;
+    a card imported elsewhere gets its own id, so exports never carry it.
+    Mutates and returns ``character_payload`` (callers pass their own copy).
+    """
+    reserved = character_payload.get('_reserved')
+    if isinstance(reserved, dict):
+        reserved.pop('character_uid', None)
+    return character_payload
+
+
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
     """Embed ZIP data into a PNG ancillary private chunk (the neKo chunk), inserted before IEND.
 
@@ -377,10 +390,10 @@ async def export_catgirl_card(name: str):
                     else:
                         return data
 
-                chara_json = {
+                chara_json = _strip_local_character_identity({
                     '档案名': name,
                     **filter_excluded_fields(catgirl_data)
-                }
+                })
                 zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
                 # 2. 检查并添加模型文件
@@ -1532,8 +1545,6 @@ async def export_catgirl_with_portrait(
                         continue
                     if key == '_reserved' and isinstance(value, dict):
                         reserved_copy = copy.deepcopy(value)
-                        # 稳定 id 只属于本机这个角色，不随角色卡导出。
-                        reserved_copy.pop('character_uid', None)
                         avatar = reserved_copy.get('avatar', {})
                         if not keep_model_paths:
                             for model_type in ('live2d', 'vrm', 'mmd', 'live3d'):
@@ -1551,7 +1562,9 @@ async def export_catgirl_with_portrait(
                         result[key] = value
                 return result
 
-            chara_json = _filter_export_fields(export_data, keep_model_paths=include_model)
+            chara_json = _strip_local_character_identity(
+                _filter_export_fields(export_data, keep_model_paths=include_model)
+            )
             zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
             # 如果需要包含模型，添加模型文件
