@@ -1,4 +1,5 @@
 import pytest
+from tests.fastapi_routes import iter_routes
 
 pytestmark = pytest.mark.unit
 
@@ -53,7 +54,7 @@ async def test_agent_status_update_syncs_master_state_into_session_flags(monkeyp
 def test_main_server_mounts_card_assist_router() -> None:
     from app import main_server
 
-    paths = {getattr(route, "path", "") for route in main_server.app.routes}
+    paths = {route.path for route in iter_routes(main_server.app.routes)}
 
     assert "/api/card-assist/clarify" in paths
     assert "/api/card-assist/generate" in paths

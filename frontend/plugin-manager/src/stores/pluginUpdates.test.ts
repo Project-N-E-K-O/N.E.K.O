@@ -11,11 +11,9 @@ import type { PluginMeta } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
   pluginStore: {
-    plugins: [] as unknown[],
-    pluginsWithStatus: [] as unknown[],
-    error: null as string | null,
-    fetchPlugins: vi.fn(async () => {}),
-    syncRegistryAndFetch: vi.fn(async () => ({
+    pluginSummaries: [] as unknown[],
+    fetchPluginSummaries: vi.fn(async () => {}),
+    syncRegistryAndFetchSummaries: vi.fn(async () => ({
       registryRefreshed: true,
       warningMessage: null,
     })),
@@ -56,8 +54,7 @@ function marketSource(marketId: string, version: string, channel = 'stable'): un
 }
 
 function setPlugins(list: PluginMeta[]): void {
-  mocks.pluginStore.plugins = list
-  mocks.pluginStore.pluginsWithStatus = list
+  mocks.pluginStore.pluginSummaries = list
 }
 
 function latestRows(rows: Array<[number, string, string?]>) {
@@ -108,8 +105,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   setPlugins([])
-  mocks.pluginStore.error = null
-  mocks.pluginStore.syncRegistryAndFetch.mockImplementation(async () => ({
+  mocks.pluginStore.fetchPluginSummaries.mockImplementation(async () => {})
+  mocks.pluginStore.syncRegistryAndFetchSummaries.mockImplementation(async () => ({
     registryRefreshed: true,
     warningMessage: null,
   }))
@@ -134,9 +131,9 @@ describe('collectMarketUpdateTargets', () => {
       }),
       plugin('zeta'),
     ])
-    setPlugins(mocks.pluginStore.plugins as PluginMeta[])
+    setPlugins(mocks.pluginStore.pluginSummaries as PluginMeta[])
 
-    expect(collectMarketUpdateTargets(mocks.pluginStore.plugins as PluginMeta[])).toEqual([
+    expect(collectMarketUpdateTargets(mocks.pluginStore.pluginSummaries as PluginMeta[])).toEqual([
       {
         pluginId: 'alpha',
         marketId: '15',
@@ -152,7 +149,7 @@ describe('collectMarketUpdateTargets', () => {
       plugin('alpha', marketSource('15', '1.0.0', 'nightly')),
       plugin('alpha', marketSource('15', '1.0.0', 'beta')),
     ])
-    const targets = collectMarketUpdateTargets(mocks.pluginStore.plugins as PluginMeta[])
+    const targets = collectMarketUpdateTargets(mocks.pluginStore.pluginSummaries as PluginMeta[])
     expect(targets).toHaveLength(1)
     expect(targets[0]!.channel).toBe('stable')
   })
@@ -293,6 +290,34 @@ describe('plugin updates store — check', () => {
     expect(store.candidates).toEqual([])
     expect(store.unresolved).toBe(0)
     expect(store.checkFailed).toBe(false)
+  })
+
+  it('keeps the previous snapshot when the plugin summaries cannot be fetched', async () => {
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+    const store = usePluginUpdatesStore()
+    await store.check()
+    expect(store.candidates).toHaveLength(1)
+
+    setPlugins([])
+    mocks.pluginStore.fetchPluginSummaries.mockRejectedValueOnce(new Error('offline'))
+    await store.check({ force: true })
+
+    expect(store.candidates.map((candidate) => candidate.pluginId)).toEqual(['alpha'])
+    expect(store.checkFailed).toBe(true)
+  })
+
+  it('loads only plugin summaries when the boot check finds no snapshot', async () => {
+    mocks.pluginStore.fetchPluginSummaries.mockImplementationOnce(async () => {
+      setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    })
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+
+    const store = usePluginUpdatesStore()
+    await store.check()
+
+    expect(mocks.pluginStore.fetchPluginSummaries).toHaveBeenCalledTimes(1)
+    expect(store.candidates.map((candidate) => candidate.pluginId)).toEqual(['alpha'])
   })
 
   it('never touches the market when nothing was installed from it', async () => {
@@ -524,7 +549,7 @@ describe('plugin updates store — upgrade', () => {
     const store = await seedOneCandidate()
     // The backend upgrade succeeds, but the refresh throws before the plugin
     // list is refetched: it still says alpha is on 1.0.0.
-    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+    mocks.pluginStore.syncRegistryAndFetchSummaries.mockRejectedValueOnce(new Error('registry down'))
 
     // The upgrade itself did happen, so it is still reported as a success.
     await expect(store.updateOne('alpha')).resolves.toBe(true)
@@ -547,7 +572,7 @@ describe('plugin updates store — upgrade', () => {
       return undefined
     })
     const store = await seedOneCandidate()
-    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+    mocks.pluginStore.syncRegistryAndFetchSummaries.mockRejectedValueOnce(new Error('registry down'))
     await expect(store.updateOne('alpha')).resolves.toBe(true)
 
     // Later reinstalled lower from the Market page; a 1.0.5 release appears.
@@ -567,7 +592,7 @@ describe('plugin updates store — upgrade', () => {
       return undefined
     })
     const store = await seedOneCandidate()
-    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+    mocks.pluginStore.syncRegistryAndFetchSummaries.mockRejectedValueOnce(new Error('registry down'))
     await expect(store.updateOne('alpha')).resolves.toBe(true)
 
     // Reinstalled from beta at the very version the stable upgrade replaced.
@@ -590,7 +615,7 @@ describe('plugin updates store — upgrade', () => {
       return undefined
     })
     const store = await seedOneCandidate()
-    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValue(new Error('registry down'))
+    mocks.pluginStore.syncRegistryAndFetchSummaries.mockRejectedValue(new Error('registry down'))
     await expect(store.updateOne('alpha')).resolves.toBe(true)
 
     vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.2.0']]))
@@ -611,7 +636,7 @@ describe('plugin updates store — upgrade', () => {
     })
     const store = await seedOneCandidate()
     let busyDuringSync: boolean | null = null
-    mocks.pluginStore.syncRegistryAndFetch.mockImplementation(async () => {
+    mocks.pluginStore.syncRegistryAndFetchSummaries.mockImplementation(async () => {
       busyDuringSync = store.busy
       return { registryRefreshed: true, warningMessage: null }
     })
@@ -653,7 +678,7 @@ describe('plugin updates store — upgrade', () => {
         version: '1.1.0',
       }),
     ])
-    expect(mocks.pluginStore.syncRegistryAndFetch).toHaveBeenCalled()
+    expect(mocks.pluginStore.syncRegistryAndFetchSummaries).toHaveBeenCalled()
   })
 
   it('reports a rollback code when the task fails', async () => {

@@ -7,7 +7,12 @@ import type { InstallStep, MarketInstallContext, MarketInstallTask } from '@/sto
 
 const mocks = vi.hoisted(() => ({ store: null as unknown as Record<string, unknown> }))
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+// Echo params so a dropped plugin name or reason would show up in assertions.
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    t: (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key),
+  }),
+}))
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => mocks.store,
 }))
@@ -20,7 +25,8 @@ interface StoreOverrides {
   task?: MarketInstallTask | null
   context?: MarketInstallContext | null
   percent?: number
-  barStatus?: 'success' | 'exception' | undefined
+  barStatus?: 'success' | 'warning' | 'exception' | undefined
+  warnings?: string[]
   stageLabelKey?: string
   errorKey?: string | null
   transferText?: string
@@ -45,6 +51,7 @@ function makeStore(overrides: StoreOverrides = {}) {
     } as MarketInstallContext | null,
     percent: 34,
     barStatus: undefined,
+    warnings: [],
     stageLabelKey: 'market.installStage.download',
     errorKey: null,
     transferText: '8.5 MB / 25.0 MB · 976.6 KB/s · 17s',
@@ -119,6 +126,26 @@ describe('market install progress', () => {
     expect(text(root)).toContain('market.installStage.download')
     expect(text(root)).toContain('8.5 MB / 25.0 MB · 976.6 KB/s · 17s')
     expect(bar.dataset.percent).toBe('34')
+  })
+
+  it('marks a completed install with warnings amber and names the plugin and reasons', () => {
+    makeStore({
+      task: { task_id: 't', status: 'completed', stage: 'completed', progress: 1 } as MarketInstallTask,
+      percent: 100,
+      barStatus: 'warning',
+      warnings: ['source record not saved', 'lock not updated'],
+      done: true,
+      running: false,
+    })
+    const root = mount()
+
+    expect((root.querySelector('.stub-progress') as HTMLElement).dataset.status).toBe('warning')
+    const alert = [...root.querySelectorAll('.stub-alert')]
+      .find((el) => el.textContent?.startsWith('package.install.completedWithWarnings')) as HTMLElement
+    expect(alert).toBeTruthy()
+    expect(alert.dataset.type).toBe('warning')
+    expect(alert.textContent).toContain('"plugin":"NEKO Live"')
+    expect(alert.textContent).toContain('"reasons":"source record not saved; lock not updated"')
   })
 
   it('hides the version line and the bar label in compact mode', () => {

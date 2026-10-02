@@ -307,6 +307,7 @@ import {
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { createStaleResponseGuard } from '@/utils/staleResponseGuard'
 import {
   confirmBuiltinOverride,
@@ -447,12 +448,21 @@ async function runInstallTask(
     return false
   }
   if (outcome.ok) {
-    ElMessage.success(
-      mode === 'install'
-        ? t('market.installSuccess', { name: plugin.name })
-        : t('market.upgradeSuccess', { name: plugin.name }),
+    notifyPluginInstallOutcome(
+      {
+        install_source_warning: installTask.task?.install_source_warning,
+        rollback_status: installTask.task?.result?.rollback_status,
+      },
+      t,
+      ElMessage,
+      {
+        plugin: plugin.name,
+        successMessage: mode === 'install'
+          ? t('market.installSuccess', { name: plugin.name })
+          : t('market.upgradeSuccess', { name: plugin.name }),
+      },
     )
-    await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+    await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
     await yankSweep().catch(() => undefined)
     void pluginUpdates.check({ force: true })
   } else if (outcome.canceled) {
@@ -535,9 +545,7 @@ function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'
 }
 
 // ─── 本地插件对比：slug / repo plugin_id / lock 三路配对 ───────────
-const localPluginKeys = computed(() => {
-  return localPluginIdentityKeys(pluginStore.pluginsWithStatus)
-})
+const localPluginKeys = computed(() => localPluginIdentityKeys(pluginStore.pluginSummariesWithStatus))
 
 function isInstalled(plugin: MarketPlugin): boolean {
   if (getInstalledState(plugin)) return true
@@ -1003,7 +1011,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         await runInstallTask(data.task_id, plugin, 'install')
       } else {
         ElMessage.success(t('market.installSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+        await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 403) {
@@ -1158,7 +1166,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         await runInstallTask(data.task_id, plugin, action.kind)
       } else {
         ElMessage.success(t('market.upgradeSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+        await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 400) {
@@ -1202,8 +1210,8 @@ async function initialize() {
     await loadPlugins()
     yankSweep().catch(() => {})
   }
-  if (pluginStore.pluginsWithStatus.length === 0) {
-    pluginStore.fetchPlugins().catch(() => {})
+  if (pluginStore.pluginSummariesWithStatus.length === 0) {
+    pluginStore.fetchPluginSummaries().catch(() => {})
   }
 }
 

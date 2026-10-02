@@ -697,7 +697,8 @@
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
-        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
+        // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
+        // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
@@ -789,24 +790,22 @@
                 }
                 return navigated;
             };
-            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
+            const waitForOAuthCompletion = async (timeoutMs) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
-                    if (requirePopup) {
-                        if (!popupRef) {
+                    if (!popupRef) {
+                        return false;
+                    }
+                    try {
+                        if (popupRef.closed) {
+                            if (typeof forgetSocialWindow === 'function') {
+                                forgetSocialWindow(popupRef, socialOpenGeneration);
+                            }
+                            popupRef = null;
                             return false;
                         }
-                        try {
-                            if (popupRef.closed) {
-                                if (typeof forgetSocialWindow === 'function') {
-                                    forgetSocialWindow(popupRef, socialOpenGeneration);
-                                }
-                                popupRef = null;
-                                return false;
-                            }
-                        } catch (_) { /* ignore */ }
-                    }
+                    } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -894,6 +893,7 @@
                         signal: controller.signal,
                     });
                     if (!response.ok) {
+                        // 后端只在确实没有桌面会话时回 409；凭据并发轮换、云端暂不可验证都回 503。
                         if (response.status === 409) {
                             return { nativeDelegate: '', loginState: 'logged-out' };
                         }
@@ -970,7 +970,8 @@
                 if (!nativeDelegate && pendingProofs.nativeHandoff) {
                     nativeDelegate = (await pendingProofs.nativeHandoff).nativeDelegate;
                 }
-                if (!nativeDelegate) {
+                // 已明确判定未登录时重试也只会再拿一次 409，白白多一次本地往返并延长 social-open 锁。
+                if (!nativeDelegate && !pendingProofs.loggedOut) {
                     const retryHandoff = await fetchNativeDelegate();
                     nativeDelegate = retryHandoff.nativeDelegate;
                 }
@@ -1082,7 +1083,7 @@
                     targetUrl.searchParams.set('cid', clientId);
                 }
                 url = targetUrl.toString();
-                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
+                // 先打开猫娘社区。桌面端的登录在设置页完成，这里不再另开浏览器。
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
@@ -1094,21 +1095,27 @@
                 }
                 const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
+                // 只有明确判定为未登录才提示去设置页登录；delegate 超时且 auth-status
+                // 兜底也失败时状态未知，已登录用户不能被误提示。
+                let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';
                 if (initialNativeHandoff.loginState === 'unknown') {
                     try {
                         const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                            // 云端暂时校验不了（离线、超时、5xx）时本地会话仍在，
+                            // 后端以 session_saved 标出；这种情况不是登出，不能提示去登录。
+                            communityLoggedOut = !communityLoggedIn
+                                && !(statusJson && statusJson.session_saved);
                         }
                     } catch (statusErr) {
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                     }
                 }
-                if (!communityLoggedIn) {
+                if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
-                    let oauthLaunched = false;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -1127,10 +1134,7 @@
                                         expiresInSec * 1000
                                     );
                                 }
-                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
-                                    await window.electronShell.openExternal(authUrl);
-                                    oauthLaunched = true;
-                                } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
@@ -1140,10 +1144,9 @@
                                         );
                                     }
                                 } else {
-                                    oauthLaunched = true;
                                     browserOAuthStarted = true;
                                 }
-                                if (oauthLaunched && typeof window.showStatusToast === 'function') {
+                                if (browserOAuthStarted && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
                                     const oauthPrompt = (typeof window.t === 'function')
                                         ? window.t(oauthPromptKey)
@@ -1160,14 +1163,11 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
-                            || (!isElectron && browserOAuthStarted);
-                        if (shouldWaitForOAuth) {
+                        if (browserOAuthStarted) {
                             releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
-                                browserOAuthTimeoutMs,
-                                !isElectron
+                                browserOAuthTimeoutMs
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();
@@ -1179,11 +1179,7 @@
                                     refreshedTargetUrl,
                                     refreshedHandoff.nativeDelegate
                                 );
-                                if (isElectron) {
-                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
-                                        console.warn('[social] failed to refresh Electron community window after OAuth');
-                                    }
-                                } else if (popupRef) {
+                                if (popupRef) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
                                         console.warn('[social] failed to navigate browser community window after OAuth');
                                         closePopup();
@@ -1203,18 +1199,32 @@
                                 initialNativeHandoff.nativeDelegate,
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
-                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                                    loggedOut: communityLoggedOut
                                 }
                             );
                         }
                     }
                 } else {
+                    if (communityLoggedOut && typeof window.showStatusToast === 'function') {
+                        const settingsPromptKey = 'app.socialSettingsLoginPrompt';
+                        const settingsPrompt = (typeof window.t === 'function')
+                            ? window.t(settingsPromptKey)
+                            : '';
+                        window.showStatusToast(
+                            (settingsPrompt && settingsPrompt !== settingsPromptKey)
+                                ? settingsPrompt
+                                : '桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录',
+                            4000
+                        );
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,
                         {
                             nativeHandoff: initialNativeHandoffPromise,
-                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                            loggedOut: communityLoggedOut
                         }
                     );
                 }

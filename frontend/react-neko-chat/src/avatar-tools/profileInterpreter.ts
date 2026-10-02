@@ -256,6 +256,15 @@ export function createAvatarToolProfileHandlers(
   definition: AvatarToolDefinition,
 ): AvatarToolRuleHandlers {
   const profile = definition.interaction;
+  if (profile.kind === 'custom-graph') {
+    // Stateful v3 graph transitions are owned by the existing pointer session.
+    // Keeping these generic handlers inert prevents a second interaction path.
+    return {
+      pointerDown: () => ({}),
+      commit: () => ({}),
+      pointerRelease: () => ({}),
+    };
+  }
   if (profile.kind === 'progressive-release') {
     return createProgressiveReleaseHandlers(definition, profile);
   }

@@ -468,6 +468,7 @@ async function autoInitMMDOnMainPage() {
     if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
         await window.__nekoStorageLocationStartupBarrier;
     }
+    await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
 
     if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
         && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {

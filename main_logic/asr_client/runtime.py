@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
@@ -96,6 +97,53 @@ _CANDIDATE_REJECTION_WATCHDOG_SECONDS = 10.0
 _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS = 1.0
 _CANDIDATE_REJECTION_REINSTALL_ATTEMPTS = 2
 _CONNECT_CLEANUP_TIMEOUT_SECONDS = 2.0
+# How often the provider-final watchdog re-checks a provider that is still
+# warming up (see provider_warmup_timeout_ms).
+_PROVIDER_WARMUP_POLL_SECONDS = 0.5
+
+_PROVIDER_FAILURE_REASON_RE = re.compile(r"(ASR_[A-Z0-9_]+):")
+
+
+_BLOCKED_DISPLAY_STATUS_CODES = frozenset(
+    {"ASR_PROVIDER_WARMUP_TIMEOUT", "ASR_PROVIDER_QUEUE_TIMEOUT"}
+)
+
+
+def _provider_warmup_reason(asr_session: Any) -> str:
+    reason = getattr(asr_session, "provider_warmup_reason", "")
+    return reason if isinstance(reason, str) else ""
+
+
+def _provider_warmup_snapshot(asr_session: Any) -> tuple[bool, float | None]:
+    """``(pending, completed_at)`` of a provider session's warm-up, read at once.
+
+    Sessions expose one locked snapshot; separate reads could straddle a wait
+    that begins on a worker thread in between. Sessions without warm-up
+    report none.
+    """
+
+    snapshot = getattr(asr_session, "provider_warmup_snapshot", None)
+    if (
+        isinstance(snapshot, tuple)
+        and len(snapshot) == 2
+        and isinstance(snapshot[0], bool)
+    ):
+        return snapshot
+    return False, None
+
+
+def _provider_failure_reason(message: str) -> str:
+    """The provider's own failure code from a connection-error message.
+
+    Sessions report ``"<ASR_CODE>: <sanitized message>"``; the code is passed
+    on as an opaque reason for the client. Generic worker failures carry no
+    extra information and are dropped.
+    """
+
+    match = _PROVIDER_FAILURE_REASON_RE.match(str(message or ""))
+    if match is None or match.group(1) == "ASR_WORKER_FAILED":
+        return ""
+    return match.group(1)
 
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
@@ -537,28 +585,32 @@ class IndependentAsrRuntime:
             return False
         return True
 
-    async def abort(self, reason: str, *, cleanup_timeout: float | None = None) -> None:
+    async def abort(
+        self, reason: str, *, cleanup_timeout: float | None = None,
+    ) -> frozenset[VoiceTurnToken]:
+        """Abort input and return the turns whose final delivery is preserved."""
         if reason == "ingress_backpressure":
             token = self._asr_current_ingress_token
             if token is not None and self._ingress_token_matches(token):
                 await self._handle_audio_ingress_backpressure(token)
-                return
+                return self.pending_transcript_turn_tokens()
         epoch = self._asr_session_epoch
         lifecycle = self._asr_lifecycle
         detector = self._asr_detector
         provider = self._asr_provider or "unknown"
         if lifecycle is not None:
             lifecycle.invalidate_audio()
-        if cleanup_timeout is None:
-            post_detach = await self._abort_transport(reason)
-        else:
-            post_detach = await self._abort_transport(
-                reason, cleanup_timeout=cleanup_timeout
-            )
+        preserve_accepted_finals = reason == "ingress_backpressure"
+        cleanup_kwargs: dict[str, float | bool] = {
+            "preserve_accepted_finals": preserve_accepted_finals,
+        }
+        if cleanup_timeout is not None:
+            cleanup_kwargs["cleanup_timeout"] = cleanup_timeout
+        post_detach = await self._abort_transport(reason, **cleanup_kwargs)
         if not self._runtime_identity_matches(
             post_detach
         ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-            return
+            return frozenset()
         if reason == "ingress_backpressure":
             await self._send_asr_status(
                 "ASR_INGRESS_BACKPRESSURE",
@@ -577,7 +629,7 @@ class IndependentAsrRuntime:
             if not self._runtime_identity_matches(
                 post_detach
             ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
-                return
+                return frozenset()
         if lifecycle is not None:
             await self._send_asr_lifecycle_state(
                 lifecycle.snapshot.state,
@@ -585,6 +637,10 @@ class IndependentAsrRuntime:
                 session_epoch=epoch,
                 expected_identity=post_detach,
             )
+        return (
+            self.pending_transcript_turn_tokens()
+            if preserve_accepted_finals else frozenset()
+        )
 
     async def wait_transcript_idle(self) -> None:
         await self._asr_transcript_dispatcher.wait_idle()
@@ -594,12 +650,29 @@ class IndependentAsrRuntime:
 
         return self._asr_transcript_dispatcher.has_pending_delivery
 
+    def pending_transcript_turn_tokens(self) -> frozenset[VoiceTurnToken]:
+        """Return turns whose accepted final is still owed to Core."""
+
+        tokens = set(self._asr_transcript_dispatcher.pending_turn_tokens())
+        # A provider endpoint seals the current turn before its final arrives.
+        # During DRAINING that final is still owed to Core even though the
+        # dispatcher has not reserved its transcript slot yet.
+        sealed_turn = self._asr_sealed_turn_token
+        if sealed_turn is not None:
+            tokens.add(sealed_turn.turn)
+        return frozenset(tokens)
+
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
         self._asr_session_epoch = 0
         self._asr_start_generation = 0
         self._asr_provider = None
         self._asr_turn_prepared = False
+        # The turn Core is holding a dispatch pause for. Preparation is a
+        # promise that a final or an abandon will follow, and this names who
+        # the promise is owed to, so teardown can still settle it after the
+        # rest of the turn's bookkeeping is gone.
+        self._asr_prepared_turn_token: VoiceTurnToken | None = None
         self._asr_final_lock = asyncio.Lock()
         self._asr_audio_bytes = 0
         self._asr_received_audio = False
@@ -617,6 +690,10 @@ class IndependentAsrRuntime:
         self._asr_transport_lock = asyncio.Lock()
         self._asr_warm_expiry_task: asyncio.Task[None] | None = None
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
+        # Tells the client when a provider announced as preparing is ready.
+        self._asr_warmup_watch_task: asyncio.Task[None] | None = None
+        # Session epoch whose PREPARING has not been followed by PREPARED yet.
+        self._asr_preparing_announced_epoch: int | None = None
         self._asr_pending_speech_confirmed = False
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
@@ -735,6 +812,8 @@ class IndependentAsrRuntime:
             self._asr_overlap_completed_onsets = deque()
         if not hasattr(self, "_asr_partial_turn_token"):
             self._asr_partial_turn_token = None
+        if not hasattr(self, "_asr_prepared_turn_token"):
+            self._asr_prepared_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
             self._asr_overlap_completed_token = None
             self._asr_overlap_completed_turns = 0
@@ -1372,6 +1451,11 @@ class IndependentAsrRuntime:
             or not getattr(session_ref, "is_ready", True)
             or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
         ):
+            logger.debug(
+                "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=false reason=not_ready",
+                getattr(turn_token.ingress, "session_epoch", ""),
+                getattr(turn_token, "turn_id", ""),
+            )
             return False
         if self._asr_audio_dispatcher.active_turn == turn_token:
             return True
@@ -1408,6 +1492,13 @@ class IndependentAsrRuntime:
                 payload,
                 sample_rate_hz=16_000,
             )
+        logger.debug(
+            "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=%s bytes=%d",
+            getattr(turn_token.ingress, "session_epoch", ""),
+            getattr(turn_token, "turn_id", ""),
+            activated,
+            len(payload),
+        )
         return activated
 
     @staticmethod
@@ -1674,16 +1765,24 @@ class IndependentAsrRuntime:
             VoiceLifecycleState.BACKOFF,
             VoiceLifecycleState.ACTIVE,
         }:
-            abandoned_turn = (
-                self._capture_turn_token(lifecycle)
-                if state is VoiceLifecycleState.ACTIVE and self._asr_turn_prepared
-                else None
+            # _abort_transport settles any prepared Core turn while it resets
+            # ASR state, including when later status or detector work fails.
+            # Notifying here as well sends the same abandon callback twice.
+            lifecycle.invalidate_audio()
+            post_detach = await self._abort_transport(
+                "detector_audio_backpressure",
+                preserve_accepted_finals=True,
             )
-            try:
-                lifecycle.invalidate_audio()
-                post_detach = await self._abort_transport(
-                    "detector_audio_backpressure"
-                )
+            if not self._runtime_identity_matches(
+                post_detach
+            ) or not self._asr_runtime_refs_match(
+                epoch,
+                lifecycle,
+                detector,
+            ):
+                return
+            if detector is not None:
+                await detector.reset()
                 if not self._runtime_identity_matches(
                     post_detach
                 ) or not self._asr_runtime_refs_match(
@@ -1692,34 +1791,21 @@ class IndependentAsrRuntime:
                     detector,
                 ):
                     return
-                if detector is not None:
-                    await detector.reset()
-                    if not self._runtime_identity_matches(
-                        post_detach
-                    ) or not self._asr_runtime_refs_match(
-                        epoch,
-                        lifecycle,
-                        detector,
-                    ):
-                        return
-                await self._send_asr_status(
-                    "ASR_INGRESS_BACKPRESSURE",
-                    provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
-                if not self._runtime_identity_matches(post_detach):
-                    return
-                await self._send_asr_lifecycle_state(
-                    VoiceLifecycleState.LOCAL_LISTEN,
-                    provider=provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            if not self._runtime_identity_matches(post_detach):
                 return
-            finally:
-                if abandoned_turn is not None:
-                    await self._notify_asr_turn_abandoned(abandoned_turn)
+            await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.LOCAL_LISTEN,
+                provider=provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            return
         identity = self._capture_runtime_identity()
         await self._send_asr_status(
             "ASR_INGRESS_BACKPRESSURE",
@@ -1734,6 +1820,7 @@ class IndependentAsrRuntime:
         route_key: str,
         resource_optimization_enabled: bool,
         user_language: str | None = None,
+        provider_preference: str | None = None,
         speaker_shadow_factory: SpeakerShadowFactory | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route.
@@ -1741,6 +1828,9 @@ class IndependentAsrRuntime:
         ``user_language`` is the caller's normalized language preference; the
         session factory maps it onto each provider's accepted hints and falls
         back to automatic detection when it is unknown or unsupported.
+        ``provider_preference`` is the persisted independent-ASR provider
+        choice; the resolver honors it only for user-selectable providers on
+        Core routes that allow independent ASR.
         """
 
         self._ensure_asr_runtime_state()
@@ -1786,11 +1876,23 @@ class IndependentAsrRuntime:
             resource_optimization_enabled
         )
         core_type = str(route_key or "").strip().lower()
+        preference = str(provider_preference or "").strip().lower()
+        # "auto" (the default) means "follow the Core route": resolve exactly
+        # as if no preference had been persisted.
+        resolver_kwargs: dict[str, Any] = (
+            {"provider_preference": preference}
+            if preference and preference != "auto"
+            else {}
+        )
 
         try:
             # The resolver reads core config synchronously from disk; keep
             # that blocking read off the event loop.
-            selection = await asyncio.to_thread(_resolve_asr_selection, core_type)
+            selection = await asyncio.to_thread(
+                _resolve_asr_selection,
+                core_type,
+                **resolver_kwargs,
+            )
             selected_provider = getattr(selection, "provider_key", None)
             if not isinstance(selected_provider, str) or not selected_provider.strip():
                 raise ValueError("invalid ASR provider selection")
@@ -1806,7 +1908,11 @@ class IndependentAsrRuntime:
             if availability is not AsrProviderAvailability.IMPLEMENTED:
                 if not operation_is_current():
                     return stale_result(provider)
-                failure_code = "ASR_INDEPENDENT_UNAVAILABLE"
+                failure_code = (
+                    "ASR_INDEPENDENT_DEPENDENCY_MISSING"
+                    if availability is AsrProviderAvailability.MISSING_DEPENDENCY
+                    else "ASR_INDEPENDENT_UNAVAILABLE"
+                )
                 status_identity = self._capture_runtime_identity()
                 delivered = await self._send_asr_status(
                     failure_code,
@@ -1881,10 +1987,14 @@ class IndependentAsrRuntime:
                     text, epoch, candidate_provider
                 )
 
-            async def on_error(_message: str) -> None:
+            async def on_error(message: str) -> None:
                 if not is_adopted_candidate():
                     return
-                await self._handle_independent_asr_error(epoch, candidate_provider)
+                await self._handle_independent_asr_error(
+                    epoch,
+                    candidate_provider,
+                    failure_reason=_provider_failure_reason(message),
+                )
 
             async def on_status(_message: str) -> None:
                 # Provider status strings are intentionally not forwarded verbatim.
@@ -2101,6 +2211,18 @@ class IndependentAsrRuntime:
                 or not self._runtime_identity_matches(start_identity)
             ):
                 return stale_result(provider)
+            delivered = await self._announce_provider_preparing(
+                self._asr_session,
+                provider,
+                session_epoch=epoch,
+                expected_identity=start_identity,
+            )
+            if (
+                not delivered
+                or not operation_is_current()
+                or not self._runtime_identity_matches(start_identity)
+            ):
+                return stale_result(provider)
             return AsrStartResult(
                 AsrStartStatus.READY,
                 provider=provider,
@@ -2116,7 +2238,7 @@ class IndependentAsrRuntime:
             if asr_session is not None:
                 await self._close_asr_session(asr_session)
             raise
-        except Exception:
+        except Exception as exc:
             if detector_ref is not None and self._asr_detector is detector_ref:
                 self._asr_detector = None
                 try:
@@ -2139,6 +2261,9 @@ class IndependentAsrRuntime:
                     provider,
                     session_epoch=epoch,
                     expected_identity=failure_identity,
+                    # A provider that failed while connecting (e.g. its local
+                    # model could not load) says why in the error it raised.
+                    reason=_provider_failure_reason(str(exc)),
                 )
                 if not delivered or not operation_is_current():
                     return stale_result(provider)
@@ -2280,6 +2405,10 @@ class IndependentAsrRuntime:
             self._asr_received_audio = False
             self._asr_audio_sequence = 0
             self._asr_partial_turn_token = None
+            # The promise passes to the suppression below, settled either by
+            # _complete_candidate_rejection or, if a teardown clears the
+            # suppression first, by _reset_asr_turn_state adopting it back.
+            self._asr_prepared_turn_token = None
             self._asr_sealed_turn_token = None
             self._asr_provider_candidate_fence = None
             self._asr_turn_endpointed_at = None
@@ -2488,9 +2617,22 @@ class IndependentAsrRuntime:
             self._ensure_transport_restart_task()
         return True
 
-    def _reset_asr_turn_state(self) -> None:
-        """Reset per-turn bookkeeping shared by close/abort/error teardown."""
+    def _reset_asr_turn_state(self) -> VoiceTurnToken | None:
+        """Reset per-turn bookkeeping shared by close/abort/error teardown.
 
+        Returns the prepared turn whose Core-side dispatch pause this reset
+        discards, if there is one. Preparation promises Core that a final or
+        an abandon will follow, and this is where the local state naming that
+        promise disappears -- so it is the last place able to identify who is
+        owed a settlement. Callers are async and must hand the token to
+        ``_notify_asr_turn_abandoned``: dropping it leaves Core paused for a
+        turn that no longer exists anywhere, and the dispatch barrier it
+        blocks is reached before anything is sent, so nothing downstream
+        would ever report the stall.
+        """
+
+        abandoned = self._asr_prepared_turn_token
+        self._asr_prepared_turn_token = None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
@@ -2506,7 +2648,15 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        rejection = self._asr_candidate_rejection
         self._asr_candidate_rejection = None
+        if abandoned is None and rejection is not None:
+            # The rejection path clears the prepared token before awaiting its
+            # own cleanup and leaves the debt with the suppression. Taking it
+            # back here is what makes the promise above true: clearing the
+            # suppression makes _complete_candidate_rejection return without
+            # notifying, so this reset is now the only settler left.
+            abandoned = rejection.turn_token
         self._asr_sealed_turn_token = None
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
@@ -2518,6 +2668,30 @@ class IndependentAsrRuntime:
         self._asr_rejection_watchdog_task = None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
+        return abandoned
+
+    def _settle_discarded_prepared_turn(
+        self,
+        turn_token: VoiceTurnToken | None,
+    ) -> None:
+        """Settle a promise ``_reset_asr_turn_state`` discarded, off the path.
+
+        Detached on purpose. Every caller is mid-teardown, holding a runtime
+        that is briefly inconsistent while sessions, lifecycles and detectors
+        are being swapped out; awaiting the Core callback there would publish
+        that window to whatever runs next. The settlement is keyed to the
+        turn id on the Core side, so arriving late costs nothing and arriving
+        never is the failure this exists to prevent.
+        """
+
+        if turn_token is None:
+            return
+        task = asyncio.create_task(
+            self._notify_asr_turn_abandoned(turn_token),
+            name="independent-asr-prepared-turn-settle",
+        )
+        self._asr_close_tasks.add(task)
+        task.add_done_callback(self._asr_close_tasks.discard)
 
     async def _notify_asr_turn_abandoned(
         self,
@@ -2587,6 +2761,7 @@ class IndependentAsrRuntime:
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -2606,7 +2781,7 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         if lifecycle is not None:
             lifecycle.stop()
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         self._asr_session_factory = None
         self._asr_transport_selection = None
 
@@ -3407,6 +3582,8 @@ class IndependentAsrRuntime:
             if max_attempts is None:
                 max_attempts = policy.connect_max_attempts
 
+            # The provider's own code from the latest failed attempt, if any.
+            last_failure_reason = ""
             for attempt in range(max_attempts):
                 if not self._runtime_identity_matches(identity):
                     return
@@ -3456,6 +3633,13 @@ class IndependentAsrRuntime:
                         expected_identity=connected_identity,
                     )
                     if not self._runtime_identity_matches(connected_identity):
+                        return
+                    if not await self._announce_provider_preparing(
+                        candidate,
+                        connected_identity.provider or "unknown",
+                        session_epoch=connected_identity.session_epoch,
+                        expected_identity=connected_identity,
+                    ):
                         return
                     if (
                         self._asr_pending_speech_confirmed
@@ -3525,13 +3709,14 @@ class IndependentAsrRuntime:
                         except Exception:
                             pass
                     raise
-                except Exception:
+                except Exception as exc:
                     logger.info(
                         "[voice-recovery] transport_failed attempt=%s "
                         "session_epoch=%s reason=ASR_INDEPENDENT_FAILED",
                         attempt + 1,
                         identity.session_epoch,
                     )
+                    last_failure_reason = _provider_failure_reason(str(exc))
                     if candidate is not None and self._asr_session is candidate:
                         adopted_identity = self._capture_runtime_identity()
                         await self._handle_independent_asr_error(
@@ -3539,6 +3724,7 @@ class IndependentAsrRuntime:
                             adopted_identity.provider or "unknown",
                             status_code="ASR_INDEPENDENT_FAILED",
                             expected_identity=adopted_identity,
+                            failure_reason=last_failure_reason,
                         )
                         return
                     if candidate is not None:
@@ -3584,6 +3770,7 @@ class IndependentAsrRuntime:
                 identity.provider or "unknown",
                 status_code="ASR_INDEPENDENT_FAILED",
                 expected_identity=identity,
+                failure_reason=last_failure_reason,
             )
 
     async def _abort_transport(
@@ -3591,20 +3778,31 @@ class IndependentAsrRuntime:
         reason: str,
         *,
         cleanup_timeout: float | None = None,
+        preserve_accepted_finals: bool = False,
     ) -> _AsrRuntimeIdentity:
-        """Invalidate provider I/O before closing a live transport."""
+        """Invalidate provider I/O before closing a live transport.
+
+        ``preserve_accepted_finals`` keeps queued and in-flight Core delivery
+        of already accepted finals; only the interrupted turn is retired.
+        """
 
         self._begin_asr_start_operation()
         self._asr_audio_generation += 1
-        self._asr_transcript_dispatcher.invalidate_all()
+        if preserve_accepted_finals:
+            reserved_final_key = self._asr_reserved_final_key
+            if reserved_final_key is not None:
+                self._asr_transcript_dispatcher.release(reserved_final_key)
+        else:
+            self._asr_transcript_dispatcher.invalidate_all()
         self._asr_detector_dispatcher.invalidate_all()
         self._asr_audio_dispatcher.abort()
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
         for task_name in (
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -3847,22 +4045,72 @@ class IndependentAsrRuntime:
         task = self._asr_final_watchdog_task
         if task is not None:
             task.cancel()
-        timeout_ms = lifecycle.provider_policy.provider_final_timeout_ms
+        timeout_s = lifecycle.provider_policy.provider_final_timeout_ms / 1_000
+        warmup_timeout_s = (
+            lifecycle.provider_policy.provider_warmup_timeout_ms / 1_000
+        )
+
+        def is_stale() -> bool:
+            return bool(
+                epoch != self._asr_session_epoch
+                or self._asr_lifecycle is not lifecycle
+                or self._asr_sealed_turn_token != sealed_token
+                or lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING
+            )
 
         async def expire() -> None:
             try:
-                await asyncio.sleep(timeout_ms / 1_000)
-                if (
-                    epoch != self._asr_session_epoch
-                    or self._asr_lifecycle is not lifecycle
-                    or self._asr_sealed_turn_token != sealed_token
-                    or lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING
-                ):
-                    return
+                sealed_at = time.monotonic()
+                deadline = sealed_at + timeout_s
+                status_code = "ASR_PROVIDER_FINAL_TIMEOUT"
+                while True:
+                    await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+                    if is_stale():
+                        return
+                    if warmup_timeout_s <= 0:
+                        break
+                    # One-off provider preparation (a local model loading or
+                    # downloading) is not recognition time: wait it out within
+                    # its own budget, then count the final timeout from the
+                    # moment the provider became ready.
+                    warmup_pending, completed_at = _provider_warmup_snapshot(
+                        self._asr_session
+                    )
+                    now = time.monotonic()
+                    if warmup_pending:
+                        warmup_deadline = sealed_at + warmup_timeout_s
+                        if now >= warmup_deadline:
+                            # A decode queued behind another session's is
+                            # not model preparation: its advice (download
+                            # the model) would not apply.
+                            kind = getattr(
+                                self._asr_session, "provider_warmup_kind", "model"
+                            )
+                            if not kind:
+                                # Ended since the snapshot: look again.
+                                continue
+                            status_code = (
+                                "ASR_PROVIDER_QUEUE_TIMEOUT"
+                                if kind == "queue"
+                                else "ASR_PROVIDER_WARMUP_TIMEOUT"
+                            )
+                            break
+                        deadline = min(
+                            now + _PROVIDER_WARMUP_POLL_SECONDS,
+                            warmup_deadline,
+                        )
+                        continue
+                    if (
+                        completed_at is not None
+                        and completed_at + timeout_s > now
+                    ):
+                        deadline = completed_at + timeout_s
+                        continue
+                    break
                 await self._handle_independent_asr_error(
                     epoch,
                     self._asr_provider or "unknown",
-                    status_code="ASR_PROVIDER_FINAL_TIMEOUT",
+                    status_code=status_code,
                 )
             except asyncio.CancelledError:
                 return
@@ -4090,6 +4338,10 @@ class IndependentAsrRuntime:
             return
         self._asr_reserved_final_key = final_key
         self._asr_turn_prepared = True
+        # Recorded before the callback, not after it succeeds: Core arms its
+        # pause inside on_prepare_turn, so a teardown landing on that await
+        # must still be able to name this turn.
+        self._asr_prepared_turn_token = turn_token
         identity = self._capture_runtime_identity(
             ingress_token=turn_token.ingress,
             turn_token=turn_token,
@@ -4120,6 +4372,8 @@ class IndependentAsrRuntime:
         ):
             self._asr_reserved_final_key = None
             self._asr_turn_prepared = False
+            if self._asr_prepared_turn_token == turn_token:
+                self._asr_prepared_turn_token = None
             if self._asr_partial_turn_token == turn_token:
                 self._asr_partial_turn_token = None
         self._notify_prefix_capacity()
@@ -4540,6 +4794,12 @@ class IndependentAsrRuntime:
         provider: str,
     ) -> None:
         clean = str(text or "").strip()
+        logger.info(
+            "[voice-chain] stage=asr_final session_epoch=%s provider=%s text_len=%d",
+            epoch,
+            provider,
+            len(clean),
+        )
         if epoch != self._asr_session_epoch:
             return
 
@@ -4638,6 +4898,13 @@ class IndependentAsrRuntime:
                     accepted_turn_token = sealed_token.turn
                     if self._asr_partial_turn_token == accepted_turn_token:
                         self._asr_partial_turn_token = None
+                    if self._asr_prepared_turn_token == accepted_turn_token:
+                        # The promise passes to the transcript dispatch below.
+                        # Its own exits settle it explicitly; a rejected
+                        # envelope is settled instead by the voice-input
+                        # registry cancelling this route, which abandons the
+                        # turn through the Core-chat consumer.
+                        self._asr_prepared_turn_token = None
                     lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
                     self._asr_turn_prepared = False
                     self._asr_received_audio = False
@@ -4697,8 +4964,18 @@ class IndependentAsrRuntime:
         lease = self._asr_smart_turn_lease
         if lease is not None and lease.token == accepted_turn_token:
             self._asr_smart_turn_lease = None
+            # Keep the accepted final visible to Core while the release
+            # awaits: ingress backpressure retires only unaccepted turns.
+            transcript_dispatcher.mark_accepted(final_key, accepted_turn_token)
             try:
                 await lease.release()
+            except asyncio.CancelledError:
+                # Session shutdown may cancel this callback mid-release; the
+                # pinned slot must not outlive it.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
+                raise
             except Exception:
                 # The final is already accepted; a failed release must not
                 # skip transcript delivery or pending-turn activation below.
@@ -4707,10 +4984,10 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
             if not self._runtime_identity_matches(final_identity):
-                transcript_dispatcher.release(final_key)
-                # The accepted final can no longer be delivered, so release
-                # the Core-side pause keyed to this turn.
-                await self._notify_asr_turn_abandoned(accepted_turn_token)
+                # Lifecycle follow-up belongs to whoever moved identity.
+                await self._settle_pinned_final(
+                    transcript_dispatcher, envelope, final_key, accepted_turn_token
+                )
                 return
         elif not self._runtime_identity_matches(final_identity):
             transcript_dispatcher.release(final_key)
@@ -4880,14 +5157,39 @@ class IndependentAsrRuntime:
             ):
                 self._asr_pending_speech_onset_at = None
 
+    async def _settle_pinned_final(
+        self,
+        transcript_dispatcher: TranscriptDispatcher,
+        envelope: TranscriptEnvelope | None,
+        final_key: FinalKey,
+        turn_token: VoiceTurnToken,
+    ) -> None:
+        """Deliver or retire an accepted final whose follow-up was interrupted."""
+
+        if (
+            envelope is not None
+            and transcript_dispatcher.holds_accepted(final_key)
+            and turn_token.ingress.session_epoch == self._asr_session_epoch
+        ):
+            # No purge retired the pinned slot, so the final is still owed to
+            # Core, the same rule as for a queued envelope.
+            transcript_dispatcher.submit(envelope)
+            return
+        transcript_dispatcher.release(final_key)
+        # The accepted final can no longer be delivered, so release the
+        # Core-side pause keyed to this turn.
+        await self._notify_asr_turn_abandoned(turn_token)
+
     async def _dispatch_asr_transcript_envelope(
         self,
         envelope: TranscriptEnvelope,
     ) -> None:
         ingress_token = envelope.turn_token.ingress
-        if not self._ingress_token_matches(ingress_token):
-            # The envelope was accepted before the audio generation moved on,
-            # so neither on_final nor a teardown path will run for this turn.
+        # Only the session epoch retires an accepted final here. Ingress
+        # backpressure bumps the audio generation to retire the interrupted
+        # turn, and every other retirement purges this queue synchronously.
+        if ingress_token.session_epoch != self._asr_session_epoch:
+            # Neither on_final nor a teardown path will run for this turn.
             # Release the Core-side pause keyed to it instead of leaking the
             # pause until the next turn.
             await self._notify_asr_turn_abandoned(envelope.turn_token)
@@ -4921,7 +5223,14 @@ class IndependentAsrRuntime:
         *,
         status_code: str = "ASR_INDEPENDENT_FAILED",
         expected_identity: _AsrRuntimeIdentity | None = None,
+        failure_reason: str = "",
     ) -> None:
+        # What BLOCKED tells the client: the provider's own code, else a
+        # runtime failure that has its own explanation. Delivery-failure codes
+        # have their own once-only notice and must not ride along here.
+        blocked_reason = failure_reason or (
+            status_code if status_code in _BLOCKED_DISPLAY_STATUS_CODES else ""
+        )
         if epoch != self._asr_session_epoch or (
             expected_identity is not None
             and not self._runtime_identity_matches(expected_identity)
@@ -4972,11 +5281,12 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         self._asr_session_factory = None
         self._asr_transport_selection = None
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         for task_name in (
             "_asr_transport_task",
             "_asr_warm_expiry_task",
             "_asr_final_watchdog_task",
+            "_asr_warmup_watch_task",
         ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -5007,6 +5317,7 @@ class IndependentAsrRuntime:
                 provider=provider,
                 session_epoch=failure_epoch,
                 expected_identity=failure_identity,
+                reason=blocked_reason,
             )
             if not delivered or not self._runtime_identity_matches(failure_identity):
                 return
@@ -5017,6 +5328,7 @@ class IndependentAsrRuntime:
                         provider=provider,
                         session_epoch=failure_epoch,
                         ingress_token=failure_ingress_token,
+                        reason=failure_reason,
                     )
                 )
             except Exception:
@@ -5032,6 +5344,7 @@ class IndependentAsrRuntime:
                 session_epoch=failure_epoch,
                 expected_identity=failure_identity,
                 ingress_token=failure_ingress_token,
+                reason=failure_reason,
             )
         finally:
             # A dispatcher can report its own failure from inside its worker.
@@ -5051,6 +5364,109 @@ class IndependentAsrRuntime:
                 self.display_name,
             )
 
+    async def _announce_provider_preparing(
+        self,
+        asr_session: Any,
+        provider: str,
+        *,
+        session_epoch: int,
+        expected_identity: _AsrRuntimeIdentity,
+    ) -> bool:
+        """Tell the client a connected provider is still preparing.
+
+        A provider may connect before it can recognize speech (a local model
+        loading, or downloading on first use). Returns whether the runtime
+        identity still matches, like ``_send_asr_status``; True with nothing
+        sent when the provider is ready.
+        """
+
+        if not _provider_warmup_snapshot(asr_session)[0]:
+            if getattr(self, "_asr_preparing_announced_epoch", None) == session_epoch:
+                # PREPARING went out for this epoch, but its session was
+                # replaced before PREPARED could: close that notice now.
+                self._asr_preparing_announced_epoch = None
+                return await self._send_asr_status(
+                    "ASR_INDEPENDENT_PREPARED",
+                    provider,
+                    session_epoch=session_epoch,
+                    expected_identity=expected_identity,
+                )
+            return self._runtime_identity_matches(expected_identity)
+        delivered = await self._send_asr_status(
+            "ASR_INDEPENDENT_PREPARING",
+            provider,
+            session_epoch=session_epoch,
+            expected_identity=expected_identity,
+            reason=_provider_warmup_reason(asr_session),
+        )
+        if delivered:
+            self._asr_preparing_announced_epoch = session_epoch
+            self._watch_provider_warmup(
+                asr_session,
+                provider,
+                session_epoch=session_epoch,
+                expected_identity=expected_identity,
+            )
+        return delivered
+
+    def _watch_provider_warmup(
+        self,
+        asr_session: Any,
+        provider: str,
+        *,
+        session_epoch: int,
+        expected_identity: _AsrRuntimeIdentity,
+    ) -> None:
+        """Send ASR_INDEPENDENT_PREPARED once the announced warm-up ends.
+
+        The client keeps its "preparing" notice up until then. Nothing is
+        sent if the session or route changes first (its failure or teardown
+        tells the client instead).
+        """
+
+        previous = self._asr_warmup_watch_task
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        def still_this_session() -> bool:
+            # The route moves on after start (lifecycle / route generations),
+            # so this only asks whether the same provider session is current.
+            return (
+                self._asr_session is asr_session
+                and self._asr_session_epoch == session_epoch
+            )
+
+        async def watch() -> None:
+            try:
+                while _provider_warmup_snapshot(asr_session)[0]:
+                    await asyncio.sleep(_PROVIDER_WARMUP_POLL_SECONDS)
+                    if not still_this_session():
+                        return
+                if not still_this_session():
+                    return
+                current = self._capture_runtime_identity()
+                if current.session_epoch != session_epoch:
+                    return
+                if await self._send_asr_status(
+                    "ASR_INDEPENDENT_PREPARED",
+                    provider,
+                    session_epoch=session_epoch,
+                    expected_identity=current,
+                ):
+                    if self._asr_preparing_announced_epoch == session_epoch:
+                        self._asr_preparing_announced_epoch = None
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._asr_warmup_watch_task is asyncio.current_task():
+                    self._asr_warmup_watch_task = None
+
+        task = asyncio.create_task(
+            watch(), name="independent-asr-warmup-watch"
+        )
+        task.add_done_callback(self._log_asr_background_task_failure)
+        self._asr_warmup_watch_task = task
+
     async def _send_asr_status(
         self,
         code: str,
@@ -5059,6 +5475,7 @@ class IndependentAsrRuntime:
         session_epoch: int,
         expected_identity: _AsrRuntimeIdentity,
         ingress_token: VoiceIngressToken | None = None,
+        reason: str = "",
     ) -> bool:
         if (
             session_epoch != expected_identity.session_epoch
@@ -5072,6 +5489,7 @@ class IndependentAsrRuntime:
                     provider=provider,
                     session_epoch=session_epoch,
                     ingress_token=ingress_token,
+                    reason=reason,
                 )
             )
         except Exception:
@@ -5088,6 +5506,7 @@ class IndependentAsrRuntime:
         provider: str,
         session_epoch: int,
         expected_identity: _AsrRuntimeIdentity,
+        reason: str = "",
     ) -> bool:
         if (
             session_epoch != expected_identity.session_epoch
@@ -5100,6 +5519,7 @@ class IndependentAsrRuntime:
                     state=state.value,
                     provider=provider,
                     session_epoch=session_epoch,
+                    reason=reason,
                 )
             )
         except Exception:

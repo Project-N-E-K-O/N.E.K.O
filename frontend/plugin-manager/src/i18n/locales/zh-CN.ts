@@ -47,6 +47,15 @@ export default {
     removeHint: "停止插件并移除关联？源码和运行数据会保留。",
   },
   common: {
+    surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
+    surfaceApplyLanguage: "应用新语言并重新载入面板",
+    surfaceApplyLanguageConfirm: "重新载入面板会丢失其中未保存的内容。是否继续？",
+
+    languageLoading: "正在加载语言，当前界面仍可使用",
+    languageLoadFailed: "语言加载失败，已保留当前语言。",
+    languageRetry: "重试语言加载",
+    languageReload: "重新加载页面",
+
     loading: '加载中...',
     refresh: '刷新',
     search: '搜索',
@@ -248,6 +257,8 @@ export default {
     packageHashMismatch: '插件包校验失败。',
     downloadFailed: '插件包下载失败。',
     marketListFetchFailed: '插件市场暂时不可用。',
+    catalogNotConfigured: '未配置插件市场地址。',
+    releaseMismatch: '安装请求与市场发布记录不一致，请刷新插件市场后重试。',
     unsafeProfilePath: '记录的包 Profile 路径不安全。',
     packageIdentityMismatch: '插件包身份与目标插件不一致。',
     confirmationChanged: '确认后插件或安装包已变化，请检查新计划后重试。',
@@ -336,6 +347,7 @@ export default {
     installFallback: '无法选择镜像源，已使用 GitHub 直连。'
   },
   plugins: {
+    configSchemaInvalid: '插件配置 Schema 无效，已使用通用配置编辑器。',
     title: '插件列表',
     name: '插件名称',
     id: '插件ID',
@@ -429,6 +441,7 @@ export default {
     addItem: '新增项',
     fieldName: '字段名',
     fieldNameRequired: '字段名不能为空',
+    readOnlyField: '此字段为只读，无法添加。',
     invalidFieldKey: '字段名不合法',
     fieldType: '字段类型',
     duplicateFieldKey: '字段名已存在，请换一个',
@@ -581,6 +594,8 @@ export default {
       blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
       blockedOwnershipUnknown: '无法确认现有插件目录的所有权。请先恢复对应的安装源记录，再重试。',
       blockedInstallSourceReadOnly: '安装源记录不可用或处于只读状态。请先恢复安装源记录，再重试。',
+      installSucceeded: '安装完成，处理了 {count} 个插件。',
+      completedWithWarnings: '{plugin} 已安装，但存在警告：{reasons}',
       rollbackCompleted: '升级失败，已恢复之前的版本。',
       rollbackIncomplete: '升级失败且回滚未完整完成，请检查插件状态后再继续。',
       error: {
@@ -591,6 +606,7 @@ export default {
         pluginManifestInvalid: '插件的 plugin.toml 格式有误，请让插件作者修复后重新打包。',
         identityMismatch: '插件文件夹名称与 plugin.toml 中的 ID 不一致，请让插件作者修复安装包。',
         hashMismatch: '安装包内容与校验信息不一致，已拒绝安装，未保留任何安装改动。',
+        profileOwnershipConflict: '这个插件包的配置档目录已存在，但不属于该安装包（可能是之前安装留下的残留），已拒绝安装，未做任何改动。',
         inspectFailed: '无法检查这个插件包。请确认文件存在且是有效的 N.E.K.O 插件包，然后重试。',
         verifyFailed: '无法校验这个插件包。请重新下载，或让插件作者重新打包后再试。',
         installFailed: '无法安装这个插件包，未保留未经确认的安装改动。'

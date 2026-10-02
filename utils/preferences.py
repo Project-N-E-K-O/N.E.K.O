@@ -30,6 +30,7 @@ from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
     CONVERSATION_SETTINGS_RESET_KEY,
+    INDEPENDENT_ASR_PROVIDER_PREFERENCES as _INDEPENDENT_ASR_PROVIDER_PREFERENCES,
     MAX_SAFE_ASR_WRITE_ID,
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
@@ -516,8 +517,11 @@ def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     int_interval_fields = {'proactiveChatInterval', 'proactiveVisionInterval'}
     string_fields = {'userLanguage'}
     int_limit_fields = {'textGuardMaxLength'}
+    choice_fields = {
+        'independentAsrProviderPreference': _INDEPENDENT_ASR_PROVIDER_PREFERENCES,
+    }
     bool_fields = _ALLOWED_CONVERSATION_SETTINGS - (
-        int_interval_fields | string_fields | int_limit_fields
+        int_interval_fields | string_fields | int_limit_fields | set(choice_fields)
     )
 
     validated = {}
@@ -533,6 +537,9 @@ def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
                 validated[key] = value
         elif key in int_limit_fields:
             if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2000:
+                validated[key] = value
+        elif key in choice_fields:
+            if isinstance(value, str) and value in choice_fields[key]:
                 validated[key] = value
     return validated
 

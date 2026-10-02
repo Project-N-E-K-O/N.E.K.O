@@ -57,6 +57,11 @@ _CONDITIONAL_CLAUSE_TOKEN_PHRASES = (
     ("only", "if"),
 )
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
+_EPISTEMIC_MODAL_NEG_RE = tuple(
+    re.compile(rf"\b{modal}\b\s*{re.escape(negative)}", re.IGNORECASE)
+    for modal in sorted(_EPISTEMIC_MODALS)
+    for negative, _ in _CJK_NEGATED_PREDICATES
+)
 _EPISTEMIC_LEXICAL_MARKERS = frozenset({
     "maybe", "perhaps", "possible", "possibly", "probable", "probably",
 })
@@ -304,9 +309,7 @@ def _has_epistemic_modal_negation(text: str) -> bool:
     ):
         return True
     return any(
-        re.search(rf"\b{modal}\b\s*{re.escape(negative)}", text, re.IGNORECASE)
-        for modal in _EPISTEMIC_MODALS
-        for negative, _ in _CJK_NEGATED_PREDICATES
+        pattern.search(text) for pattern in _EPISTEMIC_MODAL_NEG_RE
     )
 
 

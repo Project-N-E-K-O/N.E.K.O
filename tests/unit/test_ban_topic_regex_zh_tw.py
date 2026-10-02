@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import re._constants as _sre  # 私有模块：结构判据要看解析树（项目锁 Python 3.11）
+import re._parser as _sre_parser
 import unicodedata
 
 import pytest
@@ -48,6 +50,104 @@ def _zh_terms(text: str) -> set[str]:
 
 def _zh_pattern_sources() -> list[str]:
     return [raw for locale, _kind, raw in D._PATTERNS_RAW if locale == "zh"]
+
+
+_REPEATS = (_sre.MAX_REPEAT, _sre.MIN_REPEAT)
+_NOT_SPACE_CATEGORIES = (_sre.CATEGORY_NOT_SPACE, _sre.CATEGORY_UNI_NOT_SPACE)
+
+
+def _class_is_whitespace_only(items) -> bool:
+    if items and items[0][0] is _sre.NEGATE:
+        # ``[^\S...]``: a negated class that excludes every non-space is a subset of \s
+        return any(op is _sre.CATEGORY and av in _NOT_SPACE_CATEGORIES for op, av in items[1:])
+    return all(
+        (op is _sre.LITERAL and chr(av).isspace())
+        or (op is _sre.RANGE and all(chr(c).isspace() for c in range(av[0], av[1] + 1)))
+        or (op is _sre.CATEGORY and av in (_sre.CATEGORY_SPACE, _sre.CATEGORY_UNI_SPACE))
+        for op, av in items
+    )
+
+
+def _never_consumes_non_whitespace(seq) -> bool:
+    # ⚠️ 空序列算 True：``(?:\s|)*`` 的空分支什么都不吃，整体仍等价于 ``\s*``（codex P2）。
+    # 「至少能吃掉一个字」由 _consumes_something 单独判。
+    for op, av in seq:
+        if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
+            continue
+        if op is _sre.LITERAL:
+            ok = chr(av).isspace()
+        elif op is _sre.IN:
+            ok = _class_is_whitespace_only(av)
+        elif op is _sre.SUBPATTERN:
+            ok = _never_consumes_non_whitespace(av[3])
+        elif op is _sre.ATOMIC_GROUP:
+            ok = _never_consumes_non_whitespace(av)
+        elif op is _sre.BRANCH:
+            ok = all(_never_consumes_non_whitespace(branch) for branch in av[1])
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            ok = _never_consumes_non_whitespace(av[2])
+        else:
+            ok = False
+        if not ok:
+            return False
+    return True
+
+
+def _consumes_something(seq) -> bool:
+    for op, av in seq:
+        if op in (_sre.LITERAL, _sre.NOT_LITERAL, _sre.IN, _sre.ANY):
+            return True
+        if op is _sre.SUBPATTERN:
+            sub = [av[3]]
+        elif op is _sre.ATOMIC_GROUP:
+            sub = [av]
+        elif op is _sre.BRANCH:
+            sub = av[1]
+        elif op in _REPEATS or op is _sre.POSSESSIVE_REPEAT:
+            sub = [av[2]] if av[1] else []
+        else:
+            sub = []  # lookarounds / anchors are zero-width
+        if any(_consumes_something(s) for s in sub):
+            return True
+    return False
+
+
+def _matches_only_whitespace(seq) -> bool:
+    return _never_consumes_non_whitespace(seq) and _consumes_something(seq)
+
+
+def _collect_whitespace_runs(seq, out: list[str]) -> list[str]:
+    for op, av in seq:
+        if op in (_sre.ASSERT, _sre.ASSERT_NOT, _sre.ATOMIC_GROUP, _sre.POSSESSIVE_REPEAT):
+            continue  # zero-width, or already atomic
+        if op in _REPEATS:
+            lo, hi, body = av
+            if (hi is _sre.MAXREPEAT or hi > 8) and _matches_only_whitespace(body):
+                out.append(f"{op}{{{lo},{'' if hi is _sre.MAXREPEAT else hi}}}")
+                continue
+            _collect_whitespace_runs(body, out)
+        elif op is _sre.SUBPATTERN:
+            _collect_whitespace_runs(av[3], out)
+        elif op is _sre.BRANCH:
+            for branch in av[1]:
+                _collect_whitespace_runs(branch, out)
+    return out
+
+
+def _splittable_whitespace_runs(head: str) -> list[str]:
+    """Non-atomic whitespace repetitions in a template source, found on the parsed regex.
+
+    Two such runs next to each other (or next to the topic's plain-char branch,
+    which also eats spaces) can split one run of spaces in O(n^k) ways. An
+    atomic group ``(?>...)`` or a possessive quantifier removes the choice.
+
+    Works on the parse tree rather than the text, so any spelling of a
+    repetition whose body only matches whitespace counts: ``\\s*``,
+    ``(?:\\s)*``, ``[ \\t]+``, ``(?:(?>\\s))*``, ``\\s{0,50}``. Lookarounds are
+    skipped (zero-width, they split nothing), and so is a run bounded at 8 or
+    fewer: that is a constant factor, not an explosion (``_ZH_IDENT_GAP``).
+    """
+    return _collect_whitespace_runs(_sre_parser.parse(head), [])
 
 
 def _zh_terms_without_japanese_guard(text: str) -> set[str]:
@@ -980,16 +1080,17 @@ def test_bracket_and_plain_branches_are_mutually_exclusive():
     解法是把整个"单位"包进**原子组**：某个位置选了哪个分支就不再回头。比"把开括号
     排除出单字分支"更好——落单的 ``"`` / ``(``（英寸号、颜文字）仍能被当普通字吃掉。
     """  # noqa: DOCSTRING_CJK
-    import time
+    from tests.wall_clock import fastest_run
 
     assert D._ZH_TOPIC_CHAR.startswith("(?>"), (
         "话题单位不是原子组，括号分支与单字分支重叠 = 回溯爆炸"
     )
     for segment in ("《a》", '"a"', "(a)"):
-        started = time.perf_counter()
-        extract_directives("别提" + segment * 120)
-        elapsed = time.perf_counter() - started
-        assert elapsed < 1.0, f"{segment} x120 跑了 {elapsed:.2f}s，回溯又爆了"
+        # 取多次里最快的一次：单次采样被调度抢占就会误红（见 tests/wall_clock.py）
+        elapsed = fastest_run(
+            lambda segment=segment: extract_directives("别提" + segment * 120), stop_below=1.0
+        )
+        assert elapsed < 1.0, f"{segment} x120 最快也要 {elapsed:.2f}s，回溯又爆了"
 
 
 @pytest.mark.parametrize(
@@ -1414,12 +1515,12 @@ def test_filler_dedup_stays_linear_on_many_directives():
     # ⚠️ 时限是 4 秒不是 1 秒：桶索引版本本机 0.14 秒，Windows CI 上量到过 1.01 秒
     # （比本机慢 7 倍），1 秒的线就在那台机器上擦边误红。要钉的是**量级差**——
     # 退回逐条扫全表本机就要 1.25 秒，同样慢 7 倍就是 9 秒左右，4 秒的线照样拦得住。
-    import time
+    from tests.wall_clock import fastest_run
 
-    started = time.perf_counter()
-    extract_directives("成就别提了。" * 4000)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 4.0, f"4000 条以填充词结尾的话题跑了 {elapsed:.2f}s，桶索引失效了"
+    elapsed = fastest_run(
+        lambda: extract_directives("成就别提了。" * 4000), repeat=3, stop_below=4.0
+    )
+    assert elapsed < 4.0, f"4000 条以填充词结尾的话题最快也要 {elapsed:.2f}s，桶索引失效了"
 
     hits = [("zh", "ban_topic", f"话题{i}") for i in range(50)]
     spans = [(i * 10, i * 10 + 5) for i in range(50)]
@@ -1653,24 +1754,21 @@ def test_no_bracket_pair_scans_to_the_end(pair):
     （六十倍），同样的 CI 上是分钟级，10 秒的线照样拦得住。逐对的**精确**判据在
     ``test_bracket_bodies_are_bounded``（结构面、全称），这条只是它的行为面兜底。
     """  # noqa: DOCSTRING_CJK
-    import time
+    from tests.wall_clock import fastest_run
 
     lo, _hi = pair
-    started = time.perf_counter()
-    extract_directives(lo * 8000)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 10.0, f"{lo!r} * 8000 跑了 {elapsed:.2f}s"
+    elapsed = fastest_run(lambda: extract_directives(lo * 8000), repeat=3, stop_below=10.0)
+    assert elapsed < 10.0, f"{lo!r} * 8000 最快也要 {elapsed:.2f}s"
 
 
 def test_unmatched_openers_stay_linear():
-    import time
+    from tests.wall_clock import fastest_run
 
-    timings = {}
-    for n in (2000, 8000):
-        text = "《" * n
-        start = time.perf_counter()
-        extract_directives(text)
-        timings[n] = time.perf_counter() - start
+    # ⚠️ 两档都取多次里最快的一次：倍率判据最怕单次采样被抢占（8000 那档一卡就是
+    # 零点几秒，+0.2 的余量吞不住）。
+    timings = {
+        n: fastest_run(lambda n=n: extract_directives("《" * n), repeat=3) for n in (2000, 8000)
+    }
     # 二次方的话 4 倍输入是 16 倍时间；给足余量只要求**远小于**二次方。
     # ⚠️ 比值那条才是判据，它自带机器归一化。下面的绝对值只是兜底，线放到 10 秒
     # ——同一段 ``"《" * 8000`` 在 Windows CI 上被 runner 卡顿量到过 7.37 秒
@@ -2545,27 +2643,31 @@ def test_a_bare_question_particle_is_a_tail_too(text, expected):
 
 
 def test_a_whitespace_only_message_does_not_blow_up():
-    """⚠️ 前置话题的单字分支也匹配空格，于是话题和后面每个 ``\s*`` 能任意瓜分同一串
-    空白，把「在哪切」变成组合爆炸——``" " * 60`` 一度要 0.42 秒，而这条路径是每条
-    用户消息同步跑的，发一条纯空白消息就能卡住（codex P1）。
+    """A whitespace-only message must not explode template 2 (codex P1).
 
-    ⚠️ 用**增长倍率**而不是绝对秒数：这个形状本身在 parent 上就是三次方（60/120/240
-    实测 0.006/0.05/0.43），本 PR 要守的是「不比 parent 更差」，不是把它变成线性。
-    """  # noqa: DOCSTRING_CJK
-    import time
+    The preposed topic's plain-char branch also matches spaces, so the topic and
+    every whitespace run after it can split one run of spaces any way they like.
+    ``" " * 60`` once took 0.42s on a path that runs synchronously per message.
+    """
+    from tests.wall_clock import fastest_run
 
-    # 预热：别把首次正则编译算进 timings[30]，那会让倍率虚低、判据失灵（CodeRabbit）
-    extract_directives(" ")
-    timings = {}
-    for n in (30, 60):
-        started = time.perf_counter()
-        extract_directives(" " * n)
-        timings[n] = time.perf_counter() - started
-    # ⚠️ 主判据是**倍率**。绝对秒数只当一道很松的天花板——共享 CI runner 上负载不可控，
-    # 卡得紧会偶发变红（CodeRabbit）。组合爆炸时这里是 0.4 秒往上。
-    assert timings[60] < 0.5, timings
-    # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右，给足余量取 25
-    assert timings[60] < timings[30] * 25 + 0.02, timings
+    extract_directives(" ")  # 预热：别把首次正则编译算进计时（CodeRabbit）
+    # ⚠️ 主判据只计时**模板 2 自己**。整个 extract_directives 是 21 条模板之和：写这条时
+    # 纯空白上的大头是韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…`` 的三次方（60 个空格约
+    # 7ms，模板 2 自己约 0.7ms），模板 2 前置空白**全部**去原子化后 60 个空格也只要
+    # 21ms，原先那条 ``timings[60] < timings[30] * 25 + 0.02`` 照样通过。韩语那条后来
+    # 修掉了（见 test_directive_regex_whitespace.py），但整体计时量的仍是别人。
+    # ⚠️ 输入要**以正文起头**，不能是纯空白：话题捕获现在不许空白起头（见
+    # _PATTERNS_RAW 开头），纯空白里的每个起点一步就失败，去原子化也测不出来——
+    # 实测 ``" " * 240`` 去原子化前后都在 0.1ms 以下。从 ``工作`` 起头时只有这一个起点，
+    # 瓜分全落在它后面的空白上：原子化版本 0.6ms，全部去原子化 2.2s。0.25 秒的线两侧
+    # 分别约 400 倍、9 倍余量，不要再放宽。取多次里最快一次，滤掉调度抢占。
+    pat = [p for locale, _kind, p in D.DIRECTIVE_PATTERNS if locale == "zh"][1]
+    text = "工作" + " " * 1500
+    elapsed = fastest_run(lambda: list(pat.finditer(text)), stop_below=0.25)
+    assert elapsed < 0.25, f"模板 2 在 {len(text)} 个字符上最快也要 {elapsed:.3f}s，空白瓜分回溯又回来了"
+    # 端到端只留一道很松的天花板：这条路径每条用户消息同步跑。
+    assert fastest_run(lambda: extract_directives(" " * 60), stop_below=0.5) < 0.5
 
 
 def test_the_preposed_template_spacing_is_atomic():
@@ -2582,12 +2684,10 @@ def test_the_preposed_template_spacing_is_atomic():
     # ⚠️ 判据是「**任何**会匹配空白的量词都得包在原子组里」，不是「数出几个 (?>\s*)」。
     # 停顿分隔符里的空白已经收窄成横向空白类（不跨行），数量断言会跟着漂——把两种
     # 单位都摘掉之后再看有没有漏网的，才是真正的不变量。
+    # ⚠️ 在**解析树**上找，不按字面：只认 ``\s*`` / _ZH_HSPACE 两种写法的话，
+    # ``_ZH_HSPACE_ONE + "+"``、``(?:\s)*``、``[ \t]*`` 都能同时绕过这里和耗时判据。
+    assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
     units = (r"(?>\s*)", f"(?>{D._ZH_HSPACE})")
-    rest = head
-    for unit in units:
-        rest = rest.replace(unit, "")
-    assert r"\s*" not in rest, rest
-    assert D._ZH_HSPACE not in rest, rest
     for unit in units:
         assert unit + unit not in head, unit
     # ⚠️ 模板 2 里**触发词之前**已经一个跨行空白都不剩了：话题两侧、填充词两侧、
@@ -2813,21 +2913,47 @@ def test_every_address_verb_has_evidence_coverage():
 
 
 def test_the_guanyu_template_spacing_is_atomic_too():
-    """⚠️ 上一轮只原子化了模板 2、漏了模板 4，``"关于" + " " * 80`` 要 3 秒。"""  # noqa: DOCSTRING_CJK
-    import time
+    """Template 4 needs every whitespace run before its verb atomic, like template 2.
 
+    An earlier round atomized only template 2 and missed this one, and
+    ``"关于" + " " * 80`` then took 3 seconds on the per-message path.
+    """  # noqa: DOCSTRING_CJK
+    from tests.wall_clock import fastest_run
+
+    # ── 结构面（确定性的主判据），同 test_the_preposed_template_spacing_is_atomic ──
     raw = _zh_pattern_sources()[3]
-    head = raw.split("(?:说|說|提|聊|讲|講)")[0]
-    assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
+    # ⚠️ 切分锚点必须**断言存在**。这里原先写死 ``(?:说|說|提|聊|讲|講)``，触发词表改成
+    # 同源的 _ZH_PREPOSED_SAY_VERBS 之后它就不在模板里了：split 切不开，head 变成整条，
+    # 而模板早已改用横向空白类、不含 ``\s*``，于是下面那条断言恒真，结构面空转。
+    verbs = "(?:" + "|".join(D._ZH_PREPOSED_SAY_VERBS) + ")"
+    # ⚠️ 出现次数带进消息：多于 1 次同样会空转（split()[0] 把 head 截短），不只是「找不到」
+    assert raw.count(verbs) == 1, (
+        f"模板 4 里触发词组出现 {raw.count(verbs)} 次（应为 1），结构判据会空转"
+    )
+    head = raw.split(verbs)[0]
+    # 零宽 temper 里的空白是判据的一部分，不参与瓜分，先摘掉
+    head = head.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
+    # ⚠️ 这是**单个**空白单位被去原子化时唯一的防线：逐个还原模板 4 里任何一个
+    # 原子单位，"关于" + 80 个空格都只要毫秒级，下面的耗时判据拦不住。所以在解析树
+    # 上找（``(?:\s)*``、``[ \t]+``、``\s{0,50}`` 这类写法也算），不按字面。
+    assert not _splittable_whitespace_runs(head), _splittable_whitespace_runs(head)
 
-    extract_directives(" ")  # 预热
-    timings = {}
-    for n in (40, 80):
-        started = time.perf_counter()
-        extract_directives("关于" + " " * n)
-        timings[n] = time.perf_counter() - started
-    assert timings[80] < 0.5, timings
-    assert timings[80] < timings[40] * 25 + 0.02, timings
+    # ── 行为面：只计时模板 4 自己 ──
+    # ⚠️ 不能计时整个 extract_directives：写这条时韩语模板 ``(.{1,30}?)\s*(?:이|가)?\s*…``
+    # 在纯空白上是三次方，"关于" + 80 个空格的耗时几乎全是它（本机约 20ms，
+    # 模板 4 自己约 2µs），拿它的倍率当判据测的是韩语模板加机器负载——CI 和 xdist
+    # 下单次采样被调度抢占就是 {40: 0.003, 80: 0.236} 这种误红。那条后来修掉了，整条
+    # extract_directives 在空白上已是线性，但整体计时量的仍是 21 条模板之和，模板 4
+    # 自己回退时淹在里面，理由不变。
+    # 模板 4 前置空白全部去原子化时，本机 80 个空格最快一次 0.96s（n^5：20→40 涨
+    # 24 倍）；原子化版本约 2µs。所以 0.1 秒的线**只有快的一侧**余量充足（约五万倍），
+    # 慢的一侧只有**约 10 倍**：慢 runner 上也不要把它放宽到 1 秒，否则全量回退就拦不住了。
+    # 取多次里最快的一次滤掉调度噪声。
+    pat = [p for locale, _kind, p in D.DIRECTIVE_PATTERNS if locale == "zh"][3]
+    assert pat.pattern == raw
+    text = "关于" + " " * 80
+    elapsed = fastest_run(lambda: list(pat.finditer(text)), stop_below=0.1)
+    assert elapsed < 0.1, f"模板 4 在 {text!r} 上最快也要 {elapsed:.3f}s，空白瓜分回溯又回来了"
 
 
 # ── 33. 括号段本身也要认一层同种嵌套 ─────────────────────────
@@ -2867,16 +2993,17 @@ def test_the_nested_branch_only_applies_to_asymmetric_pairs():
 
 def test_nesting_does_not_regress_the_bounded_scan():
     """嵌套分支仍然有界——两个分支互斥，不会引进歧义回溯。"""  # noqa: DOCSTRING_CJK
-    import time
+    from tests.wall_clock import fastest_run
 
     extract_directives(" ")  # 预热
-    started = time.perf_counter()
-    extract_directives("《" * 8000)
-    unmatched = time.perf_counter() - started
-    started = time.perf_counter()
-    extract_directives("别提" + "《《a》" * 40)
-    nested = time.perf_counter() - started
-    assert unmatched < 1.0, unmatched
+    # ⚠️ ``"《" * 8000`` 的线和 test_no_bracket_pair_scans_to_the_end 同一个输入、同一道
+    # 10 秒：它在 Windows CI 上量到过 7.37 秒，取最快一次只滤得掉偶发抢占，滤不掉整台
+    # runner 持续偏慢，1 秒的线在那里会误红（codex P2）。这条只是兜底——括号体无界的
+    # 精确判据在 test_bracket_bodies_are_bounded（结构面）和
+    # test_unmatched_openers_stay_linear（倍率）。本条独有的判据是下面嵌套那一行。
+    unmatched = fastest_run(lambda: extract_directives("《" * 8000), repeat=3, stop_below=10.0)
+    nested = fastest_run(lambda: extract_directives("别提" + "《《a》" * 40), stop_below=0.2)
+    assert unmatched < 10.0, unmatched
     assert nested < 0.2, nested
 
 
@@ -4434,6 +4561,8 @@ def test_no_cross_line_gap_remains_anywhere_in_a_zh_template():
         # ⚠️ _ZH_OBJECTLESS_AHEAD 豁免：它是**零宽负前视**，只会「多挡一些」，
         # 拉不进任何内容。判据管的是会 consume 的那些空白。
         body = raw.replace(D._ZH_OBJECTLESS_AHEAD, "")
+        # 话题开头「不许空白起头」的 ``(?!\s)`` 同理：零宽、只挡不吃
+        body = body.replace(r"(?!\s)", "")
         body = body.replace(D._ZH_HSPACE, "")
         body = body.replace(chr(92) + "s*$", "")
         # 取反的字符类里出现 ``\s`` 是在**排除**空白，方向相反，不在此列。

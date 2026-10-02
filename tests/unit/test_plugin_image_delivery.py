@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 from plugin.sdk.shared.core.images import MAX_SOURCE_IMAGE_PIXELS
+from tests.fastapi_routes import iter_routes
 
 
 pytestmark = pytest.mark.unit
@@ -2395,7 +2396,7 @@ def test_the_main_server_serves_the_media_path_it_now_hands_out():
     """
     from app.main_server.web_app import app
 
-    paths = {getattr(route, "path", None) for route in app.routes}
+    paths = {route.path for route in iter_routes(app.routes)}
     assert "/media/{image_id}" in paths
 
 @pytest.mark.asyncio

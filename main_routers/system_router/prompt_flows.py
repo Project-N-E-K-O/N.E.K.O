@@ -34,9 +34,11 @@ from utils.seven_day_tutorial_state import (
     get_seven_day_tutorial_state_response,
     replace_seven_day_tutorial_state,
 )
+from utils.click_guide_state import get_click_guide_state, update_click_guide_state
 
 _SEVEN_DAY_SUBMIT_LOCK = asyncio.Lock()
 _AUTOSTART_SUBMIT_LOCK = asyncio.Lock()
+_CLICK_GUIDE_SUBMIT_LOCK = asyncio.Lock()
 
 
 def _consume_detached_operation_result(task: asyncio.Task) -> None:
@@ -123,6 +125,29 @@ async def put_seven_day_tutorial_state(request: Request):
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     return {"ok": True, **store}
+
+
+@router.get("/click-guide/state")
+async def get_click_guide():
+    return await _run_serialized_in_worker(
+        _CLICK_GUIDE_SUBMIT_LOCK, get_click_guide_state, config_manager=get_config_manager(),
+    )
+
+
+@router.post("/click-guide/state")
+async def post_click_guide(request: Request):
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        return validation_error
+    try:
+        result = await _run_serialized_in_worker(
+            _CLICK_GUIDE_SUBMIT_LOCK, update_click_guide_state, payload,
+            config_manager=get_config_manager(),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return JSONResponse(status_code=200 if result["ok"] else 409, content=result)
 
 
 @router.get("/autostart-prompt/state")

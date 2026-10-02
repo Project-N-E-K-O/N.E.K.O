@@ -22,6 +22,7 @@ Method-only mixin: every instance attribute is assigned in
 import asyncio
 import json
 import time
+from .session_records import INPUT_DISPATCH_DEFERRED
 from websockets import exceptions as web_exceptions
 from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -114,12 +115,21 @@ class StreamingMixin:
             if not self.pending_input_data:
                 return
             self._pending_input_flush_active = True
+            idle_event = asyncio.Event()
+            self._pending_input_flush_idle_event = idle_event
+
+        def release_gate():
+            if getattr(self, "_pending_input_flush_idle_event", None) is idle_event:
+                self._pending_input_flush_active = False
+                self._pending_input_flush_idle_event = None
+            # Rollback precedes this signal, including on cancellation.
+            idle_event.set()
 
         try:
             while True:
                 async with self.input_cache_lock:
                     if not self.pending_input_data:
-                        self._pending_input_flush_active = False
+                        release_gate()
                         return
                     # Drain atomically, then process outside this lock. One-shot
                     # image attachments may need _ensure_offline_session_for_text_input(),
@@ -127,6 +137,7 @@ class StreamingMixin:
                     # path while still holding the lock would deadlock.
                     pending_messages = list(self.pending_input_data)
                     self.pending_input_data.clear()
+                    self._pending_input_flush_batch = tuple(pending_messages)
 
                 # Once detached from ``pending_input_data``, this local batch
                 # owns every message until each item reaches a terminal handling
@@ -147,8 +158,22 @@ class StreamingMixin:
                     dropped_text_for_voice = 0
                     for index, message in enumerate(pending_messages):
                         msg_input_type = message.get("input_type")
+                        # Keep the current item in the rollback window until
+                        # the provider dispatch boundary is reached. Several
+                        # text/image paths await preparation first (for
+                        # example Focus scoring), so advancing this cursor at
+                        # loop entry would lose an item when that await is
+                        # cancelled.
+                        def mark_dispatch_attempted() -> None:
+                            nonlocal next_unprocessed
+                            next_unprocessed = index + 1
+
                         try:
                             if msg_input_type == "audio":
+                                # Queue admission is the audio dispatch
+                                # boundary; the queue worker owns the later
+                                # provider handoff.
+                                mark_dispatch_attempted()
                                 await self._enqueue_audio_stream_data(message)
                             else:
                                 if (
@@ -159,7 +184,16 @@ class StreamingMixin:
                                     dropped_text_for_voice += 1
                                     next_unprocessed = index + 1
                                     continue
-                                await self._process_stream_data_internal(message)
+                                result = await self._process_stream_data_internal(
+                                    message,
+                                    on_dispatch_attempted=mark_dispatch_attempted,
+                                )
+                                if result is INPUT_DISPATCH_DEFERRED:
+                                    return  # finally restores this item and its suffix.
+                                # A normal early return (validation failure or
+                                # an intentional drop) is terminal handling,
+                                # even though it never reaches a provider.
+                                next_unprocessed = index + 1
                         except asyncio.CancelledError:
                             raise
                         except Exception as e:
@@ -173,7 +207,6 @@ class StreamingMixin:
                                 e,
                             )
                             continue
-                        next_unprocessed = index + 1
                     if dropped_text_for_voice:
                         logger.info(
                             "[%s] _flush_pending_input_data: dropped %d cached text "
@@ -191,10 +224,10 @@ class StreamingMixin:
                     if unprocessed:
                         async with self.input_cache_lock:
                             self.pending_input_data[0:0] = unprocessed
+                    self._pending_input_flush_batch = ()
         finally:
             async with self.input_cache_lock:
-                if getattr(self, "_pending_input_flush_active", False):
-                    self._pending_input_flush_active = False
+                release_gate()
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
@@ -247,7 +280,10 @@ class StreamingMixin:
             return
         # 检查session是否就绪
         async with self.input_cache_lock:
-            if getattr(self, "_pending_input_flush_active", False):
+            if (
+                getattr(self, "_pending_input_flush_active", False)
+                or getattr(self, "_pending_input_flush_scheduled", None) is not None
+            ):
                 # Replay owns ordering until its current batch finishes. Queue
                 # live input behind it instead of racing the same offline
                 # session's stream_text/stream_image call.
@@ -281,7 +317,15 @@ class StreamingMixin:
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
-                await self.start_session(self.websocket, new=False, input_mode=mode)
+                try:
+                    await self.start_session(self.websocket, new=False, input_mode=mode)
+                except asyncio.CancelledError as exc:
+                    # A concurrent end/reset revoked this auto-start. The
+                    # websocket receive loop remains owned by the caller.
+                    if not self._consume_start_retirement_cancellation(exc):
+                        raise
+                    logger.info("Session auto-start cancelled; dropping this input")
+                    return
 
                 # 检查启动是否成功
                 if not self.session or not self.is_active:
@@ -381,11 +425,16 @@ class StreamingMixin:
                 self._starting_input_mode = None
         # Do not await between releasing the guard and entering start_session;
         # its synchronous prologue reacquires the startup ownership.
-        await self.start_session(
-            self.websocket,
-            new=False,
-            input_mode="text",
-        )
+        try:
+            await self.start_session(
+                self.websocket,
+                new=False,
+                input_mode="text",
+            )
+        except asyncio.CancelledError as exc:
+            if not self._consume_start_retirement_cancellation(exc):
+                raise
+            return False
         if (
             not self.session
             or not self.is_active
@@ -395,10 +444,24 @@ class StreamingMixin:
             return False
         return True
 
-    async def _process_stream_data_internal(self, message: dict):
+    async def _process_stream_data_internal(
+        self,
+        message: dict,
+        *,
+        on_dispatch_attempted=None,
+    ):
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
+        if input_type == "audio" and any(
+            not retirement.handoff_safe.is_set()
+            for retirement in getattr(self, "_session_retirements", ())
+        ):
+            # A detached old session is inactive before its ASR and output
+            # producers finish. PCM already in flight must not treat that gap
+            # as an auto-start request. After handoff the ordinary startup and
+            # microphone lease guards decide whether new audio is admissible.
+            return
         if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
@@ -413,8 +476,21 @@ class StreamingMixin:
         
         # 如果正在启动session，这不应该发生（因为stream_data已经检查过了）
         if self._starting_session_count > 0:
-            logger.debug("Session正在启动中，跳过...")
-            return
+            operation = self._current_start_request()
+            owns_ready_flush = (
+                operation is not None
+                and operation is getattr(self, "_start_operation", None)
+                and operation.valid
+                and self.session_ready
+                and self.is_active
+                and self.session is not None
+                and getattr(self, "_pending_input_flush_active", False)
+            )
+            if not owns_ready_flush:
+                logger.debug("Session正在启动中，跳过...")
+                if callable(on_dispatch_attempted):
+                    return INPUT_DISPATCH_DEFERRED
+                return
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
@@ -450,7 +526,12 @@ class StreamingMixin:
             
             # 根据输入类型确定模式
             mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
-            await self.start_session(self.websocket, new=False, input_mode=mode)
+            try:
+                await self.start_session(self.websocket, new=False, input_mode=mode)
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                return
             
             # 检查启动是否成功
             if not self.session or not self.is_active:
@@ -672,16 +753,15 @@ class StreamingMixin:
                     # 废，passive callback 跟用户输入一起留在 history 让 AI
                     # 后续仍能 reference）。
                     #
-                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
-                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
-                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
-                    # snapshot 回滚。
+                    # Drain also removes hot-swap mirrors. Keep every drained
+                    # callback retryable until this turn reaches history.
                     _agent_cb_ctx = ""
                     _agent_cb_images = []
-                    _agent_cb_media_drained = []
+                    _agent_cb_drained = []
+                    _agent_cb_extra_snapshot = []
                     # ⚠️ 必须在外层 try **之前**绑定：回滚发生在 drain 之后的任意
                     # 一个 await 上，包括早于下面赋值点的那些。定义在 try 内部的话，
-                    # 早期取消会让 except 里读到未绑定的名字，回滚静默失效。
+                    # 早期取消会让 finally 里读到未绑定的名字，回滚静默失效。
                     _cb_turn_committed = False
                     if self.pending_agent_callbacks:
                         callbacks_snapshot = self._claim_agent_callbacks_for_llm()
@@ -690,6 +770,15 @@ class StreamingMixin:
                                 callbacks_snapshot,
                                 self.session,
                             )
+                            _agent_cb_extra_snapshot = list(
+                                getattr(self, "pending_extra_replies", None) or []
+                            )
+                            # Taken after the media await and before the
+                            # synchronous drain: a callback another path
+                            # dequeued during that await is not this drain's.
+                            _queued_before_drain = {
+                                id(cb) for cb in self.pending_agent_callbacks
+                            }
                             _agent_cb_ctx = (
                                 self.drain_agent_callbacks_for_llm(
                                     callbacks_snapshot
@@ -703,19 +792,16 @@ class StreamingMixin:
                                         [],
                                     )
                                 )
-                                # 记下**真正被 drain 掉的、带图的**那些 callback。
-                                # 下面这轮如果在 user message 落 history 之前就抛
-                                # 了（offline 切 vision model 会新建 LLM 客户端，
-                                # 网络抖 / key 失效都会抛），文本和图一起消失且已
-                                # 报告投递成功，再也不会重试。
+                                # Track only callbacks this drain consumed;
+                                # deferred entries must retain their queue order.
                                 _still_queued = {
                                     id(cb) for cb in self.pending_agent_callbacks
                                 }
-                                _agent_cb_media_drained = [
+                                _agent_cb_drained = [
                                     cb
                                     for cb in callbacks_snapshot
                                     if isinstance(cb, dict)
-                                    and cb.get("media_images")
+                                    and id(cb) in _queued_before_drain
                                     and id(cb) not in _still_queued
                                 ]
                         except Exception as _cb_err:
@@ -726,9 +812,18 @@ class StreamingMixin:
                                 callbacks_snapshot
                             )
 
+                    # 同 _cb_turn_committed：在 try 之前绑定，finally 才读得到。
+                    reply_turn = None
                     try:
                         text_request_id = message.get("request_id")
                         self._active_text_request_id = text_request_id
+                        # 本回复的快照：它的丢弃 / 完成回调可能在很久之后才跑
+                        # （close() 截断的回复要等停住的工具或退避返回才收尾），
+                        # 那时共享的 request id / meta 可能已属于新一轮。
+                        reply_turn = self._begin_reply_turn(
+                            speech_id=new_user_sid,
+                            request_id=text_request_id,
+                        )
                         # Path A (inline) Focus 凝神：score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -747,6 +842,7 @@ class StreamingMixin:
                             discard_message: str | None = None,
                             *,
                             _request_id=text_request_id,
+                            _reply_turn=reply_turn,
                         ) -> None:
                             await self.handle_response_discarded(
                                 reason,
@@ -755,7 +851,14 @@ class StreamingMixin:
                                 will_retry,
                                 discard_message,
                                 request_id=_request_id,
+                                reply_turn=_reply_turn,
                             )
+
+                        async def response_done_callback(
+                            *,
+                            _reply_turn=reply_turn,
+                        ) -> None:
+                            await self.handle_response_complete(reply_turn=_reply_turn)
 
                         input_transcript_callback = None
                         if memory_text:
@@ -779,6 +882,7 @@ class StreamingMixin:
                             "system_prefix": _agent_cb_ctx or None,
                             "thinking_on": _focus_thinking,
                             "response_discarded_callback": response_discarded_callback,
+                            "response_done_callback": response_done_callback,
                         }
                         def _mark_cb_turn_committed() -> None:
                             nonlocal _cb_turn_committed
@@ -786,25 +890,10 @@ class StreamingMixin:
 
                         if _agent_cb_images:
                             stream_text_kwargs["system_prefix_images"] = _agent_cb_images
-                        if _agent_cb_media_drained:
-                            # 装载判据必须跟下面回滚的判据**是同一个**。回滚看的是
-                            # _agent_cb_media_drained（带图且已出队的 callback），
-                            # 按 _agent_cb_images 装的话，两者一旦分叉，那一轮就没
-                            # 人置 _cb_turn_committed：stream_text 把文字写进
-                            # history 之后再抛，外层回滚会认定"没提交过"而把
-                            # callback 放回队列，下一轮重复投递同一条通知。
-                            #
-                            # 今天这两个集合在 Offline 上是同进同出的——staging 的
-                            # _renderable 截断、预算延后标志、drain 的 STOP 判据三
-                            # 者对齐，凡是被 drain 摘走的带图 callback 都拿得到图，
-                            # 所以现在**构造不出**上面那个分叉（Codex P2 提的场景
-                            # 我没能复现）。改成按回滚判据装，是不让这个"同进同出"
-                            # 变成隐式前提：它由三处独立代码共同维持，任一处以后
-                            # 松动，分叉就会以"重复投递"的形式出现在用户面前，而
-                            # 那时没有任何断言会先红。
-                            #
-                            # 本次调用自己的「已进 history」标记。不能拿全局 history
-                            # 长度判断：并发的另一条文本请求同样会追加。
+                        if _agent_cb_drained:
+                            # Use this request's commit notification for both
+                            # text-only and image callbacks. Another request's
+                            # history growth cannot establish this one's delivery.
                             stream_text_kwargs["on_turn_committed"] = (
                                 _mark_cb_turn_committed
                             )
@@ -829,6 +918,10 @@ class StreamingMixin:
                                 # 的话，_focus_thinking_active 已经置上、通知已经入队，
                                 # 而清理永远不会执行，气泡就一直亮到下一轮偶然把它关掉。
                                 await self._push_focus_thinking(True)
+                            if callable(on_dispatch_attempted):
+                                on_dispatch_attempted()
+                            # 与下面的调用之间没有 await：记下的就是真正接这轮的 client。
+                            reply_turn.session = self.session
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
                             # stream_text claims the staged attachments (or puts them
@@ -840,7 +933,7 @@ class StreamingMixin:
                             # / error turns. _push_focus_thinking is idempotent, so a no-op
                             # clear when nothing pulsed costs nothing.
                             await self._push_focus_thinking(False)
-                    except BaseException:
+                    finally:
                         # drain 之后到本轮进 history 之间的**每一个** await 都要
                         # 覆盖，不只是 stream_text：会话拆除时这条输入任务可能在
                         # _focus_inline_decision / _push_focus_thinking(True) 里就
@@ -850,11 +943,12 @@ class StreamingMixin:
                         # 仍然只在**这一轮没进 history** 时回滚：已提交之后的失败
                         # 属于既有的 best-effort 契约（内容已经在模型眼前了），
                         # 回滚反而会重复投递。
-                        if _agent_cb_media_drained and not _cb_turn_committed:
-                            self._requeue_undelivered_callback_media(
-                                _agent_cb_media_drained
+                        if _agent_cb_drained and not _cb_turn_committed:
+                            self._requeue_undelivered_callbacks(
+                                _agent_cb_drained, _agent_cb_extra_snapshot
                             )
-                        raise
+                        if reply_turn is not None:
+                            self._end_reply_turn(reply_turn)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
@@ -944,6 +1038,8 @@ class StreamingMixin:
                             if self._should_drop_magic_command_image(message.get("request_id")):
                                 return
                             # 只添加到待发送队列，等待与文本一起发送
+                            if callable(on_dispatch_attempted):
+                                on_dispatch_attempted()
                             await target_session.stream_image(image_b64)
                             if not self.is_active or self.session is not target_session:
                                 return
@@ -989,6 +1085,8 @@ class StreamingMixin:
                             # One-shot avatar/chat attachments retain the
                             # pre-existing text/offline contract above.
                             if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                                if callable(on_dispatch_attempted):
+                                    on_dispatch_attempted()
                                 stage_result = await target_session.stream_image(
                                     image_b64,
                                     source=input_type,

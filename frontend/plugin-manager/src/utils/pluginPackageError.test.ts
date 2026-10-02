@@ -41,6 +41,13 @@ describe('resolvePluginPackageErrorMessage', () => {
       .toBe(expected)
   })
 
+  it('explains a profile ownership conflict instead of the generic install failure', () => {
+    expect(resolvePluginPackageErrorMessage(responseError('PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT', {
+      package_id: 'srcwarn_demo',
+      plugin_ids: ['srcwarn_demo'],
+    }), t, 'install')).toBe('package.install.error.profileOwnershipConflict')
+  })
+
   it('explains a rolled-back hash mismatch as a package validation problem', () => {
     expect(resolvePluginPackageErrorMessage(responseError('PLUGIN_UPGRADE_ROLLED_BACK', {
       rollback_status: 'completed',

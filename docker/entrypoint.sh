@@ -575,6 +575,15 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
     location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
@@ -694,6 +703,15 @@ server {
     
     # 取消客户端请求体大小限制
     client_max_body_size 0;
+
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
     location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {

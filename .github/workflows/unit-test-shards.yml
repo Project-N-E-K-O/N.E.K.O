@@ -139,5 +139,14 @@ jobs:
       - name: Run frontend contract tests
         run: |
           node --test tests/frontend/asr_input_delivery_status.test.cjs
+          node --test tests/frontend/mic_recovery_route.test.cjs
+          node --test tests/frontend/voice_preparing_toast.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
+          node --test tests/frontend/vrm_guided_facing.test.cjs
+          node --test tests/frontend/vrm_guided_lifecycle.test.cjs
+          node --test tests/frontend/vrm_animation_translation.test.cjs
+          node --test tests/frontend/vrm_preferences_persistence.test.cjs
+          # tests/unit/*.test.js 是 pytest 永不收集的 node:test 文件；用 glob
+          # 而非手列清单，新增文件无法再静默绕过 CI。
+          node --test tests/unit/*.test.js

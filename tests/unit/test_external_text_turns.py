@@ -2949,6 +2949,8 @@ async def test_concurrent_transport_abort_closes_detached_socket_once():
     socket = FakeSocket()
     client.ws = socket
     client._fatal_error_occurred = False
+    client._is_gemini = False
+    client._retired_websockets = []
 
     await asyncio.gather(
         client._abort_failed_transport("first"),

@@ -200,6 +200,9 @@ class TranscriptDispatcher:
             maxsize=capacity
         )
         self._reservations: set[FinalKey] = set()
+        # One delivery ledger spans accepted reservations, queued envelopes
+        # and active dispatch; moving between stages does not change it.
+        self._pending_turns: dict[FinalKey, VoiceTurnToken] = {}
         self._worker: asyncio.Task[None] | None = None
         self._active: TranscriptEnvelope | None = None
         self._idle = asyncio.Event()
@@ -215,6 +218,21 @@ class TranscriptDispatcher:
             or self._active is not None
         )
 
+    def pending_turn_tokens(self) -> frozenset[VoiceTurnToken]:
+        """Return turns whose accepted final is not yet delivered to Core."""
+
+        return frozenset(self._pending_turns.values())
+
+    def mark_accepted(self, key: FinalKey, turn_token: VoiceTurnToken) -> None:
+        """Pin a reserved slot whose final was accepted but not yet submitted."""
+
+        if key not in self._reservations:
+            raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
+        self._pending_turns[key] = turn_token
+
+    def holds_accepted(self, key: FinalKey) -> bool:
+        return key in self._reservations and key in self._pending_turns
+
     def try_reserve(self, key: FinalKey) -> bool:
         if key in self._reservations:
             return True
@@ -229,7 +247,9 @@ class TranscriptDispatcher:
         return True
 
     def release(self, key: FinalKey) -> None:
-        self._reservations.discard(key)
+        if key in self._reservations:
+            self._reservations.remove(key)
+            self._pending_turns.pop(key, None)
         self._set_idle_if_empty()
 
     def submit(self, envelope: TranscriptEnvelope) -> None:
@@ -238,6 +258,7 @@ class TranscriptDispatcher:
             raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
         self._reservations.remove(key)
         self._queue.put_nowait(envelope)
+        self._pending_turns[key] = envelope.turn_token
         self._idle.clear()
         self._ensure_worker()
 
@@ -245,6 +266,7 @@ class TranscriptDispatcher:
         """Synchronously cancel active/queued Core work at an identity barrier."""
 
         self._reservations.clear()
+        self._pending_turns.clear()
         while True:
             try:
                 self._queue.get_nowait()
@@ -301,6 +323,7 @@ class TranscriptDispatcher:
                         self._worker is worker_task
                         and self._active is envelope
                     ):
+                        self._pending_turns.pop(envelope.final_key, None)
                         self._active = None
                         self._set_idle_if_empty()
                 if self._worker is not worker_task:

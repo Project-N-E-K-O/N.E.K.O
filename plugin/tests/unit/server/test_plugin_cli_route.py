@@ -31,6 +31,9 @@ from plugin.server.routes import plugin_cli as plugin_cli_routes
 
 pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
+# Package import routes accept tokenless calls only from a loopback native
+# client; ASGITransport already reports the client as 127.0.0.1.
+_LOCAL_BASE_URL = "http://127.0.0.1"
 
 
 def _make_plugin_dir(
@@ -264,7 +267,7 @@ async def test_discard_uploaded_package_route_removes_only_requested_upload(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.delete(
             "/plugin-cli/upload",
             params={"package": str(selected["path"])},
@@ -340,7 +343,7 @@ async def test_package_entrypoints_reject_archive_bombs_before_reading_payload(
 
     monkeypatch.setattr(zipfile.ZipFile, "open", guarded_open)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(endpoint, json={"package": str(package_path)})
 
     assert response.status_code == 400
@@ -394,7 +397,7 @@ async def test_plugin_cli_inspect_and_verify_routes(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         inspect_response = await client.post(
             "/plugin-cli/inspect",
             json={"package": str(package_path)},
@@ -423,7 +426,7 @@ async def test_plugin_cli_list_plugins_route_returns_shape(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.get("/plugin-cli/plugins")
 
         assert response.status_code == 200
@@ -531,7 +534,7 @@ async def test_plugin_cli_build_single_plugin_ref_routes_to_exact_user_plugin(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/build",
             json={
@@ -585,7 +588,7 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.get("/plugin-cli/packages")
 
         assert response.status_code == 200
@@ -634,7 +637,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/pack",
             json={
@@ -674,7 +677,7 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         analyze_response = await client.post(
             "/plugin-cli/analyze",
             json={
@@ -769,7 +772,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/unpack",
             json={"package": str(package_path)},
@@ -815,7 +818,7 @@ async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
 
     try:
         transport = ASGITransport(app=plugin_cli_test_app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
             response = await client.post(
                 "/plugin-cli/install-plan",
                 json={"package": str(package_path)},
@@ -943,7 +946,7 @@ async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
 
     try:
         transport = ASGITransport(app=plugin_cli_test_app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
             install_response = await client.post(
                 "/plugin-cli/install",
                 json={"package": str(v1_package)},
@@ -1048,7 +1051,7 @@ async def test_plugin_cli_route_preserves_replacement_operation_after_confirmati
 
     try:
         transport = ASGITransport(app=plugin_cli_test_app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
             install_response = await client.post(
                 "/plugin-cli/install",
                 json={"package": str(installed_package)},
@@ -1102,7 +1105,7 @@ async def test_plugin_cli_install_returns_structured_rollback_details(
 
     monkeypatch.setattr(plugin_cli_routes.service, "install", fail_install)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/install",
             json={"package": "/packages/demo.neko-plugin"},
@@ -1152,7 +1155,7 @@ async def test_plugin_cli_install_records_uploaded_package_as_imported(
     set_global_manager(manager)
     try:
         transport = ASGITransport(app=plugin_cli_test_app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
             upload_response = await client.post(
                 "/plugin-cli/upload",
                 files={"file": (package_path.name, package_bytes, "application/octet-stream")},
@@ -1203,7 +1206,7 @@ async def test_plugin_cli_install_remains_successful_when_import_hashing_fails(
 
     monkeypatch.setattr(plugin_cli_routes.service, "_sha256_file", _hash_failure)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/install",
             json={

@@ -11,6 +11,8 @@ deduped on the material itself: MUSIC keys on the track, MEME on the search keyw
 3. Recent window expires after _RECENT_CHAT_MAX_AGE_SECONDS.
 4. _record_proactive_material: empty key not recorded; per-source_tag buckets stay
    separate.
+5. _find_verbatim_recent_proactive_chat: the one caption check fresh MEME material
+   keeps -- only a pure repeat (punctuation/space/emoji aside) counts.
 """
 import os
 import sys
@@ -122,3 +124,70 @@ def test_recent_material_expires_after_window():
         "MUSIC": deque([(stale_ts, "old song|x")], maxlen=sr._PROACTIVE_MATERIAL_HISTORY_MAX)
     }
     assert sr._is_recent_proactive_material(name, "MUSIC", "old song|x") is False
+
+
+# ── 5. MEME 逐字复读判定 ─────────────────────────────────────
+
+
+def _seed_chat_history(monkeypatch, name, *entries):
+    from collections import deque
+
+    from main_logic.proactive_chat import state
+
+    monkeypatch.setitem(
+        state._proactive_chat_history,
+        name,
+        deque(entries, maxlen=state.PROACTIVE_CHAT_HISTORY_MAX),
+    )
+    return state
+
+
+def test_verbatim_guard_matches_pure_repeat_only(monkeypatch):
+    name = "逐字复读测试"
+    state = _seed_chat_history(
+        monkeypatch, name, (time.time(), "快看这个，真的笑死我了！😂", "meme")
+    )
+
+    # 只差标点 / 空格 / emoji：单纯复读
+    match = state._find_verbatim_recent_proactive_chat(name, "快看这个 真的笑死我了。")
+    assert match.is_duplicate is True
+    assert match.common_fragment == "快看这个 真的笑死我了。"
+    # 相似但不完全一样（SequenceMatcher ≥0.90 也放行）：可以接受
+    assert state._find_verbatim_recent_proactive_chat(
+        name, "快看这个，真是笑死我了！"
+    ).is_duplicate is False
+    assert state._find_verbatim_recent_proactive_chat(
+        name, "快看这个，笑死我了！"
+    ).is_duplicate is False
+    # emoji 的变体选择符 / ZWJ 也不算内容，但重音等真实组合字符保留
+    state = _seed_chat_history(
+        monkeypatch,
+        name,
+        (time.time(), "快看❤️", "meme"),
+        (time.time(), "快看👩\u200d💻", "meme"),
+    )
+    assert state._verbatim_key("快看❤️") == "快看"
+    assert state._verbatim_key("快看👩\u200d💻") == "快看"
+    # 地区旗帜（🏴 + tag 字符序列）同样只是 emoji
+    assert state._verbatim_key(
+        "快看\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F"
+    ) == "快看"
+    assert state._find_verbatim_recent_proactive_chat(name, "快看").is_duplicate is True
+    assert state._verbatim_key("café") != state._verbatim_key("cafe")
+    # 兼容符号按原始类别剔除，不被 NFKC 展开成字母；全角字母照常归一
+    assert state._verbatim_key("快看™") == "快看"
+    assert state._verbatim_key("快看℡") == "快看"
+    assert state._verbatim_key("Ｋｕａｉ") == "kuai"
+    assert state._verbatim_key("cafe\u0301") == state._verbatim_key("café")
+    # 只有标点的草稿没有可比的内容
+    assert state._find_verbatim_recent_proactive_chat(name, "！！😂").is_duplicate is False
+
+
+def test_verbatim_guard_ignores_expired_history(monkeypatch):
+    name = "逐字复读过期测试"
+    stale_ts = time.time() - sr._RECENT_CHAT_MAX_AGE_SECONDS - 10
+    state = _seed_chat_history(monkeypatch, name, (stale_ts, "快看这个，笑死我了", "meme"))
+
+    assert state._find_verbatim_recent_proactive_chat(
+        name, "快看这个，笑死我了"
+    ).is_duplicate is False

@@ -27,6 +27,7 @@ COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 # (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
 COPY static/assets/tutorial /src/static/assets/tutorial
 COPY static/icons /src/static/icons
+COPY static/locales /src/static/locales
 
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only

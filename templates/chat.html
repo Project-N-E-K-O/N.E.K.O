@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/agent-plugin-views.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
@@ -1594,5 +1595,7 @@
         });
     })();
     </script>
+    <script src="/static/tutorial/click-guide/state.js?v={{ static_asset_version }}"></script>
+    {% include 'templates/_click_guide_scripts.html' %}
 </body>
 </html>

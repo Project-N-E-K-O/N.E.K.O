@@ -199,6 +199,8 @@ Important:
 Pull requests run the four behavior markers in `unit-test-shards.yml`, while
 `unit-tests.yml` runs the remaining unmarked unit tests:
 `unit_fast`, `runtime`, `integration_serial`, and `frontend_contract`, plus the
-Node frontend contract test. Each Python shard performs a non-empty collection
-check before execution. The full `tests/unit` gate runs on pushes to `main` and
+Node frontend contract test. The same shard job also runs the root-level
+`tests/unit/*.test.js` node:test suites, which pytest never collects. Each
+Python shard performs a non-empty collection check before execution. The full
+`tests/unit` gate runs on pushes to `main` and
 manual dispatch, avoiding duplicate 45-minute execution on pull requests.

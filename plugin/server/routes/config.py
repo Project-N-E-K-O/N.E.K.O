@@ -118,6 +118,22 @@ async def get_plugin_config_endpoint(plugin_id: str, request: Request, _: str = 
         raise_http_from_domain(error, logger=logger)
 
 
+@router.get("/plugin/{plugin_id}/config/application-state")
+async def get_plugin_config_application_state_endpoint(
+    plugin_id: str,
+    request: Request,
+    _: str = require_admin,
+) -> dict[str, object]:
+    try:
+        return await _dispatch_config(
+            request,
+            config_query_service.get_plugin_config_application_state,
+            plugin_id=plugin_id,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.get("/plugin/{plugin_id}/config/toml")
 async def get_plugin_config_toml_endpoint(plugin_id: str, request: Request, _: str = require_admin) -> dict[str, object]:
     try:

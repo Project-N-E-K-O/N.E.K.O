@@ -2695,10 +2695,12 @@ def test_unavailable_profile_store_never_falls_back_to_plaintext(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured_mode", ["invalid-mode", "shadow"])
 async def test_runtime_install_and_wrapper_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    configured_mode: str,
 ) -> None:
     installed: list[object] = []
     callback_configurations: list[tuple[object | None, object | None]] = []
@@ -2766,7 +2768,7 @@ async def test_runtime_install_and_wrapper_lifecycle(
             (prepare, reconcile)
         ),
     )
-    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
+    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", configured_mode)
     config = SimpleNamespace(local_state_dir=tmp_path)
 
     service = runtime_module.install_voice_identity_runtime(config)

@@ -18,6 +18,26 @@
     };
 
     /**
+     * Whether enumerating the provider's sources may open a system dialog
+     * (xdg-desktop-portal on Linux/Wayland). Every consumer reads this instead
+     * of the raw `sourceEnumerationMayPrompt` field.
+     *
+     * Bridges that predate the flag are inferred from the renderer platform,
+     * mirroring the flag's value in N.E.K.O.-PC (`process.platform === 'linux'`).
+     * They must not all be treated as prompting: a legacy macOS bridge without
+     * screen-recording permission also returns a single source on one display,
+     * which would be mistaken for a portal pick.
+     */
+    window.desktopSourceEnumerationMayPrompt = function (provider) {
+        if (!provider) return false;
+        if (typeof provider.sourceEnumerationMayPrompt === 'boolean') {
+            return provider.sourceEnumerationMayPrompt;
+        }
+        var userAgent = String((navigator && navigator.userAgent) || '');
+        return /Linux/.test(userAgent) && !/Android/.test(userAgent);
+    };
+
+    /**
      * Invoke a desktop capture bridge method with one shared timeout contract.
      *
      * Calling through the provider preserves Electron preload methods that rely
