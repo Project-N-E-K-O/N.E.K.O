@@ -199,6 +199,17 @@ async function phaseT1(c, targets) {
       chatConnectingCount: chat ? await chat.eval('return window.__probeConnecting;') : null,
       chatSocketState: chat ? await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;') : null,
     };
+    // Explicit verdict next to the raw data. A failing T1 is itself the evidence for falling back to design 1,
+    // so it is recorded (not thrown away by an exception); runs.t1.status only says the phase completed.
+    const reasons = [];
+    if (!r.probe || r.probe.wsName !== 'WebSocket' || !r.probe.wsNative) reasons.push('iframe WebSocket is not native');
+    if (!r.probe || !r.probe.rtcNative) reasons.push('iframe RTCPeerConnection is not native');
+    if (!r.iframeConnect || !r.iframeConnect.ok) reasons.push('iframe WebSocket connect failed');
+    if (r.afterIframe.chatConnectingCount !== 0) reasons.push(`iframe connect reached Chat CONNECTING (${r.afterIframe.chatConnectingCount})`);
+    if (!r.parentControl || !r.parentControl.ok) reasons.push('parent positive control did not connect');
+    if (r.afterParentControl.chatConnectingCount !== 1) reasons.push(`positive control CONNECTING count ${r.afterParentControl.chatConnectingCount} != 1 (observer not proven)`);
+    r.verdict = { pass: reasons.length === 0, reasons };
+    log('t1 verdict', JSON.stringify(r.verdict));
     await c.eval(`window.__visitProbe.removeFrame('guest'); return true;`);
     results.t1 = r;
     save();
