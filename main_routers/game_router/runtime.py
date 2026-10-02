@@ -4029,6 +4029,24 @@ async def route_external_voice_transcript(
     )
 
 
+def is_game_route_locked(lanlan_name: str) -> bool:
+    """True while a game route occupies ``lanlan_name``'s slot.
+
+    The exit flow flips ``game_route_active`` off first and releases the
+    session takeover only after cancelling route speech and pushing the window
+    close, so the slot stays occupied until the game's takeover token is gone.
+    """
+    if _get_active_game_route_state(lanlan_name) is not None:
+        return True
+    try:
+        mgr = get_session_manager().get(lanlan_name)
+    except RuntimeError:
+        # Shared state not initialised (no main_server): no manager holds a takeover.
+        return False
+    takeover_owner = getattr(mgr, "takeover_owner", None)
+    return callable(takeover_owner) and takeover_owner() == "game"
+
+
 async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:
     """Finalize every active game route for ``old_lanlan_name`` synchronously.
 

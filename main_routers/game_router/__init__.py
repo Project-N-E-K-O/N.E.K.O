@@ -401,6 +401,7 @@ from .runtime import (  # noqa: F401
     _build_external_user_event,
     _route_external_transcript_to_game,
     route_external_voice_transcript,
+    is_game_route_locked,
     finalize_game_routes_for_character,
     route_external_stream_message,
     _compact_realtime_context_text,
@@ -414,10 +415,10 @@ from .runtime import (  # noqa: F401
 
 # Plug the game route into the shared external-route hijack points. The
 # handlers are the original function objects, so the registered ``game`` kind
-# behaves exactly like the former direct imports. The game route has no
-# separate lock state (``is_locked`` falls back to ``is_active``), no
-# ``on_start_session`` (websocket_router keeps its own game start branch) and
-# no page signals.
+# behaves exactly like the former direct imports. Input hijack still follows
+# ``is_active``; the slot stays locked (``is_locked``) until the exit flow has
+# released the takeover. There is no ``on_start_session`` (websocket_router
+# keeps its own game start branch) and no page signals.
 from utils.external_route_registry import (  # noqa: E402
     ExternalRouteKind,
     register_external_route_kind,
@@ -434,6 +435,7 @@ def _register_external_route_kind() -> None:
         on_start_session=None,
         finalize_for_character=finalize_game_routes_for_character,
         route_voice_transcript=route_external_voice_transcript,
+        is_locked=is_game_route_locked,
         # Game voice uses the ordinary realtime session as its STT provider.
         audio_passthrough=True,
     ))

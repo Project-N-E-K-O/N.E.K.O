@@ -234,7 +234,7 @@ def test_game_router_registers_its_original_handlers():
     # independent-ASR game voice fail with GAME_VOICE_TRANSCRIPT_NOT_ROUTED.
     assert spec.route_voice_transcript is game_router.route_external_voice_transcript
     assert spec.on_start_session is None
-    assert spec.is_locked is None
+    assert spec.is_locked is game_router.is_game_route_locked
     assert spec.has_background_tasks is None
     assert spec.on_page_signal is None
 

@@ -262,3 +262,53 @@ async def test_icebreaker_route_start_is_unchanged_without_another_route(_icebre
 
     assert result["ok"] is True
     assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is not None
+
+
+@pytest.mark.asyncio
+async def test_game_slot_stays_locked_until_its_exit_flow_releases_the_takeover(
+    _icebreaker_clean, monkeypatch,
+):
+    """/route/end flips the route inactive before releasing the takeover.
+
+    In between, the slot must still count as taken: an icebreaker start lands
+    as refused, and is accepted once the takeover is released. Mutation:
+    registering the game kind without ``is_locked`` turns this red.
+    """
+    import asyncio
+
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_window_close(*_args, action="", **_kwargs):
+        if action != "closed":
+            return
+        entered.set()
+        await release.wait()
+
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", _slow_window_close)
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        finalize = asyncio.create_task(
+            gr_runtime._finalize_game_route_state(state, reason="test_end")
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert state["game_route_active"] is False
+        assert manager.takeover_owner() == "game"
+
+        refused = await icebreaker_router.icebreaker_route_start(
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+        )
+        assert refused == {"ok": False, "reason": "route_owned_by_external"}
+
+        release.set()
+        await asyncio.wait_for(finalize, timeout=5)
+        assert manager.takeover_owner() is None
+        accepted = await icebreaker_router.icebreaker_route_start(
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+        )
+        assert accepted["ok"] is True
