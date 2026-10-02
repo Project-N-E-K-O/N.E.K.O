@@ -275,17 +275,17 @@ def test_text_parts_split_by_an_image_each_keep_their_slot():
     assert project_screen_history([_assistant_parts(labelled), _user("继续")])[0]["content"] == [
         text("看这张。"), image, text("再看这张，挺好的。"),
     ]
-    indented = [text("    屏幕搭话：看这张。"), image, text("屏幕搭话：再看这张，挺好的。")]
+    indented = [text("    echo screen comment: demo"), image, text("屏幕搭话：再看这张，挺好的。")]
     assert project_screen_history([_assistant_parts(indented), _user("继续")])[0]["content"] == [
-        text("看这张。"), image, text("再看这张，挺好的。"),
+        text("    echo demo"), image, text("再看这张，挺好的。"),
     ]
     spaced = [text("屏幕搭话：看这张。 "), image, text(" 屏幕搭话：再看这张，挺好的。")]
     assert project_screen_history([_assistant_parts(spaced), _user("继续")])[0]["content"] == [
-        text("看这张。"), image, text("再看这张，挺好的。"),
+        text("看这张。 "), image, text(" 再看这张，挺好的。"),
     ]
     intro = [text("先说一句 "), image, text(chain("屏幕搭话："))]
     content = project_screen_history([_assistant_parts(intro), _user("继续")])[0]["content"]
-    assert content[:2] == [text("先说一句"), image]
+    assert content[:2] == [text("先说一句 "), image]
     _assert_cut_to_first_comment(content[2]["text"])
     chained = [text("屏幕搭话：" + PARTS[0]), image, text("屏幕搭话：" + PARTS[1])]
     content = project_screen_history([_assistant_parts(chained), _user("继续")])[0]["content"]

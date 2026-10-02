@@ -278,14 +278,17 @@ def _split_over(texts, text):
         # The joining newline, and any whitespace a part starts or ends with
         # (a removed label keeps the text's own indentation).
         remaining = remaining.lstrip()
-        core = _strip_labels(original).strip()
+        label_free = _strip_labels(original)
+        core = label_free.strip()
+        # The part keeps its own indentation and trailing whitespace.
+        lead = label_free[:len(label_free) - len(label_free.lstrip())]
         if not remaining or not core:
             pieces.append("")
         elif remaining.startswith(core):
-            pieces.append(core)
+            pieces.append(label_free)
             remaining = remaining[len(core):]
         elif core.startswith(remaining):
-            pieces.append(remaining)
+            pieces.append(lead + remaining)
             remaining = ""
         else:
             return None
