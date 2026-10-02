@@ -191,6 +191,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "发 mailto:me@example.com?subject=屏幕搭话：a 或 data:text/plain,屏幕搭话：b 都行。",
     "见下图[shot][1]。\n\n[1]: <asset?caption=屏幕搭话：a>",
     "看 [shot](<assets/a 屏幕搭话：b.png>) 这张。",
+    "看 [shot](<assets/a 屏幕搭话：b.png> \"标题\") 和 [二](<c 屏幕搭话：d.png> '标题') 这两张。",
     "见下图[shot][1]和[shot2][2]。\n\n[1]: /assets/屏幕搭话：a.png\n  [2]: ../img/【屏幕画面】/b.png",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
