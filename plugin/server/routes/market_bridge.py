@@ -103,6 +103,15 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
+# httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
+# 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
+# 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
+# bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
+# 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
+_DOWNLOAD_TOTAL_TIMEOUT = 1800.0
+# 攒够这么多字节才交给线程写一次。迭代粒度仍是 64KiB（取消检查与进度上报的密度不
+# 变），但 200MB 的包只产生约 200 次线程往返，而不是 3200 次。
+_DOWNLOAD_FLUSH_BYTES = 1024 * 1024
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 
 # GitHub Release download mirrors exposed by the local plugin-manager UI.
@@ -4435,53 +4444,78 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
     os.close(fd)
     package_path = Path(raw_path)
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
-            follow_redirects=True,
-            max_redirects=5,
-        ) as client:
-            async with client.stream("GET", url) as response:
-                response.raise_for_status()
+        # 总时长兜底：httpx 的 Timeout(120.0) 是每阶段的，滴流式响应永远不触发它。
+        async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
+                follow_redirects=True,
+                max_redirects=5,
+            ) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
 
-                content_length = response.headers.get("content-length")
-                if content_length and int(content_length) > _DOWNLOAD_MAX_BYTES:
-                    raise ValueError(
-                        f"包文件过大: {int(content_length)} bytes "
-                        f"(最大 {_DOWNLOAD_MAX_BYTES} bytes)"
-                    )
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > _DOWNLOAD_MAX_BYTES:
+                        raise ValueError(
+                            f"包文件过大: {int(content_length)} bytes "
+                            f"(最大 {_DOWNLOAD_MAX_BYTES} bytes)"
+                        )
 
-                downloaded = 0
-                total_bytes = int(content_length) if content_length else None
-                task["total_bytes"] = total_bytes
-                task["downloaded_bytes"] = 0
+                    downloaded = 0
+                    total_bytes = int(content_length) if content_length else None
+                    task["total_bytes"] = total_bytes
+                    task["downloaded_bytes"] = 0
 
-                with package_path.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(chunk_size=65536):
-                        _raise_if_task_cancel_requested(task)
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        task["downloaded_bytes"] = downloaded
+                    # open/close 保持同步（各一次 syscall），但**每一次 write 都不再
+                    # 落在事件循环上**。原来是每 64KiB 直接 handle.write()：200MB 的包
+                    # 要和 loop 交织 3200 次阻塞写，而 Windows 上 Defender 扫一个刚创建
+                    # 的 .neko-plugin 会让每次写都可能卡顿——这期间插件服务器的**所有**
+                    # 路由（/plugins、/plugin_cli、/runs、/websocket、插件 UI 流）都停摆。
+                    # 同一个函数里的哈希早就是 to_thread 的（_verify_sha256_file 的调用
+                    # 点），写循环只是漏了。
+                    #
+                    # 不在 finally 里 await close：超时/取消时 finally 里有 CancelledError
+                    # 在飞，那个 await 会再次抛出，句柄就漏了。with 的同步 close 没这个
+                    # 问题，而它只有一次 flush。
+                    with package_path.open("wb") as handle:
+                        pending = bytearray()
 
-                        if downloaded > _DOWNLOAD_MAX_BYTES:
-                            raise ValueError(
-                                f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
-                            )
+                        async def _flush_pending() -> None:
+                            if pending:
+                                await asyncio.to_thread(handle.write, bytes(pending))
+                                pending.clear()
 
-                        if total_bytes:
-                            dl_progress = downloaded / total_bytes
-                            task["progress"] = 0.1 + dl_progress * 0.6
-                            task["message"] = (
-                                f"正在下载: {_format_bytes(downloaded)}"
-                                f" / {_format_bytes(total_bytes)}"
-                            )
-                        else:
-                            task["progress"] = min(
-                                0.65,
-                                task.get("progress", 0.1) + 0.01,
-                            )
-                            task["message"] = (
-                                f"正在下载: {_format_bytes(downloaded)}"
-                            )
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            _raise_if_task_cancel_requested(task)
+                            pending += chunk
+                            downloaded += len(chunk)
+                            task["downloaded_bytes"] = downloaded
+
+                            if downloaded > _DOWNLOAD_MAX_BYTES:
+                                raise ValueError(
+                                    f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
+                                )
+
+                            if len(pending) >= _DOWNLOAD_FLUSH_BYTES:
+                                await _flush_pending()
+
+                            if total_bytes:
+                                dl_progress = downloaded / total_bytes
+                                task["progress"] = 0.1 + dl_progress * 0.6
+                                task["message"] = (
+                                    f"正在下载: {_format_bytes(downloaded)}"
+                                    f" / {_format_bytes(total_bytes)}"
+                                )
+                            else:
+                                task["progress"] = min(
+                                    0.65,
+                                    task.get("progress", 0.1) + 0.01,
+                                )
+                                task["message"] = (
+                                    f"正在下载: {_format_bytes(downloaded)}"
+                                )
+
+                        await _flush_pending()
 
         return package_path
     except asyncio.CancelledError:
@@ -4523,6 +4557,21 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
         )
         raise _DownloadAttemptError("下载网络错误") from exc
+    except TimeoutError as exc:
+        # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
+        # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
+        # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception
+        # 裸抛出去——既拿不到 GitHub 直连的回退重试，用户看到的也不是"下载超时"。
+        _cleanup_download_file(package_path)
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.warning(
+            "[market-download] request failed "
+            "category=total_timeout status=unavailable request_id=unavailable "
+            "elapsed_ms={} origin={}",
+            elapsed_ms,
+            _safe_url_log_origin(url),
+        )
+        raise _DownloadAttemptError("下载超时") from exc
     except ValueError as exc:
         _cleanup_download_file(package_path)
         raise _DownloadAttemptError(str(exc)) from exc
