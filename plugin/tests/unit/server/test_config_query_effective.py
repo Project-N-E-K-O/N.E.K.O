@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from plugin.server.application.config.query_service import ConfigQueryService
+from plugin.server.application.config import query_service as query_service_module
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import config_paths
 
@@ -164,3 +165,119 @@ async def test_get_plugin_effective_config_rejects_bad_base_shape(monkeypatch: p
         await service.get_plugin_effective_config(plugin_id="demo", profile_name="dev")
 
     assert exc_info.value.code == "INVALID_DATA_SHAPE"
+
+
+@pytest.mark.plugin_unit
+def test_application_state_classifies_host_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    plugin_id = "demo"
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir()
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(query_service_module, "_current_owner_config_path_sync", lambda _plugin_id: config_path)
+
+    class _Host:
+        applied_config_fingerprint = "sha256:applied"
+
+        def is_alive(self) -> bool:
+            return True
+
+    host = _Host()
+    host.config_path = config_path
+
+    with query_service_module.state.acquire_plugin_hosts_write_lock():
+        previous = query_service_module.state.plugin_hosts.get(plugin_id)
+        query_service_module.state.plugin_hosts[plugin_id] = host
+    try:
+        matched = query_service_module._application_state_sync(
+            plugin_id=plugin_id,
+            persisted_fingerprint="sha256:applied",
+        )
+        pending = query_service_module._application_state_sync(
+            plugin_id=plugin_id,
+            persisted_fingerprint="sha256:changed",
+        )
+        assert matched["config_state"] == "matched"
+        assert pending["config_state"] == "pending"
+    finally:
+        with query_service_module.state.acquire_plugin_hosts_write_lock():
+            if previous is None:
+                query_service_module.state.plugin_hosts.pop(plugin_id, None)
+            else:
+                query_service_module.state.plugin_hosts[plugin_id] = previous
+
+
+@pytest.mark.plugin_unit
+def test_application_state_is_conservative_for_stale_or_missing_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir()
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(query_service_module, "_current_owner_config_path_sync", lambda _plugin_id: config_path)
+
+    class _StaleHost:
+        config_path = tmp_path / "other" / "plugin.toml"
+        applied_config_fingerprint = "sha256:applied"
+
+        def is_alive(self) -> bool:
+            return True
+
+    with query_service_module.state.acquire_plugin_hosts_write_lock():
+        previous = query_service_module.state.plugin_hosts.get(plugin_id)
+        query_service_module.state.plugin_hosts[plugin_id] = _StaleHost()
+    try:
+        stale = query_service_module._application_state_sync(
+            plugin_id=plugin_id,
+            persisted_fingerprint="sha256:applied",
+        )
+        assert stale["config_state"] == "not_running"
+        assert stale["applied_fingerprint"] is None
+    finally:
+        with query_service_module.state.acquire_plugin_hosts_write_lock():
+            if previous is None:
+                query_service_module.state.plugin_hosts.pop(plugin_id, None)
+            else:
+                query_service_module.state.plugin_hosts[plugin_id] = previous
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_application_state_service_returns_persisted_and_applied_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir()
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(query_service_module, "_current_owner_config_path_sync", lambda _plugin_id: config_path)
+    monkeypatch.setattr(
+        query_service_module,
+        "infrastructure_load_plugin_config",
+        lambda _plugin_id: {"plugin_id": plugin_id, "config_fingerprint": "sha256:same"},
+    )
+
+    class _Host:
+        applied_config_fingerprint = "sha256:same"
+
+        def is_alive(self) -> bool:
+            return True
+
+    host = _Host()
+    host.config_path = config_path
+    with query_service_module.state.acquire_plugin_hosts_write_lock():
+        previous = query_service_module.state.plugin_hosts.get(plugin_id)
+        query_service_module.state.plugin_hosts[plugin_id] = host
+    try:
+        payload = await ConfigQueryService().get_plugin_config_application_state(plugin_id=plugin_id)
+        assert payload["config_state"] == "matched"
+        assert payload["persisted_fingerprint"] == "sha256:same"
+        assert payload["applied_fingerprint"] == "sha256:same"
+    finally:
+        with query_service_module.state.acquire_plugin_hosts_write_lock():
+            if previous is None:
+                query_service_module.state.plugin_hosts.pop(plugin_id, None)
+            else:
+                query_service_module.state.plugin_hosts[plugin_id] = previous

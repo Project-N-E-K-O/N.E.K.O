@@ -11,6 +11,8 @@ from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_manifest_path
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles, get_profiles_state
 from plugin.server.infrastructure.config_toml import load_toml_from_file
+from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 
 logger = get_logger("server.infrastructure.config_resolver")
 
@@ -109,6 +111,7 @@ def _resolve_plugin_config_core(
         "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
         "base_config": base_config,
         "effective_config": effective_config,
+        "config_fingerprint": fingerprint_config(effective_config),
         "profiles_state": profiles_state,
         "warnings": [*schema_warnings, *semantic_warnings],
         "schema_validation_errors": schema_validation_errors,
@@ -123,19 +126,24 @@ def resolve_plugin_config_from_path(
     include_effective_config: bool = True,
     validate_schema: bool = True,
 ) -> dict[str, object]:
-    manifest_path = config_path.resolve(strict=False)
-    manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
-    runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
-    runtime_config = load_toml_from_file(runtime_config_path)
-    return _resolve_plugin_config_core(
-        plugin_id,
-        config_path=runtime_config_path,
-        manifest_path=manifest_path,
-        manifest_config=manifest_config,
-        base_config=runtime_config,
-        include_effective_config=include_effective_config,
-        validate_schema=validate_schema,
-    )
+    # Profile and runtime writes use the same per-plugin lock. Keeping the
+    # complete synchronous read under that lock prevents an application-state
+    # query from observing one file before an atomic replacement and another
+    # file after it.
+    with get_plugin_update_lock(plugin_id):
+        manifest_path = config_path.resolve(strict=False)
+        manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
+        runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
+        runtime_config = load_toml_from_file(runtime_config_path)
+        return _resolve_plugin_config_core(
+            plugin_id,
+            config_path=runtime_config_path,
+            manifest_path=manifest_path,
+            manifest_config=manifest_config,
+            base_config=runtime_config,
+            include_effective_config=include_effective_config,
+            validate_schema=validate_schema,
+        )
 
 
 def resolve_plugin_config(

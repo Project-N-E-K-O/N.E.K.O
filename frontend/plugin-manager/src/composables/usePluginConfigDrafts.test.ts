@@ -4,6 +4,7 @@ import { effectScope, ref, type EffectScope } from 'vue'
 import {
   deletePluginProfileConfig,
   getPluginConfig,
+  getPluginConfigApplicationState,
   getPluginEffectiveBaseConfig,
   getPluginProfileConfig,
   getPluginProfilesState,
@@ -15,6 +16,7 @@ import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 vi.mock('@/api/config', () => ({
   getPluginEffectiveBaseConfig: vi.fn(),
   getPluginConfig: vi.fn(),
+  getPluginConfigApplicationState: vi.fn(),
   getPluginProfilesState: vi.fn(),
   getPluginProfileConfig: vi.fn(),
   upsertPluginProfileConfig: vi.fn(),
@@ -51,6 +53,9 @@ beforeEach(() => {
     config: { cache: { ttl: 1 } },
   } as never)
   vi.mocked(getPluginConfig).mockResolvedValue({ plugin_id: 'x', config: {} } as never)
+  // Simulate an older server by default; the editor must retain its in-memory
+  // fallback when the application-state endpoint is unavailable.
+  vi.mocked(getPluginConfigApplicationState).mockRejectedValue({ response: { status: 404 } })
   vi.mocked(getPluginProfilesState).mockImplementation(async (pluginId: string) =>
     emptyState(pluginId)
   )
@@ -494,6 +499,56 @@ describe('config draft lifecycle', () => {
     abandoned.resolve({ config: { cache: { ttl: 99 } } })
     await settle()
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
+  })
+})
+
+describe('server application state', () => {
+  it('restores a pending state after loading the configuration page', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'pending',
+      persisted_fingerprint: 'sha256:new',
+      applied_fingerprint: 'sha256:old',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.applicationState.value?.config_state).toBe('pending')
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
+  })
+
+  it('clears the local hint only when the server confirms a match', async () => {
+    setPendingReload('alpha', true)
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'matched',
+      persisted_fingerprint: 'sha256:same',
+      applied_fingerprint: 'sha256:same',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.pendingApplication.value).toBe(false)
+    expect(hasPendingReload('alpha')).toBe(false)
+  })
+
+  it('keeps the warning for an uncertain server state', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha',
+      config_state: 'unknown',
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+
+    await vi.waitFor(() => expect(drafts.applicationStateKnown.value).toBe(true))
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
   })
 })
 

@@ -41,6 +41,29 @@ export interface PluginProfileConfig {
   config: Record<string, any>
 }
 
+export type PluginConfigApplicationStateName =
+  | 'matched'
+  | 'pending'
+  | 'not_running'
+  | 'unknown'
+
+/**
+ * Authoritative comparison between the persisted effective configuration and
+ * the configuration most recently loaded by the running plugin host.
+ *
+ * The fingerprint fields are intentionally opaque to the frontend. They are
+ * useful for diagnostics, while `config_state` is the only value the UI uses
+ * to decide whether a reload warning is needed.
+ */
+export interface PluginConfigApplicationState {
+  plugin_id: string
+  lifecycle_status?: string
+  config_state: PluginConfigApplicationStateName
+  persisted_fingerprint?: string | null
+  applied_fingerprint?: string | null
+  observed_at?: string
+}
+
 /**
  * 获取插件配置
  */
@@ -143,6 +166,17 @@ export function getPluginProfileConfig(
   profileName: string
 ): Promise<PluginProfileConfig> {
   return get(`/plugin/${encodeURIComponent(pluginId)}/config/profiles/${encodeURIComponent(profileName)}`)
+}
+
+/**
+ * Get the server-side application state for a plugin's effective config.
+ * Older plugin servers may return 404/405; callers should preserve their
+ * existing in-memory hint when that happens instead of treating it as matched.
+ */
+export function getPluginConfigApplicationState(
+  pluginId: string
+): Promise<PluginConfigApplicationState> {
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/application-state`)
 }
 
 /**

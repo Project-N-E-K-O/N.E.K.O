@@ -336,6 +336,94 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     ]
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
     assert startup_payload["success"] is True
+    assert startup_payload["data"]["config_fingerprint"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_host_records_applied_config_only_after_ready_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _ReadyCommManager(_FakeCommManager):
+        async def prepare_startup_wait(self) -> None:
+            return
+
+        async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> dict[str, object]:
+            del timeout, allow_startup_error
+            return {"status": "ready", "config_fingerprint": "sha256:ready"}
+
+    comm_manager = _ReadyCommManager()
+
+    class _FakeTransport:
+        downlink_endpoint = "ipc://down"
+        uplink_endpoint = "ipc://up"
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
+    monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
+    monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
+
+    plugin_host = host_module.PluginProcessHost(
+        plugin_id="demo",
+        entry_point="plugins.demo:DemoPlugin",
+        config_path=tmp_path / "demo" / "plugin.toml",
+    )
+
+    startup_result = await plugin_host.start(startup_timeout=1.0)
+
+    assert startup_result == {"status": "ready", "config_fingerprint": "sha256:ready"}
+    assert plugin_host.applied_config_fingerprint == "sha256:ready"
+    assert plugin_host.applied_config_loaded_at
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_host_does_not_record_applied_config_for_startup_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _WarningCommManager(_StartupErrorCommManager):
+        async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> dict[str, object]:
+            del timeout, allow_startup_error
+            return {
+                "status": "failed",
+                "startup_error": "lifecycle.startup failed",
+                "config_fingerprint": "sha256:must-not-apply",
+            }
+
+    comm_manager = _WarningCommManager()
+
+    class _FakeTransport:
+        downlink_endpoint = "ipc://down"
+        uplink_endpoint = "ipc://up"
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
+    monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
+    monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
+
+    plugin_host = host_module.PluginProcessHost(
+        plugin_id="demo",
+        entry_point="plugins.demo:DemoPlugin",
+        config_path=tmp_path / "demo" / "plugin.toml",
+    )
+
+    startup_result = await plugin_host.start(startup_timeout=1.0)
+
+    assert startup_result["startup_error"] == "lifecycle.startup failed"
+    assert plugin_host.applied_config_fingerprint is None
+    assert plugin_host.applied_config_loaded_at is None
 
 
 @pytest.mark.plugin_unit
@@ -771,6 +859,8 @@ async def test_plugin_process_start_keeps_running_on_startup_error_by_default(
     assert getattr(comm_manager, "shutdown_timeout", None) is None
     assert getattr(plugin_host.transport, "closed", False) is False
     assert removed == []
+    assert plugin_host.applied_config_fingerprint is None
+    assert plugin_host.applied_config_loaded_at is None
 
 
 @pytest.mark.plugin_unit

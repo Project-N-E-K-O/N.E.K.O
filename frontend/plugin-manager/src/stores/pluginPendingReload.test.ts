@@ -11,6 +11,7 @@ import {
   reloadPlugin,
   startPlugin,
 } from '@/api/plugins'
+import { getPluginConfigApplicationState } from '@/api/config'
 import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/i18n', () => ({
@@ -30,6 +31,10 @@ vi.mock('@/api/plugins', () => ({
   refreshPluginsRegistry: vi.fn(),
 }))
 
+vi.mock('@/api/config', () => ({
+  getPluginConfigApplicationState: vi.fn(),
+}))
+
 describe('plugin store reload bookkeeping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -37,6 +42,10 @@ describe('plugin store reload bookkeeping', () => {
     localStorage.clear()
     vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(getPluginStatus).mockResolvedValue({} as never)
+    vi.mocked(getPluginConfigApplicationState).mockImplementation(async (pluginId: string) => ({
+      plugin_id: pluginId,
+      config_state: 'matched',
+    }))
     vi.mocked(reloadPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
   })
 
@@ -216,6 +225,10 @@ describe('plugin store reload bookkeeping', () => {
       plugin_id: 'demo',
       already_running: true,
       message: 'Plugin is already running',
+    })
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'pending',
     })
     const store = usePluginStore()
 

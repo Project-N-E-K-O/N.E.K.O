@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime, timezone
 import importlib
 import importlib.machinery
 import importlib.util
@@ -1066,8 +1067,15 @@ def _plugin_process_runner(
         if persist_mode is None:
             persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
         # 从 effective config 读取 persist_mode（包含 profile 覆写）
+        startup_config_fingerprint: str | None = None
         try:
             effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
+            # Keep the applied identity in the child, where the effective
+            # configuration is actually resolved immediately before startup.
+            # The parent must not hash its earlier pre-spawn snapshot.
+            from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+            startup_config_fingerprint = fingerprint_config(effective_cfg)
             # 新配置项 [plugin_state]
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
@@ -1356,6 +1364,8 @@ def _plugin_process_runner(
                 startup_data: dict[str, Any] = {
                     "status": "ready" if startup_success else "failed",
                 }
+                if startup_success and startup_config_fingerprint:
+                    startup_data["config_fingerprint"] = startup_config_fingerprint
                 if startup_error is not None:
                     startup_data["startup_error"] = startup_error
                 res_sender.put(
@@ -2100,6 +2110,12 @@ class PluginHost:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
+        # Set only after the child reports a successful startup handshake and
+        # the parent confirms that the process is still alive.  Keeping this
+        # on the host makes the applied identity belong to the process owner,
+        # rather than to a caller's best-effort reload result.
+        self.applied_config_fingerprint: str | None = None
+        self.applied_config_loaded_at: str | None = None
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
         # ZMQ transport: 4 PUSH/PULL socket channels replace 5 mp.Queues.
@@ -2284,6 +2300,22 @@ class PluginHost:
                         self.plugin_id,
                         startup_result["startup_error"],
                     )
+
+                # The child owns the effective configuration it actually
+                # loaded.  Record it only after the handshake succeeds and a
+                # second liveness check passes; a timeout, startup warning,
+                # or process that dies immediately must never advance this
+                # identity.
+                if (
+                    isinstance(startup_result, dict)
+                    and startup_result.get("status") == "ready"
+                    and not startup_result.get("startup_error")
+                    and self.process.is_alive()
+                ):
+                    fingerprint = startup_result.get("config_fingerprint")
+                    if isinstance(fingerprint, str) and fingerprint:
+                        self.applied_config_fingerprint = fingerprint
+                        self.applied_config_loaded_at = datetime.now(timezone.utc).isoformat()
                 return startup_result
             except asyncio.CancelledError:
                 await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)

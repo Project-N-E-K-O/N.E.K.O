@@ -14,6 +14,7 @@ from plugin.server.infrastructure.config_profiles import (
     get_profiles_state,
     resolve_profile_path,
 )
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 
 logger = get_logger("server.infrastructure.config_profiles_write")
 
@@ -31,17 +32,9 @@ except ImportError:
     tomli_w = None
 
 
-_profile_update_locks: dict[str, threading.Lock] = {}
-_profile_update_locks_guard = threading.Lock()
-
-
-def _get_plugin_lock(plugin_id: str) -> threading.Lock:
-    with _profile_update_locks_guard:
-        lock = _profile_update_locks.get(plugin_id)
-        if lock is None:
-            lock = threading.Lock()
-            _profile_update_locks[plugin_id] = lock
-        return lock
+def _get_plugin_lock(plugin_id: str) -> threading.RLock:
+    """Return the shared per-plugin lock used by all config reads and writes."""
+    return get_plugin_update_lock(plugin_id)
 
 
 def _require_toml_read_write() -> None:

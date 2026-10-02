@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from plugin.server.infrastructure import config_resolver as module
+from plugin.server.infrastructure.config_fingerprint import fingerprint_config
 
 
 def _assert_warning_shape(items: object) -> None:
@@ -70,6 +71,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     payload = module.resolve_plugin_config("demo")
 
     assert payload["base_config"] == base_config
+    assert payload["config_fingerprint"] == fingerprint_config(payload["effective_config"])
     assert payload["effective_config"] == {
         "plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"},
         "runtime": {"enabled": True},

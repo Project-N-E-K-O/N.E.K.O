@@ -14,6 +14,7 @@ import {
   reloadAllPlugins,
   refreshPluginsRegistry,
 } from '@/api/plugins'
+import { getPluginConfigApplicationState } from '@/api/config'
 import type { PluginListSummary } from '@/api/plugins'
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
@@ -23,6 +24,7 @@ import {
   pendingReloadPlugins,
   pendingReloadRevision,
   setPendingReload,
+  hasPendingReload,
 } from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
@@ -337,31 +339,64 @@ export const usePluginStore = defineStore('plugin', () => {
     await fetchPluginStatus()
   }
 
+  /**
+   * Refresh the server-owned config application state. A missing endpoint or
+   * malformed response leaves the window-local hint untouched for compatibility
+   * with older plugin servers. Matched/not-running are the only states that clear
+   * a hint; pending/unknown keep it visible.
+   */
+  async function syncPluginApplicationState(
+    pluginId: string,
+    expectedRevision = pendingReloadRevision(pluginId),
+  ): Promise<boolean> {
+    let raw: unknown
+    try {
+      raw = await getPluginConfigApplicationState(pluginId)
+    } catch {
+      return false
+    }
+    if (!raw || typeof raw !== 'object') return false
+    const state = raw as { plugin_id?: unknown; config_state?: unknown }
+    if (
+      state.plugin_id !== pluginId ||
+      state.config_state !== 'matched' &&
+        state.config_state !== 'pending' &&
+        state.config_state !== 'not_running' &&
+        state.config_state !== 'unknown'
+    ) {
+      return false
+    }
+    const pending = state.config_state === 'pending' || state.config_state === 'unknown'
+    if (pending) {
+      if (!hasPendingReload(pluginId)) setPendingReload(pluginId, true)
+    } else {
+      // A save that landed while this query was in flight wins over an older
+      // matched response, just like the previous local revision guard.
+      setPendingReload(pluginId, false, expectedRevision)
+    }
+    return true
+  }
+
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    // Captured before the request: the process reads the saved configuration while it
-    // starts, so a profile write that lands in the meantime is newer than what that
-    // process can have read and has to keep its reload warning.
     const pendingRevision = pendingReloadRevision(pluginId)
-    const result = await startPlugin(pluginId)
-    // Starting an already running plugin returns success without restarting the
-    // process or re-reading the saved profile overlay, so the server reports that
-    // case explicitly; the pending flag may only be cleared for a real start.
-    if (result?.already_running !== true) setPendingReload(pluginId, false, pendingRevision)
+    await startPlugin(pluginId)
+    // The server knows which effective config the host actually loaded. Keep the
+    // in-memory flag only as a compatibility fallback for older servers.
+    await syncPluginApplicationState(pluginId, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function stop(pluginId: string, options: PluginMutationOptions = {}) {
+    const pendingRevision = pendingReloadRevision(pluginId)
     await stopPlugin(pluginId)
+    await syncPluginApplicationState(pluginId, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     const pendingRevision = pendingReloadRevision(pluginId)
     await reloadPlugin(pluginId)
-    // The running host now matches the persisted configuration, whichever entry
-    // point triggered the reload — unless a profile write claimed the flag while
-    // this reload was in flight, which this host may have missed.
-    setPendingReload(pluginId, false, pendingRevision)
+    await syncPluginApplicationState(pluginId, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
@@ -378,10 +413,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
     const result = await reloadAllPlugins()
     for (const pluginId of result.reloaded) {
-      const revision = revisions.get(pluginId)
-      // Only ids that were neither listed nor flagged are skipped, and for those there is no
-      // flag to clear anyway.
-      if (revision !== undefined) setPendingReload(pluginId, false, revision)
+      await syncPluginApplicationState(pluginId, revisions.get(pluginId))
     }
     // The reload already happened; a follow-up refresh that fails or times out must not
     // turn its result into a failure for the caller.

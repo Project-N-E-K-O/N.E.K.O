@@ -19,7 +19,7 @@ class LockableFile(Protocol):
     def tell(self) -> int: ...
 
 
-_plugin_update_locks: dict[str, threading.Lock] = {}
+_plugin_update_locks: dict[str, threading.RLock] = {}
 _plugin_update_locks_guard = threading.Lock()
 
 if sys.platform == "win32":
@@ -36,11 +36,15 @@ else:
         _fcntl = None
 
 
-def get_plugin_update_lock(plugin_id: str) -> threading.Lock:
+def get_plugin_update_lock(plugin_id: str) -> threading.RLock:
     with _plugin_update_locks_guard:
         lock = _plugin_update_locks.get(plugin_id)
         if lock is None:
-            lock = threading.Lock()
+            # Runtime-config initialization can be reached from a resolver
+            # that already owns this plugin's read/write transaction.  A
+            # re-entrant lock keeps that nested synchronous path safe while
+            # preserving one shared lock per plugin.
+            lock = threading.RLock()
             _plugin_update_locks[plugin_id] = lock
         return lock
 

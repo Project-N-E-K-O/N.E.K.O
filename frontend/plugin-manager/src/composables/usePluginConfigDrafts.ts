@@ -10,7 +10,12 @@ import {
   restoreConfigPath,
   type ConfigObject,
 } from '@/utils/configEditor'
-import { hasPendingReload, setPendingReload, subscribePendingReload } from '@/utils/pendingReload'
+import {
+  hasPendingReload,
+  pendingReloadRevision,
+  setPendingReload,
+  subscribePendingReload,
+} from '@/utils/pendingReload'
 import type { ConfigEditorSchema } from '@/types/configSchema'
 
 interface ProfileDraft {
@@ -42,6 +47,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const ready = ref(false)
   // True while the running host may not match the persisted configuration.
   const pendingApplication = ref(false)
+  // The server is authoritative when this is available. `null` means the
+  // endpoint is unavailable (for example, an older backend), so the window
+  // memory hint remains the safe fallback.
+  const applicationState = ref<api.PluginConfigApplicationState | null>(null)
+  const applicationStateKnown = ref(false)
   let generation = 0
   let loadVersion = 0
   const requests = new Map<string, Promise<void>>()
@@ -87,9 +97,46 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   // Storage is written for the plugin that performed the operation, while the
   // in-memory flag only follows it while that plugin is still the current one.
-  function setPendingApplication(pending: boolean, forPluginId = pluginId.value) {
-    const applied = setPendingReload(forPluginId, pending)
+  function setPendingApplication(
+    pending: boolean,
+    forPluginId = pluginId.value,
+    expectedRevision?: number,
+  ) {
+    const applied = setPendingReload(forPluginId, pending, expectedRevision)
     if (applied && forPluginId === pluginId.value) pendingApplication.value = pending
+  }
+
+  function applyApplicationState(
+    state: api.PluginConfigApplicationState | null,
+    forPluginId: string,
+    expectedRevision = pendingReloadRevision(forPluginId),
+  ): boolean {
+    if (
+      !state ||
+      state.plugin_id !== forPluginId ||
+      !['matched', 'pending', 'not_running', 'unknown'].includes(state.config_state)
+    ) {
+      return false
+    }
+    applicationState.value = state
+    applicationStateKnown.value = true
+    // `unknown` is intentionally conservative: an uncertain lifecycle result
+    // must keep the reload affordance visible rather than claim success.
+    const pending = state.config_state === 'pending' || state.config_state === 'unknown'
+    setPendingApplication(pending, forPluginId, expectedRevision)
+    return true
+  }
+
+  async function loadApplicationState(forPluginId: string): Promise<api.PluginConfigApplicationState | null> {
+    try {
+      const state = await api.getPluginConfigApplicationState(forPluginId)
+      return state && typeof state === 'object' ? state : null
+    } catch {
+      // A missing endpoint is the expected compatibility path for older
+      // servers. Network and malformed-response failures also preserve the
+      // local hint; none of them prove that the config is matched.
+      return null
+    }
   }
   async function loadProfile(name: string): Promise<void> {
     if (records.get(name)?.loaded) return
@@ -129,19 +176,23 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   async function loadAll(discardDrafts = false): Promise<void> {
     const id = pluginId.value,
       epoch = generation,
-      version = ++loadVersion
+      version = ++loadVersion,
+      applicationRevision = pendingReloadRevision(id)
     if (!id) return
     loading.value = true
+    applicationStateKnown.value = false
+    applicationState.value = null
     // Only a discarding reload invalidates what was loaded. A refresh that keeps drafts
     // (such as the one after a save) keeps the previous state usable when it fails, so a
     // retained dirty draft can still be saved again.
     if (discardDrafts) ready.value = false
     error.value = null
     try {
-      const [baseResult, effectiveResult, profileResult] = await Promise.all([
+      const [baseResult, effectiveResult, profileResult, applicationStateResult] = await Promise.all([
         api.getPluginEffectiveBaseConfig(id),
         api.getPluginConfig(id),
         api.getPluginProfilesState(id),
+        loadApplicationState(id),
       ])
       if (!valid(id, epoch) || version !== loadVersion) return
       if (discardDrafts) {
@@ -163,6 +214,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
         selected.value =
           active.value && names.value.includes(active.value) ? active.value : names.value[0] || null
       if (selected.value) await loadProfile(selected.value)
+      applyApplicationState(applicationStateResult, id, applicationRevision)
     } catch (err) {
       if (valid(id, epoch) && version === loadVersion) error.value = message(err)
     } finally {
@@ -256,7 +308,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // the refresh worked it is authoritative; otherwise the pre-request snapshot is
       // the only evidence left.
       const refreshed = valid(id, epoch) && ready.value && !error.value
-      if (refreshed ? name === active.value : wasActive || mayBecomeActive)
+      // A supported server response is authoritative, including `matched` or
+      // `not_running`; only older servers need the legacy in-memory fallback.
+      if (!applicationStateKnown.value && (refreshed ? name === active.value : wasActive || mayBecomeActive))
         setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {
@@ -352,6 +406,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       records.clear()
       requests.clear()
       pendingApplication.value = hasPendingReload(pluginId.value)
+      applicationState.value = null
+      applicationStateKnown.value = false
       selected.value = null
       profiles.value = null
       base.value = {}
@@ -404,6 +460,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     anyDirty,
     canSave,
     pendingApplication,
+    applicationState,
+    applicationStateKnown,
     setPendingApplication,
     virtualDefault,
     dirtyCount,
