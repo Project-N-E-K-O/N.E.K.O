@@ -228,6 +228,9 @@ def test_air_basketball_mvp_interaction_contract():
     # The trusted bootstrap only consumes avatar providers registered on the
     # launch node before it runs; constructor `avatarHost` injection and raw
     # `getCharacter()` were removed from the shared host (#3108).
+    # live2d-interaction.js setupTouchZoom() needs NekoModelTouchGestures (#3124).
+    touch_gestures = "/static/avatar/avatar-touch-gestures.js?v="
+    assert html.index(touch_gestures) < html.index("/static/live2d/live2d-interaction.js?v=")
     registration = '/static/air-basketball/air-basketball-neko-host-registration.js?v='
     assert html.index(registration) < html.index("/static/game/sdk/neko-minigame-same-origin-bootstrap.js")
     assert "window.createAirBasketballAvatarHost = createAirBasketballAvatarHost" in sdk_bootstrap
