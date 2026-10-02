@@ -1,0 +1,275 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Visit receive limiter (drop and count) and blocklist sync/async twins."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from config.visit_settings import (
+    VISIT_BLOCKLIST_FILENAME,
+    VISIT_INBOUND_TEXT_BURST,
+    VISIT_PEER_CTL_PER_S,
+    VISIT_PEER_LOSSY_PER_S,
+    VISIT_PEER_RECV_MSGS_PER_S,
+)
+from main_logic.visit.limits import (
+    Blocklist,
+    PeerRateLimiter,
+    RateChannel,
+    channel_for,
+)
+
+UID = "0123456789abcdef01234567"
+
+
+class FakeClock:
+    """Manually advanced monotonic clock."""
+
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+# ── PeerRateLimiter ──
+
+
+def test_text_bucket_drops_and_counts_toward_streak():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_INBOUND_TEXT_BURST):
+        assert lim.admit("g_a", RateChannel.TEXT).allowed
+    d = lim.admit("g_a", RateChannel.TEXT)
+    assert not d.allowed and d.reason == "text_rate" and d.counts_toward_streak
+    assert lim.dropped("g_a") == {"text_rate": 1}
+    assert lim.text_accepted("g_a") == VISIT_INBOUND_TEXT_BURST
+
+
+def test_text_steady_rate_is_twenty_per_ten_seconds():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_INBOUND_TEXT_BURST):
+        lim.admit("g_a", "text")
+    clock.t += 10.0
+    allowed = sum(lim.admit("g_a", "text").allowed for _ in range(30))
+    assert allowed == 20
+    assert lim.total_dropped("g_a") == 10
+
+
+def test_text_visit_cap():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock, text_visit_max=5, text_burst=100)
+    assert all(lim.admit("g_a", "text").allowed for _ in range(5))
+    d = lim.admit("g_a", "text")
+    assert d.reason == "text_visit_cap" and d.counts_toward_streak
+
+
+@pytest.mark.parametrize("channel,rate,reason", [
+    (RateChannel.CTL, VISIT_PEER_CTL_PER_S, "ctl_rate"),
+    (RateChannel.LOSSY, VISIT_PEER_LOSSY_PER_S, "lossy_rate"),
+])
+def test_ctl_and_lossy_per_second(channel, rate, reason):
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(rate):
+        assert lim.admit("g_a", channel).allowed
+    d = lim.admit("g_a", channel)
+    assert not d.allowed and d.reason == reason
+    assert not d.counts_toward_streak and not d.sustained_overflow
+    clock.t += 1.0
+    assert lim.admit("g_a", channel).allowed
+    assert lim.dropped("g_a") == {reason: 1}
+
+
+def test_senders_are_independent():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_CTL_PER_S):
+        lim.admit("g_a", "ctl")
+    assert not lim.admit("g_a", "ctl").allowed
+    assert lim.admit("h_b", "ctl").allowed
+
+
+def test_explicit_now_overrides_clock():
+    lim = PeerRateLimiter(clock=lambda: 0.0)
+    for _ in range(VISIT_PEER_LOSSY_PER_S):
+        lim.admit("g_a", "lossy", now=5.0)
+    assert not lim.admit("g_a", "lossy", now=5.0).allowed
+    assert lim.admit("g_a", "lossy", now=6.0).allowed
+
+
+def test_frame_buckets_drop_before_reassembly():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_RECV_MSGS_PER_S):
+        assert lim.admit_frame("g_a", 10).allowed
+    d = lim.admit_frame("g_a", 10)
+    assert d.reason == "recv_msgs" and not d.counts_toward_streak
+    clock.t += 10
+    assert lim.admit_frame("g_a", 16 * 1024).allowed
+    d = lim.admit_frame("g_a", 1)
+    assert d.reason == "recv_bytes"
+
+
+def test_rejected_frame_does_not_charge_the_other_bucket():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    assert not lim.admit_frame("g_a", 10 ** 6).allowed
+    # 字节桶拒了，条数桶不应被扣。
+    assert sum(lim.admit_frame("g_a", 1).allowed for _ in range(VISIT_PEER_RECV_MSGS_PER_S)) \
+        == VISIT_PEER_RECV_MSGS_PER_S
+
+
+def test_sustained_overflow_after_thirty_seconds():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    sustained_at = None
+    for step in range(0, 400):
+        clock.t = 1000.0 + step * 0.1
+        for _ in range(3):
+            d = lim.admit("g_a", "lossy")
+            if d.sustained_overflow and sustained_at is None:
+                sustained_at = clock.t - 1000.0
+    assert sustained_at is not None and 29.9 <= sustained_at <= 30.2
+
+
+def test_overflow_run_resets_after_a_quiet_gap():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for burst_start in (0.0, 20.0):
+        clock.t = 1000.0 + burst_start
+        for k in range(150):
+            clock.t = 1000.0 + burst_start + k * 0.1
+            for _ in range(3):
+                assert not lim.admit("g_a", "lossy").sustained_overflow
+
+
+def test_channel_mapping():
+    assert channel_for("text") is RateChannel.TEXT
+    assert channel_for("hello") is RateChannel.CTL
+    assert channel_for("ack") is RateChannel.CTL
+    assert channel_for("typing") is RateChannel.LOSSY
+    assert channel_for("line_delta") is None
+    assert channel_for("future", cmd=1) is RateChannel.CTL
+    assert channel_for("future", cmd=3) is RateChannel.LOSSY
+    assert channel_for("future", cmd=2) is None
+    assert PeerRateLimiter().admit("g_a", None).allowed
+
+
+# ── Blocklist ──
+
+
+def test_missing_file_is_empty(tmp_path):
+    bl = Blocklist.load(tmp_path)
+    assert len(bl) == 0 and not bl.is_blocked(UID)
+
+
+def test_sync_block_roundtrip_and_schema(tmp_path):
+    bl = Blocklist.load(tmp_path)
+    assert bl.block(UID, display_name_at_block="Mimi", reason="rude", now=123.0)
+    assert not bl.block(UID, display_name_at_block="Mimi", now=124.0)
+    data = json.loads((tmp_path / VISIT_BLOCKLIST_FILENAME).read_text(encoding="utf-8"))
+    assert data == {"blocked": [{
+        "visit_uid": UID, "display_name_at_block": "Mimi", "blocked_at": 123.0, "reason": "rude",
+    }]}
+    again = Blocklist.load(tmp_path)
+    assert again.is_blocked(UID) and again.is_blocked(UID.upper())
+    assert UID in again
+    assert again.unblock(UID) and not again.unblock(UID)
+    assert not Blocklist.load(tmp_path).is_blocked(UID)
+
+
+async def test_async_twin_matches_sync(tmp_path):
+    bl = await Blocklist.aload(tmp_path)
+    assert await bl.ablock(UID, display_name_at_block="Mimi", now=5.0)
+    assert not await bl.ablock(UID, display_name_at_block="Mimi")
+    sync_view = Blocklist.load(tmp_path)
+    assert sync_view.is_blocked(UID)
+    assert sync_view.get(UID).display_name_at_block == "Mimi"
+    assert "reason" not in json.loads((tmp_path / VISIT_BLOCKLIST_FILENAME).read_text(encoding="utf-8"))["blocked"][0]
+    async_view = await Blocklist.aload(tmp_path)
+    assert [e.visit_uid for e in async_view.entries()] == [UID]
+    assert await async_view.aunblock(UID)
+    assert not (await Blocklist.aload(tmp_path)).is_blocked(UID)
+
+
+async def test_async_writes_are_serialised(tmp_path):
+    import asyncio
+
+    bl = await Blocklist.aload(tmp_path)
+    uids = [f"{i:024x}" for i in range(10)]
+    await asyncio.gather(*(bl.ablock(u, display_name_at_block="x", now=float(i)) for i, u in enumerate(uids)))
+    reloaded = Blocklist.load(tmp_path)
+    assert [e.visit_uid for e in reloaded.entries()] == uids
+
+
+def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
+    from main_logic.visit import limits
+
+    bl = Blocklist.load(tmp_path)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(limits, "atomic_write_json", boom)
+    with pytest.raises(OSError):
+        bl.block(UID, display_name_at_block="Mimi")
+    assert not bl.is_blocked(UID)
+
+
+def test_corrupt_file_is_moved_aside(tmp_path):
+    path = tmp_path / VISIT_BLOCKLIST_FILENAME
+    path.write_text("{not json", encoding="utf-8")
+    bl = Blocklist.load(tmp_path)
+    assert len(bl) == 0
+    assert (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).read_text(encoding="utf-8") == "{not json"
+    bl.block(UID, display_name_at_block="Mimi")
+    assert Blocklist.load(tmp_path).is_blocked(UID)
+
+
+async def test_async_corrupt_file_is_moved_aside(tmp_path):
+    path = tmp_path / VISIT_BLOCKLIST_FILENAME
+    path.write_text('{"blocked": 3}', encoding="utf-8")
+    bl = await Blocklist.aload(tmp_path)
+    assert len(bl) == 0
+    assert (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).exists()
+
+
+def test_malformed_rows_are_skipped_and_deduplicated(tmp_path):
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text(json.dumps({"blocked": [
+        {"visit_uid": UID, "display_name_at_block": "a", "blocked_at": 1},
+        {"visit_uid": UID.upper(), "display_name_at_block": "b", "blocked_at": 2},
+        {"visit_uid": ""},
+        "junk",
+        {"display_name_at_block": "no uid"},
+    ]}), encoding="utf-8")
+    bl = Blocklist.load(tmp_path)
+    assert len(bl) == 1 and bl.get(UID).display_name_at_block == "b"
+
+
+def test_blocklist_is_not_partitioned_by_account(tmp_path):
+    Blocklist.load(tmp_path).block(UID, display_name_at_block="Mimi")
+    data = json.loads((tmp_path / VISIT_BLOCKLIST_FILENAME).read_text(encoding="utf-8"))
+    assert set(data) == {"blocked"}
+
+
+def test_empty_uid_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        Blocklist.load(tmp_path).block("  ", display_name_at_block="x")

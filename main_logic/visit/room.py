@@ -1,0 +1,1104 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Turn-taking, Lamport clock and wrap-up state machine of one visit (OD-08 v2).
+
+``VisitRoom`` is a pure state machine (``docs/design/visit-infrastructure.md``
+section 3.6.3 and PR-06): it never awaits, never does I/O and holds no lock.
+Every time value is injected through ``now`` and the reply gap is drawn from
+an injected ``rng``. Events go in, ``RoomEffects`` come out; ``VisitRuntime``
+executes the effects in the fixed order
+
+    violation -> finalize_reason -> abort_speaking -> cancel_pending_reply
+    -> wrap_up (sent on the wire) -> ui_state / peer_crop / peer_hidden
+    -> say_goodbye -> reply
+
+Responsibilities kept here:
+
+* Lamport ``lp`` allocation and validation of every received ``lp`` /
+  ``lp_seen`` (value range, forward jump, regression and per-sender
+  monotonicity on new lines only).
+* The one-sentence rule: six cat lines in a row without a human line, or 40
+  own cat lines in this visit, start the wrap-up; at most six own cat lines
+  per minute (delay only).
+* Staleness (``reply_to`` chain), human interruption and the guest
+  "yield once" collision rule.
+* The wrap-up handshake with the 15 s step timer (stopped by the peer's first
+  goodbye piece or by ``wrap_up{ph:'speaking'}``), the 10 s abort of an old
+  line and the 45 s hard cap.
+* Consecutive anomaly counting (20 in a row finalize; unknown message types
+  are diagnostics only), the receive-side ``text`` token bucket, the own
+  ``text`` 20 per 10 s hard limit and the 80 cat line protocol guard.
+* Peer framing / visibility corrections carried by ``hb`` and ``state``.
+
+The receive pipeline is expected to call ``observe_lp`` (or
+``on_incoming_hb``) before dispatching a message here and to drop the message
+when it returns a violation.
+"""
+from __future__ import annotations
+
+import random
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional
+
+from config.visit_settings import (
+    VISIT_ANOMALY_FINALIZE_COUNT,
+    VISIT_CLAUSE_MAX_MS,
+    VISIT_CROP_DEFAULT,
+    VISIT_INBOUND_TEXT_BURST,
+    VISIT_INBOUND_TEXT_MAX,
+    VISIT_INBOUND_TEXT_REFILL_PER_S,
+    VISIT_LP_MAX,
+    VISIT_LP_MAX_JUMP,
+    VISIT_LP_REGRESS_MAX,
+    VISIT_MAX_CAT_TURNS_WITHOUT_HUMAN,
+    VISIT_MAX_LINES,
+    VISIT_OUTBOX_PENDING_MAX_BYTES,
+    VISIT_OWN_LINES_PER_MINUTE,
+    VISIT_OWN_LINES_PER_VISIT,
+    VISIT_OWN_TEXT_PER_10S,
+    VISIT_PIECE_MAX_BYTES,
+    VISIT_PIECES_MAX,
+    VISIT_REPLY_GAP_S,
+    VISIT_SPEAKING_ABORT_AFTER_S,
+    VISIT_WRAP_UP_MAX_S,
+    VISIT_WRAP_UP_PROPOSE_TIMEOUT_S,
+    VISIT_WRAP_UP_STEP_S,
+)
+
+Side = Literal["host", "guest"]
+SpeakerKind = Literal["cat", "human"]
+Phase = Literal["active", "wrap_up", "ending"]
+WrapUpPhase = Literal["propose", "begin", "ack", "speaking", "done"]
+WrapUpAction = Literal["none", "begin", "propose", "ack", "speaking", "done"]
+
+# 一整行 text 编码后的最大体积（8 片 × 每片上限）；may_start_cat_line 的 busy 判据
+# = 在途字节 > VISIT_OUTBOX_PENDING_MAX_BYTES − 这个值（§4.2 text 末尾）。
+# 设计稿写的是「8 片 × 1 KiB」，按信封真实上限 1000 B 计更紧；取两者较大值偏保守。
+_LINE_MAX_ENCODED_BYTES = VISIT_PIECES_MAX * max(VISIT_PIECE_MAX_BYTES, 1024)
+_OWN_TEXT_WINDOW_S = 10.0
+_MINUTE_WINDOW_S = 60.0
+_VALID_CROPS = ("upper", "full")
+
+# finalize reason（§3.6.8 集合内的值）
+FINALIZE_WRAP_UP = "wrap_up"
+FINALIZE_PROTOCOL_VIOLATION = "peer_protocol_violation"
+FINALIZE_MAX_LINES = "max_lines"
+
+# wrap_up.reason 线上枚举（§4.2 wrap_up）
+WRAP_REASON_QUIET = "quiet"
+WRAP_REASON_BUDGET = "budget"
+WRAP_REASON_RECALL = "recall"
+WRAP_REASON_TIME_UP = "time_up"
+
+
+def _side_rank(side: str) -> int:
+    return 0 if side == "host" else 1
+
+
+def _side_prefix(side: str) -> str:
+    return "h:" if side == "host" else "g:"
+
+
+def _other(side: Side) -> Side:
+    return "guest" if side == "host" else "host"
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class LineRef:
+    """Identity and total-order position of one line.
+
+    ``line_id`` is the wire ``ln`` (``"h:<n>"`` / ``"g:<n>"``, a per-side line
+    counter, not the outbox ``seq``); ``lp`` is the Lamport value allocated
+    when the first piece of the line was sent.
+    """
+
+    line_id: str
+    lp: int
+    side: Side
+
+
+@dataclass(frozen=True)
+class IncomingLineStart:
+    """The first piece (``line_delta`` with ``i == 0``) of a peer line arrived."""
+
+    ref: LineRef
+    speaker: SpeakerKind
+    addressee_side: Side
+    addressee_kind: SpeakerKind
+    reply_to: Optional[LineRef]
+    goodbye: bool
+
+
+# 截断原因里只有这几种是「被故意掐断、不该接话」：人类插话（随后有人类行）、
+# 收尾掐旧行、整场结束。wire_size / tts_error / llm_error / stall 截断的行
+# 是对端这一轮已经说完——不回就两边都在等，一直拖到 idle_timeout。
+_SILENCING_TRUNC_REASONS = frozenset({"human_interrupt", "wrap_up", "visit_end"})
+
+
+def _silences(truncated: bool, reason: Optional[str]) -> bool:
+    """True when a truncated line must not be answered (missing reason counts)."""
+    return truncated and (reason is None or reason in _SILENCING_TRUNC_REASONS)
+
+
+@dataclass(frozen=True)
+class IncomingLineDone:
+    """A peer ``text{final}`` was delivered in ``seq`` order.
+
+    The first four fields are the d4 shape. ``speaker`` / ``addressee_*`` /
+    ``reply_to`` repeat the ``text`` fields ``sp`` / ``ad`` / ``rt`` so that a
+    line whose deltas never arrived (whole-line mode, or every delta lost) is
+    still handled; when ``speaker`` is ``None`` the values recorded by the
+    matching ``IncomingLineStart`` are used, and without either the line is
+    treated as an unaddressed cat line.
+
+    ``trunc_reason`` is the ``text.trunc_reason`` of a truncated line. Only an
+    interrupting reason (see ``_SILENCING_TRUNC_REASONS``, or a missing one)
+    means "this line was cut off on purpose, do not answer it"; a line cut by
+    ``wire_size`` / ``tts_error`` / ``llm_error`` / ``stall`` / ``goodbye_cap``
+    is a finished turn and is answered like any other.
+    """
+
+    ref: LineRef
+    truncated: bool
+    tail_ms: Any
+    goodbye: bool
+    speaker: Optional[SpeakerKind] = None
+    addressee_side: Optional[Side] = None
+    addressee_kind: Optional[SpeakerKind] = None
+    reply_to: Optional[LineRef] = None
+    trunc_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ReplyPlan:
+    """A scheduled reply: start no earlier than the absolute time ``not_before``."""
+
+    reply_to: LineRef
+    not_before: float
+    goodbye: bool = False
+
+
+@dataclass(frozen=True)
+class WrapUpDecision:
+    """A ``wrap_up`` message this side must send now (``action == 'none'``: nothing).
+
+    ``ln`` is set only for ``action == 'speaking'`` (the goodbye line that is
+    starting); ``reason`` is the wire enum ``quiet | budget | recall |
+    time_up``.
+    """
+
+    action: WrapUpAction = "none"
+    reason: str = ""
+    ln: Optional[str] = None
+
+
+@dataclass
+class RoomEffects:
+    """Pure data returned by every event handler; ``VisitRuntime`` executes it.
+
+    ``say_goodbye`` asks this side to say its single goodbye line; when
+    ``reply`` is also set (with ``goodbye=True``) it carries the earliest
+    start time, otherwise the goodbye may start right away. ``peer_crop`` /
+    ``peer_hidden`` are set only when the value changed; the runtime turns
+    them into ``media{peer_crop}`` / ``visit_state_change{peer_crop}`` and
+    ``visit_state_change{peer_hidden | peer_visible}``.
+    """
+
+    reply: Optional[ReplyPlan] = None
+    cancel_pending_reply: bool = False
+    abort_speaking: Optional[str] = None
+    wrap_up: WrapUpDecision = field(default_factory=WrapUpDecision)
+    say_goodbye: bool = False
+    finalize_reason: Optional[str] = None
+    yield_once: bool = False
+    ui_state: Optional[str] = None
+    violation: Optional[str] = None
+    peer_crop: Optional[str] = None
+    peer_hidden: Optional[bool] = None
+
+
+@dataclass
+class WrapUpState:
+    """Book-keeping of the wrap-up handshake (also exposed via ``snapshot``)."""
+
+    initiated_by: Optional[Side] = None
+    began_at: float = 0.0
+    reason: str = ""
+    guest_goodbye_done: bool = False
+    host_goodbye_done: bool = False
+    proposed_at: float = 0.0
+    begin_received: bool = False
+    own_goodbye_requested: bool = False
+    own_goodbye_started: bool = False
+    peer_goodbye_started: bool = False
+    step_started_at: Optional[float] = None
+    step_stopped: bool = False
+    step_expired: bool = False
+    done_sent: bool = False
+    abort_issued: bool = False
+
+
+@dataclass
+class _PeerLine:
+    speaker: SpeakerKind
+    addressee_side: Side
+    addressee_kind: SpeakerKind
+    reply_to: Optional[LineRef]
+    goodbye: bool
+
+
+class VisitRoom:
+    """Pure per-side state machine of one visit (see the module docstring)."""
+
+    def __init__(
+        self,
+        side: Side,
+        *,
+        max_cat_turns_without_human: int = VISIT_MAX_CAT_TURNS_WITHOUT_HUMAN,
+        own_lines_per_visit: int = VISIT_OWN_LINES_PER_VISIT,
+        own_lines_per_minute: int = VISIT_OWN_LINES_PER_MINUTE,
+        reply_gap_s: tuple[float, float] = VISIT_REPLY_GAP_S,
+        wrap_up_max_s: float = VISIT_WRAP_UP_MAX_S,
+        wrap_up_step_s: float = VISIT_WRAP_UP_STEP_S,
+        wrap_up_propose_timeout_s: float = VISIT_WRAP_UP_PROPOSE_TIMEOUT_S,
+        speaking_abort_after_s: float = VISIT_SPEAKING_ABORT_AFTER_S,
+        max_lines: int = VISIT_MAX_LINES,
+        anomaly_finalize_count: int = VISIT_ANOMALY_FINALIZE_COUNT,
+        own_text_per_10s: int = VISIT_OWN_TEXT_PER_10S,
+        inbound_text_burst: int = VISIT_INBOUND_TEXT_BURST,
+        inbound_text_refill_per_s: float = VISIT_INBOUND_TEXT_REFILL_PER_S,
+        inbound_text_max: int = VISIT_INBOUND_TEXT_MAX,
+        peer_crop: str = VISIT_CROP_DEFAULT,
+        rng: Optional[random.Random] = None,
+    ) -> None:
+        """Create the room of ``side``; it starts in the ``active`` phase.
+
+        ``peer_crop`` is the framing announced by the peer ``hello.caps.crop``.
+        ``rng`` only needs ``uniform(a, b)``; inject a seeded one in tests.
+        """
+        if side not in ("host", "guest"):
+            raise ValueError(f"invalid side: {side!r}")
+        self.side: Side = side
+        self.peer_side: Side = _other(side)
+        self._max_quiet = int(max_cat_turns_without_human)
+        self._own_per_visit = int(own_lines_per_visit)
+        self._own_per_minute = int(own_lines_per_minute)
+        self._gap = (float(reply_gap_s[0]), float(reply_gap_s[1]))
+        self._wrap_max_s = float(wrap_up_max_s)
+        self._step_s = float(wrap_up_step_s)
+        self._propose_timeout_s = float(wrap_up_propose_timeout_s)
+        self._abort_after_s = float(speaking_abort_after_s)
+        self._max_lines = int(max_lines)
+        self._anomaly_limit = int(anomaly_finalize_count)
+        self._own_text_limit = int(own_text_per_10s)
+        self._in_burst = float(inbound_text_burst)
+        self._in_refill = float(inbound_text_refill_per_s)
+        self._in_max = int(inbound_text_max)
+        self._rng = rng if rng is not None else random.Random()
+
+        self._phase: Phase = "active"
+        self._wrap = WrapUpState()
+
+        # 计数（§3.6.3 ⑤）
+        self.cat_turns_since_human = 0
+        self.own_lines_total = 0
+        self.peer_cat_lines_total = 0
+        self.own_line_starts: deque[float] = deque()
+        self._last_human_key: Optional[tuple[int, int]] = None
+
+        # Lamport 钟
+        self.own_lp = 0
+        self.max_lp_seen = 0
+        self._peer_max_new_lp = -1
+        self._seen_lns: set[str] = set()
+
+        # 发言状态
+        self.local_speaking: Optional[LineRef] = None
+        self.local_speaking_since = 0.0
+        self._local_speaking_goodbye = False
+        self._local_speaking_reply_to: Optional[LineRef] = None
+        self._goodbye_line_id: Optional[str] = None
+        self.pending_reply: Optional[ReplyPlan] = None
+        self._yield_once = False
+        self._yield_line: Optional[str] = None
+
+        # 对端行
+        self._peer_meta: dict[str, _PeerLine] = {}
+        self._peer_open: set[str] = set()
+        self._peer_done: set[str] = set()
+        self._aborted: set[str] = set()
+        self._latest_to_me: Optional[tuple[int, int]] = None
+
+        # 异常计数（§4.1）
+        self.violation_streak = 0
+        self.anomalies_total = 0
+        self.unknown_type_count = 0
+        self._last_violation: Optional[str] = None
+
+        # 限速
+        self._own_text_sends: deque[float] = deque()
+        self._in_tokens = self._in_burst
+        self._in_last: Optional[float] = None
+        self.inbound_text_accepted = 0
+
+        # 对端画面
+        self.peer_crop = peer_crop if peer_crop in _VALID_CROPS else VISIT_CROP_DEFAULT
+        self.peer_hidden = False
+
+    # ------------------------------------------------------------------
+    # 查询属性
+
+    @property
+    def phase(self) -> Phase:
+        """Current phase: ``active``, ``wrap_up`` or ``ending``."""
+        return self._phase
+
+    @property
+    def wrap_up(self) -> WrapUpState:
+        """Live wrap-up book-keeping (read only by convention)."""
+        return self._wrap
+
+    # ------------------------------------------------------------------
+    # Lamport 钟与排序
+
+    def next_lp(self) -> int:
+        """Allocate the ``lp`` of a new local line: ``max(own, max_seen) + 1``."""
+        self.own_lp = max(self.own_lp, self.max_lp_seen) + 1
+        return self.own_lp
+
+    @staticmethod
+    def sort_key(ref: LineRef) -> tuple[int, int]:
+        """Total-order key ``(lp, side_rank)``; host sorts before guest on a tie."""
+        return (int(ref.lp), _side_rank(ref.side))
+
+    def _lp_in_range(self, lp: Any) -> bool:
+        if not _is_int(lp) or lp < 0 or lp > VISIT_LP_MAX:
+            return False
+        return lp - max(self.max_lp_seen, self.own_lp) <= VISIT_LP_MAX_JUMP
+
+    def observe_lp(self, lp: Any, *, ln: Optional[str] = None,
+                   is_retransmit: bool = False) -> Optional[str]:
+        """Validate and observe the ``lp`` of a received message.
+
+        Returns ``None`` when accepted (the local clock then covers it) or a
+        violation code when the message must be dropped; every violation is
+        counted as one anomaly (``record_anomaly`` semantics) and does not
+        move the local clock:
+
+        * ``'lp_out_of_range'``: not an integer, ``< 0``, ``> VISIT_LP_MAX`` or
+          more than ``VISIT_LP_MAX_JUMP`` above the highest value seen;
+        * ``'lp_regress'``: more than ``VISIT_LP_REGRESS_MAX`` below the highest
+          value seen;
+        * ``'lp_not_monotonic'``: below an ``lp`` the peer already used for an
+          earlier new line / control event.
+
+        The last two checks only apply to new lines and new control events:
+        they are skipped when ``ln`` was already observed or when the caller
+        flags ``is_retransmit`` (a reliable message that fills a ``seq`` gap or
+        repeats an earlier ``seq``), so a retransmitted ``text{final}`` keeps
+        its original ``lp`` even after later lines advanced the clock.
+        """
+        if not self._lp_in_range(lp):
+            return self._count_anomaly("lp_out_of_range")
+        known_line = ln is not None and ln in self._seen_lns
+        if not known_line and not is_retransmit:
+            if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
+                return self._count_anomaly("lp_regress")
+            if lp < self._peer_max_new_lp:
+                return self._count_anomaly("lp_not_monotonic")
+            self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
+        self.max_lp_seen = max(self.max_lp_seen, lp)
+        if ln is not None:
+            self._seen_lns.add(ln)
+        return None
+
+    # ------------------------------------------------------------------
+    # 异常计数（§4.1 版本偏斜与异常计数）
+
+    def _count_anomaly(self, kind: str) -> str:
+        self.anomalies_total += 1
+        self.violation_streak += 1
+        self._last_violation = kind
+        return kind
+
+    def _anomaly_finalize_due(self) -> bool:
+        return self.violation_streak >= self._anomaly_limit
+
+    def record_anomaly(self, kind: str) -> RoomEffects:
+        """Count one anomaly detected outside the room (schema, size, ``i``, ...).
+
+        Returns ``violation=kind`` and, once ``VISIT_ANOMALY_FINALIZE_COUNT``
+        anomalies arrived in a row, ``finalize_reason='peer_protocol_violation'``.
+        """
+        eff = RoomEffects(violation=self._count_anomaly(kind))
+        self._maybe_finalize_anomalies(eff)
+        return eff
+
+    def record_valid_message(self) -> None:
+        """A well-formed known message arrived: reset the consecutive streak."""
+        self.violation_streak = 0
+
+    def record_unknown_type(self) -> None:
+        """An unknown ``t`` arrived: diagnostics only, never part of the streak."""
+        self.unknown_type_count += 1
+
+    def _maybe_finalize_anomalies(self, eff: RoomEffects) -> None:
+        if self._phase != "ending" and self._anomaly_finalize_due():
+            self._finalize(eff, FINALIZE_PROTOCOL_VIOLATION)
+
+    # ------------------------------------------------------------------
+    # 内部工具
+
+    def _finalize(self, eff: RoomEffects, reason: str) -> None:
+        if eff.finalize_reason is None:
+            eff.finalize_reason = reason
+        self._phase = "ending"
+        self.pending_reply = None
+
+    def _cancel_pending(self, eff: RoomEffects) -> None:
+        if self.pending_reply is not None:
+            eff.cancel_pending_reply = True
+            self.pending_reply = None
+
+    def _gap_s(self) -> float:
+        return float(self._rng.uniform(self._gap[0], self._gap[1]))
+
+    def _plan(self, reply_to: LineRef, tail_ms: int, now: float, *, goodbye: bool = False) -> ReplyPlan:
+        return ReplyPlan(reply_to=reply_to, not_before=now + tail_ms / 1000.0 + self._gap_s(),
+                         goodbye=goodbye)
+
+    def _after_last_human(self, ref: LineRef) -> bool:
+        return self._last_human_key is None or self.sort_key(ref) > self._last_human_key
+
+    def _note_human(self, ref: LineRef) -> None:
+        key = self.sort_key(ref)
+        if self._last_human_key is None or key > self._last_human_key:
+            self._last_human_key = key
+        self.cat_turns_since_human = 0
+
+    def _count_cat_line(self, ref: LineRef, eff: RoomEffects) -> None:
+        if self._after_last_human(ref):
+            self.cat_turns_since_human += 1
+        if self.own_lines_total + self.peer_cat_lines_total > self._max_lines:
+            self._finalize(eff, FINALIZE_MAX_LINES)
+
+    def _enter_wrap_up(self, eff: RoomEffects, now: float, *, initiated_by: Side,
+                       reason: str) -> None:
+        if self._phase != "active":
+            return
+        self._phase = "wrap_up"
+        w = self._wrap
+        w.initiated_by = initiated_by
+        w.began_at = now
+        w.reason = reason
+        eff.ui_state = "wrap_up"
+        self._cancel_pending(eff)
+        self._yield_once = False
+        if self.side == "host" and not w.peer_goodbye_started:
+            w.step_started_at = now
+
+    def _start_wrap_up_locally(self, eff: RoomEffects, now: float, reason: str) -> None:
+        """This side detected a wrap-up condition: host begins, guest proposes."""
+        if self._phase != "active":
+            return
+        if self.side == "host":
+            self._enter_wrap_up(eff, now, initiated_by="host", reason=reason)
+            eff.wrap_up = WrapUpDecision(action="begin", reason=reason)
+        else:
+            self._enter_wrap_up(eff, now, initiated_by="guest", reason=reason)
+            self._wrap.proposed_at = now
+            eff.wrap_up = WrapUpDecision(action="propose", reason=reason)
+
+    def _request_goodbye(self, eff: RoomEffects, *, plan: Optional[ReplyPlan] = None) -> None:
+        w = self._wrap
+        if w.own_goodbye_requested or w.own_goodbye_started:
+            return
+        w.own_goodbye_requested = True
+        eff.say_goodbye = True
+        if plan is not None:
+            eff.reply = plan
+            self.pending_reply = plan
+
+    def _peer_goodbye_started(self, now: float) -> None:
+        w = self._wrap
+        w.peer_goodbye_started = True
+        w.step_stopped = True
+
+    def _check_wrap_conditions(self, eff: RoomEffects, now: float) -> None:
+        if self._phase != "active":
+            return
+        if self.own_lines_total >= self._own_per_visit:
+            self._start_wrap_up_locally(eff, now, WRAP_REASON_BUDGET)
+        elif self.cat_turns_since_human >= self._max_quiet:
+            self._start_wrap_up_locally(eff, now, WRAP_REASON_QUIET)
+
+    def _addressed_to_me(self, addressee_side: Optional[str], addressee_kind: Optional[str]) -> bool:
+        return addressee_side == self.side and addressee_kind == "cat"
+
+    def _collision(self, reply_to: Optional[LineRef]) -> bool:
+        """True when a peer cat line arrives while this side's cat is speaking.
+
+        The opening exemption: both lines answering nobody (``rt == ''``) may
+        coexist and are not a collision.
+        """
+        if self.local_speaking is None or self._local_speaking_goodbye:
+            return False
+        if reply_to is None and self._local_speaking_reply_to is None:
+            return False
+        return True
+
+    def _on_new_peer_line(self, ln: str) -> None:
+        if self._yield_line is not None and ln != self._yield_line:
+            self._yield_once = False
+            self._yield_line = None
+
+    def _interrupt_for_human(self, eff: RoomEffects) -> None:
+        # 收尾期间人类行不打断告别、不取消送客计划（旧行由 10 s 规则收口）
+        if self._phase != "active":
+            return
+        if self.local_speaking is not None and not self._local_speaking_goodbye:
+            eff.abort_speaking = "human_interrupt"
+        self._cancel_pending(eff)
+
+    # ------------------------------------------------------------------
+    # 入站事件
+
+    def on_incoming_start(self, ev: IncomingLineStart, now: float) -> RoomEffects:
+        """First piece of a peer line arrived (``line_delta`` with ``i == 0``).
+
+        Effects: a human line interrupts this side's speaking cat; a peer cat
+        line arriving while this side's cat speaks makes the guest yield once;
+        a goodbye line (``wu``) enters the wrap-up and stops the step timer. A
+        second open line from the same sender is dropped as
+        ``violation='line_overlap'`` (one anomaly, not a finalize).
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        ln = ev.ref.line_id
+        if ln in self._peer_done or ln in self._peer_meta:
+            return eff
+        if self._peer_open:
+            eff.violation = self._count_anomaly("line_overlap")
+            self._maybe_finalize_anomalies(eff)
+            return eff
+        self._peer_meta[ln] = _PeerLine(ev.speaker, ev.addressee_side, ev.addressee_kind,
+                                        ev.reply_to, ev.goodbye)
+        self._peer_open.add(ln)
+        self._on_new_peer_line(ln)
+        if ev.speaker == "human":
+            self._note_human(ev.ref)
+            self._interrupt_for_human(eff)
+            return eff
+        if ev.goodbye:
+            self._on_peer_goodbye_seen(eff, now)
+            return eff
+        if self._collision(ev.reply_to) and self.side == "guest":
+            self._yield_once = True
+            self._yield_line = ln
+            eff.yield_once = True
+        return eff
+
+    def _on_peer_goodbye_seen(self, eff: RoomEffects, now: float) -> None:
+        """A peer goodbye line started (first ``wu`` piece, ``speaking``, or its ``text``)."""
+        if self._phase == "active":
+            self._enter_wrap_up(eff, now, initiated_by=self.peer_side,
+                                reason=self._wrap.reason or "")
+        self._peer_goodbye_started(now)
+        if self.side == "guest":
+            # begin 丢了也不卡死：guest 见到 host 的告别行就自己告别一句
+            self._request_goodbye(eff)
+
+    def on_incoming_done(self, ev: IncomingLineDone, now: float) -> RoomEffects:
+        """A peer ``text{final}`` was delivered (in ``seq`` order, after admission).
+
+        ``tail_ms`` is accepted only as an integer in ``[0, VISIT_CLAUSE_MAX_MS]``;
+        anything else is treated as 0 and reported as
+        ``violation='tail_ms_out_of_range'`` (counted in ``anomalies_total``
+        but not in the consecutive streak, so the line is processed and never
+        finalizes the visit). A line addressed to this side's cat produces a
+        ``ReplyPlan`` with ``not_before = now + tail_ms / 1000 + U(gap)``; a
+        line truncated for an interrupting reason never gets a reply (see
+        ``IncomingLineDone.trunc_reason``).
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        tail_ms = ev.tail_ms
+        if not _is_int(tail_ms) or tail_ms < 0 or tail_ms > VISIT_CLAUSE_MAX_MS:
+            tail_ms = 0
+            self.anomalies_total += 1
+            eff.violation = "tail_ms_out_of_range"
+
+        ln = ev.ref.line_id
+        if ln in self._peer_done:
+            return eff
+        opened = self._peer_meta.pop(ln, None)
+        self._peer_open.discard(ln)
+        speaker = ev.speaker or (opened.speaker if opened else "cat")
+        ad_side = ev.addressee_side or (opened.addressee_side if opened else None)
+        ad_kind = ev.addressee_kind or (opened.addressee_kind if opened else None)
+        reply_to = ev.reply_to if ev.reply_to is not None else (opened.reply_to if opened else None)
+        goodbye = bool(ev.goodbye or (opened.goodbye if opened else False))
+        self._peer_done.add(ln)
+
+        if opened is None:
+            self._on_new_peer_line(ln)
+            if speaker == "cat" and not goodbye and self._collision(reply_to) \
+                    and self.side == "guest" and self._phase == "active":
+                self._yield_once = True
+                self._yield_line = ln
+                eff.yield_once = True
+
+        silenced = _silences(ev.truncated, ev.trunc_reason)
+        if silenced:
+            self._aborted.add(ln)
+            if (self.pending_reply is not None and not self.pending_reply.goodbye
+                    and self.pending_reply.reply_to.line_id == ln):
+                self._cancel_pending(eff)
+
+        if speaker == "human":
+            self._note_human(ev.ref)
+            self._interrupt_for_human(eff)
+        elif goodbye:
+            self._on_peer_goodbye_done(eff, ev.ref, tail_ms, now, opened is None)
+            return eff
+        else:
+            self.peer_cat_lines_total += 1
+            self._count_cat_line(ev.ref, eff)
+            if self._phase == "ending":
+                return eff
+
+        to_me = self._addressed_to_me(ad_side, ad_kind)
+        if to_me and not silenced:
+            key = self.sort_key(ev.ref)
+            if self._latest_to_me is None or key > self._latest_to_me:
+                self._latest_to_me = key
+        if self._phase == "active" and to_me and not silenced:
+            self._cancel_pending(eff)
+            plan = self._plan(ev.ref, tail_ms, now)
+            self.pending_reply = plan
+            eff.reply = plan
+        self._check_wrap_conditions(eff, now)
+        if self._phase != "active" and eff.reply is not None and not eff.reply.goodbye:
+            eff.reply = None
+            eff.cancel_pending_reply = True
+            self.pending_reply = None
+        return eff
+
+    def _on_peer_goodbye_done(self, eff: RoomEffects, ref: LineRef, tail_ms: int, now: float,
+                              unseen_start: bool) -> None:
+        w = self._wrap
+        if unseen_start or not w.peer_goodbye_started:
+            self._on_peer_goodbye_seen(eff, now)
+        if self.peer_side == "guest":
+            w.guest_goodbye_done = True
+        else:
+            w.host_goodbye_done = True
+        if self.side == "host":
+            # 客人告别说完 → 东家送客一句（按对端末句 tail_ms + 间隙排程）
+            self._request_goodbye(eff, plan=self._plan(ref, tail_ms, now, goodbye=True))
+
+    def on_incoming_abort(self, line_id: str, now: float,
+                          reason: Optional[str] = None) -> RoomEffects:
+        """A peer ``line_abort`` arrived: drop the pending reply to that line, if any.
+
+        Only an interrupting ``reason`` (or a missing one) marks the line as
+        aborted; a ``tts_error`` / ``llm_error`` abort is still answered once
+        its ``text`` arrives.
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        # line_abort = 这行已停嘴：不再算「未收口」，免得紧随其后的告别行首片被当成交叠
+        self._peer_open.discard(line_id)
+        if not _silences(True, reason):
+            return eff
+        self._aborted.add(line_id)
+        if self.pending_reply is not None and self.pending_reply.reply_to.line_id == line_id \
+                and not self.pending_reply.goodbye:
+            self._cancel_pending(eff)
+        return eff
+
+    def on_incoming_wrap_up(self, phase: WrapUpPhase, reason: str, lp: int, now: float,
+                            ln: Optional[str] = None) -> RoomEffects:
+        """A peer ``wrap_up`` message was delivered (``lp`` already observed).
+
+        * ``propose`` (host only): enter the wrap-up and answer ``begin`` with
+          the same reason, without judging any condition (``recall`` too);
+          ignored when already wrapping up.
+        * ``begin`` (guest only): enter the wrap-up and say the goodbye.
+        * ``speaking`` (``ln`` required, prefixed with the peer side): the peer
+          goodbye line started; stops the step timer (idempotent). Without a
+          valid ``ln`` it is an anomaly and the timer keeps running.
+        * ``done`` (guest only): finalize with ``'wrap_up'``.
+        * ``ack``: no effect.
+
+        A phase sent in the wrong direction counts as an anomaly.
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        if phase == "speaking":
+            if not isinstance(ln, str) or not ln.startswith(_side_prefix(self.peer_side)):
+                eff.violation = self._count_anomaly("wrap_up_speaking_bad_ln")
+                self._maybe_finalize_anomalies(eff)
+                return eff
+            if not self._wrap.peer_goodbye_started:
+                self._on_peer_goodbye_seen(eff, now)
+            return eff
+        if phase == "ack":
+            return eff
+        if phase == "propose":
+            if self.side != "host":
+                return self.record_anomaly("wrap_up_bad_direction")
+            if self._phase == "active":
+                self._enter_wrap_up(eff, now, initiated_by="guest", reason=reason)
+                eff.wrap_up = WrapUpDecision(action="begin", reason=reason)
+            return eff
+        if phase == "begin":
+            if self.side != "guest":
+                return self.record_anomaly("wrap_up_bad_direction")
+            self._wrap.begin_received = True
+            if self._phase == "active":
+                self._enter_wrap_up(eff, now, initiated_by="host", reason=reason)
+            self._request_goodbye(eff)
+            return eff
+        if phase == "done":
+            if self.side != "guest":
+                return self.record_anomaly("wrap_up_bad_direction")
+            self._finalize(eff, FINALIZE_WRAP_UP)
+            return eff
+        return self.record_anomaly("wrap_up_bad_phase")
+
+    def on_incoming_hb(self, lp_seen: Any, crop: Any, hidden: Any, now: float) -> RoomEffects:
+        """A peer ``hb{lp_seen, crop, hidden}`` arrived.
+
+        ``lp_seen`` obeys the same range / jump rule as ``lp`` (no
+        monotonicity check: ``hb`` is lossy); an invalid heartbeat is dropped
+        as a whole (one anomaly, no correction applied). A valid one advances
+        the Lamport clock and corrects ``peer_crop`` / ``peer_hidden``, so a
+        lost ``state`` message is repaired within one heartbeat period.
+        """
+        eff = RoomEffects()
+        if not self._lp_in_range(lp_seen):
+            eff.violation = self._count_anomaly("lp_out_of_range")
+            self._maybe_finalize_anomalies(eff)
+            return eff
+        if crop not in _VALID_CROPS or not isinstance(hidden, bool):
+            eff.violation = self._count_anomaly("hb_bad_field")
+            self._maybe_finalize_anomalies(eff)
+            return eff
+        self.max_lp_seen = max(self.max_lp_seen, lp_seen)
+        self._apply_peer_view(eff, crop, hidden)
+        return eff
+
+    def on_incoming_state(self, hidden: Any, crop: Any, now: float) -> RoomEffects:
+        """A peer ``state{hidden, crop, ...}`` arrived; same corrections as ``hb``."""
+        eff = RoomEffects()
+        if crop not in _VALID_CROPS or not isinstance(hidden, bool):
+            eff.violation = self._count_anomaly("state_bad_field")
+            self._maybe_finalize_anomalies(eff)
+            return eff
+        self._apply_peer_view(eff, crop, hidden)
+        return eff
+
+    def on_peer_frame(self, now: float) -> RoomEffects:
+        """A new peer video frame arrived: a hidden peer becomes visible again."""
+        eff = RoomEffects()
+        if self.peer_hidden:
+            self.peer_hidden = False
+            eff.peer_hidden = False
+        return eff
+
+    def _apply_peer_view(self, eff: RoomEffects, crop: str, hidden: bool) -> None:
+        if crop != self.peer_crop:
+            self.peer_crop = crop
+            eff.peer_crop = crop
+        if hidden != self.peer_hidden:
+            self.peer_hidden = hidden
+            eff.peer_hidden = hidden
+
+    def admit_incoming_text(self, now: float) -> tuple[bool, RoomEffects]:
+        """Receive-side limit on peer ``text`` (call once per new ``seq`` only).
+
+        Token bucket of ``VISIT_INBOUND_TEXT_BURST`` refilled at
+        ``VISIT_INBOUND_TEXT_REFILL_PER_S`` plus a per-visit hard cap of
+        ``VISIT_INBOUND_TEXT_MAX``. A rejected text is still acked by the
+        caller but dropped; it counts as an anomaly in the consecutive streak
+        (``inbound_text_rate`` / ``inbound_text_cap``).
+        """
+        if self._in_last is not None and now > self._in_last:
+            self._in_tokens = min(self._in_burst,
+                                  self._in_tokens + (now - self._in_last) * self._in_refill)
+        if self._in_last is None or now > self._in_last:
+            self._in_last = now
+        if self.inbound_text_accepted >= self._in_max:
+            return False, self.record_anomaly("inbound_text_cap")
+        if self._in_tokens < 1.0:
+            return False, self.record_anomaly("inbound_text_rate")
+        self._in_tokens -= 1.0
+        self.inbound_text_accepted += 1
+        return True, RoomEffects()
+
+    # ------------------------------------------------------------------
+    # 本地事件
+
+    def _prune_own_text(self, now: float) -> None:
+        while self._own_text_sends and self._own_text_sends[0] <= now - _OWN_TEXT_WINDOW_S:
+            self._own_text_sends.popleft()
+
+    def can_accept_local_line(self, now: float) -> bool:
+        """Own ``text`` hard limit: fewer than 20 sent in the last 10 s (cat + human)."""
+        self._prune_own_text(now)
+        return len(self._own_text_sends) < self._own_text_limit
+
+    def on_local_human_line(self, ref: LineRef, now: float) -> RoomEffects:
+        """The local human's line was accepted (call after ``can_accept_local_line``).
+
+        Resets the six-line counter, interrupts this side's speaking cat
+        (``abort_speaking='human_interrupt'``), cancels an unspoken reply and
+        books one own ``text`` against the 20 per 10 s limit.
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        self._own_text_sends.append(now)
+        self._note_human(ref)
+        self._interrupt_for_human(eff)
+        return eff
+
+    def on_local_line_started(self, ref: LineRef, reply_to: Optional[LineRef], goodbye: bool,
+                              now: float) -> RoomEffects:
+        """This side's cat line sent (or is about to send) its first piece.
+
+        A goodbye line yields ``wrap_up=WrapUpDecision('speaking', ln=...)``,
+        which the runtime sends before any piece of that line (both subtitle
+        modes) and enters the wrap-up if still active. A normal line enters
+        the per-minute window.
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        self.local_speaking = ref
+        self.local_speaking_since = now
+        self._local_speaking_goodbye = bool(goodbye)
+        self._local_speaking_reply_to = reply_to
+        self.pending_reply = None
+        if goodbye:
+            w = self._wrap
+            if self._phase == "active":
+                self._enter_wrap_up(eff, now, initiated_by=self.side, reason=w.reason or "")
+            w.own_goodbye_requested = True
+            w.own_goodbye_started = True
+            self._goodbye_line_id = ref.line_id
+            eff.wrap_up = WrapUpDecision(action="speaking", reason=w.reason, ln=ref.line_id)
+        else:
+            self.own_line_starts.append(now)
+        return eff
+
+    def on_local_line_done(self, ref: LineRef, truncated: bool, now: float) -> RoomEffects:
+        """This side's cat line sent its ``text{final}`` (normal, truncated or aborted).
+
+        Books the line (40 per visit, six-line counter, 80 line guard, own text
+        limit) and starts the wrap-up when a condition is met. For the goodbye
+        line: the host answers ``wrap_up{done}`` (the runtime sends it after
+        the line's ``tail_ms``); the guest starts the 15 s step timer waiting
+        for the host's farewell unless it already started.
+        """
+        eff = RoomEffects()
+        if self.local_speaking is not None and self.local_speaking.line_id == ref.line_id:
+            self.local_speaking = None
+            self._local_speaking_goodbye = False
+            self._local_speaking_reply_to = None
+        if self._phase == "ending":
+            return eff
+        self._own_text_sends.append(now)
+        w = self._wrap
+        is_goodbye = ref.line_id == self._goodbye_line_id
+        if is_goodbye:
+            if self.side == "host":
+                w.host_goodbye_done = True
+                if not w.done_sent:
+                    w.done_sent = True
+                    eff.wrap_up = WrapUpDecision(action="done", reason=w.reason)
+            else:
+                w.guest_goodbye_done = True
+                if not w.peer_goodbye_started:
+                    w.step_started_at = now
+                    w.step_stopped = False
+                    w.step_expired = False
+            return eff
+        self.own_lines_total += 1
+        self._count_cat_line(ref, eff)
+        if self._phase == "ending":
+            return eff
+        self._check_wrap_conditions(eff, now)
+        return eff
+
+    def on_local_recall(self, now: float) -> RoomEffects:
+        """The recall button was pressed (guest: call her back; host: see the guest off).
+
+        Guest: ``propose{recall}``; host: ``begin{recall}``. A repeated press
+        while already wrapping up has no effect (the runtime answers
+        ``VISIT_RECALL_ALREADY``).
+        """
+        eff = RoomEffects()
+        self._start_wrap_up_locally(eff, now, WRAP_REASON_RECALL)
+        return eff
+
+    def on_time_up(self, now: float) -> RoomEffects:
+        """``max_duration - 60 s`` reached: host ``begin{time_up}``, guest ``propose``."""
+        eff = RoomEffects()
+        self._start_wrap_up_locally(eff, now, WRAP_REASON_TIME_UP)
+        return eff
+
+    def on_tick(self, now: float) -> RoomEffects:
+        """Timer fallback; call periodically (``visit_sweep_loop``).
+
+        Handles the anomaly finalize, the propose timeout (guest starts its
+        goodbye), the 10 s abort of an old line still speaking after
+        ``begin``, the step timeout (host: see the guest off itself; guest:
+        finalize) and the 45 s hard cap.
+        """
+        eff = RoomEffects()
+        if self._phase == "ending":
+            return eff
+        if self._anomaly_finalize_due():
+            self._finalize(eff, FINALIZE_PROTOCOL_VIOLATION)
+            return eff
+        if self._phase != "wrap_up":
+            return eff
+        w = self._wrap
+        if now - w.began_at >= self._wrap_max_s:
+            self._finalize(eff, FINALIZE_WRAP_UP)
+            return eff
+        if (self.side == "guest" and w.initiated_by == "guest" and not w.begin_received
+                and now - w.proposed_at >= self._propose_timeout_s):
+            self._request_goodbye(eff)
+        if (self.local_speaking is not None and not self._local_speaking_goodbye
+                and not w.abort_issued and now - w.began_at >= self._abort_after_s):
+            w.abort_issued = True
+            eff.abort_speaking = "wrap_up"
+        if (w.step_started_at is not None and not w.step_stopped and not w.step_expired
+                and now - w.step_started_at >= self._step_s):
+            w.step_expired = True
+            if self.side == "host":
+                self._request_goodbye(eff)
+            else:
+                self._finalize(eff, FINALIZE_WRAP_UP)
+        return eff
+
+    # ------------------------------------------------------------------
+    # 查询
+
+    def is_stale(self, plan: ReplyPlan) -> bool:
+        """True when ``plan`` should be dropped before speaking.
+
+        Stale = the replied line was aborted / truncated, or a newer complete
+        line addressed to this side's cat arrived (its own plan supersedes
+        this one). Goodbye plans are never stale.
+        """
+        if plan.goodbye:
+            return False
+        if plan.reply_to.line_id in self._aborted:
+            return True
+        if self._latest_to_me is not None and self._latest_to_me > self.sort_key(plan.reply_to):
+            return True
+        return False
+
+    def _prune_minute(self, now: float) -> None:
+        while self.own_line_starts and self.own_line_starts[0] <= now - _MINUTE_WINDOW_S:
+            self.own_line_starts.popleft()
+
+    def may_start_cat_line(self, now: float, *, goodbye: bool = False,
+                           outbox_pending_bytes: int = 0,
+                           plan: Optional[ReplyPlan] = None) -> tuple[bool, str]:
+        """Whether this side's cat may open a line now; returns ``(ok, reason)``.
+
+        Reasons: ``ok``; ``wrap_up`` (ending, or a non-goodbye line during the
+        wrap-up, or the goodbye was already said); ``visit_cap`` (40 own
+        lines); ``stale`` (``plan`` given and ``is_stale(plan)``); ``yield``
+        (guest collision: returned exactly once, then cleared; the runtime
+        drops the plan); ``minute_cap`` (six lines in the last 60 s, retry at
+        ``next_allowed_start``); ``busy`` (unacked outbox bytes
+        ``outbox_pending_bytes`` exceed ``VISIT_OUTBOX_PENDING_MAX_BYTES``
+        minus one maximum line, or the own ``text`` 20 per 10 s limit is
+        full; retry later). The goodbye line bypasses the line caps, yield
+        and staleness but not ``busy``.
+        """
+        if self._phase == "ending":
+            return False, "wrap_up"
+        if goodbye:
+            if self._wrap.own_goodbye_started:
+                return False, "wrap_up"
+        else:
+            if self.own_lines_total >= self._own_per_visit:
+                return False, "visit_cap"
+            if self._phase != "active":
+                return False, "wrap_up"
+            if plan is not None and self.is_stale(plan):
+                return False, "stale"
+            if self._yield_once:
+                self._yield_once = False
+                self._yield_line = None
+                return False, "yield"
+            self._prune_minute(now)
+            if len(self.own_line_starts) >= self._own_per_minute:
+                return False, "minute_cap"
+        if outbox_pending_bytes > VISIT_OUTBOX_PENDING_MAX_BYTES - _LINE_MAX_ENCODED_BYTES:
+            return False, "busy"
+        if not self.can_accept_local_line(now):
+            return False, "busy"
+        return True, "ok"
+
+    def next_allowed_start(self, now: float) -> float:
+        """Earliest time the per-minute cap lets a new own line start."""
+        self._prune_minute(now)
+        if len(self.own_line_starts) < self._own_per_minute:
+            return now
+        return self.own_line_starts[0] + _MINUTE_WINDOW_S
+
+    def snapshot(self) -> dict:
+        """JSON-safe view for ``GET /api/visit/state`` (``room`` field)."""
+        w = self._wrap
+        return {
+            "phase": self._phase,
+            "cat_turns_since_human": self.cat_turns_since_human,
+            "own_lines_total": self.own_lines_total,
+            "peer_cat_lines_total": self.peer_cat_lines_total,
+            "own_lp": self.own_lp,
+            "max_lp_seen": self.max_lp_seen,
+            "anomalies": self.anomalies_total,
+            "violation_streak": self.violation_streak,
+            "unknown_types": self.unknown_type_count,
+            "peer_crop": self.peer_crop,
+            "peer_hidden": self.peer_hidden,
+            "wrap_up": {
+                "initiated_by": w.initiated_by,
+                "began_at": w.began_at,
+                "reason": w.reason,
+                "guest_goodbye_done": w.guest_goodbye_done,
+                "host_goodbye_done": w.host_goodbye_done,
+                "peer_goodbye_started": w.peer_goodbye_started,
+                "own_goodbye_started": w.own_goodbye_started,
+                "done_sent": w.done_sent,
+            },
+        }
