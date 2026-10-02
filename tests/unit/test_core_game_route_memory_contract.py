@@ -3284,6 +3284,8 @@ def test_mini_game_magic_command_matches_whole_slash_aliases_only():
     assert normalize("/足球") == "soccer"
     assert normalize("/羽毛球") == "badminton"
     assert normalize("/你画我猜") == "drawing_guess"
+    assert normalize("/投篮") == "air_basketball"
+    assert normalize("/Air  Basketball") == "air_basketball"
     assert normalize("一起看") is None
     assert normalize("/一起看吧") is None
     assert normalize("我们 /一起看") is None

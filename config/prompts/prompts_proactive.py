@@ -4247,6 +4247,16 @@ MINI_GAME_MAGIC_COMMANDS: dict[str, dict[str, list[str]]] = {
         "es": ["dibuja y adivina"],
         "pt": ["desenhe e adivinhe"],
     },
+    "air_basketball": {
+        "zh": ["投篮", "空气投篮"],
+        "zh-TW": ["投籃", "空氣投籃"],
+        "en": ["basketball", "air basketball"],
+        "ja": ["バスケ", "エアバスケ"],
+        "ko": ["농구", "에어 농구"],
+        "ru": ["баскетбол"],
+        "es": ["baloncesto", "básquet"],
+        "pt": ["basquete"],
+    },
 }
 
 # ---------- 音乐搜索结果格式化 ----------
