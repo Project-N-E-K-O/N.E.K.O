@@ -45,9 +45,13 @@ _CN_LABEL = (
 )
 _EN_LABEL = r"(?:current[ \t]{1,8})?screen[ \t]{1,8}(?:comment|observation|content|display|image)"
 _LABEL = rf"{_CN_LABEL}|{_EN_LABEL}"
-# A bracket followed by "(" closes link text ("[屏幕截图](url)", and the
-# full-width "【屏幕截图】(url)" a model may write the same way), not a label.
-_CLOSING_BRACKET = r"[】\]](?!\()"
+# A bracket followed by "(" or "[" closes link text ("[屏幕截图](url)",
+# "[屏幕截图][1]", and the full-width "【屏幕截图】(url)" a model may write the
+# same way), and one next to a path separator is a path segment
+# ("/tmp/[屏幕截图]/a.png"); neither is a label.
+_NOT_A_LABEL_AFTER_BRACKET = "([/\\"
+_CLOSING_BRACKET = r"[】\]](?![(\[/\\])"
+_OPENING_BRACKET = r"(?<![/\\])[【\[]"
 # Match only through the first separator. No unbounded whitespace lookahead.
 # The lexer checks the preceding character; complete and partial matches use
 # the same engine (re and regex disagree about Unicode combining characters).
@@ -76,7 +80,7 @@ _NOT_AFTER_WORD = r"(?<![A-Za-z0-9_])"
 # the request copy of the model's own replies is touched. An English label
 # glued to an ASCII word stays ("screenshot", "keyboard/screen display").
 _LABEL_STRIP = regex.compile(
-    rf"[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}[ \t]*(?:[:：][ \t]*)?"
+    rf"{_OPENING_BRACKET}[ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}{_CLOSING_BRACKET}[ \t]*(?:[:：][ \t]*)?"
     rf"|(?:^|(?<=[{_SLASH_OPENERS}]))[/／][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[/／]"
     r"[ \t]*(?:[:：][ \t]*)?"
     r"|(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])[ \t]*(?:[:：][ \t]*)?"
@@ -532,7 +536,7 @@ class _ScreenLexer:
     def _accept(self, char):
         if self.pending_closed:
             held, self.pending, self.pending_closed = self.pending, "", False
-            if char != "(":
+            if char not in _NOT_A_LABEL_AFTER_BRACKET:
                 return [self._emit(held, True), *self._accept(char)]
             result = [self._emit(held[0])]
             for rest in held[1:] + char:
@@ -619,6 +623,8 @@ class _ScreenLexer:
             if not ((char == '"' and self.previous.isdigit()) or (char == "'" and attached)):
                 self.quote = _QUOTES[char]
         elif char in "/／" and self.previous and self.previous not in _SLASH_OPENERS:
+            pass
+        elif char in "【[" and self.previous in ("/", "\\"):
             pass
         elif char in "/／屏螢当當【[sScC":
             # An ASCII word character before a marker blocks it only when the

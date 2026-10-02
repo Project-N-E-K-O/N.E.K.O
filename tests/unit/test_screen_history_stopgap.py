@@ -173,6 +173,9 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "Try the screen content / settings panel and tell me what you see there.",
     "照片/屏幕截图 都可以发给我，我帮你看看哪里出了问题呀。照片/屏幕截图/视频也行，我会尽量帮你分析。",
     "Could you share the screen content/layout you see?",
+    # Label-like path segments and reference-style links.
+    "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
+    "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
     # A label-like path segment inside a URL.
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
