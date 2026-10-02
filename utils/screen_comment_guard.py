@@ -91,8 +91,12 @@ _LABEL_STRIP = regex.compile(
 # punctuation, and a Markdown link target "](...)". Paths in them may name a
 # label ("https://host/屏幕搭话：a.png").
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
+# A URL may also come without its scheme: protocol-relative ("//cdn.host/")
+# or a bare host with a path ("www.host.com/", "cdn.host.io:8080/").
 _PROTECTED = regex.compile(
-    r"[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
+    r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
+    r"|(?<![\w:/.@])(?://)?[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}(?::\d+)?(?=/))"
+    r"(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
     r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
 )
