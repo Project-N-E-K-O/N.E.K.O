@@ -27,6 +27,30 @@ async function mutationHeaders() {
     }
 }
 
+async function isCsrfTokenFailure(response) {
+    if (response.headers.get('X-CSRF-Failure') === 'token') return true;
+    try {
+        const data = await response.clone().json();
+        return Boolean(data && data.detail && data.detail.csrf_failure === 'token');
+    } catch (error) {
+        return false;
+    }
+}
+
+// A stale cached token is rejected even though sending none would pass, so
+// on a token rejection refetch it and retry once; other failures pass through.
+async function postWithCsrfRetry(url, body) {
+    for (let attempt = 0; ; attempt += 1) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
+            body,
+        });
+        if (attempt > 0 || response.status !== 403 || !(await isCsrfTokenFailure(response))) return response;
+        csrfTokenPromise = null;
+    }
+}
+
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -41,11 +65,7 @@ function pluginErrorMessage(error) {
 }
 
 async function callPlugin(entry, args = {}) {
-    const resp = await fetch(RUNS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
-        body: JSON.stringify({ plugin_id: pluginId, entry_id: entry, args })
-    });
+    const resp = await postWithCsrfRetry(RUNS_URL, JSON.stringify({ plugin_id: pluginId, entry_id: entry, args }));
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const { run_id, id } = await resp.json();
     const runId = run_id || id;

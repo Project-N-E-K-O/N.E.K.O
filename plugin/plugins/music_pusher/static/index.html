@@ -1051,6 +1051,31 @@
         return {};
       }
     }
+
+    async function isCsrfTokenFailure(response) {
+      if (response.headers.get("X-CSRF-Failure") === "token") return true;
+      try {
+        const data = await response.clone().json();
+        return Boolean(data && data.detail && data.detail.csrf_failure === "token");
+      } catch (error) {
+        return false;
+      }
+    }
+
+    // A stale cached token is rejected even though sending none would pass, so
+    // on a token rejection refetch it and retry once; other failures pass through.
+    async function postWithCsrfRetry(url, body) {
+      for (let attempt = 0; ; attempt += 1) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await mutationHeaders()) },
+          body,
+        });
+        if (attempt > 0 || response.status !== 403 || !(await isCsrfTokenFailure(response))) return response;
+        csrfTokenPromise = null;
+      }
+    }
+
     // 500MB 是浏览器安全的上限（readAsDataURL 会把文件整体加载到内存 + 约 33% base64 膨胀）
     // 大文件路径应未来迁移到 multipart/form-data 或分片上传
     const MAX_AUDIO_SIZE = 500 * 1024 * 1024;
@@ -1315,11 +1340,9 @@
     }
 
     async function callEntry(entryId, args = {}, timeoutMs = 90000) {
-      const createResp = await fetch(RUNS_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await mutationHeaders()) },
-        body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
-      });
+      const createResp = await postWithCsrfRetry(
+        RUNS_URL, JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
+      );
 
       if (!createResp.ok) {
         const rawText = await createResp.text().catch(() => "");

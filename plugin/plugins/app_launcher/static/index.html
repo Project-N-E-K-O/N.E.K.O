@@ -1053,6 +1053,30 @@
         }
     }
 
+    async function isCsrfTokenFailure(response) {
+        if (response.headers.get('X-CSRF-Failure') === 'token') return true;
+        try {
+            const data = await response.clone().json();
+            return Boolean(data && data.detail && data.detail.csrf_failure === 'token');
+        } catch (error) {
+            return false;
+        }
+    }
+
+    // A stale cached token is rejected even though sending none would pass, so
+    // on a token rejection refetch it and retry once; other failures pass through.
+    async function postWithCsrfRetry(url, body) {
+        for (let attempt = 0; ; attempt += 1) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
+                body,
+            });
+            if (attempt > 0 || response.status !== 403 || !(await isCsrfTokenFailure(response))) return response;
+            csrfTokenPromise = null;
+        }
+    }
+
     let allApps = [];
     let editingAppId = null;
     let editingAppSnapshot = null;
@@ -1150,15 +1174,11 @@
     }
 
     async function callPlugin(entry, args = {}) {
-        const createResp = await fetch(RUNS_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(await mutationHeaders()) },
-            body: JSON.stringify({
-                plugin_id: PLUGIN_ID,
-                entry_id: entry,
-                args: args
-            })
-        });
+        const createResp = await postWithCsrfRetry(RUNS_URL, JSON.stringify({
+            plugin_id: PLUGIN_ID,
+            entry_id: entry,
+            args: args
+        }));
         if (!createResp.ok) {
             const text = await createResp.text();
             throw new Error(t('ui.error.create_run', `创建任务失败 HTTP ${createResp.status}: ${text}`, {
