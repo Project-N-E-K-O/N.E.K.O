@@ -1,0 +1,24 @@
+{
+  "call": {
+    "method": "fetch_bootstrap",
+    "lanlan": "Lanlan",
+    "kwargs": {
+      "subjects": [
+        {
+          "subject_kind": "group_chat",
+          "subject_id": "neko_visit:0123456789abcdef01234567",
+          "scope": "group_chat:neko_visit:0123456789abcdef01234567"
+        }
+      ],
+      "lang": "estonian",
+      "max_tokens": 500
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/Lanlan/scoped_context",
+    "body": "{\"subjects\":[{\"subject_kind\":\"group_chat\",\"subject_id\":\"neko_visit:0123456789abcdef01234567\",\"scope\":\"group_chat:neko_visit:0123456789abcdef01234567\"}]}"
+  },
+  "model": "ScopedContextRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.fetch_scoped_bootstrap_memory"
+}

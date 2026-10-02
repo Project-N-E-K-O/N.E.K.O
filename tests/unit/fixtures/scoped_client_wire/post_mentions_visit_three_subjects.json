@@ -1,0 +1,30 @@
+{
+  "call": {
+    "method": "post_mentions",
+    "lanlan": "小八",
+    "kwargs": {
+      "subjects": [
+        {
+          "subject_kind": "group_chat",
+          "subject_id": "neko_visit:0123456789abcdef01234567"
+        },
+        {
+          "subject_kind": "group_participant",
+          "subject_id": "neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef"
+        },
+        {
+          "subject_kind": "participant",
+          "subject_id": "neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b"
+        }
+      ],
+      "response_text": "上次你说喜欢\"草莓蛋糕\"，今天带了一块来～"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:48912/internal/memory/%E5%B0%8F%E5%85%AB/scoped_mentions",
+    "body": "{\"response_text\":\"上次你说喜欢\\\"草莓蛋糕\\\"，今天带了一块来～\",\"subjects\":[{\"subject_kind\":\"group_chat\",\"subject_id\":\"neko_visit:0123456789abcdef01234567\"},{\"subject_kind\":\"group_participant\",\"subject_id\":\"neko_visit:0123456789abcdef01234567:c_89abcdef0123456789abcdef\"},{\"subject_kind\":\"participant\",\"subject_id\":\"neko_visit:5f2c1b7e-3a4d-4e8f-9b10-2c3d4e5f6a7b\"}]}"
+  },
+  "model": "ScopedMentionsRequest",
+  "qq_reference": "b0b283e34:plugin/plugins/qq_auto_reply/memory_bridge.py::QQMemoryBridge.post_scoped_mentions"
+}
