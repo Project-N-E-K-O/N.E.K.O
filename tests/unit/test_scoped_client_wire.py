@@ -566,3 +566,16 @@ async def test_mentions_require_a_recorded_confirmation(body):
         assert await client.post_mentions(
             "Lanlan", subjects=[_SUBJECT], response_text="hi",
         ) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("top", [{"status": "failed"}, {}, {"status": None}])
+async def test_batch_requires_the_top_level_processed_status(top):
+    def responder(request):
+        return httpx.Response(200, json=dict(top, segments=[{"status": "ok"}]))
+
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    client, http = _client(_Recorder(responder))
+    async with http:
+        result = await client.post_history_batch("Lanlan", segments=[segment])
+    assert result.segments_ok == (False,)

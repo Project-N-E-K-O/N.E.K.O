@@ -456,7 +456,11 @@ class ScopedMemoryClient:
         except ValueError:
             logger.warning("scoped_history segments returned invalid JSON")
             return none_ok
-        results = payload.get("segments") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("status") != "processed":
+            # 服务端只在整批的落盘写入完成后才回顶层 processed；没有它，逐段结果不可信
+            logger.warning("scoped_history segments: response does not confirm processing")
+            return none_ok
+        results = payload.get("segments")
         if not isinstance(results, list) or len(results) != len(wire_segments):
             logger.warning("scoped_history segments returned a mismatched result list")
             return none_ok

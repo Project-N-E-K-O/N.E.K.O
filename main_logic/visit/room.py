@@ -267,6 +267,9 @@ class _PeerLine:
     lp: int = 0
 
 
+# 记住的 ln 上限（按最近使用淘汰）：只发首片、永不收口的新行能把它撑到整场无界。
+# 仍在收片的行每片都会刷新，正常场次远到不了这个量
+_SEEN_LNS_MAX = 4 * (VISIT_REORDER_BUFFER_MAX + 1)
 _GOODBYE_ONLY_REASON = "quiet"   # 只收到告别行（没有 begin / propose）时的收尾原因
 
 
@@ -336,7 +339,7 @@ class VisitRoom:
         self.own_lp = 0
         self.max_lp_seen = 0
         self._peer_max_new_lp = -1
-        self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp）
+        self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp；LRU）
 
         # 发言状态
         self.local_speaking: Optional[LineRef] = None
@@ -443,8 +446,13 @@ class VisitRoom:
                 return self._count_anomaly("lp_not_monotonic")
             self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
         self.max_lp_seen = max(self.max_lp_seen, lp)
-        if ln is not None and not known_line:
-            self._seen_lns[ln] = lp
+        if ln is not None:
+            if known_line:
+                self._seen_lns[ln] = self._seen_lns.pop(ln)     # 刷新为最近使用
+            else:
+                self._seen_lns[ln] = lp
+                while len(self._seen_lns) > _SEEN_LNS_MAX:
+                    del self._seen_lns[next(iter(self._seen_lns))]
         return None
 
     # ------------------------------------------------------------------

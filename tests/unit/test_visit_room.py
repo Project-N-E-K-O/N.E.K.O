@@ -940,3 +940,19 @@ def test_local_goodbye_from_active_uses_a_valid_reason():
     assert wu.action == "speaking" and wu.reason in {"quiet", "budget", "recall", "time_up"}
     encode_msg({"t": "wrap_up", "seq": 1, "lp": 2, "ph": "speaking", "ln": wu.ln,
                 "reason": wu.reason, "initiated_by": "guest"})
+
+
+def test_remembered_line_ids_are_bounded_and_keep_active_lines():
+    # 只发首片、永不收口的新行不能让 ln 表整场无界增长；仍在收片的行不被挤出
+    from main_logic.visit.room import _SEEN_LNS_MAX
+
+    room = make_room("host")
+    assert room.observe_lp(1, ln="g:keep") is None
+    for i in range(_SEEN_LNS_MAX * 3):
+        assert room.observe_lp(2 + i, ln=f"g:{i}") is None
+        if i % 16 == 0:
+            assert room.observe_lp(1, ln="g:keep") is None
+    assert len(room._seen_lns) <= _SEEN_LNS_MAX
+    assert "g:keep" in room._seen_lns
+    assert room.observe_lp(5, ln="g:keep") == "lp_changed"
+    assert "g:0" not in room._seen_lns
