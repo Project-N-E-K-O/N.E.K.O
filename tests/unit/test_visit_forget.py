@@ -420,3 +420,14 @@ async def test_a_malformed_extra_pair_id_also_fails_closed(tmp_path):
     path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(RevocationLogUnreadable):
         await log.list_open()
+
+
+async def test_discovery_fails_closed_on_a_malformed_jsonl_header(tmp_path):
+    # 只剩 .jsonl 且头行坏了：不能当作「不是这一对」而让 wipe_spool 记完成
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    (spool_dir / "visit00000000000000077.jsonl").write_bytes(b'{"v":1,"visit_id":"trunc')
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, ["p" * 24])

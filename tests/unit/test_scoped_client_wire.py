@@ -488,3 +488,32 @@ async def test_character_name_cannot_escape_its_path_segment():
     url = recorder.requests[0].url
     assert url.raw_path == b"/internal/memory/a%2Fb%3Fc%23d/scoped_forget"
     assert url.query == b""
+
+
+@pytest.mark.asyncio
+async def test_ok_segment_with_unpersisted_trust_must_be_retried():
+    """``status: ok`` + ``trust.persisted: false`` means retain and retry
+    (memory_server ``_trust_response_block``)."""
+    def responder(request):
+        return httpx.Response(200, json={"status": "processed", "segments": [
+            {"status": "ok", "trust": {"persisted": False}},
+            {"status": "ok", "trust": {"persisted": None}},
+            {"status": "ok", "trust": {"persisted": True}},
+        ]})
+
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    client, http = _client(_Recorder(responder))
+    async with http:
+        result = await client.post_history_batch("Lanlan", segments=[segment] * 3)
+    assert result.segments_ok == (False, True, True)
+
+
+@pytest.mark.asyncio
+async def test_single_subject_history_with_unpersisted_trust_is_not_done():
+    def responder(request):
+        return httpx.Response(200, json={"status": "processed", "trust": {"persisted": False}})
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+    assert ok is False

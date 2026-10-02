@@ -513,6 +513,14 @@ def _retention_exempt(state_path: Path, age_s: float) -> bool:
     return bool(state and state.get("debrief_choice") == "committing:diary")
 
 
+def _names_pair(doc: dict | None, own_char_uid: str, pair_ids: frozenset[str]) -> bool:
+    return (
+        doc is not None
+        and doc.get("own_char_uid") == own_char_uid
+        and doc.get("pair_id") in pair_ids
+    )
+
+
 def _try_read_state(path: Path) -> dict | None:
     try:
         return _read_state_file(path)
@@ -534,6 +542,25 @@ def _read_header(path: Path) -> dict | None:
     except ValueError:
         return None
     return header if isinstance(header, dict) else None
+
+
+def _read_header_strict(path: Path) -> dict | None:
+    """Read a spool header for the forget path: ``None`` only when the file is absent.
+
+    A truncated (no newline), unparseable or non-object first line raises
+    ``ValueError``; other read errors raise ``OSError``.
+    """
+    try:
+        with open(path, "rb") as f:
+            first = f.readline()
+    except FileNotFoundError:
+        return None
+    if not first.endswith(b"\n"):
+        raise ValueError(f"spool header of {path.name} is truncated")
+    header = json.loads(first)
+    if not isinstance(header, dict):
+        raise ValueError(f"spool header of {path.name} is not an object")
+    return header
 
 
 def _rewrite_header(path: Path, mutate, *, strict: bool = False) -> bool:
@@ -1016,15 +1043,18 @@ class VisitSpool:
             except (OSError, ValueError):
                 unreadable.append(visit_id)
                 continue
-            header = _read_header(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
-            for doc in (state, header):
-                if (
-                    doc is not None
-                    and doc.get("own_char_uid") == own_char_uid
-                    and doc.get("pair_id") in pair_ids
-                ):
-                    found.append(visit_id)
-                    break
+            if _names_pair(state, own_char_uid, pair_ids):
+                found.append(visit_id)
+                continue
+            # 只剩 .jsonl（或 state 已不指认）时靠头行认场次：头行坏了不能当作
+            # 「不是这一对」，否则 wipe_spool 记完成而原始 peer 字段留在文件里
+            try:
+                header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
+            except (OSError, ValueError):
+                unreadable.append(visit_id)
+                continue
+            if _names_pair(header, own_char_uid, pair_ids):
+                found.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
         return found

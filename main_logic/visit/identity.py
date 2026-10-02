@@ -320,17 +320,23 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
 
     Expected shape: ``{keys:[{kid, alg:'Ed25519', pub, not_before, not_after}],
     revoked:[kid], ttl_s}``. ``not_before`` / ``not_after`` are mandatory. A
-    malformed key entry is skipped (logged by kid only); a malformed envelope
-    raises ``ValueError`` so the caller treats the refresh as failed. A key
-    published under the reserved dev kid is ignored.
+    malformed key entry is skipped (logged by kid only; that kid then fails
+    closed as unknown); a malformed envelope, a missing ``revoked`` list or
+    any malformed revocation entry raises ``ValueError`` so the caller
+    treats the refresh as failed. A key published under the reserved dev kid
+    is ignored.
     """
     if not isinstance(payload, Mapping):
         raise ValueError("pubkeys response must be an object")
     raw_keys = payload.get("keys")
-    raw_revoked = payload.get("revoked", [])
+    raw_revoked = payload.get("revoked")
     if not isinstance(raw_keys, list) or not isinstance(raw_revoked, list):
         raise ValueError("pubkeys response keys/revoked must be lists")
-    revoked = frozenset(k for k in raw_revoked if isinstance(k, str) and k)
+    # 吊销名单不完整就等于不知道最新吊销状态：缺字段或有坏条目都按刷新失败处理，
+    # 否则一把已吊销的内置钥匙会继续放行到缓存过期
+    if not all(isinstance(k, str) and k for k in raw_revoked):
+        raise ValueError("pubkeys response revoked entries must be non-empty kid strings")
+    revoked = frozenset(raw_revoked)
     keys: dict[str, PubkeyEntry] = {}
     for item in raw_keys:
         kid = item.get("kid") if isinstance(item, Mapping) else None

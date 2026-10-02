@@ -377,7 +377,16 @@ class ScopedMemoryClient:
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history",
         )
-        return response is not None
+        if response is None:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            return True   # 旧服务端 / 无 trust 块：没有要结算的信赖写入
+        if not _trust_settled(payload):
+            logger.warning("scoped_history: trust write not persisted, keep and retry")
+            return False
+        return True
 
     async def post_history_batch(
         self,
@@ -420,7 +429,8 @@ class ScopedMemoryClient:
             logger.warning("scoped_history segments returned a mismatched result list")
             return none_ok
         outcome = ScopedBatchResult(tuple(
-            isinstance(result, dict) and result.get("status") == "ok" for result in results
+            isinstance(result, dict) and result.get("status") == "ok" and _trust_settled(result)
+            for result in results
         ))
         if outcome.failed_positions:
             logger.warning(
@@ -428,6 +438,17 @@ class ScopedMemoryClient:
                 list(outcome.failed_positions),
             )
         return outcome
+
+
+def _trust_settled(result: Any) -> bool:
+    """False when the server reports ``trust.persisted is False`` (retain and retry).
+
+    ``app/memory_server/routes.py::_trust_response_block``: ``ok`` with
+    ``persisted`` true / null may be dropped, ``ok`` with ``persisted`` false
+    must be kept and retried, otherwise an owner trust correction is lost.
+    """
+    trust = result.get("trust") if isinstance(result, dict) else None
+    return not (isinstance(trust, dict) and trust.get("persisted") is False)
 
 
 def _put_retry_identity(

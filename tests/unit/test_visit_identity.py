@@ -530,3 +530,16 @@ def test_ticket_lifetime_is_capped_by_role(priv, pubkeys, tmp_path, role, ttl):
     too_long = mint_ticket(_claims(role=role, iat=iat, exp=iat + ttl + 1, jti="K" * 22), priv)
     with pytest.raises(TicketTimeInvalid):
         _verify(too_long, pubkeys=pubkeys, blocklist=Blocklist(tmp_path), expect_role=role)
+
+
+@pytest.mark.parametrize("revoked", [None, ["k1", ""], ["k1", 7]])
+def test_incomplete_revocation_list_is_a_failed_refresh(revoked):
+    # 吊销名单缺失或有坏条目 = 不知道最新吊销状态：按刷新失败处理，不当空名单
+    from main_logic.visit.identity import parse_pubkeys_response
+
+    payload = {"keys": [], "ttl_s": 86400}
+    if revoked is not None:
+        payload["revoked"] = revoked
+    with pytest.raises(ValueError):
+        parse_pubkeys_response(payload, fetched_at=NOW)
+    assert parse_pubkeys_response({"keys": [], "revoked": ["k1"]}, fetched_at=NOW).revoked == {"k1"}
