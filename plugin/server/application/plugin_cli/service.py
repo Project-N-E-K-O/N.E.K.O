@@ -1451,7 +1451,10 @@ class PluginCliService:
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
-            package_plugin_id = self._read_installed_plugin_toml_id(target_dir)
+            # 一次 tomllib 读+解析，同样在全局锁内、同样不该睡在事件循环上。
+            package_plugin_id = await asyncio.to_thread(
+                self._read_installed_plugin_toml_id, target_dir
+            )
 
             # Step 4 — degrade to imported when market_detail is incomplete.
             required_keys = ("plugin_market_id", "version", "package_url")
@@ -1538,15 +1541,28 @@ class PluginCliService:
                 market_detail["payload_hash"] = unpacked_payload_hash
 
             # Step 6 — record into ISM with the right semantic.
+            #
+            # record_market_* 是**同步**方法，而它们最终会走到 install_source/manager.py
+            # 的 _atomic_write —— 那里在 Windows 上撞到 PermissionError（AV / Explorer
+            # 短暂持有句柄，注释说明这是预期会发生的）会执行
+            # ``for attempt_ms in (0, 50, 100, 200): time.sleep(attempt_ms / 1000)``，
+            # 累计最多 350ms。直接调用就是让这 350ms **睡在事件循环上**，而且是在全局
+            # 插件操作锁**内部**：这期间插件服务器的所有路由（/plugins、/plugin_cli、
+            # /runs、/websocket、插件 UI 流）全部停摆。
+            #
+            # 同一个 record_market_install 在本文件 :893 早就是 to_thread 的，这里只是
+            # 补齐一致性。record_market_* 自己持 manager 的 threading.Lock，跨线程安全。
             mgr = self._require_install_source_manager()
-            root_id, directory_name = classify_plugin_path(
+            root_id, directory_name = await asyncio.to_thread(
+                classify_plugin_path,
                 target_dir,
                 builtin_root=mgr.builtin_root,
                 user_root=mgr.user_root,
             )
 
             if install_mode in ("upgrade", "reinstall"):
-                entry, ism_warnings = mgr.record_market_upgrade(
+                entry, ism_warnings = await asyncio.to_thread(
+                    mgr.record_market_upgrade,
                     root_id=root_id,
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
@@ -1555,7 +1571,8 @@ class PluginCliService:
                     profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             else:
-                entry, ism_warnings = mgr.record_market_install(
+                entry, ism_warnings = await asyncio.to_thread(
+                    mgr.record_market_install,
                     root_id=root_id,
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
