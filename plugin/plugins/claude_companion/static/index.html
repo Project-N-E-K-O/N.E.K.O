@@ -883,15 +883,24 @@
                     })
                     .finally(function () { clearTimeout(bootstrapTimer); });
             }
+            // Each caller bounds its own wait: a long strict-mode retry must not hold
+            // other actions past their own limit. The shared bootstrap keeps running.
+            var pending = csrfTokenPromise;
+            var waitTimer;
             try {
-                return { 'X-CSRF-Token': await csrfTokenPromise };
+                var token = await Promise.race([pending, new Promise(function (resolve) { waitTimer = setTimeout(function () { resolve(null); }, timeoutMs || CSRF_BOOTSTRAP_TIMEOUT_MS); })]);
+                if (token) return { 'X-CSRF-Token': token };
+                console.warn('CSRF token not ready; sending without it');
+                return {};
             } catch (error) {
                 // The server accepts tokenless plugin-page writes by default, so a
                 // missing bootstrap (e.g. a proxy without /security/csrf-token)
                 // must not block the request. Retry the bootstrap next time.
-                csrfTokenPromise = null;
+                if (csrfTokenPromise === pending) csrfTokenPromise = null;
                 console.warn('CSRF token unavailable; sending without it:', error);
                 return {};
+            } finally {
+                clearTimeout(waitTimer);
             }
         }
 
