@@ -225,7 +225,16 @@ def test_air_basketball_mvp_interaction_contract():
     assert "window.NekoMiniGame.connect" in sdk_bootstrap
     assert "import(`./avatar-host.js${assetVersion}`)" in sdk_bootstrap
     assert "NekoMiniGame audio host is unavailable" in sdk_bootstrap
-    assert "transport.getCharacter(identity.name)" in sdk_bootstrap
+    # The trusted bootstrap only consumes avatar providers registered on the
+    # launch node before it runs; constructor `avatarHost` injection and raw
+    # `getCharacter()` were removed from the shared host (#3108).
+    registration = '/static/air-basketball/air-basketball-neko-host-registration.js?v='
+    assert html.index(registration) < html.index("/static/game/sdk/neko-minigame-same-origin-bootstrap.js")
+    assert "window.createAirBasketballAvatarHost = createAirBasketballAvatarHost" in sdk_bootstrap
+    assert "avatarHost," not in sdk_bootstrap
+    assert "getCharacter(" not in sdk_bootstrap
+    assert "game.runtime.bindCharacter(requestedName || undefined)" in sdk_bootstrap
+    assert "transport.bindRuntimeCharacter(identity.name)" in sdk_bootstrap
     assert "requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']" in sdk_bootstrap
     assert "game.audio.mount" in sdk_bootstrap
     assert "audio.playSfx" in sdk_bootstrap

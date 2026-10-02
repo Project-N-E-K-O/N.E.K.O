@@ -57,24 +57,26 @@ const toneSpecs = [
   [190,.04,'triangle']
 ];
 
+// avatar-host.js only implements these renderers.
+const SUPPORTED_AVATAR_TYPES = new Set(['live2d', 'vrm']);
+
 function resolveIdentity(character) {
-  const name = String(character?.lanlan_name || pageParams.get('lanlan_name') || 'N.E.K.O').trim() || 'N.E.K.O';
-  const type = String(character?.model_type || '').trim().toLowerCase();
-  const subType = String(character?.live3d_sub_type || '').trim().toLowerCase();
-  if (type === 'live2d' && character?.live2d_path) {
-    return { name, renderer:'live2d', modelType:type, model:{ type:'live2d', path:String(character.live2d_path) } };
+  const name = String(character?.name || pageParams.get('lanlan_name') || 'N.E.K.O').trim() || 'N.E.K.O';
+  const primary = character?.rendererAvailable ? character.model : null;
+  const model = [primary, ...(character?.fallbackModels || [])]
+    .find(candidate => SUPPORTED_AVATAR_TYPES.has(candidate?.type) && candidate.path);
+  if (model) {
+    return { name, renderer:model.type, modelType:model.type, model:{ type:model.type, path:String(model.path) } };
   }
-  if ((type === 'vrm' || (type === 'live3d' && subType === 'vrm')) && character?.vrm_path) {
-    return { name, renderer:'vrm', modelType:type, live3dSubType:subType, model:{ type:'vrm', path:String(character.vrm_path) } };
-  }
-  return { name, renderer:'unavailable', modelType:type || subType || 'unavailable', live3dSubType:subType, model:null };
+  return { name, renderer:'unavailable', modelType:character?.model?.type || 'unavailable', model:null };
 }
 
 async function bootstrap() {
   if (!window.NekoMiniGame?.connect) throw new Error('NekoMiniGame SDK is unavailable');
   if (!window.NekoMiniGameAudioHost?.create) throw new Error('NekoMiniGame audio host is unavailable');
   const createHost = await window.nekoMiniGameSameOriginHostReady;
-  const avatarHost = createAirBasketballAvatarHost();
+  // Consumed by air-basketball-neko-host-registration.js when the host is created.
+  window.createAirBasketballAvatarHost = createAirBasketballAvatarHost;
   const audioHost = window.NekoMiniGameAudioHost.create({
     AudioSystem:window.NekoGameSystem?.GameAudioSystem,
     maxControllers:1
@@ -85,7 +87,6 @@ async function bootstrap() {
     sessionId:String(pageParams.get('session_id') || '').trim(),
     source:'air_basketball',
     displayName:'Air Basketball',
-    avatarHost,
     audioHost
   });
   const game = await window.NekoMiniGame.connect({
@@ -95,9 +96,8 @@ async function bootstrap() {
     requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']
   }, { transport });
   const requestedName = String(pageParams.get('lanlan_name') || '').trim();
-  const characterResponse = await transport.getCharacter(requestedName);
-  if (!characterResponse.ok) throw new Error(`Character request failed (${characterResponse.status})`);
-  const character = await characterResponse.json();
+  const character = await game.runtime.bindCharacter(requestedName || undefined);
+  if (!character) throw new Error(`Character is unavailable (${requestedName || 'current'})`);
   const identity = resolveIdentity(character);
   const sfx = Object.fromEntries(toneSpecs.map(spec => {
     const [frequency, duration, type] = spec;
@@ -155,8 +155,10 @@ export function startGameRuntime(payload) {
   return enqueueLifecycle(async ({ game, identity, transport }) => {
     if (['ended', 'inactive'].includes(game.runtime.state)) {
       game.runtime.reset({ newSession:true });
-      const characterResponse = await transport.getCharacter(identity.name);
-      if (!characterResponse.ok) throw new Error(`Character restore failed (${characterResponse.status})`);
+      // reset() clears the host's bound character. Public bindCharacter() would
+      // require unmounting the Avatar first, so the trusted adapter restores the
+      // already-validated identity on its private transport instead.
+      transport.bindRuntimeCharacter(identity.name);
     }
     const result = await game.runtime.start(payload);
     await game.logger.enableAfterRuntimeStart();

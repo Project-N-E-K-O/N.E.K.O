@@ -196,6 +196,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     *_MODEL_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     _PROJECT_ROOT / "static/air-basketball/air-basketball.css",
+    _PROJECT_ROOT / "static/air-basketball/air-basketball-neko-host-registration.js",
     _PROJECT_ROOT / "static/air-basketball/avatar.css",
     _PROJECT_ROOT / "static/air-basketball/avatar-host.js",
     _PROJECT_ROOT / "static/air-basketball/avatar.js",
