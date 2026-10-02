@@ -23,6 +23,7 @@ import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
 import {
   pendingReloadPlugins,
   pendingReloadRevision,
+  pendingReloadRevisionSnapshot,
   setPendingReload,
   hasPendingReload,
 } from '@/utils/pendingReload'
@@ -434,11 +435,15 @@ export const usePluginStore = defineStore('plugin', () => {
     const baseline = [
       ...new Set([...pluginSummaries.value.map((p) => p.id), ...pendingReloadPlugins()]),
     ]
-    const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
+    const baselineIds = new Set(baseline)
+    const revisions = pendingReloadRevisionSnapshot()
+    for (const id of baseline) revisions.set(id, pendingReloadRevision(id))
     const result = await reloadAllPlugins()
     await Promise.all(result.reloaded.map(async (pluginId) => {
-      const revision = revisions.get(pluginId)
-      await syncPluginApplicationState(pluginId, revision, revision !== undefined)
+      // Unknown plugins still receive a revision fence. A save during the bulk
+      // request must not be hidden by a matched response based on old config.
+      const revision = revisions.get(pluginId) ?? 0
+      await syncPluginApplicationState(pluginId, revision, baselineIds.has(pluginId))
     }))
     // The reload already happened; a follow-up refresh that fails or times out must not
     // turn its result into a failure for the caller.

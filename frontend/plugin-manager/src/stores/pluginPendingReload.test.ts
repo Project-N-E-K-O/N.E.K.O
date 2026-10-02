@@ -244,6 +244,34 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(true)
   })
 
+  it('does not clear an unknown plugin from an old matched response after a save', async () => {
+    let releaseReload!: (result: {
+      success: boolean
+      reloaded: string[]
+      failed: { plugin_id: string; error: string }[]
+      skipped: string[]
+      message: string
+    }) => void
+    vi.mocked(reloadAllPlugins).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = resolve
+        })
+    )
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'demo',
+      config_state: 'matched',
+    })
+    const store = usePluginStore()
+
+    const reloading = store.reloadAll({ refresh: false })
+    setPendingReload('demo', true)
+    releaseReload({ success: true, reloaded: ['demo'], failed: [], skipped: [], message: '' })
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
   it('keeps the flag when the server reports the plugin was already running', async () => {
     // That response does not restart the host or re-read the saved configuration,
     // so the new configuration is still not applied.

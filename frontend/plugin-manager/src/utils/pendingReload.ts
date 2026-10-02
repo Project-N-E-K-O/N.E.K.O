@@ -36,6 +36,11 @@ export function pendingReloadRevision(pluginId: string): number {
   return revisions.get(pluginId) ?? 0
 }
 
+/** Captures revisions for every plugin this window has observed before a bulk operation. */
+export function pendingReloadRevisionSnapshot(): Map<string, number> {
+  return new Map(revisions)
+}
+
 /** The plugins this window currently flags, so a caller can capture their revisions. */
 export function pendingReloadPlugins(): string[] {
   return [...flags]

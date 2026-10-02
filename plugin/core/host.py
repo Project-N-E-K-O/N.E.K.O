@@ -1077,6 +1077,17 @@ def _plugin_process_runner(
             from plugin.server.infrastructure.config_fingerprint import fingerprint_config
 
             startup_config_fingerprint = fingerprint_config(effective_cfg)
+        except Exception as e:
+            logger.debug("[Plugin Process] Could not resolve startup config: {}", e)
+
+        instance = cls(ctx)
+
+        # 配置覆盖实例默认值；保留旧 checkpoint 配置的回退顺序。
+        freezable_keys = getattr(instance, "__freezable__", []) or []
+        persist_mode = getattr(instance, "__persist_mode__", None)
+        if persist_mode is None:
+            persist_mode = getattr(instance, "__freeze_mode__", "off")
+        try:
             # 新配置项 [plugin_state]
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
@@ -1095,15 +1106,6 @@ def _plugin_process_runner(
         except Exception as e:
             logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
 
-        instance = cls(ctx)
-
-        # 获取 freezable 属性列表和持久化模式
-        freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
-        persist_mode = getattr(instance, "__persist_mode__", None)
-        if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
-        # 从 effective config 读取 persist_mode（包含 profile 覆写）
         # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
         ctx._restored_from_freeze = False
         

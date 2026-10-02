@@ -87,14 +87,6 @@ def file_lock(file_obj: LockableFile):
 def plugin_config_file_lock(config_path: Path):
     """Coordinate config snapshots across the server and plugin processes."""
     lock_path = config_path.with_name(f"{config_path.name}.lock")
-    # A mocked resolver path or a not-yet-created runtime directory cannot have
-    # a shared lock file. The config itself is unavailable in that case, so let
-    # the caller retain its existing error/fixture behavior.
-    try:
-        lock_file = lock_path.open("a+b")
-    except FileNotFoundError:
-        yield
-        return
-    with lock_file:
+    with lock_path.open("a+b") as lock_file:
         with file_lock(lock_file):
             yield

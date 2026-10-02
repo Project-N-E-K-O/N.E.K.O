@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
@@ -102,6 +104,7 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
@@ -156,6 +159,7 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     runtime_path = Path("/tmp/runtime/demo/plugin.toml")
     manifest_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
     runtime_config = {"runtime": {"enabled": False}}
@@ -224,6 +228,7 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
