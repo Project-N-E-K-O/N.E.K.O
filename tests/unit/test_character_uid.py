@@ -317,6 +317,8 @@ def _export_config(tmp_path, uid):
         },
     }})
     config_manager.card_faces_dir = tmp_path
+    # The export writes a sidecar meta file; keep it inside tmp_path.
+    config_manager.card_face_meta_path = MagicMock(return_value=tmp_path / "card_meta.json")
     return config_manager
 
 
