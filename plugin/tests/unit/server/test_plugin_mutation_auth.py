@@ -327,6 +327,36 @@ async def test_nas_bootstrap_without_referer_requires_same_origin_metadata(app, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["plugin", "autostart"])
+@pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:48911"])
+async def test_explicit_origin_opt_in_with_lan_backend(app, monkeypatch, source, origin):
+    monkeypatch.setenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", "")
+    monkeypatch.setattr(mutation_auth, "AUTOSTART_EXPLICIT_ALLOWED_ORIGINS", ())
+    stop = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    async with _client(app, host="192.168.1.10:48911", peer="172.18.0.2") as client:
+        headers = {"Origin": origin}
+        assert (await client.get("/security/csrf-token", headers=headers)).status_code == 403
+        if source == "plugin":
+            monkeypatch.setenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", origin)
+        else:
+            monkeypatch.setattr(mutation_auth, "AUTOSTART_EXPLICIT_ALLOWED_ORIGINS", (origin,))
+        bootstrap = await client.get("/security/csrf-token", headers=headers)
+        assert bootstrap.status_code == 200
+        assert (await client.get("/security/csrf-token", headers={
+            "Referer": f"{origin}/ui/plugins",
+        })).status_code == 200
+        denied = await client.post("/plugin/demo/stop", headers=headers)
+        assert denied.status_code == 403
+        assert denied.headers["X-CSRF-Failure"] == "token"
+        accepted = await client.post("/plugin/demo/stop", headers={
+            **headers, "X-CSRF-Token": bootstrap.json()["csrf_token"],
+        })
+        assert accepted.status_code == 200
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_nas_originless_bootstrap_cannot_use_local_native_compatibility(app):
     async with _client(app, host="192.168.1.5:48911", peer="192.168.1.10") as client:
         assert (await client.get("/security/csrf-token")).status_code == 403
@@ -344,16 +374,17 @@ async def test_trusted_nas_domain_remains_supported(app, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("peer", ["127.0.0.1", "172.18.0.2"])
 @pytest.mark.parametrize("host,origin", [
     ("192.168.1.5:80", "https://192.168.1.5:8443"),
     ("nas.example.test", "https://nas.example.test"),
     ("192.168.1.5:48911", "http://192.168.1.5:9999"),
 ])
-async def test_nas_hostname_fallback_bootstrap_and_mutation(app, monkeypatch, host, origin):
+async def test_nas_hostname_fallback_bootstrap_and_mutation(app, monkeypatch, host, origin, peer):
     monkeypatch.setenv("NEKO_TRUSTED_HOSTS", "nas.example.test")
     stop = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
-    async with _client(app, host=host, peer="127.0.0.1", headers={
+    async with _client(app, host=host, peer=peer, headers={
         "Referer": f"{origin}/ui/plugins", "X-Forwarded-Proto": "http",
         "X-Forwarded-For": "192.168.1.10",
     }) as client:

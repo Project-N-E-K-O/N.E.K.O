@@ -22,6 +22,7 @@ from utils.host_origin_guard import _canonicalize_hostname
 
 from config.network import (
     AUTOSTART_ALLOWED_ORIGINS,
+    AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
     MAIN_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
@@ -114,6 +115,13 @@ def _local_request(request: Request) -> bool:
     )
 
 
+def _explicit_origins() -> frozenset[str]:
+    """Operator opt-ins apply to LAN/proxy targets too, unlike local defaults."""
+    values = (*AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
+              *os.getenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", "").split(","))
+    return frozenset(origin for value in values if (origin := _normalize_origin(value)))
+
+
 def _trusted_origin(request: Request, origin: str) -> bool:
     """Match the external origin or an explicitly allowed frontend origin.
 
@@ -131,7 +139,7 @@ def _trusted_origin(request: Request, origin: str) -> bool:
         not _is_loopback(request.url.hostname)
         and urlsplit(origin).hostname == urlsplit(target).hostname
     )
-    return origin == target or nas_hostname_match or (
+    return origin == target or nas_hostname_match or origin in _explicit_origins() or (
         _is_loopback(request.url.hostname) and origin in _configured_origins()
     )
 

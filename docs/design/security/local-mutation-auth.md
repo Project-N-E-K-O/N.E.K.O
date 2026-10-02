@@ -43,7 +43,7 @@ FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此�
 
 插件引导接口复用实例级 `AUTOSTART_CSRF_TOKEN`，因此允许读取它的来源也可能影响主服务认同一 token 的接口。生产默认不信任通用 Vite 端口 `5173`。开发插件前端时，启动后端前显式配置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS=http://localhost:5173`（如实际使用 `127.0.0.1`，配置对应完整来源；多个来源以逗号分隔）。这仅对开发者有配置要求，官方 NAS 用户不需要设置此变量。
 
-`AUTOSTART_ALLOWED_ORIGINS` 中的显式配置也属于共享 token 的信任合同。不要把无关应用加入允许列表；配置只识别网页来源，不能验证该端口运行的是哪个项目。本次没有引入独立插件 token，也没有改变全局 CORS。
+`AUTOSTART_ALLOWED_ORIGINS` 中的显式配置也属于共享 token 的信任合同。显式配置的完整来源对 loopback、LAN IP 和代理改写后的 Host 均生效，因此 Vite 代理指向 LAN 后端时仍可使用开发来源 opt-in；自动生成的 loopback 端口默认值仍只对 loopback Host 生效。不要把无关应用加入允许列表；配置只识别网页来源，不能验证该端口运行的是哪个项目。本次没有引入独立插件 token，也没有改变全局 CORS。
 
 `NEKO_TRUSTED_ORIGINS` 是 HostOriginGuard 的 WebSocket/特定 HTTP 来源信任配置，不自动授予读取共享 token 或执行插件生命周期变更的权限。本次保留独立的插件 token 信任合同；官方同源 NAS 页面不需要配置任一来源列表。若将来统一来源配置，需同时明确其对 token 读取、WebSocket 和 CORS 的权限范围，不能仅合并列表就宣称跨来源调用可用。
 

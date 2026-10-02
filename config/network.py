@@ -209,7 +209,8 @@ def resolve_user_plugin_base() -> str:
 # 始终返回有效 id。
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 AUTOSTART_CSRF_TOKEN = os.getenv("NEKO_AUTOSTART_CSRF_TOKEN") or INSTANCE_ID
+AUTOSTART_EXPLICIT_ALLOWED_ORIGINS = _read_list_env("AUTOSTART_ALLOWED_ORIGINS")
 AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
     MAIN_SERVER_PORT,
-    extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
+    extra_origins=AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
 )
