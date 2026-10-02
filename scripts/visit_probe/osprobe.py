@@ -5,6 +5,7 @@ Subcommands (all coordinates are physical pixels, the process is per-monitor DPI
   shot OUT.png X Y W H           -> screenshot of the region (+40 px margin) only
   pet                            -> JSON {hwnd, rect, exstyle} of the Electron Pet window (full-monitor top-level window)
   hit X Y [WAIT_S]               -> move the cursor to (X, Y), wait, report Pet WS_EX_TRANSPARENT (click-through) state
+  topgrid X Y W H                -> distinct windows on an 8x8 grid over the saved shot range (rect + margin)
   topat X Y                      -> {hwnd, title, process} of the top-level window under (X, Y)
   findwin TITLE                  -> {hwnd, rect} of a visible top-level window with that title, or null
   cursor                         -> current cursor position
@@ -118,6 +119,18 @@ def top_at(x, y):
     buf = ctypes.create_unicode_buffer(256)
     user32.GetWindowTextW(root, buf, 256)
     return {"hwnd": int(root or 0), "title": buf.value, "process": os.path.basename(_proc_name(_window_pid(root)))}
+
+
+def top_grid(x, y, w, h, n=8):
+    """Distinct top-level windows under an n x n grid covering the rect edge to edge (one process, one pass)."""
+    seen = {}
+    for i in range(n):
+        for j in range(n):
+            px = x + round((w - 1) * i / (n - 1))
+            py = y + round((h - 1) * j / (n - 1))
+            t = top_at(px, py)
+            seen.setdefault(t["hwnd"], dict(t, at=[px, py]))
+    return list(seen.values())
 
 
 def exstyle(hwnd):
@@ -261,6 +274,11 @@ def main(argv):
         r = {"pet": p, "electronWindows": allw}
     elif cmd == "hit":
         r = hit(int(argv[2]), int(argv[3]), float(argv[4]) if len(argv) > 4 else 1.2)
+    elif cmd == "topgrid":
+        # region given like shot (probe rect); the grid covers the saved range, i.e. rect + SHOT_MARGIN
+        x, y, w, h = map(int, argv[2:6])
+        m = SHOT_MARGIN
+        r = top_grid(x - m, y - m, w + 2 * m, h + 2 * m)
     elif cmd == "topat":
         r = top_at(int(argv[2]), int(argv[3]))
     elif cmd == "findwin":

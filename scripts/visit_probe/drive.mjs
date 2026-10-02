@@ -358,11 +358,12 @@ async function shotTriple(geo, name, rectPhys, showFn, hideFn) {
   let last;
   for (let attempt = 0; attempt < 3; attempt++) {
     await hideFn(); await sleep(400);
-    const bg = path.join(outDir, `${name}-bg.png`); os('shot', bg, ...rectPhys);
+    const guard = () => { if (!backdropGuard) throw new Error('screenshots are only allowed inside withBackdrop'); backdropGuard(); };
+    guard(); const bg = path.join(outDir, `${name}-bg.png`); os('shot', bg, ...rectPhys);
     await showFn(); await sleep(700);
-    const fg = path.join(outDir, `${name}-fg.png`); os('shot', fg, ...rectPhys);
+    guard(); const fg = path.join(outDir, `${name}-fg.png`); os('shot', fg, ...rectPhys);
     await hideFn(); await sleep(400);
-    const bg2 = path.join(outDir, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
+    guard(); const bg2 = path.join(outDir, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
     last = { bg: path.basename(bg), fg: path.basename(fg), bg2: path.basename(bg2), cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
     if (last.cmp.bgStable_pixelsOver8 < last.cmp.pixels * 0.002) break;
     log(name, 'background changed between shots, retrying');
@@ -371,6 +372,7 @@ async function shotTriple(geo, name, rectPhys, showFn, hideFn) {
 }
 
 import { spawn } from 'node:child_process';
+let backdropGuard = null;
 async function withBackdrop(rp, fn) {
   const m = 60;
   const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'backdrop.ps1'), rp[0] - m, rp[1] - m, rp[2] + 2 * m, rp[3] + 2 * m].map(String), { stdio: 'ignore' });
@@ -380,22 +382,27 @@ async function withBackdrop(rp, fn) {
     for (let i = 0; i < 20 && !found; i++) {
       await sleep(500);
       const w = os('findwin', 'visit-probe-backdrop');
-      if (w && w.rect && w.rect[0] <= rp[0] && w.rect[1] <= rp[1] && w.rect[0] + w.rect[2] >= rp[0] + rp[2] && w.rect[1] + w.rect[3] >= rp[1] + rp[3]) found = w;
+      // must cover the saved range (rect + 40 px shot margin), not just the probe rect
+      const s = 40;
+      if (w && w.rect && w.rect[0] <= rp[0] - s && w.rect[1] <= rp[1] - s && w.rect[0] + w.rect[2] >= rp[0] + rp[2] + s && w.rect[1] + w.rect[3] >= rp[1] + rp[3] + s) found = w;
     }
     if (!found) throw new Error('backdrop window did not appear over the probe region; aborting before any screenshot');
-    // z-order: at 5 points of the region the topmost window must be the backdrop or the (click-through) Pet,
-    // otherwise another always-on-top / foreground window overlaps the region and would end up in the shots.
+    // z-order guard over the whole saved range (rect + 40 px margin, 8x8 grid): only the backdrop or the
+    // (click-through) Pet may be on top. shotTriple re-runs it right before every screenshot.
     const pet = os('pet').pet;
-    const pts = [[0.05, 0.05], [0.95, 0.05], [0.5, 0.5], [0.05, 0.95], [0.95, 0.95]].map(([fx, fy]) => [Math.round(rp[0] + rp[2] * fx), Math.round(rp[1] + rp[3] * fy)]);
-    for (const [x, y] of pts) {
-      const t = os('topat', x, y);
-      if (t.hwnd !== found.hwnd && !(pet && t.hwnd === pet.hwnd)) {
-        throw new Error(`window "${t.title}" (${t.process}) overlaps the probe region at ${x},${y}; aborting before any screenshot`);
+    backdropGuard = () => {
+      for (const t of os('topgrid', ...rp)) {
+        if (t.hwnd !== found.hwnd && !(pet && t.hwnd === pet.hwnd)) {
+          throw new Error(`window "${t.title}" (${t.process}) overlaps the screenshot range at ${t.at}; aborting before the screenshot`);
+        }
       }
-    }
+    };
+    backdropGuard();
     await sleep(500);
     return await fn();
-  } finally { try { execFileSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }
+  } finally {
+    backdropGuard = null;
+    try { execFileSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }
 }
 
 async function phaseT3(c) {
