@@ -385,6 +385,10 @@ class ScopedMemoryClient:
             # 截断 / HTML 之类的 2xx 不能证明抽取与信赖写入已完成：按失败，调用方重试
             logger.warning("scoped_history returned a non-JSON body; keep and retry")
             return False
+        if not isinstance(payload, dict) or payload.get("status") != "processed":
+            # null / [] / {} 之类的 2xx 不能证明这批已处理：按失败，调用方重试
+            logger.warning("scoped_history: response does not confirm processing")
+            return False
         if not _trust_settled(payload):
             logger.warning("scoped_history: trust write not persisted, keep and retry")
             return False

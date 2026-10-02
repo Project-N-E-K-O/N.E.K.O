@@ -426,16 +426,32 @@ class PeerRoster:
 
         Only the named local character is touched: the same person's entries
         under other local characters stay. The ``last_summary`` stored inside
-        the entry goes with it. Returns whether anything was removed.
+        the entry goes with it. Returns whether anything was removed (False
+        when the entry is already absent). A damaged structure on the path
+        raises :class:`RosterCorruptError` so a revocation stays pending
+        instead of recording the removal as done.
         """
 
         def fn(data: dict):
-            peers = self._peers_view(data)
-            peer = peers.get(peer_uid)
-            if not isinstance(peer, dict):
+            node: Any = data
+            for key in ("accounts", self.own_uid, "peers"):
+                if key not in node:
+                    return False, False
+                node = node[key]
+                if not isinstance(node, dict):
+                    raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
+            peers = node
+            if peer_uid not in peers:
                 return False, False
-            by_char = peer.get("by_char")
-            if not isinstance(by_char, dict) or own_char not in by_char:
+            peer = peers[peer_uid]
+            if not isinstance(peer, dict):
+                raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
+            if "by_char" not in peer:
+                return False, False
+            by_char = peer["by_char"]
+            if not isinstance(by_char, dict):
+                raise RosterCorruptError(f"{self.path.name}: by_char is not an object")
+            if own_char not in by_char:
                 return False, False
             del by_char[own_char]
             if not by_char:

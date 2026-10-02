@@ -528,3 +528,15 @@ async def test_non_json_2xx_history_response_is_a_failed_write():
     async with http:
         ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
     assert ok is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"null", b"[]", b"{}", b'{"status": "failed"}'])
+async def test_history_response_must_confirm_processing(body):
+    def responder(request):
+        return httpx.Response(200, content=body, headers={"Content-Type": "application/json"})
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+    assert ok is False

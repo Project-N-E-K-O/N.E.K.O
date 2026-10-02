@@ -414,3 +414,32 @@ async def test_strict_reads_reject_damaged_pair_or_char_ids(tmp_path, damage):
     roster.path.write_text(_json.dumps(data), encoding="utf-8")
     with pytest.raises(RosterCorruptError):
         await roster.expand_subjects("peer_x", "A")
+
+
+@pytest.mark.parametrize("damage", [
+    lambda d: d["accounts"]["own_a"]["peers"].__setitem__("peer_x", []),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"].__setitem__("by_char", []),
+    lambda d: d["accounts"]["own_a"].__setitem__("peers", "x"),
+])
+async def test_remove_char_fails_closed_on_a_damaged_target(tmp_path, damage):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    damage(data)
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.remove_char("peer_x", "A")
+
+
+async def test_remove_char_on_an_absent_entry_is_a_no_op(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    assert await roster.remove_char("peer_x", "A") is False
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    assert await roster.remove_char("peer_x", "B") is False
+    assert await roster.remove_char("peer_y", "A") is False

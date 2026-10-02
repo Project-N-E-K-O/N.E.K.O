@@ -238,6 +238,10 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     if subject_pairs - {own_pair}:
         raise ValueError("revocation log pairs do not belong to its own / peer uid")
     own_person = participant_subject(derive_person_id(record["own_uid"], record["peer_uid"]))
+    # 每份合法计划都含这个人的人级主体：缺了它的日志即便内部自洽（subjects:[]），
+    # 重放也只会删名册、不清任何记忆
+    if own_person not in subjects:
+        raise ValueError("revocation log lacks the person subject of its peer")
     for subject in subjects:
         if subject["subject_kind"] == "participant" and subject != own_person:
             raise ValueError("revocation log participant does not belong to its peer")

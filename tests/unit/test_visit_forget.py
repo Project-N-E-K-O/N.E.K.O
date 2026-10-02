@@ -528,3 +528,15 @@ async def test_subjects_must_stay_on_the_visit_platform(tmp_path):
         record["done_steps"] = []
 
     await _damaged_log(tmp_path, to_qq)
+
+
+async def test_a_plan_without_the_person_subject_fails_closed(tmp_path):
+    # subjects:[] / pair_ids:[] / steps:build_steps([]) 内部自洽，但重放只删名册不清记忆
+    def empty(record):
+        from main_logic.visit.forget import build_steps
+        record["subjects"] = []
+        record["pair_ids"] = []
+        record["steps"] = build_steps([])
+        record["done_steps"] = []
+
+    await _damaged_log(tmp_path, empty)
