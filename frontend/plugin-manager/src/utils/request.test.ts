@@ -618,6 +618,27 @@ describe('CSRF bootstrap error policy', () => {
     }
   })
 
+  it.each([
+    ['token-required route', '/plugin/demo/stop'],
+    ['optional-token route', '/runs'],
+  ])('stops waiting for the token when the caller cancels (%s)', async (_label, url) => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockReturnValue(new Promise(() => {}) as never)
+    const adapter = vi.fn()
+    const controller = new AbortController()
+    const pending = fresh.post(url, {}, { adapter, signal: controller.signal })
+    await Promise.resolve()
+    const abortedAt = Date.now()
+    controller.abort()
+    const error = await pending.catch((reason: unknown) => reason)
+    expect(axios.isCancel(error)).toBe(true)
+    // Settle right away, not after the 2s best-effort cap or bootstrap timeout.
+    expect(Date.now() - abortedAt).toBeLessThan(500)
+    expect(adapter).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    bootstrap.mockRestore()
+  })
+
   it('does not blame the bootstrap for an Origin rejection', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap down'))

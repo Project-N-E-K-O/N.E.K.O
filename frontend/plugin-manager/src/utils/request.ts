@@ -230,6 +230,17 @@ function loadCsrfToken(): Promise<string> {
   return requestPromise
 }
 
+/** Stop waiting for the shared bootstrap when the caller cancels its request. */
+function untilCanceled<T>(promise: Promise<T>, signal: AxiosRequestConfig['signal']): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new axios.CanceledError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new axios.CanceledError())
+    signal.addEventListener?.('abort', onAbort)
+    promise.then(resolve, reject).finally(() => signal.removeEventListener?.('abort', onAbort))
+  })
+}
+
 /**
  * Token for a mutation that the server accepts without one by default.
  *
@@ -312,9 +323,12 @@ service.interceptors.request.use(
       // request without it and let a later token rejection explain why. A
       // retry after a token rejection means this deployment does require it,
       // so wait for the full bootstrap, ignoring the short cap and cooldown.
-      const token = (config as ErrorDisplayRequestConfig).csrfRetryAttempted
-        ? await loadCsrfToken().catch(() => null)
-        : await loadCsrfTokenBestEffort()
+      const token = await untilCanceled(
+        (config as ErrorDisplayRequestConfig).csrfRetryAttempted
+          ? loadCsrfToken().catch(() => null)
+          : loadCsrfTokenBestEffort(),
+        config.signal,
+      )
       if (token) {
         if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
         writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
@@ -324,8 +338,9 @@ service.interceptors.request.use(
     } else if (isMutationMethod(config.method)) {
       let token: string
       try {
-        token = await loadCsrfToken()
+        token = await untilCanceled(loadCsrfToken(), config.signal)
       } catch (cause) {
+        if (axios.isCancel(cause)) throw cause
         // Token-required calls are fail-closed: the original request is never sent.
         // Bootstrap is shared by concurrent callers. Create a separate error
         // for each caller instead of mutating its shared config/display policy.
