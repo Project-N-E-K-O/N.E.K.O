@@ -680,7 +680,15 @@ def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None 
 
 
 def _mask_phone(phone: str) -> str:
-    """Keep only enough of a phone number to recognise the account (138****0000)."""
+    """Keep only enough of a phone number to recognise the account (138****0000).
+
+    Spaces and dashes are stripped first, and a leading plus is kept, so
+    ``+86 138 0000 0000`` masks as ``+86138****0000`` instead of hiding only
+    the last formatted group.
+    """
+    phone = ("+" if phone.startswith("+") else "") + "".join(
+        ch for ch in phone if ch.isdigit()
+    )
     if len(phone) >= 8:
         return f"{phone[:-8]}****{phone[-4:]}"
     return f"****{phone[-2:]}"
