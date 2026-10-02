@@ -242,7 +242,8 @@ def _check_char_entry(entry: Any, where: str) -> dict:
     """Validate one ``by_char`` entry the way strict roster reads do.
 
     The entry must be an object; ``pairs`` (when present) a list of non-empty
-    ids; ``chars`` (when present) an object keyed by non-empty ids. Raises
+    ids; ``chars`` (when present) an object mapping non-empty ids to objects;
+    ``last_summary`` (when present) an object or null. Raises
     :class:`RosterCorruptError`.
     """
     if not isinstance(entry, dict):
@@ -251,8 +252,14 @@ def _check_char_entry(entry: Any, where: str) -> dict:
     if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
         raise RosterCorruptError(f"{where}: pairs is not a list of ids")
     chars = entry.get("chars", {})
-    if not isinstance(chars, dict) or not all(isinstance(c, str) and c for c in chars):
-        raise RosterCorruptError(f"{where}: chars is not an object keyed by ids")
+    if not isinstance(chars, dict) or not all(
+        isinstance(c, str) and c and isinstance(info, dict) for c, info in chars.items()
+    ):
+        # 值也要是 object：改名合并遇到同一 id 时会静默丢掉坏的一边
+        raise RosterCorruptError(f"{where}: chars is not an object of id -> object")
+    summary = entry.get("last_summary")
+    if summary is not None and not isinstance(summary, dict):
+        raise RosterCorruptError(f"{where}: last_summary is not an object")
     return entry
 
 

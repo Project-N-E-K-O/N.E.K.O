@@ -557,3 +557,18 @@ def test_a_malformed_fetched_entry_revokes_its_kid(priv):
     pk = PubkeySet.build(now=NOW, fetched=fetched, builtin=_builtin(priv))
     with pytest.raises(RevokedKid):
         _verify(mint_ticket(_claims(), priv), pubkeys=pk, blocklist=SpyBlocklist())
+
+
+@pytest.mark.parametrize("second_same", [True, False])
+def test_duplicate_fetched_kid_is_revoked(priv, second_same):
+    other = Ed25519PrivateKey.generate()
+    first = {"kid": "k2", "alg": "Ed25519", "pub": _pub_b64(priv),
+             "not_before": KEY_NB, "not_after": KEY_NA}
+    second = dict(first) if second_same else dict(first, pub=_pub_b64(other))
+    fetched = parse_pubkeys_response(
+        {"keys": [first, second], "revoked": [], "ttl_s": 86400}, fetched_at=NOW,
+    )
+    assert "k2" not in fetched.keys and "k2" in fetched.revoked
+    pk = PubkeySet.build(now=NOW, fetched=fetched, builtin={})
+    with pytest.raises(TicketRejected):
+        _verify(mint_ticket(_claims(kid="k2"), priv), pubkeys=pk, blocklist=SpyBlocklist())

@@ -553,3 +553,16 @@ async def test_forget_requires_a_forgotten_confirmation(body):
     client, http = _client(_Recorder(responder))
     async with http:
         assert await client.post_forget("Lanlan", subject=_SUBJECT) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"null", b"{}", b"<html/>", b'{"status": "error"}', b'{"stat'])
+async def test_mentions_require_a_recorded_confirmation(body):
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        assert await client.post_mentions(
+            "Lanlan", subjects=[_SUBJECT], response_text="hi",
+        ) is False

@@ -28,6 +28,7 @@ import pytest
 
 import config.visit_settings as visit_settings
 from main_logic.visit import spool as spool_mod
+from main_logic.visit.subjects import derive_pair_id
 from main_logic.visit.spool import (
     LINE_SPEAKERS,
     SpoolLineTooLarge,
@@ -45,7 +46,11 @@ def vid(n: int) -> str:
     return f"visit{n:017d}"
 
 
-def header(visit_id: str, *, own_char="A", own_char_uid="uid_a", pair_id="pair1",
+PAIR1 = derive_pair_id("own_a", "peer1")
+PAIR2 = derive_pair_id("own_a", "peer2")
+
+
+def header(visit_id: str, *, own_char="A", own_char_uid="uid_a", pair_id=PAIR1,
            peer_uid="peer1", peer_char_id="c_peer") -> dict:
     return {
         "v": 1,
@@ -67,7 +72,7 @@ def line(lp: int, text: str = "hello", speaker: str = "own_cat") -> dict:
     return {"lp": lp, "side": "host", "ts": NOW + lp, "from": speaker, "text": text}
 
 
-def state_for(*, own_char="A", own_char_uid="uid_a", pair_id="pair1", peer_uid="peer1",
+def state_for(*, own_char="A", own_char_uid="uid_a", pair_id=PAIR1, peer_uid="peer1",
               memory_enabled=True) -> dict:
     return new_state(
         own_uid="own_a", own_char=own_char, own_char_uid=own_char_uid, pair_id=pair_id,
@@ -402,12 +407,12 @@ async def test_delete_peer_fields_refuses_open_writer(tmp_path):
 
 async def test_find_visits_for_pairs_matches_own_char_and_pair(tmp_path):
     a = VisitSpool(tmp_path, vid(1))
-    await a.write_state(state_for(pair_id="pair1"))
+    await a.write_state(state_for())
     b = VisitSpool(tmp_path, vid(2))
-    await b.write_state(state_for(pair_id="pair_other_account"))
+    await b.write_state(state_for(pair_id=PAIR2, peer_uid="peer2"))
     c = VisitSpool(tmp_path, vid(3))
-    await c.write_state(state_for(own_char_uid="uid_b", pair_id="pair1"))
-    found = await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", ["pair1"])
+    await c.write_state(state_for(own_char_uid="uid_b"))
+    found = await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1])
     assert found == [vid(1)]
 
 
@@ -1027,3 +1032,53 @@ async def test_cap_sweep_rechecks_settlement_under_the_lock(tmp_path, monkeypatc
     monkeypatch.setattr(spool_mod, "_try_read_state", flip)
     assert await VisitSpool.sweep(tmp_path, NOW) == []
     assert sp.jsonl_path.exists()
+
+
+def test_state_and_header_pair_id_must_derive_from_the_identities():
+    # pair_id 与 (own_uid, peer_uid) 对不上：清除这个人时按 pair 找不到这一场
+    from main_logic.visit.spool import SpoolStateError, validate_header, validate_state
+
+    validate_state(state_for())
+    validate_header(header(vid(1)))
+    with pytest.raises(SpoolStateError):
+        validate_state(state_for(pair_id=PAIR2))
+    with pytest.raises(ValueError):
+        validate_header(header(vid(1), pair_id=PAIR2))
+
+
+def test_retention_sweep_waits_for_an_in_progress_header_rewrite(tmp_path):
+    # 保留期删除与头行改写同一把锁，锁内重判：改写方换回来的新文件不会被误删
+    import threading
+
+    from main_logic.visit.subjects import path_lock
+
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    body = spool_dir / f"{vid(22)}.jsonl"
+    body.write_text(json.dumps(header(vid(22))) + chr(10), encoding="utf-8")
+    _age(body, 8)
+    held = threading.Event()
+    release = threading.Event()
+
+    def rewriter():
+        with path_lock(body):
+            held.set()
+            release.wait(5)
+            os.utime(body, None)                       # 改写方原子替换成新文件
+
+    t = threading.Thread(target=rewriter)
+    t.start()
+    held.wait(5)
+    done = threading.Event()
+
+    def sweep():
+        asyncio.run(VisitSpool.sweep(tmp_path, NOW))
+        done.set()
+
+    s = threading.Thread(target=sweep)
+    s.start()
+    assert not done.wait(0.3)
+    release.set()
+    t.join(5)
+    s.join(5)
+    assert done.is_set() and body.exists()

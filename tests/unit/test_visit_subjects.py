@@ -547,6 +547,10 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     ("A2", {"pairs": "q" * 24}),
     ("A", {"pairs": [7]}),
     ("A2", {"chars": []}),
+    ("A", {"chars": {"c_" + "1" * 24: "damaged"}}),
+    ("A2", {"chars": {"c_" + "1" * 24: 3}}),
+    ("A", {"last_summary": "damaged"}),
+    ("A2", {"last_summary": ["damaged"]}),
 ])
 async def test_rename_char_refuses_malformed_nested_data(tmp_path, side, damage):
     # 两边都是 object 但嵌套数据坏了：合并会把字符串 pairs 拆成单个字符写回去

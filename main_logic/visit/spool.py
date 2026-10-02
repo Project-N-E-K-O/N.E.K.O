@@ -69,7 +69,7 @@ from config.visit_settings import (
     VISIT_SPOOL_RETENTION_DAYS,
     VISIT_TEXT_MAX_BYTES,
 )
-from main_logic.visit.subjects import path_lock
+from main_logic.visit.subjects import derive_pair_id, path_lock
 from utils.file_utils import atomic_write_bytes, atomic_write_json
 from utils.logger_config import get_module_logger
 from utils.visit_wire import VISIT_ID_RE, require_visit_id, visit_path
@@ -229,6 +229,11 @@ def validate_header(header: Mapping[str, Any]) -> dict:
         # 「清除这个人」一次抹掉全部对端字段；只剩一半说明抹到一半或被改坏，
         # 按 pair 找不到它，留下的 peer_uid 却永远不会再被清掉
         raise ValueError("spool header peer fields must be all set or all null")
+    if header["pair_id"] is not None and header["pair_id"] != derive_pair_id(
+        header["own_uid"], header["peer_uid"]
+    ):
+        # pair_id 必须是 (own_uid, peer_uid) 推出的那一对，否则清除按 pair 找不到它
+        raise ValueError("spool header pair_id does not match own_uid / peer_uid")
     if not _is_number(header["started_at"]):
         raise ValueError("spool header started_at must be a number")
     return dict(header)
@@ -355,6 +360,11 @@ def validate_state(state: Any) -> dict:
     if len({state[name] is None for name in _PEER_IDENTITY_FIELDS}) > 1:
         # 同头行：只抹了一半的对端身份按 pair 找不到，剩下的 peer_uid 会永久留在磁盘上
         raise SpoolStateError("peer_uid / pair_id / peer_char_id must be all set or all null")
+    if state["pair_id"] is not None and state["pair_id"] != derive_pair_id(
+        state["own_uid"], state["peer_uid"]
+    ):
+        # 同头行：pair_id 与身份对不上的场次，清除这个人时按 pair 找不到
+        raise SpoolStateError("pair_id does not match own_uid / peer_uid")
     if not _is_int(state["digested_through_lp"]) or state["digested_through_lp"] < -1:
         raise SpoolStateError("digested_through_lp must be an int >= -1")
     if not _is_int(state["digest_runs"]) or state["digest_runs"] < 0:
@@ -1153,23 +1163,34 @@ class VisitSpool:
         spool_dir = _spool_dir(config_dir).resolve()
         deleted: list[Path] = []
         remaining = []
-        committing: dict[str, bool] = {}
         scanned = _scan(spool_dir)
         # 豁免宽限按 state.json 自己的年龄算：同场较旧的 .jsonl 可能先被扫到
         state_age = {v: now - st.st_mtime for v, sfx, _p, st in scanned if sfx == STATE_SUFFIX}
         for visit_id, suffix, path, st in scanned:
-            if now - st.st_mtime > _RETENTION_S and suffix not in _UPLOAD_SUFFIXES:
-                # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
-                # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
-                if visit_id not in committing:
-                    committing[visit_id] = _retention_exempt(
-                        visit_path(spool_dir, visit_id, STATE_SUFFIX),
-                        state_age.get(visit_id, now - st.st_mtime),
-                    )
-                if committing[visit_id]:
+            if now - st.st_mtime <= _RETENTION_S:
+                remaining.append((visit_id, suffix, path, st))
+                continue
+            state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
+            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state），锁内重判是否过期：
+            # 改写方读完过期转录、还没原子替换时删掉，它的替换会以新 mtime 把转录复活
+            with path_lock(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)), path_lock(state_path):
+                try:
+                    st = path.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
                     remaining.append((visit_id, suffix, path, st))
                     continue
-            if now - st.st_mtime > _RETENTION_S:
+                if now - st.st_mtime <= _RETENTION_S:
+                    remaining.append((visit_id, suffix, path, st))
+                    continue
+                # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
+                # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
+                if suffix not in _UPLOAD_SUFFIXES and _retention_exempt(
+                    state_path, state_age.get(visit_id, now - st.st_mtime),
+                ):
+                    remaining.append((visit_id, suffix, path, st))
+                    continue
                 if _unlink(path):
                     deleted.append(path)
                     if suffix in _UPLOAD_SUFFIXES:
@@ -1177,8 +1198,6 @@ class VisitSpool:
                             "visit spool: gave up pending upload %s after %d days",
                             path.name, VISIT_SPOOL_RETENTION_DAYS,
                         )
-                continue
-            remaining.append((visit_id, suffix, path, st))
         total = sum(st.st_size for _v, _s, _p, st in remaining)
         if total <= VISIT_SPOOL_DIR_CAP_BYTES:
             return deleted

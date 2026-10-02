@@ -542,6 +542,20 @@ async def run_revocation(
     char_name = own_char or record.get("own_char")
     if not isinstance(char_name, str) or not char_name:
         raise ValueError("the local character name of this revocation is unknown")
+    if STEP_REMOVE_CHAR not in record["done_steps"]:
+        # 名册条目还在时，以它为准对账：日志里丢了某只对方猫娘的 group_participant
+        # （或某个 pair）也能自洽通过校验，重放会清掉其余主体、删名册、关日志，
+        # 漏掉的那份记忆就再也没有重放入口。名册展开得到而日志缺的部分先并回日志
+        # （合并会把 remove_char 及其后的步骤重新排到新 forget 之后）
+        plan = await plan_forget_person(roster, peer_uid, char_name, record["own_char_uid"])
+        known = {_subject_key(_clean_subject(s)) for s in record["subjects"]}
+        if any(_subject_key(s) not in known for s in plan.subjects) or (
+            set(plan.pair_ids) - set(record["pair_ids"])
+        ):
+            await log.open_plan(plan)
+            record = await log.load(rev_id)
+            if record is None:
+                return False
     subjects = {forget_step_id(s): s for s in record["subjects"]}
     done = set(record["done_steps"])
     for step in record["steps"]:

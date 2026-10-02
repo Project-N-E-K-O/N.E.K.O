@@ -314,7 +314,9 @@ class ScopedMemoryClient:
         """Bump mention counters of ``subjects``' entries echoed in a reply.
 
         Nothing to record (no subjects, blank text) is a successful no-op
-        with no request, as on the server side.
+        with no request, as on the server side. Otherwise ``True`` only when
+        the server answers ``status: "recorded"`` (or ``"skipped"``); a
+        truncated, non-JSON or wrong-shaped 2xx body is a failed write.
         """
         if not subjects or not str(response_text or "").strip():
             return True
@@ -323,7 +325,17 @@ class ScopedMemoryClient:
             self._url(lanlan, "scoped_mentions"), body,
             timeout=_MENTIONS_TIMEOUT_S, what="scoped_mentions",
         )
-        return response is not None
+        if response is None:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict) or payload.get("status") not in ("recorded", "skipped"):
+            # 没有明确确认就不算记上：调用方会丢掉这次更新，防复读计数却没涨
+            logger.warning("scoped_mentions: response does not confirm the update")
+            return False
+        return True
 
     async def post_forget(self, lanlan: str, *, subject: dict) -> bool:
         """Erase everything stored for one exact subject. Idempotent.

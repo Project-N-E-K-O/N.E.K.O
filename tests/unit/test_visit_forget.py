@@ -561,3 +561,28 @@ async def test_a_recorded_pair_without_participant_subjects_fails_closed(tmp_pat
         record["done_steps"] = []
 
     await _damaged_log(tmp_path, drop_participants)
+
+
+async def test_replay_restores_a_participant_subject_dropped_from_the_log(tmp_path):
+    # 同一 pair 有两只对方猫娘，日志丢了其中一只的 group_participant 仍能通过校验；
+    # 名册还在，重放前对账把它并回来，那份记忆照样被清
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair, c_x = await seed(roster, PEER_X, "A", TAG_X)
+    _, c_y = await seed(roster, PEER_X, "A", TAG_Y)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    path = log.path_for(rev_id)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    dropped = {"subject_kind": "group_participant", "subject_id": f"neko_visit:{pair}:{c_y}"}
+    record["subjects"] = [s for s in record["subjects"] if s != dropped]
+    from main_logic.visit.forget import build_steps
+    record["steps"] = build_steps(record["subjects"])
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert await log.load(rev_id) is not None          # 单看日志是自洽的
+
+    server = FakeMemoryServer(roster, PEER_X, "A")
+    assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget) is True
+    assert dropped in server.calls
+    # remove_char 仍在所有 forget 之后：每次 forget 时名册条目都还在
+    assert all(server.entry_present_at_each_call)
+    assert await roster.get_char_entry(PEER_X, "A") is None

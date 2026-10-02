@@ -338,8 +338,18 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
         raise ValueError("pubkeys response revoked entries must be non-empty kid strings")
     revoked = set(raw_revoked)
     keys: dict[str, PubkeyEntry] = {}
+    seen: set[str] = set()
     for item in raw_keys:
         kid = item.get("kid") if isinstance(item, Mapping) else None
+        if isinstance(kid, str) and kid:
+            if kid in seen:
+                # 同一个 kid 出现两次：哪条生效取决于顺序，两条可能是不同的钥匙或窗口。
+                # 与「内置 / 拉取冲突」一样 fail closed：这个 kid 整体吊销
+                logger.warning("visit pubkeys: duplicate fetched kid %r, revoking it", kid)
+                revoked.add(kid)
+                keys.pop(kid, None)
+                continue
+            seen.add(kid)
         if kid == VISIT_DEV_KID:
             logger.warning("visit pubkeys: ignoring fetched key under reserved dev kid")
             continue
