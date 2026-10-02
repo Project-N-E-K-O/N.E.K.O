@@ -216,7 +216,7 @@ async def test_new_character_gets_a_fresh_id_even_when_copied_from_another(monke
     monkeypatch.setattr(crud, "_get_new_catgirl_default_voice_id", lambda: "voice")
     monkeypatch.setattr(crud, "asave_characters_with_recent_activation", _save)
     monkeypatch.setattr(crud, "_mark_new_character_greeting_pending_safe", AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_init_one_catgirl", AsyncMock)
     monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=True))
 
     # "Copying" a character re-submits its fields; a forged _reserved id is dropped.

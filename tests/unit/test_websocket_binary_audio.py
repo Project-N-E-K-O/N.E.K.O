@@ -2010,3 +2010,118 @@ async def test_route_with_on_start_session_decides_the_session_start(monkeypatch
     names = [name for name, _payload in manager.calls]
     assert "start_session" not in names
     assert route_external_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame", ["binary", "json"])
+@pytest.mark.parametrize(
+    ("consumed", "passthrough", "forwarded"),
+    [
+        (True, False, False),
+        (True, True, True),
+        (False, False, True),
+    ],
+    ids=["consumed-dropped", "game-style-passthrough", "not-consumed"],
+)
+async def test_route_consuming_microphone_audio_stops_pcm_unless_passthrough(
+    monkeypatch, frame, consumed, passthrough, forwarded,
+) -> None:
+    """A route that consumes the audio announcement keeps PCM out of the ordinary session.
+
+    The game kind sets ``audio_passthrough`` because it uses ordinary realtime
+    as its STT provider. Mutation: ignoring the announcement's return value
+    (the first version) turns the consumed-dropped cases red.
+    """
+    manager = _ProtocolManager()
+    if frame == "binary":
+        websocket = _EventWebSocket([])
+        websocket.events.insert(0, {
+            "type": "websocket.receive",
+            "bytes": struct.pack("<4sI2h", b"NEKO", 16_000, 1, -1),
+        })
+    else:
+        websocket = _EventWebSocket([dict(_PCM_MESSAGE)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    announcements: list[dict] = []
+
+    async def _announce(_name: str, message: dict) -> bool:
+        announcements.append(message)
+        return consumed
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: True,
+            route_stream_message=_announce,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+            audio_passthrough=passthrough,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert announcements == [{"input_type": "audio", "stt_provider": "realtime"}]
+    streamed = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert bool(streamed) is forwarded
+
+
+def test_game_kind_keeps_its_stt_audio_passthrough() -> None:
+    from main_routers import game_router
+
+    game_router._register_external_route_kind()
+    assert external_route_registry._snapshot_for_tests()["game"].audio_passthrough is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("passthrough", "forwarded"), [(False, False), (True, True)])
+async def test_superseded_recording_socket_honours_route_audio_consumption(
+    monkeypatch, passthrough, forwarded,
+) -> None:
+    """Same rule on the superseded recording socket's narrower dispatch path."""
+    manager = _ProtocolManager()
+    superseded_pcm = {
+        "action": "stream_data",
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [3, -3],
+    }
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [superseded_pcm],
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=recording_socket)
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: any(json.loads(payload) == {"type": "pong"} for payload in chat_socket.sent_text)
+    )
+
+    async def _consume(_name: str, _message: dict) -> bool:
+        return True
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: True,
+            route_stream_message=_consume,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+            audio_passthrough=passthrough,
+        )
+    )
+    recording_socket.release.set()
+    await recording_task
+    chat_socket.release.set()
+    await chat_task
+
+    stream_payloads = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert (superseded_pcm in stream_payloads) is forwarded

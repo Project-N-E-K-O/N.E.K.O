@@ -768,10 +768,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             return
         external_route = get_active_external_route(lanlan_name)
         if external_route is not None:
-            await external_route.route_stream_message(
+            audio_consumed = await external_route.route_stream_message(
                 lanlan_name,
                 {"input_type": "audio", "stt_provider": "realtime"},
             )
+            if audio_consumed and not external_route.audio_passthrough:
+                return
         await voice_mgr.stream_data(message)
 
     if mgr.pending_agent_callbacks:
@@ -1102,7 +1104,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 external_route = get_active_external_route(lanlan_name)
                 if external_route is not None:
                     if input_type == "audio":
-                        await external_route.route_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
+                        audio_consumed = await external_route.route_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
+                        if audio_consumed and not external_route.audio_passthrough:
+                            continue
                     else:
                         handled_by_route = await external_route.route_stream_message(lanlan_name, message)
                         if handled_by_route:

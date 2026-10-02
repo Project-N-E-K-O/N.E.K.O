@@ -54,6 +54,12 @@ class ExternalRouteKind:
     transcripts, so an utterance captured for one instance is never delivered
     to the next instance of the same kind. ``is_locked`` defaults to
     ``is_active``; ``has_background_tasks`` defaults to "never".
+
+    Microphone PCM on the main socket is announced to the route as
+    ``{"input_type": "audio", "stt_provider": "realtime"}``. When the route
+    returns True the PCM is dropped, unless the kind sets ``audio_passthrough``:
+    the game route uses the ordinary realtime session as its STT provider, so
+    its PCM keeps flowing there after the announcement.
     """
 
     kind: str
@@ -66,6 +72,7 @@ class ExternalRouteKind:
     is_locked: Callable[[str], bool] | None = None
     has_background_tasks: Callable[[str], bool] | None = None
     current_instance: Callable[[str], str | None] | None = None
+    audio_passthrough: bool = False
 
 
 # Registration order is lookup order. Kinds are expected to be mutually

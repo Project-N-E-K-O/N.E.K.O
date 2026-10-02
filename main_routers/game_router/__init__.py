@@ -434,6 +434,8 @@ def _register_external_route_kind() -> None:
         on_start_session=None,
         finalize_for_character=finalize_game_routes_for_character,
         route_voice_transcript=route_external_voice_transcript,
+        # Game voice uses the ordinary realtime session as its STT provider.
+        audio_passthrough=True,
     ))
 
 
