@@ -23,6 +23,8 @@ let _ttsProviders = {};
 let _imageProviders = {};
 // 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
 let _resolvedProviderUrls = {};
+// 辅助 API 的模型 ID 按服务商分开记，切换服务商时互不串用
+let _assistModelIds = {};
 // 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
@@ -765,10 +767,10 @@ function closeProviderSelectDropdown(wrapper) {
 
     wrapper.classList.remove('open');
 
-    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
-    if (trigger) {
-        trigger.setAttribute('aria-expanded', 'false');
-    }
+    // 服务商下拉只有 trigger 带 aria-expanded；模型 ID 选择器的输入框和按钮也带
+    wrapper.querySelectorAll('[aria-expanded]').forEach(element => {
+        element.setAttribute('aria-expanded', 'false');
+    });
 }
 
 function closeAllProviderSelectDropdowns(exceptWrapper = null) {
@@ -1312,7 +1314,8 @@ function getProviderModeSourceKey(modelType, providerMode, visited = new Set()) 
 function setModelIdFieldHidden(modelType, hidden) {
     const input = document.getElementById(`${modelType}ModelId`);
     if (!input) return;
-    const group = input.closest('.form-group') || input.parentElement;
+    // 输入框外面包了一层模型选择器，父元素已不是整行
+    const group = input.closest('.form-group, .field-row') || input.parentElement;
     if (group) group.style.display = hidden ? 'none' : '';
     input.dataset.fixedModelHidden = hidden ? 'true' : '';
 }
@@ -1443,6 +1446,7 @@ function onCustomModelProviderChange(modelType) {
     const sel = document.getElementById(`${modelType}ModelProvider`);
     if (!sel) return;
 
+    scheduleModelIdHintsRefresh();
     syncProviderSelectDropdowns(sel);
 
     const previousProvider = sel.dataset.currentProvider || '';
@@ -1730,6 +1734,700 @@ function removeKeyBookLink(input) {
     if (!parent) return;
     const shortcutScope = input.closest('.field-row') || parent;
     shortcutScope.querySelectorAll('.key-book-shortcut').forEach(link => link.remove());
+}
+
+// ==================== 模型 ID 选择器 ====================
+
+const ASSIST_MODEL_TIERS = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'agent'];
+const MODEL_TIER_BY_TYPE = {
+    conversation: 'conversation',
+    summary: 'summary',
+    gameMain: 'conversation',
+    gameSummary: 'summary',
+    correction: 'correction',
+    emotion: 'emotion',
+    vision: 'vision',
+    agent: 'agent',
+};
+const ASSIST_MODEL_TIER_FALLBACK_LABELS = {
+    conversation: '对话',
+    vision: '视觉',
+    summary: '摘要',
+    correction: '纠错',
+    emotion: '情感',
+    agent: 'Agent',
+};
+const MODEL_PICKER_UNAVAILABLE_TEXT = {
+    noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
+    fixed: ['api.modelPicker.unavailable.fixed', '该服务商使用固定模型，无需选择'],
+    follow: ['api.modelPicker.unavailable.follow', '当前模式下模型由跟随的配置决定，无需选择'],
+    missingUrl: ['api.modelPicker.unavailable.missingUrl', '请先填写 API URL'],
+    unsupported: ['api.modelPicker.error.unsupported', '该端点不提供模型列表，请手动填写模型ID'],
+};
+// 聚合平台动辄上千个模型，全部渲染会拖慢输入，其余的靠关键字筛选
+const MODEL_PICKER_RENDER_LIMIT = 200;
+// 后端会依次尝试服务商的全部候选地址，每个最多等 15 秒
+const MODEL_PICKER_REQUEST_TIMEOUT_MS = 60000;
+const _modelListCache = new Map();
+const _modelIdPickers = new Map();
+let _modelIdPickersInitialized = false;
+let _modelIdHintsRefreshQueued = false;
+
+function translateModelPickerText(key, fallback, params = null) {
+    if (window.t) {
+        const translated = window.t(key, { ...(params || {}), defaultValue: fallback });
+        if (translated && translated !== key) return translated;
+    }
+    if (!params) return fallback;
+    return fallback.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, name) => (
+        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : ''
+    ));
+}
+
+function getSelectedCoreProviderKey() {
+    const select = document.getElementById('coreApiSelect');
+    return select ? select.value : '';
+}
+
+function getSelectedAssistProviderKey() {
+    const select = document.getElementById('assistApiSelect');
+    return select ? select.value : '';
+}
+
+function isFreeModelProvider(providerKey) {
+    if (providerKey === 'free') return true;
+    const profile = getProviderInfo(providerKey);
+    return isProviderFlagEnabled(profile.is_free_version) || isProviderFlagEnabled(profile.isFreeVersion);
+}
+
+// 与后端 _uses_fixed_models 一致：这些服务商只认自家模型，填写的模型 ID 不会下发
+function usesFixedModels(providerKey) {
+    return !!providerKey && (isFreeModelProvider(providerKey) || isFixedModelProvider(providerKey));
+}
+
+// 后端的档位默认只来自辅助服务商表（assist_api_profiles），核心或管理簿 profile 不参与
+function getAssistProfileTierModelId(providerKey, tier) {
+    const profile = _assistApiProviders[providerKey];
+    const field = MODEL_PROVIDER_FIELD_BY_TYPE[tier];
+    return profile && field && profile[field] ? String(profile[field]).trim() : '';
+}
+
+function getAssistDefaultTierModelId(providerKey, tier) {
+    // 后端 AGENT_MODEL 缺省时回退到 VISION_MODEL
+    return getAssistProfileTierModelId(providerKey, tier)
+        || (tier === 'agent' ? getAssistProfileTierModelId(providerKey, 'vision') : '');
+}
+
+function normalizeAssistModelIds(value) {
+    const ids = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return ids;
+    Object.keys(value).forEach(providerKey => {
+        const modelId = value[providerKey];
+        if (typeof modelId === 'string' && modelId.trim()) {
+            ids[providerKey] = modelId.trim();
+        }
+    });
+    return ids;
+}
+
+function loadAssistModelIds(data) {
+    _assistModelIds = normalizeAssistModelIds(data && data.assistModelIds);
+    const input = document.getElementById('assistModelIdInput');
+    if (!input) return;
+    const providerKey = (data && data.assistApi) || '';
+    input.value = providerKey && !usesFixedModels(providerKey) ? (_assistModelIds[providerKey] || '') : '';
+    input.dataset.providerKey = providerKey;
+    scheduleModelIdHintsRefresh();
+}
+
+// 输入框里的值属于 dataset.providerKey 那一家；辅助服务商变了先把它收回映射，再换上新服务商的值
+function syncAssistModelIdInput() {
+    const input = document.getElementById('assistModelIdInput');
+    if (!input) return;
+    const providerKey = getSelectedAssistProviderKey();
+    const previousKey = input.dataset.providerKey || '';
+    if (previousKey === providerKey) return;
+    if (previousKey && !usesFixedModels(previousKey)) {
+        _assistModelIds[previousKey] = input.value.trim();
+    }
+    input.value = providerKey && !usesFixedModels(providerKey) ? (_assistModelIds[providerKey] || '') : '';
+    input.dataset.providerKey = providerKey;
+}
+
+function collectAssistModelIdsForSave() {
+    syncAssistModelIdInput();
+    const ids = { ..._assistModelIds };
+    const input = document.getElementById('assistModelIdInput');
+    const providerKey = input ? (input.dataset.providerKey || '') : '';
+    if (providerKey && !usesFixedModels(providerKey)) {
+        ids[providerKey] = input.value.trim();
+    }
+    return ids;
+}
+
+function getAssistModelOverride() {
+    const providerKey = getSelectedAssistProviderKey();
+    if (!providerKey || usesFixedModels(providerKey)) return '';
+    const input = document.getElementById('assistModelIdInput');
+    if (input && input.dataset.providerKey === providerKey) return input.value.trim();
+    return _assistModelIds[providerKey] || '';
+}
+
+function getAssistTierModelId(tier) {
+    return getAssistModelOverride() || getAssistDefaultTierModelId(getSelectedAssistProviderKey(), tier);
+}
+
+function getSlotTypedModelId(modelType, state) {
+    const input = document.getElementById(`${modelType}ModelId`);
+    return state.acceptsTypedModelId && input ? input.value.trim() : '';
+}
+
+function mirrorSlotModelState(sourceType, visited) {
+    const sourceState = resolveSlotModelState(sourceType, visited);
+    const sourceTyped = getSlotTypedModelId(sourceType, sourceState);
+    return {
+        defaultModelId: sourceTyped || sourceState.defaultModelId,
+        acceptsTypedModelId: false,
+        fixedModelProvider: sourceTyped ? '' : sourceState.fixedModelProvider,
+    };
+}
+
+// 照搬后端 get_core_config 的槽位模型解析，两边规则改动要同步
+function resolveSlotModelState(modelType, visited = new Set()) {
+    const state = { defaultModelId: '', acceptsTypedModelId: true, fixedModelProvider: '' };
+    if (visited.has(modelType)) return state;
+    visited.add(modelType);
+
+    const providerSel = document.getElementById(`${modelType}ModelProvider`);
+    const provider = providerSel ? providerSel.value : '';
+    const followsApi = provider === 'follow_core' || provider === 'follow_assist';
+
+    if (provider === 'follow_conversation' || provider === 'follow_summary') {
+        return mirrorSlotModelState(provider === 'follow_conversation' ? 'conversation' : 'summary', visited);
+    }
+
+    if (modelType === 'omni') {
+        if (!followsApi) return state;
+        // 跟随模式下实时模型就是核心服务商的 core_model，槽位里填的值不生效
+        const coreKey = getSelectedCoreProviderKey();
+        return {
+            defaultModelId: String((_coreApiProviders[coreKey] || {}).core_model || '').trim(),
+            acceptsTypedModelId: false,
+            fixedModelProvider: isFreeModelProvider(coreKey) ? coreKey : '',
+        };
+    }
+
+    const tier = MODEL_TIER_BY_TYPE[modelType];
+    if (!tier) {
+        // TTS 的默认模型由各家 TTS 链路决定，前端给不出可靠的值
+        return { ...state, acceptsTypedModelId: !followsApi };
+    }
+
+    const isGameSlot = modelType === 'gameMain' || modelType === 'gameSummary';
+    if (followsApi) {
+        const sourceKey = provider === 'follow_core' ? getSelectedCoreProviderKey() : getSelectedAssistProviderKey();
+        if (usesFixedModels(sourceKey)) {
+            return {
+                defaultModelId: getAssistProfileTierModelId(sourceKey, tier),
+                acceptsTypedModelId: false,
+                fixedModelProvider: sourceKey,
+            };
+        }
+        if (!isGameSlot) {
+            return {
+                defaultModelId: provider === 'follow_core'
+                    ? (getAssistProfileTierModelId(sourceKey, tier) || getAssistTierModelId(tier))
+                    : getAssistTierModelId(tier),
+                acceptsTypedModelId: true,
+                fixedModelProvider: '',
+            };
+        }
+        // 小游戏槽在 follow_* 下不采用输入值，跟随文本对话/摘要槽的结果或核心服务商的档位默认
+        if (provider === 'follow_assist') return mirrorSlotModelState(tier, visited);
+        if (!_assistApiProviders[sourceKey]) {
+            return {
+                defaultModelId: String((_coreApiProviders[sourceKey] || {}).core_model || '').trim(),
+                acceptsTypedModelId: false,
+                fixedModelProvider: '',
+            };
+        }
+        const coreTierModel = getAssistProfileTierModelId(sourceKey, tier);
+        if (!coreTierModel) return mirrorSlotModelState(tier, visited);
+        return { defaultModelId: coreTierModel, acceptsTypedModelId: false, fixedModelProvider: '' };
+    }
+
+    if (provider && provider !== 'custom') {
+        const namedModel = getAssistProfileTierModelId(provider, tier);
+        if (usesFixedModels(provider)) {
+            return { defaultModelId: namedModel, acceptsTypedModelId: false, fixedModelProvider: provider };
+        }
+        return {
+            defaultModelId: namedModel || (isGameSlot ? '' : getAssistTierModelId(tier)),
+            acceptsTypedModelId: true,
+            fixedModelProvider: '',
+        };
+    }
+
+    // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示
+    return {
+        defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
+        acceptsTypedModelId: true,
+        fixedModelProvider: '',
+    };
+}
+
+function getDefaultModelIdPlaceholder(input) {
+    const i18nKey = input.getAttribute('data-i18n-placeholder');
+    const fallback = input.dataset.defaultPlaceholder || '';
+    return i18nKey ? translateModelPickerText(i18nKey, fallback) : fallback;
+}
+
+function applyModelIdPlaceholder(input, state) {
+    if (!input) return;
+    if (state.fixedModelProvider && isFreeModelProvider(state.fixedModelProvider)) {
+        input.placeholder = translateModelPickerText('api.modelIdFreePlaceholder', '免费版使用固定模型');
+    } else if (state.defaultModelId) {
+        input.placeholder = translateModelPickerText('api.modelIdCurrentPlaceholder', '当前使用：{{model}}', {
+            model: state.defaultModelId,
+        });
+    } else {
+        input.placeholder = getDefaultModelIdPlaceholder(input);
+    }
+}
+
+function buildAssistModelDefaultsText(providerKey) {
+    const tiersByModel = new Map();
+    ASSIST_MODEL_TIERS.forEach(tier => {
+        const model = getAssistDefaultTierModelId(providerKey, tier);
+        if (!model) return;
+        if (!tiersByModel.has(model)) tiersByModel.set(model, []);
+        tiersByModel.get(model).push(
+            translateModelPickerText(`api.assistModelTiers.${tier}`, ASSIST_MODEL_TIER_FALLBACK_LABELS[tier])
+        );
+    });
+    if (tiersByModel.size === 0) return '';
+
+    let models = Array.from(tiersByModel.keys())[0];
+    if (tiersByModel.size > 1) {
+        const separator = translateModelPickerText('api.assistModelIdListSeparator', '、');
+        models = Array.from(tiersByModel, ([model, tiers]) => translateModelPickerText(
+            'api.assistModelIdDefaultsEntry',
+            '{{tiers}}：{{model}}',
+            { tiers: tiers.join(separator), model }
+        )).join(' · ');
+    }
+    return translateModelPickerText('api.assistModelIdDefaultsHint', '当前使用：{{models}}', { models });
+}
+
+function refreshAssistModelIdField() {
+    const input = document.getElementById('assistModelIdInput');
+    if (!input) return;
+    const hint = document.getElementById('assistModelIdHint');
+    const providerKey = getSelectedAssistProviderKey();
+    const fixed = usesFixedModels(providerKey);
+    input.disabled = !providerKey || fixed;
+
+    let hintText = '';
+    const fixedModel = fixed ? getAssistDefaultTierModelId(providerKey, 'conversation') : '';
+    if (fixed && isFreeModelProvider(providerKey)) {
+        input.placeholder = translateModelPickerText('api.modelIdFreePlaceholder', '免费版使用固定模型');
+    } else if (fixedModel) {
+        input.placeholder = translateModelPickerText('api.modelIdCurrentPlaceholder', '当前使用：{{model}}', {
+            model: fixedModel,
+        });
+    } else {
+        input.placeholder = getDefaultModelIdPlaceholder(input);
+        if (providerKey && !fixed) {
+            hintText = input.value.trim()
+                ? translateModelPickerText(
+                    'api.assistModelIdOverrideHint',
+                    '对话、视觉、摘要、纠错、情感和 Agent 都会使用此模型；自定义API中为单个功能填写的模型优先'
+                )
+                : buildAssistModelDefaultsText(providerKey);
+        }
+    }
+    if (hint) hint.textContent = hintText;
+}
+
+function refreshImageModelIdPlaceholder() {
+    const select = document.getElementById('imageModelProvider');
+    const provider = select ? select.value : '';
+    const meta = provider !== 'custom' ? _imageProviders[provider] : null;
+    applyModelIdPlaceholder(document.getElementById('imageModelId'), {
+        defaultModelId: meta ? String(meta.model || '').trim() : '',
+        acceptsTypedModelId: true,
+        fixedModelProvider: '',
+    });
+}
+
+function buildProviderModelListRequest(providerKey, apiKey, { useTokenPlan = false } = {}) {
+    if (!providerKey) return { reason: 'noProvider' };
+    if (usesFixedModels(providerKey)) return { reason: 'fixed' };
+    // 后端只按辅助服务商表解析端点和 Key
+    if (!_assistApiProviders[providerKey]) return { reason: 'unsupported' };
+    const body = { provider_key: providerKey, api_key: apiKey || '' };
+    if (useTokenPlan && providerKey === 'mimo' && isMimoTokenPlanActive()) {
+        body.url = getMimoTokenPlanUrl();
+    }
+    return { body };
+}
+
+function buildCustomModelListRequest(url, apiKey, modelType) {
+    if (!url) return { reason: 'missingUrl' };
+    if (!/^https?:\/\//i.test(url)) return { reason: 'unsupported' };
+    return { body: { url, api_key: apiKey || '', model_type: modelType, provider_type: 'openai_compatible' } };
+}
+
+function resolveAssistModelPickerRequest() {
+    const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+    return buildProviderModelListRequest(getSelectedAssistProviderKey(), resolved.key, { useTokenPlan: true });
+}
+
+function resolveSlotModelPickerRequest(modelType) {
+    const providerSel = document.getElementById(`${modelType}ModelProvider`);
+    const provider = providerSel ? providerSel.value : '';
+    if (!provider) return { reason: 'noProvider' };
+    const state = resolveSlotModelState(modelType);
+    if (!state.acceptsTypedModelId) return { reason: state.fixedModelProvider ? 'fixed' : 'follow' };
+    if (modelType === 'tts' && provider === 'gptsovits') return { reason: 'unsupported' };
+
+    const ttsMeta = modelType === 'tts' ? getTtsProviderMeta(provider) : null;
+    if (provider === 'custom' || (ttsMeta && ttsMeta.editable_endpoint)) {
+        const urlInput = document.getElementById(`${modelType}ModelUrl`);
+        const keyInput = document.getElementById(`${modelType}ModelApiKey`);
+        return buildCustomModelListRequest(
+            urlInput ? urlInput.value.trim() : '',
+            keyInput ? getRealKey(keyInput) : '',
+            modelType
+        );
+    }
+
+    const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType });
+    if (provider === 'follow_assist') {
+        return buildProviderModelListRequest(getSelectedAssistProviderKey(), resolved.key, { useTokenPlan: true });
+    }
+    if (provider === 'follow_core') {
+        return buildProviderModelListRequest(getSelectedCoreProviderKey(), resolved.key);
+    }
+    return buildProviderModelListRequest(provider, resolved.key);
+}
+
+function resolveImageModelPickerRequest() {
+    const select = document.getElementById('imageModelProvider');
+    const provider = select ? select.value : '';
+    if (!provider || provider === 'disabled') return { reason: 'noProvider' };
+    if (provider === 'custom') {
+        const urlInput = document.getElementById('imageModelUrl');
+        const keyInput = document.getElementById('imageModelApiKey');
+        return buildCustomModelListRequest(
+            urlInput ? urlInput.value.trim() : '',
+            keyInput ? getRealKey(keyInput) : '',
+            'image'
+        );
+    }
+    // DashScope 原生图片接口没有 /models，只有 OpenAI 协议的服务商能借用同家文本端点列出模型
+    const meta = _imageProviders[provider];
+    if (!meta || meta.protocol !== 'openai') return { reason: 'unsupported' };
+    return buildProviderModelListRequest(provider, getEffectiveAssistKey(provider, null, { useTokenPlan: false }));
+}
+
+async function fetchModelList(body) {
+    const cacheKey = JSON.stringify(body);
+    if (_modelListCache.has(cacheKey)) return _modelListCache.get(cacheKey);
+
+    let response;
+    try {
+        response = await fetch('/api/config/list_models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(MODEL_PICKER_REQUEST_TIMEOUT_MS),
+        });
+    } catch (error) {
+        const timedOut = !!error && error.name === 'TimeoutError';
+        return {
+            success: false,
+            error_code: timedOut ? 'timeout' : 'backend_unavailable',
+            error: error ? String(error.message || error) : '',
+        };
+    }
+    if (!response.ok) {
+        return { success: false, error_code: 'backend_unavailable', error: `HTTP ${response.status}` };
+    }
+
+    let result;
+    try {
+        result = await response.json();
+    } catch (error) {
+        return { success: false, error_code: 'invalid_response', error: error ? String(error.message || error) : '' };
+    }
+    if (!result || typeof result !== 'object') {
+        return { success: false, error_code: 'invalid_response', error: '' };
+    }
+    if (!result.success) return result;
+
+    const models = (Array.isArray(result.models) ? result.models : [])
+        .filter(model => model && typeof model.id === 'string' && model.id.trim())
+        .map(model => ({ id: model.id.trim(), name: typeof model.name === 'string' ? model.name.trim() : '' }));
+    if (models.length === 0) return { success: false, error_code: 'empty', error: '' };
+
+    const normalized = { success: true, models };
+    _modelListCache.set(cacheKey, normalized);
+    return normalized;
+}
+
+function getModelPickerErrorMessage(result) {
+    const errorCode = (result && result.error_code) || 'unknown';
+    for (const key of [`api.modelPicker.error.${errorCode}`, `connectivity.error.${errorCode}`]) {
+        const translated = window.t ? window.t(key) : key;
+        if (translated && translated !== key) return translated;
+    }
+    return (result && result.error) || errorCode;
+}
+
+function renderModelIdPickerMessage(picker, message) {
+    const row = document.createElement('div');
+    row.className = 'api-provider-dropdown-empty';
+    row.textContent = message;
+    picker.menuScroll.replaceChildren(row);
+}
+
+function renderModelIdPickerOptions(picker) {
+    const { input, menuScroll } = picker;
+    const models = picker.models || [];
+    const query = picker.filterActive ? input.value.trim().toLowerCase() : '';
+    const matches = query
+        ? models.filter(model => model.id.toLowerCase().includes(query) || model.name.toLowerCase().includes(query))
+        : models;
+    if (matches.length === 0) {
+        renderModelIdPickerMessage(picker, translateModelPickerText('api.modelPicker.noMatch', '没有匹配的模型'));
+        return;
+    }
+
+    const currentModelId = input.value.trim();
+    const fragment = document.createDocumentFragment();
+    matches.slice(0, MODEL_PICKER_RENDER_LIMIT).forEach(model => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'api-provider-dropdown-option';
+        item.setAttribute('role', 'option');
+        item.dataset.value = model.id;
+        item.textContent = model.id;
+        if (model.name && model.name !== model.id) {
+            const name = document.createElement('span');
+            name.className = 'model-id-picker-option-name';
+            name.textContent = model.name;
+            item.appendChild(name);
+        }
+        const selected = model.id === currentModelId;
+        item.classList.toggle('selected', selected);
+        item.setAttribute('aria-selected', selected ? 'true' : 'false');
+        item.addEventListener('click', event => {
+            event.preventDefault();
+            applyPickedModelId(picker, model.id);
+        });
+        fragment.appendChild(item);
+    });
+    if (matches.length > MODEL_PICKER_RENDER_LIMIT) {
+        const more = document.createElement('div');
+        more.className = 'api-provider-dropdown-empty';
+        more.textContent = translateModelPickerText('api.modelPicker.more', '还有 {{count}} 个模型，输入关键字可筛选', {
+            count: matches.length - MODEL_PICKER_RENDER_LIMIT,
+        });
+        fragment.appendChild(more);
+    }
+    menuScroll.replaceChildren(fragment);
+
+    // 手动定位而不用 scrollIntoView，避免把整个设置页一起滚走
+    const selectedItem = menuScroll.querySelector('.api-provider-dropdown-option.selected');
+    menuScroll.scrollTop = selectedItem
+        ? Math.max(0, selectedItem.offsetTop - menuScroll.offsetTop - (menuScroll.clientHeight - selectedItem.offsetHeight) / 2)
+        : 0;
+}
+
+function applyPickedModelId(picker, modelId) {
+    closeProviderSelectDropdown(picker.wrapper);
+    picker.input.value = modelId;
+    // 连通性指示灯、小游戏跟随槽和 TTS 脏标记都挂在 input/change 上
+    picker.input.dispatchEvent(new Event('input', { bubbles: true }));
+    picker.input.dispatchEvent(new Event('change', { bubbles: true }));
+    picker.input.focus();
+}
+
+function focusModelIdPickerOption(picker, step) {
+    const options = Array.from(picker.menuScroll.querySelectorAll('.api-provider-dropdown-option'));
+    if (options.length === 0) return;
+    const currentIndex = options.indexOf(document.activeElement);
+    const nextIndex = currentIndex === -1
+        ? (step > 0 ? 0 : options.length - 1)
+        : Math.min(options.length - 1, Math.max(0, currentIndex + step));
+    options[nextIndex].focus();
+}
+
+async function openModelIdPicker(picker) {
+    const request = picker.resolveRequest();
+    if (!request.body) {
+        refreshModelIdPickerButton(picker);
+        return;
+    }
+
+    closeAllProviderSelectDropdowns(picker.wrapper);
+    picker.wrapper.classList.add('open');
+    picker.wrapper.querySelectorAll('[aria-expanded]').forEach(element => {
+        element.setAttribute('aria-expanded', 'true');
+    });
+    picker.filterActive = false;
+    picker.signature = JSON.stringify(request.body);
+    picker.models = null;
+
+    const requestSeq = ++picker.requestSeq;
+    renderModelIdPickerMessage(picker, translateModelPickerText('api.modelPicker.loading', '正在拉取模型列表…'));
+    const result = await fetchModelList(request.body);
+    if (requestSeq !== picker.requestSeq || !picker.wrapper.classList.contains('open')) return;
+
+    if (result.success) {
+        picker.models = result.models;
+        renderModelIdPickerOptions(picker);
+    } else {
+        renderModelIdPickerMessage(picker, getModelPickerErrorMessage(result));
+    }
+}
+
+function refreshModelIdPickerButton(picker) {
+    const request = picker.resolveRequest();
+    const available = !!request.body;
+    const [key, fallback] = available
+        ? ['api.modelPicker.fetchTooltip', '从服务商拉取可用的模型列表']
+        : (MODEL_PICKER_UNAVAILABLE_TEXT[request.reason] || MODEL_PICKER_UNAVAILABLE_TEXT.noProvider);
+    picker.button.disabled = !available;
+    picker.button.title = translateModelPickerText(key, fallback);
+
+    // 服务商、地址或 Key 变了，已展开的列表就不再属于当前配置
+    if (picker.wrapper.classList.contains('open')
+        && (!available || JSON.stringify(request.body) !== picker.signature)) {
+        picker.requestSeq += 1;
+        closeProviderSelectDropdown(picker.wrapper);
+    }
+}
+
+function refreshModelIdHints() {
+    syncAssistModelIdInput();
+    refreshAssistModelIdField();
+    MODEL_TYPES.forEach(modelType => {
+        applyModelIdPlaceholder(document.getElementById(`${modelType}ModelId`), resolveSlotModelState(modelType));
+    });
+    refreshImageModelIdPlaceholder();
+    _modelIdPickers.forEach(refreshModelIdPickerButton);
+}
+
+// 合并同一轮同步代码里的多次触发（加载配置时会逐个槽位联动）
+function scheduleModelIdHintsRefresh() {
+    if (_modelIdHintsRefreshQueued) return;
+    _modelIdHintsRefreshQueued = true;
+    queueMicrotask(() => {
+        _modelIdHintsRefreshQueued = false;
+        refreshModelIdHints();
+    });
+}
+
+function initModelIdPicker(input, resolveRequest) {
+    if (!input || !input.parentNode || input.dataset.modelPickerAttached === 'true') return;
+    input.dataset.modelPickerAttached = 'true';
+    input.dataset.defaultPlaceholder = input.getAttribute('placeholder') || '';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('spellcheck', 'false');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'connectivity-input-row api-provider-dropdown model-id-picker';
+    input.parentNode.insertBefore(wrapper, input);
+    wrapper.appendChild(input);
+
+    const menu = document.createElement('div');
+    menu.className = 'api-provider-dropdown-menu';
+    menu.id = `${input.id}-model-menu`;
+    menu.setAttribute('role', 'listbox');
+    const menuScroll = document.createElement('div');
+    menuScroll.className = 'api-provider-dropdown-menu-scroll';
+    menu.appendChild(menuScroll);
+
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', menu.id);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'connectivity-mini-test-btn';
+    button.setAttribute('data-i18n', 'api.modelPicker.fetch');
+    button.textContent = translateModelPickerText('api.modelPicker.fetch', '拉取模型');
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-controls', menu.id);
+
+    wrapper.appendChild(button);
+    wrapper.appendChild(menu);
+
+    const picker = {
+        input,
+        button,
+        wrapper,
+        menuScroll,
+        resolveRequest,
+        models: null,
+        signature: '',
+        requestSeq: 0,
+        filterActive: false,
+    };
+    _modelIdPickers.set(input.id, picker);
+
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        if (wrapper.classList.contains('open')) {
+            picker.requestSeq += 1;
+            closeProviderSelectDropdown(wrapper);
+        } else {
+            openModelIdPicker(picker);
+        }
+    });
+    input.addEventListener('input', () => {
+        if (!wrapper.classList.contains('open')) return;
+        // 列表还在加载时输入的关键字也要记下，结果回来后按它筛选
+        picker.filterActive = true;
+        if (picker.models) renderModelIdPickerOptions(picker);
+    });
+    const handleArrowKeys = event => {
+        if (!wrapper.classList.contains('open')) return;
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        focusModelIdPickerOption(picker, event.key === 'ArrowDown' ? 1 : -1);
+    };
+    input.addEventListener('keydown', handleArrowKeys);
+    menu.addEventListener('keydown', handleArrowKeys);
+}
+
+function initModelIdPickers() {
+    if (_modelIdPickersInitialized) return;
+    _modelIdPickersInitialized = true;
+    bindProviderDropdownGlobalHandlers();
+
+    initModelIdPicker(document.getElementById('assistModelIdInput'), resolveAssistModelPickerRequest);
+    MODEL_TYPES.forEach(modelType => {
+        initModelIdPicker(
+            document.getElementById(`${modelType}ModelId`),
+            () => resolveSlotModelPickerRequest(modelType)
+        );
+    });
+    initModelIdPicker(document.getElementById('imageModelId'), resolveImageModelPickerRequest);
+
+    const watchedInputIds = ['assistModelIdInput', 'imageModelUrl'];
+    MODEL_TYPES.forEach(modelType => watchedInputIds.push(`${modelType}ModelId`, `${modelType}ModelUrl`));
+    watchedInputIds.forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.addEventListener('input', scheduleModelIdHintsRefresh);
+    });
+    // 不在 onImageProviderChange 里调度：图片设置的前端测试会把那段代码单独拿去执行
+    const imageProviderSelect = document.getElementById('imageModelProvider');
+    if (imageProviderSelect) imageProviderSelect.addEventListener('change', scheduleModelIdHintsRefresh);
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -2049,6 +2747,8 @@ async function loadCurrentApiKey() {
                     }
                 }
             }
+
+            loadAssistModelIds(data);
 
             // 加载用户自定义API配置
             setInputValue('conversationModelUrl', data.conversationModelUrl);
@@ -2428,6 +3128,7 @@ function updateAssistApiKeyInputAvailability() {
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (!assistApiSelect || !assistApiKeyInput) return;
 
+    scheduleModelIdHintsRefresh();
     const isFreeAssistApi = assistApiSelect.value === 'free';
     assistApiKeyInput.dataset.disabledByFreeAssist = isFreeAssistApi ? 'true' : 'false';
     assistApiKeyInput.disabled = isFreeAssistApi;
@@ -2723,6 +3424,7 @@ async function save_button_down(e) {
     const useMimoTokenPlan = isMimoTokenPlanActive();
     const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
     const mimoTokenPlanKey = mimoTokenPlanKeyInput ? getRealKey(mimoTokenPlanKeyInput) : '';
+    const assistModelIds = collectAssistModelIdsForSave();
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -2852,7 +3554,7 @@ async function save_button_down(e) {
     const bookPayload = buildKeyBookSecretPayload(allBookKeys, _apiKeyRegistry);
 
     const payload = {
-        apiKey: apiKeyForSave, coreApi, assistApi,
+        apiKey: apiKeyForSave, coreApi, assistApi, assistModelIds,
         ...bookPayload,
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
@@ -5305,6 +6007,7 @@ async function initializePage() {
         }
 
         initProviderSelectDropdowns();
+        initModelIdPickers();
 
         await waitForI18n();
 

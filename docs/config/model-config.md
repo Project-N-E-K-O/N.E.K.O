@@ -33,6 +33,10 @@ When a role's model ID is left blank in the custom API section, the role uses th
 
 The assist API section can set one model ID for the selected assist provider (stored per provider in `assistModelIds`). It overrides every assist role; a model ID set on an individual role in the custom API section still wins, and the free tier and fixed-model providers ignore it.
 
+## Model ID pickers
+
+Every model ID field in the Web UI has a *Fetch models* button that lists the models the upstream endpoint offers (`POST /api/config/list_models`), filtered by what you type. A blank field shows the model currently in use as its grey placeholder. The button stays disabled where a typed model ID would not be used: free and fixed-model providers, mirrored mini-game slots, and follow modes of the realtime, TTS and mini-game slots.
+
 ## Avoid catalog snapshots
 
 Model IDs, endpoints, thinking controls, token limits, and voice catalogs are provider-specific and change over time. Use the Web UI and `config/api_providers.json` from the same revision as the running app. Examples are not compatibility promises.

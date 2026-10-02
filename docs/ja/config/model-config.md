@@ -10,6 +10,8 @@ Web UI で Core/Assist Provider と credential を設定し、connectivity check
 
 Assist API 欄では、選択中の Assist Provider に model ID を 1 つ指定できます（Provider ごとに `assistModelIds` へ保存）。Assist の全 role を上書きしますが、カスタム API で role ごとに入力した model ID が優先され、無料版と固定モデルの Provider では無視されます。
 
+Web UI の各 model ID 欄には「モデルを取得」ボタンがあり、upstream endpoint が提供する model を一覧し、入力内容で絞り込めます（`POST /api/config/list_models`）。空欄のときは現在使われている model が灰色の placeholder で表示されます。入力しても使われない場所ではボタンが無効です：無料版と固定モデルの Provider、会話/要約を追従するミニゲーム slot、realtime・TTS・ミニゲーム slot の追従モード。
+
 Model IDs、endpoints、thinking controls、token limits、voice catalog は変化します。running revision と同じ `config/api_providers.json` と Web UI を確認し、文書例を compatibility promise にしないでください。
 
 新しい role/field は loader、config manager、router/UI、tests、8 locale を同時に更新します。

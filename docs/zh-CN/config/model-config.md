@@ -20,6 +20,8 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 
 辅助 API 区可以为当前辅助 Provider 指定一个模型 ID（按 Provider 分开存于 `assistModelIds`），它覆盖辅助 API 的全部角色；在自定义 API 中为单个角色填写的模型 ID 仍然优先，免费版与固定模型的 Provider 会忽略它。
 
+Web UI 中每个模型 ID 输入框旁都有「拉取模型」按钮，可列出上游端点提供的模型（`POST /api/config/list_models`），并按输入内容筛选；留空时输入框以灰色占位文字显示当前实际使用的模型。填了也不会生效的位置按钮不可用：免费版与固定模型的 Provider、镜像对话/摘要的小游戏槽，以及实时、TTS、小游戏槽的跟随模式。
+
 模型 ID、端点、thinking 参数、token 限制和语音目录都易变。应查看运行 revision 对应的 Web UI 和 `config/api_providers.json`，不要把文档示例当兼容性承诺。
 
 新增角色或字段时必须同步更新 loader、config manager、router/UI、测试及全部 8 个 locale。

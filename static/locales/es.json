@@ -1341,6 +1341,42 @@
         "assistApiSelectLabel": "Ayudar al proveedor de API",
         "assistApiKeyLabel": "Clave API de asistencia",
         "assistApiAutoFillHint": "Se completa automáticamente desde el Libro de claves cuando está vacío; Las claves ingresadas manualmente se guardan de forma independiente.",
+        "assistModelIdLabel": "ID del modelo de la API de asistencia",
+        "assistModelIdPlaceholder": "Déjalo en blanco para que cada función use el modelo predeterminado del proveedor",
+        "assistModelIdOverrideHint": "Chat, visión, resumen, corrección, emociones y Agente usarán este modelo; el modelo indicado para una función concreta en la API personalizada tiene prioridad",
+        "assistModelIdDefaultsHint": "En uso: {{models}}",
+        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
+        "assistModelIdListSeparator": ", ",
+        "assistModelTiers": {
+            "conversation": "Chat",
+            "vision": "Visión",
+            "summary": "Resumen",
+            "correction": "Corrección",
+            "emotion": "Emociones",
+            "agent": "Agente"
+        },
+        "modelIdCurrentPlaceholder": "En uso: {{model}}",
+        "modelIdFreePlaceholder": "La versión gratuita usa modelos fijos",
+        "modelPicker": {
+            "fetch": "Obtener modelos",
+            "fetchTooltip": "Obtener la lista de modelos disponibles del proveedor",
+            "loading": "Obteniendo la lista de modelos…",
+            "noMatch": "No hay modelos que coincidan",
+            "more": "{{count}} modelos más; escribe una palabra clave para filtrar",
+            "unavailable": {
+                "noProvider": "Selecciona primero un proveedor",
+                "fixed": "Este proveedor usa modelos fijos, no hay nada que elegir",
+                "follow": "En este modo el modelo lo determina la configuración seguida, no hay nada que elegir",
+                "missingUrl": "Introduce primero la URL de la API"
+            },
+            "error": {
+                "unsupported": "Este endpoint no ofrece una lista de modelos; introduce el ID del modelo manualmente",
+                "key_required": "Una clave guardada solo funciona con la dirección para la que se guardó; vuelve a introducir la clave API",
+                "rate_limited": "Demasiadas solicitudes; inténtalo de nuevo más tarde",
+                "empty": "El proveedor no devolvió ningún modelo",
+                "timeout": "Se agotó el tiempo de espera; revisa tu red e inténtalo de nuevo"
+            }
+        },
         "disableTts": "Deshabilitar TTS",
         "disableTtsHint": "Cuando esté habilitado, no se llamará a ningún servicio de texto a voz.",
         "keyBookTitle": "Libro de claves API",

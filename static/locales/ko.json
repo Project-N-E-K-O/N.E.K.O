@@ -1341,6 +1341,42 @@
         "assistApiSelectLabel": "보조 API 제공업체",
         "assistApiKeyLabel": "보조 API 키",
         "assistApiAutoFillHint": "비어 있으면 관리 대장의 키를 자동 사용, 직접 입력하면 독립적으로 저장됩니다",
+        "assistModelIdLabel": "보조 API 모델 ID",
+        "assistModelIdPlaceholder": "비워 두면 기능별로 제공업체의 기본 모델을 사용합니다",
+        "assistModelIdOverrideHint": "대화, 비전, 요약, 교정, 감정, 에이전트 모두 이 모델을 사용합니다. 사용자 정의 API에서 기능별로 입력한 모델이 우선합니다",
+        "assistModelIdDefaultsHint": "현재 사용 중: {{models}}",
+        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
+        "assistModelIdListSeparator": ", ",
+        "assistModelTiers": {
+            "conversation": "대화",
+            "vision": "비전",
+            "summary": "요약",
+            "correction": "교정",
+            "emotion": "감정",
+            "agent": "에이전트"
+        },
+        "modelIdCurrentPlaceholder": "현재 사용 중: {{model}}",
+        "modelIdFreePlaceholder": "무료 버전은 고정 모델을 사용합니다",
+        "modelPicker": {
+            "fetch": "모델 가져오기",
+            "fetchTooltip": "제공업체에서 사용 가능한 모델 목록을 가져옵니다",
+            "loading": "모델 목록을 가져오는 중…",
+            "noMatch": "일치하는 모델이 없습니다",
+            "more": "모델이 {{count}}개 더 있습니다. 키워드를 입력해 필터링하세요",
+            "unavailable": {
+                "noProvider": "먼저 제공업체를 선택하세요",
+                "fixed": "이 제공업체는 고정 모델을 사용하므로 선택할 필요가 없습니다",
+                "follow": "이 모드에서는 따르는 구성이 모델을 결정하므로 선택할 필요가 없습니다",
+                "missingUrl": "먼저 API URL을 입력하세요"
+            },
+            "error": {
+                "unsupported": "이 엔드포인트는 모델 목록을 제공하지 않습니다. 모델 ID를 직접 입력하세요",
+                "key_required": "저장된 키는 저장할 때의 주소에서만 사용할 수 있습니다. API 키를 다시 입력하세요",
+                "rate_limited": "요청이 너무 많습니다. 잠시 후 다시 시도하세요",
+                "empty": "제공업체가 모델을 반환하지 않았습니다",
+                "timeout": "가져오기 시간이 초과되었습니다. 네트워크를 확인한 후 다시 시도하세요"
+            }
+        },
         "disableTts": "TTS 비활성화",
         "disableTtsHint": "활성화하면 음성 합성 서비스를 호출하지 않습니다",
         "keyBookTitle": "API 관리 대장",

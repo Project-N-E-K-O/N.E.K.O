@@ -1341,6 +1341,42 @@
         "assistApiSelectLabel": "辅助API服务商",
         "assistApiKeyLabel": "辅助API Key",
         "assistApiAutoFillHint": "留空时自动使用管理簿中的Key，手动输入则独立保存",
+        "assistModelIdLabel": "辅助API模型ID",
+        "assistModelIdPlaceholder": "留空则各功能使用服务商默认模型",
+        "assistModelIdOverrideHint": "对话、视觉、摘要、纠错、情感和 Agent 都会使用此模型；自定义API中为单个功能填写的模型优先",
+        "assistModelIdDefaultsHint": "当前使用：{{models}}",
+        "assistModelIdDefaultsEntry": "{{tiers}}：{{model}}",
+        "assistModelIdListSeparator": "、",
+        "assistModelTiers": {
+            "conversation": "对话",
+            "vision": "视觉",
+            "summary": "摘要",
+            "correction": "纠错",
+            "emotion": "情感",
+            "agent": "Agent"
+        },
+        "modelIdCurrentPlaceholder": "当前使用：{{model}}",
+        "modelIdFreePlaceholder": "免费版使用固定模型",
+        "modelPicker": {
+            "fetch": "拉取模型",
+            "fetchTooltip": "从服务商拉取可用的模型列表",
+            "loading": "正在拉取模型列表…",
+            "noMatch": "没有匹配的模型",
+            "more": "还有 {{count}} 个模型，输入关键字可筛选",
+            "unavailable": {
+                "noProvider": "请先选择服务商",
+                "fixed": "该服务商使用固定模型，无需选择",
+                "follow": "当前模式下模型由跟随的配置决定，无需选择",
+                "missingUrl": "请先填写 API URL"
+            },
+            "error": {
+                "unsupported": "该端点不提供模型列表，请手动填写模型ID",
+                "key_required": "已保存的 Key 只能用于保存时的地址，请重新填写 API Key",
+                "rate_limited": "请求过于频繁，请稍后再试",
+                "empty": "服务商没有返回任何模型",
+                "timeout": "拉取超时，请检查网络后重试"
+            }
+        },
         "disableTts": "禁用TTS",
         "disableTtsHint": "开启后不会调用任何语音合成服务",
         "keyBookTitle": "API 管理簿",

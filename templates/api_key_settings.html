@@ -231,6 +231,16 @@
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
+                        <div class="field-row">
+                            <label for="assistModelIdInput">
+                                <span data-i18n="api.assistModelIdLabel">辅助API模型ID</span>
+                            </label>
+                            <input type="text" id="assistModelIdInput"
+                                data-i18n-placeholder="api.assistModelIdPlaceholder"
+                                placeholder="留空则各功能使用服务商默认模型" value=""
+                                maxlength="256" aria-describedby="assistModelIdHint">
+                            <em id="assistModelIdHint" class="model-id-hint"></em>
+                        </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">
                                 <input type="checkbox" id="disableTts" aria-describedby="disableTtsHintText">

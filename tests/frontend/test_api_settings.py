@@ -1989,3 +1989,32 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     assert 'sk-stale-claude' not in (state['omniKey'] or ''), (
         f"残留凭证应被覆盖，实际 omniKey={state['omniKey']!r}"
     )
+
+
+@pytest.mark.frontend
+def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, running_server: str):
+    """Keywords typed before the upstream model list arrives still filter it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    pending = []
+    mock_page.route("**/api/config/list_models", lambda route: pending.append(route))
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.select_option("#assistApiSelect", "qwen")
+
+    menu = mock_page.locator("#assistModelIdInput-model-menu")
+    mock_page.locator("#assistModelIdInput ~ button").click()
+    expect(menu.locator(".api-provider-dropdown-empty")).to_be_visible()
+    mock_page.fill("#assistModelIdInput", "qwen3.8")
+    assert len(pending) == 1
+    assert pending[0].request.post_data_json["provider_key"] == "qwen"
+
+    pending[0].fulfill(json={"success": True, "models": [
+        {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+        {"id": "qwen3.8-flash", "name": "Qwen3.8 Flash"},
+        {"id": "qwen3.8-plus", "name": "Qwen3.8 Plus"},
+    ]})
+    options = menu.locator(".api-provider-dropdown-option")
+    expect(options).to_have_count(2)
+    expect(options.nth(0)).to_have_attribute("data-value", "qwen3.8-flash")
+    expect(options.nth(1)).to_have_attribute("data-value", "qwen3.8-plus")
