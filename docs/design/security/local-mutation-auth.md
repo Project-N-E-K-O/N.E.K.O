@@ -57,7 +57,7 @@ FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此�
 
 ## 前端调用模式
 
-前端 `request.ts` 在能取到 token 时为所有 POST/PUT/PATCH/DELETE 请求注入 token，以便公网部署打开严格模式后继续可用；只读 POST 忽略该 header。token 引导失败时，只有必须带 token 的路由（`requiresCsrfToken()`，与 `PluginMutationGuardedRoute` 档位一一对应，后端增删该档路由时须同步）不发出原请求；其余写请求不带 token 照常发出，由服务端判定。引导失败（含代理未转发导致的 404、403、响应内容无效）以及其后不带 token 被拒的请求，统一提示 `messages.csrfBootstrapFailed`，不再沿用原操作的状态码静默处理。仓库内置插件页面同样携带 token，取不到时不带 token 照常发请求。变更请求仅在收到 token 失败标记时刷新一次并重试（multipart 重试复用同一 FormData）；来源拒绝不刷新重试。token 引导使用独立的 API_TIMEOUT（30 秒），失败时保持调用方的静默配置；引导超时使用通用请求超时提示，不套用“插件操作超时”，因为原变更请求尚未发送。生命周期请求自身的超时提示配置保持有效。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
+前端 `request.ts` 在能取到 token 时为所有 POST/PUT/PATCH/DELETE 请求注入 token，以便公网部署打开严格模式后继续可用；只读 POST 忽略该 header。token 引导失败时，只有必须带 token 的路由（`requiresCsrfToken()`，与 `PluginMutationGuardedRoute` 档位一一对应，后端增删该档路由时须同步）不发出原请求；其余写请求最多等待引导 2 秒，取不到就不带 token 照常发出，由服务端判定；引导失败后 30 秒内这类请求直接跳过引导，避免代理未转发或接口挂起时反复拖慢只读操作。引导失败（含代理未转发导致的 404、403、响应内容无效）以及其后不带 token、被服务端标为 token 失败（`csrf_failure: token`，来源拒绝不算）的请求，统一提示 `messages.csrfBootstrapFailed`，不再沿用原操作的状态码静默处理。仓库内置插件页面同样携带 token，取不到时不带 token 照常发请求。变更请求仅在收到 token 失败标记时刷新一次并重试（multipart 重试复用同一 FormData）；来源拒绝不刷新重试。token 引导使用独立的 API_TIMEOUT（30 秒），失败时保持调用方的静默配置；引导超时使用通用请求超时提示，不套用“插件操作超时”，因为原变更请求尚未发送。生命周期请求自身的超时提示配置保持有效。心跳或长跑任务遇到校验失败必须停止退避，不能每秒无限重试。fire-and-forget 请求仍要构造完整 headers，并处理页面卸载时的失败语义。
 
 命令行调试应使用项目环境读取 JSON 并显式传 header，例如先保存响应再用：
 

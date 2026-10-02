@@ -559,7 +559,45 @@ describe('CSRF bootstrap error policy', () => {
       await expect(fresh.post(url, {}, { adapter })).resolves.toEqual({ ok: true })
     }
     expect(sentTokens).toEqual([null, null, null])
+    // After one failure these requests skip bootstrap instead of retrying it each time.
+    expect(bootstrap).toHaveBeenCalledTimes(1)
     expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    bootstrap.mockRestore()
+  })
+
+  it('does not hold optional-token mutations behind a hung bootstrap', async () => {
+    vi.useFakeTimers()
+    try {
+      const fresh = (await import('./request')).default
+      const bootstrap = vi.spyOn(axios, 'get').mockReturnValue(new Promise(() => {}) as never)
+      const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => (
+        { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config, request: {} }
+      ))
+      const pending = fresh.post('/plugin-cli/analyze', {}, { adapter })
+      await vi.advanceTimersByTimeAsync(1999)
+      expect(adapter).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      await expect(pending).resolves.toEqual({ ok: true })
+      expect(AxiosHeaders.from(adapter.mock.calls[0]![0].headers).get('X-CSRF-Token')).toBeFalsy()
+      bootstrap.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not blame the bootstrap for an Origin rejection', async () => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap down'))
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+      throw Object.assign(new Error('Origin rejected'), {
+        config, isAxiosError: true,
+        response: { status: 403, data: { detail: { error_code: 'csrf_validation_failed', csrf_failure: 'origin' } },
+          headers: { 'X-Error-Code': 'csrf_validation_failed', 'X-CSRF-Failure': 'origin' } },
+      })
+    })
+    await expect(fresh.post('/runs', {}, { adapter })).rejects.toMatchObject({ response: { status: 403 } })
+    expect(adapter).toHaveBeenCalledTimes(1)
+    expect(requestMocks.errorMessage).not.toHaveBeenCalledWith('messages.csrfBootstrapFailed')
     bootstrap.mockRestore()
   })
 

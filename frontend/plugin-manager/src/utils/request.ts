@@ -154,8 +154,13 @@ export function isRequestTimeout(error: AxiosError): boolean {
 let pendingHealthProbe: Promise<boolean> | null = null
 
 const CSRF_TOKEN_HEADER = 'X-CSRF-Token'
+/** Longest a mutation that does not require the token waits for bootstrap. */
+const BEST_EFFORT_TOKEN_WAIT_MS = 2000
+/** After a failed bootstrap, such mutations skip it for this long. */
+const CSRF_BOOTSTRAP_RETRY_AFTER_MS = 30000
 let csrfToken: string | null = null
 let pendingCsrfToken: Promise<string> | null = null
+let lastCsrfBootstrapFailureAt = 0
 
 function isMutationMethod(method: unknown): boolean {
   return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
@@ -214,12 +219,33 @@ function loadCsrfToken(): Promise<string> {
     }
     csrfToken = value
     return value
+  }).catch((error: unknown) => {
+    lastCsrfBootstrapFailureAt = Date.now()
+    throw error
   }).finally(() => {
     if (pendingCsrfToken === requestPromise) pendingCsrfToken = null
   })
 
   pendingCsrfToken = requestPromise
   return requestPromise
+}
+
+/**
+ * Token for a mutation that the server accepts without one by default.
+ *
+ * A proxy that does not forward /security/csrf-token (or a hung endpoint)
+ * must not delay such requests: wait briefly, skip bootstrap for a while
+ * after a failure, and return null so the request is sent without a token.
+ * A slow bootstrap keeps running for later callers.
+ */
+function loadCsrfTokenBestEffort(): Promise<string | null> {
+  if (csrfToken) return Promise.resolve(csrfToken)
+  if (Date.now() - lastCsrfBootstrapFailureAt < CSRF_BOOTSTRAP_RETRY_AFTER_MS) return Promise.resolve(null)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), BEST_EFFORT_TOKEN_WAIT_MS)
+  })
+  return Promise.race([loadCsrfToken().catch(() => null), timeout]).finally(() => clearTimeout(timer))
 }
 
 function isCsrfValidationFailure(error: AxiosError): boolean {
@@ -281,17 +307,21 @@ const service: AxiosInstance = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    if (isMutationMethod(config.method)) {
+    if (isMutationMethod(config.method) && !requiresCsrfToken(config)) {
+      // The server does not require the token here by default; send the
+      // request without it and let a later token rejection explain why.
+      const token = await loadCsrfTokenBestEffort()
+      if (token) {
+        if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
+        writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
+      } else {
+        ;(config as ErrorDisplayRequestConfig).csrfTokenUnavailable = true
+      }
+    } else if (isMutationMethod(config.method)) {
       let token: string
       try {
         token = await loadCsrfToken()
       } catch (cause) {
-        if (!requiresCsrfToken(config)) {
-          // The server does not require the token here by default; send the
-          // request and let a later token rejection explain the bootstrap.
-          ;(config as ErrorDisplayRequestConfig).csrfTokenUnavailable = true
-          return stripJsonContentTypeForFormData(config)
-        }
         // Token-required calls are fail-closed: the original request is never sent.
         // Bootstrap is shared by concurrent callers. Create a separate error
         // for each caller instead of mutating its shared config/display policy.
@@ -368,8 +398,9 @@ service.interceptors.response.use(
     // A failed token bootstrap (404 from a proxy without the route, 403,
     // invalid body) is not the original operation's status: say so instead
     // of the generic or silent 403/404 handling. Timeouts keep their message.
+    // Only a token rejection points at the bootstrap; an Origin rejection does not.
     const tokenRejectedAfterBootstrapFailure = Boolean(requestConfig?.csrfTokenUnavailable)
-      && error.response?.status === 403 && readErrorCode(error) === 'csrf_validation_failed'
+      && isCsrfValidationFailure(error)
     if ((requestConfig?.csrfBootstrapFailed && !isRequestTimeout(error)) || tokenRejectedAfterBootstrapFailure) {
       if (!suppressErrorMessage) {
         ElMessage.error(i18n.global.t('messages.csrfBootstrapFailed'))
