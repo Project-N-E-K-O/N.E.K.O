@@ -117,10 +117,18 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
         user_language_provider: Optional[Callable[[], Optional[str]]] = None,
+        # Work companion 模式（Issue #3157）：可选回调，返回 bool 表示当前是否在
+        # 工作陪伴模式。激活时 _conversation_history 会被裁剪（保留 SystemMessage +
+        # 最近 N 轮），降低 token 消耗 + 延迟。None 或返回 False 时不裁剪。
+        work_companion_check: Optional[Callable[[], bool]] = None,
+        work_companion_keep_turns: int = 3,  # 保留最近 N 轮 Human+AI
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
         self._user_language_provider = user_language_provider
+        # Work companion 模式：history 裁剪回调（None = 不裁剪）
+        self._work_companion_check = work_companion_check
+        self._work_companion_keep_turns = max(1, int(work_companion_keep_turns))
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching

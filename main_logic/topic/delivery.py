@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -11,6 +12,11 @@ from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETR
 
 logger = logging.getLogger("N.E.K.O.Main.topic.delivery")
 _DELIVERY_ACK_TIMEOUT_S = 120.0
+
+# Work companion 模式下降频投递概率（Issue #3157）。
+# work_companion 激活时，每次 preflight 有此概率跳过 proactive 投递。
+# 0.5 = 约一半主动搭话被跳过（频率减半），用户可在 config 覆盖。
+WORK_COMPANION_PROACTIVE_SKIP_PROBABILITY = 0.5
 
 _SessionManagerGetter = Callable[[str], Any]
 _session_manager_getter: _SessionManagerGetter | None = None
@@ -259,6 +265,29 @@ def topic_hook_delivery_available(
         except Exception as exc:
             logger.warning(
                 "[%s] topic hook goodbye-silent preflight failed open: %s",
+                lanlan_name,
+                exc,
+            )
+    # Work companion 模式（Issue #3157）：降频而非完全抑制。
+    # 以 WORK_COMPANION_PROACTIVE_SKIP_PROBABILITY 概率跳过投递。
+    is_work_companion = getattr(mgr, "is_work_companion", None)
+    has_work_gate = (
+        "is_work_companion" in getattr(mgr, "__dict__", {})
+        or hasattr(type(mgr), "is_work_companion")
+    )
+    if has_work_gate and callable(is_work_companion):
+        try:
+            if bool(is_work_companion()):
+                if random.random() < WORK_COMPANION_PROACTIVE_SKIP_PROBABILITY:
+                    logger.info(
+                        "[%s] topic hook delivery skipped: work_companion mode "
+                        "(skip_prob=%.2f)",
+                        lanlan_name, WORK_COMPANION_PROACTIVE_SKIP_PROBABILITY,
+                    )
+                    return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook work-companion preflight failed open: %s",
                 lanlan_name,
                 exc,
             )

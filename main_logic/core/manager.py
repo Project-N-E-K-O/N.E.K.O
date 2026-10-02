@@ -266,6 +266,13 @@ class LLMSessionManager(
         self.goodbye_silent_updated_at: float = 0.0
         self.goodbye_silent_started_monotonic: float = 0.0
         self.goodbye_silent_completed_duration: float | None = None
+        # ── Work companion 模式（Issue #3157）───────────────────────
+        # 用户选择"工作陪伴"：紧凑聊天 UI + 小模型 + 较低 proactive 频率。
+        # 不同于 goodbye_silent/quiet_companion（完全抑制 proactive），
+        # work_companion 只降频——proactive 仍会触发但跳过部分投递。
+        self.work_companion: bool = False
+        self.work_companion_reason: str = ""
+        self.work_companion_updated_at: float = 0.0
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、

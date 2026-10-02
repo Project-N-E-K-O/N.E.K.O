@@ -1653,6 +1653,8 @@ class CoreConfigMixin:
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
+                - 'companion_work': lightweight model for work-companion mode
+                  (Issue #3157, falls back to conversation)
             _core_config: optional pre-read get_core_config snapshot, so a caller that already
                 holds one does not pay a second core_config.json read. Private: async callers
                 reach it through aget_model_api_config(core_config=...).
@@ -1777,6 +1779,16 @@ class CoreConfigMixin:
                 'custom_key': 'TTS_MODEL_API_KEY',
                 'default_model': 'CORE_MODEL',
                 'fallback_type': 'assist',  # 自定义TTS回退到辅助API
+            },
+            # ── Work companion 小模型（Issue #3157）───────────────────
+            # 用户选择"工作陪伴模式"时用的较轻量、便宜的模型。
+            # fallback 到 conversation（主对话模型），用户可以单独配小模型。
+            'companion_work': {
+                'custom_model': 'COMPANION_WORK_MODEL',
+                'custom_url': 'COMPANION_WORK_MODEL_URL',
+                'custom_key': 'COMPANION_WORK_MODEL_API_KEY',
+                'default_model': 'COMPANION_WORK_MODEL',
+                'fallback_type': 'conversation',
             },
         }
         
