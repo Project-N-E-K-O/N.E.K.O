@@ -61,6 +61,7 @@ from main_logic.visit.subjects import (
     PeerRoster,
     derive_pair_id,
     derive_person_id,
+    group_chat_subject,
     participant_subject,
     path_lock,
 )
@@ -242,6 +243,11 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     # 重放也只会删名册、不清任何记忆
     if own_person not in subjects:
         raise ValueError("revocation log lacks the person subject of its peer")
+    # 每个记录在案的 pair 都必须带它的群主体：只丢了 group_chat 的日志会在重放后
+    # 把这一对的群记忆永久留下
+    for pair in pair_ids:
+        if group_chat_subject(pair) not in subjects:
+            raise ValueError("revocation log lacks the group subject of a recorded pair")
     for subject in subjects:
         if subject["subject_kind"] == "participant" and subject != own_person:
             raise ValueError("revocation log participant does not belong to its peer")

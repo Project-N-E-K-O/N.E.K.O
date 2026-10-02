@@ -444,3 +444,27 @@ async def test_remove_char_on_an_absent_entry_is_a_no_op(tmp_path):
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     assert await roster.remove_char("peer_x", "B") is False
     assert await roster.remove_char("peer_y", "A") is False
+
+
+@pytest.mark.parametrize("damage", [
+    lambda d: d.__setitem__("accounts", []),
+    lambda d: d["accounts"].__setitem__("own_a", 5),
+    lambda d: d["accounts"]["own_a"].__setitem__("peers", "x"),
+])
+async def test_upsert_refuses_to_rebuild_damaged_containers(tmp_path, damage):
+    # 类型坏了的容器不能被重建成 {}：下一次原子写会把可恢复的数据永久冲掉
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    damage(data)
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.upsert("peer_y", "A", pair_id="q" * 24, peer_char_id="c_" + "2" * 24,
+                            char_tag="e" * 32, char_display_name="cat", now=2.0)
+    assert roster.path.read_text(encoding="utf-8") == before

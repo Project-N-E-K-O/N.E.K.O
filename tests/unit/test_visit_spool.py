@@ -839,3 +839,68 @@ async def test_retire_char_rejects_malformed_ownership_in_a_legacy_header(tmp_pa
     (spool_dir / f"{vid(1)}.jsonl").write_text(json.dumps(legacy) + chr(10), encoding="utf-8")
     with pytest.raises(SpoolStateUnreadable):
         await VisitSpool.retire_char(tmp_path, "uid_b", legacy_name="B")
+
+
+async def test_cancelled_append_queued_behind_a_write_still_lands(tmp_path, monkeypatch):
+    # 排在前一次写入之后的 append 被取消时，已接受的那一行不能丢
+    import threading
+
+    sp = await open_spool(tmp_path, vid(17))
+    gate = threading.Event()
+    real_append = VisitSpool._append_sync
+    calls = {"n": 0}
+
+    def slow_first(self, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            gate.wait(5)
+        return real_append(self, data)
+
+    monkeypatch.setattr(VisitSpool, "_append_sync", slow_first)
+    first = asyncio.create_task(sp.append(line(1)))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(sp.append(line(2)))
+    await asyncio.sleep(0.05)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    gate.set()
+    await first
+    await sp.close()
+    got = await sp.read_back()
+    assert [ln["lp"] for ln in got.lines] == [1, 2]
+
+
+def test_retirement_waits_for_an_in_progress_state_update(tmp_path):
+    # 读改写 state.json 的更新与退役用同一把逐路径锁：退役不会被更新「写回来」
+    import threading
+
+    from main_logic.visit.subjects import path_lock
+
+    sp = VisitSpool(tmp_path, vid(18))
+    asyncio.run(sp.write_state(state_for(own_char_uid="uid_b")))
+    held = threading.Event()
+    release = threading.Event()
+
+    def updater():
+        with path_lock(sp.state_path):
+            held.set()
+            release.wait(5)
+            assert sp.state_path.exists()      # 持锁期间文件还在
+
+    t = threading.Thread(target=updater)
+    t.start()
+    held.wait(5)
+    done = threading.Event()
+
+    def retire():
+        asyncio.run(VisitSpool.retire_char(tmp_path, "uid_b"))
+        done.set()
+
+    r = threading.Thread(target=retire)
+    r.start()
+    assert not done.wait(0.3)                  # 退役在等这把锁
+    release.set()
+    t.join(5)
+    r.join(5)
+    assert done.is_set() and not sp.state_path.exists()

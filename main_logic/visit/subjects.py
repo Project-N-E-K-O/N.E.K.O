@@ -223,11 +223,18 @@ def path_lock(path: Path) -> threading.Lock:
 
 
 def _dict_at(parent: dict, key: str) -> dict:
-    """Return ``parent[key]`` as a dict, creating or replacing a malformed value."""
-    value = parent.get(key)
+    """Return ``parent[key]`` as a dict, creating it when absent.
+
+    A present value of another type is damage, not "missing": rebuilding it as
+    ``{}`` would let the next atomic write erase whatever was recoverable, so
+    it raises :class:`RosterCorruptError` instead.
+    """
+    if key not in parent:
+        parent[key] = {}
+        return parent[key]
+    value = parent[key]
     if not isinstance(value, dict):
-        value = {}
-        parent[key] = value
+        raise RosterCorruptError(f"roster {key!r} is not an object")
     return value
 
 

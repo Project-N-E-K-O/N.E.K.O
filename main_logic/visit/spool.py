@@ -784,7 +784,8 @@ class VisitSpool:
         data = encode_spool_line(line)
         fut = self._submit(self._append_sync, data)
         self._dirty = True
-        await fut
+        # 已接受并提交的一行不能因调用方被取消而撤回（排在别的写入后面时会被直接取消）
+        await asyncio.shield(fut)
 
     def fsync_due(self, now: float) -> bool:
         """Whether unsynced lines exist and ``VISIT_SPOOL_FSYNC_S`` passed since the last fsync."""
@@ -1002,8 +1003,14 @@ class VisitSpool:
                 match = legacy_name is not None and owner_name == legacy_name
             if not match:
                 continue
-            _unlink(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
-            _unlink(visit_path(spool_dir, visit_id, STATE_SUFFIX))
+            jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
+            state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
+            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state）：正在读改写
+            # state.json 的更新要么先做完再被删掉，要么之后读到「不存在」而报错，
+            # 不会在退役之后把文件重新写回来
+            with path_lock(jsonl), path_lock(state_path):
+                _unlink(jsonl)
+                _unlink(state_path)
             retired.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
