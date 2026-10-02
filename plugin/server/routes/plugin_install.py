@@ -35,10 +35,13 @@ from ._install_task_store import (
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-install"])
-mutation_router = APIRouter(tags=["plugin-install"], route_class=PluginMutationGuardedRoute)
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-install"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.plugin_install")
 run_service = RunService()
 

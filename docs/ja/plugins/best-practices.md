@@ -182,6 +182,37 @@ async def on_shutdown(self, **_):
     return Ok({"status": "stopped"})
 ```
 
+## プラグインページから CSRF トークンを送る
+
+プラグインが静的ページ（またはその他のブラウザコード）を同梱し、`/runs`、`/uploads/...`、`/plugin/<id>/ui-api/...`、`/plugin/<id>/config` などプラグインサーバーへ `POST`、`PUT`、`PATCH`、`DELETE` リクエストを送る場合は、この SDK リリースからインスタンスの CSRF トークンを付けて送ってください。
+
+```js
+let tokenPromise = null
+
+async function csrfHeaders() {
+  tokenPromise ??= fetch('/security/csrf-token', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((data) => data.csrf_token)
+  try {
+    return { 'X-CSRF-Token': await tokenPromise }
+  } catch (error) {
+    tokenPromise = null
+    throw error
+  }
+}
+
+await fetch('/runs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+  body: JSON.stringify({ plugin_id: 'my_plugin', entry_id: 'do_work', args: {} }),
+})
+```
+
+- トークンを送らないページも既定では引き続き動作します。ホストはリクエストが信頼できるオリジンから来たかだけを確認します。マーケットで公開済みのプラグインがこの変更で動かなくなることはありません。
+- トークンは公開環境にデプロイする人向けのオプションです。`NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` を設定すると、トークンを送らないページは `403`（`csrf_validation_failed`）になります。
+- 送るトークンは正しい値でなければなりません。`detail.csrf_failure` が `"token"` の `403` を受け取ったら、キャッシュしたトークンを破棄して取り直し、1 回だけ再試行してください。
+- Hosted TSX の画面は `props.api` 経由でアクションを呼ぶため、トークンは自動で付きます。
+
 ## プラグインチェックリスト
 
 プラグインをリリースする前に確認してください：
@@ -194,3 +225,4 @@ async def on_shutdown(self, **_):
 - [ ] タイマーを使用する場合、共有状態がロックで保護されている
 - [ ] プラグイン間呼び出しが `Err` 結果を処理している
 - [ ] `plugin.toml` の host-loading `[plugin].entry` path と SDK version constraint が正しい
+- [ ] ブラウザページからプラグインサーバーへの書き込みリクエストに `X-CSRF-Token` を付けている

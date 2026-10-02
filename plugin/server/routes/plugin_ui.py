@@ -36,10 +36,13 @@ from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-ui"])
-mutation_router = APIRouter(tags=["plugin-ui"], route_class=PluginMutationGuardedRoute)
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-ui"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
 

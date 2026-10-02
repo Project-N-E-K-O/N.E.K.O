@@ -12,14 +12,17 @@ from plugin.server.application.model_config_service import ModelConfigService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 from plugin.server.model_gateway.errors import ModelGatewayError
 from plugin.server.model_gateway.execution import ResolvedModelCall
 from plugin.server.model_gateway.observation import normalize_usage
 from plugin.server.routes.model_gateway import _get_executor
 
 router = APIRouter(prefix="/api/model-config", tags=["plugin-models"])
-mutation_router = APIRouter(tags=["plugin-models"], route_class=PluginMutationGuardedRoute)
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-models"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.model_config")
 service = ModelConfigService()
 PROBE_IDENTITY = "@host:model_probe"  # Invalid as a plugin ID; never a registry entry.

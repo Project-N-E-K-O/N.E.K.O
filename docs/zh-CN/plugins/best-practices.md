@@ -183,6 +183,37 @@ async def on_shutdown(self, **_):
     return Ok({"status": "stopped"})
 ```
 
+## 插件页面发送 CSRF token
+
+如果插件自带静态页面（或其他浏览器代码），并向插件服务器发送 `POST`、`PUT`、`PATCH`、`DELETE` 请求，例如 `/runs`、`/uploads/...`、`/plugin/<id>/ui-api/...`、`/plugin/<id>/config`，请从本版 SDK 起在这些请求里携带实例 CSRF token：
+
+```js
+let tokenPromise = null
+
+async function csrfHeaders() {
+  tokenPromise ??= fetch('/security/csrf-token', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((data) => data.csrf_token)
+  try {
+    return { 'X-CSRF-Token': await tokenPromise }
+  } catch (error) {
+    tokenPromise = null
+    throw error
+  }
+}
+
+await fetch('/runs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+  body: JSON.stringify({ plugin_id: 'my_plugin', entry_id: 'do_work', args: {} }),
+})
+```
+
+- 默认情况下，不带 token 的页面仍可正常使用：宿主只校验请求是否来自可信来源。市场中已发布的插件不会因此失效。
+- token 是公网部署者的可选项。部署者设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，不带 token 的页面会收到 `403`（`csrf_validation_failed`）。
+- 一旦发送 token，就必须正确。收到 `403` 且 `detail.csrf_failure` 为 `"token"` 时，清掉缓存的 token，重新获取后重试一次。
+- Hosted TSX 界面通过 `props.api` 调用动作，已自动携带 token，无需额外处理。
+
 ## 插件检查清单
 
 发布插件前请检查：
@@ -195,3 +226,4 @@ async def on_shutdown(self, **_):
 - [ ] 如果使用了定时器，共享状态已用锁保护
 - [ ] 跨插件调用已处理 `Err` 结果
 - [ ] `plugin.toml` 中宿主加载用的 `[plugin].entry` 路径和 SDK 版本约束正确
+- [ ] 浏览器页面向插件服务器发送写请求时携带 `X-CSRF-Token`

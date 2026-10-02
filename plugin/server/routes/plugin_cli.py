@@ -16,6 +16,8 @@ from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter()
+# Package build/import changes executable plugin code and is only called by the
+# plugin manager and native CLI, so the browser token stays required here.
 mutation_router = APIRouter(route_class=PluginMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_cli")
 service = PluginCliService()

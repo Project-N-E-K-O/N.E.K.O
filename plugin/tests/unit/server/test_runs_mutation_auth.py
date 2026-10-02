@@ -146,3 +146,89 @@ async def test_originless_lan_peer_and_foreign_host_are_rejected(
         )
     assert response.status_code == 403
     create_run.assert_not_awaited()
+
+
+# Market-plugin compatibility contract (owner decision): published plugin
+# pages post without X-CSRF-Token, so a trusted Origin alone must keep working.
+# The token is an opt-in for public deployments only.
+_RUN_PAYLOAD = {"plugin_id": "demo", "entry_id": "run", "args": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("peer", "host", "origin"),
+    [
+        ("127.0.0.1", "127.0.0.1:48916", f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}"),
+        ("127.0.0.1", "127.0.0.1:48916", "http://127.0.0.1:48916"),
+        ("192.168.1.10", "192.168.1.5:48916", "http://192.168.1.5:48916"),
+    ],
+    ids=["desktop-main-page", "desktop-plugin-page", "nas-same-origin-page"],
+)
+async def test_tokenless_plugin_page_from_trusted_origin_keeps_working(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, peer: str, host: str, origin: str,
+) -> None:
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+
+    async with _client(app, peer=peer, host=host, headers={"Origin": origin}) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+
+    assert response.status_code == 200, response.text
+    create_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["wrong", ""], ids=["wrong", "empty"])
+async def test_plugin_page_supplied_invalid_token_is_rejected(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, token: str,
+) -> None:
+    monkeypatch.delenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, raising=False)
+    create_run = AsyncMock()
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+
+    headers = {"Origin": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}", "X-CSRF-Token": token}
+    async with _client(app, headers=headers) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "token"
+    create_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["1", "true"])
+async def test_public_deployment_can_require_plugin_page_token(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    monkeypatch.setenv(mutation_auth.PAGE_MUTATION_REQUIRE_TOKEN_ENV, value)
+    create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
+    monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
+
+    origin = {"Origin": f"http://127.0.0.1:{mutation_auth.MAIN_SERVER_PORT}"}
+    async with _client(app, headers=origin) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 403
+    assert response.headers.get("X-CSRF-Failure") == "token"
+    create_run.assert_not_awaited()
+
+    async with _client(app, headers=_valid_headers()) as client:
+        response = await client.post("/runs", json=_RUN_PAYLOAD)
+    assert response.status_code == 200
+    create_run.assert_awaited_once()
+
+
+def test_page_and_strict_guards_cover_the_intended_routes() -> None:
+    """Pin which routers stay market-compatible and which require the token."""
+    from plugin.server.routes import config, model_config, plugin_cli, plugin_install, plugin_ui
+
+    page_modules = (runs_route_module, config, model_config, plugin_install, plugin_ui)
+    for module in page_modules:
+        guarded = [route for route in module.router.routes
+                   if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
+        assert guarded, module.__name__
+        assert all(isinstance(route, mutation_auth.PluginPageMutationGuardedRoute) for route in guarded), module.__name__
+    cli_guarded = [route for route in plugin_cli.router.routes
+                   if isinstance(route, mutation_auth.PluginMutationGuardedRoute)]
+    assert cli_guarded
+    assert not any(isinstance(route, mutation_auth.PluginPageMutationGuardedRoute) for route in cli_guarded)

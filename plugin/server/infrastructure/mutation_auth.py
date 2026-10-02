@@ -3,7 +3,10 @@
 The plugin manager may use desktop loopback or NAS/Docker same-origin access.
 CORS does not prevent simple cross-origin POSTs from executing, so browser
 lifecycle and package-import mutations require both trusted provenance and the
-instance token. HostOriginGuard rejects DNS-rebinding hosts before these guards.
+instance token. Routes that plugin pages call directly require trusted
+provenance, with the token optional so published market plugins keep working
+(see ``require_plugin_page_mutation_access``). HostOriginGuard rejects
+DNS-rebinding hosts before these guards.
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ _CSRF_HEADER = "X-CSRF-Token"
 _ERROR_CODE = "csrf_validation_failed"
 # Embedded and standalone servers share the same trusted proxy boundary.
 TRUSTED_PROXY_IPS = "127.0.0.1,::1"
+# Opt-in for public deployments; see require_plugin_page_mutation_access.
+PAGE_MUTATION_REQUIRE_TOKEN_ENV = "NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN"
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -177,12 +182,42 @@ def _deny(*, token_invalid: bool = False) -> None:
 
 def require_plugin_mutation_access(request: Request) -> None:
     """Authorize a plugin lifecycle mutation before any route side effect."""
+    _authorize_mutation(request, browser_token_required=True)
+
+
+def _page_token_required() -> bool:
+    return os.getenv(PAGE_MUTATION_REQUIRE_TOKEN_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def require_plugin_page_mutation_access(request: Request) -> None:
+    """Authorize a mutation that plugin pages call directly.
+
+    Compatibility contract (owner decision): published market plugins must
+    keep working. Their static pages post to ``/runs``, ``/uploads``,
+    ``ui-api``, config and hosted/chat-card routes without ``X-CSRF-Token``,
+    so a trusted Origin alone authorizes a browser request here. That still
+    rejects cross-site pages; every origin trusted here can also read the
+    token from ``/security/csrf-token``, so the token adds no boundary in the
+    default deployment. A supplied token must be valid, and originless
+    requests keep the native loopback rules.
+
+    Public deployments may opt in to requiring the token with
+    ``NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1``; this breaks plugin pages
+    that do not send it yet. Plugin authors are asked to send the token
+    starting with this SDK release (docs/plugins/best-practices.md). Do not
+    make it the default while published plugins still omit it.
+    """
+    _authorize_mutation(request, browser_token_required=_page_token_required())
+
+
+def _authorize_mutation(request: Request, *, browser_token_required: bool) -> None:
     origin_header = request.headers.get("origin")
     origin = _normalize_origin(origin_header)
     if origin_header is not None:
         if not _trusted_origin(request, origin):
             _deny()
-        if not _valid_token(request):
+        token_supplied = _CSRF_HEADER.lower() in request.headers
+        if (browser_token_required or token_supplied) and not _valid_token(request):
             _deny(token_invalid=True)
         return
     # Native/local callers may omit Origin, but browser metadata or a Referer
@@ -206,14 +241,27 @@ class PluginMutationGuardedRoute(APIRoute):
     same as the lifecycle dependency.
     """
 
+    guard: Callable[[Request], None] = staticmethod(require_plugin_mutation_access)
+
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
+        guard = type(self).guard
 
         async def guarded_handler(request: Request) -> Response:
-            require_plugin_mutation_access(request)
+            guard(request)
             return await handler(request)
 
         return guarded_handler
+
+
+class PluginPageMutationGuardedRoute(PluginMutationGuardedRoute):
+    """Pre-body guard for routes plugin pages call directly.
+
+    Uses ``require_plugin_page_mutation_access``: the browser token is
+    optional by default so published market plugins keep working.
+    """
+
+    guard: Callable[[Request], None] = staticmethod(require_plugin_page_mutation_access)
 
 
 def require_plugin_token_bootstrap_access(request: Request) -> None:

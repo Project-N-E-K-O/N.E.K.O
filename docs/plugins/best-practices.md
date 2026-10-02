@@ -184,6 +184,37 @@ async def on_shutdown(self, **_):
     return Ok({"status": "stopped"})
 ```
 
+## Send the CSRF token from plugin pages
+
+If your plugin ships a static page (or other browser code) that sends `POST`, `PUT`, `PATCH` or `DELETE` requests to the plugin server, such as `/runs`, `/uploads/...`, `/plugin/<id>/ui-api/...` or `/plugin/<id>/config`, start sending the instance CSRF token with this SDK release:
+
+```js
+let tokenPromise = null
+
+async function csrfHeaders() {
+  tokenPromise ??= fetch('/security/csrf-token', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((data) => data.csrf_token)
+  try {
+    return { 'X-CSRF-Token': await tokenPromise }
+  } catch (error) {
+    tokenPromise = null
+    throw error
+  }
+}
+
+await fetch('/runs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+  body: JSON.stringify({ plugin_id: 'my_plugin', entry_id: 'do_work', args: {} }),
+})
+```
+
+- Pages that do not send the token keep working by default: the host only checks that the request comes from a trusted origin. Published market plugins are not broken by this change.
+- The token is an option for public deployments. When a deployer sets `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`, pages without it get `403` with `csrf_validation_failed`.
+- A token you send must be valid. On a `403` whose `detail.csrf_failure` is `"token"`, clear the cached token, fetch it again and retry once.
+- Hosted TSX surfaces call actions through `props.api`, which already sends the token.
+
 ## Plugin checklist
 
 Before shipping your plugin:
@@ -196,3 +227,4 @@ Before shipping your plugin:
 - [ ] Shared state is protected with locks if timers are used
 - [ ] Cross-plugin calls handle `Err` results
 - [ ] `plugin.toml` has a correct host-loading `[plugin].entry` path and SDK version constraints
+- [ ] Browser pages send `X-CSRF-Token` on write requests to the plugin server
