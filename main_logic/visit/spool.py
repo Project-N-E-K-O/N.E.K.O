@@ -218,6 +218,11 @@ def validate_header(header: Mapping[str, Any]) -> dict:
     for name in ("own_uid", "own_char", "own_char_uid"):
         if not isinstance(header[name], str) or not header[name]:
             raise ValueError(f"spool header {name} must be a non-empty string")
+    for name in ("pair_id", "peer_uid", "peer_char_id", "peer_char_tag"):
+        value = header[name]
+        # 对端字段可被「清除这个人」置空；否则必须是非空字符串（类型坏了不能当「不是这一对」）
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"spool header {name} must be a non-empty string or null")
     if not _is_number(header["started_at"]):
         raise ValueError("spool header started_at must be a number")
     return dict(header)
@@ -544,11 +549,13 @@ def _read_header(path: Path) -> dict | None:
     return header if isinstance(header, dict) else None
 
 
-def _read_header_strict(path: Path) -> dict | None:
+def _read_header_strict(path: Path, *, validate: bool = True) -> dict | None:
     """Read a spool header for the forget path: ``None`` only when the file is absent.
 
     A truncated (no newline), unparseable or non-object first line raises
-    ``ValueError``; other read errors raise ``OSError``.
+    ``ValueError``; other read errors raise ``OSError``. ``validate=False``
+    only requires a well-formed object (ownership lookups must still accept
+    headers of older versions that lack ``own_char_uid``).
     """
     try:
         with open(path, "rb") as f:
@@ -562,7 +569,7 @@ def _read_header_strict(path: Path) -> dict | None:
         raise ValueError(f"spool header of {path.name} is not an object")
     # 完整 schema 校验（peer 字段允许被「清除这个人」置空）：{} 之类缺字段的头行
     # 不能被当作「不是这一对」
-    return validate_header(header)
+    return validate_header(header) if validate else header
 
 
 def _rewrite_header(path: Path, mutate, *, strict: bool = False) -> bool:
@@ -940,11 +947,17 @@ class VisitSpool:
 
     @classmethod
     def _owner_of(cls, spool_dir: Path, visit_id: str) -> tuple[str | None, str | None]:
-        """Return ``(own_char_uid, own_char)`` from ``state.json``, else from the header."""
-        state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
+        """Return ``(own_char_uid, own_char)`` from ``state.json``, else from the header.
+
+        Strict: an existing but unreadable / schema-invalid ``state.json`` or
+        header raises (``OSError`` / ``ValueError``) instead of reading as
+        "owned by nobody", so transactional callers keep their marker.
+        """
+        state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
         if state is not None:
             return state["own_char_uid"], state["own_char"]
-        header = _read_header(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
+        header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX),
+                                     validate=False)
         if header is not None:
             return header.get("own_char_uid"), header.get("own_char")
         return None, None
@@ -960,8 +973,14 @@ class VisitSpool:
     ) -> list[str]:
         spool_dir = _spool_dir(config_dir)
         retired = []
+        unreadable: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
-            owner_uid, owner_name = cls._owner_of(spool_dir, visit_id)
+            try:
+                owner_uid, owner_name = cls._owner_of(spool_dir, visit_id)
+            except (OSError, ValueError):
+                # 读不出归属不能当「不是这个角色的」：上抛让删除事务保留退役标记、启动对账重试
+                unreadable.append(visit_id)
+                continue
             if owner_uid:
                 match = owner_uid == character_uid
             else:
@@ -971,6 +990,8 @@ class VisitSpool:
             _unlink(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
             _unlink(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             retired.append(visit_id)
+        if unreadable:
+            raise SpoolStateUnreadable(unreadable)
         return retired
 
     @classmethod
@@ -988,6 +1009,8 @@ class VisitSpool:
         legacy_name``; the caller passes ``legacy_name`` only while no new
         character of the same name exists. ``.upload.json(l)`` and
         ``visit_reports/`` are never touched. Returns the retired visit ids.
+        Raises :class:`SpoolStateUnreadable` (after handling every readable
+        visit) when some visit's ownership cannot be read.
         """
         return await asyncio.to_thread(
             cls._retire_char_sync, Path(config_dir), character_uid, legacy_name
@@ -1004,20 +1027,28 @@ class VisitSpool:
                 return True
             return False
 
+        unreadable: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
             changed = False
             jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
-            with path_lock(jsonl):
-                changed |= _rewrite_header(jsonl, fix_header)
             state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
-            with path_lock(state_path):
-                state = _try_read_state(state_path)
-                if state is not None and state["own_char"] == old:
-                    state["own_char"] = new
-                    atomic_write_json(state_path, validate_state(state))
-                    changed = True
+            # 改名是事务的一步：读不出来的场次不能静默跳过，否则 pending_rename 被清掉、
+            # 这场留在已不存在的旧名下。先改完能改的，最后上抛让标记保留、对账重跑
+            try:
+                with path_lock(jsonl):
+                    changed |= _rewrite_header(jsonl, fix_header, strict=True)
+                with path_lock(state_path):
+                    state = _read_state_file(state_path)
+                    if state is not None and state["own_char"] == old:
+                        state["own_char"] = new
+                        atomic_write_json(state_path, validate_state(state))
+                        changed = True
+            except (OSError, ValueError, SpoolStateUnreadable):
+                unreadable.append(visit_id)
             if changed:
                 renamed.append(visit_id)
+        if unreadable:
+            raise SpoolStateUnreadable(unreadable)
         return renamed
 
     @classmethod
@@ -1029,6 +1060,8 @@ class VisitSpool:
         so the call is idempotent and safe to rerun from startup
         reconciliation (and to run as ``new -> old`` for a rollback). Returns
         the visit ids that changed. Only allowed while no visit is in flight.
+        Raises :class:`SpoolStateUnreadable` (after rewriting every readable
+        visit) when some header or ``state.json`` cannot be read.
         """
         if not old or not new or old == new:
             return []

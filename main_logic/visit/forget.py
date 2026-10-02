@@ -196,6 +196,10 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     # 步骤计划必须能从 subjects 原样推出：损坏成 steps:[] 的日志若被放行，重放会
     # 什么都不清就把日志删掉，清除请求就此丢失
     subjects = [_clean_subject(s) if isinstance(s, Mapping) else _bad_subject() for s in record["subjects"]]
+    # subject 只许 subject_kind / subject_id 两个键：多出的 scope 会被原样转发给
+    # /scoped_forget，换掉删除的作用域，清的不是本该清的那一份
+    if any(set(s) != {"subject_kind", "subject_id"} for s in record["subjects"]):
+        raise ValueError("revocation log subjects carry unexpected fields")
     if record["steps"] != build_steps(subjects):
         raise ValueError("revocation log steps do not match its subjects")
     # 执行器严格按序记完成、合并只撤掉尾部标记，所以 done_steps 必是 steps 的无重复前缀；
@@ -208,11 +212,16 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     pair_ids = record["pair_ids"]
     if not all(isinstance(p, str) and p for p in pair_ids):
         raise ValueError("revocation log pair_ids must be non-empty strings")
+    subject_pairs = set()
     for subject in subjects:
         if subject["subject_kind"] in ("group_chat", "group_participant"):
             parts = subject["subject_id"].split(":")
-            if len(parts) < 2 or parts[1] not in pair_ids:
-                raise ValueError("revocation log pair_ids do not cover its pair subjects")
+            if len(parts) < 2:
+                raise ValueError("revocation log pair subject has no pair id")
+            subject_pairs.add(parts[1])
+    # 双向相等：多出的无关 pair 会让 wipe_spool 去抹别人的场次
+    if set(pair_ids) != subject_pairs or len(pair_ids) != len(set(pair_ids)):
+        raise ValueError("revocation log pair_ids do not match its pair subjects")
     return record
 
 

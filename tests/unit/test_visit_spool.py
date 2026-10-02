@@ -763,3 +763,43 @@ async def test_cancelled_close_still_closes_the_fd(tmp_path, monkeypatch):
             break
         await asyncio.sleep(0.01)
     assert not is_spool_open(sp.jsonl_path)
+
+
+@pytest.mark.parametrize("field,value", [("pair_id", 7), ("peer_uid", ""), ("peer_char_id", [])])
+def test_header_peer_fields_must_be_strings_or_null(field, value):
+    from main_logic.visit.spool import validate_header
+
+    good = header(vid(1))
+    validate_header(dict(good, **{field: None}))
+    with pytest.raises(ValueError):
+        validate_header(dict(good, **{field: value}))
+
+
+async def test_retire_char_fails_closed_on_unreadable_ownership(tmp_path):
+    # 只剩 state.json 且读不出：不能当「不是这个角色的」，其余可读场次照常退役
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = VisitSpool(tmp_path, vid(1))
+    await mine.write_state(state_for(own_char_uid="uid_b"))
+    broken = VisitSpool(tmp_path, vid(2))
+    await broken.write_state(state_for(own_char_uid="uid_b"))
+    broken.state_path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(SpoolStateUnreadable) as ei:
+        await VisitSpool.retire_char(tmp_path, "uid_b")
+    assert ei.value.visit_ids == [vid(2)]
+    assert not mine.state_path.exists()
+    assert broken.state_path.exists()
+
+
+async def test_rename_fails_closed_on_unreadable_state(tmp_path):
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    ok = VisitSpool(tmp_path, vid(1))
+    await ok.write_state(state_for(own_char="old"))
+    broken = VisitSpool(tmp_path, vid(2))
+    await broken.write_state(state_for(own_char="old"))
+    broken.state_path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(SpoolStateUnreadable) as ei:
+        await VisitSpool.rename_own_char(tmp_path, "old", "new")
+    assert ei.value.visit_ids == [vid(2)]
+    assert (await ok.read_state())["own_char"] == "new"

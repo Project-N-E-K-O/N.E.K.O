@@ -443,3 +443,42 @@ async def test_discovery_rejects_a_schema_damaged_header(tmp_path):
     (spool_dir / "visit00000000000000078.jsonl").write_bytes(b"{}" + bytes([10]))
     with pytest.raises(SpoolStateUnreadable):
         await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, ["p" * 24])
+
+
+async def test_discovery_rejects_a_header_with_a_damaged_pair_id(tmp_path):
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    head = {"v": 1, "visit_id": "visit00000000000000079", "role": "host", "own_uid": OWN_A,
+            "own_char": "A", "own_char_uid": CHAR_UID_A, "pair_id": 7, "peer_uid": PEER_X,
+            "peer_char_id": None, "peer_char_tag": None, "started_at": 1.0, "lang": "zh"}
+    (spool_dir / "visit00000000000000079.jsonl").write_bytes(
+        json.dumps(head).encode("utf-8") + bytes([10]))
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, ["p" * 24])
+
+
+async def _damaged_log(tmp_path, mutate):
+    from main_logic.visit.forget import RevocationLogUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    path = log.path_for(rev_id)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    mutate(record)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable):
+        await log.list_open()
+
+
+async def test_subject_with_an_extra_scope_field_fails_closed(tmp_path):
+    # 多出的 scope 会被原样转发给 /scoped_forget，换掉删除作用域
+    await _damaged_log(tmp_path, lambda r: r["subjects"][0].__setitem__("scope", "other"))
+
+
+async def test_unrelated_extra_pair_id_fails_closed(tmp_path):
+    # 多出的无关 pair 会让 wipe_spool 去抹别人的场次
+    await _damaged_log(tmp_path, lambda r: r["pair_ids"].append("q" * 24))
