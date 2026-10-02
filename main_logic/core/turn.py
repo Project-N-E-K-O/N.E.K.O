@@ -1368,10 +1368,21 @@ class TurnMixin:
         # has not reached ``stream_text`` yet.
         self._discard_request_staged_images(request_id)
         self._mark_magic_command_image_drop_request(request_id)
+        if isinstance(self.session, OmniOfflineClient):
+            # The command never reaches stream_text, so a staged proactive
+            # screenshot or plugin ``read`` image would otherwise leak into the
+            # next unrelated message.
+            pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
+            if hasattr(pending_plugin_images, "clear"):
+                pending_plugin_images.clear()
+            clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+            if callable(clear_shot):
+                clear_shot(None)
         # Another external route (not a mini-game) holding this character would
         # make the game's /route/start refuse the slot after its window opened,
-        # so say why instead of opening it -- and before any of the steps below,
-        # which would cut off what that route is still saying. The turn end
+        # so say why instead of opening it -- after dropping this command's
+        # attachments, but before the interrupt steps below, which would cut off
+        # what that route is still saying. The turn end
         # settles this request on the frontend. A mini-game replacing another
         # one is handled by the game route's own supersede logic.
         if is_external_route_locked(self.lanlan_name, exclude_kind="game"):
@@ -1386,16 +1397,6 @@ class TurnMixin:
                 game_type,
             )
             return True
-        if isinstance(self.session, OmniOfflineClient):
-            # The command never reaches stream_text, so a staged proactive
-            # screenshot or plugin ``read`` image would otherwise leak into the
-            # next unrelated message.
-            pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
-            if hasattr(pending_plugin_images, "clear"):
-                pending_plugin_images.clear()
-            clear_shot = getattr(self.session, "set_proactive_screenshot", None)
-            if callable(clear_shot):
-                clear_shot(None)
         # The turn end below seals the frontend's current assistant bubble, so
         # stop an in-flight reply first, the same way a new text message does,
         # without tearing the session down. Only the offline producer is

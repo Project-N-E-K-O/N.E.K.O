@@ -5123,3 +5123,36 @@ async def test_auto_start_is_unchanged_when_no_route_claims_it(input_type, data,
 
     claim.assert_not_awaited()
     mgr.start_session.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refused_mini_game_command_still_drops_staged_images_without_interrupting():
+    """A refused slash command never reaches stream_text: staged images must not leak into the next message."""
+    _register_external_route_kind("visit", active=False, locked=True)
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session_ready = True
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.handle_interruption = AsyncMock()
+    mgr.session.set_proactive_screenshot = Mock()
+    mgr.session._pending_plugin_images = ["plugin-read-image"]
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    # Mutation: returning before the image cleanup turns this red.
+    assert mgr.session._pending_plugin_images == []
+    mgr.session.set_proactive_screenshot.assert_called_once_with(None)
+    mgr.session.handle_interruption.assert_not_awaited()
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr.send_status.assert_awaited_once()
