@@ -671,8 +671,9 @@ class VisitSpool:
             return
         try:
             os.close(fut.result())
-        except OSError:
-            pass
+        except OSError as exc:
+            # fd 已失效也无妨：这里只负责不泄漏；登记照样要撤销
+            logger.debug("visit spool: closing orphan fd failed: %s", exc)
         with _OPEN_SPOOLS_LOCK:
             _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
