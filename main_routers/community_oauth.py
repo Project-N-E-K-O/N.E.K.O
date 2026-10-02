@@ -689,6 +689,8 @@ def _mask_phone(phone: str) -> str:
     phone = ("+" if phone.startswith("+") else "") + "".join(
         ch for ch in phone if ch.isdigit()
     )
+    if not phone.lstrip("+"):
+        raise ValueError(f"phone normalised to empty string; original value contained no digits")
     if len(phone) >= 8:
         return f"{phone[:-8]}****{phone[-4:]}"
     return f"****{phone[-2:]}"

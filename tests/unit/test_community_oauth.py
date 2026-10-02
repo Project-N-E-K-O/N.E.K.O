@@ -242,6 +242,14 @@ def test_mask_phone_hides_the_middle_digits(raw, masked):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad", ["---", "", "   ", "+--"])
+def test_mask_phone_raises_on_no_digits(bad):
+    """Inputs that normalise to zero digits must raise rather than silently store '****'."""
+    with pytest.raises(ValueError, match="empty string"):
+        O._mask_phone(bad)
+
+
+@pytest.mark.unit
 async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
     old_snapshot = {
         "base_url": "https://community.example",
