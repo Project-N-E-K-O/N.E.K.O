@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 13) return;
-  const P = (window.__visitProbe = { version: 13 });
+  if (window.__visitProbe && window.__visitProbe.version === 14) return;
+  const P = (window.__visitProbe = { version: 14 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -80,7 +80,7 @@
   P.hostStyle = function (rect, opts) {
     opts = opts || {};
     // explicit auto: the Pet body is pointer-events:none, so omitting the declaration would inherit none
-    const pe = opts.pointerEvents === false ? 'pointer-events:auto;' : 'pointer-events:none;';
+    const pe = opts.peNone === false ? 'pointer-events:auto;' : 'pointer-events:none;';
     return {
       className: opts.noClass ? '' : 'transparent-overlay',
       css: `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;z-index:${opts.z || 9};border:0;background:transparent;${pe}`,

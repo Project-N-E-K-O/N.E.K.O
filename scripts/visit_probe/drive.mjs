@@ -15,8 +15,16 @@ const opt = (name, def) => { const i = args.indexOf('--' + name); if (i < 0) ret
 const LABEL = opt('label', 'direct');
 const OUT = opt('out', path.join(HERE, 'results'));
 const PORT = Number(opt('cdp', '9222'));
-const SHELL_DIR = opt('shell', 'C:/Users/wehos/Project/lanlan_release/lanlan_frd');
-const MAIN_REPO = opt('repo', 'C:/Users/wehos/Project/lanlan_release/Xiao8');
+const SHELL_DIR = opt('shell', process.env.VISIT_PROBE_SHELL_DIR || '');
+const MAIN_REPO = opt('repo', process.env.VISIT_PROBE_REPO_DIR || '');
+if (!SHELL_DIR || !fs.existsSync(path.join(SHELL_DIR, 'node_modules', 'ws'))) {
+  console.error('--shell <N.E.K.O.-PC checkout with node_modules> (or VISIT_PROBE_SHELL_DIR) is required; ws is loaded from it');
+  process.exit(2);
+}
+if (!MAIN_REPO || !fs.existsSync(path.join(MAIN_REPO, 'pyproject.toml'))) {
+  console.error('--repo <N.E.K.O checkout with .venv> (or VISIT_PROBE_REPO_DIR) is required; osprobe.py runs via uv there');
+  process.exit(2);
+}
 const PHASES = args.length ? args : ['env', 't1', 't2', 't5', 't3', 't4'];
 const require = createRequire(path.join(SHELL_DIR, 'package.json'));
 const WebSocket = require('ws');
@@ -355,7 +363,7 @@ async function shotTriple(geo, name, rectPhys, showFn, hideFn) {
     const fg = path.join(outDir, `${name}-fg.png`); os('shot', fg, ...rectPhys);
     await hideFn(); await sleep(400);
     const bg2 = path.join(outDir, `${name}-bg2.png`); os('shot', bg2, ...rectPhys);
-    last = { bg, fg, bg2, cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
+    last = { bg: path.basename(bg), fg: path.basename(fg), bg2: path.basename(bg2), cmp: os('compare', bg, fg, bg2, rectPhys[2], rectPhys[3]) };
     if (last.cmp.bgStable_pixelsOver8 < last.cmp.pixels * 0.002) break;
     log(name, 'background changed between shots, retrying');
   }
@@ -423,15 +431,15 @@ async function phaseT3(c) {
   // z:11 variants put the frame above the canvas, where the two safeties (pointer-events / class) matter.
   const variants = [
     { name: 'no-iframe', make: null },
-    { name: 'z9 pe-none+class (design as written)', make: { z: 9, pointerEvents: true, noClass: false } },
-    { name: 'z9 neither', make: { z: 9, pointerEvents: false, noClass: true } },
-    { name: 'z11 pe-none+class', make: { z: 11, pointerEvents: true, noClass: false } },
-    { name: 'z11 pe-none only', make: { z: 11, pointerEvents: true, noClass: true } },
-    { name: 'z11 class only (pe auto)', make: { z: 11, pointerEvents: false, noClass: false } },
-    { name: 'z11 neither (negative control)', make: { z: 11, pointerEvents: false, noClass: true } },
+    { name: 'z9 pe-none+class (design as written)', make: { z: 9, peNone: true, noClass: false } },
+    { name: 'z9 neither', make: { z: 9, peNone: false, noClass: true } },
+    { name: 'z11 pe-none+class', make: { z: 11, peNone: true, noClass: false } },
+    { name: 'z11 pe-none only', make: { z: 11, peNone: true, noClass: true } },
+    { name: 'z11 class only (pe auto)', make: { z: 11, peNone: false, noClass: false } },
+    { name: 'z11 neither (negative control)', make: { z: 11, peNone: false, noClass: true } },
     // Opaque visitor pixel: pattern displayed, sampled where alpha ~0.97 (compat mode hit-tests per pixel).
     { name: 'no-iframe @opaque point', make: null, opaque: true },
-    { name: 'z9 design + visible pattern @opaque point', make: { z: 9, pointerEvents: true, noClass: false }, opaque: true, pattern: true },
+    { name: 'z9 design + visible pattern @opaque point', make: { z: 9, peNone: true, noClass: false }, opaque: true, pattern: true },
   ];
   const ox = rect.left + rect.width * 0.97, oy = rect.top + rect.height * 0.56;
   const [opx, opy] = geo.toPhys(ox, oy);
@@ -493,7 +501,7 @@ async function phaseT4(c) {
       const packPng = path.join(outDir, `t4-pack-${kind}.png`);
       fs.writeFileSync(packPng, Buffer.from(dataUrl.split(',')[1], 'base64'));
       await hide();
-      r[`direct_${kind}`] = { shots, composite: os('composite', shots.bg, shots.fg, packPng, rp[2], rp[3]) };
+      r[`direct_${kind}`] = { shots, composite: os('composite', path.join(outDir, shots.bg), path.join(outDir, shots.fg), packPng, rp[2], rp[3]) };
       log('t4 direct', kind, JSON.stringify(r[`direct_${kind}`].composite));
     }
     // through the codec: pack -> captureStream -> loopback RTCPeerConnection -> hidden <video> -> rVFC -> WebGL unpack
@@ -504,7 +512,7 @@ async function phaseT4(c) {
     await showV();
     const stats = await c.eval(`return await window.__visitProbe.fp('host').rtcStats();`);
     await hide();
-    r.video_2d = { shots: shotsV, composite: os('composite', shotsV.bg, shotsV.fg, path.join(outDir, 't4-pack-2d.png'), rp[2], rp[3]), rtc: stats };
+    r.video_2d = { shots: shotsV, composite: os('composite', path.join(outDir, shotsV.bg), path.join(outDir, shotsV.fg), path.join(outDir, 't4-pack-2d.png'), rp[2], rp[3]), rtc: stats };
     log('t4 video', JSON.stringify(r.video_2d.composite), JSON.stringify(stats && stats.stat));
     // Live model through the full chain, for a visual record only
     const showL = () => c.eval(`await window.__visitProbe.makeFrame('host', 'host', window.__visitProbe.hostStyle(${rectJs}));

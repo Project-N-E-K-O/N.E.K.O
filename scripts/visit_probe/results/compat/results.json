@@ -1128,9 +1128,9 @@
         863
       ],
       "emptyFrameShots": {
-        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-bg.png",
-        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-fg.png",
-        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-empty-bg2.png",
+        "bg": "t3-empty-bg.png",
+        "fg": "t3-empty-fg.png",
+        "bg2": "t3-empty-bg2.png",
         "cmp": {
           "region": [
             40,
@@ -1157,9 +1157,9 @@
         }
       },
       "idleTransportShots": {
-        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-bg.png",
-        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-fg.png",
-        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t3-idle-canvas-bg2.png",
+        "bg": "t3-idle-canvas-bg.png",
+        "fg": "t3-idle-canvas-fg.png",
+        "bg2": "t3-idle-canvas-bg2.png",
         "cmp": {
           "region": [
             40,
@@ -1456,9 +1456,9 @@
       ],
       "direct_2d": {
         "shots": {
-          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-bg.png",
-          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-fg.png",
-          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-direct-bg2.png",
+          "bg": "t4-pattern-2d-direct-bg.png",
+          "fg": "t4-pattern-2d-direct-fg.png",
+          "bg2": "t4-pattern-2d-direct-bg2.png",
           "cmp": {
             "region": [
               40,
@@ -1502,9 +1502,9 @@
       },
       "direct_gl": {
         "shots": {
-          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-bg.png",
-          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-fg.png",
-          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-gl-direct-bg2.png",
+          "bg": "t4-pattern-gl-direct-bg.png",
+          "fg": "t4-pattern-gl-direct-fg.png",
+          "bg2": "t4-pattern-gl-direct-bg2.png",
           "cmp": {
             "region": [
               40,
@@ -1548,9 +1548,9 @@
       },
       "video_2d": {
         "shots": {
-          "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-bg.png",
-          "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-fg.png",
-          "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-pattern-2d-video-bg2.png",
+          "bg": "t4-pattern-2d-video-bg.png",
+          "fg": "t4-pattern-2d-video-fg.png",
+          "bg2": "t4-pattern-2d-video-bg2.png",
           "cmp": {
             "region": [
               40,
@@ -1636,9 +1636,9 @@
         }
       },
       "live_video": {
-        "bg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-bg.png",
-        "fg": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-fg.png",
-        "bg2": "C:\\Users\\wehos\\AppData\\Local\\Temp\\claude\\C--Users-wehos-Project-lanlan-release-Xiao8--claude-worktrees-blissful-murdock-b90598\\8bab2d34-e745-409c-9e1d-bf942f566d26\\scratchpad\\results\\compat\\t4-live2d-video-bg2.png",
+        "bg": "t4-live2d-video-bg.png",
+        "fg": "t4-live2d-video-fg.png",
+        "bg2": "t4-live2d-video-bg2.png",
         "cmp": {
           "region": [
             40,
