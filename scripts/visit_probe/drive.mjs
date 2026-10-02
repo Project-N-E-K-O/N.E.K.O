@@ -206,6 +206,9 @@ async function phaseT1(c, targets) {
     if (!r.probe || !r.probe.rtcNative) reasons.push('iframe RTCPeerConnection is not native');
     if (!r.iframeConnect || !r.iframeConnect.ok) reasons.push('iframe WebSocket connect failed');
     if (r.afterIframe.chatConnectingCount !== 0) reasons.push(`iframe connect reached Chat CONNECTING (${r.afterIframe.chatConnectingCount})`);
+    // the app's own connections must still be OPEN (1) after the iframe connect, not just "no CONNECTING seen"
+    if (r.afterIframe.chatSocketState !== 1) reasons.push(`Chat socket not OPEN after iframe connect (readyState ${r.afterIframe.chatSocketState})`);
+    if (r.afterIframe.petSocketState !== 1) reasons.push(`Pet socket not OPEN after iframe connect (readyState ${r.afterIframe.petSocketState})`);
     if (!r.parentControl || !r.parentControl.ok) reasons.push('parent positive control did not connect');
     if (r.afterParentControl.chatConnectingCount !== 1) reasons.push(`positive control CONNECTING count ${r.afterParentControl.chatConnectingCount} != 1 (observer not proven)`);
     r.verdict = { pass: reasons.length === 0, reasons };
