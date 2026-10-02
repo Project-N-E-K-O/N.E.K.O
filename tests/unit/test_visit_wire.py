@@ -856,3 +856,19 @@ def test_inbound_delta_is_measured_in_its_escaped_wire_form():
         vw.decode_msg(compact, cmd=2)
     ok = _delta_msg("好" * 200, i=1)
     assert vw.decode_msg(json.dumps(ok, ensure_ascii=False), cmd=2)["t"] == "line_delta"
+
+
+def test_newer_line_piece_overtaking_a_delayed_text_is_not_overlap():
+    """The previous line's reliable ``text`` may still wait behind a ``seq`` gap
+    when the next line's first lossy piece arrives: a larger ``lp`` retires the
+    open line instead of counting an anomaly; an equal ``lp`` still does."""
+    asm = vw.LineDeltaAssembler()
+    assert asm.feed(_delta_msg("旧行", ln="g:1", lp=3))
+    assert asm.feed(_delta_msg("新行", ln="g:2", lp=5))
+    assert asm.anomalies == 0
+    assert asm.render("g:1") == "旧行"
+    assert asm.close(_text_msg("旧行全文", ln="g:1")) == "旧行全文"
+    assert asm.feed(_delta_msg("续", i=1, ln="g:2", lp=5))
+    assert asm.render("g:2") == "新行续"
+    assert not asm.feed(_delta_msg("同 lp", ln="g:3", lp=5))
+    assert asm.anomalies == 1

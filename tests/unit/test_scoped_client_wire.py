@@ -264,7 +264,7 @@ async def test_write_retries_502_on_5_15_45_then_gives_up(method: str):
     client, http = _client(recorder, sleep)
     async with http:
         ok = await getattr(client, method)("Lanlan", **_WRITE_CALLS[method])
-    assert ok is False
+    assert bool(ok) is False   # batch 返回 ScopedBatchResult，其余返回 bool
     assert len(recorder.requests) == 4
     assert sleep.delays == [5.0, 15.0, 45.0]
     bodies = {request.content for request in recorder.requests}
@@ -287,7 +287,7 @@ async def test_write_recovers_after_transient_502(method: str):
     client, http = _client(recorder, sleep)
     async with http:
         ok = await getattr(client, method)("Lanlan", **_WRITE_CALLS[method])
-    assert ok is True
+    assert bool(ok) is True
     assert len(recorder.requests) == 3
     assert sleep.delays == [5.0, 15.0]
 
@@ -422,9 +422,13 @@ async def test_batch_is_false_unless_every_segment_is_ok():
     segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
     client, http = _client(_Recorder(responder))
     async with http:
-        assert await client.post_history_batch(
+        result = await client.post_history_batch(
             "Lanlan", segments=[segment, dict(segment, speaker_label="B")],
-        ) is False
+        )
+    assert not result
+    # 已成功的段要报出来：服务端已提交它们，调用方只重试失败的位置
+    assert result.segments_ok == (True, False)
+    assert result.failed_positions == (1,)
 
 
 @pytest.mark.asyncio

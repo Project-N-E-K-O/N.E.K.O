@@ -328,7 +328,7 @@ class VisitRoom:
         self.own_lp = 0
         self.max_lp_seen = 0
         self._peer_max_new_lp = -1
-        self._seen_lns: set[str] = set()
+        self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp）
 
         # 发言状态
         self.local_speaking: Optional[LineRef] = None
@@ -412,7 +412,10 @@ class VisitRoom:
         * ``'lp_regress'``: more than ``VISIT_LP_REGRESS_MAX`` below the highest
           value seen;
         * ``'lp_not_monotonic'``: below an ``lp`` the peer already used for an
-          earlier new line / control event.
+          earlier new line / control event;
+        * ``'lp_changed'``: an already observed ``ln`` carries a different
+          ``lp`` than its first piece (one line keeps one ``lp``; a changed
+          value would move the line in ordering, staleness and history).
 
         The last two checks only apply to new lines and new control events:
         they are skipped when ``ln`` was already observed or when the caller
@@ -423,6 +426,8 @@ class VisitRoom:
         if not self._lp_in_range(lp):
             return self._count_anomaly("lp_out_of_range")
         known_line = ln is not None and ln in self._seen_lns
+        if known_line and self._seen_lns[ln] != lp:
+            return self._count_anomaly("lp_changed")
         if not known_line and not is_retransmit:
             if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
                 return self._count_anomaly("lp_regress")
@@ -430,8 +435,8 @@ class VisitRoom:
                 return self._count_anomaly("lp_not_monotonic")
             self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
         self.max_lp_seen = max(self.max_lp_seen, lp)
-        if ln is not None:
-            self._seen_lns.add(ln)
+        if ln is not None and not known_line:
+            self._seen_lns[ln] = lp
         return None
 
     # ------------------------------------------------------------------

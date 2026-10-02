@@ -842,3 +842,14 @@ def test_whole_line_mode_older_human_line_keeps_the_newer_reply():
     eff_human = peer.done(human, 3.0, speaker="human")
     assert not eff_human.cancel_pending_reply
     assert room.pending_reply == eff_cat.reply
+
+
+def test_a_line_keeps_the_lp_of_its_first_piece():
+    # 同一 ln 后续片 / text 换了 lp → 计异常并丢弃；同值重传照常
+    room = make_room("host")
+    assert room.observe_lp(10, ln="g:1") is None
+    assert room.observe_lp(10, ln="g:1") is None
+    assert room.observe_lp(10, ln="g:1", is_retransmit=True) is None
+    assert room.observe_lp(12, ln="g:1") == "lp_changed"
+    assert room.observe_lp(9, ln="g:1", is_retransmit=True) == "lp_changed"
+    assert room.anomalies_total == 2

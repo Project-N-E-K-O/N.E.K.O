@@ -75,6 +75,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from config.visit_settings import (
     NEKO_VISIT_DEV_KEYFILE,
+    VISIT_CREDENTIAL_TTL_S,
     VISIT_DEV_KID,
     VISIT_HOST_CREDENTIAL_TTL_S,
     VISIT_PUBKEYS_CACHE_S,
@@ -605,6 +606,9 @@ def _claims_from_dict(raw: Mapping[str, Any]) -> TicketClaims:
     return TicketClaims(**values)
 
 
+_ROLE_TICKET_TTL_S = {"guest": VISIT_CREDENTIAL_TTL_S, "host": VISIT_HOST_CREDENTIAL_TTL_S}
+
+
 def verify_identity_ticket(
     ticket: str,
     *,
@@ -675,6 +679,10 @@ def verify_identity_ticket(
         raise ClaimMismatch("role")
     if claims.exp < claims.iat:
         raise TicketTimeInvalid("exp precedes iat")
+    # 寿命按角色封顶（guest 40 / host 50 min）：签发方即便给出超长 exp，也不能让
+    # 同一张票被反复用到协议承诺之外
+    if claims.exp - claims.iat > _ROLE_TICKET_TTL_S[claims.role]:
+        raise TicketTimeInvalid("ticket lifetime exceeds the role limit")
     if not (claims.iat - tol <= now <= claims.exp + tol):
         raise TicketTimeInvalid()
 

@@ -1521,8 +1521,13 @@ class LineDeltaAssembler:
     of the following is dropped and counted in ``anomalies``: ``i`` not an
     integer in ``0..VISIT_LINE_DELTA_MAX_I`` (checked before indexing), an
     ``i`` already seen for that ``ln``, missing ``ln`` / ``txt``, and a new
-    ``ln`` while another line of the same sender is still open (overlap).
-    Pieces arriving after ``close`` for their ``ln`` are ignored silently.
+    ``ln`` whose ``lp`` is not above the still-open line's (overlap). A new
+    line with a larger ``lp`` retires the open one (its pieces stay
+    renderable until its ``text`` closes it): the old line's reliable
+    ``text`` may simply be waiting behind a ``seq`` gap while the lossy
+    first piece of the next line overtook it (same rule as
+    ``VisitRoom.on_incoming_start``). Pieces arriving after ``close`` for
+    their ``ln`` are ignored silently.
     """
 
     def __init__(self, *, max_i: int = VISIT_LINE_DELTA_MAX_I, gap_mark: str = "…",
@@ -1532,6 +1537,7 @@ class LineDeltaAssembler:
         self._lru = int(closed_lru)
         self._lines: dict[str, dict[int, str]] = {}
         self._open: Optional[str] = None
+        self._open_lp: Optional[int] = None
         self._final: "OrderedDict[str, str]" = OrderedDict()
         self.anomalies = 0
 
@@ -1546,15 +1552,21 @@ class LineDeltaAssembler:
             return False
         if ln in self._final:
             return False
+        lp = msg.get("lp")
         if self._open is not None and ln != self._open:
-            self.anomalies += 1
-            return False
+            if not (_is_int(lp) and self._open_lp is not None and lp > self._open_lp):
+                self.anomalies += 1
+                return False
+            # 新行 lp 更大：旧行只是 text 还在 seq 缺口后排队，退出「打开」但保留其分片
+            self._open = None
         clauses = self._lines.setdefault(ln, {})
         if i in clauses:
             self.anomalies += 1
             return False
         clauses[i] = txt
-        self._open = ln
+        if self._open != ln:
+            self._open = ln
+            self._open_lp = lp if _is_int(lp) else None
         return True
 
     def close(self, msg: Mapping[str, Any]) -> str:
@@ -1564,6 +1576,7 @@ class LineDeltaAssembler:
         self._lines.pop(ln, None)
         if self._open == ln:
             self._open = None
+            self._open_lp = None
         self._final[ln] = txt
         self._final.move_to_end(ln)
         while len(self._final) > self._lru:
@@ -1575,6 +1588,7 @@ class LineDeltaAssembler:
         self._lines.pop(ln, None)
         if self._open == ln:
             self._open = None
+            self._open_lp = None
 
     def render(self, ln: str) -> Optional[str]:
         """Current subtitle text of ``ln`` (final text once closed), or None if unknown."""

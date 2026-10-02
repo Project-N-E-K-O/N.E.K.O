@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -75,6 +76,33 @@ _READ_TIMEOUT_S = 5.0
 _MENTIONS_TIMEOUT_S = 5.0
 _FORGET_TIMEOUT_S = 30.0
 _HISTORY_TIMEOUT_S = 30.0
+
+
+@dataclass(frozen=True)
+class ScopedBatchResult:
+    """Per-segment outcome of a batched ``/scoped_history`` call.
+
+    ``segments_ok[i]`` tells whether request segment ``i`` was extracted
+    (server status ``"ok"``); a transport failure, a non-2xx answer or a
+    malformed response marks every segment False. The server commits the
+    successful segments on its own, so a caller should retry only the
+    failed positions. Truthiness is :attr:`ok` (every segment succeeded).
+    """
+
+    segments_ok: tuple[bool, ...]
+
+    @property
+    def ok(self) -> bool:
+        """True when the batch is non-empty and every segment succeeded."""
+        return bool(self.segments_ok) and all(self.segments_ok)
+
+    @property
+    def failed_positions(self) -> tuple[int, ...]:
+        """Request positions that still need a retry."""
+        return tuple(i for i, done in enumerate(self.segments_ok) if not done)
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
 class ScopedMemoryError(RuntimeError):
@@ -358,7 +386,7 @@ class ScopedMemoryClient:
         segments: list[dict],
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
-    ) -> bool:
+    ) -> ScopedBatchResult:
         """Extract facts for several single-speaker segments in one call.
 
         Each segment dict is ``{"messages": [...], "subject": {...},
@@ -366,9 +394,11 @@ class ScopedMemoryClient:
         ``speaker_activity_events``, ``speaker_channel``, ``speaker_id``,
         ``speaker_is_owner``, ``trust_signal_excluded_fact_identities`` and
         ``display_name`` (each sent only when it carries a value).
-        Returns ``True`` only when every segment came back ``"ok"``: the
-        server reports per segment, and a partially extracted batch is not a
-        finished one.
+        Returns a :class:`ScopedBatchResult` with one flag per segment (truthy
+        only when every segment came back ``"ok"``). The server commits the
+        successful segments and reports them in request order, so callers
+        retry only ``failed_positions`` instead of re-extracting the whole
+        batch.
         """
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
@@ -377,27 +407,27 @@ class ScopedMemoryClient:
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history segments",
         )
+        none_ok = ScopedBatchResult(tuple(False for _ in wire_segments))
         if response is None:
-            return False
+            return none_ok
         try:
             payload = response.json()
         except ValueError:
             logger.warning("scoped_history segments returned invalid JSON")
-            return False
+            return none_ok
         results = payload.get("segments") if isinstance(payload, dict) else None
         if not isinstance(results, list) or len(results) != len(wire_segments):
             logger.warning("scoped_history segments returned a mismatched result list")
-            return False
-        failed = [
-            index for index, result in enumerate(results)
-            if not (isinstance(result, dict) and result.get("status") == "ok")
-        ]
-        if failed:
+            return none_ok
+        outcome = ScopedBatchResult(tuple(
+            isinstance(result, dict) and result.get("status") == "ok" for result in results
+        ))
+        if outcome.failed_positions:
             logger.warning(
-                "scoped_history segments not extracted: positions %s", failed,
+                "scoped_history segments not extracted: positions %s",
+                list(outcome.failed_positions),
             )
-            return False
-        return True
+        return outcome
 
 
 def _put_retry_identity(

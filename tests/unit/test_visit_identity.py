@@ -367,12 +367,13 @@ def test_iat_after_key_not_after_rejected(priv, blocklist):
 def test_key_accepted_until_one_longest_ticket_after_retirement(priv, blocklist):
     na = NOW - 1000
     pk_at = PubkeySet.build(now=NOW, fetched=_fresh(), builtin=_builtin(priv, na=na))
-    c = _claims(iat=na, exp=na + VISIT_HOST_CREDENTIAL_TTL_S)
+    # 最长的票是 host 票（50 min）
+    c = _claims(role="host", iat=na, exp=na + VISIT_HOST_CREDENTIAL_TTL_S)
     ticket = mint_ticket(c, priv)
     last_ok = na + VISIT_HOST_CREDENTIAL_TTL_S + 300
-    _verify(ticket, pubkeys=pk_at, blocklist=blocklist, now=last_ok)
+    _verify(ticket, pubkeys=pk_at, blocklist=blocklist, now=last_ok, expect_role="host")
     with pytest.raises(KeyOutOfWindow):
-        _verify(ticket, pubkeys=pk_at, blocklist=blocklist, now=last_ok + 1)
+        _verify(ticket, pubkeys=pk_at, blocklist=blocklist, now=last_ok + 1, expect_role="host")
 
 
 # ── 公钥集合：过期、合并、开发键 ──
@@ -518,3 +519,14 @@ def test_every_rejection_is_a_ticket_rejected():
         assert cls.code
     assert ClaimMismatch("v").finalize_reason == "peer_identity_rejected"
     assert PeerBlocked().finalize_reason == "peer_blocked"
+
+
+@pytest.mark.parametrize("role,ttl", [("guest", 2400), ("host", 3000)])
+def test_ticket_lifetime_is_capped_by_role(priv, pubkeys, tmp_path, role, ttl):
+    # 签名有效但 exp 远超协议寿命（guest 40 / host 50 min）的票不能一直被认
+    iat = NOW - 60
+    ok = mint_ticket(_claims(role=role, iat=iat, exp=iat + ttl), priv)
+    _verify(ok, pubkeys=pubkeys, blocklist=Blocklist(tmp_path), expect_role=role)
+    too_long = mint_ticket(_claims(role=role, iat=iat, exp=iat + ttl + 1, jti="K" * 22), priv)
+    with pytest.raises(TicketTimeInvalid):
+        _verify(too_long, pubkeys=pubkeys, blocklist=Blocklist(tmp_path), expect_role=role)
