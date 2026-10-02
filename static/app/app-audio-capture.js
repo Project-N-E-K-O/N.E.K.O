@@ -1334,8 +1334,9 @@
 
     // 正式录音开始占用麦克风时，临时 probe 立即让位，避免两路流同时占着麦克风。
     function yieldSettingsMicVolumeProbeToLive() {
-        if (!settingsMicVolumeTest) return;
-        if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
+        // 只让位还在跑的 probe。failed 是终态：重建失败后设置页已经收尾，
+        // 再改成 live 会让录音结束时把麦克风重新打开，而且没有 watchdog 收场。
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
         releaseSettingsMicVolumeProbe();
         settingsMicVolumeTest = { mode: 'live' };
     }
@@ -2947,12 +2948,15 @@
     // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
     // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
     function resumeSettingsMicVolumeProbeAfterLive() {
+        // watchdog 还在才表示设置页这轮试麦还在。会话已经结束就不要再开设备。
+        if (settingsMicVolumeWatchdog === null) return;
         if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
         if (isLiveMicCaptureActiveOrPending()) return;
         reopenSettingsMicVolumeProbe();
     }
 
     function restartSettingsMicVolumeProbe() {
+        if (settingsMicVolumeWatchdog === null) return;
         if (!settingsMicVolumeTest) return;
         if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
         reopenSettingsMicVolumeProbe();
@@ -2969,7 +2973,8 @@
     // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
     // 入口先计时，兜住挂起中的 start；成功后再从头计时，让 20s 从设置页 15s 倒计时开始时算起。
     // 被 stop / 新一轮 start 越过的旧 start 不碰 watchdog。
-    // 失败时带上 error（NotAllowedError 等），设置页据此区分“去授权”和“设备不可用”。
+    // 失败时带上 error（NotAllowedError 等）。桌面端目前失败只回 { ok: false }，
+    // 设置页还不按这个字段区分“去授权”和“设备不可用”；字段先留给日志和后续接线。
     // start 期间被内部 reopen（切换设备）越过不算失败，跟随那次 reopen 的结果；
     // 被 stop 或设置页新一轮 start 越过才是过期。
     async function startSettingsMicVolumeTestFromSettings() {

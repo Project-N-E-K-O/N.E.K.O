@@ -546,6 +546,61 @@ async function deviceSwitchDuringResumeCountsAsSuccessCase() {
   assert(activeWatchdogTimers(timers).length === 1, 'the watchdog stays armed for the running probe');
 }
 
+async function failedReopenDoesNotReviveProbeCase() {
+  // 设置页 start 停在 context.resume() 时切了麦克风，新设备打开失败：
+  // failed 终态不能被正式录音改成 live，会话结束后也不能再开麦克风。
+  const env = loadModule();
+  const timers = env.captureTimeouts();
+  env.S.selectedMicrophoneId = 'mic-A';
+  const Base = env.win.AudioContext;
+  let firstContext = null;
+  let releaseResume;
+  const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+  env.win.AudioContext = class extends Base {
+    constructor(options) {
+      super(options);
+      if (!firstContext) { firstContext = this; this.state = 'suspended'; }
+    }
+    resume() {
+      if (this !== firstContext) return super.resume();
+      return resumeGate.then(() => { this.state = 'running'; });
+    }
+  };
+  const pending = env.win.startSettingsMicVolumeTest();
+  await settle();
+  assert(isLive(env.streams[0]), 'the first probe holds the microphone while resume is parked');
+
+  env.failNextGetUserMedia(mediaError('NotAllowedError'));
+  const switching = env.win.selectMicrophone('mic-B');
+  await settle();
+  releaseResume();
+  const result = await pending;
+  await switching;
+  await settle(10);
+
+  assert(result.ok === false && result.error === 'NotAllowedError',
+         'the settings start follows the failed reopen');
+  assert(env.mod.sampleMicVolumeLevel().failed === true, 'the failed marker stays after the reopen');
+  assert(activeWatchdogTimers(timers).length === 0, 'the failed start disarms the watchdog');
+  assert(!isLive(env.streams[0]), 'the probe that was parked is released');
+
+  const callsAfterFailure = env.getUserMediaCalls.length;
+  await env.win.selectMicrophone('mic-C');
+  await settle(10);
+  assert(env.getUserMediaCalls.length === callsAfterFailure,
+         'a device switch after the session ended must not reopen the microphone');
+
+  await env.mod.startMicCapture();
+  env.mod.stopRecording({ notifyServer: false });
+  await settle(10);
+  assert(env.getUserMediaCalls.length === callsAfterFailure + 1,
+         'real recording opens its own stream and does not rebuild a probe afterwards');
+  assert(env.streams.every((stream) => !isLive(stream)),
+         'no microphone stays open after the failed session');
+  assert(env.mod.sampleMicVolumeLevel().failed === true,
+         'the failed marker survives the real recording');
+}
+
 async function liveDeviceSwitchKeepsProbeOffCase() {
   // 正式录音中切换设备：切换期间 inputAnalyser 被清空，probe 不能趁机抢占设备。
   const env = loadModule();
@@ -598,6 +653,7 @@ async function liveDeviceSwitchKeepsProbeOffCase() {
   await fallbackYieldsToLiveStartWithoutChangingSelectionCase();
   await failureReportsErrorNameCase();
   await deviceSwitchDuringResumeCountsAsSuccessCase();
+  await failedReopenDoesNotReviveProbeCase();
   await liveDeviceSwitchKeepsProbeOffCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
