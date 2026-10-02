@@ -241,6 +241,14 @@ def test_the_first_comment_closes_at_its_sentence_end_before_a_later_message():
     assert [message["content"] for message in view] == ["聊", PARTS[0], "继续"]
 
 
+def test_an_unclosed_angle_link_does_not_hide_a_chain():
+    """An angle-bracketed link target counts only when it is closed right
+    there; otherwise a later ">" on the line would shelter the comments."""
+    text = "[图](<x 屏幕搭话：" + PARTS[0] + "屏幕搭话：" + PARTS[1] + " a>b"
+    content = project_screen_history([_user("聊"), _assistant(text), _user("继续")])[1]["content"]
+    _assert_cut_to_first_comment(content)
+
+
 def test_a_chain_cut_keeps_the_whitespace_around_what_stays():
     messages = [_user("聊"), _assistant("\n\n" + chain("屏幕搭话：")), _user("继续")]
     assert project_screen_history(messages)[1]["content"] == "\n\n" + FIRST
