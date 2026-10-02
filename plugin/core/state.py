@@ -196,6 +196,33 @@ class BusChangeHub:
                 continue
 
 
+def _start_method_inherits_manager_proxies() -> bool:
+    """只有 fork 能把 ``multiprocessing.Manager`` 的代理继承给子进程。
+
+    Windows 一律 spawn（``app/main_server/__init__.py:56`` 的 ``set_start_method("fork")``
+    被 ``sys.platform != "win32"`` 挡着），macOS 自 3.8 起默认也是 spawn。spawn 子进程是
+    全新解释器，**不可能**继承父进程的代理对象——Manager 提供的跨进程共享在这些平台上
+    没有任何消费者，却要付：
+
+    * 一次 ``multiprocessing.Manager()`` 冷启动（实测 ~320ms，占冷启动 10%）
+    * 一个常驻的 manager 子进程（进程树 +1、RSS 增加）
+    * **每次代理读写都是一次到 manager 进程的 socket 往返**——包括
+      ``_get_or_create_response_event`` 造出来的 Event，而它是在
+      ``while True: ev.wait(timeout=0.01)`` 这样的轮询循环里被反复等的
+
+    而且即便在 fork 平台，插件子进程也用不上：``host.py:909`` 在子进程入口
+    ``_plugin_process_runner`` 里**无条件**调 ``state.mark_plugin_child_process()``，
+    于是 ``plugin_response_map`` 走 ``_is_plugin_child_process`` 分支拿普通 dict。
+    这里仍然按平台区分，是为了不改变 POSIX/fork 上的既有行为。
+
+    拿不到 start method 时保守返回 True（继续用 Manager）——宁可慢，不可错。
+    """
+    try:
+        return multiprocessing.get_start_method() == "fork"
+    except (RuntimeError, ValueError):
+        return True
+
+
 class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -238,6 +265,10 @@ class GlobalState:
         self._plugin_response_event_map: Optional[Any] = None
         self._plugin_response_notify_event: Optional[Any] = None
         self._is_plugin_child_process = False
+        # True 表示响应表/事件表是本进程的普通 dict（没有 Manager）。此时
+        # _get_or_create_response_event 必须造 threading.Event 而不是 mgr.Event()，
+        # 否则它会因为拿不到 manager 而返回 None，把"事件唤醒"退化成纯短轮询。
+        self._response_maps_are_local = False
         self._plugin_comm_lock = threading.Lock()
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
@@ -696,14 +727,29 @@ class GlobalState:
     
     @property
     def plugin_response_map(self) -> Any:
-        """插件响应映射（跨进程共享字典）"""
+        """插件响应映射。
+
+        只有 **fork** 平台才需要 Manager 的跨进程共享字典；spawn 平台
+        （Windows，以及 3.8 起的 macOS）用普通 dict。理由见
+        ``_start_method_inherits_manager_proxies``。
+        """
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
-                if self._plugin_response_map is None and self._is_plugin_child_process:
+                if self._plugin_response_map is None and (
+                    self._is_plugin_child_process
+                    or not _start_method_inherits_manager_proxies()
+                ):
                     # Plugin child without inherited proxies (spawn): only the host
                     # writes this map, so a child-local Manager would never be fed.
                     # Replies reach the child over ZMQ instead.
+                    #
+                    # 服务器进程在 spawn 平台上同理：子进程拿不到代理，而这张表的读写方
+                    # 全部在本进程内（set_plugin_response 写、wait_for_plugin_response
+                    # 等），普通 dict 就够。省掉的是一次 Manager 冷启动（实测 ~320ms，
+                    # 占冷启动 10%）、一个常驻子进程，以及**每次代理读写到 manager 进程
+                    # 的 socket 往返**——后者落在 ev.wait(0.01) 那种轮询循环里。
                     self._plugin_response_map = {}
+                    self._response_maps_are_local = True
                     if self._plugin_response_event_map is None:
                         self._plugin_response_event_map = {}
                 if self._plugin_response_map is None:
@@ -756,12 +802,21 @@ class GlobalState:
             return ev
         try:
             mgr = self._plugin_response_map_manager
-            if mgr is None:
+            if mgr is None and not self._response_maps_are_local:
                 _ = self.plugin_response_map
                 mgr = self._plugin_response_map_manager
             if mgr is None:
-                return None
-            ev = mgr.Event()
+                if self._is_plugin_child_process or not self._response_maps_are_local:
+                    # 插件子进程：没人会 set 这个事件（回应走 ZMQ），交给调用方的短轮询
+                    # 后备——这是既有行为，保持不变。
+                    return None
+                # 服务器进程 + 本地表（spawn 平台，没有 Manager）：用 threading.Event。
+                # API 与 mgr.Event() 一致（set / wait / clear），而所有等待都发生在本
+                # 进程的线程池里（调用点注释原文："使用线程事件等待(在线程池中执行)"），
+                # 所以线程事件语义足够；顺带省掉每次 wait/set 到 manager 进程的往返。
+                ev = threading.Event()
+            else:
+                ev = mgr.Event()
             try:
                 event_map = self.plugin_response_event_map
                 try:
