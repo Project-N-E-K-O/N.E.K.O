@@ -446,8 +446,9 @@ class PeerRoster:
             peer = peers[peer_uid]
             if not isinstance(peer, dict):
                 raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
+            # upsert 建 peer 时总带 by_char：已存在的 peer 缺它只能是损坏，不能当「已删除」
             if "by_char" not in peer:
-                return False, False
+                raise RosterCorruptError(f"{self.path.name}: peer entry has no by_char")
             by_char = peer["by_char"]
             if not isinstance(by_char, dict):
                 raise RosterCorruptError(f"{self.path.name}: by_char is not an object")

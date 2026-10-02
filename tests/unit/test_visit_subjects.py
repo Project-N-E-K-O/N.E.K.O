@@ -420,6 +420,7 @@ async def test_strict_reads_reject_damaged_pair_or_char_ids(tmp_path, damage):
     lambda d: d["accounts"]["own_a"]["peers"].__setitem__("peer_x", []),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"].__setitem__("by_char", []),
     lambda d: d["accounts"]["own_a"].__setitem__("peers", "x"),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"].pop("by_char"),
 ])
 async def test_remove_char_fails_closed_on_a_damaged_target(tmp_path, damage):
     import json as _json
