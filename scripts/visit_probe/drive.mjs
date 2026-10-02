@@ -281,6 +281,20 @@ async function phaseT2(c) {
       log('t2 fps', m.name, JSON.stringify(w));
       save();
     }
+    // Cold start: captures in the first 1000 ms after installing the hook, with no warm-up.
+    r.coldStart = [];
+    for (const m of [{ kind: 'timer', fps: 30 }, { kind: 'raf', fps: 0 }, { kind: 'timer', fps: 75 }, { kind: 'timer', fps: 144 }]) {
+      await c.eval(`window.__visitProbe.unhook(); return window.__visitProbe.setMode(${JSON.stringify(m)});`);
+      await sleep(1500);
+      await c.eval(`window.__visitProbe.hook('guest'); return true;`);
+      await sleep(2500);
+      const st = await c.eval(`return Object.assign({}, window.__visitProbe.stat);`);
+      const first = st.captureTimes.filter((t) => t < 1000).length;
+      const second = st.captureTimes.filter((t) => t >= 1000 && t < 2000).length;
+      r.coldStart.push({ mode: m, firstSecondCaptures: first, secondSecondCaptures: second, postrender: st.postrender });
+      log('t2 cold start', JSON.stringify(m), 'first 1s', first, 'second 1s', second);
+    }
+    await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.hook('guest'); return true;`);
     // H.264 once (TRTC primary codec) at the timer-60 source.
     await c.eval(`window.__visitProbe.unhook(); return await window.__visitProbe.fp('guest').startLoopback({ codec: 'h264', maxBitrate: 560000 });`);
     await c.eval(`window.__visitProbe.hook('guest'); return window.__visitProbe.setMode({ kind: 'timer', fps: 60 });`);
@@ -405,22 +419,35 @@ async function phaseT3(c) {
     { name: 'z11 pe-none only', make: { z: 11, pointerEvents: true, noClass: true } },
     { name: 'z11 class only (pe auto)', make: { z: 11, pointerEvents: false, noClass: false } },
     { name: 'z11 neither (negative control)', make: { z: 11, pointerEvents: false, noClass: true } },
+    // Opaque visitor pixel: pattern displayed, sampled where alpha ~0.97 (compat mode hit-tests per pixel).
+    { name: 'no-iframe @opaque point', make: null, opaque: true },
+    { name: 'z9 design + visible pattern @opaque point', make: { z: 9, pointerEvents: true, noClass: false }, opaque: true, pattern: true },
   ];
+  const ox = rect.left + rect.width * 0.97, oy = rect.top + rect.height * 0.56;
+  const [opx, opy] = geo.toPhys(ox, oy);
+  r.opaquePointCss = [ox, oy];
   r.hit = [];
   try {
     r.modelPositiveControl = [];
     for (const v of variants) {
       await hide();
-      if (v.make) await c.eval(`await window.__visitProbe.makeFrame('host', 'empty', window.__visitProbe.hostStyle(${rectJs}, ${JSON.stringify(v.make)})); return true;`);
+      if (v.make && v.pattern) {
+        await c.eval(`await window.__visitProbe.makeFrame('host', 'host', window.__visitProbe.hostStyle(${rectJs}, ${JSON.stringify(v.make)}));
+          const fp = window.__visitProbe.fp('host'); fp.configure({ crop: [320, 448], packer: '2d' }); fp.startDisplay('pack'); fp.startPatternFeed(30, '2d'); return true;`);
+        await sleep(500);
+      } else if (v.make) {
+        await c.eval(`await window.__visitProbe.makeFrame('host', 'empty', window.__visitProbe.hostStyle(${rectJs}, ${JSON.stringify(v.make)})); return true;`);
+      }
+      const [tx, ty, tcx, tcy] = v.opaque ? [opx, opy, ox, oy] : [px, py, cx, cy];
       const samples = [];
       for (let k = 0; k < 3; k++) {
         // come from the model each time so a stale "not click-through" state has to be undone
         const onModel = os('hit', mx, my, 1.0);
         r.modelPositiveControl.push({ clickThrough: onModel.clickThrough, wsExTransparent: onModel.wsExTransparent });
-        const at = os('hit', px, py, 1.2);
+        const at = os('hit', tx, ty, 1.2);
         samples.push({ clickThrough: at.clickThrough, wsExTransparent: at.wsExTransparent });
       }
-      const el = await c.eval(`return window.__visitProbe.elementAt(${cx}, ${cy});`);
+      const el = await c.eval(`return window.__visitProbe.elementAt(${tcx}, ${tcy});`);
       r.hit.push({ variant: v.name, elementFromPoint: el, clickThroughSamples: samples });
       log('t3 hit', v.name, JSON.stringify(el), JSON.stringify(samples));
     }

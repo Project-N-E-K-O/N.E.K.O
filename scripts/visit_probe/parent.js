@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 11) return;
-  const P = (window.__visitProbe = { version: 11 });
+  if (window.__visitProbe && window.__visitProbe.version === 12) return;
+  const P = (window.__visitProbe = { version: 12 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -129,7 +129,7 @@
     const app = lm.pixi_app;
     const r = app.renderer;
     const sink = P.frames[frameName].contentWindow.__nekoVisitFrameSink;
-    const stat = (P.stat = { postrender: 0, guardedRT: 0, guardedStage: 0, captures: 0, asyncCaptures: 0, renderFpsLast: 0, accMax: 0, startedAt: performance.now() });
+    const stat = (P.stat = { postrender: 0, guardedRT: 0, guardedStage: 0, captures: 0, asyncCaptures: 0, renderFpsLast: 0, accMax: 0, startedAt: performance.now(), captureTimes: [] });
     const times = [];
     let acc = 0;
     const fn = function () {
@@ -151,6 +151,7 @@
           setTimeout(() => { stat.asyncCaptures++; sink.onFrame(app.view, rect, performance.now()); }, 0);
         } else {
           stat.captures++;
+          if (stat.captureTimes.length < 400) stat.captureTimes.push(Math.round(now - stat.startedAt));
           sink.onFrame(app.view, P.rectPx, now);
         }
       }
