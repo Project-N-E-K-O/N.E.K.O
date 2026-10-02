@@ -3,6 +3,7 @@
 import asyncio
 from queue import Queue
 from threading import Event
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -58,6 +59,57 @@ async def test_startup_handler_stop_respects_deadline_and_retains_cleanup(startu
         release.set()
         manager._retire_tts_runtime(runtime)
         await asyncio.gather(task, runtime.cleanup_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_handler_does_not_block_successor_tts_start():
+    from main_logic.core.lifecycle import LifecycleMixin
+
+    manager = Manager()
+    release_worker, release_next_worker = Event(), Event()
+    old = install(manager, release_worker)
+    release_worker.set()
+    await asyncio.to_thread(old.thread.join)
+    entered, release_handler = asyncio.Event(), asyncio.Event()
+
+    async def handler():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release_handler.wait()
+
+    old_handler = asyncio.create_task(handler())
+    manager.tts_handler_task = old.handler = old_handler
+    manager._tts_handler_response_queue = old.response_queue
+    manager.use_tts = False
+    manager._check_start_operation = lambda: None
+    manager._current_start_deadline = lambda: asyncio.get_running_loop().time() + 0.13
+    await entered.wait()
+    successor = None
+    try:
+        with pytest.raises(TimeoutError):
+            await LifecycleMixin._start_session_start_tts_if_needed(manager)
+        assert old.retired and not old_handler.done()
+        assert old.handler is old_handler
+        assert old.cleanup_task is not None and not old.cleanup_task.done()
+        manager.use_tts = True
+        manager._start_tts_thread = lambda **kwargs: install(manager, release_next_worker)
+        manager._start_tts_response_handler = MagicMock()
+        await manager.ensure_tts_pipeline_alive(deadline=asyncio.get_running_loop().time() + 0.1)
+        successor = manager._tts_runtime
+        assert successor is not old and not successor.retired
+        manager._start_tts_response_handler.assert_called_once()
+        assert not old_handler.done(), "successor startup must not join retired handler cleanup"
+        release_handler.set()
+        await asyncio.wait_for(old.cleanup_task, 1)
+    finally:
+        release_handler.set()
+        release_worker.set()
+        release_next_worker.set()
+        if successor is not None:
+            manager._retire_tts_runtime(successor)
+        await asyncio.gather(old_handler, *manager._tts_cleanup_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

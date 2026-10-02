@@ -1313,6 +1313,10 @@ class TtsRuntimeMixin:
                     # Fence output and retain physical cleanup after the
                     # optional startup wait has exhausted its own budget.
                     self._retire_tts_runtime(runtime)
+                    if self.tts_handler_task is handler_task:
+                        self.tts_handler_task = None
+                        if getattr(self, "_tts_handler_response_queue", None) is handler_queue:
+                            self._tts_handler_response_queue = None
                 raise TimeoutError("TTS response handler did not stop before handoff")
         if self.tts_handler_task is handler_task:
             self.tts_handler_task = None
