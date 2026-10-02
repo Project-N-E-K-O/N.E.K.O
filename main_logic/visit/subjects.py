@@ -332,9 +332,9 @@ class PeerRoster:
                 atomic_write_json(self.path, data)
             return result
 
-    def _read(self, fn) -> Any:
+    def _read(self, fn, strict: bool = False) -> Any:
         with path_lock(self.path):
-            data = self._load(strict=False)
+            data = self._load(strict=strict)
         return fn(data)
 
     # ── 公开 API ──
@@ -421,14 +421,19 @@ class PeerRoster:
 
         return await asyncio.to_thread(self._mutate, fn)
 
-    async def get_char_entry(self, peer_uid: str, own_char: str) -> dict | None:
-        """Return a deep copy of ``by_char[own_char]`` of one peer, or ``None``."""
+    async def get_char_entry(self, peer_uid: str, own_char: str, *,
+                             strict: bool = False) -> dict | None:
+        """Return a deep copy of ``by_char[own_char]`` of one peer, or ``None``.
+
+        ``strict=True`` raises :class:`RosterCorruptError` on an unreadable
+        roster instead of reading it as empty (forget planning uses it).
+        """
 
         def fn(data: dict):
             entry = self._char_view(data, peer_uid, own_char)
             return copy.deepcopy(entry) if entry is not None else None
 
-        return await asyncio.to_thread(self._read, fn)
+        return await asyncio.to_thread(self._read, fn, strict)
 
     async def get_peer(self, peer_uid: str) -> dict | None:
         """Return a deep copy of one peer entry of this account, or ``None``."""
@@ -465,6 +470,10 @@ class PeerRoster:
         in-flight visit's ``(pair_id, peer_char_id)``, merged in even when it
         has not reached the roster yet. Duplicates are removed and other local
         characters' entries never contribute.
+
+        Reads strictly: an unreadable roster raises :class:`RosterCorruptError`
+        instead of expanding to the person subject alone (an incomplete
+        revocation log would later finish and leave scoped memories behind).
         """
         _require_str(peer_uid, "peer_uid")
 
@@ -478,7 +487,7 @@ class PeerRoster:
             ]
             return pairs, chars
 
-        pairs, chars = await asyncio.to_thread(self._read, fn)
+        pairs, chars = await asyncio.to_thread(self._read, fn, True)
         if current is not None:
             cur_pair, cur_char = current
             if cur_pair and cur_pair not in pairs:

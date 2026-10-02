@@ -250,6 +250,7 @@ class WrapUpState:
     own_goodbye_started: bool = False
     peer_goodbye_started: bool = False
     step_started_at: Optional[float] = None
+    step_awaiting_begin: bool = False
     step_stopped: bool = False
     step_expired: bool = False
     done_sent: bool = False
@@ -532,7 +533,9 @@ class VisitRoom:
         self._cancel_pending(eff)
         self._yield_once = False
         if self.side == "host" and not w.peer_goodbye_started:
-            w.step_started_at = now
+            # 15 s 步进表从 begin 真正发出时才开始（on_wrap_up_sent）：outbox
+            # 暂停 / 拥塞时 begin 可能晚发，提前计时会让东家抢在客人之前送客
+            w.step_awaiting_begin = True
 
     def _start_wrap_up_locally(self, eff: RoomEffects, now: float, reason: str) -> None:
         """This side detected a wrap-up condition: host begins, guest proposes."""
@@ -958,7 +961,9 @@ class VisitRoom:
         if goodbye:
             w = self._wrap
             if self._phase == "active":
-                self._enter_wrap_up(eff, now, initiated_by=self.side, reason=w.reason or "")
+                # 本侧未经 recall / time_up / 对端收尾就先开口告别：同样要合法 reason
+                self._enter_wrap_up(eff, now, initiated_by=self.side,
+                                    reason=w.reason or _GOODBYE_ONLY_REASON)
             w.own_goodbye_requested = True
             w.own_goodbye_started = True
             self._goodbye_line_id = ref.line_id
@@ -1005,6 +1010,19 @@ class VisitRoom:
             return eff
         self._check_wrap_conditions(eff, now)
         return eff
+
+    def on_wrap_up_sent(self, phase: WrapUpPhase, now: float) -> None:
+        """Runtime: one of this side's ``wrap_up`` frames was first transmitted.
+
+        ``begin`` starts the host's 15 s step timer (waiting for the guest's
+        goodbye to start); it does not start before the guest can have
+        received the instruction. Other phases are ignored.
+        """
+        w = self._wrap
+        if (phase == "begin" and self.side == "host" and w.step_awaiting_begin
+                and w.step_started_at is None and not w.peer_goodbye_started):
+            w.step_awaiting_begin = False
+            w.step_started_at = now
 
     def on_local_recall(self, now: float) -> RoomEffects:
         """The recall button was pressed (guest: call her back; host: see the guest off).

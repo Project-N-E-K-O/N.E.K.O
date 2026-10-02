@@ -363,6 +363,7 @@ def test_13_step_and_hard_cap_timeouts():
     # host: guest goodbye never starts within 15 s -> host sees the guest off itself
     host = make_room("host")
     host.on_local_recall(0.0)
+    host.on_wrap_up_sent("begin", 0.0)
     assert not host.on_tick(14.9).say_goodbye
     eff = host.on_tick(15.0)
     assert eff.say_goodbye and eff.finalize_reason is None
@@ -492,6 +493,7 @@ def test_speaking_dispatch_stops_the_guest_step_timer():
 def test_speaking_without_ln_is_an_anomaly_and_does_not_stop_the_timer():
     room = make_room("host")
     room.on_local_recall(0.0)
+    room.on_wrap_up_sent("begin", 0.0)
     eff = room.on_incoming_wrap_up("speaking", "recall", 9, 10.0)
     assert eff.violation is not None
     assert room.anomalies_total == 1
@@ -915,3 +917,26 @@ def test_unclosed_peer_lines_are_bounded():
     for n in range(400):
         peer.start(peer.new_ref(), float(n))
     assert len(room._peer_meta) <= VISIT_REORDER_BUFFER_MAX + 1
+
+
+def test_host_step_timer_starts_when_begin_is_sent_not_when_created():
+    # outbox 暂停 / 拥塞时 begin 晚发：提前计时会让东家抢在客人之前送客
+    host = make_room("host")
+    host.on_local_recall(0.0)
+    assert host.wrap_up.step_started_at is None
+    assert not host.on_tick(20.0).say_goodbye
+    host.on_wrap_up_sent("begin", 12.0)
+    assert not host.on_tick(26.9).say_goodbye
+    assert host.on_tick(27.0).say_goodbye
+
+
+def test_local_goodbye_from_active_uses_a_valid_reason():
+    from utils.visit_wire import encode_msg
+
+    room = make_room("guest")
+    own = Own(room)
+    eff = room.on_local_line_started(own.new_ref(), None, True, 0.0)
+    wu = eff.wrap_up
+    assert wu.action == "speaking" and wu.reason in {"quiet", "budget", "recall", "time_up"}
+    encode_msg({"t": "wrap_up", "seq": 1, "lp": 2, "ph": "speaking", "ln": wu.ln,
+                "reason": wu.reason, "initiated_by": "guest"})

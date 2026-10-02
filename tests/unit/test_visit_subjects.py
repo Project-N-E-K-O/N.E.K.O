@@ -343,3 +343,15 @@ async def test_corrupt_roster_refuses_writes_but_reads_degrade(tmp_path):
     with pytest.raises(RosterCorruptError):
         await _upsert(roster, PEER_X, "A")
     assert path.read_text(encoding="utf-8") == "{not json"
+
+
+async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    roster.path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.expand_subjects("peer_x", "A")
+    with pytest.raises(RosterCorruptError):
+        await roster.get_char_entry("peer_x", "A", strict=True)
+    assert await roster.get_char_entry("peer_x", "A") is None   # 展示用途仍宽松

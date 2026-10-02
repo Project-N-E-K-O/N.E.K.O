@@ -145,6 +145,14 @@ class SpoolLineTooLarge(ValueError):
     """Raised when one encoded spool line exceeds ``VISIT_SPOOL_LINE_MAX_BYTES``."""
 
 
+class SpoolStateUnreadable(RuntimeError):
+    """One or more ``state.json`` files exist but cannot be read (forget paths fail closed)."""
+
+    def __init__(self, visit_ids: list[str]) -> None:
+        self.visit_ids = list(visit_ids)
+        super().__init__(f"unreadable visit state: {', '.join(self.visit_ids)}")
+
+
 class SpoolBusy(RuntimeError):
     """Raised when a header rewrite targets a spool that is still open for appends."""
 
@@ -968,8 +976,17 @@ class VisitSpool:
     ) -> list[str]:
         spool_dir = _spool_dir(config_dir)
         found = []
+        unreadable: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
-            state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
+            # 清除路径要严格读：已结清的场次常常只剩 state.json，读不出来就跳过
+            # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
+            try:
+                state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
+            except FileNotFoundError:
+                state = None
+            except (OSError, ValueError):
+                unreadable.append(visit_id)
+                continue
             header = _read_header(visit_path(spool_dir, visit_id, SPOOL_SUFFIX))
             for doc in (state, header):
                 if (
@@ -979,6 +996,8 @@ class VisitSpool:
                 ):
                     found.append(visit_id)
                     break
+        if unreadable:
+            raise SpoolStateUnreadable(unreadable)
         return found
 
     @classmethod
@@ -989,7 +1008,9 @@ class VisitSpool:
 
         Matching on ``pair_id`` (which embeds both community accounts) rather
         than ``peer_uid`` keeps another local account's visits with the same
-        person untouched.
+        person untouched. Raises :class:`SpoolStateUnreadable` when a
+        ``state.json`` exists but cannot be read (the forget step then stays
+        pending instead of silently missing that visit).
         """
         return await asyncio.to_thread(
             cls._find_visits_sync, Path(config_dir), own_char_uid, frozenset(pair_ids)

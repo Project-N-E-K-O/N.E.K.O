@@ -537,7 +537,8 @@ def _speaking(seq: int, ln: str = "g:4") -> dict:
 
 def test_wrap_up_speaking_is_not_blocked_by_a_seq_gap():
     room = VisitRoom("host")
-    room.on_time_up(0.0)                          # host 已发 begin，15 s 步进计时开始
+    room.on_time_up(0.0)
+    room.on_wrap_up_sent("begin", 0.0)            # host 的 begin 已发出，15 s 步进计时开始
     assert room.wrap_up.step_started_at == 0.0
     rx = Receiver(peer_prefix="g:", room=room)
     rx.feed(text(1, "g one", side="g", seq=1), 0.0, cmd=2)

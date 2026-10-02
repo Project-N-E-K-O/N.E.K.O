@@ -165,7 +165,7 @@ async def plan_forget_person(
     with the same person stay untouched.
     """
     subjects = await roster.expand_subjects(peer_uid, own_char, current)
-    entry = await roster.get_char_entry(peer_uid, own_char) or {}
+    entry = await roster.get_char_entry(peer_uid, own_char, strict=True) or {}
     pair_ids = [p for p in entry.get("pairs") or [] if isinstance(p, str) and p]
     if current is not None and current[0] and current[0] not in pair_ids:
         pair_ids.append(current[0])
@@ -193,7 +193,18 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     for name in ("pair_ids", "subjects", "steps", "done_steps"):
         if not isinstance(record.get(name), list):
             raise ValueError(f"revocation log {name} must be a list")
+    # 步骤计划必须能从 subjects 原样推出：损坏成 steps:[] 的日志若被放行，重放会
+    # 什么都不清就把日志删掉，清除请求就此丢失
+    subjects = [_clean_subject(s) if isinstance(s, Mapping) else _bad_subject() for s in record["subjects"]]
+    if record["steps"] != build_steps(subjects):
+        raise ValueError("revocation log steps do not match its subjects")
+    if not all(isinstance(step, str) and step in record["steps"] for step in record["done_steps"]):
+        raise ValueError("revocation log done_steps are not a subset of its steps")
     return record
+
+
+def _bad_subject() -> dict:
+    raise ValueError("revocation log subject must be an object")
 
 
 class RevocationLog:

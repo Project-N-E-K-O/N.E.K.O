@@ -349,3 +349,57 @@ async def test_unreadable_log_fails_closed_instead_of_disappearing(tmp_path):
     assert ei.value.ids == [broken]
     with pytest.raises(RevocationLogUnreadable):
         await log.list_open()
+
+
+@pytest.mark.parametrize("corrupt", [
+    {"steps": []},
+    {"done_steps": ["forget:participant:neko_visit:nobody"]},
+    {"subjects": []},
+])
+async def test_parseable_but_inconsistent_log_fails_closed(tmp_path, corrupt):
+    # steps:[] 之类的日志若被放行，重放会什么都不清就删掉日志
+    from main_logic.visit.forget import RevocationLogUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    path = log.path_for(rev_id)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.update(corrupt)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable):
+        await log.list_open()
+    with pytest.raises(ValueError):
+        await log.load(rev_id)
+
+
+async def test_forget_planning_refuses_an_unreadable_roster(tmp_path):
+    # 名册读不出来时不能当空表规划：那会只清人级主体、漏掉全部 pair 与对方猫娘
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    roster.path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
+
+
+async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path):
+    # 已结清的场次常只剩 state.json：它读不出来时 wipe_spool 不能记完成
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair_a, cid = await seed(roster, PEER_X, "A", TAG_X)
+    sp = VisitSpool(tmp_path, "visit00000000000000009")
+    await sp.write_state(new_state(own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                   pair_id=pair_a, peer_uid=PEER_X, peer_char_id=cid,
+                                   memory_enabled=True))
+    sp.state_path.write_text("{broken", encoding="utf-8")
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    with pytest.raises(SpoolStateUnreadable):
+        await run_revocation(log, rev_id, roster=roster,
+                             forget_subject=FakeMemoryServer().forget)
+    record = await log.load(rev_id)
+    assert record is not None and "wipe_spool" not in record["done_steps"]
