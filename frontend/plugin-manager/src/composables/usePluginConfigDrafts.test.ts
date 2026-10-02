@@ -11,7 +11,7 @@ import {
   upsertPluginProfileConfig,
 } from '@/api/config'
 import { usePluginConfigDrafts } from './usePluginConfigDrafts'
-import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
+import { hasPendingReload, pendingReloadRevision, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/api/config', () => ({
   getPluginEffectiveBaseConfig: vi.fn(),
@@ -503,6 +503,35 @@ describe('config draft lifecycle', () => {
 })
 
 describe('server application state', () => {
+  it('fences both pre-save lifecycle responses as soon as an active save succeeds', async () => {
+    vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
+      plugin_id: 'alpha', config_state: 'matched',
+    })
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(ref('alpha')))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    // Both lifecycle queries were dispatched before the profile write.
+    const firstOldRevision = pendingReloadRevision('alpha')
+    const secondOldRevision = pendingReloadRevision('alpha')
+    const response = deferred<{ plugin_id: string; config_state: 'pending' }>()
+    vi.mocked(getPluginConfigApplicationState).mockReturnValueOnce(response.promise)
+    const calls = vi.mocked(getPluginConfigApplicationState).mock.calls.length
+
+    const saving = drafts.saveProfile()
+    await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(setPendingReload('alpha', false, firstOldRevision)).toBe(false)
+    response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
+    await saving
+    expect(setPendingReload('alpha', false, secondOldRevision)).toBe(false)
+
+    expect(drafts.applicationStateKnown.value).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(drafts.pendingApplication.value).toBe(true)
+    expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1)
+  })
+
   it.each(['pending', 'matched'] as const)(
     're-queries a rejected save response and respects the fresh %s state', async (freshState) => {
     vi.mocked(getPluginConfigApplicationState).mockResolvedValue({
@@ -518,7 +547,7 @@ describe('server application state', () => {
 
     const saving = drafts.saveProfile()
     await vi.waitFor(() => expect(getPluginConfigApplicationState).toHaveBeenCalledTimes(calls + 1))
-    // A pre-save lifecycle response clears the hint after loadAll captured R.
+    // A newer lifecycle response clears the hint after loadAll captured R.
     setPendingReload('alpha', false)
     response.resolve({ plugin_id: 'alpha', config_state: 'pending' })
     vi.mocked(getPluginConfigApplicationState).mockResolvedValue({

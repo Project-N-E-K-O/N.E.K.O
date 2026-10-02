@@ -304,6 +304,13 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Storing the virtual default creates the first profile; either way the server
       // activates it when none was active. Reflect that before the fallible refresh.
       recordStoredProfile(name)
+      // Claim this persisted change before starting any fallible reads. Every
+      // lifecycle request dispatched before this save then loses its revision
+      // fence; a genuinely newer reload can still clear the hint. Legacy
+      // servers keep their current flag until the refreshed active profile is
+      // known, but must still advance the revision to fence older responses.
+      if (wasActive || mayBecomeActive || name === active.value)
+        setPendingApplication(applicationStateKnown.value || hasPendingReload(id), id)
       let fallbackRevision: number | undefined
       await loadAll()
       if (valid(id, epoch) && !applicationStateKnown.value && applicationState.value) {
