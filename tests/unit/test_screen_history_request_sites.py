@@ -195,4 +195,6 @@ async def test_persisted_ephemeral_replies_are_marked_as_independent_deliveries(
     delivered = client._conversation_history[-2:]
     assert [m.additional_kwargs for m in delivered] == [{"dialog_source": "proactive"}] * 2
     messages = client._conversation_history + [HumanMessage(content="继续")]
-    assert project_screen_history(messages) is messages
+    # Never cut as one chain: each delivery keeps its comment, unlabelled.
+    projected = [m.content for m in project_screen_history(messages)]
+    assert projected[-3:] == [_BODY_A, _COMMENT_B[len("屏幕搭话 "):], "继续"]

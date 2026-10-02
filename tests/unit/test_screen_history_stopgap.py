@@ -121,23 +121,70 @@ def test_rewrite_is_idempotent():
     assert project_screen_history(run) is run
 
 
-@pytest.mark.parametrize("text", [
-    PREFIX,
-    PREFIX + "屏幕搭话 " + PARTS[0],
-    "屏幕搭话 A。屏幕搭话 B。",
-    "屏幕搭话 短。屏幕搭话 也短。",
-])
-def test_detector_boundary_passes_through_unchanged(text):
-    """The measured failure boundary: these shapes are silently not covered.
+def test_unlabelled_history_passes_through_unchanged():
+    """Unlabelled history is left byte-for-byte alone."""
+    messages = [{"role": "assistant", "content": PREFIX},
+                {"role": "user", "content": "陪我聊聊。"}]
+    assert project_screen_history(messages) is messages
 
-    Unlabelled history, a single comment, and comments below ``MIN_PROSE`` must
-    come back byte-for-byte.
-    """
+
+@pytest.mark.parametrize("text, expected", [
+    (PREFIX + "屏幕搭话 " + PARTS[0], PREFIX + PARTS[0]),
+    ("屏幕搭话 A。屏幕搭话 B。", "A。B。"),
+    ("屏幕搭话 短。屏幕搭话 也短。", "短。也短。"),
+])
+def test_labels_go_even_without_a_chain(text, expected):
+    """A single comment, or comments below ``MIN_PROSE``, are no chain and are
+    not cut, but their labels are still a sample of the format and go."""
     messages = [{"role": "assistant", "content": text},
                 {"role": "user", "content": "陪我聊聊。"}]
     assert screen_chain_start(text) is None
-    assert project_screen_history(messages) is messages
+    assert project_screen_history(messages)[0]["content"] == expected
     assert messages[0]["content"] == text
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("她说“屏幕搭话：你好呀”然后走了。", "她说“你好呀”然后走了。"),
+    ("```\n屏幕搭话: 代码块里的标签\n```", "```\n代码块里的标签\n```"),
+    ("<think>屏幕搭话：想一想</think>好的。", "<think>想一想</think>好的。"),
+    ("【屏幕搭话】今天天气不错。", "今天天气不错。"),
+    ("[屏幕画面] 今天天气不错。", "今天天气不错。"),
+    ("螢幕搭話：今天天氣不錯。", "今天天氣不錯。"),
+    ("/螢幕畫面/ 今天天氣不錯。", "今天天氣不錯。"),
+])
+def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expected):
+    """Removal is stateless: the lexer's quote and code exemptions guard chain
+    detection, but only the request copy of the model's own reply is touched."""
+    messages = [_assistant(text), _user("继续")]
+    assert project_screen_history(messages)[0]["content"] == expected
+
+
+@pytest.mark.parametrize("text", [
+    "The screenshot comment: it looks fine to me.",
+    "Scroll down to the screen comment section of the page.",
+    "Check the keyboard/screen display first.",
+    "打开设置/屏幕画面选项看看。",
+    "屏幕搭话就是我会定时看看你的屏幕。",
+    "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
+])
+def test_words_and_prose_that_only_contain_a_label_stay(text):
+    messages = [_assistant(text), _user("继续")]
+    assert project_screen_history(messages) is messages
+
+
+def test_a_message_that_was_only_a_label_leaves_the_view():
+    messages = [_user("聊"), _assistant("屏幕搭话："), _assistant("好呀。"), _user("继续")]
+    assert [m["content"] for m in project_screen_history(messages)] == ["聊", "好呀。", "继续"]
+
+
+def test_label_removal_is_idempotent_and_reported():
+    hits = {}
+    once = project_screen_history(
+        [_assistant("屏幕搭话 ：" + PARTS[0]), _user("继续")], hits=hits,
+    )
+    assert once[0]["content"] == PARTS[0]
+    assert hits == {"label": 1}
+    assert project_screen_history(once) is once
 
 
 @pytest.mark.parametrize("label", [
@@ -276,11 +323,12 @@ def _user(text):
 
 
 _BODY_A = _COMMENT_A[len("屏幕搭话 "):]
+_BODY_B = _COMMENT_B[len("屏幕搭话 "):]
 
 
 def _rewritten(messages):
     """Indices of the messages the request view rewrites or leaves out."""
-    return sorted(screen_history_rewrites(messages))
+    return sorted(guard_module._chain_rewrites(messages))
 
 
 def test_chain_spread_over_the_run_answering_a_user_turn_is_cut():
@@ -402,7 +450,7 @@ def test_proactive_source_survives_file_and_sql_history_roundtrip(tmp_path):
         }) for text in (_COMMENT_A, _COMMENT_B)
     ], HumanMessage(content="继续")]
     restored = messages_from_dict(json.loads(json.dumps(messages_to_dict(messages))))
-    assert project_screen_history(restored) is restored
+    assert guard_module._chain_rewrites(restored) == {}
     history = SQLChatMessageHistory(f"sqlite:///{tmp_path / 'source.db'}", "source-test")
     try:
         history.add_messages(messages)
@@ -411,7 +459,7 @@ def test_proactive_source_survives_file_and_sql_history_roundtrip(tmp_path):
             saved = [json.loads(row[0]) for row in rows]
         assert saved[1]["data"]["additional_kwargs"] == {"dialog_source": "proactive"}
         restored = messages_from_dict(saved)
-        assert project_screen_history(restored) is restored
+        assert guard_module._chain_rewrites(restored) == {}
         assert "dialog_source" not in restored[1].to_openai()
     finally:
         history._engine.dispose()
@@ -639,12 +687,12 @@ def test_restored_history_counts_its_last_run_as_the_current_turn():
     so a chain spread over the run at its end is cut there even though no
     user message follows it in the list."""
     messages = [_user("聊"), _assistant(_COMMENT_A), _assistant(_COMMENT_B)]
-    assert project_screen_history(messages) is messages
+    assert _rewritten(messages) == []
     projected = project_screen_history(messages, trailing_turn=True)
     assert [m["content"] for m in projected[1:]] == [_BODY_A]
     # The run still has to follow a user turn.
     lone = [_assistant(_COMMENT_A), _assistant(_COMMENT_B)]
-    assert project_screen_history(lone, trailing_turn=True) is lone
+    assert guard_module._chain_rewrites(lone, trailing_turn=True) == {}
 
 
 def test_hot_swap_cache_catches_a_chain_split_over_entries(monkeypatch):
@@ -687,7 +735,7 @@ def test_a_cache_slice_is_judged_with_what_precedes_it(monkeypatch):
     owner = SimpleNamespace(lanlan_name="YUI", master_name="Alice", user_language="zh")
     earlier = [{"role": "Alice", "text": "陪我聊聊"}, {"role": "YUI", "text": _COMMENT_A}]
     later = [{"role": "YUI", "text": _COMMENT_B}]
-    assert NotifyMixin._convert_cache_to_str(owner, later).splitlines() == [f"YUI | {_COMMENT_B}"]
+    assert NotifyMixin._convert_cache_to_str(owner, later).splitlines() == [f"YUI | {_BODY_B}"]
     assert NotifyMixin._convert_cache_to_str(owner, later, preceding=earlier) == ""
 
 
@@ -728,7 +776,7 @@ async def test_hot_swap_cache_keeps_each_proactive_delivery_apart(monkeypatch):
         {"role": "Lan", "text": _COMMENT_B, "source": "proactive", "speech_id": "s-2"},
     ]
     assert NotifyMixin._convert_cache_to_str(mgr, cache).splitlines() == [
-        "Master | 陪我聊聊", f"Lan | {_COMMENT_A}", f"Lan | {_COMMENT_B}",
+        "Master | 陪我聊聊", f"Lan | {_BODY_A}", f"Lan | {_BODY_B}",
     ]
     # An ordinary reply still starts its own entry after a delivery and
     # merges its own chunks, as before.

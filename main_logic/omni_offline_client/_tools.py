@@ -88,9 +88,11 @@ class _ToolingMixin:
             self._screen_quarantine_signature = signature
             log(
                 "OmniOfflineClient: screen-chain request view rewrote "
-                "%d message(s) with an in-message chain, %d in a cross-message run",
+                "%d message(s) with an in-message chain, %d in a cross-message run, "
+                "%d more for labels alone",
                 hits.get("message", 0),
                 hits.get("run", 0),
+                hits.get("label", 0),
             )
         return projected
 

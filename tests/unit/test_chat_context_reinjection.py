@@ -503,8 +503,10 @@ async def test_final_swap_judges_the_increment_with_what_was_primed(monkeypatch,
         # The second comment is left out either way.
         assert "红色小车" not in content, content
         if split:
-            # comment_a went out at preparation, alone and unjudgeable.
-            assert comment_a in content, content
+            # comment_a went out at preparation, alone and unjudgeable as a
+            # chain, so it stays (without its label).
+            assert comment_a[len("屏幕搭话 "):] in content, content
+            assert "屏幕搭话" not in content, content
         else:
             # Kept as the first comment, without its label.
             assert comment_a not in content, content

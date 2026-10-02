@@ -36,10 +36,15 @@ MIN_PROSE = 16
 SCREEN_GUARD_ENV = "NEKO_SCREEN_HISTORY_GUARD"
 _USER_ROLES = {"user", "human"}
 _ASSISTANT_ROLES = {"assistant", "ai"}
-_LABEL = (
-    r"(?:当前)?屏幕(?:搭话|画面|观察|内容|截图|显示)"
-    r"|(?:current[ \t]{1,8})?screen[ \t]{1,8}(?:comment|observation|content|display|image)"
+# Labels are written by the model, never by the app, so this list only covers
+# the forms seen so far (simplified and traditional Chinese, English). Other
+# variants pass through; the request view does not depend on catching them all.
+_CN_LABEL = (
+    r"(?:当前|當前)?(?:屏幕|螢幕)"
+    r"(?:搭话|搭話|画面|畫面|观察|觀察|内容|內容|截图|截圖|显示|顯示)"
 )
+_EN_LABEL = r"(?:current[ \t]{1,8})?screen[ \t]{1,8}(?:comment|observation|content|display|image)"
+_LABEL = rf"{_CN_LABEL}|{_EN_LABEL}"
 # Match only through the first separator. No unbounded whitespace lookahead.
 # The lexer checks the preceding character; complete and partial matches use
 # the same engine (re and regex disagree about Unicode combining characters).
@@ -51,14 +56,30 @@ _LABEL = (
 _MARKER = regex.compile(
     rf"(?:[/／][ \t]{{0,8}}(?:{_LABEL})[\s:：/／]"
     rf"|(?:{_LABEL})[ \t]{{0,8}}[/／]"
-    r"|屏幕搭话[\s:：]"
+    rf"|[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[】\]]"
+    r"|(?:屏幕|螢幕)(?:搭话|搭話)[\s:：]"
     r"|screen[ \t]{1,8}comment[:：])",
+    regex.IGNORECASE,
+)
+_NOT_AFTER_WORD = r"(?<![A-Za-z0-9_])"
+# Every label in an assistant message, with the separator after it, for the
+# unconditional removal in the request view. The same forms as ``_MARKER`` but
+# stateless: quotes, code and think blocks are no exemption here, because only
+# the request copy of the model's own replies is touched. An English label
+# glued to an ASCII word stays ("screenshot", "keyboard/screen display").
+_LABEL_STRIP = regex.compile(
+    rf"[【\[][ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}[】\]][ \t]*(?:[:：][ \t]*)?"
+    rf"|(?:[/／][ \t]{{0,8}}(?:{_CN_LABEL})|{_NOT_AFTER_WORD}[/／][ \t]{{0,8}}(?:{_EN_LABEL}))"
+    r"(?=[\s:：/／])[ \t]*(?:[/／:：][ \t]*)?"
+    rf"|(?:(?:{_CN_LABEL})|{_NOT_AFTER_WORD}(?:{_EN_LABEL}))[ \t]{{0,8}}[/／][ \t]*"
+    r"|(?:屏幕|螢幕)(?:搭话|搭話)(?=[\s:：])\s*(?:[:：][ \t]*)?"
+    rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
 _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
 _QUOTES = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"', "'": "'"}
 # Every marker form carries one of these; texts without either skip the lexer.
-_LABEL_HINT = regex.compile(r"屏幕|screen", regex.IGNORECASE)
+_LABEL_HINT = regex.compile(r"屏幕|螢幕|screen", regex.IGNORECASE)
 # Always a sentence end.
 _SENTENCE_ENDS = "。！？!?…～"
 # A sentence end unless an ASCII letter or digit follows ("example.com",
@@ -211,8 +232,48 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
                             hits: dict | None = None) -> dict:
     """Map each assistant message the request view rewrites to its new text.
 
-    A value of ``None`` means the message lies wholly past a chain's cut and
-    has nothing left to say. Indices not in the result are untouched.
+    A value of ``None`` means the message has nothing left to say (it lies
+    wholly past a chain's cut, or was only a label). Indices not in the
+    result are untouched.
+
+    Chains are cut first (``_chain_rewrites``). Then every remaining
+    assistant text loses its source labels, chain or not, because a single
+    labelled comment is still a sample of the format (``_strip_labels``).
+
+    ``trailing_turn`` is for restored history: the end of ``messages`` is
+    treated as followed by the next user turn (see ``_assistant_tail_run``).
+    ``hits``, when given, receives the count of rewritten messages per
+    category: ``"message"`` for a chain inside one message, ``"run"`` for one
+    spread over the assistant run, and ``"label"`` for labels removed outside
+    a chain's cut.
+    """
+    rewrites = _chain_rewrites(messages, trailing_turn=trailing_turn, hits=hits)
+    for index, message in enumerate(messages):
+        role, content = _role_and_content(message)
+        original = _text_of(content)
+        if role not in _ASSISTANT_ROLES or original is None:
+            continue
+        current = rewrites.get(index, original)
+        if current is None:
+            continue
+        stripped = _strip_labels(current)
+        if stripped != current:
+            rewrites[index] = stripped.strip() or None
+            if hits is not None:
+                hits["label"] = hits.get("label", 0) + 1
+    return rewrites
+
+
+def _strip_labels(text: str) -> str:
+    """``text`` without any source label (see ``_LABEL_STRIP``)."""
+    if not _LABEL_HINT.search(text):
+        return text
+    return _LABEL_STRIP.sub("", text)
+
+
+def _chain_rewrites(messages, *, trailing_turn: bool = False,
+                    hits: dict | None = None) -> dict:
+    """The chain cuts of ``screen_history_rewrites``, before label removal.
 
     Every assistant message is judged alone first. Then the consecutive
     assistant run immediately before the last user turn is judged as one
@@ -223,12 +284,6 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
     once, at its second comment). Internally marked proactive deliveries
     split the run and are checked individually. Unmarked legacy deliveries
     remain positionally ambiguous.
-
-    ``trailing_turn`` is for restored history: the end of ``messages`` is
-    treated as followed by the next user turn (see ``_assistant_tail_run``).
-    ``hits``, when given, receives the count of rewritten messages per
-    category: ``"message"`` for a chain inside one message and ``"run"`` for
-    one spread over the assistant run.
     """
     rewrites: dict = {}
     originals: dict = {}
@@ -278,8 +333,8 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
     touched; ``messages`` is never mutated, and ``messages`` itself is
     returned when nothing matched.
 
-    Detection needs labelled, multi-item chains. Unlabelled history and
-    comments below ``MIN_PROSE`` are left byte-for-byte alone, silently.
+    Every source label is removed from assistant texts, chain or not.
+    Unlabelled history is left byte-for-byte alone, silently.
     See ``screen_history_rewrites`` for ``trailing_turn`` and ``hits``.
     """
     if guard_enabled is None:
@@ -433,7 +488,7 @@ class _ScreenLexer:
             attached = self.previous.isalnum() or self.previous == "_"
             if not ((char == '"' and self.previous.isdigit()) or (char == "'" and attached)):
                 self.quote = _QUOTES[char]
-        elif char in "/／屏当sScC":
+        elif char in "/／屏螢当當【[sScC":
             # An ASCII word character before a marker blocks it only when the
             # label is English (checked once the marker is complete). A
             # Chinese label counts after any character, so "…喵屏幕搭话 …",

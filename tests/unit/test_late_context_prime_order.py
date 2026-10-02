@@ -71,7 +71,8 @@ async def _run(
         await _drain_task(mgr.message_handler_task)
 
 
-# What a rewrite of COMMENT_B would leave if any of it survived.
+# The prose without its label, as the request view keeps it.
+BODY_A = COMMENT_A[len("屏幕搭话 "):]
 BODY_B = COMMENT_B[len("屏幕搭话 "):]
 
 
@@ -95,11 +96,13 @@ async def test_late_context_does_not_join_across_a_primed_user_turn(monkeypatch,
         incremental_cache=exchange if where == "increment" else [],
     )
     assert mgr.lanlan_name == LAN
-    assert COMMENT_A in content, content
+    assert BODY_A in content, content
     # Prompt order: 陪我聊聊, A, 今天好累, 辛苦啦, B -> the run before the
-    # trailing turn is [辛苦啦, B]: one screen item, no chain.
-    assert COMMENT_B in content, content
-    assert content.index("今天好累") < content.index(COMMENT_B), content
+    # trailing turn is [辛苦啦, B]: one screen item, no chain, so B stays
+    # (without its label).
+    assert BODY_B in content, content
+    assert content.index("今天好累") < content.index(BODY_B), content
+    assert "屏幕搭话" not in content, content
 
 
 @pytest.mark.asyncio
@@ -119,8 +122,8 @@ async def test_late_context_joins_a_chain_that_starts_in_the_cache(monkeypatch, 
         incremental_cache=exchange if where == "increment" else [],
     )
     assert mgr.lanlan_name == LAN
-    # COMMENT_A went out first, alone, and cannot be withdrawn.
-    assert COMMENT_A in content, content
+    # COMMENT_A went out first, alone (unlabelled), and cannot be withdrawn.
+    assert BODY_A in content, content
     assert BODY_B not in content, content
 
 

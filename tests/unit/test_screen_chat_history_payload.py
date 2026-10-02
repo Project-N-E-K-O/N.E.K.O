@@ -148,14 +148,16 @@ async def test_screen_history_is_not_duplicated_or_concatenated_on_chat_request(
             assert image_urls[0] == first_user["content"][0]["image_url"]["url"]
         assert client._proactive_image_to_inject is None
         assistant_texts = [m["content"] for m in messages if m["role"] == "assistant"]
-        expected = [prefix + text for text in SCREEN_COMMENTS[:7]]
+        # Independent deliveries are never cut, but their labels never reach
+        # the provider.
+        expected = list(SCREEN_COMMENTS[:7])
         if turn:
-            expected += [replies[0], prefix + SCREEN_COMMENTS[7]]
+            expected += [replies[0], SCREEN_COMMENTS[7]]
         assert assistant_texts == expected
         joined = "\n".join(text_content(m) for m in messages)
         for comment in SCREEN_COMMENTS[:count]:
             assert joined.count(comment) == 1
-        assert joined.count("屏幕搭话") == (count if prefix else 0)
+        assert joined.count("屏幕搭话") == 0
         assert [m.content for m in delivered] == [prefix + text for text in SCREEN_COMMENTS[:7]]
         assert client._conversation_history[-1].content == replies[turn]
     if with_screenshot:
