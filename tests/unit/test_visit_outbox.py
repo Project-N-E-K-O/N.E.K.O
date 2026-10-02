@@ -783,7 +783,6 @@ def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
 
 
 async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
-    import asyncio
     import threading
 
     tx = make_outbox(tmp_path)
