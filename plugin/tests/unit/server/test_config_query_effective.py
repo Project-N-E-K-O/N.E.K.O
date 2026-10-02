@@ -273,8 +273,8 @@ async def test_application_state_service_returns_persisted_and_applied_fingerpri
     monkeypatch.setattr(query_service_module, "_current_owner_config_path_sync", lambda _plugin_id: config_path)
     monkeypatch.setattr(
         query_service_module,
-        "infrastructure_load_plugin_config",
-        lambda _plugin_id: {"plugin_id": plugin_id, "config_fingerprint": "sha256:same"},
+        "resolve_plugin_config",
+        lambda _plugin_id, **_kwargs: {"plugin_id": plugin_id, "config_fingerprint": "sha256:same"},
     )
 
     class _Host:
@@ -299,3 +299,46 @@ async def test_application_state_service_returns_persisted_and_applied_fingerpri
                 query_service_module.state.plugin_hosts.pop(plugin_id, None)
             else:
                 query_service_module.state.plugin_hosts[plugin_id] = previous
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_application_state_skips_editor_work_without_changing_fingerprint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from plugin.server.infrastructure import config_queries, config_resolver
+
+    plugin_id = "application_state_snapshot"
+    root = tmp_path / "plugins"
+    installed = root / plugin_id
+    installed.mkdir(parents=True)
+    (installed / "plugin.toml").write_text(
+        f"[plugin]\nid='{plugin_id}'\nversion='1.0.0'\nentry='demo:Plugin'\n"
+        "[feature]\nvalue=1\n", encoding="utf-8",
+    )
+    (installed / "profiles.toml").write_text(
+        "[config_profiles]\nactive='prod'\n[config_profiles.files]\nprod='prod.toml'\n",
+        encoding="utf-8",
+    )
+    (installed / "prod.toml").write_text("[feature]\nvalue=2\n", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "PLUGIN_CONFIG_ROOTS", (root,))
+    expected = config_queries.load_plugin_config(plugin_id)
+    assert expected["config"]["feature"]["value"] == 2
+
+    def _reject_editor_work(*_args, **_kwargs):
+        raise AssertionError("application-state must skip editor schema and validation")
+
+    monkeypatch.setattr(config_resolver, "_validate_config_schema", _reject_editor_work)
+    monkeypatch.setattr(config_queries, "load_config_editor_schema", _reject_editor_work)
+    result = await ConfigQueryService().get_plugin_config_application_state(plugin_id=plugin_id)
+    assert result["persisted_fingerprint"] == expected["config_fingerprint"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_application_state_keeps_domain_404_for_missing_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_paths, "PLUGIN_CONFIG_ROOTS", ())
+    with pytest.raises(ServerDomainError) as error:
+        await ConfigQueryService().get_plugin_config_application_state(plugin_id="missing_application_state_config")
+    assert error.value.status_code == 404
+    assert error.value.code == "PLUGIN_CONFIG_APPLICATION_STATE_QUERY_FAILED"

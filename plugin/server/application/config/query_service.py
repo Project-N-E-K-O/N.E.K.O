@@ -13,6 +13,7 @@ from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_profiles import (
     get_profile_config as infrastructure_get_profile_config,
 )
@@ -231,8 +232,15 @@ class ConfigQueryService:
 
     async def get_plugin_config_application_state(self, *, plugin_id: str) -> dict[str, object]:
         try:
-            persisted = await asyncio.to_thread(infrastructure_load_plugin_config, plugin_id)
-            normalized = _normalize_payload(persisted, context="load_plugin_config")
+            # State queries only need the effective snapshot identity, not the
+            # editor schema, schema validation, or its warning logs.
+            persisted = await asyncio.to_thread(
+                resolve_plugin_config,
+                plugin_id,
+                include_effective_config=True,
+                validate_schema=False,
+            )
+            normalized = _normalize_payload(persisted, context="resolve_plugin_config")
             fingerprint_obj = normalized.get("config_fingerprint")
             persisted_fingerprint = fingerprint_obj if isinstance(fingerprint_obj, str) else None
             return await asyncio.to_thread(
