@@ -326,12 +326,26 @@ class ScopedMemoryClient:
         return response is not None
 
     async def post_forget(self, lanlan: str, *, subject: dict) -> bool:
-        """Erase everything stored for one exact subject. Idempotent."""
+        """Erase everything stored for one exact subject. Idempotent.
+
+        ``True`` only when the server confirms ``status: "forgotten"``; a
+        truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
+        """
         response = await self._post_write(
             self._url(lanlan, "scoped_forget"), {"subject": subject},
             timeout=_FORGET_TIMEOUT_S, what="scoped_forget",
         )
-        return response is not None
+        if response is None:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict) or payload.get("status") != "forgotten":
+            # 没有明确确认就不能记完成：撤销流程会据此删名册与日志，失去重试入口
+            logger.warning("scoped_forget: response does not confirm the erase")
+            return False
+        return True
 
     async def post_history(
         self,

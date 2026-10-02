@@ -75,6 +75,8 @@ def _ok_response(request: httpx.Request) -> httpx.Response:
                 "segments": [{"status": "ok"} for _ in body["segments"]],
             })
         return httpx.Response(200, json={"status": "processed"})
+    if path.endswith("/scoped_forget"):
+        return httpx.Response(200, json={"status": "forgotten"})
     return httpx.Response(200, json={"status": "recorded"})
 
 
@@ -540,3 +542,14 @@ async def test_history_response_must_confirm_processing(body):
     async with http:
         ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
     assert ok is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"null", b"{}", b"<html/>", b'{"status": "ok"}'])
+async def test_forget_requires_a_forgotten_confirmation(body):
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        assert await client.post_forget("Lanlan", subject=_SUBJECT) is False

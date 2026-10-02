@@ -396,7 +396,10 @@ class PeerRoster:
         def fn(data: dict):
             peers = self._peers_mut(data)
             peer = peers.get(peer_uid)
-            if not isinstance(peer, dict):
+            if peer_uid in peers and not isinstance(peer, dict):
+                # 已存在但类型坏了的行不能当新 peer 覆盖：by_char / 摘要 / pair 史都会丢
+                raise RosterCorruptError(f"{self.path.name}: peer entry is not an object")
+            if peer is None:
                 peer = {
                     "display_name": display_name or "",
                     "short_code": derive_short_code(peer_uid),
@@ -576,17 +579,27 @@ class PeerRoster:
             return 0
 
         def fn(data: dict):
+            # 改名是事务的一步：任何分区结构坏了都不能跳过（pending_rename 会被清掉、
+            # 那个分区里的条目永远停在旧名下），一律报损坏让事务保留标记
             moved = 0
-            accounts = data.get("accounts")
-            if not isinstance(accounts, dict):
+            if "accounts" not in data:
                 return 0, False
+            accounts = data["accounts"]
+            if not isinstance(accounts, dict):
+                raise RosterCorruptError(f"{self.path.name}: accounts is not an object")
             for account in accounts.values():
-                peers = account.get("peers") if isinstance(account, dict) else None
-                if not isinstance(peers, dict):
+                if not isinstance(account, dict):
+                    raise RosterCorruptError(f"{self.path.name}: account entry is not an object")
+                if "peers" not in account:
                     continue
+                peers = account["peers"]
+                if not isinstance(peers, dict):
+                    raise RosterCorruptError(f"{self.path.name}: peers is not an object")
                 for peer in peers.values():
-                    by_char = peer.get("by_char") if isinstance(peer, dict) else None
-                    if not isinstance(by_char, dict) or old not in by_char:
+                    if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
+                        raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
+                    by_char = peer["by_char"]
+                    if old not in by_char:
                         continue
                     entry = by_char.pop(old)
                     if isinstance(by_char.get(new), dict) and isinstance(entry, dict):

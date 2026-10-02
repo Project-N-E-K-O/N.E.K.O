@@ -468,3 +468,40 @@ async def test_upsert_refuses_to_rebuild_damaged_containers(tmp_path, damage):
         await roster.upsert("peer_y", "A", pair_id="q" * 24, peer_char_id="c_" + "2" * 24,
                             char_tag="e" * 32, char_display_name="cat", now=2.0)
     assert roster.path.read_text(encoding="utf-8") == before
+
+
+async def test_upsert_refuses_a_malformed_existing_peer_row(tmp_path):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"]["own_a"]["peers"]["peer_x"] = ["damaged"]
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                            char_tag="f" * 32, char_display_name="cat", now=2.0)
+
+
+@pytest.mark.parametrize("damage", [
+    lambda d: d.__setitem__("accounts", []),
+    lambda d: d["accounts"].__setitem__("other", 3),
+    lambda d: d["accounts"].__setitem__("other", {"peers": "x"}),
+    lambda d: d["accounts"]["own_a"]["peers"].__setitem__("peer_z", {"no": "by_char"}),
+])
+async def test_rename_char_fails_on_any_malformed_partition(tmp_path, damage):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    damage(data)
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.rename_char("A", "A2")

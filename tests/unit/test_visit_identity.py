@@ -403,10 +403,10 @@ def test_fetched_key_is_usable(priv, blocklist):
     _verify(mint_ticket(_claims(kid="k2"), priv), pubkeys=pk, blocklist=blocklist)
 
 
-def test_fetched_key_without_window_is_skipped(priv):
+def test_fetched_key_without_window_is_skipped_and_revoked(priv):
     payload = {"keys": [{"kid": "k2", "alg": "Ed25519", "pub": _pub_b64(priv)}], "revoked": ["x"], "ttl_s": 60}
     fetched = parse_pubkeys_response(payload, fetched_at=NOW)
-    assert fetched.keys == {} and fetched.revoked == frozenset({"x"})
+    assert fetched.keys == {} and fetched.revoked == frozenset({"x", "k2"})
 
 
 def test_malformed_pubkeys_envelope_raises():
@@ -543,3 +543,17 @@ def test_incomplete_revocation_list_is_a_failed_refresh(revoked):
     with pytest.raises(ValueError):
         parse_pubkeys_response(payload, fetched_at=NOW)
     assert parse_pubkeys_response({"keys": [], "revoked": ["k1"]}, fetched_at=NOW).revoked == {"k1"}
+
+
+def test_a_malformed_fetched_entry_revokes_its_kid(priv):
+    # 坏条目若只是被跳过，内置表里同名的旧钥匙仍会被放行
+    from main_logic.visit.identity import parse_pubkeys_response
+
+    fetched = parse_pubkeys_response(
+        {"keys": [{"kid": KID, "alg": "Ed25519", "pub": "!!"}], "revoked": [], "ttl_s": 86400},
+        fetched_at=NOW,
+    )
+    assert KID in fetched.revoked
+    pk = PubkeySet.build(now=NOW, fetched=fetched, builtin=_builtin(priv))
+    with pytest.raises(RevokedKid):
+        _verify(mint_ticket(_claims(), priv), pubkeys=pk, blocklist=SpyBlocklist())

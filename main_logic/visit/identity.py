@@ -320,8 +320,8 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
 
     Expected shape: ``{keys:[{kid, alg:'Ed25519', pub, not_before, not_after}],
     revoked:[kid], ttl_s}``. ``not_before`` / ``not_after`` are mandatory. A
-    malformed key entry is skipped (logged by kid only; that kid then fails
-    closed as unknown); a malformed envelope, a missing ``revoked`` list or
+    malformed key entry is skipped (logged by kid only) and its kid is added
+    to ``revoked``, so a same-named built-in key cannot stay usable; a malformed envelope, a missing ``revoked`` list or
     any malformed revocation entry raises ``ValueError`` so the caller
     treats the refresh as failed. A key published under the reserved dev kid
     is ignored.
@@ -336,7 +336,7 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
     # 否则一把已吊销的内置钥匙会继续放行到缓存过期
     if not all(isinstance(k, str) and k for k in raw_revoked):
         raise ValueError("pubkeys response revoked entries must be non-empty kid strings")
-    revoked = frozenset(raw_revoked)
+    revoked = set(raw_revoked)
     keys: dict[str, PubkeyEntry] = {}
     for item in raw_keys:
         kid = item.get("kid") if isinstance(item, Mapping) else None
@@ -347,13 +347,16 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
             entry = _entry_from_mapping(kid, item, source="fetched")
         except ValueError as exc:
             logger.warning("visit pubkeys: skipping malformed fetched key %r: %s", kid, exc)
+            # 坏条目按吊销处理：只从拉取结果里跳过的话，内置表里同名的旧钥匙仍会被放行
+            if isinstance(kid, str) and kid:
+                revoked.add(kid)
             continue
         keys[entry.kid] = entry
     ttl_raw = payload.get("ttl_s", VISIT_PUBKEYS_CACHE_S)
     if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)) or not math.isfinite(ttl_raw) or ttl_raw < 0:
         ttl_raw = VISIT_PUBKEYS_CACHE_S
     return FetchedPubkeys(
-        keys=keys, revoked=revoked, fetched_at=float(fetched_at), ttl_s=float(ttl_raw),
+        keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=float(ttl_raw),
     )
 
 
