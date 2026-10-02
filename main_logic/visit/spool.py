@@ -220,11 +220,15 @@ def validate_header(header: Mapping[str, Any]) -> dict:
     for name in ("own_uid", "own_char", "own_char_uid"):
         if not isinstance(header[name], str) or not header[name]:
             raise ValueError(f"spool header {name} must be a non-empty string")
-    for name in ("pair_id", "peer_uid", "peer_char_id", "peer_char_tag"):
+    for name in _HEADER_PEER_FIELDS:
         value = header[name]
         # 对端字段可被「清除这个人」置空；否则必须是非空字符串（类型坏了不能当「不是这一对」）
         if value is not None and (not isinstance(value, str) or not value):
             raise ValueError(f"spool header {name} must be a non-empty string or null")
+    if len({header[name] is None for name in _HEADER_PEER_FIELDS}) > 1:
+        # 「清除这个人」一次抹掉全部对端字段；只剩一半说明抹到一半或被改坏，
+        # 按 pair 找不到它，留下的 peer_uid 却永远不会再被清掉
+        raise ValueError("spool header peer fields must be all set or all null")
     if not _is_number(header["started_at"]):
         raise ValueError("spool header started_at must be a number")
     return dict(header)
@@ -348,6 +352,9 @@ def validate_state(state: Any) -> dict:
         value = state[name]
         if value is not None and (not isinstance(value, str) or not value):
             raise SpoolStateError(f"{name} must be a non-empty string or null")
+    if len({state[name] is None for name in _PEER_IDENTITY_FIELDS}) > 1:
+        # 同头行：只抹了一半的对端身份按 pair 找不到，剩下的 peer_uid 会永久留在磁盘上
+        raise SpoolStateError("peer_uid / pair_id / peer_char_id must be all set or all null")
     if not _is_int(state["digested_through_lp"]) or state["digested_through_lp"] < -1:
         raise SpoolStateError("digested_through_lp must be an int >= -1")
     if not _is_int(state["digest_runs"]) or state["digest_runs"] < 0:
@@ -1189,13 +1196,21 @@ class VisitSpool:
                 oldest = min(st.st_mtime for _p, st in reclaimable)
                 candidates.append((oldest, visit_id, reclaimable))
         candidates.sort()
-        for _oldest, _visit_id, files in candidates:
+        for _oldest, visit_id, files in candidates:
             if total <= VISIT_SPOOL_DIR_CAP_BYTES:
                 break
-            for path, st in files:
-                if _unlink(path):
-                    deleted.append(path)
-                    total -= st.st_size
+            jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
+            state_path = visit_path(spool_dir, visit_id, STATE_SUFFIX)
+            # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state），锁内重判是否结清：
+            # 改写方读完转录、还没原子替换时删掉，它随后的替换会把文件复活
+            with path_lock(jsonl), path_lock(state_path):
+                state = _try_read_state(state_path)
+                if state is None or not visit_settled(state):
+                    continue
+                for path, st in files:
+                    if _unlink(path):
+                        deleted.append(path)
+                        total -= st.st_size
         return deleted
 
     @classmethod

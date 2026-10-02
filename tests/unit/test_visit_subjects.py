@@ -540,3 +540,28 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     with pytest.raises(RosterCorruptError):
         await roster.rename_char("A", "A2")
     assert roster.path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("side,damage", [
+    ("A", {"pairs": "p" * 24}),
+    ("A2", {"pairs": "q" * 24}),
+    ("A", {"pairs": [7]}),
+    ("A2", {"chars": []}),
+])
+async def test_rename_char_refuses_malformed_nested_data(tmp_path, side, damage):
+    # 两边都是 object 但嵌套数据坏了：合并会把字符串 pairs 拆成单个字符写回去
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    for char in ("A", "A2"):
+        await roster.upsert("peer_x", char, pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                            char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"][side].update(damage)
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.rename_char("A", "A2")
+    assert roster.path.read_text(encoding="utf-8") == before

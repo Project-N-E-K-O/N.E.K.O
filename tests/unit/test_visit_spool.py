@@ -770,9 +770,27 @@ def test_header_peer_fields_must_be_strings_or_null(field, value):
     from main_logic.visit.spool import validate_header
 
     good = header(vid(1))
-    validate_header(dict(good, **{field: None}))
+    validate_header(dict(good, pair_id=None, peer_uid=None, peer_char_id=None, peer_char_tag=None))
     with pytest.raises(ValueError):
         validate_header(dict(good, **{field: value}))
+
+
+@pytest.mark.parametrize("field", ["pair_id", "peer_uid", "peer_char_id", "peer_char_tag"])
+def test_header_peer_fields_must_be_all_set_or_all_null(field):
+    # 只抹了一半的对端身份：按 pair 找不到，剩下的 peer_uid 永远清不掉
+    from main_logic.visit.spool import validate_header
+
+    with pytest.raises(ValueError):
+        validate_header(dict(header(vid(1)), **{field: None}))
+
+
+@pytest.mark.parametrize("field", ["pair_id", "peer_uid", "peer_char_id"])
+def test_state_peer_fields_must_be_all_set_or_all_null(field):
+    from main_logic.visit.spool import SpoolStateError, validate_state
+
+    validate_state(dict(state_for(), pair_id=None, peer_uid=None, peer_char_id=None))
+    with pytest.raises(SpoolStateError):
+        validate_state(dict(state_for(), **{field: None}))
 
 
 async def test_retire_char_fails_closed_on_unreadable_ownership(tmp_path):
@@ -944,3 +962,68 @@ def test_settled_deletion_waits_for_an_in_progress_header_rewrite(tmp_path):
     t.join(5)
     d.join(5)
     assert done.is_set() and not sp.jsonl_path.exists()
+
+
+def test_cap_sweep_waits_for_an_in_progress_header_rewrite(tmp_path, monkeypatch):
+    # 容量回收与头行改写同一把锁：改写方不会在回收之后把转录换回来
+    import threading
+
+    from main_logic.visit import spool as spool_mod
+    from main_logic.visit.subjects import path_lock
+
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+
+    async def setup():
+        sp = VisitSpool(tmp_path, vid(20))
+        await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+        sp.jsonl_path.write_bytes(b"x" * 1024)
+        return sp
+
+    sp = asyncio.run(setup())
+    held = threading.Event()
+    release = threading.Event()
+
+    def rewriter():
+        with path_lock(sp.jsonl_path):
+            held.set()
+            release.wait(5)
+            assert sp.jsonl_path.exists()
+
+    t = threading.Thread(target=rewriter)
+    t.start()
+    held.wait(5)
+    done = threading.Event()
+
+    def sweep():
+        asyncio.run(VisitSpool.sweep(tmp_path, NOW))
+        done.set()
+
+    s = threading.Thread(target=sweep)
+    s.start()
+    assert not done.wait(0.3)
+    release.set()
+    t.join(5)
+    s.join(5)
+    assert done.is_set() and not sp.jsonl_path.exists()
+
+
+async def test_cap_sweep_rechecks_settlement_under_the_lock(tmp_path, monkeypatch):
+    # 扫描后、加锁前 state 被改回未结清：锁内重判，不删
+    from main_logic.visit import spool as spool_mod
+
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    sp = VisitSpool(tmp_path, vid(21))
+    await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    sp.jsonl_path.write_bytes(b"x" * 1024)
+    real = spool_mod._try_read_state
+    calls = {"n": 0}
+
+    def flip(path):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return state_for()
+        return real(path)
+
+    monkeypatch.setattr(spool_mod, "_try_read_state", flip)
+    assert await VisitSpool.sweep(tmp_path, NOW) == []
+    assert sp.jsonl_path.exists()

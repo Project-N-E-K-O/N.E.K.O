@@ -238,6 +238,24 @@ def _dict_at(parent: dict, key: str) -> dict:
     return value
 
 
+def _check_char_entry(entry: Any, where: str) -> dict:
+    """Validate one ``by_char`` entry the way strict roster reads do.
+
+    The entry must be an object; ``pairs`` (when present) a list of non-empty
+    ids; ``chars`` (when present) an object keyed by non-empty ids. Raises
+    :class:`RosterCorruptError`.
+    """
+    if not isinstance(entry, dict):
+        raise RosterCorruptError(f"{where}: by_char entry is not an object")
+    pairs = entry.get("pairs", [])
+    if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
+        raise RosterCorruptError(f"{where}: pairs is not a list of ids")
+    chars = entry.get("chars", {})
+    if not isinstance(chars, dict) or not all(isinstance(c, str) and c for c in chars):
+        raise RosterCorruptError(f"{where}: chars is not an object keyed by ids")
+    return entry
+
+
 def _merge_char_entries(target: dict, source: dict) -> dict:
     """Merge two ``by_char`` entries (used when a rename target already exists)."""
     merged = copy.deepcopy(target)
@@ -346,13 +364,7 @@ class PeerRoster:
             node = node[key]
             if not isinstance(node, dict):
                 raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
-        pairs = node.get("pairs", [])
-        if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
-            raise RosterCorruptError(f"{self.path.name}: pairs is not a list of ids")
-        chars = node.get("chars", {})
-        if not isinstance(chars, dict) or not all(isinstance(c, str) and c for c in chars):
-            raise RosterCorruptError(f"{self.path.name}: chars is not an object keyed by ids")
-        return node
+        return _check_char_entry(node, self.path.name)
 
     def _mutate(self, fn) -> Any:
         with path_lock(self.path):
@@ -601,11 +613,12 @@ class PeerRoster:
                     by_char = peer["by_char"]
                     if old not in by_char:
                         continue
-                    entry = by_char[old]
+                    # 源或目标条目（含嵌套的 pairs / chars）坏了：覆盖或合并都会丢掉
+                    # 可恢复的数据（字符串 pairs 会被拆成单个字符），改名事务保留标记
+                    entry = _check_char_entry(by_char[old], self.path.name)
                     target = by_char.get(new)
-                    if not isinstance(entry, dict) or (new in by_char and not isinstance(target, dict)):
-                        # 源或目标条目坏了：覆盖会丢掉可恢复的数据，改名事务保留标记
-                        raise RosterCorruptError(f"{self.path.name}: by_char entry is not an object")
+                    if new in by_char:
+                        _check_char_entry(target, self.path.name)
                     del by_char[old]
                     by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1
