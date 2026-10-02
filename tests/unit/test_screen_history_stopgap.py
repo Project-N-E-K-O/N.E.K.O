@@ -170,8 +170,8 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "看这张[屏幕截图](https://example.com/a.png)就知道了。",
     "![screen image](a.png)",
     "看这张【屏幕截图】(https://example.com/a.png)就知道了。",
-    "这是[屏幕画面](https://example.com/a.png)，这个视频画面好漂亮，色调很温柔呢。"
-    "再看[屏幕画面](https://example.com/b.png)，右下角那只猫好可爱，毛茸茸的呢。",
+    ("这是[屏幕画面](https://example.com/a.png)，这个视频画面好漂亮，色调很温柔呢。"
+     "再看[屏幕画面](https://example.com/b.png)，右下角那只猫好可爱，毛茸茸的呢。"),
 ])
 def test_words_and_prose_that_only_contain_a_label_stay(text):
     messages = [_assistant(text), _user("继续")]
