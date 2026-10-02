@@ -1240,6 +1240,17 @@ class CoreConfigMixin:
                 'OPENROUTER_URLS',
             )
             config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
+        # 辅助 API 的模型 ID 按服务商分开存，只认当前辅助服务商那一条：切换服务商时不会把
+        # 上一家的模型名带过去。命中时覆盖辅助 API 的全部档位，follow_assist 槽随之继承。
+        assist_model_ids = core_cfg.get('assistModelIds')
+        assist_model_override = ''
+        if isinstance(assist_model_ids, dict) and not _uses_fixed_models(assist_api_value):
+            raw_assist_model = assist_model_ids.get(assist_api_value)
+            if isinstance(raw_assist_model, str):
+                assist_model_override = raw_assist_model.strip()
+        if assist_model_override:
+            for tier_model_key in dict.fromkeys(self._SLOT_PROFILE_MODEL_KEYS.values()):
+                config[tier_model_key] = assist_model_override
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')

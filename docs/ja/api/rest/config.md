@@ -38,6 +38,35 @@
 
 応答は `success`、必要に応じて `error`、`error_code`、`resolved_url`。Pydantic 型エラーは `422`。network/auth/model 失敗は設定画面で分類表示するため、通常 HTTP `200` と `success: false` です。
 
+### `POST /api/config/list_models`
+
+設定 UI の model ID picker 向けに、upstream endpoint が提供する model を一覧します。body は connectivity test の 2 モードに対応します：
+
+```json
+{
+  "provider_key": "openrouter",
+  "api_key": "..."
+}
+```
+
+または custom endpoint：
+
+```json
+{
+  "url": "https://example.test/v1",
+  "api_key": "...",
+  "model_type": "conversation",
+  "provider_type": "openai_compatible"
+}
+```
+
+設定 UI は mask された key しか持たないため、保存済み key はこの endpoint が解決します。制約は 2 つです：
+
+- Built-in provider：endpoint は常に `config/api_providers.json` から取ります（MiMo の Token Plan node への切り替えのみ可）。`api_key` が mask または空なら、API Key Book の該当 provider の key を使います。
+- Custom endpoint：HTTP(S) URL のみ受け付けます。`api_key` が mask の場合、`url` がその slot に保存済みの endpoint と一致するときだけ保存済み `<model_type>ModelApiKey` を再利用し、それ以外は `key_required` を返します。
+
+成功時は `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}` を id 順で返し、`name` は upstream が名前を返した場合のみ含まれます。失敗時は HTTP `200` と `success: false` に加え、`unsupported`（無料版・固定モデル provider・WebSocket endpoint・`/models` なし）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` などの `error_code` を返します。
+
 ### Core provider
 
 | メソッドとパス | 用途 |
@@ -47,6 +76,8 @@
 | `GET /api/config/api_providers` | runtime provider catalog と frontend metadata を返します。 |
 
 POST body は `coreApi`、`coreApiKey`、`assistApi` など同梱設定 UI の field と provider 固有 field を使う拡張可能 JSON です。
+
+`assistModelIds` は assist provider ごとに選んだ model ID の map です（例：`{"openrouter": "google/gemini-2.5-flash"}`）。選択中の assist provider の entry だけが適用され、assist の全 tier を上書きします。固定モデルの provider では無視されます。POST は送信された entry を保存済み map に merge し、空値はその provider の entry を削除します。
 
 ### GPT-SoVITS
 
@@ -110,6 +141,7 @@ server が古い decision を拒否できるようにします。
 
 ```text
 POST /api/config/test_connectivity
+POST /api/config/list_models
 GET  /api/config/core_api
 POST /api/config/core_api
 GET  /api/config/api_providers

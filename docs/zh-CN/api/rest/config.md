@@ -38,6 +38,35 @@
 
 响应含 `success`，按情况附带 `error`、`error_code`、`resolved_url`。Pydantic 类型错误返回 `422`；网络、认证或模型错误通常以 HTTP `200` 加 `success: false` 返回，供设置页显示分类错误。
 
+### `POST /api/config/list_models`
+
+为设置页的模型 ID 选择器列出上游端点提供的模型。请求体与连通性测试的两种模式对应：
+
+```json
+{
+  "provider_key": "openrouter",
+  "api_key": "..."
+}
+```
+
+或自定义端点：
+
+```json
+{
+  "url": "https://example.test/v1",
+  "api_key": "...",
+  "model_type": "conversation",
+  "provider_type": "openai_compatible"
+}
+```
+
+设置页只持有掩码后的密钥，因此由该接口自行解析已保存的密钥，并有两条限制：
+
+- 内置 provider：端点只取自 `config/api_providers.json`（仅 MiMo 可切换到 Token Plan 节点）；`api_key` 为掩码或为空时，使用 API 管理簿中该 provider 的 Key。
+- 自定义端点：只接受 HTTP(S) URL；`api_key` 为掩码时，只有 `url` 与该槽位已保存的端点一致，才会复用已保存的 `<model_type>ModelApiKey`，否则返回 `key_required`。
+
+成功时返回 `{"success": true, "models": [{"id": "...", "name": "..."}], "resolved_url": "..."}`，按 id 排序；上游提供名称时才有 `name`。失败时返回 HTTP `200` 加 `success: false`，`error_code` 可能为 `unsupported`（免费版、固定模型 provider、WebSocket 端点或上游没有 `/models`）、`auth_failed`、`key_required`、`rate_limited`、`timeout`、`empty` 等。
+
 ### 核心 provider
 
 | 方法和路径 | 用途 |
@@ -47,6 +76,8 @@
 | `GET /api/config/api_providers` | 返回运行时 provider 配置中的目录和前端元数据。 |
 
 POST 请求体使用第一方设置页返回的字段名，例如 `coreApi`、`coreApiKey`、`assistApi` 及各 provider 专属字段；它是可扩展 JSON 对象，不是固定 Pydantic schema。
+
+`assistModelIds` 记录为各辅助 provider 选定的模型 ID，例如 `{"openrouter": "google/gemini-2.5-flash"}`。只有当前辅助 provider 的那一条生效，并覆盖辅助 API 的全部档位；固定模型的 provider 会忽略它。POST 会把提交的条目合并进已保存的映射，空值表示删除该 provider 的条目。
 
 ### GPT-SoVITS
 
@@ -106,6 +137,7 @@ POST 请求体使用第一方设置页返回的字段名，例如 `coreApi`、`c
 
 ```text
 POST /api/config/test_connectivity
+POST /api/config/list_models
 GET  /api/config/core_api
 POST /api/config/core_api
 GET  /api/config/api_providers
