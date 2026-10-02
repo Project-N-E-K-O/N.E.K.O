@@ -111,6 +111,8 @@ LINE_REQUIRED_FIELDS = ("lp", "side", "ts", "from", "text")
 LINE_OPTIONAL_FIELDS = ("ln", "truncated")
 LINE_SPEAKERS = ("own_cat", "peer_cat", "peer_human", "own_human")
 _PEER_IDENTITY_FIELDS = ("peer_uid", "pair_id", "peer_char_id")
+# 头行还多一个对端的稳定角色标签（state.json 没有这个键），「清除这个人」时一并抹掉
+_HEADER_PEER_FIELDS = _PEER_IDENTITY_FIELDS + ("peer_char_tag",)
 
 DEBRIEF_CHOICES = (
     None,
@@ -685,6 +687,10 @@ class VisitSpool:
         # 先登记再打开、与头行改写同一把锁：改写方要么看到登记而报 SpoolBusy，
         # 要么在登记之前就已替换完文件（此时 O_EXCL 打开会失败）
         with _OPEN_SPOOLS_LOCK:
+            if key in _OPEN_SPOOLS:
+                # 别的实例正在写这一场：不能先 add 再在失败分支里 discard——那会撤掉
+                # 对方的登记，之后的清除 / 改名就会在对方写入时替换掉文件
+                raise SpoolBusy(f"spool {self.jsonl_path.name} is already open for appends")
             _OPEN_SPOOLS.add(key)
             try:
                 fd = os.open(self.jsonl_path, flags, 0o600)
@@ -917,7 +923,7 @@ class VisitSpool:
     def _delete_peer_fields_sync(self) -> None:
         def clear_header(header: dict) -> bool:
             changed = False
-            for name in _PEER_IDENTITY_FIELDS:
+            for name in _HEADER_PEER_FIELDS:
                 if header.get(name) is not None:
                     header[name] = None
                     changed = True

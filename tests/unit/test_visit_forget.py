@@ -236,8 +236,11 @@ async def test_reopen_rearms_local_steps_already_done(tmp_path):
     rev_id = await log.open_plan(plan)
     for step in plan.steps[:-1]:
         await log.mark_done(rev_id, step)
-    extra = {"subject_kind": "group_chat", "subject_id": "neko_visit:extra"}
-    await log.open(PEER_X, CHAR_UID_A, ["extra"], [extra])
+    from main_logic.visit.subjects import group_participant_subject
+
+    pair = derive_pair_id(OWN_A, PEER_X)
+    extra = group_participant_subject(pair, "c_" + "9" * 24)   # 对方新带来的一只猫
+    await log.open(PEER_X, CHAR_UID_A, [pair], [extra])
     record = await log.load(rev_id)
     assert STEP_REMOVE_CHAR not in record["done_steps"]
     assert STEP_WIPE_SPOOL not in record["done_steps"]
@@ -482,3 +485,33 @@ async def test_subject_with_an_extra_scope_field_fails_closed(tmp_path):
 async def test_unrelated_extra_pair_id_fails_closed(tmp_path):
     # 多出的无关 pair 会让 wipe_spool 去抹别人的场次
     await _damaged_log(tmp_path, lambda r: r["pair_ids"].append("q" * 24))
+
+
+async def test_pairs_must_belong_to_the_logs_own_identities(tmp_path):
+    # 把 pair 在 pair_ids 与 subjects 两处一起换成别人的：自洽但不属于这条日志的人
+    other = derive_pair_id(OWN_A, PEER_Y)
+
+    def swap(record):
+        mine = record["pair_ids"][0]
+        record["pair_ids"] = [other]
+        for s in record["subjects"]:
+            s["subject_id"] = s["subject_id"].replace(mine, other)
+        from main_logic.visit.forget import build_steps
+        record["steps"] = build_steps(record["subjects"])
+        record["done_steps"] = []
+
+    await _damaged_log(tmp_path, swap)
+
+
+async def test_participant_must_be_the_logs_own_peer(tmp_path):
+    from main_logic.visit.subjects import derive_person_id, participant_subject
+
+    def swap(record):
+        stranger = participant_subject(derive_person_id(OWN_A, PEER_Y))
+        record["subjects"] = [stranger if s["subject_kind"] == "participant" else s
+                              for s in record["subjects"]]
+        from main_logic.visit.forget import build_steps
+        record["steps"] = build_steps(record["subjects"])
+        record["done_steps"] = []
+
+    await _damaged_log(tmp_path, swap)

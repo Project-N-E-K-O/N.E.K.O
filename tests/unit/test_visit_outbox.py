@@ -780,3 +780,37 @@ def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
                      "sp": "c", "ad": "hc", "rt": "", "wu": False})
     assert rx.accept(ok, 0.0).deliver
     assert rx.prefix_rejected == 2
+
+
+async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
+    import asyncio
+    import threading
+
+    tx = make_outbox(tmp_path)
+    gate = threading.Event()
+    real_write = VisitOutbox._append_sync
+
+    def slow_write(self, *args, **kwargs):
+        gate.wait(5)
+        return real_write(self, *args, **kwargs)
+
+    VisitOutbox._append_sync = slow_write
+    try:
+        tx.send(text(1), now=0.0)
+        closing = asyncio.create_task(tx.close())
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        pending = tx._last_write
+        gate.set()
+        while not pending.done():          # 先等被挡住的那次写入真正落盘
+            await asyncio.sleep(0.01)
+        for _ in range(200):
+            if not tx.path.exists():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert not tx.path.exists()
+    finally:
+        VisitOutbox._append_sync = real_write

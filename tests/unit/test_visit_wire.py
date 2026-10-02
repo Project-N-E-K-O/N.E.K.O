@@ -142,7 +142,7 @@ def test_fragment_round_trip_random_payloads_each_piece_within_limit():
     rng = random.Random(20261002)
     for k in range(1000):
         txt = _clamp_utf8(_rand_text(rng, rng.randint(0, 1200)), VISIT_TEXT_MAX_BYTES)
-        payload = vw.encode_msg(_text_msg(txt, seq=k))
+        payload = vw.encode_msg(_text_msg(txt, seq=k + 1))
         msg_id = rng.randint(0, U32_MAX)
         pieces = vw.fragment(payload, visit_id=VID, msg_id=msg_id)
         assert all(len(p) <= VISIT_PIECE_MAX_BYTES for p in pieces)
@@ -910,3 +910,23 @@ def test_leave_watermark_must_be_the_previous_seq():
     low = dict(ok, last_seq=3)
     bad = vw.decode_msg(json.dumps(low), cmd=1)
     assert bad["t"] == "_invalid" and bad["seq"] == 10
+
+
+def test_reliable_messages_require_a_positive_seq():
+    """Reliable sequence numbers start at 1; ``seq: 0`` would be swallowed as an
+    already-seen duplicate, so it is rejected outright (``ack`` may carry 0)."""
+    with pytest.raises(ValueError):
+        vw.decode_msg(json.dumps(_text_msg("x", seq=0)), cmd=2)
+    with pytest.raises(ValueError):
+        vw.decode_msg(json.dumps({"t": "future_thing", "seq": 0}), cmd=1)
+    assert vw.decode_msg(json.dumps({"t": "ack", "v": 1, "seq": 0}), cmd=1)["t"] == "ack"
+
+
+def test_stalled_line_ignores_late_pieces_but_accepts_its_text():
+    asm = vw.LineDeltaAssembler()
+    assert asm.feed(_delta_msg("一", ln="g:7", lp=3))
+    asm.drop("g:7")
+    assert not asm.feed(_delta_msg("迟到", i=1, ln="g:7", lp=3))
+    assert asm.render("g:7") is None
+    closed = asm.close(_text_msg("一。", ln="g:7"))
+    assert closed == "一。" and asm.render("g:7") == "一。"

@@ -803,3 +803,25 @@ async def test_rename_fails_closed_on_unreadable_state(tmp_path):
         await VisitSpool.rename_own_char(tmp_path, "old", "new")
     assert ei.value.visit_ids == [vid(2)]
     assert (await ok.read_state())["own_char"] == "new"
+
+
+async def test_forget_erases_the_peer_char_tag_from_the_header(tmp_path):
+    sp = await open_spool(tmp_path, vid(15))
+    await sp.close()
+    await sp.write_state(state_for())
+    await VisitSpool(tmp_path, vid(15)).delete_peer_fields()
+    head = (await sp.read_back()).header
+    assert head["peer_char_tag"] is None and head["peer_uid"] is None
+
+
+async def test_a_second_open_of_the_same_visit_keeps_the_first_registration(tmp_path):
+    from main_logic.visit.spool import SpoolBusy, is_spool_open
+
+    first = await open_spool(tmp_path, vid(16))
+    second = VisitSpool(tmp_path, vid(16))
+    with pytest.raises(SpoolBusy):
+        await second.open(header(vid(16)), now=NOW)
+    assert is_spool_open(first.jsonl_path)
+    with pytest.raises(SpoolBusy):
+        await VisitSpool(tmp_path, vid(16)).delete_peer_fields()
+    await first.close()

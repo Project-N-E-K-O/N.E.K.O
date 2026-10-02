@@ -280,6 +280,11 @@ def _is_u32(v: Any) -> bool:
     return _is_int(v) and 0 <= v <= _U32_MAX
 
 
+def _is_seq(v: Any) -> bool:
+    """A valid reliable-message ``seq`` (1-based)."""
+    return _is_int(v) and 1 <= v <= _U32_MAX
+
+
 def _utf8_len_char(ch: str) -> int:
     o = ord(ch)
     if o < 0x80:
@@ -595,6 +600,8 @@ def _utf8_cap(limit: int) -> AfterValidator:
 
 
 _U32 = Annotated[int, Field(ge=0, le=_U32_MAX)]
+# 必达消息的 seq 从 1 起（累计 ack 可以是 0）：seq=0 的必达帧会被收端当成「已见过」静默吞掉
+_Seq = Annotated[int, Field(ge=1, le=_U32_MAX)]
 _Lp = Annotated[int, Field(ge=0, le=VISIT_LP_MAX)]
 _IIdx = Annotated[int, Field(ge=0, le=VISIT_LINE_DELTA_MAX_I)]
 _Ln = Annotated[str, Field(pattern=r"^[hg]:[0-9]{1,10}$")]
@@ -626,7 +633,7 @@ class _HelloCaps(BaseModel):
 
 class _Hello(_Msg):
     t: Literal["hello"]
-    seq: _U32
+    seq: _Seq
     ticket: Annotated[str, _utf8_cap(_TICKET_MAX_BYTES)]
     caps: _HelloCaps
     lang: _Lang
@@ -635,7 +642,7 @@ class _Hello(_Msg):
 
 class _Ready(_Msg):
     t: Literal["ready"]
-    seq: _U32
+    seq: _Seq
 
 
 class _Ack(_Msg):
@@ -660,7 +667,7 @@ class _State(_Msg):
 
 class _WrapUp(_Msg):
     t: Literal["wrap_up"]
-    seq: _U32
+    seq: _Seq
     lp: _Lp
     ph: Literal["propose", "begin", "ack", "speaking", "done"]
     ln: Optional[_Ln] = None
@@ -679,7 +686,7 @@ class _WrapUp(_Msg):
 
 class _Leave(_Msg):
     t: Literal["leave"]
-    seq: _U32
+    seq: _Seq
     last_seq: _U32
     reason: Annotated[str, Field(min_length=1), _utf8_cap(_LEAVE_REASON_MAX_BYTES)]
 
@@ -716,7 +723,7 @@ class _Text(_Msg):
     t: Literal["text"]
     ln: _Ln
     lp: _Lp
-    seq: _U32
+    seq: _Seq
     sp: _Sp
     ad: _Ad
     rt: _Rt
@@ -894,7 +901,7 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
         seq = None
         if cmd != CMD_LOSSY and "seq" in raw:
             seq = raw["seq"]
-            if not _is_u32(seq):
+            if not _is_seq(seq):
                 raise ValueError("unknown message with malformed seq")
         return {"t": "_unknown", "raw_t": t[:_RAW_T_DIAG_MAX], "cmd": cmd, "seq": seq}
 
@@ -938,7 +945,7 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
             problem = str(exc.errors()[0].get("msg"))
 
     if problem is not None or obj is None:
-        if t in RELIABLE_TYPES and _is_u32(raw.get("seq")):
+        if t in RELIABLE_TYPES and _is_seq(raw.get("seq")):
             return {"t": "_invalid", "raw_t": t, "cmd": expected, "seq": raw["seq"],
                     "error": problem or "invalid"}
         raise ValueError(f"malformed {t}: {problem}")
@@ -1547,6 +1554,7 @@ class LineDeltaAssembler:
         self._open: Optional[str] = None
         self._open_lp: Optional[int] = None
         self._final: "OrderedDict[str, str]" = OrderedDict()
+        self._stalled: "OrderedDict[str, None]" = OrderedDict()
         self.anomalies = 0
 
     def feed(self, msg: Mapping[str, Any]) -> bool:
@@ -1558,7 +1566,7 @@ class LineDeltaAssembler:
                 or not (0 <= i <= self._max_i):
             self.anomalies += 1
             return False
-        if ln in self._final:
+        if ln in self._final or ln in self._stalled:
             return False
         lp = msg.get("lp")
         retired = ln in self._lines and ln != self._open
@@ -1594,6 +1602,7 @@ class LineDeltaAssembler:
         ln = str(msg.get("ln"))
         txt = str(msg.get("txt", ""))
         self._lines.pop(ln, None)
+        self._stalled.pop(ln, None)
         if self._open == ln:
             self._open = None
             self._open_lp = None
@@ -1604,11 +1613,20 @@ class LineDeltaAssembler:
         return txt
 
     def drop(self, ln: str) -> None:
-        """Forget an open line locally (stall truncation) without a ``text``."""
+        """Forget an open line locally (stall truncation) without a ``text``.
+
+        The ``ln`` is kept as a tombstone: later pieces of it are ignored (the
+        stalled subtitle must not reappear), while its reliable ``text`` can
+        still close it through :meth:`close`.
+        """
         self._lines.pop(ln, None)
         if self._open == ln:
             self._open = None
             self._open_lp = None
+        self._stalled[ln] = None
+        self._stalled.move_to_end(ln)
+        while len(self._stalled) > self._lru:
+            self._stalled.popitem(last=False)
 
     def render(self, ln: str) -> Optional[str]:
         """Current subtitle text of ``ln`` (final text once closed), or None if unknown."""

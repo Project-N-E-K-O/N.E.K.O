@@ -987,8 +987,13 @@ class VisitOutbox:
 
         Called when the background close task of a finalize ends (``leave``
         acked or the grace expired): the file holds ``text`` bodies and must
-        not outlive the visit. Idempotent.
+        not outlive the visit. Idempotent. Cancelling the caller does not stop
+        the cleanup: the pending write, the writer shutdown and the unlink
+        still run, so no file with ``text`` bodies is left behind.
         """
+        await asyncio.shield(self._close_impl(delete))
+
+    async def _close_impl(self, delete: bool) -> None:
         await self.flush()
         executor, self._executor = self._executor, None
         if executor is not None:

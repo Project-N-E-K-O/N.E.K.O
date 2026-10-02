@@ -57,7 +57,13 @@ from typing import Any
 
 from config.visit_settings import VISIT_REVOCATIONS_DIRNAME
 from main_logic.visit.spool import VisitSpool
-from main_logic.visit.subjects import PeerRoster, path_lock
+from main_logic.visit.subjects import (
+    PeerRoster,
+    derive_pair_id,
+    derive_person_id,
+    participant_subject,
+    path_lock,
+)
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 from utils.visit_wire import REVOCATION_ID_RE, revocation_path
@@ -222,6 +228,15 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     # 双向相等：多出的无关 pair 会让 wipe_spool 去抹别人的场次
     if set(pair_ids) != subject_pairs or len(pair_ids) != len(set(pair_ids)):
         raise ValueError("revocation log pair_ids do not match its pair subjects")
+    # 再绑定到日志自己的身份：pair 只能是 (own_uid, peer_uid) 那一对，人级主体只能是
+    # 这个人。否则把 pair 在两处一起换掉的日志也能自洽通过、去清别人的记忆
+    own_pair = derive_pair_id(record["own_uid"], record["peer_uid"])
+    if subject_pairs - {own_pair}:
+        raise ValueError("revocation log pairs do not belong to its own / peer uid")
+    own_person = participant_subject(derive_person_id(record["own_uid"], record["peer_uid"]))
+    for subject in subjects:
+        if subject["subject_kind"] == "participant" and subject != own_person:
+            raise ValueError("revocation log participant does not belong to its peer")
     return record
 
 

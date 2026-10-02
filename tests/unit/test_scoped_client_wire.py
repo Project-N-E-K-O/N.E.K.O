@@ -517,3 +517,14 @@ async def test_single_subject_history_with_unpersisted_trust_is_not_done():
     async with http:
         ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_non_json_2xx_history_response_is_a_failed_write():
+    def responder(request):
+        return httpx.Response(200, content=b"<html>proxy</html>")
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        ok = await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+    assert ok is False

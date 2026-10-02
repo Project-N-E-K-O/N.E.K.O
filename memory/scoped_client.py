@@ -382,7 +382,9 @@ class ScopedMemoryClient:
         try:
             payload = response.json()
         except ValueError:
-            return True   # 旧服务端 / 无 trust 块：没有要结算的信赖写入
+            # 截断 / HTML 之类的 2xx 不能证明抽取与信赖写入已完成：按失败，调用方重试
+            logger.warning("scoped_history returned a non-JSON body; keep and retry")
+            return False
         if not _trust_settled(payload):
             logger.warning("scoped_history: trust write not persisted, keep and retry")
             return False
