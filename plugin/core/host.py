@@ -18,7 +18,7 @@ import hashlib
 import types
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Type
+from typing import Any, Dict, Iterator, Optional, Type, TYPE_CHECKING
 
 from config import (
     MAIN_SERVER_PORT,
@@ -35,7 +35,20 @@ from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.core.communication import PluginCommunicationResourceManager, STARTUP_RESULT_REQ_ID
-from plugin._types.models import HealthCheckResponse
+
+if TYPE_CHECKING:
+    # 只为 health_check() 的返回注解而导入。本模块第 1 行有
+    # ``from __future__ import annotations``，注解是字符串、运行时不求值，所以放进
+    # TYPE_CHECKING 不影响任何调用方；真正的构造在 health_check() 内部按需导入。
+    #
+    # 为什么值得这么做：``plugin._types.models`` 是服务端的 pydantic API 模型模块，
+    # 在模块级导入它会把 pydantic 整条链拖进**每一个插件子进程**——实测 self 70.9ms、
+    # cuml 416.5ms，占子进程框架 import 闭包（1696ms / 451 模块）的 24.6%，而子进程
+    # 只在 health_check() 里用到这一个名字。已验证 host.py:38 是该模块在子进程闭包里的
+    # **唯一**入口（core.dependency / core.ui_manifest / core.registry / config.schema
+    # 都不在闭包内），所以摘掉它才真的摘得掉。做法与 #3242 一致。
+    from plugin._types.models import HealthCheckResponse
+
 from plugin._types.exceptions import (
     PluginLifecycleError,
     PluginEntryNotFoundError,
@@ -2538,6 +2551,12 @@ class PluginHost:
     
     def health_check(self) -> HealthCheckResponse:
         """执行健康检查，返回详细状态"""
+        # 按需导入，理由见文件头 TYPE_CHECKING 块的注释：模块级导入会让每个插件子
+        # 进程白付 pydantic 整条链（实测 cuml 416.5ms，占子进程框架 import 的 24.6%），
+        # 而 health_check() 是低频调用。首次调用之后模块已在 sys.modules 里，
+        # 后续只是一次字典查找。
+        from plugin._types.models import HealthCheckResponse
+
         alive = self.is_alive()
         exitcode = self.process.exitcode
         pid = self.process.pid if self.process.is_alive() else None
