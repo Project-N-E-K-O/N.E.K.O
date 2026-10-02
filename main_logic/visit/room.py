@@ -262,6 +262,7 @@ class _PeerLine:
     addressee_kind: SpeakerKind
     reply_to: Optional[LineRef]
     goodbye: bool
+    lp: int = 0
 
 
 class VisitRoom:
@@ -345,6 +346,9 @@ class VisitRoom:
         self._peer_done: set[str] = set()
         self._aborted: set[str] = set()
         self._latest_to_me: Optional[tuple[int, int]] = None
+        # 已收口的对端行里排序最大的那条：同一发送方的 text 按收口先后发，
+        # 先开口的行可能更晚收口（人类插话行常见），晚到的旧行不能盖掉新行的回复
+        self._latest_peer_done: Optional[tuple[int, int]] = None
 
         # 异常计数（§4.1）
         self.violation_streak = 0
@@ -596,11 +600,19 @@ class VisitRoom:
         if ln in self._peer_done or ln in self._peer_meta:
             return eff
         if self._peer_open:
-            eff.violation = self._count_anomaly("line_overlap")
-            self._maybe_finalize_anomalies(eff)
-            return eff
+            # 上一行的 text{final} 可能还在 seq 缺口后面排队，而新行的首片（可丢、
+            # 不经重排）先到了：lp 更大的新行说明旧行已经说完，只是收口未到。
+            # 旧行移出「未收口」但保留元数据，等它的 text 照常处理；只有 lp
+            # 不递增的才是真交叠。
+            for other in [o for o in self._peer_open
+                          if (m := self._peer_meta.get(o)) is not None and m.lp < ev.ref.lp]:
+                self._peer_open.discard(other)
+            if self._peer_open:
+                eff.violation = self._count_anomaly("line_overlap")
+                self._maybe_finalize_anomalies(eff)
+                return eff
         self._peer_meta[ln] = _PeerLine(ev.speaker, ev.addressee_side, ev.addressee_kind,
-                                        ev.reply_to, ev.goodbye)
+                                        ev.reply_to, ev.goodbye, ev.ref.lp)
         self._peer_open.add(ln)
         self._on_new_peer_line(ln)
         if ev.speaker == "human":
@@ -674,9 +686,16 @@ class VisitRoom:
                     and self.pending_reply.reply_to.line_id == ln):
                 self._cancel_pending(eff)
 
+        key = self.sort_key(ev.ref)
+        older = self._latest_peer_done is not None and key < self._latest_peer_done
+        if not older:
+            self._latest_peer_done = key
         if speaker == "human":
             self._note_human(ev.ref)
-            self._interrupt_for_human(eff)
+            # 首片到达时已经打断过；只有整句模式（没见过首片）才在收口时打断，
+            # 且比已收口的行旧时不打断——那会取消针对更新那行的回复
+            if opened is None and not older:
+                self._interrupt_for_human(eff)
         elif goodbye:
             self._on_peer_goodbye_done(eff, ev.ref, tail_ms, now, opened is None)
             return eff
@@ -688,10 +707,9 @@ class VisitRoom:
 
         to_me = self._addressed_to_me(ad_side, ad_kind)
         if to_me and not silenced:
-            key = self.sort_key(ev.ref)
             if self._latest_to_me is None or key > self._latest_to_me:
                 self._latest_to_me = key
-        if self._phase == "active" and to_me and not silenced:
+        if self._phase == "active" and to_me and not silenced and not older:
             self._cancel_pending(eff)
             plan = self._plan(ev.ref, tail_ms, now)
             self.pending_reply = plan

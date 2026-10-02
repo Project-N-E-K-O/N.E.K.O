@@ -265,6 +265,16 @@ def test_blocklist_hit_is_peer_blocked(priv, pubkeys, tmp_path):
     assert ei.value.finalize_reason == "peer_blocked"
 
 
+def test_unreadable_blocklist_rejects_every_peer(priv, pubkeys, tmp_path):
+    from main_logic.visit.identity import BlocklistUnavailable
+
+    (tmp_path / "visit_blocklist.json").write_text("{broken", encoding="utf-8")
+    bl = Blocklist.load(tmp_path)
+    with pytest.raises(BlocklistUnavailable) as ei:
+        _verify(mint_ticket(_claims(), priv), pubkeys=pubkeys, blocklist=bl)
+    assert ei.value.finalize_reason == "peer_identity_rejected"
+
+
 def test_blocklist_not_read_when_signature_fails(priv, pubkeys):
     spy = SpyBlocklist({SUB})
     other = Ed25519PrivateKey.generate()

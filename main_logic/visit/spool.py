@@ -55,6 +55,7 @@ import copy
 import json
 import math
 import os
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -142,6 +143,27 @@ STATE_FIELDS = frozenset({
 
 class SpoolLineTooLarge(ValueError):
     """Raised when one encoded spool line exceeds ``VISIT_SPOOL_LINE_MAX_BYTES``."""
+
+
+class SpoolBusy(RuntimeError):
+    """Raised when a header rewrite targets a spool that is still open for appends."""
+
+
+# 进程级「仍在写」登记：在飞串门持有 .jsonl 的 O_APPEND fd，此时整文件替换式改写头行
+# 会让后续追加写进被替换掉的旧 inode（Windows 上替换还可能直接失败）。清除 / 改名
+# 遇到在飞场次时报 SpoolBusy，撤销日志保留未完成步骤，等这场结束后重放。
+_OPEN_SPOOLS: set[str] = set()
+_OPEN_SPOOLS_LOCK = threading.Lock()
+
+
+def _spool_key(path: Path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def is_spool_open(path: Path) -> bool:
+    """True while some ``VisitSpool`` in this process holds ``path`` open for appends."""
+    with _OPEN_SPOOLS_LOCK:
+        return _spool_key(path) in _OPEN_SPOOLS
 
 
 class SpoolStateError(ValueError):
@@ -484,7 +506,13 @@ def _read_header(path: Path) -> dict | None:
 
 
 def _rewrite_header(path: Path, mutate) -> bool:
-    """Atomically rewrite the first line of a spool file; return whether it changed."""
+    """Atomically rewrite the first line of a spool file; return whether it changed.
+
+    Raises :class:`SpoolBusy` when the file is still open for appends in this
+    process (an in-flight visit).
+    """
+    if is_spool_open(path):
+        raise SpoolBusy(f"spool {path.name} is still being written")
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -581,6 +609,8 @@ class VisitSpool:
         except BaseException:
             os.close(fd)
             raise
+        with _OPEN_SPOOLS_LOCK:
+            _OPEN_SPOOLS.add(_spool_key(self.jsonl_path))
         return fd
 
     @staticmethod
@@ -608,6 +638,8 @@ class VisitSpool:
                 os.fsync(fd)
             finally:
                 os.close(fd)
+                with _OPEN_SPOOLS_LOCK:
+                    _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
     async def open(self, header: Mapping[str, Any], *, now: float | None = None) -> None:
         """Create ``<visit_id>.jsonl`` (``O_EXCL``, ``0o600``) and write the header line.
@@ -652,11 +684,22 @@ class VisitSpool:
         )
 
     async def fsync(self, now: float) -> None:
-        """Flush the spool to disk on the writer thread (after every queued append)."""
+        """Flush the spool to disk on the writer thread (after every queued append).
+
+        On failure the spool stays dirty and the cadence is not advanced, so
+        :meth:`fsync_due` keeps asking for a retry.
+        """
         fut = self._submit(self._fsync_sync)
+        # 提交前先清标志：提交之后才到的 append 会重新置脏，不会被这次成功误清
         self._dirty = False
+        previous = self._last_fsync
         self._last_fsync = now
-        await fut
+        try:
+            await fut
+        except BaseException:
+            self._dirty = True
+            self._last_fsync = previous
+            raise
 
     async def close(self) -> None:
         """Fsync and close the spool (the finalize fsync); idempotent."""

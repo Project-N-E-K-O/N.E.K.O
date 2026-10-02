@@ -71,7 +71,7 @@ class FakeMemoryServer:
         self.own_char = own_char
         self.entry_present_at_each_call: list[bool] = []
 
-    async def forget(self, subject: dict) -> None:
+    async def forget(self, subject: dict) -> bool:
         if self.roster is not None:
             entry = await self.roster.get_char_entry(self.peer_uid, self.own_char)
             self.entry_present_at_each_call.append(entry is not None)
@@ -79,6 +79,7 @@ class FakeMemoryServer:
         if self.fail_on_call is not None and len(self.calls) == self.fail_on_call:
             self.fail_on_call = None
             raise Upstream502("502 from memory_server")
+        return True
 
 
 async def seed(roster: PeerRoster, peer: str, own_char: str, tag: str, now=100.0):
@@ -304,3 +305,27 @@ async def test_corrupt_log_is_skipped_from_listing(tmp_path):
     bogus = revocation_id(OWN_A, PEER_Y, CHAR_UID_A)
     (directory / f"{bogus}.json").write_text(json.dumps({"id": "x"}), encoding="utf-8")
     assert await RevocationLog.list_all_open(tmp_path) == []
+
+
+async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
+    # ScopedMemoryClient.post_forget 失败时返回 False（不抛异常）：不能记完成
+    from main_logic.visit.forget import ForgetStepFailed
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    plan = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
+    rev_id = await log.open_plan(plan)
+    calls: list[dict] = []
+
+    async def failing(subject: dict) -> bool:
+        calls.append(subject)
+        return False
+
+    with pytest.raises(ForgetStepFailed):
+        await run_revocation(log, rev_id, roster=roster, forget_subject=failing)
+    record = await log.load(rev_id)
+    assert record is not None
+    assert not any(step.startswith("forget:") for step in record["done_steps"])
+    assert await roster.get_char_entry(PEER_X, "A") is not None
+    assert len(calls) == 1

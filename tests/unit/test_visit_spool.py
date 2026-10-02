@@ -535,3 +535,40 @@ async def test_sweep_ignores_foreign_files(tmp_path):
     _age(foreign, 30)
     await VisitSpool.sweep(tmp_path, NOW)
     assert foreign.exists()
+
+
+async def test_failed_fsync_keeps_the_spool_dirty(tmp_path, monkeypatch):
+    sp = await open_spool(tmp_path, vid(1))
+    await sp.append(line(1))
+    assert sp.fsync_due(NOW + 30)
+
+    def boom(self):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(VisitSpool, "_fsync_sync", boom)
+    with pytest.raises(OSError):
+        await sp.fsync(NOW + 30)
+    # 失败后仍然是脏的、节拍不前移：下一次 tick 立刻重试
+    assert sp.fsync_due(NOW + 30)
+    monkeypatch.undo()
+    await sp.fsync(NOW + 31)
+    assert not sp.fsync_due(NOW + 40)
+    await sp.close()
+
+
+async def test_header_rewrite_refuses_an_in_flight_spool_of_another_instance(tmp_path):
+    # 清除执行器会新建实例去抹 peer 字段；在飞那场的 fd 还开着时必须拒绝，等结束后重放
+    from main_logic.visit.spool import SpoolBusy
+
+    live = await open_spool(tmp_path, vid(3))
+    await live.write_state(state_for())
+    await live.append(line(1))
+    other = VisitSpool(tmp_path, vid(3))
+    with pytest.raises(SpoolBusy):
+        await other.delete_peer_fields()
+    await live.append(line(2))
+    await live.close()
+    await other.delete_peer_fields()
+    contents = await other.read_back()
+    assert [ln["lp"] for ln in contents.lines] == [1, 2]
+    assert contents.header["peer_uid"] is None

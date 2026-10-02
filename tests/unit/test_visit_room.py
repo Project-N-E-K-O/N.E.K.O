@@ -419,15 +419,33 @@ def test_16_propose_and_begin_cross_one_goodbye_each():
 
 
 def test_17_overlapping_lines_from_one_sender_are_a_counted_anomaly():
+    # 真交叠：新开的行 lp 不比仍未收口的行大
+    room = make_room("host")
+    peer = Peer(room)
+    a = peer.new_ref()
+    peer.start(a, 0.0)
+    b = LineRef(f"{peer.prefix}99", a.lp, peer.side)
+    eff = peer.start(b, 1.0)
+    assert eff.violation == "line_overlap"
+    assert eff.finalize_reason is None
+    assert room.anomalies_total == 1
+
+
+def test_newer_line_start_while_previous_text_waits_behind_a_gap_is_not_overlap():
+    # 上一行 text 在 seq 缺口后排队、新行首片先到：正常乱序，不是交叠
     room = make_room("host")
     peer = Peer(room)
     a = peer.new_ref()
     peer.start(a, 0.0)
     b = peer.new_ref()
-    eff = peer.start(b, 1.0)
-    assert eff.violation == "line_overlap"
-    assert eff.finalize_reason is None
-    assert room.anomalies_total == 1
+    eff_b = peer.start(b, 3.0, speaker="human")
+    assert eff_b.violation is None
+    assert room.anomalies_total == 0
+    # 旧行的 text 随后补到：元数据还在，照常收口（不当成新行）
+    eff_a = room.on_incoming_done(IncomingLineDone(a, False, 0, False), 4.0)
+    assert eff_a.violation is None
+    eff_b2 = peer.done(b, 5.0, speaker="human")
+    assert eff_b2.reply is not None and eff_b2.reply.reply_to == b
 
 
 # ── main design PR-06 additions ─────────────────────────────────────────
@@ -766,3 +784,43 @@ def test_snapshot_is_plain_data():
     assert snap["phase"] == "active"
     assert snap["wrap_up"]["initiated_by"] is None
     assert isinstance(ReplyPlan(ref("h:1", 1), 1.0), ReplyPlan)
+
+
+def test_older_line_closing_late_does_not_steal_the_newer_reply():
+    # 对端人类行先开口（lp 小）、对端猫娘行后开口却先收口：旧行晚到不能取消新行的回复
+    room = make_room("host")
+    peer = Peer(room)
+    human = peer.new_ref()
+    peer.start(human, 0.0, speaker="human")
+    cat = peer.new_ref()
+    peer.start(cat, 0.5)
+    eff_cat = peer.done(cat, 2.0)
+    assert eff_cat.reply is not None and eff_cat.reply.reply_to == cat
+    eff_human = peer.done(human, 3.0, speaker="human")
+    assert eff_human.reply is None
+    assert not eff_human.cancel_pending_reply
+    assert room.pending_reply == eff_cat.reply
+    assert not room.is_stale(room.pending_reply)
+
+
+def test_whole_line_mode_human_line_still_interrupts_when_newest():
+    room = make_room("host")
+    peer = Peer(room)
+    _, eff = peer.line(0.0)
+    assert eff.reply is not None
+    r = peer.new_ref()
+    eff2 = peer.done(r, 1.0, speaker="human")
+    assert eff2.cancel_pending_reply
+    assert eff2.reply is not None and eff2.reply.reply_to == r
+
+
+def test_whole_line_mode_older_human_line_keeps_the_newer_reply():
+    room = make_room("host")
+    peer = Peer(room)
+    human = peer.new_ref()            # 先开口，但整句模式下没有首片
+    cat = peer.new_ref()
+    peer.start(cat, 0.5)
+    eff_cat = peer.done(cat, 2.0)
+    eff_human = peer.done(human, 3.0, speaker="human")
+    assert not eff_human.cancel_pending_reply
+    assert room.pending_reply == eff_cat.reply

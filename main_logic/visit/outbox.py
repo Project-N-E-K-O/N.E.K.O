@@ -322,6 +322,7 @@ class VisitOutbox:
         self._leave_acked = False
         self._drain_deadline: Optional[float] = None
         self.dropped_lossy = 0
+        self.ack_beyond_sent = 0
 
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._last_write: Optional[concurrent.futures.Future] = None
@@ -640,16 +641,23 @@ class VisitOutbox:
     def on_ack(self, seq: Any, now: Optional[float] = None) -> list[tuple[int, str]]:
         """Apply a cumulative peer ``ack{seq}``; return the ``(seq, t)`` pairs it released.
 
-        Every reliable item with ``seq <= ack`` is removed (a value beyond
-        the last assigned ``seq`` only covers what exists). The runtime uses
-        the result for e.g. ``VisitLiveness.on_hello_acked``; an acked
-        ``leave`` ends the outbox (:meth:`leave_done`).
+        Every reliable item with ``seq <= ack`` is removed, but only up to the
+        first item that was never actually sent: the peer cannot have
+        received it, so an ack reaching past it (a broken or modified peer)
+        releases nothing beyond that point and bumps
+        :attr:`ack_beyond_sent` for the runtime to count as an anomaly. The
+        runtime uses the result for e.g. ``VisitLiveness.on_hello_acked``; an
+        acked ``leave`` ends the outbox (:meth:`leave_done`).
         """
         if not _is_int(seq) or seq <= 0:
             return []
         released: list[tuple[int, str]] = []
         for s in list(self._unacked):
             if s > seq:
+                break
+            if not self._unacked[s].emitted:
+                # 还没发出去的项不可能被对端收到：越界 ack 不能把它当已确认
+                self.ack_beyond_sent += 1
                 break
             item = self._unacked.pop(s)
             item.acked = True

@@ -249,3 +249,15 @@ def test_heartbeat_resumes_without_burst_after_a_pause():
     assert not lv.heartbeat_due(60.5)
     assert not lv.heartbeat_due(64.9)
     assert lv.heartbeat_due(65.0)
+
+
+def test_verification_clears_a_departure_left_over_from_the_wait():
+    # 等待期对端进房又走（刷新后换了 vendor 身份重进，不会调 rejoined），之后 hello 才核验通过
+    lv = VisitLiveness("host", 0.0)
+    lv.on_peer_entered(100.0)
+    lv.on_peer_vendor_left(110.0)
+    lv.on_peer_verified(150.0)          # > 110 + 35
+    feed(lv, 150.0, 170.0)
+    assert lv.tick(171.0) is None
+    assert lv.tick(199.0) is None
+    assert lv.tick(201.0) == "peer_lost"

@@ -404,7 +404,11 @@ class RevocationLog:
         return await asyncio.to_thread(cls._list_dir_sync, directory, None)
 
 
-ForgetSubject = Callable[[dict], Awaitable[None]]
+ForgetSubject = Callable[[dict], Awaitable[bool]]
+
+
+class ForgetStepFailed(RuntimeError):
+    """A ``forget_subject`` callback did not confirm the erase (returned anything but ``True``)."""
 VoidPending = Callable[[dict], Awaitable[None]]
 
 
@@ -424,7 +428,10 @@ async def run_revocation(
     on disk, so a later call resumes exactly there. ``remove_char`` therefore
     never runs before every forget step is recorded. ``forget_subject``
     receives one ``{subject_kind, subject_id}`` dict (the memory_server
-    ``/scoped_forget`` call, injected). ``own_char`` is the character's
+    ``/scoped_forget`` call, injected, e.g. ``ScopedMemoryClient.post_forget``)
+    and must return ``True`` once the erase is confirmed; any other return
+    value raises :class:`ForgetStepFailed` before the step is recorded, so a
+    failed erase is never marked done. ``own_char`` is the character's
     current name (resolved from ``own_char_uid`` by the caller); it defaults
     to the name stored in the log. When every step is done the log is
     closed and ``True`` is returned; ``False`` means the log was already gone.
@@ -451,7 +458,10 @@ async def run_revocation(
             subject = subjects.get(step)
             if subject is None:
                 raise ValueError(f"revocation step {step!r} has no subject")
-            await forget_subject(dict(subject))
+            # 只认明确的 True：post_forget 失败返回 False，不检查就会记完成、
+            # 随后删名册与日志，残留记忆再也没有重放入口
+            if await forget_subject(dict(subject)) is not True:
+                raise ForgetStepFailed(f"scoped_forget not confirmed for {step!r}")
         elif step == STEP_REMOVE_CHAR:
             await roster.remove_char(peer_uid, char_name)
         elif step == STEP_WIPE_SPOOL:

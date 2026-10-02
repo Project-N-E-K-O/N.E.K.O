@@ -618,7 +618,8 @@ def test_line_delta_forward_jump_is_loss_not_violation():
         with pytest.raises(ValueError):
             vw.decode_msg(json.dumps(_delta_msg("x", i=bad_i)), cmd=2)
     full = "".join(pieces)
-    assert asm.close(_text_msg(full, ln="g:7")) == full
+    closed = asm.close(_text_msg(full, ln="g:7"))
+    assert closed == full
     assert asm.render("g:7") == full
     assert not asm.feed(_delta_msg("迟到", i=1))
     assert asm.anomalies == 3

@@ -454,8 +454,6 @@ async def test_list_scoped_subjects_rejects_malformed_payload():
 @pytest.mark.asyncio
 async def test_default_http_client_is_the_internal_one(monkeypatch):
     """Without ``http`` the shared internal client is looked up per request."""
-    import memory.scoped_client as scoped_client
-
     recorder = _Recorder()
     http = httpx.AsyncClient(transport=httpx.MockTransport(recorder))
     lookups: list[int] = []
@@ -465,7 +463,7 @@ async def test_default_http_client_is_the_internal_one(monkeypatch):
         return http
 
     monkeypatch.setattr(
-        scoped_client, "get_internal_http_client", fake_get_internal_http_client,
+        "memory.scoped_client.get_internal_http_client", fake_get_internal_http_client,
     )
     client = ScopedMemoryClient(base_url=BASE_URL + "/")
     async with http:

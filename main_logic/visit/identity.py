@@ -204,6 +204,12 @@ class PeerBlocked(TicketRejected):
     finalize_reason = FINALIZE_PEER_BLOCKED
 
 
+class BlocklistUnavailable(TicketRejected):
+    """The local blocklist could not be read, so no peer can be admitted (fail closed)."""
+
+    code = "blocklist_unavailable"
+
+
 class JtiReplay(TicketRejected):
     """The ``jti`` was already used by another room or another ``vid``."""
 
@@ -676,7 +682,9 @@ def verify_identity_ticket(
     if claims.vid != expect_vid:
         raise VidMismatch()
 
-    # 7. 本机黑名单（只在验签通过后才读）。
+    # 7. 本机黑名单（只在验签通过后才读）。读不出来时一律拒：当空表会放进被拉黑的人。
+    if not getattr(blocklist, "available", True):
+        raise BlocklistUnavailable()
     if blocklist.is_blocked(claims.sub):
         raise PeerBlocked()
 
@@ -701,6 +709,7 @@ def mint_ticket(claims: Mapping[str, Any], private_key: Ed25519PrivateKey) -> st
 
 
 __all__ = [
+    "BlocklistUnavailable",
     "FINALIZE_IDENTITY_REJECTED",
     "FINALIZE_PEER_BLOCKED",
     "BadSignature",

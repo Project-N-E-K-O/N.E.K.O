@@ -234,22 +234,34 @@ def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
     assert not bl.is_blocked(UID)
 
 
-def test_corrupt_file_is_moved_aside(tmp_path):
+def test_corrupt_file_fails_closed_and_is_left_in_place(tmp_path):
+    # 读不出来不能当空表：那会把被拉黑的人放进来；原文件留在原处待修复
+    from main_logic.visit.limits import BlocklistUnavailable
+
     path = tmp_path / VISIT_BLOCKLIST_FILENAME
     path.write_text("{not json", encoding="utf-8")
     bl = Blocklist.load(tmp_path)
-    assert len(bl) == 0
-    assert (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).read_text(encoding="utf-8") == "{not json"
-    bl.block(UID, display_name_at_block="Mimi")
-    assert Blocklist.load(tmp_path).is_blocked(UID)
+    assert bl.available is False
+    with pytest.raises(BlocklistUnavailable):
+        bl.is_blocked(UID)
+    with pytest.raises(BlocklistUnavailable):
+        bl.block(UID, display_name_at_block="Mimi")
+    assert path.read_text(encoding="utf-8") == "{not json"
+    assert not (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).exists()
 
 
-async def test_async_corrupt_file_is_moved_aside(tmp_path):
+async def test_async_unreadable_file_fails_closed_then_recovers(tmp_path):
+    from main_logic.visit.limits import BlocklistUnavailable
+
     path = tmp_path / VISIT_BLOCKLIST_FILENAME
     path.write_text('{"blocked": 3}', encoding="utf-8")
     bl = await Blocklist.aload(tmp_path)
-    assert len(bl) == 0
-    assert (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).exists()
+    assert bl.available is False
+    with pytest.raises(BlocklistUnavailable):
+        await bl.ablock(UID, display_name_at_block="Mimi")
+    # 修好后重新加载即恢复
+    path.write_text('{"blocked": []}', encoding="utf-8")
+    assert (await Blocklist.aload(tmp_path)).available is True
 
 
 def test_malformed_rows_are_skipped_and_deduplicated(tmp_path):

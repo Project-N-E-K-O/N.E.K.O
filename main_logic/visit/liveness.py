@@ -140,6 +140,9 @@ class VisitLiveness:
         """
         self.waiting = False
         self.peer_last_seen = now if self.peer_last_seen is None else max(self.peer_last_seen, now)
+        # 核验通过的 hello 本身就证明对端在场：等待期里留下的暂定离开（对端刷新后
+        # 换了 vendor 身份重进，runtime 不会调 on_peer_vendor_rejoined）不能再判 peer_left
+        self.peer_departed_at = None
 
     def on_peer_message(self, now: float) -> None:
         """Any peer message arrived (reliable, ``hb``, lossy): refresh ``peer_last_seen``.

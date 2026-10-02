@@ -360,20 +360,29 @@ def _parse_entries(payload: Any) -> list[BlockEntry]:
     return list(by_uid.values())
 
 
+class BlocklistUnavailable(RuntimeError):
+    """The blocklist file exists but could not be read; it must not be treated as empty."""
+
+
 class Blocklist:
     """In-memory view of ``config_dir/visit_blocklist.json`` with atomic writes.
 
     Build with :meth:`load` / :meth:`aload`. A missing file is an empty list.
-    An unreadable or malformed file is moved aside to ``<name>.corrupt`` (so a
-    later write cannot silently destroy it) and treated as empty, with a
-    warning. Mutations write the new list first and only then swap it in, so
-    a failed write leaves memory and disk consistent.
+    An unreadable or malformed file fails closed: the file is left untouched
+    (a transient read error recovers on the next load, a corrupt file stays
+    available for repair), :attr:`available` is False, :meth:`is_blocked`
+    and every mutation raise :class:`BlocklistUnavailable`, and identity
+    verification rejects every peer. Treating it as empty would let a
+    blocked peer back in. Mutations write the new list first and only then
+    swap it in, so a failed write leaves memory and disk consistent.
     """
 
-    def __init__(self, config_dir: str | os.PathLike[str], entries: Iterable[BlockEntry] = ()) -> None:
+    def __init__(self, config_dir: str | os.PathLike[str], entries: Iterable[BlockEntry] = (),
+                 *, available: bool = True) -> None:
         self._path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
         self._entries: dict[str, BlockEntry] = {e.visit_uid: e for e in entries}
         self._lock = asyncio.Lock()
+        self.available = available
 
     @property
     def path(self) -> Path:
@@ -395,8 +404,7 @@ class Blocklist:
         try:
             return cls._from_payload(config_dir, read_json(path))
         except (OSError, ValueError) as exc:
-            _quarantine(path, exc)
-            return cls(config_dir)
+            return cls._unavailable(config_dir, exc)
 
     @classmethod
     async def aload(cls, config_dir: str | os.PathLike[str]) -> "Blocklist":
@@ -408,13 +416,25 @@ class Blocklist:
             payload = await read_json_async(path)
             return cls._from_payload(config_dir, payload)
         except (OSError, ValueError) as exc:
-            await asyncio.to_thread(_quarantine, path, exc)
-            return cls(config_dir)
+            return cls._unavailable(config_dir, exc)
+
+    @classmethod
+    def _unavailable(cls, config_dir: str | os.PathLike[str], exc: BaseException) -> "Blocklist":
+        logger.warning("visit blocklist unreadable (%s); failing closed", type(exc).__name__)
+        return cls(config_dir, available=False)
+
+    def _require_available(self) -> None:
+        if not self.available:
+            raise BlocklistUnavailable("visit blocklist could not be read")
 
     # ── 查询（同步，内存）──
 
     def is_blocked(self, visit_uid: str) -> bool:
-        """Return True when ``visit_uid`` is blocked (in-memory, synchronous)."""
+        """Return True when ``visit_uid`` is blocked (in-memory, synchronous).
+
+        Raises :class:`BlocklistUnavailable` when the file could not be read.
+        """
+        self._require_available()
         uid = _norm_uid(visit_uid)
         return bool(uid) and uid in self._entries
 
@@ -440,6 +460,7 @@ class Blocklist:
     def _with_block(
         self, visit_uid: str, display_name_at_block: str, reason: str | None, now: float | None,
     ) -> dict[str, BlockEntry] | None:
+        self._require_available()
         uid = _norm_uid(visit_uid)
         if not uid:
             raise ValueError("visit_uid must be a non-empty string")
@@ -455,6 +476,7 @@ class Blocklist:
         return entries
 
     def _without(self, visit_uid: str) -> dict[str, BlockEntry] | None:
+        self._require_available()
         uid = _norm_uid(visit_uid)
         if uid not in self._entries:
             return None
@@ -507,17 +529,10 @@ class Blocklist:
             return True
 
 
-def _quarantine(path: Path, exc: BaseException) -> None:
-    logger.warning("visit blocklist unreadable (%s); moving it aside", type(exc).__name__)
-    try:
-        os.replace(path, path.with_name(path.name + ".corrupt"))
-    except OSError as move_exc:
-        logger.warning("visit blocklist: could not move corrupt file aside: %s", type(move_exc).__name__)
-
-
 __all__ = [
     "BlockEntry",
     "Blocklist",
+    "BlocklistUnavailable",
     "PeerRateLimiter",
     "RateChannel",
     "RateDecision",

@@ -331,6 +331,28 @@ def test_cumulative_ack_clears_every_item_up_to_seq(tmp_path):
     assert tx.pending_bytes == 0
 
 
+def test_ack_cannot_release_items_that_were_never_sent(tmp_path):
+    # 对端提前发来越界的累计 ack：未发出的 text / leave 不能被当成已确认
+    tx = make_outbox(tmp_path, peer_present=False)
+    tx.send(text(1), now=0.0)
+    tx.send({"t": "leave", "reason": "ended"}, now=0.0)
+    assert tx.due(0.0) == []            # 对端未入房：什么都没发
+    assert tx.on_ack(99, 0.1) == []
+    assert tx.unacked_seqs == [1, 2]
+    assert tx.ack_beyond_sent == 1
+    assert not tx.leave_done(0.2)
+
+
+def test_ack_past_the_sent_prefix_releases_only_the_sent_part(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    assert [f.seq for f in tx.due(0.0)] == [1]
+    tx.send(text(2), now=0.5)           # 入队但还没 due() 发出
+    assert tx.on_ack(2, 0.6) == [(1, "text")]
+    assert tx.unacked_seqs == [2]
+    assert tx.ack_beyond_sent == 1
+
+
 def test_retransmit_schedule_then_every_eight_seconds(tmp_path):
     tx = make_outbox(tmp_path, delivery_timeout_s=10_000)
     tx.send(text(1), now=0.0)
