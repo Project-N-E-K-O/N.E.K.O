@@ -348,11 +348,19 @@ export const usePluginStore = defineStore('plugin', () => {
   async function syncPluginApplicationState(
     pluginId: string,
     expectedRevision = pendingReloadRevision(pluginId),
+    legacyLifecycleApplied = false,
   ): Promise<boolean> {
     let raw: unknown
     try {
       raw = await getPluginConfigApplicationState(pluginId)
-    } catch {
+    } catch (error) {
+      const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+      // Older plugin servers do not expose application-state. A successful
+      // lifecycle operation is the only compatibility evidence available there;
+      // network errors remain conservative and keep the hint visible.
+      if (legacyLifecycleApplied && (status === 404 || status === 405)) {
+        return setPendingReload(pluginId, false, expectedRevision)
+      }
       return false
     }
     if (!raw || typeof raw !== 'object') return false
@@ -379,10 +387,14 @@ export const usePluginStore = defineStore('plugin', () => {
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
     const pendingRevision = pendingReloadRevision(pluginId)
-    await startPlugin(pluginId)
+    const result = await startPlugin(pluginId)
     // The server knows which effective config the host actually loaded. Keep the
     // in-memory flag only as a compatibility fallback for older servers.
-    await syncPluginApplicationState(pluginId, pendingRevision)
+    await syncPluginApplicationState(
+      pluginId,
+      pendingRevision,
+      result.success === true && result.already_running !== true,
+    )
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
@@ -395,8 +407,8 @@ export const usePluginStore = defineStore('plugin', () => {
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     const pendingRevision = pendingReloadRevision(pluginId)
-    await reloadPlugin(pluginId)
-    await syncPluginApplicationState(pluginId, pendingRevision)
+    const result = await reloadPlugin(pluginId)
+    await syncPluginApplicationState(pluginId, pendingRevision, result.success === true)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
@@ -413,7 +425,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
     const result = await reloadAllPlugins()
     for (const pluginId of result.reloaded) {
-      await syncPluginApplicationState(pluginId, revisions.get(pluginId))
+      await syncPluginApplicationState(pluginId, revisions.get(pluginId), true)
     }
     // The reload already happened; a follow-up refresh that fails or times out must not
     // turn its result into a failure for the caller.

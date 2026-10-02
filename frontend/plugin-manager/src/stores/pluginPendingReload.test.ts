@@ -236,4 +236,24 @@ describe('plugin store reload bookkeeping', () => {
 
     expect(hasPendingReload('demo')).toBe(true)
   })
+
+  it('clears the flag after a successful reload on an older server', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue({ response: { status: 404 } })
+    const store = usePluginStore()
+
+    await store.reload('demo')
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
+
+  it('keeps the flag when application-state fails for a non-compatibility reason', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(getPluginConfigApplicationState).mockRejectedValue(new Error('network failure'))
+    const store = usePluginStore()
+
+    await store.reload('demo')
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
 })

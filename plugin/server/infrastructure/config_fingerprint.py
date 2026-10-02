@@ -88,10 +88,51 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def fingerprint_config(config: object) -> str:
-    """Return a content fingerprint for an already resolved config value."""
+def _typed_fingerprint_value(value: object) -> object:
+    """Encode every value with an explicit type tag before hashing.
 
-    serialized = _canonical_json(canonicalize_config(config)).encode("utf-8")
+    ``canonicalize_config`` is kept as a readable normalized view, but tagged
+    dictionaries can otherwise collide with ordinary user dictionaries. The
+    fingerprint representation must keep mapping, sequence, scalar, and TOML
+    special-scalar domains disjoint.
+    """
+
+    if isinstance(value, Mapping):
+        items = [
+            [_typed_fingerprint_value(key), _typed_fingerprint_value(item)]
+            for key, item in value.items()
+        ]
+        items.sort(key=lambda item: _canonical_json(item[0]))
+        return ["mapping", items]
+    if isinstance(value, list):
+        return ["list", [_typed_fingerprint_value(item) for item in value]]
+    if isinstance(value, tuple):
+        return ["tuple", [_typed_fingerprint_value(item) for item in value]]
+    if isinstance(value, datetime):
+        return ["datetime", value.isoformat()]
+    if isinstance(value, date):
+        return ["date", value.isoformat()]
+    if isinstance(value, time):
+        return ["time", value.isoformat()]
+    if value is None:
+        return ["null"]
+    if isinstance(value, bool):
+        return ["bool", value]
+    if isinstance(value, int):
+        return ["int", str(value)]
+    if isinstance(value, str):
+        return ["string", value]
+    if isinstance(value, float):
+        return ["float", value.hex()]
+    if isinstance(value, bytes):
+        return ["bytes", value.hex()]
+    raise TypeError(f"Unsupported configuration value type: {type(value).__name__}")
+
+
+def fingerprint_config(config: object) -> str:
+    """Return a collision-resistant fingerprint for an effective config value."""
+
+    serialized = _canonical_json(_typed_fingerprint_value(config)).encode("utf-8")
     return f"sha256:{hashlib.sha256(serialized).hexdigest()}"
 
 

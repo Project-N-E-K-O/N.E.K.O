@@ -50,6 +50,19 @@ def test_toml_special_scalars_are_tagged_and_stable() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_fingerprint_separates_tagged_scalars_from_user_mappings() -> None:
+    ordinary_mapping = {
+        "value": {
+            "__neko_config_value_type__": "date",
+            "value": "2026-10-01",
+        }
+    }
+    actual_date = {"value": date(2026, 10, 1)}
+
+    assert fingerprint_config(ordinary_mapping) != fingerprint_config(actual_date)
+
+
+@pytest.mark.plugin_unit
 def test_unsupported_values_fail_without_rendering_the_value() -> None:
     class SecretValue:
         def __repr__(self) -> str:

@@ -253,7 +253,12 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {}
+
+            self.config = SimpleNamespace(dump=dump)
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {
@@ -441,7 +446,12 @@ def test_plugin_process_runner_cancels_trigger_without_run_id_before_closing_mod
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {}
+
+            self.config = SimpleNamespace(dump=dump)
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {}
@@ -621,7 +631,12 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {}
+
+            self.config = SimpleNamespace(dump=dump)
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {
