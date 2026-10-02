@@ -183,8 +183,8 @@ async function phaseT1(c, targets) {
     await sleep(1500);
     r.afterIframe = {
       ...(await c.eval(`return { petSocketState: window.appState && window.appState.socket && window.appState.socket.readyState };`)),
-      chatConnectingCount: chat ? await chat.eval('return window.__probeConnecting;') : null,
-      chatSocketState: chat ? await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;') : null,
+      chatConnectingCount: await chat.eval('return window.__probeConnecting;'),
+      chatSocketState: await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;'),
     };
     r.before = before;
     // Positive control: the same connect from the parent realm goes through PetWebSocket and hijacks _activeWs.
@@ -200,8 +200,8 @@ async function phaseT1(c, targets) {
       });`);
     await sleep(1500);
     r.afterParentControl = {
-      chatConnectingCount: chat ? await chat.eval('return window.__probeConnecting;') : null,
-      chatSocketState: chat ? await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;') : null,
+      chatConnectingCount: await chat.eval('return window.__probeConnecting;'),
+      chatSocketState: await chat.eval('return window.appState && window.appState.socket && window.appState.socket.readyState;'),
     };
     // Explicit verdict next to the raw data. A failing T1 is itself the evidence for falling back to design 1,
     // so it is recorded (not thrown away by an exception); runs.t1.status only says the phase completed.
