@@ -176,6 +176,9 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     # Label-like path segments and reference-style links.
     "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
     "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
+    # Shortcut reference links with their definitions.
+    ("看这张[屏幕截图]，你觉得这个视频画面好漂亮吗？色调很温柔呢。再看[屏幕画面]，"
+     "右下角那只猫好可爱，毛茸茸的呢。\n\n[屏幕截图]: https://host/a.png\n[屏幕画面]: /tmp/b.png"),
     # A label-like path segment inside a URL.
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
@@ -190,6 +193,13 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
 def test_words_and_prose_that_only_contain_a_label_stay(text):
     messages = [_assistant(text), _user("继续")]
     assert project_screen_history(messages) is messages
+
+
+def test_whitespace_around_a_removed_label_stays():
+    """Indentation and trailing spaces can be Markdown structure."""
+    text = "看这段：\n\n    echo screen comment: demo\n    ls  "
+    messages = [_assistant("    " + text.lstrip()), _user("继续")]
+    assert project_screen_history(messages)[0]["content"] == "    看这段：\n\n    echo demo\n    ls  "
 
 
 def test_a_bare_label_does_not_join_paragraphs():

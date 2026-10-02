@@ -87,6 +87,11 @@ _LABEL_STRIP = regex.compile(
     rf"|{_NOT_AFTER_WORD}screen[ \t]{{1,8}}comment[:：][ \t]*",
     regex.IGNORECASE,
 )
+# A Markdown reference definition, "[name]: destination", on its own line.
+_REFERENCE_DEFINITION = regex.compile(r"(?m)^[ \t]{0,3}\[([^\]\n]{1,40})\]:[ \t]*\S")
+_LABEL_ONLY = regex.compile(rf"[ \t]{{0,8}}(?:{_LABEL})[ \t]{{0,8}}", regex.IGNORECASE)
+# Stands in for "[" of a masked reference; never in model text, no marker.
+_MASK = "\x00"
 # What a message that held only a label shows when it must stay in the view.
 _NOTHING_SAID = "…"
 _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
@@ -342,7 +347,9 @@ def screen_history_rewrites(messages, *, trailing_turn: bool = False,
             continue
         stripped = _strip_labels(current)
         if stripped != current:
-            rewrites[index] = stripped.strip() or None
+            # Only the label goes; indentation and other whitespace around it
+            # can be Markdown structure (code blocks, line breaks).
+            rewrites[index] = stripped if stripped.strip() else None
             if hits is not None:
                 hits["label"] = hits.get("label", 0) + 1
     return rewrites
@@ -352,7 +359,27 @@ def _strip_labels(text: str) -> str:
     """``text`` without any source label (see ``_LABEL_STRIP``)."""
     if not _LABEL_HINT.search(text):
         return text
-    return _LABEL_STRIP.sub("", text)
+    return _unmask(_LABEL_STRIP.sub("", _mask_reference_links(text)))
+
+
+def _mask_reference_links(text: str) -> str:
+    """Hide the "[" of label-like Markdown shortcut references.
+
+    "see [screen image]" next to a definition "[screen image]: https://..."
+    is a link, lexically the same as a bracket label; the definition marks
+    it. The mask keeps every offset, and ``_unmask`` puts the brackets back.
+    """
+    names = {
+        match.group(1) for match in _REFERENCE_DEFINITION.finditer(text)
+        if _LABEL_ONLY.fullmatch(match.group(1))
+    }
+    for name in names:
+        text = text.replace(f"[{name}]", f"{_MASK}{name}]")
+    return text
+
+
+def _unmask(text: str) -> str:
+    return text.replace(_MASK, "[")
 
 
 def _chain_rewrites(messages, *, trailing_turn: bool = False,
@@ -475,7 +502,7 @@ def strip_screen_labels(messages, *, guard_enabled: bool | None = None):
             continue
         if projected is None:
             projected = list(messages)
-        projected[index] = _with_text(message, stripped.strip())
+        projected[index] = _with_text(message, stripped if stripped.strip() else "")
     return messages if projected is None else projected
 
 
@@ -841,7 +868,11 @@ _cached_dechain = lru_cache(maxsize=1024)(_dechain)
 def _dechained(texts: tuple) -> tuple | None:
     if not any(_LABEL_HINT.search(text) for text in texts):
         return None
-    return _cached_dechain(texts)
+    masked = tuple(_mask_reference_links(text) for text in texts)
+    result = _cached_dechain(masked)
+    if result is None or masked == texts:
+        return result
+    return tuple(None if text is None else _unmask(text) for text in result)
 
 
 def _is_ascii_word_char(char: str) -> bool:
