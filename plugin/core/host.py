@@ -1069,9 +1069,13 @@ def _plugin_process_runner(
         # 从 effective config 读取 persist_mode（包含 profile 覆写）
         startup_config_fingerprint: str | None = None
         try:
-            # PluginConfig exposes the effective configuration asynchronously;
-            # this runner is synchronous, so bridge the one startup read here.
-            effective_cfg = asyncio.run(instance.config.dump(timeout=3.0))
+            from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+
+            resolved_config = resolve_plugin_config_from_path(
+                plugin_id,
+                config_path=Path(config_path),
+            )
+            effective_cfg = resolved_config["effective_config"]
             # Keep the applied identity in the child, where the effective
             # configuration is actually resolved immediately before startup.
             # The parent must not hash its earlier pre-spawn snapshot.

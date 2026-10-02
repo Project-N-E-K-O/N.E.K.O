@@ -65,6 +65,7 @@ export const usePluginStore = defineStore('plugin', () => {
   let fetchStatusSeq = 0
   let fetchSummariesSeq = 0
   const fetchDetailSeq = new Map<string, number>()
+  const applicationStateQuerySeq = new Map<string, number>()
 
   // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
   // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
@@ -350,10 +351,14 @@ export const usePluginStore = defineStore('plugin', () => {
     expectedRevision = pendingReloadRevision(pluginId),
     legacyLifecycleApplied = false,
   ): Promise<boolean> {
+    const requestSeq = (applicationStateQuerySeq.get(pluginId) ?? 0) + 1
+    applicationStateQuerySeq.set(pluginId, requestSeq)
+    const isLatestRequest = () => applicationStateQuerySeq.get(pluginId) === requestSeq
     let raw: unknown
     try {
       raw = await getPluginConfigApplicationState(pluginId)
     } catch (error) {
+      if (!isLatestRequest()) return false
       const status = (error as { response?: { status?: unknown } } | null)?.response?.status
       // Older plugin servers do not expose application-state. A successful
       // lifecycle operation is the only compatibility evidence available there;
@@ -363,6 +368,7 @@ export const usePluginStore = defineStore('plugin', () => {
       }
       return false
     }
+    if (!isLatestRequest()) return false
     if (!raw || typeof raw !== 'object') return false
     const state = raw as { plugin_id?: unknown; config_state?: unknown }
     if (
@@ -425,7 +431,8 @@ export const usePluginStore = defineStore('plugin', () => {
     const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
     const result = await reloadAllPlugins()
     for (const pluginId of result.reloaded) {
-      await syncPluginApplicationState(pluginId, revisions.get(pluginId), true)
+      const revision = revisions.get(pluginId)
+      await syncPluginApplicationState(pluginId, revision, revision !== undefined)
     }
     // The reload already happened; a follow-up refresh that fails or times out must not
     // turn its result into a failure for the caller.
