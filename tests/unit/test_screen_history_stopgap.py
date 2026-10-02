@@ -183,6 +183,20 @@ def test_a_message_that_was_only_a_label_leaves_the_view():
     assert [m["content"] for m in project_screen_history(messages)] == ["聊", "好呀。", "继续"]
 
 
+def test_non_text_parts_of_a_rewritten_message_stay():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    messages = [
+        _user("聊"),
+        {"role": "assistant", "content": [{"type": "text", "text": chain("屏幕搭话：")}, image]},
+        {"role": "assistant", "content": [{"type": "text", "text": "屏幕搭话："}, image]},
+        _user("继续"),
+    ]
+    first, label_only = project_screen_history(messages)[1:3]
+    assert first["content"][1:] == [image]
+    _assert_cut_to_first_comment(first["content"][0]["text"])
+    assert label_only["content"] == [image]
+
+
 def test_label_removal_is_idempotent_and_reported():
     hits = {}
     once = project_screen_history(

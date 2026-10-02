@@ -231,6 +231,25 @@ def _with_content(message, content):
     return message
 
 
+def _non_text_parts(message) -> list:
+    _, content = _role_and_content(message)
+    if not isinstance(content, list):
+        return []
+    return [
+        part for part in content
+        if not (isinstance(part, dict) and part.get("type") == "text"
+                and isinstance(part.get("text"), str))
+    ]
+
+
+def _with_text(message, text):
+    """``message`` showing ``text``; non-text parts of list content stay."""
+    others = _non_text_parts(message)
+    if not others:
+        return _with_content(message, text)
+    return _with_content(message, ([{"type": "text", "text": text}] if text else []) + others)
+
+
 def screen_history_rewrites(messages, *, trailing_turn: bool = False,
                             hits: dict | None = None) -> dict:
     """Map each assistant message the request view rewrites to its new text.
@@ -332,6 +351,7 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
     comment's sentence end. The rest of the chain is dropped. A message left
     with nothing is dropped from the view, unless it carries ``tool_calls``,
     in which case it stays with empty content so tool-result pairing holds.
+    Non-text parts of list content (images and the like) are kept.
     Role, ``tool_calls`` and every other key are preserved. Only the copy is
     touched; ``messages`` is never mutated, and ``messages`` itself is
     returned when nothing matched.
@@ -352,9 +372,9 @@ def project_screen_history(messages, *, guard_enabled: bool | None = None,
         if index not in rewrites:
             projected.append(message)
         elif rewrites[index] is not None:
-            projected.append(_with_content(message, rewrites[index]))
-        elif _has_tool_calls(message):
-            projected.append(_with_content(message, ""))
+            projected.append(_with_text(message, rewrites[index]))
+        elif _has_tool_calls(message) or _non_text_parts(message):
+            projected.append(_with_text(message, ""))
     return projected
 
 

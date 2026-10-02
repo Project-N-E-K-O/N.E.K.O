@@ -3241,10 +3241,15 @@ class LifecycleMixin:
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
             ]
-            incremental_cache = (
-                list(incremental_next_session_context)
-                + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
-            )
+            # Copies: a reply still streaming grows its cache entry in place,
+            # and that growth is not in the final prime rendered below.
+            incremental_cache = [
+                dict(entry)
+                for entry in (
+                    list(incremental_next_session_context)
+                    + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+                )
+            ]
             # What the pending session was primed with at preparation, in
             # prime order: next-session context snapshot, then cache snapshot,
             # as frozen when it was rendered.

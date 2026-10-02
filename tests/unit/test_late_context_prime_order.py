@@ -22,12 +22,15 @@ COMMENT_B = "屏幕搭话 远处的红色小车正在缓慢经过桥面，桥下
 
 async def _run(
     monkeypatch, *, context, snapshot_cache, incremental_cache, unprimed_cache=(),
+    unprimed_growth="",
 ):
     """Prepare with ``context`` + ``snapshot_cache``, add ``incremental_cache``
     before the swap, and deliver COMMENT_B as next-session context while the
     final prime is awaiting, together with ``unprimed_cache`` (cache entries
-    that land after the final prime's slice and are never primed). Returns
-    the promoted session's system text."""
+    that land after the final prime's slice and are never primed) and
+    ``unprimed_growth`` (text a still-streaming reply appends to the last
+    cache entry after the final prime rendered it). Returns the promoted
+    session's system text."""
     mgr, pending = _manager(monkeypatch)
     mgr.master_name = "Alice"
     # _make_swap_manager stubs the late prime out; this test is about it.
@@ -55,6 +58,8 @@ async def _run(
             )
             late_delivered.append(result)
             mgr.message_cache_for_new_session += [dict(e) for e in unprimed_cache]
+            if unprimed_growth:
+                mgr.message_cache_for_new_session[-1]["text"] += unprimed_growth
         await OmniOfflineClient.prime_context(pending, text, skipped=skipped)
 
     pending.prime_context = prime_while_late_context_arrives
@@ -153,3 +158,19 @@ async def test_late_context_ignores_cache_entries_that_were_never_primed(monkeyp
     )
     assert "嗯嗯" not in content, content
     assert BODY_B not in content, content
+
+
+@pytest.mark.asyncio
+async def test_late_context_ignores_reply_growth_that_was_never_primed(monkeypatch):
+    """A reply still streaming while the final prime awaits grows its cache
+    entry in place. That growth is not in the prompt, so it must not start
+    a chain that the late item would then be judged to continue."""
+    mgr, content = await _run(
+        monkeypatch,
+        context=[],
+        snapshot_cache=[],
+        incremental_cache=[{"role": "Alice", "text": "陪我聊聊"}, {"role": LAN, "text": "好呀。"}],
+        unprimed_growth=COMMENT_A,
+    )
+    assert BODY_A not in content, content
+    assert BODY_B in content, content
