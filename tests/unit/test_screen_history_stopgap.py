@@ -171,6 +171,8 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "Try the screen content / settings panel and tell me what you see there.",
     "照片/屏幕截图 都可以发给我，我帮你看看哪里出了问题呀。照片/屏幕截图/视频也行，我会尽量帮你分析。",
     "Could you share the screen content/layout you see?",
+    # A label-like path segment inside a URL.
+    "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
     # Markdown link text is not a label, neither for removal nor for chains.
@@ -241,6 +243,14 @@ def test_text_parts_split_by_an_image_each_keep_their_slot():
     assert project_screen_history([_assistant_parts(labelled), _user("继续")])[0]["content"] == [
         text("看这张。"), image, text("再看这张，挺好的。"),
     ]
+    spaced = [text("屏幕搭话：看这张。 "), image, text(" 屏幕搭话：再看这张，挺好的。")]
+    assert project_screen_history([_assistant_parts(spaced), _user("继续")])[0]["content"] == [
+        text("看这张。"), image, text("再看这张，挺好的。"),
+    ]
+    intro = [text("先说一句 "), image, text(chain("屏幕搭话："))]
+    content = project_screen_history([_assistant_parts(intro), _user("继续")])[0]["content"]
+    assert content[:2] == [text("先说一句"), image]
+    _assert_cut_to_first_comment(content[2]["text"])
     chained = [text("屏幕搭话：" + PARTS[0]), image, text("屏幕搭话：" + PARTS[1])]
     content = project_screen_history([_assistant_parts(chained), _user("继续")])[0]["content"]
     assert content[1:] == [image]

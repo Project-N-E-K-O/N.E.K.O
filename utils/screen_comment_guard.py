@@ -261,7 +261,9 @@ def _split_over(texts, text):
     remaining, pieces = text, []
     for original in texts:
         if pieces:
-            remaining = remaining.lstrip("\n")
+            # The joining newline, and any whitespace the earlier part ended
+            # with or this one starts with.
+            remaining = remaining.lstrip()
         core = _strip_labels(original).strip()
         if not remaining or not core:
             pieces.append("")
