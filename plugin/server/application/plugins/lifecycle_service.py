@@ -9,7 +9,7 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import partial
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +41,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     PluginOperationBusy,
+    plugin_operation_lock,
     serialized_plugin_operation,
 )
 from plugin.server.application.plugins.registry_service import (
@@ -88,6 +89,7 @@ from plugin.server.messaging.llm_tool_registry import (
 )
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
+    PLUGIN_AUTOSTART_CONCURRENCY,
     PLUGIN_CONFIG_ROOTS,
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
@@ -917,6 +919,39 @@ class PluginLifecycleService:
         persist_user_intent: bool = False,
         start_deadline: float | None = None,
     ) -> dict[str, object]:
+        return await self._start_plugin_inner(
+            plugin_id,
+            restore_state,
+            refresh_registry=refresh_registry,
+            persist_user_intent=persist_user_intent,
+            start_deadline=start_deadline,
+        )
+
+    async def _start_plugin_inner(
+        self,
+        plugin_id: str,
+        restore_state: bool = False,
+        *,
+        refresh_registry: bool = True,
+        persist_user_intent: bool = False,
+        start_deadline: float | None = None,
+    ) -> dict[str, object]:
+        """``start_plugin`` 的函数体：**调用方必须已经持有插件操作锁**。
+
+        拆出来是为了让自启动批次能「整批只持锁一次、锁内并发拉起多个插件」，见
+        ``start_plugins_batch``。串行自启动 12 个插件实测 14871ms，占冷启动的 79%
+        （sum/max≈10.4 → 零重叠），而单个插件的成本几乎全在子进程冷启动上；子进程
+        是**独立进程**，不受 GIL 约束，16 逻辑核实测 12 并发整组 1430ms（串行等效
+        8007ms，5.6x）。
+
+        ⚠️ 本方法体内**不得**调用任何被 ``@serialized_plugin_operation`` 装饰的方法，
+        也不得显式 ``plugin_operation_lock.hold()``。批次是在 ``asyncio.gather`` 的
+        子任务里跑本方法的，而锁的重入判定按 ``asyncio.current_task()`` 认
+        （``operation_lock.py`` 的 ``_OPERATION_OWNER``）——子任务里 ``current_task``
+        是子任务自己、owner 是父任务，判定必然失败，于是它会去抢一把已被父任务持有的
+        锁，**整个启动挂死**。有 AST 守卫测试盯着这件事（见
+        ``test_autostart_concurrency.py``）。
+        """
         _hot_reload_failed.discard(plugin_id)
         if _operations_shutting_down:
             # 关停已经开始了：这时候拉起的插件会落在 host 快照之后，变成没人
@@ -1264,12 +1299,13 @@ class PluginLifecycleService:
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
-                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
-                # 该写的那份：写回去，下次启动走快路径。指纹在 import 之前先取一份，
-                # 之后比对，和打包器一样拒绝"import 改动了树"的情况。reload_all 有
-                # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
+                # 包里那份元数据如果 schema 过期、**或者 build_env 不是本机的**，这次
+                # 扫描学到的就是打包器本该写的那份：写回去，下次启动走快路径。指纹在
+                # import 之前先取一份，之后比对，和打包器一样拒绝"import 改动了树"的
+                # 情况。reload_all 有总预算，可选的优化不放进去；应用启动的自动拉起没有
+                # 截止期，在那里做。
                 before_scan = (
-                    await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
+                    await asyncio.to_thread(_snapshot_package_tree_for_rebuild, config_path)
                     if start_deadline is None and development_snapshot is None
                     else None
                 )
@@ -1448,6 +1484,137 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 error_type=type(exc).__name__,
             ) from exc
+
+    async def start_plugins_batch(
+        self,
+        independent_plugin_ids: Sequence[str],
+        ordered_plugin_ids: Sequence[str] = (),
+        *,
+        concurrency: int | None = None,
+        refresh_registry: bool = False,
+    ) -> dict[str, object]:
+        """一次锁持有内启动一批插件：第一组并发，第二组按既有拓扑序串行。
+
+        **为什么整批只持锁一次**，而不是让每个插件各自走 ``start_plugin`` 去抢锁：
+        ``serialized_plugin_operation`` 的重入判定按 ``asyncio.current_task()`` 认，而
+        ``asyncio.gather`` 给每个协程新建 Task——子任务里 ``current_task`` 是子任务自己、
+        ``_OPERATION_OWNER`` 是父任务，判定必然失败，于是它们会去抢一把已被本方法持有
+        的锁，**整批挂死**。这正是 ``reload_all_plugins`` 当年用 gather 一点并发都买不到
+        的原因（见那里的注释）。所以这里显式持锁一次，锁内调**未加装饰**的
+        ``_start_plugin_inner``。
+
+        **锁语义没有被削弱**：整批期间全局锁（含跨进程文件锁）一直在手，安装/卸载/
+        其他启停照样进不来。相比原来"12 次各自持锁 ~1.44s"，现在是"1 次持锁 ~3s"，
+        对其他等待者反而更友好。
+
+        **两组的划分依据**见 ``registry_service._get_autostart_plugin_groups_sync``：
+        依赖检查读的是 ``state.event_handlers``，要求被依赖方已注册完 handler，所以
+        只有不声明依赖的插件能并发；声明了依赖的排在第二组，等第一组全部就绪后按序跑。
+
+        失败隔离与原来的 for 循环一致：一个插件起不来只记 error，不影响同批其他插件。
+        """
+        limit = PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
+        limit = max(1, limit)
+        started: list[str] = []
+        failed: list[str] = []
+
+        async def _start_one(plugin_id: str) -> None:
+            # 取消保护与 serialized_plugin_operation 同款，只是锁已经在批次手里、
+            # 不需要再抢一次，所以那个包装器的 lock_acquired 分支在这里恒为真：
+            # **启动一旦开始就不取消它**。
+            #
+            # 为什么必须这样：函数体的 except 分支只接 Exception 类族
+            # （ServerDomainError / HTTPException / PluginError / ImportError /
+            # RUNTIME_ERRORS），而 CancelledError 是 BaseException，一个都接不住。
+            # 从中间掐断就会留下一个已经 spawn、却还没走到
+            # _register_or_replace_host_sync 的 host 进程——落在 host 快照之后，
+            # 成为没人停止的孤儿（正是 start_plugin 开头 _operations_shutting_down
+            # 那段注释在防的同一件事）。所以让它跑完，再把取消交还给调用方。
+            operation = asyncio.create_task(
+                self._start_plugin_inner(
+                    plugin_id,
+                    refresh_registry=refresh_registry,
+                )
+            )
+            cancelled = False
+            while True:
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if operation.done():
+                        break
+                except BaseException:
+                    if cancelled:
+                        raise asyncio.CancelledError from None
+                    raise
+                else:
+                    break
+
+            error = operation.exception()
+            if cancelled:
+                # 启动已经落地（成功或失败都已记完），把取消如实交还。
+                raise asyncio.CancelledError
+            if error is not None:
+                failed.append(plugin_id)
+                logger.error(
+                    "failed to autostart plugin at startup: plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(error).__name__,
+                    str(error),
+                )
+            else:
+                started.append(plugin_id)
+                logger.debug("autostart plugin started: plugin_id={}", plugin_id)
+
+        independent = [str(plugin_id) for plugin_id in independent_plugin_ids if plugin_id]
+        ordered = [str(plugin_id) for plugin_id in ordered_plugin_ids if plugin_id]
+
+        async with plugin_operation_lock.hold():
+            if limit <= 1 or len(independent) <= 1:
+                # 并发上限设为 1 就是回退开关：完全恢复原来的串行行为。
+                for plugin_id in independent:
+                    await _start_one(plugin_id)
+            else:
+                semaphore = asyncio.Semaphore(limit)
+
+                async def _start_one_bounded(plugin_id: str) -> None:
+                    async with semaphore:
+                        await _start_one(plugin_id)
+
+                # return_exceptions=True：一个插件失败不该让 gather 取消其余兄弟任务
+                # ——那会把"某个插件起不来"放大成"半批插件被从中间掐断"。失败隔离
+                # 由 _start_one 内部记录，这里只负责等全部落地。
+                outcomes = await asyncio.gather(
+                    *(_start_one_bounded(plugin_id) for plugin_id in independent),
+                    return_exceptions=True,
+                )
+                for plugin_id, outcome in zip(independent, outcomes):
+                    if isinstance(outcome, BaseException) and not isinstance(
+                        outcome, asyncio.CancelledError
+                    ):
+                        # _start_one 已经吞掉了启动本身的异常；能走到这里的是它自己
+                        # 出了意外（不该发生），照样记下来而不是静默丢掉。
+                        if plugin_id not in failed and plugin_id not in started:
+                            failed.append(plugin_id)
+                            logger.error(
+                                "autostart task failed unexpectedly: plugin_id={}, err_type={}, err={}",
+                                plugin_id,
+                                type(outcome).__name__,
+                                str(outcome),
+                            )
+
+            # 声明了依赖的插件：等并发组全部注册完 handler 之后，按既有拓扑序串行。
+            for plugin_id in ordered:
+                await _start_one(plugin_id)
+
+        logger.info(
+            "autostart batch finished: started={}, failed={}, concurrency_limit={}",
+            len(started),
+            len(failed),
+            limit,
+        )
+        return {"started": started, "failed": failed}
 
     @serialized_plugin_operation
     async def stop_plugin(

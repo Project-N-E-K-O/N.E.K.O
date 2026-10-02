@@ -322,7 +322,11 @@ async def test_startup_reconciles_existing_install_source_after_migration_before
             return {"success": True, "plugin_id": plugin_id}
 
         monkeypatch.setattr(service._plugin_registry_service, "refresh_registry", _refresh_registry)
-        monkeypatch.setattr(service._plugin_lifecycle_service, "start_plugin", _start_plugin)
+        # 打在 _start_plugin_inner 而不是 start_plugin：自启动现在走
+        # start_plugins_batch（整批只持锁一次、锁内并发），它调的是未加装饰的
+        # 内部实现。可观测效果不变——每个自启动插件各被启动一次、
+        # refresh_registry=False，所以下面的 calls 断言一字不改。
+        monkeypatch.setattr(service._plugin_lifecycle_service, "_start_plugin_inner", _start_plugin)
 
         await service.startup()
 

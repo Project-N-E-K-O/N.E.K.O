@@ -1,0 +1,403 @@
+"""自启动批次：整批只持锁一次、锁内并发，且依赖方不与它的提供者同时启动。
+
+串行自启动 12 个插件实测 14871ms，占冷启动的 79%（``service.start_plugin`` 的
+sum/max≈10.4 → 零重叠）。插件子进程是**独立进程**，不受 GIL 约束，16 逻辑核实测
+12 个并发冷启动整组 1430ms（串行等效 8007ms，5.6x），单个只慢 1.92x。
+
+实现是「整批只持锁一次 + 锁内 ``asyncio.gather`` 跑未加装饰的 ``_start_plugin_inner``」。
+这里钉住四件在后续重构里很容易被悄悄丢掉、而丢掉之后**不是变慢而是挂死或静默失败**
+的事：
+
+1. ``_start_plugin_inner`` 体内不得再取锁。批次是在 gather 的**子任务**里跑它的，而
+   ``serialized_plugin_operation`` 的重入判定按 ``asyncio.current_task()`` 认
+   （``operation_lock.py`` 的 ``_OPERATION_OWNER``）：子任务里 current_task 是子任务
+   自己、owner 是父任务，判定必然失败 → 去抢一把已被父任务持有的锁 → 整批挂死。
+   这也是 ``reload_all_plugins`` 当年用 gather 一点并发都买不到的原因。
+2. 声明了依赖的插件必须排在并发组**之后**。依赖检查
+   （``core/dependency.py:_find_plugins_by_entry``）读的是 ``state.event_handlers``，
+   要求被依赖方已经启动并注册完 handler；拓扑序只在串行时天然成立。
+3. 单个插件失败不得拖垮同批其他插件——与原来 for 循环的语义一致。
+4. 并发上限设成 1 时必须完全退回串行（回退开关）。
+"""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+import inspect
+from pathlib import Path
+
+import pytest
+
+from plugin.server.application.plugins import lifecycle_service as module
+from plugin.server.application.plugins import registry_service as registry_module
+
+pytestmark = pytest.mark.plugin_unit
+
+
+# ── 1. 死锁守卫：锁内跑的那个函数不得再取锁 ─────────────────────────────
+
+
+def _lock_decorated_names() -> set[str]:
+    """模块里所有被 @serialized_plugin_operation 装饰的可调用名。
+
+    用 ``__wrapped__`` 认，而不是硬编码名单：functools.wraps 会设它，而新加一个
+    受装饰的方法时这个集合会自动跟上——硬编码名单会在最该报警的时候漏掉。
+    """
+    names: set[str] = set()
+    for owner in (module, module.PluginLifecycleService):
+        for name, value in vars(owner).items():
+            if callable(value) and getattr(value, "__wrapped__", None) is not None:
+                names.add(name)
+    return names
+
+
+def test_start_plugin_inner_never_reacquires_the_lock() -> None:
+    """变异：在 _start_plugin_inner 里加一句 self.stop_plugin(...) 或 hold()。
+
+    批次在 gather 的子任务里跑它，重入判定认的是父任务 → 子任务会去抢一把已被
+    持有的锁 → 整个启动挂死。这个失败不会在单插件测试里出现（那时没有父任务持锁），
+    只在真实自启动批次里挂，所以必须有静态守卫。
+    """
+    source = Path(inspect.getfile(module.PluginLifecycleService)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    cls = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "PluginLifecycleService"
+    )
+    inner = next(
+        node
+        for node in cls.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name == "_start_plugin_inner"
+    )
+
+    decorated = _lock_decorated_names()
+    assert "start_plugin" in decorated, "前提没成立：start_plugin 应该是被锁装饰的那个"
+
+    offenders: list[str] = []
+    for node in ast.walk(inner):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr in decorated:
+                offenders.append(f"{func.attr}() @line {node.lineno}")
+            if func.attr == "hold":
+                offenders.append(f"hold() @line {node.lineno}")
+        elif isinstance(func, ast.Name) and func.id in decorated:
+            offenders.append(f"{func.id}() @line {node.lineno}")
+
+    assert not offenders, (
+        "_start_plugin_inner 体内取锁了：" + ", ".join(offenders) +
+        "——批次在 gather 子任务里跑它，重入判定按 current_task 认，子任务会去抢"
+        "父任务已持有的锁，整个自启动批次挂死。要串行化就调 _start_plugin_inner，"
+        "别调被装饰的那个。"
+    )
+
+
+def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
+    """另一侧的守卫：抽函数体不能把公开入口的锁一起抽走。
+
+    start_plugin 有 8 个生产调用方（HTTP 路由、reload、安装/卸载/换源事务、
+    development_service），它们靠装饰器拿锁。
+    """
+    assert getattr(module.PluginLifecycleService.start_plugin, "__wrapped__", None) is not None, (
+        "start_plugin 不再被 @serialized_plugin_operation 装饰——其余调用方就此失去互斥"
+    )
+    assert getattr(module.PluginLifecycleService._start_plugin_inner, "__wrapped__", None) is None, (
+        "_start_plugin_inner 被装饰了：批次会在子任务里抢父任务的锁，挂死"
+    )
+    # 公开签名一字不变（8 个调用方按名字/关键字传参）。结构化比对而不是比字符串：
+    # 本模块有 from __future__ import annotations，str(signature) 会把注解渲染成
+    # 带引号的形式，逐字比对会在与本次改动无关的重构里假报警。
+    signature = inspect.signature(module.PluginLifecycleService.start_plugin)
+    assert [
+        (p.name, p.kind.name, p.default) for p in signature.parameters.values()
+    ] == [
+        ("self", "POSITIONAL_OR_KEYWORD", inspect.Parameter.empty),
+        ("plugin_id", "POSITIONAL_OR_KEYWORD", inspect.Parameter.empty),
+        ("restore_state", "POSITIONAL_OR_KEYWORD", False),
+        ("refresh_registry", "KEYWORD_ONLY", True),
+        ("persist_user_intent", "KEYWORD_ONLY", False),
+        ("start_deadline", "KEYWORD_ONLY", None),
+    ], f"start_plugin 的公开签名变了：{signature}"
+
+
+# ── 批次行为 ────────────────────────────────────────────────────────────
+
+
+class _LockHoldCounter:
+    """替身：记录 hold() 被进入了几次，并让批次真的处在"锁已持有"状态。"""
+
+    def __init__(self) -> None:
+        self.entered = 0
+
+    def hold(self):
+        counter = self
+
+        class _Held:
+            async def __aenter__(self):
+                counter.entered += 1
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Held()
+
+
+def _service_with_recorder(monkeypatch, *, delay=0.0, fail_ids=()):
+    """造一个只记录并发度的 service；_start_plugin_inner 被换成替身。"""
+    service = module.PluginLifecycleService()
+    state = {"live": 0, "peak": 0, "order": [], "finished": []}
+
+    async def _fake_inner(plugin_id, restore_state=False, **kwargs):
+        state["live"] += 1
+        state["peak"] = max(state["peak"], state["live"])
+        state["order"].append(("start", plugin_id))
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+            if plugin_id in fail_ids:
+                raise RuntimeError(f"boom {plugin_id}")
+        finally:
+            state["live"] -= 1
+            state["finished"].append(plugin_id)
+            state["order"].append(("end", plugin_id))
+
+    monkeypatch.setattr(service, "_start_plugin_inner", _fake_inner)
+    counter = _LockHoldCounter()
+    monkeypatch.setattr(module, "plugin_operation_lock", counter)
+    return service, state, counter
+
+
+@pytest.mark.asyncio
+async def test_batch_holds_the_lock_once_and_overlaps_the_independent_group(monkeypatch) -> None:
+    """变异：把 hold() 挪进 _start_one，或把 gather 换回 for 循环。"""
+    service, state, counter = _service_with_recorder(monkeypatch, delay=0.05)
+
+    result = await service.start_plugins_batch(["a", "b", "c", "d"], concurrency=4)
+
+    assert counter.entered == 1, (
+        f"整批应该只持锁一次，实际 {counter.entered} 次——每个插件各自持锁就退回串行了"
+    )
+    assert state["peak"] > 1, "并发组没有真的重叠（peak=%d）" % state["peak"]
+    assert sorted(result["started"]) == ["a", "b", "c", "d"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_concurrency_one_is_a_full_rollback_to_serial(monkeypatch) -> None:
+    """回退开关：上限设 1 必须完全串行。线上出问题时的逃生门。"""
+    service, state, counter = _service_with_recorder(monkeypatch, delay=0.02)
+
+    await service.start_plugins_batch(["a", "b", "c"], concurrency=1)
+
+    assert state["peak"] == 1, f"concurrency=1 却出现了重叠（peak={state['peak']}）"
+    assert [p for _, p in state["order"] if _ == "start"] == ["a", "b", "c"]
+    assert counter.entered == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrency_limit_is_respected(monkeypatch) -> None:
+    """上限是承重的一部分：PLUGIN_STARTUP_TIMEOUT 是**每插件**的，弱机上过多并发
+    会把单个子进程启动拖到撞超时，把"慢"变成"启动失败"。"""
+    service, state, _ = _service_with_recorder(monkeypatch, delay=0.05)
+
+    await service.start_plugins_batch([f"p{i}" for i in range(8)], concurrency=3)
+
+    assert state["peak"] <= 3, f"并发超过上限：peak={state['peak']} > 3"
+    assert state["peak"] > 1, "上限 3 却完全没并发"
+
+
+@pytest.mark.asyncio
+async def test_ordered_group_starts_only_after_the_whole_independent_group(monkeypatch) -> None:
+    """变异：把两个 for/gather 段落调个顺序，或让它们一起进 gather。
+
+    依赖检查读 state.event_handlers，要求被依赖方**已注册完 handler**。并发组没跑完
+    就放依赖方进去，依赖方会以 PLUGIN_DEPENDENCY_CHECK_FAILED 失败——那是并发化
+    引入的新失败，不是既有的。
+    """
+    service, state, _ = _service_with_recorder(monkeypatch, delay=0.03)
+
+    await service.start_plugins_batch(
+        ["indep1", "indep2", "indep3"],
+        ["dep1", "dep2"],
+        concurrency=3,
+    )
+
+    finished = state["finished"]
+    last_independent = max(finished.index(p) for p in ("indep1", "indep2", "indep3"))
+    first_dependent = min(finished.index(p) for p in ("dep1", "dep2"))
+    assert last_independent < first_dependent, (
+        f"依赖方与它的提供者重叠了：并发组最后完成于 {last_independent}，"
+        f"按序组最早开始于 {first_dependent}（完成序列 {finished}）"
+    )
+    # 按序组内部保持传入的拓扑序
+    dependent_starts = [p for kind, p in state["order"] if kind == "start" and p in ("dep1", "dep2")]
+    assert dependent_starts == ["dep1", "dep2"]
+
+
+@pytest.mark.asyncio
+async def test_one_failure_does_not_take_down_the_batch(monkeypatch) -> None:
+    """与原来的 for 循环语义一致：单个插件起不来只记 error。"""
+    service, state, _ = _service_with_recorder(
+        monkeypatch, delay=0.02, fail_ids={"bad1", "bad2"}
+    )
+
+    result = await service.start_plugins_batch(
+        ["ok1", "bad1", "ok2", "bad2", "ok3"], concurrency=5
+    )
+
+    assert sorted(result["started"]) == ["ok1", "ok2", "ok3"]
+    assert sorted(result["failed"]) == ["bad1", "bad2"]
+    assert len(state["finished"]) == 5, "有插件根本没被尝试"
+
+
+@pytest.mark.asyncio
+async def test_empty_batch_is_a_noop_that_still_does_not_explode(monkeypatch) -> None:
+    service, state, counter = _service_with_recorder(monkeypatch)
+
+    result = await service.start_plugins_batch([], [])
+
+    assert result == {"started": [], "failed": []}
+    assert state["peak"] == 0
+    assert counter.entered == 1, "空批次也应该正常进出锁一次（而不是绕过它）"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> None:
+    """变异：把 _start_one 里的 asyncio.shield 去掉，直接 await。
+
+    ``_start_plugin_inner`` 的 except 分支只接 Exception 类族（ServerDomainError /
+    HTTPException / PluginError / ImportError / RUNTIME_ERRORS），而 CancelledError
+    是 BaseException，一个都接不住。从中间掐断就会留下一个已经 spawn、却还没走到
+    ``_register_or_replace_host_sync`` 的 host 进程——落在 host 快照之后，成为没人
+    停止的孤儿。这也是 ``serialized_plugin_operation`` 要用 shield 的同一个理由。
+    """
+    completed: list[str] = []
+    service = module.PluginLifecycleService()
+
+    async def _slow_inner(plugin_id, restore_state=False, **kwargs):
+        await asyncio.sleep(0.25)
+        completed.append(plugin_id)  # 只有真的跑完才会到这里
+
+    monkeypatch.setattr(service, "_start_plugin_inner", _slow_inner)
+    counter = _LockHoldCounter()
+    monkeypatch.setattr(module, "plugin_operation_lock", counter)
+
+    batch = asyncio.create_task(
+        service.start_plugins_batch(["a", "b", "c"], concurrency=3)
+    )
+    await asyncio.sleep(0.05)  # 三个都已经进到 sleep 里
+    batch.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await batch
+
+    assert sorted(completed) == ["a", "b", "c"], (
+        f"批次被取消后仍有启动没落地：{completed}——那些插件的 host 可能已经 spawn "
+        "却没注册，成为没人停止的孤儿进程"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failing_sibling_does_not_cancel_the_rest(monkeypatch) -> None:
+    """变异：把 gather 的 return_exceptions=True 去掉。
+
+    没有它，第一个抛出的异常会让 gather 取消其余兄弟任务——把"某个插件起不来"
+    放大成"半批插件被从中间掐断"（接着就是上一个测试防的那种孤儿）。
+    """
+    service, state, _ = _service_with_recorder(monkeypatch, delay=0.08, fail_ids={"bad"})
+
+    result = await service.start_plugins_batch(
+        ["bad", "ok1", "ok2", "ok3"], concurrency=4
+    )
+
+    assert result["failed"] == ["bad"]
+    assert sorted(result["started"]) == ["ok1", "ok2", "ok3"], (
+        f"一个插件失败把兄弟一起带走了：{result}"
+    )
+    assert len(state["finished"]) == 4
+
+
+# ── 分组：谁可以并发 ────────────────────────────────────────────────────
+
+
+def test_groups_partition_preserves_topological_order(monkeypatch) -> None:
+    """变异：让分组打乱顺序，或把声明依赖的插件放进并发组。
+
+    两组合起来必须还是 _get_autostart_plugin_ids_sync() 的同一个序列（只是内部
+    分组），否则"提供者在依赖方之前"这个既有保证就被破坏了。
+    """
+    ordered = ["prov1", "prov2", "dep1", "prov3", "dep2"]
+    monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: list(ordered))
+    monkeypatch.setattr(
+        registry_module,
+        "_dependency_declaring_runtime_plugin_ids",
+        lambda: {"dep1", "dep2"},
+    )
+
+    independent, dependent = registry_module._get_autostart_plugin_groups_sync()
+
+    assert independent == ["prov1", "prov2", "prov3"], independent
+    assert dependent == ["dep1", "dep2"], dependent
+    # 集合不变、各组内部相对顺序不变
+    assert sorted(independent + dependent) == sorted(ordered)
+    assert independent == [p for p in ordered if p in set(independent)]
+    assert dependent == [p for p in ordered if p in set(dependent)]
+
+
+def test_no_dependency_declarations_means_everything_is_concurrent(monkeypatch) -> None:
+    """内置 12 个插件都不声明依赖 —— 这是常态，必须走全并发。"""
+    ordered = [f"p{i}" for i in range(12)]
+    monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: list(ordered))
+    monkeypatch.setattr(
+        registry_module, "_dependency_declaring_runtime_plugin_ids", lambda: set()
+    )
+
+    independent, dependent = registry_module._get_autostart_plugin_groups_sync()
+
+    assert independent == ordered
+    assert dependent == []
+
+
+def test_single_plugin_skips_the_extra_context_scan(monkeypatch) -> None:
+    """0 或 1 个插件时并发没有意义，也不该多跑一次 context 收集（那步实测 ~36ms）。"""
+    calls = []
+    monkeypatch.setattr(registry_module, "_get_autostart_plugin_ids_sync", lambda: ["only"])
+    monkeypatch.setattr(
+        registry_module,
+        "_dependency_declaring_runtime_plugin_ids",
+        lambda: calls.append(1) or {"only"},
+    )
+
+    independent, dependent = registry_module._get_autostart_plugin_groups_sync()
+
+    assert (independent, dependent) == (["only"], [])
+    assert calls == [], "单插件批次不该付 context 收集的钱"
+
+
+def test_autostart_ids_are_already_topologically_ordered() -> None:
+    """钉住前提：分组之所以能只按"是否声明依赖"切，是因为拿到的序列已经是拓扑序。
+
+    变异：把 _get_autostart_plugin_ids_sync 末尾的 _build_ordered_plugin_ids_sync
+    换成 sorted(candidates) —— 那样"提供者在依赖方之前"就不再成立，而并发组内
+    的顺序也就不再有任何保证。
+    """
+    source = Path(inspect.getfile(registry_module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_get_autostart_plugin_ids_sync"
+    )
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert returns, "找不到返回语句"
+    last = ast.unparse(returns[-1].value)
+    assert "_build_ordered_plugin_ids_sync" in last, (
+        f"自启动列表不再是拓扑序了（return {last}）——并发分组的前提就此失效："
+        "依赖检查要求提供者已注册完 handler，只有拓扑序能保证它排在前面"
+    )

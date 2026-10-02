@@ -1143,6 +1143,66 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
     return _build_ordered_plugin_ids_sync(candidates)
 
 
+def _dependency_declaring_runtime_plugin_ids() -> set[str]:
+    """声明了依赖的插件（映射到运行时 id）。
+
+    为什么并发自启动必须先问这个：依赖检查（``core/dependency.py`` 的
+    ``_check_plugin_dependency`` / ``_find_plugins_by_entry``）读的是
+    ``state.event_handlers``，也就是**被依赖的插件必须已经启动并注册完 handler**，
+    而不是只在注册表里存在。``_get_autostart_plugin_ids_sync`` 返回的序列已经是
+    拓扑序（末尾就是 ``_build_ordered_plugin_ids_sync``），串行跑的时候"提供者在前"
+    天然成立；一旦并发，同一批里的提供者可能还没注册完 handler，依赖方就会以
+    ``PLUGIN_DEPENDENCY_CHECK_FAILED`` 失败——那是并发化引入的新失败，不是既有的。
+
+    所以只把**不声明依赖**的插件放进并发组：它们没有任何需要等待的提供者。
+    声明了依赖的插件留在第二批，按既有拓扑序串行启动，语义与并发化之前一致。
+    """
+    plugin_contexts, _pid_to_context = _collect_plugin_contexts_from_roots_sync(
+        tuple(PLUGIN_CONFIG_ROOTS)
+    )
+    if not plugin_contexts:
+        return set()
+
+    # 声明 id -> 运行时 id：与 _build_ordered_plugin_ids_sync 用同一套映射，
+    # 因为一个插件的声明 id 和它运行时占的 id 可以不同（见那里的注释）。
+    registered_snapshot = _get_registered_plugin_snapshot_sync()
+    config_path_to_plugin_id: dict[Path, str] = {}
+    for plugin_id, meta in registered_snapshot.items():
+        resolved_config_path = _resolve_meta_config_path(meta)
+        if resolved_config_path is not None:
+            config_path_to_plugin_id[resolved_config_path] = plugin_id
+
+    declaring: set[str] = set()
+    for ctx in plugin_contexts:
+        if not getattr(ctx, "dependencies", None):
+            continue
+        try:
+            ctx_config_path = ctx.toml_path.resolve()
+        except Exception:
+            ctx_config_path = ctx.toml_path
+        declaring.add(config_path_to_plugin_id.get(ctx_config_path, ctx.pid))
+    return declaring
+
+
+def _get_autostart_plugin_groups_sync() -> tuple[list[str], list[str]]:
+    """把自启动集合切成 ``(可并发组, 需按序组)``，两组各自保持既有拓扑序。
+
+    两组合起来就是 ``_get_autostart_plugin_ids_sync()`` 的同一个集合，且"需按序组"
+    内部相对顺序不变、并整体排在"可并发组"之后。没有任何插件声明依赖时（内置 12 个
+    插件都是这种），第二组为空，全部进并发组。
+    """
+    ordered = _get_autostart_plugin_ids_sync()
+    if len(ordered) < 2:
+        # 0 或 1 个：并发没有意义，也不需要多跑一次 context 收集。
+        return list(ordered), []
+    declaring = _dependency_declaring_runtime_plugin_ids()
+    if not declaring:
+        return list(ordered), []
+    independent = [plugin_id for plugin_id in ordered if plugin_id not in declaring]
+    dependent = [plugin_id for plugin_id in ordered if plugin_id in declaring]
+    return independent, dependent
+
+
 class PluginRegistryService:
     async def refresh_registry(self) -> dict[str, object]:
         """Rebuild the registry from what is on disk.
@@ -1172,6 +1232,14 @@ class PluginRegistryService:
 
     async def list_autostart_plugin_ids(self) -> list[str]:
         return await asyncio.to_thread(_get_autostart_plugin_ids_sync)
+
+    async def list_autostart_plugin_groups(self) -> tuple[list[str], list[str]]:
+        """``(可并发组, 需按序组)``，见 ``_get_autostart_plugin_groups_sync``。
+
+        给自启动批次用：第一组可以同时拉起（它们的子进程是独立进程，不受 GIL 约束），
+        第二组必须等第一组全部注册完 handler 之后按序串行。
+        """
+        return await asyncio.to_thread(_get_autostart_plugin_groups_sync)
 
     async def order_plugin_ids(self, plugin_ids: list[str]) -> list[str]:
         return await asyncio.to_thread(self._order_plugin_ids_sync, plugin_ids)

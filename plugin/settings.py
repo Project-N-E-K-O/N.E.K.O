@@ -273,6 +273,26 @@ PLUGIN_TRIGGER_TIMEOUT = _get_float_env("NEKO_PLUGIN_TRIGGER_TIMEOUT", 10.0)
 # Env: NEKO_PLUGIN_STARTUP_TIMEOUT, default=10.0
 PLUGIN_STARTUP_TIMEOUT = _get_float_env("NEKO_PLUGIN_STARTUP_TIMEOUT", 10.0)
 
+# 服务器启动时「自启动批次」的并发上限。
+# Env: NEKO_PLUGIN_AUTOSTART_CONCURRENCY, default=按 CPU 核数推导
+#
+# 为什么需要它：12 个插件串行自启动实测 14.9s，占冷启动的 79%（单个子进程冷启动
+# 约 1.36s，sum/max≈10.4 说明零重叠）。插件子进程是**独立进程**，不受 GIL 约束，
+# 可以真并行：16 逻辑核实测 12 并发整组 1430ms（串行等效 8007ms，5.6x 加速），
+# 单个只慢 1.92x。
+#
+# 为什么必须有上限：PLUGIN_STARTUP_TIMEOUT 是**每插件**的，并发越多单个子进程越慢。
+# 弱机上不设上限会把子进程启动拖到撞超时，把"慢"变成"启动失败"。默认取
+# min(8, max(2, cpu // 2))：16 核→8，8 核→4，4 核→2。
+#
+# 设为 1 即完全恢复原来的串行行为（回退开关）。
+# 注意：只有**不声明依赖**的插件参与并发；声明了依赖的插件仍按既有拓扑序串行启动
+# （依赖检查读的是 state.event_handlers，要求被依赖方已注册完 handler）。
+PLUGIN_AUTOSTART_CONCURRENCY = _get_int_env(
+    "NEKO_PLUGIN_AUTOSTART_CONCURRENCY",
+    min(8, max(2, (os.cpu_count() or 4) // 2)),
+)
+
 # Keep the next-launch auto-start preference in sync with explicit user
 # start/stop actions from the plugin manager. Internal lifecycle operations do
 # not persist user intent and therefore do not change auto-start.
@@ -747,6 +767,11 @@ def validate_config() -> None:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT must be positive")
     if PLUGIN_STARTUP_TIMEOUT > 300:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT is unreasonably large (max: 300s)")
+
+    if PLUGIN_AUTOSTART_CONCURRENCY < 1:
+        raise ValueError("PLUGIN_AUTOSTART_CONCURRENCY must be >= 1 (1 = serial)")
+    if PLUGIN_AUTOSTART_CONCURRENCY > 64:
+        raise ValueError("PLUGIN_AUTOSTART_CONCURRENCY is unreasonably large (max: 64)")
 
     if PLUGIN_SHUTDOWN_TIMEOUT <= 0:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT must be positive")

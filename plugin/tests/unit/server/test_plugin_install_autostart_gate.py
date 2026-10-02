@@ -421,7 +421,10 @@ def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> 
 
     from plugin.server.application.plugins import lifecycle_service
 
-    source = inspect.getsource(lifecycle_service.PluginLifecycleService.start_plugin)
+    # 函数体现在在 _start_plugin_inner 里：start_plugin 只剩一层加锁的薄包装，
+    # 好让自启动批次能"整批持锁一次、锁内并发"（见 start_plugins_batch）。
+    # 这里钉的是元数据与 host 启动的相对顺序，顺序本身没变，只是搬了个地方。
+    source = inspect.getsource(lifecycle_service.PluginLifecycleService._start_plugin_inner)
     metadata_at = source.find("_read_packaged_isolated_metadata")
     host_start_at = source.find("_start_host_with_timeout(")
     clamp_at = source.find("startup_timeout_value = _clamp_step_timeout(")
@@ -1691,7 +1694,8 @@ def test_the_scan_budget_is_computed_after_the_packaged_read() -> None:
         PluginLifecycleService,
     )
 
-    source = inspect.getsource(PluginLifecycleService.start_plugin)
+    # 同上一个测试：函数体搬到了 _start_plugin_inner，钳位顺序本身没变。
+    source = inspect.getsource(PluginLifecycleService._start_plugin_inner)
     read_at = source.find("_read_packaged_isolated_metadata,")
     clamp_at = source.find("scan_timeout = _clamp_step_timeout(")
     use_at = source.find("timeout=scan_timeout,")
