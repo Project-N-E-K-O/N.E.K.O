@@ -180,6 +180,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "链接 https://host/屏幕搭话 打开，还有[图](https://host/【屏幕画面】/a.png)和[图2](/屏幕画面/b.png)。",
     "[图](https://host/a_(1)/屏幕搭话：b.png) 和 [图2](/tmp/a_(2)/【屏幕画面】/c.png) 都在这里。",
     "[图](https://host/a_((1))/屏幕搭话：b.png) 和 https://host/x_(a(b))/【屏幕画面】/c.png 都在这里。",
+    "本机地址是 https://[::1]/屏幕搭话：file.png 和 http://[fe80::1]:8080/【屏幕画面】/a.png 哦。",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
@@ -208,6 +209,46 @@ def test_a_label_inside_a_url_is_neither_removed_nor_a_chain_marker():
             "看 https://host/屏幕搭话：右下角那只猫好可爱 毛茸茸的呢。")
     messages = [_user("聊"), _assistant(text), _user("继续")]
     assert project_screen_history(messages)[1]["content"] == text[len("屏幕搭话："):]
+
+
+def test_a_chain_cut_keeps_the_whitespace_around_what_stays():
+    messages = [_user("聊"), _assistant("\n\n" + chain("屏幕搭话：")), _user("继续")]
+    assert project_screen_history(messages)[1]["content"] == "\n\n" + FIRST
+
+
+def test_hidden_thinking_never_completes_a_visible_comment():
+    """Two visibly short comments stay, however long the reasoning between."""
+    thought = "<think>这是一段很长的内部推理，用来凑够长度。</think>"
+    text = "屏幕搭话：好。" + thought + "屏幕搭话：嗯。" + thought
+    messages = [_user("聊"), _assistant(text), _user("继续")]
+    assert project_screen_history(messages)[1]["content"] == "好。" + thought + "嗯。" + thought
+    long_thought = "屏幕搭话：<think>想一想。</think>" + PARTS[0] + "屏幕搭话：" + PARTS[1]
+    cut = project_screen_history([_user("聊"), _assistant(long_thought), _user("继续")])[1]
+    assert cut["content"] == "<think>想一想。</think>" + PARTS[0]
+
+
+async def test_recent_history_is_summarised_from_the_guarded_view(monkeypatch):
+    """The compression summary is stored as a system memo the guard does not
+    rewrite, so it must be made from the guarded replies."""
+    from memory.recent import CompressedRecentHistoryManager
+    from utils.llm_client import AIMessage, HumanMessage
+
+    rendered = []
+
+    class _Stop(Exception):
+        pass
+
+    def render(messages, _name):
+        rendered.append([m.content for m in messages])
+        raise _Stop
+
+    manager = object.__new__(CompressedRecentHistoryManager)
+    monkeypatch.setattr(manager, "_render_messages_to_text", render, raising=False)
+    with pytest.raises(_Stop):
+        await manager.compress_history(
+            [HumanMessage(content="聊"), AIMessage(content=chain("屏幕搭话："))], "Neko",
+        )
+    assert rendered == [["聊", FIRST]]
 
 
 def test_whitespace_around_a_removed_label_stays():

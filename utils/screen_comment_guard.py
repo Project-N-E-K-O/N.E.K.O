@@ -92,12 +92,18 @@ _LABEL_STRIP = regex.compile(
 # label ("https://host/屏幕搭话：a.png").
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 _PROTECTED = regex.compile(
-    r"[A-Za-z][A-Za-z0-9+.\-]*://(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
+    r"[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?(?:[^\s<>\"'()\]】）」』，。！？；、]|(?&paren))+"
     r"|(?<=\]\()(?:[^()\s]|(?&paren))+"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
 )
-# Stands in for a protected character (Unicode private use area).
+# Stand in for a protected and a thinking character (Unicode private use).
 _MASK = "\ue000"
+_THINK_MASK = "\ue001"
+# A thinking block, closed or running to the end of the text.
+_THINK_BLOCK = regex.compile(
+    r"<think(?:ing)?[ \t]{0,8}>.*?(?:</think(?:ing)?[ \t]{0,8}>|\Z)",
+    regex.IGNORECASE | regex.DOTALL,
+)
 # What a message that held only a label shows when it must stay in the view.
 _NOTHING_SAID = "…"
 _THINK_TAG = regex.compile(r"</?think(?:ing)?[ \t]{0,8}>", regex.IGNORECASE)
@@ -380,26 +386,42 @@ def _strip_labels(text: str) -> str:
 
 
 def _masked(text: str) -> tuple[str, str]:
-    """``text`` with ``_PROTECTED`` spans hidden from the chain lexer.
+    """``text`` with ``_PROTECTED`` spans and thinking hidden from the lexer.
 
-    Every protected character becomes ``_MASK``, so offsets hold; the second
+    A protected character becomes ``_MASK`` (still prose for a comment's
+    length), a thinking character ``_THINK_MASK`` (not prose: hidden
+    reasoning never completes a visible comment). Offsets hold; the second
     value holds the hidden characters in order for ``_unmasked``.
     """
-    if _MASK in text:
+    if _MASK in text or _THINK_MASK in text:
         return text, ""
-    hidden = "".join(match.group() for match in _PROTECTED.finditer(text))
+    spans = sorted(
+        [(m.start(), m.end(), _MASK) for m in _PROTECTED.finditer(text)]
+        + [(m.start(), m.end(), _THINK_MASK) for m in _THINK_BLOCK.finditer(text)]
+    )
+    masked, hidden, position = [], [], 0
+    for start, end, mask in spans:
+        if start < position:
+            continue
+        masked.append(text[position:start])
+        masked.append(mask * (end - start))
+        hidden.append(text[start:end])
+        position = end
     if not hidden:
         return text, ""
-    return _PROTECTED.sub(lambda match: _MASK * len(match.group()), text), hidden
+    masked.append(text[position:])
+    return "".join(masked), "".join(hidden)
 
 
 def _unmasked(text: str, hidden: str) -> str:
     """Put hidden characters back. A rewrite only drops markers (never
     masked) and cuts the end, so masks keep their order from the start."""
-    if not hidden or _MASK not in text:
+    if not hidden:
         return text
     characters = iter(hidden)
-    return "".join(next(characters) if char == _MASK else char for char in text)
+    return "".join(
+        next(characters) if char in (_MASK, _THINK_MASK) else char for char in text
+    )
 
 
 def _chain_rewrites(messages, *, trailing_turn: bool = False,
@@ -750,6 +772,8 @@ class _ChainTracker:
             self.start, self.length, self.complete = start, 0, False
         elif self.start is not None:
             for offset, char in enumerate(text):
+                if char == _THINK_MASK:
+                    continue
                 if self.length or not char.isspace():
                     self.length = min(MIN_PROSE, self.length + 1)
                 if self.length >= MIN_PROSE and start + offset in self.ends:
@@ -874,7 +898,9 @@ def _dechain(texts) -> tuple | None:
         kept = _unlabelled(tokens[index], cut)
         if index == cut_index:
             kept = _through_last_sentence(kept)
-        rewritten.append(kept.strip() or None)
+        # Only emptiness is judged on stripped text; the rest keeps its
+        # whitespace (blank lines, indentation) as is.
+        rewritten.append(kept if kept.strip() else None)
     return tuple(rewritten)
 
 
