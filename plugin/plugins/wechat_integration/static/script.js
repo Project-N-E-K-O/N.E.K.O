@@ -2,10 +2,15 @@ const pluginId = 'wechat_integration';
 const RUNS_URL = '/runs';
 const RUN_POLL_DELAY_MS = 500;
 let csrfTokenPromise = null;
+const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000;
 
 async function mutationHeaders() {
     if (!csrfTokenPromise) {
-        csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin' })
+        // A hung bootstrap must not block the action: abort it so the
+        // tokenless fallback below runs.
+        const bootstrapAbort = new AbortController();
+        const bootstrapTimer = setTimeout(() => bootstrapAbort.abort(), CSRF_BOOTSTRAP_TIMEOUT_MS);
+        csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin', signal: bootstrapAbort.signal })
             .then(async (response) => {
                 if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
                 const data = await response.json();
@@ -13,7 +18,8 @@ async function mutationHeaders() {
                     throw new Error('CSRF token bootstrap returned an invalid token');
                 }
                 return data.csrf_token;
-            });
+            })
+            .finally(() => clearTimeout(bootstrapTimer));
     }
     try {
         return { 'X-CSRF-Token': await csrfTokenPromise };
