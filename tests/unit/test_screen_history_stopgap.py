@@ -184,6 +184,7 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     "全角链接【图】(/屏幕搭话：file.png)和【图2】(/tmp/【屏幕画面】/b.png)也一样。",
     "没写协议的 //cdn.example.com/屏幕搭话：a.png 和 www.example.com/【屏幕画面】/b.png 也是地址。",
     "本地的 //192.168.1.10/屏幕搭话：a.png、//[::1]/【屏幕画面】/b.png、//localhost:8080/屏幕搭话：c.png 和 10.0.0.2/屏幕搭话：d.png。",
+    "见下图[shot][1]和[shot2][2]。\n\n[1]: /assets/屏幕搭话：a.png\n  [2]: ../img/【屏幕画面】/b.png",
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
     "“屏幕搭话”功能开启之后我会主动和你聊几句哦。",
@@ -220,6 +221,15 @@ def test_a_url_ends_at_sentence_punctuation_before_the_next_label(address, stop)
     text = "屏幕搭话：" + PARTS[0] + address + stop + "屏幕搭话：" + PARTS[1]
     messages = [_user("聊"), _assistant(text), _user("继续")]
     assert project_screen_history(messages)[1]["content"] == PARTS[0] + address + stop
+
+
+def test_the_first_comment_closes_at_its_sentence_end_before_a_later_message():
+    """The fragment after the first comment's last sentence end goes, also
+    when the next comment's label starts in a later message."""
+    messages = [_user("聊"), _assistant("屏幕搭话：" + PARTS[0] + "然后那个"),
+                _assistant("而且"), _assistant("屏幕搭话：" + PARTS[1]), _user("继续")]
+    view = project_screen_history(messages)
+    assert [message["content"] for message in view] == ["聊", PARTS[0], "继续"]
 
 
 def test_a_chain_cut_keeps_the_whitespace_around_what_stays():

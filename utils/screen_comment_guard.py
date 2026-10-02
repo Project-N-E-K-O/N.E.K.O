@@ -93,11 +93,14 @@ _LABEL_STRIP = regex.compile(
 # Balanced parentheses, nested or not, are part of either ("a_(1)/b.png").
 # A URL may also come without its scheme: protocol-relative with any host
 # ("//cdn.host/", "//192.168.1.10/", "//[::1]/", "//localhost/") or a bare
-# domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/").
+# domain or IPv4 host with a path ("www.host.com/", "10.0.0.2:8080/"). A
+# Markdown reference definition's target may also be a path ("[1]: /a.png",
+# "./a.png", "../a.png").
 _PROTECTED = regex.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.\-]*://(?:\[[0-9A-Fa-f:.]+\])?"
     r"|(?<![\w:/.@])//(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-.]+)(?::\d+)?(?=/)"
-    r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/))"
+    r"|(?<![\w:/.@])(?:[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=/)"
+    r"|(?<=(?:^|\n)[ ]{0,3}\[[^\]\n]+\]:[ \t]{0,8})(?:\.{1,2})?(?=/))"
     r"(?:[^\s<>\"'()\]】）」』，。！？；、…～]|(?&paren))+"
     r"|(?<=[\]】]\()(?:[^()\s]|(?&paren))+"
     r"(?(DEFINE)(?P<paren>\((?:[^\s()]|(?&paren))*\)))"
@@ -905,11 +908,17 @@ def _dechain(texts) -> tuple | None:
             rewritten.append(text)
             continue
         kept = _unlabelled(tokens[index], cut)
-        if index == cut_index:
-            kept = _through_last_sentence(kept)
         # Only emptiness is judged on stripped text; the rest keeps its
         # whitespace (blank lines, indentation) as is.
         rewritten.append(kept if kept.strip() else None)
+    # The first comment closes at its last sentence end, which may lie in an
+    # earlier text than the cut; texts after it hold only a dangling fragment.
+    for index in range(cut_index, -1, -1):
+        kept = _through_last_sentence(rewritten[index] or "")
+        if kept.strip():
+            rewritten[index] = kept
+            break
+        rewritten[index] = None
     return tuple(rewritten)
 
 
