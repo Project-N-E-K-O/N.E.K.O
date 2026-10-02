@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
@@ -260,6 +261,9 @@ def _publish_github(
         plugin=str(plugin_dir),
         python=sys.executable,
         clean=True,
+        # A clean rebuild by default must not silently drop an unreconciled
+        # backup of vendor/; only an explicit `sync --clean` may.
+        discard_backups=False,
     )
     if deps_cmd.handle_sync(sync_args) != 0:
         raise RuntimeError(
@@ -346,7 +350,18 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
                 "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
-    if _git(plugin_dir, "status", "--porcelain"):
+    # Untracked sync work dirs are not plugin source. Keep checking tracked
+    # changes (including accidentally committed sync work dirs).
+    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
+        plugin_dir, "status", "--porcelain", "--", ".",
+        # A wildcard pathspec matches whole paths: exclude each work dir
+        # itself and everything under it.
+        *(
+            f":(top,exclude){pattern}{suffix}"
+            for pattern in VENDOR_SYNC_GLOBS
+            for suffix in ("", "/*")
+        ),
+    ):
         raise RuntimeError(
             _tri(
                 "git working tree has uncommitted changes",
@@ -401,7 +416,9 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
                 "--select",
                 "E4,E7,E9,F,I",
                 "--exclude",
-                "vendor",
+                # "./" anchors the sync work dirs to the plugin root, matching
+                # the build rules; a bare pattern would match at any depth.
+                ",".join(["vendor", *(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS)]),
                 ".",
             ],
             cwd=plugin_dir,

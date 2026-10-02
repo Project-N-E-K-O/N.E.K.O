@@ -242,7 +242,13 @@ async def test_development_config_requires_local_current_reference(workspace, me
                       headers={} if access == "missing_header" else {"X-Neko-Development": "1"}) as http:
         response = await http.request(method, "/plugin/demo/config" + suffix, params=params, json=body)
     assert response.status_code == (409 if access == "stale" else 403), response.text
-    assert response.headers["X-Error-Code"] == ("DEVELOPMENT_STALE" if access == "stale" else "DEVELOPMENT_ACCESS_DENIED")
+    # Config writes pass the shared mutation guard first: a LAN peer without
+    # browser provenance is rejected there, before the development check.
+    mutation = method in {"PUT", "DELETE"} or suffix in {"/profiles/default/activate", "/hot-update"}
+    expected = ("DEVELOPMENT_STALE" if access == "stale"
+                else "csrf_validation_failed" if access == "lan" and mutation
+                else "DEVELOPMENT_ACCESS_DENIED")
+    assert response.headers["X-Error-Code"] == expected
     assert source_bytes(record.source_dir) == before
 
 

@@ -1,8 +1,9 @@
 """Local mutation authentication for the user-plugin server.
 
-The plugin manager is a browser client of a loopback HTTP service. CORS does
-not prevent a simple cross-origin POST from executing, so lifecycle mutations
-require both a trusted Origin and the instance CSRF token.
+The plugin manager may use desktop loopback or NAS/Docker same-origin access.
+CORS does not prevent simple cross-origin POSTs from executing, so browser
+lifecycle and package-import mutations require both trusted provenance and the
+instance token. HostOriginGuard rejects DNS-rebinding hosts before these guards.
 """
 
 from __future__ import annotations
@@ -17,18 +18,22 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from fastapi.routing import APIRoute
+from utils.host_origin_guard import _canonicalize_hostname
 
 from config.network import (
     AUTOSTART_ALLOWED_ORIGINS,
+    AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
     MAIN_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
+    resolve_user_plugin_base,
 )
-from plugin.server.infrastructure.development_access import require_development_access
 
 logger = logging.getLogger(__name__)
 _CSRF_HEADER = "X-CSRF-Token"
 _ERROR_CODE = "csrf_validation_failed"
+# Embedded and standalone servers share the same trusted proxy boundary.
+TRUSTED_PROXY_IPS = "127.0.0.1,::1"
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -57,36 +62,27 @@ def _normalize_origin(raw: str | None) -> str:
         return ""
     if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         return ""
-    hostname = hostname.lower().rstrip(".")
+    # Use the same IPv6/IDNA hostname rules as the outer rebinding guard.
+    canonical = _canonicalize_hostname(hostname)
+    if canonical is None or (port is not None and not 1 <= port <= 65535):
+        return ""
+    hostname = canonical[0]
     host_text = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
     effective_port = (443 if parsed.scheme == "https" else 80) if port is None else port
     return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
 
 
-def _normalize_referer_origin(raw: str | None) -> str:
-    """Extract and normalize the origin from a page URL in ``Referer``.
-
-    A browser Referer normally includes the page path (and may include a
-    query), while Origin deliberately does not.  Only the URL authority is
-    relevant to the trust decision; credentials and malformed authorities are
-    still rejected.
-    """
+def _origin_from_referer(raw: str | None) -> str:
+    """Extract only the origin from a document Referer URL."""
     if not raw:
         return ""
     try:
         parsed = urlsplit(raw.strip())
-        hostname = parsed.hostname
-        port = parsed.port
+        if parsed.username or parsed.password or not parsed.scheme or not parsed.netloc:
+            return ""
+        return _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
     except (TypeError, ValueError):
         return ""
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        return ""
-    if parsed.username or parsed.password:
-        return ""
-    hostname = hostname.lower().rstrip(".")
-    host_text = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
-    effective_port = (443 if parsed.scheme == "https" else 80) if port is None else port
-    return f"{parsed.scheme.lower()}://{host_text}:{effective_port}"
 
 
 def _origin_for_host_port(host: str, port: int, *, scheme: str = "http") -> str:
@@ -94,21 +90,10 @@ def _origin_for_host_port(host: str, port: int, *, scheme: str = "http") -> str:
     return f"{scheme}://{host_text}:{int(port)}"
 
 
-def _read_runtime_port(name: str, fallback: int) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return int(fallback)
-    try:
-        port = int(raw)
-    except ValueError:
-        return int(fallback)
-    return port if 1 <= port <= 65535 else int(fallback)
-
-
 def _configured_origins() -> frozenset[str]:
     origins: set[str] = set()
-    plugin_port = _read_runtime_port("NEKO_USER_PLUGIN_SERVER_PORT", USER_PLUGIN_SERVER_PORT)
-    for port in (MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT, plugin_port, 5173):
+    plugin_port = urlsplit(resolve_user_plugin_base()).port or USER_PLUGIN_SERVER_PORT
+    for port in (MAIN_SERVER_PORT, USER_PLUGIN_SERVER_PORT, plugin_port):
         for host in ("127.0.0.1", "localhost", "::1"):
             origins.add(_origin_for_host_port(host, port))
     for value in AUTOSTART_ALLOWED_ORIGINS:
@@ -122,7 +107,7 @@ def _configured_origins() -> frozenset[str]:
     return frozenset(origins)
 
 
-def _direct_local_request(request: Request) -> bool:
+def _local_request(request: Request) -> bool:
     return bool(
         request.client is not None
         and _is_loopback(request.client.host)
@@ -130,23 +115,33 @@ def _direct_local_request(request: Request) -> bool:
     )
 
 
-def _trusted_proxy_request(request: Request) -> bool:
+def _explicit_origins() -> frozenset[str]:
+    """Operator opt-ins apply to LAN/proxy targets too, unlike local defaults."""
+    values = (*AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
+              *os.getenv("NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS", "").split(","))
+    return frozenset(origin for value in values if (origin := _normalize_origin(value)))
 
-    # The bundled Docker Nginx is the only supported non-loopback ingress for
-    # this loopback-bound service.  It marks the hop explicitly and forwards
-    # the original request metadata; Origin/token validation still runs below.
-    behind_proxy = os.getenv("NEKO_BEHIND_PROXY", "").strip().lower() in {"1", "true", "yes"}
-    return bool(
-        behind_proxy
-        and request.headers.get("x-neko-trusted-proxy") == "1"
-        and request.headers.get("x-forwarded-for")
-        and request.headers.get("x-forwarded-host")
-        and request.headers.get("x-forwarded-proto") in {"http", "https"}
+
+def _trusted_origin(request: Request, origin: str) -> bool:
+    """Match the external origin or an explicitly allowed frontend origin.
+
+    Official Nginx preserves Host (including the published port). Uvicorn
+    supplies the external scheme only from trusted proxy peers; do not read
+    X-Forwarded-* directly here. Peer IP need not be loopback for NAS access.
+    NAS hosts also permit hostname-only matching for outer TLS termination
+    and port mapping. This deliberately trusts other ports on the same NAS;
+    loopback desktop frontends retain their explicit origin allowlist.
+    """
+    target = _normalize_origin(f"{request.url.scheme}://{request.headers.get('host', '')}")
+    if not origin or not target:
+        return False
+    nas_hostname_match = (
+        not _is_loopback(request.url.hostname)
+        and urlsplit(origin).hostname == urlsplit(target).hostname
     )
-
-
-def _local_request(request: Request) -> bool:
-    return _direct_local_request(request) or _trusted_proxy_request(request)
+    return origin == target or nas_hostname_match or origin in _explicit_origins() or (
+        _is_loopback(request.url.hostname) and origin in _configured_origins()
+    )
 
 
 def _has_browser_metadata(request: Request) -> bool:
@@ -158,65 +153,57 @@ def _has_browser_metadata(request: Request) -> bool:
 
 def _valid_token(request: Request) -> bool:
     token = request.headers.get(_CSRF_HEADER, "")
-    return bool(token and AUTOSTART_CSRF_TOKEN and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN))
+    try:
+        return bool(token and AUTOSTART_CSRF_TOKEN and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN))
+    except (TypeError, UnicodeError):
+        # Header values are decoded from raw HTTP bytes. Reject malformed or
+        # non-ASCII values as an ordinary failed credential instead of leaking
+        # a 500 from compare_digest.
+        return False
 
 
-def _deny() -> None:
+def _deny(*, token_invalid: bool = False) -> None:
     raise HTTPException(
         status_code=403,
         detail={
             "error_code": _ERROR_CODE,
+            "csrf_failure": "token" if token_invalid else "origin",
             "detail": "Request could not be verified",
         },
-        headers={"X-Error-Code": _ERROR_CODE},
+        # Keep the public error code stable; only token failures are retryable.
+        headers={"X-Error-Code": _ERROR_CODE, "X-CSRF-Failure": "token" if token_invalid else "origin"},
     )
 
 
 def require_plugin_mutation_access(request: Request) -> None:
     """Authorize a plugin lifecycle mutation before any route side effect."""
-    direct_local = _direct_local_request(request)
-    if not _local_request(request):
-        _deny()
     origin_header = request.headers.get("origin")
     origin = _normalize_origin(origin_header)
     if origin_header is not None:
-        if not origin or origin not in _configured_origins() or not _valid_token(request):
+        if not _trusted_origin(request, origin):
             _deny()
+        if not _valid_token(request):
+            _deny(token_invalid=True)
         return
-    referer = request.headers.get("referer")
-    if referer:
-        if _normalize_referer_origin(referer) not in _configured_origins() or not _valid_token(request):
-            _deny()
-        return
-    # Native/local callers may omit Origin, but browser metadata must never
-    # silently enter this compatibility path.
-    if not direct_local:
+    # Native/local callers may omit Origin, but browser metadata or a Referer
+    # must never silently enter this compatibility path.
+    if not _local_request(request) or request.headers.get("referer") or _has_browser_metadata(request):
         _deny()
-    if _has_browser_metadata(request):
-        _deny()
+    # Keep tokenless native scripts compatible, but never ignore a supplied
+    # invalid credential. This is not authentication against local processes.
+    if _CSRF_HEADER.lower() in request.headers and not _valid_token(request):
+        _deny(token_invalid=True)
     logger.info("Accepted originless local plugin mutation: path=%s", request.url.path)
 
 
-def require_plugin_mutation_or_development_access(request: Request) -> None:
-    """Select the auth contract for ordinary versus registered-dev mutations.
-
-    Development lifecycle/config requests carry ``registration_id`` and use
-    the separate local development contract. Ordinary plugin mutations keep
-    the CSRF/Origin contract above.
-    """
-    if request.query_params.get("registration_id") is not None:
-        require_development_access(request)
-        return
-    require_plugin_mutation_access(request)
-
-
 class PluginMutationGuardedRoute(APIRoute):
-    """Run the mutation guard before FastAPI parses a request body.
+    """Apply ``require_plugin_mutation_access`` before the body is read.
 
-    FastAPI resolves body parameters before route dependencies.  Applying the
-    guard in a dependency therefore still spools rejected JSON/multipart
-    uploads.  This route wrapper checks request headers first, while retaining
-    the exact same authorization contract as ``require_plugin_mutation_access``.
+    FastAPI parses JSON and multipart bodies before it solves route
+    dependencies, so a dependency would still spool a rejected package upload.
+    Routes that accept plugin packages use this class to reject from headers
+    alone; the guard, failure response and native compatibility path are the
+    same as the lifecycle dependency.
     """
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
@@ -229,36 +216,26 @@ class PluginMutationGuardedRoute(APIRoute):
         return guarded_handler
 
 
-class PluginConfigMutationGuardedRoute(APIRoute):
-    """Guard config writes before body parsing with the matching auth contract."""
-
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
-
-        async def guarded_handler(request: Request) -> Response:
-            require_plugin_mutation_or_development_access(request)
-            return await handler(request)
-
-        return guarded_handler
-
-
 def require_plugin_token_bootstrap_access(request: Request) -> None:
     """Authorize token bootstrap without exposing it through arbitrary CORS."""
-    direct_local = _direct_local_request(request)
-    if not _local_request(request):
-        _deny()
     origin_header = request.headers.get("origin")
     if origin_header is not None:
         origin = _normalize_origin(origin_header)
-        if not origin or origin not in _configured_origins():
+        if not _trusted_origin(request, origin):
             _deny()
         return
     referer = request.headers.get("referer")
-    if referer and _normalize_referer_origin(referer) not in _configured_origins():
-        _deny()
-    if not direct_local and not referer:
-        _deny()
-    if _has_browser_metadata(request) and request.headers.get("sec-fetch-site") not in {"same-origin", "same-site", "none"}:
+    if referer:
+        if not _trusted_origin(request, _origin_from_referer(referer)):
+            _deny()
+        return
+    # Browsers with a suppressed Referer may still fetch their same-origin
+    # token. same-site is insufficient: another service on the NAS is a
+    # different origin even when browsers classify it as the same site.
+    if _has_browser_metadata(request):
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            _deny()
+    elif not _local_request(request):
         _deny()
 
 

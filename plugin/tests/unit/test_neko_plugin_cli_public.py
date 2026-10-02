@@ -17,6 +17,10 @@ from plugin.neko_plugin_cli.public import (
 )
 from plugin.neko_plugin_cli.public.build import PluginBuilder
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
+from plugin.neko_plugin_cli.public.pack_rules import (
+    PackRuleSet,
+    should_skip_path as should_skip_pack_path,
+)
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -246,6 +250,42 @@ def test_build_rules_keep_vendored_packages_named_build_or_dist() -> None:
     assert should_skip_path(Path("vendor/build/__init__.py"), is_dir=False, rules=rules) is False
     assert should_skip_path(Path("vendor/dist"), is_dir=True, rules=rules) is False
     assert should_skip_path(Path("vendor/dist/__init__.py"), is_dir=False, rules=rules) is False
+
+
+def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
+    build_rules = BuildRuleSet()
+    pack_rules = PackRuleSet()
+
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        for path, is_dir in ((Path(name), True), (Path(name, "old.py"), False)):
+            assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+            assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
+    marker = Path(".vendor.backup-0a1b2c3d.pending")
+    assert should_skip_path(marker, is_dir=False, rules=build_rules) is True
+    assert should_skip_pack_path(marker, is_dir=False, rules=pack_rules) is True
+    # An in-place --clean of a linked or mounted vendor/ stages inside it.
+    for path, is_dir in (
+        (Path("vendor", ".vendor.staging-0a1b2c3d"), True),
+        (Path("vendor", ".vendor.staging-0a1b2c3d", "half.py"), False),
+    ):
+        assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+        assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
+    # Only exact generated names at the plugin root: a plugin's own
+    # look-alike directory, or one nested deeper, is plugin source.
+    for kept in (
+        # Only a backup has a pending marker; this name is never generated.
+        Path(".vendor.staging-0a1b2c3d.pending"),
+        Path(".vendor.backup-notes", "data.txt"),
+        Path(".vendor.staging-assets", "data.txt"),
+        Path("assets", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # Only staging is ever created inside vendor/.
+        Path("vendor", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # A plugin may ship its own files in vendor/bin, as on main.
+        Path("vendor", "bin", "tool"),
+        Path("vendor", "pkg", ".vendor.staging-0a1b2c3d", "data.txt"),
+    ):
+        assert should_skip_path(kept, is_dir=False, rules=build_rules) is False
+        assert should_skip_pack_path(kept, is_dir=False, rules=pack_rules) is False
 
 
 def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:
@@ -940,3 +980,67 @@ def test_build_metadata_does_not_store_absolute_source_paths(tmp_path: Path) -> 
 
     assert str(plugin_dir.resolve()) not in metadata
     assert 'paths = ["metadata_demo"]' in metadata
+
+
+def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeypatch):
+    # A backup is retained when it holds a mount; build/pack must not walk it.
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / ".vendor.backup-0a1b2c3d" / "deep").mkdir(parents=True)
+    (tmp_path / ".vendor.backup-0a1b2c3d.pending").touch()
+    (tmp_path / "vendor" / ".vendor.staging-1111abcd" / "deep").mkdir(parents=True)
+    (tmp_path / ".vendor.backup-notes").mkdir()
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
+    visited = []
+    real_walk = build_rules.os.walk
+
+    def walk(top, *args, **kwargs):
+        for entry in real_walk(top, *args, **kwargs):
+            visited.append(Path(entry[0]).relative_to(tmp_path))
+            yield entry
+
+    monkeypatch.setattr(build_rules.os, "walk", walk)
+    paths = build_rules.walk_plugin_tree(tmp_path)
+
+    pruned = {
+        Path(".vendor.backup-0a1b2c3d"),
+        Path("vendor", ".vendor.staging-1111abcd"),
+    }
+    assert not any(
+        path == root or root in path.parents for path in visited for root in pruned
+    )
+    assert paths == sorted(
+        path
+        for path in tmp_path.rglob("*")
+        if not any(
+            rel == root or root in rel.parents
+            for rel in [path.relative_to(tmp_path)]
+            for root in pruned
+        )
+    )
+
+
+@pytest.mark.parametrize("error", [OSError(5, "I/O error"), PermissionError(13, "denied")])
+def test_plugin_tree_walk_raises_like_rglob(tmp_path, monkeypatch, error):
+    # rglob skipped only denied directories; any other error must fail the
+    # build instead of silently dropping the subtree.
+    import os
+
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "ok.py").write_text("x = 1", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path) == tmp_path / "broken":
+            raise error
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    if isinstance(error, PermissionError):
+        assert tmp_path / "ok.py" in build_rules.walk_plugin_tree(tmp_path)
+    else:
+        with pytest.raises(OSError):
+            build_rules.walk_plugin_tree(tmp_path)

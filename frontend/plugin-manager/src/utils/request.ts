@@ -1,7 +1,7 @@
 /**
  * HTTP 请求封装
  */
-import axios from 'axios'
+import axios, { AxiosError as RequestAxiosError } from 'axios'
 import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
@@ -20,6 +20,8 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   timeoutErrorMessageKey?: string
   /** Internal guard: a failed CSRF request is retried at most once. */
   csrfRetryAttempted?: boolean
+  /** Bootstrap errors carry caller display options but cannot retry a mutation. */
+  csrfBootstrapFailed?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -157,7 +159,15 @@ function isMutationMethod(method: unknown): boolean {
   return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
 }
 
-/** Fetch the per-process mutation token once, sharing concurrent callers. */
+/**
+ * Fetch the per-process mutation token once, sharing concurrent callers.
+ *
+ * The plugin server guards its state-changing routes (lifecycle, package
+ * import, config, model config, runs/uploads, plugin UI actions). Every
+ * mutation carries the token so a newly guarded route cannot miss it;
+ * read-only POSTs ignore the header. Shared bootstrap has its own
+ * API_TIMEOUT; lifecycle timeouts apply after it.
+ */
 function loadCsrfToken(): Promise<string> {
   if (csrfToken) return Promise.resolve(csrfToken)
   if (pendingCsrfToken) return pendingCsrfToken
@@ -183,7 +193,13 @@ function loadCsrfToken(): Promise<string> {
 }
 
 function isCsrfValidationFailure(error: AxiosError): boolean {
+  const headers = error.response?.headers as HeaderBag | undefined
+  // Cross-port frontends can read the JSON reason without expanding global
+  // CORS exposed headers; same-origin callers may also use the response header.
+  const data = error.response?.data as { detail?: { csrf_failure?: string } } | undefined
   return error.response?.status === 403 && readErrorCode(error) === 'csrf_validation_failed'
+    && (data?.detail?.csrf_failure === 'token'
+      || Boolean(headers && readHeader(headers, 'X-CSRF-Failure') === 'token'))
 }
 
 function invalidateCsrfTokenIfCurrent(config: AxiosRequestConfig | undefined): void {
@@ -236,9 +252,29 @@ const service: AxiosInstance = axios.create({
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     if (isMutationMethod(config.method)) {
-      // All mutation calls carry the same instance token. Bootstrap failure is
-      // fail-closed: the original state-changing request is never sent.
-      const token = await loadCsrfToken()
+      // Mutations are fail-closed: bootstrap failure means the original
+      // state-changing request is never sent.
+      let token: string
+      try {
+        token = await loadCsrfToken()
+      } catch (cause) {
+        // Bootstrap is shared by concurrent callers. Create a separate error
+        // for each caller instead of mutating its shared config/display policy.
+        const source = axios.isAxiosError(cause) ? cause : undefined
+        const failureConfig = { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig
+        // The protected operation has not been sent. Its domain timeout label
+        // would incorrectly imply that the plugin itself timed out.
+        delete (failureConfig as ErrorDisplayRequestConfig).timeoutErrorMessageKey
+        const error = new RequestAxiosError(
+          source?.message || i18n.global.t('messages.requestFailed'),
+          source?.code,
+          failureConfig,
+          source?.request,
+          source?.response,
+        )
+        error.cause = cause
+        throw error
+      }
       if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
       writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
     }
@@ -267,7 +303,13 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
     const requestConfig = error.config as ErrorDisplayRequestConfig | undefined
-    if (isCsrfValidationFailure(error) && requestConfig && !requestConfig.csrfRetryAttempted) {
+    if (
+      isCsrfValidationFailure(error)
+      && requestConfig
+      && isMutationMethod(requestConfig.method)
+      && !requestConfig.csrfBootstrapFailed
+      && !requestConfig.csrfRetryAttempted
+    ) {
       // A rotated token can invalidate an in-flight request. Retry exactly
       // once, and only discard the token that this request actually sent so a
       // newer concurrent bootstrap result cannot be clobbered.

@@ -122,14 +122,17 @@ async def test_originless_loopback_native_create_remains_supported(
 
 
 @pytest.mark.asyncio
-async def test_non_loopback_origin_and_host_are_rejected(
+async def test_originless_lan_peer_and_foreign_host_are_rejected(
     app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     create_run = AsyncMock(return_value={"run_id": "r1", "status": "queued"})
     monkeypatch.setattr(runs_route_module.run_service, "create_run", create_run)
 
-    async with _client(app, peer="192.168.1.10", headers=_valid_headers()) as client:
+    # LAN/NAS browsers must prove provenance with Origin; only loopback peers
+    # may use the originless native path, even with a valid token.
+    lan_headers = {"X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN}
+    async with _client(app, peer="192.168.1.10", host="192.168.1.5:48916", headers=lan_headers) as client:
         response = await client.post(
             "/runs",
             json={"plugin_id": "demo", "entry_id": "run", "args": {}},

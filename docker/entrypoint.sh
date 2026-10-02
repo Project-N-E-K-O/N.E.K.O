@@ -575,8 +575,17 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|security/csrf-token(?:/|$)|health|market-bridge/) {
+    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -586,7 +595,6 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Neko-Trusted-Proxy 1;
         
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
@@ -696,8 +704,17 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|security/csrf-token(?:/|$)|health|market-bridge/) {
+    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -707,7 +724,6 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Neko-Trusted-Proxy 1;
         
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
