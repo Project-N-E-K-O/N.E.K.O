@@ -176,9 +176,6 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
     # Label-like path segments and reference-style links.
     "截图放在 /tmp/[屏幕截图]/file.png 和 C:\\Users\\me\\[屏幕画面]\\a.png 里了。",
     "看这张[屏幕截图][1]，再看那张[屏幕画面][2]，都在下面的链接里。",
-    # Shortcut reference links with their definitions.
-    ("看这张[屏幕截图]，你觉得这个视频画面好漂亮吗？色调很温柔呢。再看[屏幕画面]，"
-     "右下角那只猫好可爱，毛茸茸的呢。\n\n[屏幕截图]: https://host/a.png\n[屏幕画面]: /tmp/b.png"),
     # A label-like path segment inside a URL.
     "截图在这里：[capture](https://host/屏幕截图/file.png)，还有 https://host/屏幕画面/a.png 也可以看。",
     "屏幕搭话就是我会定时看看你的屏幕。",
@@ -193,6 +190,14 @@ def test_labels_go_from_quotes_code_brackets_and_traditional_forms(text, expecte
 def test_words_and_prose_that_only_contain_a_label_stay(text):
     messages = [_assistant(text), _user("继续")]
     assert project_screen_history(messages) is messages
+
+
+def test_a_label_named_like_a_reference_definition_is_still_removed():
+    """A Markdown shortcut reference whose name is a label is not told apart
+    from the label (design doc 7.1.3, item 7): guarding wins over the link."""
+    text = "屏幕截图 这个视频画面好漂亮，色调很温柔呢。\n\n[屏幕截图]: https://host/a.png"
+    messages = [_assistant("[" + text.replace(" ", "] ", 1)), _user("继续")]
+    assert "[屏幕截图]" not in project_screen_history(messages)[0]["content"]
 
 
 def test_whitespace_around_a_removed_label_stays():
@@ -260,6 +265,10 @@ def test_text_parts_split_by_an_image_each_keep_their_slot():
 
     labelled = [text("屏幕搭话：看这张。"), image, text("屏幕搭话：再看这张，挺好的。")]
     assert project_screen_history([_assistant_parts(labelled), _user("继续")])[0]["content"] == [
+        text("看这张。"), image, text("再看这张，挺好的。"),
+    ]
+    indented = [text("    屏幕搭话：看这张。"), image, text("屏幕搭话：再看这张，挺好的。")]
+    assert project_screen_history([_assistant_parts(indented), _user("继续")])[0]["content"] == [
         text("看这张。"), image, text("再看这张，挺好的。"),
     ]
     spaced = [text("屏幕搭话：看这张。 "), image, text(" 屏幕搭话：再看这张，挺好的。")]
