@@ -85,7 +85,19 @@
 | 工具服务器端口 | `TOOL_SERVER_PORT` | `NEKO_TOOL_SERVER_PORT` | `48915` | Agent 服务 |
 | 用户插件服务器端口 | `USER_PLUGIN_SERVER_PORT` | `NEKO_USER_PLUGIN_SERVER_PORT` | `48916` | 用户插件服务，跑在 Agent 服务进程里 |
 
+**可选 Monitor 服务的监听与认证**（定义在 `config/network.py`，读取方式同上：`NEKO_<常量名>` 优先，兼容裸名）：
+
+| 配置项 | 代码常量 | 环境变量 | 默认值 | 说明 |
+|-------|---------|---------|--------|------|
+| Monitor 监听地址 | `MONITOR_HOST` | `NEKO_MONITOR_HOST` | `0.0.0.0` | IPv6 带不带方括号均可；主服务直接连这个地址，通配地址换成同协议族的回环地址 |
+| Monitor 完整权限 token | `MONITOR_TOKEN` | `NEKO_MONITOR_TOKEN` | 空 | 为空时不认证（兼容旧行为）；设置后除静态资源外所有路由都要认证，包括主服务写入的 `/sync*`，主服务会自动携带 |
+| Monitor 只读 token | `MONITOR_VIEWER_TOKEN` | `NEKO_MONITOR_VIEWER_TOKEN` | 空 | 仅在设置了 `NEKO_MONITOR_TOKEN` 时生效；只能看 viewer，不能写 `/sync*`，分享 viewer 链接请用它 |
+
+浏览器首次访问、cookie 会话和反向代理的细节见 `docs/zh-CN/config/environment-vars.md`。
+
 > **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。Nginx 反代配置里只有主服务的上游端口跟随 `NEKO_MAIN_SERVER_PORT`，记忆（48912）、Agent（48915）、插件（48916）的上游端口都写死了，所以在容器里不要改这三个端口。
+
+> **插件安全与 NAS 兼容**：官方 HTTP/HTTPS 代理同时转发插件操作与 `/security/csrf-token`，浏览器自动获取和附加校验 token。通过 NAS IP 和宿主机映射端口访问不需要额外配置 Origin/token。外层 HTTPS 反代转容器 HTTP 时，非 loopback NAS 地址允许 hostname 兜底，不比较协议与端口；这也意味着同一 NAS hostname 的其他应用端口进入来源信任边界。自定义域名沿用 `NEKO_TRUSTED_HOSTS`；公网访问认证与网络隔离仍由部署层负责。此校验防跨站操作，不提供用户登录认证。Vite `5173` 仅在开发者显式设置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS` 后允许，不应加入普通 NAS 部署配置。完整合同见 [`local-mutation-auth.md`](../docs/design/security/local-mutation-auth.md)。
 
 ### 4. 模型配置
 

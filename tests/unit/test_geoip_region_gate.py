@@ -407,8 +407,8 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
 
     class _Hanging:
         def open(self, req, timeout=None):
-            release.wait(5)
-            raise OSError('timed out')
+            release.wait()
+            return _JsonResp('{"countryCode": "US"}')
 
     import urllib.request
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Hanging())
@@ -421,28 +421,32 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
     ConfigManager._ensure_ip_probe_started()
 
     async def _run():
-        gaps = []
-        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        join_entered = asyncio.Event()
+        original_join = probe.join_ip_probe
 
-        async def _beat():
-            last = real_time.monotonic()
-            while not stop.is_set():
-                await asyncio.sleep(0.02)
-                now = real_time.monotonic()
-                gaps.append(now - last)
-                last = now
+        def observed_join(*args):
+            assert threading.get_ident() != loop_thread, "probe wait ran on the event-loop thread"
+            loop.call_soon_threadsafe(join_entered.set)
+            # Start the real join budget only after the test releases the
+            # probe; scheduler delays cannot finish warming before that gate.
+            release.wait()
+            return original_join(*args)
 
-        beat = asyncio.create_task(_beat())
-        await asyncio.sleep(0.1)
-        release.set()
-        await probe.awarmup_region_check(timeout=5)
-        stop.set()
-        await beat
-        return max(gaps)
+        monkeypatch.setattr(probe, "join_ip_probe", observed_join)
+        warming = asyncio.create_task(probe.awarmup_region_check(timeout=5))
+        try:
+            # The loop must run while the real probe is still blocked. Unlike
+            # a heartbeat latency ceiling, this survives shared-runner load.
+            await asyncio.wait_for(join_entered.wait(), timeout=5)
+            assert not warming.done()
+        finally:
+            release.set()
+            assert await asyncio.wait_for(warming, timeout=5) is True
 
     try:
-        worst = asyncio.run(_run())
-        assert worst < 0.5, f'预热期间事件循环被占用 {worst:.2f}s'
+        asyncio.run(_run())
     finally:
         release.set()
 

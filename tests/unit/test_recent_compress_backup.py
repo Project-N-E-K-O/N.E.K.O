@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+from tests.fastapi_routes import iter_routes
 
 
 def _history(n: int):
@@ -415,7 +416,7 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     probe_name = "围栏探针角色"
     fenced: set[tuple[str, str]] = set()
     unfenced: set[tuple[str, str]] = set()
-    for route in runtime.app.routes:
+    for route in iter_routes(runtime.app.routes):
         path = getattr(route, "path", "")
         if "{lanlan_name}" not in path:
             continue

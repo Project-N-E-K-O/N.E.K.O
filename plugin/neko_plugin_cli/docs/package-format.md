@@ -80,6 +80,7 @@ The plugin manager backend exposes the same package workflow with explicit respo
 - `POST /plugin-cli/install` returns `installed_plugins` and `installed_plugin_count`.
 - `upgrade`, `reinstall`, and `downgrade` require the current plan token plus explicit confirmation; the server rebuilds the plan before changing files.
 - `POST /plugin-cli/upload-and-install` returns `{ upload, install }`, where `install` uses the same shape as `/plugin-cli/install`.
+- `POST /plugin-cli/upload`, `/plugin-cli/upload-and-install`, `/plugin-cli/install` and their legacy aliases (`/plugin-cli/upload-and-unpack`, `/plugin-cli/unpack`) require the plugin mutation CSRF contract: a browser request needs a trusted `Origin` plus `X-CSRF-Token` from `GET /security/csrf-token`; a native caller on the same loopback host may omit both. See `docs/design/security/local-mutation-auth.md`.
 
 ## Archive Layout
 

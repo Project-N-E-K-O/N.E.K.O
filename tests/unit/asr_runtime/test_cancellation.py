@@ -25,7 +25,7 @@ async def test_abort_bumps_generation_before_waiting_for_registry_cancel() -> No
         side_effect=lambda _reason: order.append("abort")
     )
     runtime._invalidate_voice_pcm_sync = MagicMock(
-        side_effect=lambda _reason: order.append("invalidate")
+        side_effect=lambda _reason, **_kwargs: order.append("invalidate")
     )
     runtime._voice_input_registry.wait_idle = AsyncMock(
         side_effect=lambda: order.append("wait_idle")

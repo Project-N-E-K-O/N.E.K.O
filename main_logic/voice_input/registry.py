@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -239,10 +240,15 @@ class VoiceInputRegistry:
         token: VoiceTurnToken | None = None,
         *,
         reason: str,
+        keep: Collection[VoiceTurnToken] = (),
     ) -> bool:
         if token is not None:
             return self._invalidate_route(token, reason)
-        tokens = tuple(self._utterances)
+        tokens = tuple(
+            route_token
+            for route_token in self._utterances
+            if route_token not in keep
+        )
         for route_token in tokens:
             self._invalidate_route(route_token, reason)
         return bool(tokens)

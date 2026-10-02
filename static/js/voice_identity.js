@@ -40,8 +40,7 @@
         secure_storage_unavailable: 'voiceIdentity.reasonSecureStorageUnavailable',
         enrollment_active: 'voiceIdentity.reasonEnrollmentActive',
         runtime_degraded: 'voiceIdentity.reasonRuntimeDegraded',
-        unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute',
-        shadow_mode: 'voiceIdentity.reasonShadowMode'
+        unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute'
     });
     const ENROLLMENT_ERROR_MESSAGES = Object.freeze({
         invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],
@@ -60,6 +59,7 @@
         model_unavailable: ['voiceIdentity.errorModelUnavailable', '声纹模型暂时不可用，请检查模型资源后重试。'],
         audio_processing_unavailable: ['voiceIdentity.errorAudioProcessingUnavailable', '麦克风音频处理暂时不可用，请重启麦克风后重试。'],
         secure_storage_unavailable: ['voiceIdentity.errorSecureStorageUnavailable', '安全存储不可用，无法保存声纹。'],
+        feature_disabled: ['voiceIdentity.featureDisabled', '声纹功能当前已关闭，无法录入或开启声纹激活；已保存的声纹仍可删除。'],
         insufficient_enrollment_time: ['voiceIdentity.errorInsufficientTime', '剩余时间不足以完成下一段，请重新开始录入。']
     });
 
@@ -75,6 +75,7 @@
         requestedEnabled: false,
         effectiveEnabled: false,
         effectiveReason: 'no_profile',
+        runtimeDisabled: false,
         mediaStream: null,
         audioContext: null,
         captureAbort: null,
@@ -328,6 +329,9 @@
         if (!state.profileAvailable) {
             state.effectiveEnabled = false;
         }
+        if (typeof status.runtime_mode === 'string') {
+            state.runtimeDisabled = status.runtime_mode === 'off';
+        }
         render();
     }
 
@@ -466,6 +470,12 @@
     }
 
     function reasonMessage() {
+        if (state.runtimeDisabled) {
+            return translate(
+                'voiceIdentity.featureDisabled',
+                '声纹功能当前已关闭，无法录入或开启声纹激活；已保存的声纹仍可删除。'
+            );
+        }
         if (!state.profileAvailable) {
             if (['disabled', 'no_profile'].includes(state.effectiveReason)) {
                 return translate('voiceIdentity.profileMissing', '尚未录入 Owner 声纹');
@@ -523,8 +533,9 @@
 
         const pending = !state.initialized || state.busy
             || state.cancelPending || state.filterPending;
-        const enrollmentUnavailable = ['secure_storage_unavailable', 'model_unavailable']
-            .includes(state.effectiveReason);
+        const enrollmentUnavailable = state.runtimeDisabled
+            || ['secure_storage_unavailable', 'model_unavailable']
+                .includes(state.effectiveReason);
         elements.start.hidden = state.busy || state.cancelPending
             || (state.profileAvailable && !state.enrollmentId);
         elements.start.disabled = pending || enrollmentUnavailable;
@@ -539,7 +550,8 @@
         elements.reenroll.disabled = pending || enrollmentUnavailable;
         elements.delete.disabled = pending;
         if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
-        elements.filter.disabled = pending;
+        elements.filter.disabled = pending
+            || (state.runtimeDisabled && !state.requestedEnabled);
         if (elements.retry) {
             elements.retry.hidden = !state.initializationError || state.busy;
             elements.retry.disabled = state.busy;

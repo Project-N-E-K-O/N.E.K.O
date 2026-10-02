@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..core.build_rules import is_vendor_sync_path
+
 # Built-in excludes are hard safety defaults. User rules extend them, but do
 # not replace them, so common cache/build artifacts never leak into packages.
 _DEFAULT_EXCLUDE_DIR_NAMES = {
@@ -84,6 +86,10 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -
     path_str = relative_path.as_posix()
 
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in relative_path.parts):
+        return True
+
+    # Dependency sync recovery artifacts must never become plugin payload.
+    if is_vendor_sync_path(relative_path):
         return True
 
     if not is_dir:

@@ -31,14 +31,16 @@ from config import MEMORY_SERVER_PORT, AVATAR_INTERACTION_DEDUPE_MAX_ITEMS
 from utils.config_manager import get_config_manager
 from queue import Queue
 import soxr
-from ._shared import logger, ContextAppendResult
+from ._shared import logger, ContextAppendResult, _ReplyTurn
 
 from .context_append import ContextAppendMixin
 from .focus import FocusMixin
 from .tts_runtime import TtsRuntimeMixin
+from .tts_lifecycle import TtsLifecycleMixin
 from .turn import TurnMixin
 from .tool_calling import ToolCallingMixin
 from .lifecycle import LifecycleMixin
+from .session_lifecycle import SessionOwnershipMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
@@ -51,9 +53,11 @@ class LLMSessionManager(
     ContextAppendMixin,
     FocusMixin,
     TtsRuntimeMixin,
+    TtsLifecycleMixin,
     TurnMixin,
     ToolCallingMixin,
     LifecycleMixin,
+    SessionOwnershipMixin,
     ProactiveMixin,
     GreetingMixin,
     AsrRuntimeMixin,
@@ -71,6 +75,8 @@ class LLMSessionManager(
         self.websocket = None
         self.sync_message_queue = sync_message_queue
         self.session = None
+        self._init_session_lifecycle_state()
+        self._init_tts_lifecycle_state()
         self._init_asr_runtime_state()
         self.last_time = None
         self.is_active = False
@@ -188,6 +194,7 @@ class LLMSessionManager(
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         self.initial_next_session_context_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
@@ -357,6 +364,9 @@ class LLMSessionManager(
         # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
         self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
+        # 最近一次交给 Offline client 的回复（见 _shared._ReplyTurn）。热切换
+        # promote 轮换 speech id 时靠它把仍在途的回复带到新 id 上。
+        self._open_reply_turn: Optional[_ReplyTurn] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
         # (request_id, staged image) pairs for offline attachments still queued in
@@ -375,6 +385,7 @@ class LLMSessionManager(
         # Serialize pending-input replay with live input dispatch. The cache
         # lock cannot span awaits because attachment handoff reacquires it.
         self._pending_input_flush_active = False
+        self._pending_input_flush_idle_event = None
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None

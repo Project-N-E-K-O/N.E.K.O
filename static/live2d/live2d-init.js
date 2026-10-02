@@ -476,6 +476,7 @@ async function _initLive2DModelInner() {
         && typeof window.__nekoSevenDayTutorialStateReady.then === 'function') {
         await window.__nekoSevenDayTutorialStateReady;
     }
+    await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
 
     if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
         && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {

@@ -1016,7 +1016,8 @@
                 if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
                     window.stopProactiveVisionDuringSpeech();
                 }
-                // 停止屏幕共享
+                // 只临时停掉屏幕共享的发送，切换完成后按 shouldRestartScreening
+                // 恢复；进行中的换源重启和启动都要保留，不能用 teardownScreenSharing。
                 if (typeof window.stopScreening === 'function') {
                     window.stopScreening();
                 }
@@ -1148,9 +1149,9 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
 
-                // 清理资源
-                if (typeof window.stopScreening === 'function') {
-                    window.stopScreening();
+                // 清理资源（会话结束：屏幕共享要完整收尾）
+                if (typeof window.teardownScreenSharing === 'function') {
+                    window.teardownScreenSharing();
                 }
                 stopSilenceDetection();
                 S.inputAnalyser = null;
@@ -2473,8 +2474,8 @@
             window.invalidatePendingMusicSearch();
         }
 
-        if (typeof window.stopScreening === 'function') {
-            window.stopScreening();
+        if (typeof window.teardownScreenSharing === 'function') {
+            window.teardownScreenSharing();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (typeof window.removeExternalAsrPreview === 'function') {
@@ -2852,7 +2853,14 @@
                 if (!isCurrent()) return { ok: false };
                 if (selectionGeneration !== microphoneSelectionGeneration) continue;
                 if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
-                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                // 回退也可能失败：和首次请求同样先看是否过期、选择是否已变，变了就按新设备重试。
+                try {
+                    stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                } catch (fallbackError) {
+                    if (!isCurrent()) return { ok: false };
+                    if (selectionGeneration !== microphoneSelectionGeneration) continue;
+                    throw fallbackError;
+                }
                 fellBack = true;
             }
             // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。

@@ -564,6 +564,7 @@ class _StreamingMixin:
         response_discarded_callback: Optional[
             Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
         ] = None,
+        response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -605,6 +606,11 @@ class _StreamingMixin:
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
         request has already started.
+
+        ``response_done_callback`` does the same for the completion, which runs
+        in place of ``on_response_done``. It still runs whenever the session
+        callback would, including for a reply cut by ``close()``; the caller
+        decides what a late completion may still touch.
 
         ``system_prefix_images`` binds passive callback media to the same
         invocation as ``system_prefix``.  Unlike ``_pending_images``, this list
@@ -2042,5 +2048,6 @@ class _StreamingMixin:
                         await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
 
             # Call response done callback
-            if self.on_response_done:
-                await self.on_response_done()
+            done_callback = response_done_callback or self.on_response_done
+            if done_callback:
+                await done_callback()

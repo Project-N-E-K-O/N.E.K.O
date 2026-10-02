@@ -36,6 +36,7 @@ from utils.language_utils import (
     get_global_language_full,
 )
 from utils.tokenize import acount_tokens
+from utils.screen_comment_guard import strip_screen_labels
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
@@ -1134,6 +1135,11 @@ class CompressedRecentHistoryManager:
 
     # detailed: 保留尽可能多的细节
     async def compress_history(self, messages, lanlan_name, detailed=False):
+        # The summary replaces these messages and is stored as a system memo
+        # the screen-history guard does not rewrite: it is made from the
+        # replies without source labels, but with every comment kept, so no
+        # content the user saw is lost to the summary.
+        messages = strip_screen_labels(list(messages))
         messages_text = self._render_messages_to_text(messages, lanlan_name)
         locale_text = self._summary_prompt_locale_text(messages)
         # 输入过大（积压一直压不掉时会膨胀）→ 先分段 map-reduce 缩小输入，减小

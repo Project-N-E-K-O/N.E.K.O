@@ -832,10 +832,123 @@
         "avatarToolSlotFull": "Сначала снимите один инструмент.",
         "avatarToolManagerTitle": "Управление инструментами",
         "avatarToolCreateTitle": "Создать пользовательский предмет",
+        "avatarToolWorkspaceLocalOnly": "Сохраняется только на этом устройстве",
+        "avatarToolWorkspaceNodeA11y": "Нажмите Enter, чтобы выбрать это взаимодействие. Перемещайте его стрелками.",
+        "avatarToolWorkspaceEdgeA11y": "Нажмите Enter, чтобы выбрать эту связь. Нажмите Delete, чтобы удалить её.",
+        "avatarToolWorkspaceControls": "Управление холстом",
+        "avatarToolWorkspaceZoomIn": "Увеличить",
+        "avatarToolWorkspaceZoomOut": "Уменьшить",
+        "avatarToolWorkspaceFitView": "Показать всё",
+        "avatarToolWorkspaceMiniMap": "Обзор взаимодействий",
+        "avatarToolWorkspaceHandle": "Граница узла для соединений",
+        "avatarToolWorkspaceHandleTop": "Верхняя граница для соединений",
+        "avatarToolWorkspaceHandleRight": "Правая граница для соединений",
+        "avatarToolWorkspaceHandleBottom": "Нижняя граница для соединений",
+        "avatarToolWorkspaceHandleLeft": "Левая граница для соединений",
+        "avatarToolInitialImageNode": "Начальное изображение",
+        "avatarToolInitialImageMissing": "Начальное изображение не выбрано",
+        "avatarToolInitialImageNodeHint": "С этой картинки начинается сценарий взаимодействий",
+        "avatarToolInitialConnection": "Связь начального изображения",
+        "avatarToolInitialConnectionHint": "При запуске инструмента это взаимодействие доступно, пока показано начальное изображение.",
+        "avatarToolOverview": "Обзор",
+        "avatarToolOverviewShow": "Показать обзор",
+        "avatarToolOverviewHide": "Скрыть обзор",
+        "avatarToolOverviewPosition": "Положение обзора",
+        "avatarToolOverviewTopLeft": "Переместить обзор в левый верхний угол",
+        "avatarToolOverviewTopRight": "Переместить обзор в правый верхний угол",
+        "avatarToolOverviewBottomLeft": "Переместить обзор в левый нижний угол",
+        "avatarToolOverviewBottomRight": "Переместить обзор в правый нижний угол",
+        "avatarToolWorkspaceEmptyTitle": "Взаимодействий пока нет",
+        "avatarToolWorkspaceEmptyBody": "Здесь появятся щелчки, задержки и связи между ними.",
+        "avatarToolWorkspaceCanvasReady": "Холст готов",
+        "avatarToolWorkspaceCanvasLoading": "Подготовка холста…",
+        "avatarToolWorkspaceCanvasTitle": "Сценарий взаимодействия",
+        "avatarToolWorkspaceEditorTitle": "Редактор предмета",
+        "avatarToolWorkspaceSettingsTitle": "Настройки предмета",
+        "avatarToolWorkspaceCanvasHint": "Свободно перетаскивайте узлы; они выравниваются после отпускания · Тяните от края узла для соединения · Прокручивайте для панорамирования",
+        "avatarToolEdgeStyle": "Стиль соединений",
+        "avatarToolEdgeStyleOrthogonal": "Ломаные",
+        "avatarToolEdgeStyleCurved": "Кривые",
+        "avatarToolCreateEditArea": "Область редактирования",
+        "avatarToolInteractionSettings": "Настройки взаимодействия",
+        "avatarToolInteractionAddGroup": "Добавить взаимодействие",
+        "avatarToolInteractionAdd": "Добавить",
+        "avatarToolInteractionMouseClick": "Щелчок мышью",
+        "avatarToolInteractionAfterTime": "Переключение с задержкой",
+        "avatarToolPresetGroup": "Предустановки",
+        "avatarToolPresetReplaceConfirm": "Применение предустановки заменит текущую схему взаимодействий. Продолжить?",
+        "avatarToolPresetPressSwap": "Смена при нажатии",
+        "avatarToolPresetPressSwapHint": "«Щелчок мышью 1» меняет изображение в «При нажатии» и восстанавливает его в «При отпускании».",
+        "avatarToolPresetClickAdvance": "Последовательная смена",
+        "avatarToolPresetClickAdvanceHint": "«Щелчок мышью 1» → «Щелчок мышью 2» → «Щелчок мышью 3» последовательно меняет изображения, затем останавливается.",
+        "avatarToolPresetCycleStop": "Смена по кругу",
+        "avatarToolPresetCycleStopHint": "«Переключение с задержкой 1», «Переключение с задержкой 2» и «Переключение с задержкой 3» образуют цикл; после «Щелчок мышью 1» его возобновляет «Переключение с задержкой 4».",
+        "avatarToolPresetReferenceWith": "Пример: {{tool}}",
+        "avatarToolPresetFlowLabel": "Пример схемы",
+        "avatarToolPresetPressSwapFlow": "Щелчок мышью 1: При нажатии сменить изображение → При отпускании восстановить",
+        "avatarToolPresetClickAdvanceFlow": "Щелчок мышью 1 → Щелчок мышью 2 → Щелчок мышью 3 → конец",
+        "avatarToolPresetCycleStopFlow": "Переключение с задержкой 1 → Переключение с задержкой 2 → Переключение с задержкой 3 → повтор; Щелчок мышью 1 → Переключение с задержкой 4 → возобновить цикл",
+        "avatarToolPresetSetupLabel": "Последующая настройка",
+        "avatarToolPresetPressSwapSetup": "В «Щелчок мышью 1» выберите отдельные изображения для «При нажатии» и «При отпускании».",
+        "avatarToolPresetClickAdvanceSetup": "В «Щелчок мышью 1», «Щелчок мышью 2» и «Щелчок мышью 3» выберите изображения 1, 2 и 3 для «При отпускании». После «Щелчок мышью 3» процесс завершается.",
+        "avatarToolPresetCycleStopSetup": "Выберите изображения цикла в «Переключить на» для «Переключение с задержкой 1», «Переключение с задержкой 2» и «Переключение с задержкой 3», а изображение удержания — в «При отпускании» для «Щелчок мышью 1». «Ждать» в первых трёх переключениях с задержкой задаёт скорость, а «Ждать» в «Переключение с задержкой 4» — время удержания.",
+        "avatarToolPresetCycleScope": "Здесь используется только ритм смены, паузы по щелчку и продолжения после задержки из игры «камень, ножницы, бумага». Логика победы и анимация результата не входят в предустановку.",
+        "avatarToolPresetReferenceNotice": "Примеры только объясняют схему. Предустановка не копирует эталонные изображения и не выбирает изображения узлов за вас.",
+        "avatarToolInteractionClickNumber": "Щелчок мышью {{number}}",
+        "avatarToolInteractionDelayNumber": "Переключение с задержкой {{number}}",
+        "avatarToolInteractionNodeHasError": "Это взаимодействие нужно исправить",
+        "avatarToolInteractionPressTiming": "При нажатии",
+        "avatarToolInteractionReleaseTiming": "При отпускании",
+        "avatarToolInteractionWaitTime": "Ждать",
+        "avatarToolInteractionThenShow": "Переключить на",
+        "avatarToolInteractionKeepImage": "Не менять изображение",
+        "avatarToolImageName": "Название изображения",
+        "avatarToolInteractionName": "Название взаимодействия",
+        "avatarToolEditableNameHint": "Нажмите на название, чтобы изменить его",
+        "avatarToolEditableNameLengthError": "Название должно содержать не более {{count}} символов.",
+        "avatarToolEditableNameInvalidError": "В названии можно использовать буквы, цифры, пробелы, «-» и «_».",
+        "avatarToolImageNameDuplicate": "Название «{{name}}» уже используется для другого изображения. Выберите другое название.",
+        "avatarToolInteractionNameDuplicate": "Название «{{name}}» уже используется для другого взаимодействия. Выберите другое название.",
+        "avatarToolInteractionMissingImage": "Изображение отсутствует",
+        "avatarToolInteractionMillisecondsValue": "{{count}} мс",
+        "avatarToolInteractionNotSet": "Не задано",
+        "avatarToolInteractionUnknown": "Неизвестное взаимодействие",
+        "avatarToolInteractionAfterLabel": "после {{interaction}}",
+        "avatarToolInteractionStartPosition": "после появления начального изображения",
+        "avatarToolInteractionFlow": "Сценарий взаимодействия",
+        "avatarToolInitialConnectionRequired": "Соедините начальное изображение хотя бы с одним взаимодействием.",
+        "avatarToolInteractionActionImageMissing": "В {{interaction}} используется недоступное изображение.",
+        "avatarToolInteractionDelayInvalid": "Для {{interaction}} нужна задержка больше нуля.",
+        "avatarToolInteractionDelayImageMissing": "Выберите, сохранит ли {{interaction}} текущее изображение или покажет другое.",
+        "avatarToolInteractionLinkMissing": "Связь указывает на несуществующее взаимодействие.",
+        "avatarToolInteractionDuplicateLink": "Два взаимодействия соединены одной и той же связью несколько раз.",
+        "avatarToolInteractionUnreachable": "К {{interaction}} нельзя перейти от начального изображения.",
+        "avatarToolInteractionAmbiguousClick": "{{interaction}} неотличимо от другого щелчка {{position}}.",
+        "avatarToolInteractionAmbiguousDelay": "{{interaction}} неотличимо от другой задержки {{delay}} мс {{position}}.",
+        "avatarToolInteractionInvalid": "Это взаимодействие нужно исправить.",
+        "avatarToolInteractionErrorSummary": "Проблемы взаимодействий: {{count}}",
+        "avatarToolInteractionTooMany": "Взаимодействий в сценарии: {{count}}. Удалите лишние, чтобы осталось не больше {{max}}.",
+        "avatarToolInteractionConnection": "Связь",
+        "avatarToolInteractionConnectionFromTo": "{{from}} → {{to}}",
+        "avatarToolInteractionRemoveConnection": "Удалить связь",
+        "avatarToolInteractionConnectionHint": "После завершения первого взаимодействия предмет ожидает связанное взаимодействие.",
+        "avatarToolInteractionSelectTitle": "Выберите взаимодействие",
+        "avatarToolInteractionSelectHint": "Добавьте или выберите цельное взаимодействие на холсте, чтобы настроить его здесь.",
+        "avatarToolInteractionDuplicate": "Дублировать",
+        "avatarToolInteractionRemove": "Удалить",
+        "avatarToolInteractionClickHint": "Нажатие и отпускание — два момента смены изображения внутри одного щелчка. Связи продолжаются от целого щелчка.",
+        "avatarToolInteractionDelayDuration": "Время ожидания",
+        "avatarToolInteractionMilliseconds": "мс",
+        "avatarToolInteractionTargetImage": "Переключить на",
+        "avatarToolInteractionChooseImage": "Выберите изображение",
+        "avatarToolInteractionFixBeforeSave": "Исправьте проблемы в сценарии взаимодействия перед сохранением.",
+        "avatarToolEditorWindowTitle": "Редактор пользовательских предметов",
+        "avatarToolEditorOpenError": "Не удалось открыть редактор предметов.",
         "avatarToolCreateSaveError": "Не удалось сохранить предмет. Повторите попытку.",
         "avatarToolCreateNameRequired": "Введите название предмета.",
         "avatarToolCreateNameLengthError": "Название должно содержать от 1 до {{count}} символов.",
         "avatarToolCreateNameInvalidError": "В названии можно использовать буквы, цифры, пробелы, «-» и «_».",
+        "avatarToolCreateNameDuplicate": "Название «{{name}}» уже используется другим предметом. Выберите другое название.",
         "avatarToolCreateDefaultImageRequired": "Выберите обычное изображение.",
         "avatarToolCreateChangeImageRequired": "Выберите изменяемое изображение.",
         "avatarToolCreateChangeImageRequiredNumber": "Выберите изменяемое изображение {{number}}.",
@@ -846,6 +959,10 @@
         "avatarToolCreateSpecialImageRequired": "Выберите изображение сюрприза.",
         "avatarToolCreateImageSizeError": "Размер изображения не должен превышать {{size}}.",
         "avatarToolCreateImageInvalidError": "Это изображение нельзя использовать. Выберите другой PNG.",
+        "avatarToolCreateImagePixelsError": "Изображение слишком большое. Выберите PNG с общим числом пикселей не более {{count}}.",
+        "avatarToolCreateOptionalMeaningLengthError": "Описание должно быть не длиннее {{count}} символов.",
+        "avatarToolCreateImagesRequired": "Добавьте хотя бы одно изображение предмета.",
+        "avatarToolCreateInitialImageRequired": "Выберите начальное изображение.",
         "avatarToolCreateSpecialProbabilityInvalid": "Выберите вероятность от 1% до 100%.",
         "avatarToolCreateToolLimitError": "Достигнут лимит пользовательских предметов.",
         "avatarToolCreateStorageLimitError": "На устройстве недостаточно места для нового предмета.",
@@ -863,12 +980,23 @@
         "avatarToolCreateSpecialImage": "Изображение сюрприза",
         "avatarToolCreateSpecialMeaningPlaceholder": "Например: «{{user}}» легко касается «{{character}}» кошачьей лапкой, и выпадает награда.",
         "avatarToolCreateSpecialSound": "Звук сюрприза (необязательно)",
-        "avatarToolCreatePrivacy": "Изображения и звуки хранятся на устройстве; при взаимодействии название и соответствующее описание отправляются модели.",
+        "avatarToolCreatePrivacy": "Изображения и звуки остаются на устройстве. При взаимодействии модели отправляется текст подсказки для текущего изображения или сюрприза, а название предмета сохраняется в памяти персонажа и может упоминаться в последующих разговорах.",
         "avatarToolCreateName": "Название предмета",
         "avatarToolCreateNamePlaceholder": "От 1 до {{count}} символов; можно использовать буквы, цифры, пробелы, «-» и «_»",
         "avatarToolCreateDefaultImage": "Обычное изображение",
         "avatarToolCreateChooseImage": "Выбрать изображение",
         "avatarToolCreateNoImage": "Изображение не выбрано",
+        "avatarToolCreateToolImages": "Изображения предмета",
+        "avatarToolCreateToolImagesHint": "Выберите начальное изображение.",
+        "avatarToolCreateToolImageNumber": "Изображение предмета {{number}}",
+        "avatarToolCreateEditToolImage": "Редактировать {{image}}",
+        "avatarToolCreateNoImageMeaning": "Без описания взаимодействия",
+        "avatarToolCreateInitialImage": "Начальное изображение",
+        "avatarToolCreateAddToolImage": "Добавить изображение",
+        "avatarToolCreateImageMeaningOptional": "Описание взаимодействия (необязательно)",
+        "avatarToolCreateImageMeaningForImage": "Описание изображения {{number}} (необязательно)",
+        "avatarToolCreateInitialImageRemoveError": "Сначала назначьте другое изображение начальным, затем удалите текущее.",
+        "avatarToolCreateReferencedImageRemoveError": "Изображение используется в {{locations}}. Сначала измените соответствующие действия.",
         "avatarToolCreateDefaultImageHint": "Показывается до смены изображения и увеличивается в зоне взаимодействия.",
         "avatarToolCreateChangeMode": "Смена изображения",
         "avatarToolCreateModePressSwap": "Менять во время удержания",
@@ -914,9 +1042,13 @@
         "avatarToolDelete": "Удалить {{name}}",
         "avatarToolDeleteConfirm": "Удалить «{{name}}»? Это действие нельзя отменить.",
         "avatarToolDeleteError": "Не удалось удалить этот предмет. Повторите попытку позже.",
+        "avatarToolDeletePendingSaveError": "Предыдущее удаление этого предмета не завершилось, поэтому изменения нельзя сохранить. Удалите предмет и создайте его заново.",
+        "avatarToolRecoveryPendingError": "Предыдущее изменение этого предмета было прервано и не восстановилось автоматически, поэтому сейчас его нельзя изменить или удалить.",
+        "avatarToolTemporarilyUnavailable": "Временно недоступно",
         "avatarToolLibrary": "Библиотека инструментов",
         "avatarToolEquipped": "Уже выбрано",
         "avatarToolEquip": "Добавить",
+        "avatarToolNotYetEquippable": "Пока нельзя экипировать",
         "avatarToolNoAvailableTools": "Нет доступных инструментов",
         "avatarToolCancel": "Отмена",
         "avatarToolSave": "Сохранить изменения",
@@ -3026,7 +3158,7 @@
         "reasonEnrollmentActive": "Записывается новый голосовой профиль. До завершения активация не начнётся, а аудио ожидания не будет отправлено.",
         "reasonRuntimeDegraded": "Активация по голосу временно недоступна; аудио ожидания не отправляется.",
         "reasonUnsupportedAsrRoute": "Текущий голосовой маршрут ещё не поддерживает активацию; пока она включена, аудио ожидания не отправляется.",
-        "reasonShadowMode": "Активация по голосу работает только в режиме наблюдения и ещё не разрешила отправку аудио ожидания.",
+        "featureDisabled": "Функция голосового профиля сейчас отключена: запись и активация по голосу недоступны. Сохранённый голосовой профиль можно удалить.",
         "sessionWaiting": "Ожидание вашей речи для активации голосового диалога",
         "sessionActive": "Голосовой диалог активирован",
         "sessionUnavailable": "Активация по голосу временно недоступна; аудио ожидания не отправляется",
@@ -5715,6 +5847,186 @@
             "finalTitle": "Итоговый экран",
             "roundLabel": "Раунд {{round}}",
             "noRounds": "Завершенных раундов пока нет."
+        }
+    },
+    "clickGuide": {
+        "tour": "Интерактивный гид",
+        "back": "Назад",
+        "next": "Далее",
+        "skip": "Завершить обучение",
+        "unavailable": "Эта кнопка пока недоступна. Нажмите «Далее», чтобы продолжить.",
+        "nativeFallback": "Если шарик не нажимается, выберите «Далее».",
+        "skipTools": "Пропустить инструменты",
+        "toolContinueHint": "Нажмите подсвеченную кнопку, чтобы продолжить. Инструмент не запустится.",
+        "finishButton": "Завершить",
+        "close": "Закрыть",
+        "saveFailed": "Не удалось сохранить. Повторите попытку.",
+        "resetButton": "Повторить обучение",
+        "resetSuccess": "Гид сброшен. Обновите главную страницу для запуска. Прогресс семидневного обучения не изменился.",
+        "choice": {
+            "title": "Какое обучение вы хотите пройти снова?",
+            "body": "Выберите пошаговый гид или начните семидневное сюжетное обучение заново. Пошаговый гид сохраняет прогресс семидневного обучения.",
+            "click": "Интерактивный гид",
+            "sevenDay": "Семидневное обучение"
+        },
+        "chatOverview": {
+            "title": "Компактный чат",
+            "body": "Введите здесь «你好» и нажмите Enter для отправки."
+        },
+        "chatOverviewSend": {
+            "body": "Готово? Нажмите Enter, чтобы отправить сообщение."
+        },
+        "chatOverviewDraft": {
+            "body": "У вас уже есть неотправленный текст или вложение. Мы сохраним его; нажмите «Далее», чтобы посмотреть историю."
+        },
+        "chatOverviewBack": {
+            "body": "Это капсула чата. История и черновик останутся без изменений; нажмите «Далее», чтобы снова посмотреть историю."
+        },
+        "history": {
+            "title": "История чата",
+            "body": "Нажмите синюю полоску над капсулой, чтобы открыть переписку."
+        },
+        "historyClose": {
+            "title": "Закрыть историю",
+            "body": "Нажмите синюю полоску ещё раз, чтобы закрыть историю и вернуться к чату."
+        },
+        "minimize": {
+            "title": "Свернуть чат",
+            "body": "Нажмите на пушистый шарик слева — чат свернётся в маленький шарик на рабочем столе."
+        },
+        "restore": {
+            "title": "Вернуть чат",
+            "body": "Нажмите шарик ещё раз, чтобы раскрыть капсулу и продолжить разговор."
+        },
+        "tools": {
+            "title": "Инструменты",
+            "body": "Наведите курсор на кнопку справа, чтобы открыть колесо инструментов."
+        },
+        "toolsDraft": {
+            "body": "При наличии текста или вложения кнопка справа становится кнопкой отправки. Чтобы попробовать колесо инструментов, удалите текст или вложение вручную либо пропустите инструменты и сохраните черновик."
+        },
+        "screenshot": {
+            "title": "Снимок экрана",
+            "body": "Прокручивайте или перетаскивайте колесо, чтобы менять инструменты. Снимок экрана добавится к сообщению."
+        },
+        "avatar": {
+            "title": "Предметы для игры",
+            "body": "Откройте эту панель, когда захотите поиграть с персонажем. Любимые предметы можно выбирать и расставлять по своему вкусу."
+        },
+        "avatarTools": {
+            "title": "Ваши предметы",
+            "body": "Порядок соответствует сохранённому. Последняя кнопка позволяет изменить избранное. Лапка здесь — игровой предмет, а не Agent."
+        },
+        "translate": {
+            "title": "Перевод субтитров",
+            "body": "Включите перевод субтитров, если нужна помощь с другим языком. Повторное нажатие выключает перевод."
+        },
+        "jukebox": {
+            "title": "Музыка",
+            "body": "Музыкальный проигрыватель позволяет слушать музыку во время беседы. В нём можно выбирать песни и управлять воспроизведением."
+        },
+        "import": {
+            "title": "Импорт изображения",
+            "body": "Импорт изображения позволяет выбрать файл на устройстве и добавить его к разговору."
+        },
+        "export": {
+            "title": "Экспорт беседы",
+            "body": "Экспорт позволяет выбрать сообщения, посмотреть предпросмотр и сохранить копию беседы."
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "Переключает разговор в режим Galgame с вариантами ответов. Нажмите ещё раз, чтобы вернуться к обычному чату."
+        },
+        "floatingOverviewContinueHint": "Нажмите любую подсвеченную кнопку, чтобы продолжить. Функция не откроется.",
+        "floatingOverview": {
+            "title": "Кнопки рядом с персонажем",
+            "body": "Кнопки рядом с персонажем открывают голос, Agent, Neko Universe, настройки и отдых."
+        },
+        "mic": {
+            "title": "Голосовой чат",
+            "body": "Кнопка микрофона запускает и останавливает голосовой разговор. Маленькая стрелка открывает настройки микрофона, громкости и показа экрана."
+        },
+        "micSettings": {
+            "title": "Настройки голоса",
+            "body": "Нажмите стрелку рядом с микрофоном. Здесь также выбираются устройства и громкость."
+        },
+        "screen": {
+            "title": "Показ экрана",
+            "body": "Выберите экран или окно. Переключатель справа запускает и останавливает показ. Включать необязательно."
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "Лапка открывает Agent для помощи с компьютером, браузером и плагинами. В панели задач можно смотреть прогресс и останавливать выполнение."
+        },
+        "agentMaster": {
+            "title": "Переключатель Agent",
+            "body": "Включает Agent. Панель задач показывает ход работы и позволяет остановить задачи. Включение необязательно."
+        },
+        "social": {
+            "title": "Мяу-вселенная",
+            "body": "Neko Universe открывается новым пользователям через три календарных дня. После этого войти в сообщество можно здесь."
+        },
+        "settings": {
+            "title": "Настройки",
+            "body": "Персонаж, голос, настройки чата и память находятся в разделе «Настройки»."
+        },
+        "proactive": {
+            "title": "Инициативный чат",
+            "body": "Разрешите персонажу начинать беседу. Можно сохранить текущую настройку."
+        },
+        "privacy": {
+            "title": "Приватность",
+            "body": "Управляйте инициативным визуальным доступом. Сохраните удобные настройки приватности."
+        },
+        "memory": {
+            "title": "Браузер воспоминаний",
+            "body": "Просматривайте и управляйте воспоминаниями. Здесь можно отдельно сбросить каждый учебный режим."
+        },
+        "goodbye": {
+            "title": "Домой",
+            "body": "Здесь можно отправить персонажа отдохнуть. Позже его можно позвать обратно."
+        },
+        "return": {
+            "title": "Позвать обратно",
+            "body": "Нажмите кнопку возврата, чтобы персонаж снова появился рядом."
+        },
+        "lock": {
+            "title": "Фиксация позиции",
+            "body": "Замок закрепляет положение персонажа. Без блокировки его можно перетаскивать и менять размер колесом мыши."
+        },
+        "finish": {
+            "title": "Исследуйте сами",
+            "body": "Знакомство завершено. Чтобы пройти его снова, сбросьте руководство в разделе «Настройки → Обзор памяти»."
+        },
+        "connection": {
+            "title": "Чат недоступен",
+            "body": "Окно чата не ответило. Откройте его и обновите главную страницу. Гид не отмечен завершённым."
+        },
+        "closeMenu": "Закрыть меню и продолжить",
+        "openedWindow": {
+            "title": "Вернуться назад",
+            "body": "Эту страницу всегда можно снова открыть тем же способом. Сейчас нажмите выделенную кнопку закрытия, чтобы вернуться и познакомиться с другими функциями.",
+            "close": "Закрыть страницу и продолжить",
+            "pending": "Если страница просит сохранить или подтвердить, сначала завершите это действие. Обучение продолжится после закрытия.",
+            "manualClose": "Эта страница уже открыта в другом окне. Закройте её там и вернитесь сюда; обучение продолжится автоматически.",
+            "returnToPage": "Перейти к открытой странице"
+        },
+        "socialClose": {
+            "title": "Вернуться из сообщества",
+            "body": "Сообщество открыто. Нажмите ×, чтобы закрыть его и вернуться к кнопкам персонажа."
+        },
+        "micMenu": {
+            "body": "В этом меню находятся микрофон, громкость и показ экрана. Когда закончите, закройте меню и продолжите."
+        },
+        "agentMenu": {
+            "body": "Переключатели задают доступные Agent инструменты. Панель задач показывает прогресс. Можно оставить настройки как есть и закрыть меню."
+        },
+        "settingsMenu": {
+            "body": "Здесь собраны настройки персонажа, голоса и чата. Пока достаточно запомнить, где они находятся; изменить их можно позже. Закройте меню кнопкой внизу."
+        },
+        "sections": {
+            "chat": "Капсула чата",
+            "floating": "Кнопки персонажа"
         }
     }
 }

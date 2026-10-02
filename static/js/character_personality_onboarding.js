@@ -394,7 +394,7 @@
             }
 
             const manager = window.universalTutorialManager || null;
-            if (window.isInTutorial === true
+            if (window.isNekoClickGuideActive === true || window.isInTutorial === true
                 || window.isNekoHomeTutorialPending === true
                 || (manager && manager.currentPage === 'home' && manager.isTutorialRunning)) {
                 return true;

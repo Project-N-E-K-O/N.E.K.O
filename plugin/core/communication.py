@@ -94,6 +94,10 @@ class PluginCommunicationResourceManager:
     # terminal frame-drop warnings.
     _plane_drop_warn_last: dict = field(default_factory=dict, init=False, repr=False)
     _plane_drop_warn_suppressed: dict = field(default_factory=dict, init=False, repr=False)
+    # Consumer tasks currently parked in a transport poll, and the ones
+    # shutdown has cancelled only to wake them; see _poll_transport.
+    _polling_tasks: set = field(default_factory=set, init=False, repr=False)
+    _poll_wakeups: set = field(default_factory=set, init=False, repr=False)
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -224,6 +228,13 @@ class PluginCommunicationResourceManager:
             current_loop = asyncio.get_running_loop()
             task_loop = consumer_task.get_loop()
             if task_loop is current_loop:
+                if consumer_task in self._polling_tasks:
+                    # Parked in poll: wake it now rather than waiting up to
+                    # QUEUE_GET_TIMEOUT. _poll_transport turns this into one
+                    # non-blocking read, then the loop sees the event and
+                    # exits; the graceful wait below still bounds that pass.
+                    self._poll_wakeups.add(consumer_task)
+                    consumer_task.cancel()
                 try:
                     await asyncio.wait_for(consumer_task, timeout=graceful)
                 except asyncio.TimeoutError:
@@ -232,6 +243,8 @@ class PluginCommunicationResourceManager:
                         await consumer_task
                     except asyncio.CancelledError:
                         pass
+                finally:
+                    self._poll_wakeups.discard(consumer_task)
             else:
                 task = consumer_task
                 if task_loop.is_closed():
@@ -493,6 +506,32 @@ class PluginCommunicationResourceManager:
 
     # ── uplink consumer ──────────────────────────────────────────
 
+    async def _poll_transport(self, recv: Any, poll_ms: int) -> Any:
+        """Poll the transport, returning early when shutdown interrupts it.
+
+        Shutdown cancels a consumer parked here instead of waiting out the
+        poll. The interrupted poll has consumed nothing, so the cancel is
+        turned into one non-blocking read: a frame that was already queued
+        still gets the final pass it got when shutdown waited for the poll.
+        """
+        task = asyncio.current_task()
+        self._polling_tasks.add(task)
+        try:
+            return await recv(timeout_ms=poll_ms)
+        except asyncio.CancelledError:
+            # Only the shutdown wake-up is absorbed; any other cancel,
+            # including the one after the graceful wait, still stops the task.
+            if task is None or task not in self._poll_wakeups:
+                raise
+            self._poll_wakeups.discard(task)
+            # A cancel that overlaps the wake-up (shutdown(timeout=0)'s own
+            # wait_for, or an external cancel) must still stop the task.
+            if task.uncancel() > 0:
+                raise
+        finally:
+            self._polling_tasks.discard(task)
+        return await recv(timeout_ms=0)
+
     _MESSAGE_ROUTING: ClassVar[Dict[str, str]] = {
         "ENTRY_UPDATE": "_handle_entry_update",
         "STATIC_UI_REGISTER": "_handle_static_ui_register",
@@ -517,7 +556,7 @@ class PluginCommunicationResourceManager:
 
         while not se.is_set():
             try:
-                result = await self.transport.recv(timeout_ms=poll_ms)
+                result = await self._poll_transport(self.transport.recv, poll_ms)
                 if result is None:
                     continue
                 ch, payload = result
@@ -568,7 +607,7 @@ class PluginCommunicationResourceManager:
         poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
         while not se.is_set():
             try:
-                result = await recv_message(timeout_ms=poll_ms)
+                result = await self._poll_transport(recv_message, poll_ms)
                 if result is None:
                     continue
                 channel, payload = result
@@ -619,7 +658,7 @@ class PluginCommunicationResourceManager:
         poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
         while not se.is_set():
             try:
-                upload = await self.transport.recv_image(timeout_ms=poll_ms)
+                upload = await self._poll_transport(self.transport.recv_image, poll_ms)
                 if upload is None:
                     continue
                 metadata, data = upload

@@ -38,6 +38,7 @@ from uuid import uuid4
 import numpy as np
 from ._shared import (
     _REQUEST_ID_UNSET,
+    _ReplyTurn,
     _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX,
     _VOICE_ECHO_LOOKBACK_SECONDS,
     _VOICE_ECHO_LOOKBACK_CHARS,
@@ -265,7 +266,10 @@ class TurnMixin:
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
-                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
+                    if is_first_chunk and self.tts_thread and (
+                        not self.tts_thread.is_alive()
+                        or not self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                    ):
                         self._respawn_tts_worker()
 
     def _set_conversation_turn_language(self, language: str | None) -> None:
@@ -361,22 +365,44 @@ class TurnMixin:
         except Exception as e:
             logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
 
-    async def _emit_turn_end(self, active_request_id) -> None:
+    async def _emit_turn_end(
+        self,
+        active_request_id,
+        *,
+        reply_turn: _ReplyTurn | None = None,
+    ) -> None:
         """Send the turn end signal to both sync_message_queue and the WebSocket,
         passing ``_pending_turn_meta`` through both channels before clearing it.
         Shared by two paths:
         - ``handle_response_complete`` normal completion
         - ``handle_response_discarded``'s truncate-recovery / too-long-final
         Unified semantics: sync queue and WS carry the same meta, avoiding one
-        having meta while the other doesn't."""
+        having meta while the other doesn't.
+
+        A bound reply (``reply_turn``) carries the meta it was started with
+        instead: it never takes a ``_pending_turn_meta`` another reply staged,
+        and clears the shared field only while that still holds its own. Its
+        ``turn_ended`` is set once the turn end is queued, so the completion
+        that follows a final discard does not end the turn again."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
-        pending_meta = self._pending_turn_meta
+        pending_meta = (
+            self._pending_turn_meta if reply_turn is None else reply_turn.meta
+        )
         if pending_meta:
             turn_end_msg['meta'] = pending_meta
-            self._pending_turn_meta = None
+            if self._pending_turn_meta is pending_meta:
+                self._pending_turn_meta = None
         if active_request_id:
             turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
+        if reply_turn is not None:
+            reply_turn.turn_ended = True
+        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
+        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
+        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
+        # 必须在下面等 WS 发送之前：等的这段时间里新一轮可能已经开始往这个
+        # buffer 里写，放在后面就会把新一轮的半段算进这一轮、再把它清掉。
+        self._flush_ai_turn_text_to_tracker()
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 ws_msg = {
@@ -389,10 +415,6 @@ class TurnMixin:
                 await self.websocket.send_json(ws_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
-        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
-        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
-        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
-        self._flush_ai_turn_text_to_tracker()
 
     async def _emit_agent_callback_turn_end(self, active_request_id) -> None:
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
@@ -470,8 +492,107 @@ class TurnMixin:
                         break
         self._prune_request_staged_images()
 
-    async def handle_response_complete(self):
-        """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
+    def _begin_reply_turn(
+        self,
+        *,
+        speech_id: str | None,
+        request_id: str | None = None,
+        meta: dict | None = None,
+    ) -> _ReplyTurn:
+        """Open the snapshot for a reply Core is about to hand to the Offline client.
+
+        It becomes the open reply that ``_carry_reply_turn`` moves along; the
+        caller attaches ``session`` right before the hand-over and passes the
+        snapshot to ``_end_reply_turn`` once the reply has returned.
+        """
+        reply_turn = _ReplyTurn(speech_id=speech_id, request_id=request_id, meta=meta)
+        self._open_reply_turn = reply_turn
+        return reply_turn
+
+    def _end_reply_turn(self, reply_turn: _ReplyTurn) -> None:
+        if self._open_reply_turn is reply_turn:
+            self._open_reply_turn = None
+
+    def _carry_reply_turn(self, previous_speech_id: str | None) -> None:
+        """Move the open reply onto the speech id that just replaced ``previous_speech_id``.
+
+        Only for the two rotations that start no turn. After the hot-swap
+        promotion, a reply the old session was cut off in is still the host's
+        turn, and its late completion is the only thing that closes it. A
+        truncation recovery re-speaks the same reply under a fresh id, and its
+        remaining steps must keep treating that reply as the owner.
+        """
+        reply_turn = getattr(self, "_open_reply_turn", None)
+        if reply_turn is not None and reply_turn.speech_id == previous_speech_id:
+            reply_turn.speech_id = self.current_speech_id
+
+    def _reply_turn_is_current(self, reply_turn: _ReplyTurn) -> bool:
+        """Does this reply still own the host's turn?
+
+        While its client is still ``self.session`` the answer is yes, as before
+        replies carried a snapshot: turn succession on a live client belongs to
+        the interruption path, which cancels the reply before the interrupter's
+        turn starts. A retired client (closed by ``end_session`` or a hot swap)
+        has no such hand-over, so its reply owns the turn only while the host is
+        still on the speech id it spoke under. Every writer that starts a turn
+        assigns a fresh speech id, and the rotations that start no turn (the
+        hot-swap promotion, a truncation recovery) carry the open reply along.
+
+        Client identity alone cannot decide it: ``end_session`` closes the client
+        before it clears ``self.session``, and after a hot swap the retired
+        client's completion is still the only thing that closes the turn it cut.
+        """
+        if reply_turn.session is self.session:
+            return True
+        return self.current_speech_id == reply_turn.speech_id
+
+    def _stand_down_reply_turn(self, reply_turn: _ReplyTurn) -> None:
+        """Leave the host's newer turn alone; release only the request id this reply owns.
+
+        A newer voice or proactive turn does not replace
+        ``_active_text_request_id``, so the id may still be this reply's and
+        would otherwise ride on that turn's end. A staged meta is left to the
+        path that staged it (the avatar path clears its own once it sees the
+        speech id moved on).
+        """
+        logger.info(
+            "[%s] a retired reply completed after the host moved to a newer turn "
+            "(request_id=%s); leaving that turn alone",
+            self.lanlan_name,
+            reply_turn.request_id,
+        )
+        if self._active_text_request_id == reply_turn.request_id:
+            self._active_text_request_id = None
+
+    async def handle_response_complete(self, *, reply_turn: _ReplyTurn | None = None):
+        """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic.
+
+        ``reply_turn`` is set when Core bound the callback to one Offline reply
+        (``_ReplyTurn``). Such a completion ends the turn with its own request id
+        and meta rather than whatever the shared fields hold when it finally
+        runs, and when a newer turn already owns the host
+        (``_reply_turn_is_current``) it leaves every shared effect (TTS done,
+        turn end, AI text flush, wrap-up) to that turn. When a final discard
+        already ended its turn (``_ReplyTurn.turn_ended``) it does nothing: the
+        discard sent that turn end and has already settled the wrap-up.
+
+        Unbound completions read the shared fields as they stand: realtime
+        clients, which guard their own turn ends, and the Offline replies Core
+        does not bind (independent-ASR voice turns, whose completion runs inside
+        ``close()`` rather than after it, and proactive replies without
+        ``on_proactive_done``). An unbound reply keeps no record of a discard's
+        turn end, so after a final discard it still ends the turn a second
+        time. Skipping the completion on the client side instead would lose the
+        only close whenever the discard stood down without ending the turn.
+        """
+        if reply_turn is not None and reply_turn.turn_ended:
+            return
+        # 先于接管清理：已经不拥有这一轮的迟到回调也不该去清接管方自己的
+        # TTS（镜像台词）和簿记。
+        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+            self._stand_down_reply_turn(reply_turn)
+            return
+
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
@@ -480,22 +601,38 @@ class TurnMixin:
             self._active_text_request_id = None
             return
 
-        active_request_id = self._active_text_request_id
+        if reply_turn is None:
+            active_request_id = self._active_text_request_id
+            tts_expected_speech_id = None
+        else:
+            active_request_id = reply_turn.request_id
+            tts_expected_speech_id = reply_turn.speech_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
-                await self._request_tts_done_for_turn("handle_response_complete")
+                await self._request_tts_done_for_turn(
+                    "handle_response_complete",
+                    expected_speech_id=tts_expected_speech_id,
+                )
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
+            # 上面等 tts_cache_lock 的这段时间里可能开了新一轮：复查一次。
+            if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+                self._stand_down_reply_turn(reply_turn)
+                return
         try:
-            await self._emit_turn_end(active_request_id)
+            await self._emit_turn_end(active_request_id, reply_turn=reply_turn)
         finally:
             # Compare-and-clear：仅在共享字段仍是本轮快照时才清空，避免
             # 抹掉用户在 turn end 发出前提交的新轮 request_id。
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
 
+        # 发 WS turn end 那一下也会让出：期间开始的新一轮自己会收尾。
+        if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
+            self._stand_down_reply_turn(reply_turn)
+            return
         await self._finalize_turn_after_emit()
 
     async def _finalize_turn_after_emit(self) -> None:
@@ -561,6 +698,7 @@ class TurnMixin:
                         self.summary_triggered_time = datetime.now()
                         self.message_cache_for_new_session = []
                         self.initial_cache_snapshot_len = 0
+                        self._primed_context_snapshot = None
                         self.initial_next_session_context_snapshot_len = 0
                         self.sync_message_queue.put({'type': 'system', 'data': 'renew session'})
 
@@ -608,9 +746,16 @@ class TurnMixin:
         message: Optional[str] = None,
         *,
         request_id: Any = _REQUEST_ID_UNSET,
+        reply_turn: _ReplyTurn | None = None,
     ):
         """
         Handle the response-discarded notification: clear the TTS pipeline + frontend output, sending turn end if necessary
+
+        ``reply_turn`` binds the notification to one Offline reply the same way
+        it binds that reply's completion: once a newer turn owns the host
+        (``_reply_turn_is_current``), the discard no longer touches shared
+        output. The request id alone cannot see a newer voice or proactive
+        turn, which leaves ``_active_text_request_id`` as it was.
         """
         # 文本流在发起时显式绑定 request_id；旧调用者未传时才兼容回读共享字段。
         # 不能只在函数入口快照 self._active_text_request_id：旧请求 A 的回调若在
@@ -632,6 +777,8 @@ class TurnMixin:
             return (
                 not request_has_owner
                 or self._active_text_request_id == active_request_id
+            ) and (
+                reply_turn is None or self._reply_turn_is_current(reply_turn)
             )
 
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
@@ -672,8 +819,19 @@ class TurnMixin:
         # 门控（#2534 合并时留的路标就是指这里）：文本请求由 websocket_router
         # 作为各自独立的后台任务分发，旧请求 A 的迟到 discard 可以落在新请求 B
         # 已经开始 publish 之后，无门控地清会连 B 的前缀一起抹掉。
+        #
+        # cross_server 的 response_discarded_clear 也是同一份共享输出，同步地
+        # 和 buffer 一起清，必须赶在任何 await 之前：下面的 recovery 会先发正文
+        # 和 turn end，再 compare-and-clear 掉 request id，等它跑完再判产权就
+        # 恒为 False，clear 永远发不出去，cross_server 会把丢弃版和恢复正文
+        # 一起写进记忆。
         if may_clear_shared_output():
             self._current_ai_turn_text = ''
+            if self.sync_message_queue:
+                self.sync_message_queue.put({
+                    'type': 'system',
+                    'data': 'response_discarded_clear'
+                })
             await self._clear_tts_pipeline()
 
         # A request-bound discard is only relevant while that request still owns
@@ -730,10 +888,13 @@ class TurnMixin:
                 # 会把恢复内容和新轮串到一起。
                 if self.use_tts:
                     async with self.lock:
+                        replaced_speech_id = self.current_speech_id
                         recovery_turn_id = str(uuid4())
                         self.current_speech_id = recovery_turn_id
                         self._tts_done_queued_for_turn = False
                         self._tts_done_pending_until_ready = False
+                        # 同一轮只是换了 speech id，本回复仍是这一轮的主人。
+                        self._carry_reply_turn(replaced_speech_id)
                 else:
                     recovery_turn_id = self.current_speech_id
 
@@ -752,7 +913,10 @@ class TurnMixin:
                     # persist_response=False 的路径）时才写历史。avatar_interaction
                     # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
                     # 不留下 AIMessage 痕迹。
-                    pending_meta = self._pending_turn_meta
+                    # 绑定了快照的回复只看自己起轮时的 meta，不拿别的回复挂上的。
+                    pending_meta = (
+                        self._pending_turn_meta if reply_turn is None else reply_turn.meta
+                    )
                     is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
                     if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
                         self.session._conversation_history.append(AIMessage(content=body_text))
@@ -796,9 +960,11 @@ class TurnMixin:
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
                 # 走同一套语义；sync queue 和 WS 都带相同 meta）。
                 # 注：_append_recovery_history 读 pending_meta 已经触发 is_ephemeral
-                # 判定，但这里 _emit_turn_end 自己会再读一次 _pending_turn_meta 做
-                # 透传 + 清空，二者读的是同一个值，幂等。
-                recovery_steps.append(lambda: self._emit_turn_end(active_request_id))
+                # 判定，但这里 _emit_turn_end 自己会再读一次（同一个快照或共享
+                # 字段）做透传 + 清空，二者读的是同一个值，幂等。
+                recovery_steps.append(
+                    lambda: self._emit_turn_end(active_request_id, reply_turn=reply_turn)
+                )
 
                 for recovery_step in recovery_steps:
                     await recovery_step()
@@ -810,12 +976,6 @@ class TurnMixin:
                 # Compare-and-clear：见函数顶部 active_request_id 快照说明。
                 if self._active_text_request_id == active_request_id:
                     self._active_text_request_id = None
-
-        if self.sync_message_queue and may_clear_shared_output():
-            self.sync_message_queue.put({
-                'type': 'system',
-                'data': 'response_discarded_clear'
-            })
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
@@ -834,7 +994,14 @@ class TurnMixin:
         # 抢占不代表 A 这一轮不用结算——按产权跳过的话，连续截断又被连续打断
         # 时会链式跳过归档，正好落回上面那个死循环。同理放在 try 外：不能让它
         # 的异常被上面 "回复发送失败" 的 except 吞成一条 warning。
-        if _is_too_long_final or _truncated_text is not None:
+        #
+        # 唯一跳过的是已退役 client 的回复、且宿主已经换到新一轮（见
+        # _reply_turn_is_current；client 仍在用时它恒为真，上面的理由不受影响）：
+        # 它的 session 已经不在了，没有要它结算的上下文；这时跑 finalize 读的是
+        # 新 session，可能在新一轮说到一半时触发续期 / 热切换，结算由新一轮自己做。
+        if (_is_too_long_final or _truncated_text is not None) and (
+            reply_turn is None or self._reply_turn_is_current(reply_turn)
+        ):
             await self._finalize_turn_after_emit()
 
     async def handle_audio_data(self, audio_data: bytes):
@@ -1648,7 +1815,10 @@ class TurnMixin:
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
-                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
+                    if is_first_chunk and self.tts_thread and (
+                        not self.tts_thread.is_alive()
+                        or not self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                    ):
                         self._respawn_tts_worker()
 
     async def send_lanlan_response(
@@ -1747,17 +1917,44 @@ class TurnMixin:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()
         self.sync_message_queue.put({"type": "json", "data": message})
+        logger.debug(
+            "[voice-chain] stage=model_text_publish turn_id=%s request_id=%s first=%s text_len=%d",
+            effective_turn_id,
+            effective_request_id,
+            is_first_chunk,
+            len(text_clean),
+        )
         if on_published is not None:
             on_published(published_at)
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
-            if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
-                self.message_cache_for_new_session.append(
-                    {"role": self.lanlan_name, "text": text_clean})
-            elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
-                self.message_cache_for_new_session[-1]['text'] += text_clean
+            # Only guarded proactive deliveries pass expected_speech_id. Each
+            # one gets its own entry marked as such, so the screen-history
+            # guard (NotifyMixin._convert_cache_to_str) never reads two
+            # independent deliveries, or a delivery and a reply, as one chain.
+            # A first chunk under the same speech id is a retry of that
+            # delivery (prompt_ephemeral restarts each attempt with
+            # is_first_chunk=True); it replaces the discarded attempt's text.
+            source = "proactive" if expected_speech_id is not None else None
+            cache = self.message_cache_for_new_session
+            last = cache[-1] if cache else None
+            same_kind = (
+                last is not None
+                and last['role'] == self.lanlan_name
+                and last.get('source') == source
+            )
+            if same_kind and not (source and is_first_chunk):
+                last['text'] += text_clean
+            elif same_kind and last.get('speech_id') == expected_speech_id:
+                last['text'] = text_clean
+            elif last is None or last['role'] in (self.master_name, self.lanlan_name):
+                entry = {"role": self.lanlan_name, "text": text_clean}
+                if source:
+                    entry['source'] = source
+                    entry['speech_id'] = expected_speech_id
+                cache.append(entry)
 
         # WS 发送（可能失败，但 sync/cache 已保存）
         # [DIAG] 切换猫娘后对话框空白问题：仅首 chunk 记录，避免流式刷屏
@@ -2173,9 +2370,8 @@ class TurnMixin:
                 cache_for_new_session=False,
             )
 
-        self._remember_game_speech_correlation(turn_id, speech_correlation_id)
-
         if cached_chunks is not None:
+            self._remember_game_speech_correlation(turn_id, speech_correlation_id)
             # One call, one lock hold: sending frame by frame let an overlapping
             # ordinary/project TTS stream interleave between them, and the
             # frontend schedules decoded chunks in arrival order.
@@ -2224,6 +2420,7 @@ class TurnMixin:
             }
 
         await self.ensure_tts_pipeline_alive()
+        self._remember_game_speech_correlation(turn_id, speech_correlation_id)
         audio_queued = False
         capture_started = False
         completion_supported = bool(

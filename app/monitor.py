@@ -32,7 +32,12 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
-from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
+from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
+from app.monitor_auth import (
+    MonitorAuthMiddleware,
+    install_monitor_log_redaction,
+    monitor_auth_enabled,
+)
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +46,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
-from utils.preferences import aload_user_preferences
+from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging
@@ -97,11 +102,35 @@ async def lifespan(app: FastAPI):
     # Startup: launch a background task that periodically cleans up
     # disconnected WebSocket clients. Replaces the deprecated
     # @app.on_event("startup") hook (FastAPI lifespan is the supported API).
+    # Redaction lives here rather than under __main__ so `uvicorn app.monitor:app`
+    # and embedded runs never write ?token= into the access log either.
+    install_monitor_log_redaction()
+    if MONITOR_VIEWER_TOKEN and not MONITOR_TOKEN:
+        logger.warning("MONITOR_VIEWER_TOKEN is ignored because MONITOR_TOKEN is empty")
     _fire_task(cleanup_disconnected_clients())
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+# Gates every route except the static asset mounts once MONITOR_TOKEN is set.
+app.add_middleware(MonitorAuthMiddleware)
+
+# Viewers only need model layout; keep other preference fields off the LAN.
+_ALLOWED_VIEWER_PREFERENCE_KEYS = {
+    "model_path", "position", "scale", "rotation", "display", "viewport",
+    "camera_position", "parameters",
+}
+
+
+def _viewer_preferences_only(preferences):
+    if not isinstance(preferences, list):
+        return preferences
+    return [
+        {k: v for k, v in entry.items() if k in _ALLOWED_VIEWER_PREFERENCE_KEYS}
+        for entry in preferences
+        if isinstance(entry, dict) and entry.get("model_path") != GLOBAL_CONVERSATION_KEY
+    ]
+
 
 DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
 LEGACY_DEFAULT_LIVE2D_MODELS = {
@@ -192,7 +221,7 @@ async def get_page_config(lanlan_name: str = ""):
 async def get_preferences():
     """Get user preferences consistent with the main server package."""
     preferences = await aload_user_preferences()
-    return preferences
+    return _viewer_preferences_only(preferences)
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
 def get_emotion_mapping(model_name: str):
@@ -508,6 +537,13 @@ async def cleanup_disconnected_clients():
 if __name__ == "__main__":
     # 在打包环境中，直接传递 app 对象而不是字符串
     # The monitor server is a read-only status receiver designed to be
-    # reachable by external clients. Keep binding to 0.0.0.0 to preserve
-    # its intended use; hardening (e.g. token auth) should be additive.
-    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)
+    # reachable by external clients, so MONITOR_HOST defaults to 0.0.0.0.
+    # Set it to 127.0.0.1 for local-only use, and MONITOR_TOKEN to require
+    # authentication (see app/monitor_auth.py).
+    logger.info(
+        "Monitor listening on %s:%s; authentication %s",
+        MONITOR_HOST,
+        MONITOR_SERVER_PORT,
+        "enabled" if monitor_auth_enabled() else "disabled",
+    )
+    uvicorn.run(app, host=MONITOR_HOST, port=MONITOR_SERVER_PORT, reload=False)

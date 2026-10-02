@@ -832,10 +832,123 @@
         "avatarToolSlotFull": "Remova uma ferramenta primeiro.",
         "avatarToolManagerTitle": "Gerenciar ferramentas",
         "avatarToolCreateTitle": "Criar ferramenta personalizada",
+        "avatarToolWorkspaceLocalOnly": "Salvo neste dispositivo",
+        "avatarToolWorkspaceNodeA11y": "Pressione Enter para selecionar esta interação. Use as setas para movê-la.",
+        "avatarToolWorkspaceEdgeA11y": "Pressione Enter para selecionar esta conexão. Pressione Delete para removê-la.",
+        "avatarToolWorkspaceControls": "Controles da tela",
+        "avatarToolWorkspaceZoomIn": "Ampliar",
+        "avatarToolWorkspaceZoomOut": "Reduzir",
+        "avatarToolWorkspaceFitView": "Ajustar visualização",
+        "avatarToolWorkspaceMiniMap": "Visão geral das interações",
+        "avatarToolWorkspaceHandle": "Borda do nó para conexões",
+        "avatarToolWorkspaceHandleTop": "Borda superior para conexões",
+        "avatarToolWorkspaceHandleRight": "Borda direita para conexões",
+        "avatarToolWorkspaceHandleBottom": "Borda inferior para conexões",
+        "avatarToolWorkspaceHandleLeft": "Borda esquerda para conexões",
+        "avatarToolInitialImageNode": "Imagem inicial",
+        "avatarToolInitialImageMissing": "Nenhuma imagem inicial selecionada",
+        "avatarToolInitialImageNodeHint": "O fluxo de interação começa com esta imagem",
+        "avatarToolInitialConnection": "Conexão da imagem inicial",
+        "avatarToolInitialConnectionHint": "Ao iniciar a ferramenta, esta interação fica disponível enquanto a imagem inicial é exibida.",
+        "avatarToolOverview": "Visão geral",
+        "avatarToolOverviewShow": "Mostrar visão geral",
+        "avatarToolOverviewHide": "Ocultar visão geral",
+        "avatarToolOverviewPosition": "Posição da visão geral",
+        "avatarToolOverviewTopLeft": "Mover a visão geral para o canto superior esquerdo",
+        "avatarToolOverviewTopRight": "Mover a visão geral para o canto superior direito",
+        "avatarToolOverviewBottomLeft": "Mover a visão geral para o canto inferior esquerdo",
+        "avatarToolOverviewBottomRight": "Mover a visão geral para o canto inferior direito",
+        "avatarToolWorkspaceEmptyTitle": "Ainda não há interações",
+        "avatarToolWorkspaceEmptyBody": "Cliques, esperas e as conexões entre eles aparecerão aqui.",
+        "avatarToolWorkspaceCanvasReady": "Tela pronta",
+        "avatarToolWorkspaceCanvasLoading": "Preparando a tela…",
+        "avatarToolWorkspaceCanvasTitle": "Fluxo de interação",
+        "avatarToolWorkspaceEditorTitle": "Editor da ferramenta",
+        "avatarToolWorkspaceSettingsTitle": "Configurações da ferramenta",
+        "avatarToolWorkspaceCanvasHint": "Arraste os nós livremente; eles se alinham ao soltar · Arraste da borda para conectar · Role para navegar",
+        "avatarToolEdgeStyle": "Estilo da conexão",
+        "avatarToolEdgeStyleOrthogonal": "Angular",
+        "avatarToolEdgeStyleCurved": "Curva",
+        "avatarToolCreateEditArea": "Área de edição",
+        "avatarToolInteractionSettings": "Configurações de interação",
+        "avatarToolInteractionAddGroup": "Adicionar interação",
+        "avatarToolInteractionAdd": "Adicionar",
+        "avatarToolInteractionMouseClick": "Clique do mouse",
+        "avatarToolInteractionAfterTime": "Troca com atraso",
+        "avatarToolPresetGroup": "Predefinições",
+        "avatarToolPresetReplaceConfirm": "Aplicar uma predefinição substituirá o fluxo de interação atual. Continuar?",
+        "avatarToolPresetPressSwap": "Troca ao pressionar",
+        "avatarToolPresetPressSwapHint": "“Clique do mouse 1” muda a imagem em “Ao pressionar” e a restaura em “Ao soltar”.",
+        "avatarToolPresetClickAdvance": "Troca sequencial",
+        "avatarToolPresetClickAdvanceHint": "“Clique do mouse 1” → “Clique do mouse 2” → “Clique do mouse 3” muda as imagens em ordem e depois para.",
+        "avatarToolPresetCycleStop": "Ciclo de imagens",
+        "avatarToolPresetCycleStopHint": "“Troca com atraso 1”, “Troca com atraso 2” e “Troca com atraso 3” formam o ciclo; após “Clique do mouse 1”, “Troca com atraso 4” retoma o ciclo.",
+        "avatarToolPresetReferenceWith": "Referência: {{tool}}",
+        "avatarToolPresetFlowLabel": "Exemplo de fluxo",
+        "avatarToolPresetPressSwapFlow": "Clique do mouse 1: Ao pressionar muda a imagem → Ao soltar restaura",
+        "avatarToolPresetClickAdvanceFlow": "Clique do mouse 1 → Clique do mouse 2 → Clique do mouse 3 → fim",
+        "avatarToolPresetCycleStopFlow": "Troca com atraso 1 → Troca com atraso 2 → Troca com atraso 3 → repetir; Clique do mouse 1 → Troca com atraso 4 → retomar o ciclo",
+        "avatarToolPresetSetupLabel": "Configuração posterior",
+        "avatarToolPresetPressSwapSetup": "Em “Clique do mouse 1”, escolha uma imagem para “Ao pressionar” e outra para “Ao soltar”.",
+        "avatarToolPresetClickAdvanceSetup": "Em “Clique do mouse 1”, “Clique do mouse 2” e “Clique do mouse 3”, escolha as imagens 1, 2 e 3 para “Ao soltar”. O fluxo termina após “Clique do mouse 3”.",
+        "avatarToolPresetCycleStopSetup": "Escolha as imagens do ciclo em “Mudar para” de “Troca com atraso 1”, “Troca com atraso 2” e “Troca com atraso 3”, e a imagem de espera em “Ao soltar” de “Clique do mouse 1”. “Esperar” nas três primeiras trocas com atraso controla a velocidade; “Esperar” em “Troca com atraso 4” controla o tempo de espera.",
+        "avatarToolPresetCycleScope": "Isto usa apenas como referência o ritmo de ciclo, pausa ao clicar e retomada com atraso do pedra-papel-tesoura. Não inclui lógica de vitória ou derrota nem animação de resultado.",
+        "avatarToolPresetReferenceNotice": "Os exemplos apenas explicam o fluxo. Aplicar uma predefinição não copia as imagens de referência nem escolhe as imagens dos nós por você.",
+        "avatarToolInteractionClickNumber": "Clique do mouse {{number}}",
+        "avatarToolInteractionDelayNumber": "Troca com atraso {{number}}",
+        "avatarToolInteractionNodeHasError": "Esta interação precisa de atenção",
+        "avatarToolInteractionPressTiming": "Ao pressionar",
+        "avatarToolInteractionReleaseTiming": "Ao soltar",
+        "avatarToolInteractionWaitTime": "Esperar",
+        "avatarToolInteractionThenShow": "Mudar para",
+        "avatarToolInteractionKeepImage": "Manter imagem",
+        "avatarToolImageName": "Nome da imagem",
+        "avatarToolInteractionName": "Nome da interação",
+        "avatarToolEditableNameHint": "Clique no nome para alterá-lo",
+        "avatarToolEditableNameLengthError": "O nome deve ter no máximo {{count}} caracteres.",
+        "avatarToolEditableNameInvalidError": "Use letras, números, espaços, “-” ou “_” no nome.",
+        "avatarToolImageNameDuplicate": "“{{name}}” já é usado por outra imagem. Escolha outro nome.",
+        "avatarToolInteractionNameDuplicate": "“{{name}}” já é usado por outra interação. Escolha outro nome.",
+        "avatarToolInteractionMissingImage": "Imagem ausente",
+        "avatarToolInteractionMillisecondsValue": "{{count}} ms",
+        "avatarToolInteractionNotSet": "Não definido",
+        "avatarToolInteractionUnknown": "Interação desconhecida",
+        "avatarToolInteractionAfterLabel": "depois de {{interaction}}",
+        "avatarToolInteractionStartPosition": "depois que a imagem inicial aparece",
+        "avatarToolInteractionFlow": "Fluxo de interação",
+        "avatarToolInitialConnectionRequired": "Conecte a imagem inicial a pelo menos uma interação.",
+        "avatarToolInteractionActionImageMissing": "{{interaction}} usa uma imagem que não está mais disponível.",
+        "avatarToolInteractionDelayInvalid": "{{interaction}} precisa de um tempo de espera maior que zero.",
+        "avatarToolInteractionDelayImageMissing": "Escolha se {{interaction}} mantém a imagem atual ou mostra outra.",
+        "avatarToolInteractionLinkMissing": "Uma conexão aponta para uma interação que não existe mais.",
+        "avatarToolInteractionDuplicateLink": "As mesmas duas interações estão conectadas mais de uma vez.",
+        "avatarToolInteractionUnreachable": "Não é possível chegar a {{interaction}} a partir da imagem inicial.",
+        "avatarToolInteractionAmbiguousClick": "{{interaction}} não pode ser distinguida de outro clique do mouse {{position}}.",
+        "avatarToolInteractionAmbiguousDelay": "{{interaction}} não pode ser distinguida de outra espera de {{delay}} ms {{position}}.",
+        "avatarToolInteractionInvalid": "Esta interação precisa de atenção.",
+        "avatarToolInteractionErrorSummary": "Problemas de interação: {{count}}",
+        "avatarToolInteractionTooMany": "Este fluxo tem {{count}} interações. Remova algumas para que não haja mais de {{max}}.",
+        "avatarToolInteractionConnection": "Conexão",
+        "avatarToolInteractionConnectionFromTo": "{{from}} → {{to}}",
+        "avatarToolInteractionRemoveConnection": "Remover conexão",
+        "avatarToolInteractionConnectionHint": "Quando a primeira interação termina, a ferramenta aguarda a interação conectada.",
+        "avatarToolInteractionSelectTitle": "Selecione uma interação",
+        "avatarToolInteractionSelectHint": "Adicione ou selecione uma interação completa na tela para editá-la aqui.",
+        "avatarToolInteractionDuplicate": "Duplicar",
+        "avatarToolInteractionRemove": "Remover",
+        "avatarToolInteractionClickHint": "Pressionar e soltar são dois momentos da imagem no mesmo clique. As conexões saem do clique completo.",
+        "avatarToolInteractionDelayDuration": "Tempo de espera",
+        "avatarToolInteractionMilliseconds": "ms",
+        "avatarToolInteractionTargetImage": "Mudar para",
+        "avatarToolInteractionChooseImage": "Escolha uma imagem",
+        "avatarToolInteractionFixBeforeSave": "Corrija o fluxo de interação antes de salvar.",
+        "avatarToolEditorWindowTitle": "Editor de ferramentas personalizadas",
+        "avatarToolEditorOpenError": "Não foi possível abrir o editor de ferramentas.",
         "avatarToolCreateSaveError": "Não foi possível salvar a ferramenta. Tente novamente.",
         "avatarToolCreateNameRequired": "Digite um nome para a ferramenta.",
         "avatarToolCreateNameLengthError": "O nome deve ter de 1 a {{count}} caracteres.",
         "avatarToolCreateNameInvalidError": "Use letras, números, espaços, “-” ou “_” no nome.",
+        "avatarToolCreateNameDuplicate": "“{{name}}” já está sendo usado por outro item. Escolha um nome diferente.",
         "avatarToolCreateDefaultImageRequired": "Escolha uma imagem padrão.",
         "avatarToolCreateChangeImageRequired": "Escolha uma imagem de mudança.",
         "avatarToolCreateChangeImageRequiredNumber": "Escolha a imagem de mudança {{number}}.",
@@ -846,6 +959,10 @@
         "avatarToolCreateSpecialImageRequired": "Escolha uma imagem surpresa.",
         "avatarToolCreateImageSizeError": "A imagem deve ter no máximo {{size}}.",
         "avatarToolCreateImageInvalidError": "Esta imagem não pode ser usada. Escolha outro PNG.",
+        "avatarToolCreateImagePixelsError": "A imagem é grande demais. Escolha um PNG com até {{count}} pixels no total.",
+        "avatarToolCreateOptionalMeaningLengthError": "A descrição deve ter no máximo {{count}} caracteres.",
+        "avatarToolCreateImagesRequired": "Adicione pelo menos uma imagem da ferramenta.",
+        "avatarToolCreateInitialImageRequired": "Escolha uma imagem inicial.",
         "avatarToolCreateSpecialProbabilityInvalid": "Escolha uma chance de ativação entre 1% e 100%.",
         "avatarToolCreateToolLimitError": "O limite de ferramentas personalizadas foi atingido.",
         "avatarToolCreateStorageLimitError": "Não há espaço suficiente no dispositivo para outra ferramenta.",
@@ -863,12 +980,23 @@
         "avatarToolCreateSpecialImage": "Imagem surpresa",
         "avatarToolCreateSpecialMeaningPlaceholder": "Por exemplo: “{{user}}” toca de leve em “{{character}}” com uma pata de gato, e uma recompensa cai.",
         "avatarToolCreateSpecialSound": "Som surpresa (opcional)",
-        "avatarToolCreatePrivacy": "Imagens e sons ficam neste dispositivo; durante a interação, o nome e a descrição correspondente são enviados ao modelo.",
+        "avatarToolCreatePrivacy": "Imagens e sons ficam neste dispositivo. Durante a interação, o texto do prompt da imagem atual ou da surpresa é enviado ao modelo, e o nome da ferramenta é salvo na memória do personagem e pode ser usado em conversas futuras.",
         "avatarToolCreateName": "Nome da ferramenta",
         "avatarToolCreateNamePlaceholder": "De 1 a {{count}} caracteres; use letras, números, espaços, “-” ou “_”",
         "avatarToolCreateDefaultImage": "Imagem padrão",
         "avatarToolCreateChooseImage": "Escolher imagem",
         "avatarToolCreateNoImage": "Nenhuma imagem selecionada",
+        "avatarToolCreateToolImages": "Imagens da ferramenta",
+        "avatarToolCreateToolImagesHint": "Escolha uma imagem inicial.",
+        "avatarToolCreateToolImageNumber": "Imagem da ferramenta {{number}}",
+        "avatarToolCreateEditToolImage": "Editar {{image}}",
+        "avatarToolCreateNoImageMeaning": "Sem descrição da interação",
+        "avatarToolCreateInitialImage": "Imagem inicial",
+        "avatarToolCreateAddToolImage": "Adicionar imagem",
+        "avatarToolCreateImageMeaningOptional": "Descrição da interação (opcional)",
+        "avatarToolCreateImageMeaningForImage": "Descrição da imagem {{number}} (opcional)",
+        "avatarToolCreateInitialImageRemoveError": "Escolha outra imagem como inicial antes de remover a atual.",
+        "avatarToolCreateReferencedImageRemoveError": "Esta imagem é usada em {{locations}}. Altere primeiro as ações correspondentes.",
         "avatarToolCreateDefaultImageHint": "Exibida até a troca de imagem; aumenta ao entrar na área de interação.",
         "avatarToolCreateChangeMode": "Troca de imagem",
         "avatarToolCreateModePressSwap": "Trocar enquanto mantém pressionado",
@@ -914,9 +1042,13 @@
         "avatarToolDelete": "Excluir {{name}}",
         "avatarToolDeleteConfirm": "Excluir “{{name}}”? Esta ação não pode ser desfeita.",
         "avatarToolDeleteError": "Não foi possível excluir este item. Tente novamente mais tarde.",
+        "avatarToolDeletePendingSaveError": "A exclusão anterior deste item não terminou, então as alterações não podem ser salvas. Exclua o item e crie-o novamente.",
+        "avatarToolRecoveryPendingError": "Uma alteração anterior neste item foi interrompida e não pôde ser recuperada automaticamente, então no momento ele não pode ser alterado nem excluído.",
+        "avatarToolTemporarilyUnavailable": "Temporariamente indisponível",
         "avatarToolLibrary": "Biblioteca de ferramentas",
         "avatarToolEquipped": "Equipada",
         "avatarToolEquip": "Equipar",
+        "avatarToolNotYetEquippable": "Ainda não pode ser equipado",
         "avatarToolNoAvailableTools": "Nenhuma ferramenta disponível",
         "avatarToolCancel": "Cancelar",
         "avatarToolSave": "Salvar alterações",
@@ -3026,7 +3158,7 @@
         "reasonEnrollmentActive": "Um novo perfil está sendo cadastrado. A ativação não começará e o áudio em espera não será enviado até o fim do cadastro.",
         "reasonRuntimeDegraded": "A ativação por voz está temporariamente indisponível; o áudio em espera não será enviado.",
         "reasonUnsupportedAsrRoute": "A rota de voz atual ainda não oferece ativação por voz; o áudio em espera não será enviado enquanto ela estiver ligada.",
-        "reasonShadowMode": "A ativação por voz está apenas observando e ainda não autorizou o envio do áudio em espera.",
+        "featureDisabled": "A identidade de voz está desativada, então não é possível cadastrar a voz nem ligar a ativação por voz. O perfil de voz salvo ainda pode ser excluído.",
         "sessionWaiting": "Aguardando você falar para ativar a conversa por voz",
         "sessionActive": "A conversa por voz está ativa",
         "sessionUnavailable": "A ativação por voz está temporariamente indisponível; o áudio em espera não será enviado",
@@ -5715,6 +5847,186 @@
             "finalTitle": "Resumo final",
             "roundLabel": "Rodada {{round}}",
             "noRounds": "Ainda não há rodadas concluídas."
+        }
+    },
+    "clickGuide": {
+        "tour": "Guia interativo",
+        "back": "Anterior",
+        "next": "Próximo",
+        "skip": "Encerrar guia",
+        "unavailable": "Este botão está indisponível por enquanto. Selecione Próximo para continuar.",
+        "nativeFallback": "Se não conseguir clicar na bolinha, escolha Próximo.",
+        "skipTools": "Pular ferramentas",
+        "toolContinueHint": "Clique no botão destacado para continuar. A ferramenta não será executada.",
+        "finishButton": "Concluir",
+        "close": "Fechar",
+        "saveFailed": "Não foi possível salvar. Tente novamente.",
+        "resetButton": "Reativar tutorial",
+        "resetSuccess": "Guia reiniciado. Recarregue o início para começar. O progresso de sete dias permanece igual.",
+        "choice": {
+            "title": "Qual tutorial você quer repetir?",
+            "body": "Escolha o guia de cliques ou reinicie o tutorial de história de sete dias. O guia de cliques mantém seu progresso de sete dias.",
+            "click": "Guia interativo",
+            "sevenDay": "Tutorial de sete dias"
+        },
+        "chatOverview": {
+            "title": "Chat em cápsula",
+            "body": "Digite “你好” aqui e pressione Enter para enviar."
+        },
+        "chatOverviewSend": {
+            "body": "Pronto? Pressione Enter para enviar a mensagem."
+        },
+        "chatOverviewDraft": {
+            "body": "Você já tem uma mensagem ou anexo não enviado. Vamos mantê-lo; escolha Próximo para ver o histórico."
+        },
+        "chatOverviewBack": {
+            "body": "Esta é a cápsula de conversa. A conversa e o rascunho ficam como estão; escolha Próximo para rever o histórico."
+        },
+        "history": {
+            "title": "Histórico",
+            "body": "Clique na barra azul acima da cápsula para abrir a conversa."
+        },
+        "historyClose": {
+            "title": "Fechar histórico",
+            "body": "Clique na barra azul novamente para fechar o histórico e voltar ao chat."
+        },
+        "minimize": {
+            "title": "Minimizar chat",
+            "body": "Clique na bolinha à esquerda para transformar o chat em uma pequena bolinha na área de trabalho."
+        },
+        "restore": {
+            "title": "Restaurar chat",
+            "body": "Clique de novo na bolinha para abrir a cápsula e continuar conversando."
+        },
+        "tools": {
+            "title": "Ferramentas",
+            "body": "Passe o mouse sobre o botão à direita para abrir a roda de ferramentas."
+        },
+        "toolsDraft": {
+            "body": "Com texto ou anexo, o botão da direita vira Enviar. Apague o texto ou remova o anexo para testar a roda de ferramentas, ou escolha Pular ferramentas e mantenha o rascunho."
+        },
+        "screenshot": {
+            "title": "Captura de tela",
+            "body": "Role ou arraste a roda para trocar de ferramenta. A captura é anexada à mensagem."
+        },
+        "avatar": {
+            "title": "Itens interativos",
+            "body": "Abra estas ferramentas quando quiser brincar com seu personagem. Você pode escolher e organizar suas favoritas."
+        },
+        "avatarTools": {
+            "title": "Seus itens",
+            "body": "A ordem salva é respeitada. O botão final permite editar os favoritos. Esta patinha é um item, diferente do Agent."
+        },
+        "translate": {
+            "title": "Tradução de legendas",
+            "body": "Ative a tradução de legendas para acompanhar outro idioma. Clique de novo para desativar."
+        },
+        "jukebox": {
+            "title": "Música",
+            "body": "A jukebox permite ouvir música enquanto você conversa. A escolha de músicas e os controles de reprodução ficam lá."
+        },
+        "import": {
+            "title": "Importar imagem",
+            "body": "Importar imagem permite escolher uma imagem do dispositivo e anexá-la à conversa."
+        },
+        "export": {
+            "title": "Exportar conversa",
+            "body": "Exportar permite selecionar mensagens, conferir a prévia e salvar uma cópia."
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "Muda a conversa para o modo Galgame, com opções de resposta. Clique novamente para voltar ao chat comum."
+        },
+        "floatingOverviewContinueHint": "Clique em qualquer botão destacado para continuar. A função não será aberta.",
+        "floatingOverview": {
+            "title": "Botões ao lado do personagem",
+            "body": "Os botões ao lado da personagem abrem voz, Agent, Neko Universe, configurações e descanso."
+        },
+        "mic": {
+            "title": "Chat de voz",
+            "body": "O microfone inicia ou encerra a conversa por voz. A setinha abre opções de microfone, volume e compartilhamento de tela."
+        },
+        "micSettings": {
+            "title": "Configurações de voz",
+            "body": "Clique na seta ao lado do microfone. Dispositivos e volume também ficam aqui."
+        },
+        "screen": {
+            "title": "Compartilhar tela",
+            "body": "Escolha uma tela ou janela. O botão à direita inicia ou para o compartilhamento. É opcional."
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "A patinha abre as ferramentas Agent para ajudar com o computador, navegador e plugins. O painel de tarefas mostra o andamento e permite interromper tarefas."
+        },
+        "agentMaster": {
+            "title": "Interruptor do Agent",
+            "body": "Ativa o Agent. O painel de tarefas mostra o progresso e permite pará-las. Não é preciso ativar."
+        },
+        "social": {
+            "title": "Universo Miau",
+            "body": "O Neko Universe é liberado para novos usuários após três dias corridos. Depois, entre na comunidade por aqui."
+        },
+        "settings": {
+            "title": "Configurações",
+            "body": "Encontre personagem, voz, preferências de chat e memórias em Configurações."
+        },
+        "proactive": {
+            "title": "Chat proativo",
+            "body": "Permita que seu personagem inicie conversas. Não é necessário mudar."
+        },
+        "privacy": {
+            "title": "Privacidade",
+            "body": "Controle o acesso visual proativo. Mantenha suas preferências de privacidade."
+        },
+        "memory": {
+            "title": "Navegador de memórias",
+            "body": "Veja e gerencie memórias. Aqui também pode reiniciar cada tutorial separadamente."
+        },
+        "goodbye": {
+            "title": "Ir para casa",
+            "body": "Deixe a personagem descansar por aqui. Você pode chamá-la de volta quando quiser."
+        },
+        "return": {
+            "title": "Chamar de volta",
+            "body": "Clique em Chamar para trazer o personagem de volta."
+        },
+        "lock": {
+            "title": "Travar posição",
+            "body": "O cadeado fixa o personagem no lugar. Destrancado, você pode arrastar para mover e usar a roda para redimensionar."
+        },
+        "finish": {
+            "title": "Hora de explorar",
+            "body": "O guia terminou. Para vê-lo de novo, redefina o guia de cliques em Configurações → Navegador de memórias."
+        },
+        "connection": {
+            "title": "Chat indisponível",
+            "body": "A janela de chat não respondeu. Abra-a e recarregue o início para tentar novamente. O guia não foi marcado como concluído."
+        },
+        "closeMenu": "Fechar menu e continuar",
+        "openedWindow": {
+            "title": "Voltar para onde estávamos",
+            "body": "Você pode reabrir esta página pelo mesmo atalho sempre que precisar. Agora clique no botão de fechar destacado para voltar e conhecer as outras funções.",
+            "close": "Fechar página e continuar",
+            "pending": "Se a página pedir para salvar ou confirmar, conclua essa etapa. O guia continua quando ela fechar.",
+            "manualClose": "Esta página já está aberta em outra janela. Feche-a lá e volte aqui; o guia continuará automaticamente.",
+            "returnToPage": "Ir para a página aberta"
+        },
+        "socialClose": {
+            "title": "Voltar da comunidade",
+            "body": "A comunidade está aberta. Clique no × para fechar e voltar aos atalhos do personagem."
+        },
+        "micMenu": {
+            "body": "Aqui ficam opções de microfone, volume e compartilhamento de tela. Feche o menu quando terminar de olhar."
+        },
+        "agentMenu": {
+            "body": "Os interruptores escolhem as ferramentas do Agent. O painel de tarefas mostra o andamento. Pode manter as opções atuais e fechar o menu."
+        },
+        "settingsMenu": {
+            "body": "As configurações do personagem, da voz e do chat estão agrupadas aqui. Por enquanto, basta conhecer os atalhos; os ajustes podem ficar para depois. Feche o menu pelo botão abaixo."
+        },
+        "sections": {
+            "chat": "Cápsula de chat",
+            "floating": "Botões do personagem"
         }
     }
 }

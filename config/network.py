@@ -15,6 +15,7 @@
 
 """Runtime ports, environment overrides, instance identity, and local origins."""
 
+import ipaddress
 import json
 import os
 import sys
@@ -156,13 +157,42 @@ def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = 
     origins.extend(extra_origins)
     return tuple(dict.fromkeys(origins))
 
+
+def _read_monitor_host() -> str:
+    """Monitor bind address; uvicorn needs bare IPv6 literals, so drop brackets."""
+    return _read_str_env("MONITOR_HOST", "0.0.0.0").strip("[]")
+
+
+def _monitor_dial_host(bind_host: str) -> str:
+    """Map Monitor's bind address to a URL host the local main server can dial.
+
+    Wildcards (any spelling, e.g. ``::0``) map to the loopback of the same
+    family: asyncio sets IPV6_V6ONLY on AF_INET6 listeners, so a ``::`` bind
+    accepts no IPv4.
+    """
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{address}]" if address.version == 6 else str(address)
+
+
 # 服务器端口配置
 MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
 MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
 MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
+# Optional Monitor bind/auth settings.  Keep the historical LAN-facing bind as
+# the default and leave authentication opt-in for backwards compatibility.
+MONITOR_HOST = _read_monitor_host()
+MONITOR_TOKEN = _read_str_env("MONITOR_TOKEN", "")
+MONITOR_VIEWER_TOKEN = _read_str_env("MONITOR_VIEWER_TOKEN", "")
 COMMENTER_SERVER_PORT = _read_port_env("COMMENTER_SERVER_PORT", 48914)
 TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
+
+MONITOR_SYNC_URL = f"ws://{_monitor_dial_host(MONITOR_HOST)}:{MONITOR_SERVER_PORT}"
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 
@@ -209,7 +239,8 @@ def resolve_user_plugin_base() -> str:
 # 始终返回有效 id。
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 AUTOSTART_CSRF_TOKEN = os.getenv("NEKO_AUTOSTART_CSRF_TOKEN") or INSTANCE_ID
+AUTOSTART_EXPLICIT_ALLOWED_ORIGINS = _read_list_env("AUTOSTART_ALLOWED_ORIGINS")
 AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
     MAIN_SERVER_PORT,
-    extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
+    extra_origins=AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
 )

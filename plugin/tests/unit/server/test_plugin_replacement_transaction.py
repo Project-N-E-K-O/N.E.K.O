@@ -868,3 +868,214 @@ async def test_remove_directory_propagates_cleanup_failure(
         await remove_directory(target)
 
     assert ignore_values == [False]
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_revokes_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    # The new package is a different source; a later edit must not start it.
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_rollback_keeps_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    # The old source is back, so its pending recovery stays valid.
+    assert exc_info.value.rollback_status == "completed"
+    assert lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_incomplete_rollback_revokes_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    async def rollback_fails(**kwargs) -> bool:
+        kwargs["failed_targets"].add(target)
+        return False
+
+    monkeypatch.setattr(replace_transaction, "_rollback_targets", rollback_fails)
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    # The failed new payload may still be on disk; it must not inherit the retry.
+    assert exc_info.value.rollback_status == "incomplete"
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_restored_files_keep_recovery_despite_cache_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the on-disk source decides: a cache eviction failure after the files
+    were restored still leaves the original source in place."""
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    def eviction_fails(_plugin_id: str) -> None:
+        raise RuntimeError("module cache")
+
+    monkeypatch.setattr(replace_transaction, "_evict_replaced_plugin_modules", eviction_fails)
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    assert exc_info.value.rollback_status == "incomplete"
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == OLD_PLUGIN_MANIFEST
+    assert lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_profile_target_failure_keeps_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the plugin's own code tree decides: an additional (profile) target
+    that fails to come back does not change which code is on disk."""
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    extra = tmp_path / "profiles" / "demo"
+    extra.mkdir(parents=True)
+    (extra / "settings.toml").write_text("value = 1\n", encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    original_restore = replace_transaction.restore_directory
+
+    async def restore_fails_for_extra(backup: Path, restore_target: Path) -> None:
+        if restore_target == extra:
+            raise PermissionError("profile is in use")
+        await original_restore(backup, restore_target)
+
+    monkeypatch.setattr(replace_transaction, "restore_directory", restore_fails_for_extra)
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            additional_targets=(extra,),
+            validate_channel_specific=_async_none,
+        )
+
+    assert exc_info.value.rollback_status == "incomplete"
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == OLD_PLUGIN_MANIFEST
+    assert lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_missing_backup_revokes_hot_reload_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backup that vanished before rollback means the old code never came back;
+    the rollback must not count the code tree as restored."""
+    import shutil
+
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    async def install_new() -> dict[str, object]:
+        shutil.rmtree(target.parent / ".upgrade-backups")
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    assert exc_info.value.rollback_status == "incomplete"
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.asyncio
+async def test_run_rollback_reports_missing_backup_as_not_restored(tmp_path: Path) -> None:
+    target = tmp_path / "demo"
+    target.mkdir()
+    (target / "new.txt").write_text("new", encoding="utf-8")
+
+    restored = await run_rollback(
+        plugin_id="demo",
+        target_dir=target,
+        backup_dir=tmp_path / "demo.bak",
+        restart=False,
+    )
+
+    assert restored is False

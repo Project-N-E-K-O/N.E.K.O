@@ -123,5 +123,52 @@ test('only the successful-start hides keep the local-model notice', () => {
   // The start succeeded: the preparing toast gives way to "ready".
   assert.match(buttons, /Success — hide preparing toast, show ready\s+window\.hideVoicePreparingToast\(\{ keepLocalAsrNotice: true \}\);/);
   // The session_started ack drops the banner in a window whose start it answers.
-  assert.match(websocket, /_ackAnswersThisWindow && typeof window\.hideVoicePreparingToast === 'function'\) window\.hideVoicePreparingToast\(\{ keepLocalAsrNotice: true \}\);/);
+  assert(/if \(_ackAnswersThisWindow && !window\.sessionStartsSince\(_ackedClaimSeq\)\s+&& typeof window\.hideVoicePreparingToast === 'function'\) \{\s+window\.hideVoicePreparingToast\(\{ keepLocalAsrNotice: true \}\);/.test(websocket), 'session_started must preserve the notice only while its start claim is current');
+});
+
+test('local ASR fallback guidance remains actionable without translations', () => {
+  const websocket = fs.readFileSync(path.resolve(__dirname, '../../static/app/app-websocket.js'), 'utf8');
+  const helper = websocket.match(/function independentAsrReasonToastText\(reason\) \{[\s\S]*?\n    \}/)[0];
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(helper, context);
+  for (const [reason, guidance] of [
+    ['ASR_LOCAL_MODEL_LOAD_FAILED', /HuggingFace.*HF_ENDPOINT.*hf-mirror\.com/],
+    ['ASR_LOCAL_DEPENDENCY_MISSING', /faster-whisper.*Install it/],
+    ['ASR_PROVIDER_WARMUP_TIMEOUT', /HuggingFace.*HF_ENDPOINT.*hf-mirror\.com/],
+    ['ASR_PROVIDER_QUEUE_TIMEOUT', /earlier recognition.*new voice session in a moment/],
+  ]) {
+    assert.match(context.independentAsrReasonToastText(reason), guidance);
+  }
+});
+
+test('ASR blocked and dependency notices keep the existing toast durations', () => {
+  const websocket = fs.readFileSync(path.resolve(__dirname, '../../static/app/app-websocket.js'), 'utf8');
+  const helpers = ['independentAsrReasonToastText', 'independentAsrFailureToastText'].map(name =>
+    websocket.match(new RegExp('function ' + name + '\\(reason\\) \\{[\\s\\S]*?\\n    \\}'))[0]
+  ).join('\n');
+  const start = websocket.indexOf("if (lifecycleState === 'blocked') {");
+  const end = websocket.indexOf("if (lifecycleState === 'deep_sleep'", start);
+  assert(start >= 0 && end > start);
+  for (const reason of ['', 'ASR_PROVIDER_WARMUP_TIMEOUT']) {
+    const calls = [];
+    const context = {
+      window: { showStatusToast: (text, duration) => calls.push({ text, duration }) },
+      lifecycleState: 'blocked', statusDetails: { reason },
+      tearDownBlockedVoiceRoute: () => calls.push('teardown'),
+    };
+    vm.runInNewContext(helpers + '\n' + websocket.slice(start, end), context);
+    assert.equal(calls[0], 'teardown');
+    assert.equal(calls[1].duration, reason ? 8000 : 5000);
+    assert(calls[1].text.length > 0);
+  }
+  const dependencyStart = websocket.indexOf("if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {");
+  const dependencyEnd = websocket.indexOf('// Terminal startup failure.', dependencyStart);
+  const calls = [];
+  vm.runInNewContext('function receive() {\n' + websocket.slice(dependencyStart, dependencyEnd) + '\n} receive();', {
+    statusCode: 'ASR_INDEPENDENT_DEPENDENCY_MISSING',
+    tearDownBlockedVoiceRoute() {},
+    window: { showStatusToast: (text, duration) => calls.push({ text, duration }) },
+  });
+  assert.equal(calls[0].duration, 5000);
+  assert.match(calls[0].text, /faster-whisper.*Install it/);
 });

@@ -216,3 +216,6 @@ jobs:
       - name: Run react-neko-chat unit suite
         working-directory: frontend/react-neko-chat
         run: npm test
+
+      - name: Run click-guide and seven-day tutorial regression suites
+        run: node --test --test-force-exit tests/frontend/click-guide.test.cjs tests/frontend/tutorial-seven-day-state.test.cjs

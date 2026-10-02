@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import (
@@ -2000,9 +2000,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 cross_server.run_sync_connector(
                     rs.sync_message_queue,
                     k,
-                    f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
-                    {"bullet": False, "monitor": True},
-                    _status_cb,
+                    config={"bullet": False, "monitor": True},
+                    status_callback=_status_cb,
                     user_language_provider=(
                         lambda _name=k: _get_explicit_session_user_language(_name)
                     ),

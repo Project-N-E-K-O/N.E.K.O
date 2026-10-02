@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import main_routers.card_drop_router as C
 import main_logic.card_forge_facts as F
 from main_logic.card_forge_facts import ActiveNekoContext, build_forge_facts_payload
+from tests.fastapi_routes import iter_routes
 
 pytestmark = pytest.mark.unit
 
@@ -110,8 +111,8 @@ def test_main_active_character_exposes_only_canonical_card_drop_routes():
 
     routes = {
         (route.path, method)
-        for route in web_app.app.routes
-        for method in getattr(route, "methods", set())
+        for route in iter_routes(web_app.app.routes)
+        for method in route.methods or set()
     }
     for method in ("GET", "POST", "OPTIONS"):
         assert ("/api/card-drop/active-character", method) in routes

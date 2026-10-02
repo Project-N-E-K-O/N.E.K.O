@@ -832,10 +832,123 @@
         "avatarToolSlotFull": "Unequip a tool first.",
         "avatarToolManagerTitle": "Manage tools",
         "avatarToolCreateTitle": "Create custom tool",
+        "avatarToolWorkspaceLocalOnly": "Saved on this device",
+        "avatarToolWorkspaceNodeA11y": "Press Enter to select this interaction. Use the arrow keys to move it.",
+        "avatarToolWorkspaceEdgeA11y": "Press Enter to select this connection. Press Delete to remove it.",
+        "avatarToolWorkspaceControls": "Canvas controls",
+        "avatarToolWorkspaceZoomIn": "Zoom in",
+        "avatarToolWorkspaceZoomOut": "Zoom out",
+        "avatarToolWorkspaceFitView": "Fit view",
+        "avatarToolWorkspaceMiniMap": "Interaction overview",
+        "avatarToolWorkspaceHandle": "Node edge for connections",
+        "avatarToolWorkspaceHandleTop": "Top edge for connections",
+        "avatarToolWorkspaceHandleRight": "Right edge for connections",
+        "avatarToolWorkspaceHandleBottom": "Bottom edge for connections",
+        "avatarToolWorkspaceHandleLeft": "Left edge for connections",
+        "avatarToolInitialImageNode": "Initial image",
+        "avatarToolInitialImageMissing": "No initial image selected",
+        "avatarToolInitialImageNodeHint": "The interaction flow starts from this image",
+        "avatarToolInitialConnection": "Initial image connection",
+        "avatarToolInitialConnectionHint": "When the tool starts, this interaction is available while the initial image is shown.",
+        "avatarToolOverview": "Overview",
+        "avatarToolOverviewShow": "Show overview",
+        "avatarToolOverviewHide": "Hide overview",
+        "avatarToolOverviewPosition": "Overview position",
+        "avatarToolOverviewTopLeft": "Move overview to top left",
+        "avatarToolOverviewTopRight": "Move overview to top right",
+        "avatarToolOverviewBottomLeft": "Move overview to bottom left",
+        "avatarToolOverviewBottomRight": "Move overview to bottom right",
+        "avatarToolWorkspaceEmptyTitle": "No interactions yet",
+        "avatarToolWorkspaceEmptyBody": "Clicks, delays, and the connections between them will appear here.",
+        "avatarToolWorkspaceCanvasReady": "Canvas ready",
+        "avatarToolWorkspaceCanvasLoading": "Preparing canvas…",
+        "avatarToolWorkspaceCanvasTitle": "Interaction flow",
+        "avatarToolWorkspaceEditorTitle": "Tool editor",
+        "avatarToolWorkspaceSettingsTitle": "Tool settings",
+        "avatarToolWorkspaceCanvasHint": "Drag nodes freely; they align on release · Drag from a node edge to connect · Scroll to pan",
+        "avatarToolEdgeStyle": "Connection style",
+        "avatarToolEdgeStyleOrthogonal": "Elbow",
+        "avatarToolEdgeStyleCurved": "Curve",
+        "avatarToolCreateEditArea": "Edit area",
+        "avatarToolInteractionSettings": "Interaction settings",
+        "avatarToolInteractionAddGroup": "Add interaction",
+        "avatarToolInteractionAdd": "Add",
+        "avatarToolInteractionMouseClick": "Mouse click",
+        "avatarToolInteractionAfterTime": "Delayed switch",
+        "avatarToolPresetGroup": "Presets",
+        "avatarToolPresetReplaceConfirm": "Applying a preset replaces the current interaction flow. Continue?",
+        "avatarToolPresetPressSwap": "Press swap",
+        "avatarToolPresetPressSwapHint": "“Mouse click 1” switches the image on “Press” and restores it on “Release”.",
+        "avatarToolPresetClickAdvance": "Sequential switch",
+        "avatarToolPresetClickAdvanceHint": "“Mouse click 1” → “Mouse click 2” → “Mouse click 3” switches images in order, then stops.",
+        "avatarToolPresetCycleStop": "Image cycle",
+        "avatarToolPresetCycleStopHint": "“Delayed switch 1”, “Delayed switch 2”, and “Delayed switch 3” cycle automatically; after “Mouse click 1”, “Delayed switch 4” resumes the cycle.",
+        "avatarToolPresetReferenceWith": "Reference: {{tool}}",
+        "avatarToolPresetFlowLabel": "Flow example",
+        "avatarToolPresetPressSwapFlow": "Mouse click 1: Press switches the image → Release restores it",
+        "avatarToolPresetClickAdvanceFlow": "Mouse click 1 → Mouse click 2 → Mouse click 3 → end",
+        "avatarToolPresetCycleStopFlow": "Delayed switch 1 → Delayed switch 2 → Delayed switch 3 → repeat; Mouse click 1 → Delayed switch 4 → resume cycling",
+        "avatarToolPresetSetupLabel": "Follow-up setup",
+        "avatarToolPresetPressSwapSetup": "In “Mouse click 1”, choose an image for “Press” and another for “Release”.",
+        "avatarToolPresetClickAdvanceSetup": "In “Mouse click 1”, “Mouse click 2”, and “Mouse click 3”, choose images 1, 2, and 3 for “Release”. The flow ends after “Mouse click 3”.",
+        "avatarToolPresetCycleStopSetup": "Choose cycling images under “Switch to” in “Delayed switch 1”, “Delayed switch 2”, and “Delayed switch 3”, and choose the held image under “Release” in “Mouse click 1”. “Wait” in the first three delayed switches sets the cycling speed; “Wait” in “Delayed switch 4” sets the hold duration.",
+        "avatarToolPresetCycleScope": "This only references the cycling, click-to-hold, and delayed-resume rhythm of rock paper scissors. It does not include win/loss logic or result animation.",
+        "avatarToolPresetReferenceNotice": "The examples only explain the flow. Applying a preset adds an editable flow without copying the reference images or choosing node images for you.",
+        "avatarToolInteractionClickNumber": "Mouse click {{number}}",
+        "avatarToolInteractionDelayNumber": "Delayed switch {{number}}",
+        "avatarToolInteractionNodeHasError": "This interaction needs attention",
+        "avatarToolInteractionPressTiming": "Press",
+        "avatarToolInteractionReleaseTiming": "Release",
+        "avatarToolInteractionWaitTime": "Wait",
+        "avatarToolInteractionThenShow": "Switch to",
+        "avatarToolInteractionKeepImage": "Keep image",
+        "avatarToolImageName": "Image name",
+        "avatarToolInteractionName": "Interaction name",
+        "avatarToolEditableNameHint": "Click the name to rename",
+        "avatarToolEditableNameLengthError": "The name must be no more than {{count}} characters.",
+        "avatarToolEditableNameInvalidError": "Use letters, numbers, spaces, “-”, or “_” in the name.",
+        "avatarToolImageNameDuplicate": "“{{name}}” is already used by another image. Choose a different name.",
+        "avatarToolInteractionNameDuplicate": "“{{name}}” is already used by another interaction. Choose a different name.",
+        "avatarToolInteractionMissingImage": "Missing image",
+        "avatarToolInteractionMillisecondsValue": "{{count}} ms",
+        "avatarToolInteractionNotSet": "Not set",
+        "avatarToolInteractionUnknown": "Unknown interaction",
+        "avatarToolInteractionAfterLabel": "after {{interaction}}",
+        "avatarToolInteractionStartPosition": "after the initial image appears",
+        "avatarToolInteractionFlow": "Interaction flow",
+        "avatarToolInitialConnectionRequired": "Connect the initial image to at least one interaction.",
+        "avatarToolInteractionActionImageMissing": "{{interaction}} uses an image that is no longer available.",
+        "avatarToolInteractionDelayInvalid": "{{interaction}} needs a positive wait time.",
+        "avatarToolInteractionDelayImageMissing": "Choose whether {{interaction}} keeps the current image or shows another image.",
+        "avatarToolInteractionLinkMissing": "A connection points to an interaction that no longer exists.",
+        "avatarToolInteractionDuplicateLink": "The same two interactions are connected more than once.",
+        "avatarToolInteractionUnreachable": "{{interaction}} cannot be reached from the initial image.",
+        "avatarToolInteractionAmbiguousClick": "{{interaction}} conflicts with another mouse click {{position}}.",
+        "avatarToolInteractionAmbiguousDelay": "{{interaction}} conflicts with another {{delay}} ms delay {{position}}.",
+        "avatarToolInteractionInvalid": "This interaction needs attention.",
+        "avatarToolInteractionErrorSummary": "Interaction issues: {{count}}",
+        "avatarToolInteractionTooMany": "This flow has {{count}} interactions. Remove some so there are no more than {{max}}.",
+        "avatarToolInteractionConnection": "Connection",
+        "avatarToolInteractionConnectionFromTo": "{{from}} → {{to}}",
+        "avatarToolInteractionRemoveConnection": "Remove connection",
+        "avatarToolInteractionConnectionHint": "After the first interaction completes, the tool waits for the connected interaction.",
+        "avatarToolInteractionSelectTitle": "Select an interaction",
+        "avatarToolInteractionSelectHint": "Add or select a complete interaction on the canvas to edit it here.",
+        "avatarToolInteractionDuplicate": "Duplicate",
+        "avatarToolInteractionRemove": "Remove",
+        "avatarToolInteractionClickHint": "Press and release are two image moments inside the same mouse click. Connections leave the complete click.",
+        "avatarToolInteractionDelayDuration": "Wait time",
+        "avatarToolInteractionMilliseconds": "ms",
+        "avatarToolInteractionTargetImage": "Switch to",
+        "avatarToolInteractionChooseImage": "Choose an image",
+        "avatarToolInteractionFixBeforeSave": "Fix the interaction flow before saving.",
+        "avatarToolEditorWindowTitle": "Custom tool editor",
+        "avatarToolEditorOpenError": "Could not open the tool editor.",
         "avatarToolCreateSaveError": "Could not save this tool. Please try again.",
         "avatarToolCreateNameRequired": "Enter a tool name.",
         "avatarToolCreateNameLengthError": "The tool name must be 1–{{count}} characters.",
         "avatarToolCreateNameInvalidError": "Use letters, numbers, spaces, “-”, or “_” in the tool name.",
+        "avatarToolCreateNameDuplicate": "“{{name}}” is already used by another tool. Choose a different name.",
         "avatarToolCreateDefaultImageRequired": "Choose a default image.",
         "avatarToolCreateChangeImageRequired": "Choose a change image.",
         "avatarToolCreateChangeImageRequiredNumber": "Choose change image {{number}}.",
@@ -846,6 +959,10 @@
         "avatarToolCreateSpecialImageRequired": "Choose a surprise image.",
         "avatarToolCreateImageSizeError": "The image must be no larger than {{size}}.",
         "avatarToolCreateImageInvalidError": "This image cannot be used. Choose another PNG.",
+        "avatarToolCreateImagePixelsError": "The image dimensions are too large. Choose a PNG with no more than {{count}} total pixels.",
+        "avatarToolCreateOptionalMeaningLengthError": "The interaction description must be no more than {{count}} characters.",
+        "avatarToolCreateImagesRequired": "Add at least one tool image.",
+        "avatarToolCreateInitialImageRequired": "Choose one initial image.",
         "avatarToolCreateSpecialProbabilityInvalid": "Choose a trigger chance from 1% to 100%.",
         "avatarToolCreateToolLimitError": "The custom tool library is full.",
         "avatarToolCreateStorageLimitError": "There is not enough device storage for another custom tool.",
@@ -863,12 +980,23 @@
         "avatarToolCreateSpecialImage": "Surprise image",
         "avatarToolCreateSpecialMeaningPlaceholder": "For example: “{{user}}” lightly taps “{{character}}” with a cat paw and a reward drops.",
         "avatarToolCreateSpecialSound": "Surprise sound (optional)",
-        "avatarToolCreatePrivacy": "Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.",
+        "avatarToolCreatePrivacy": "Images and sounds stay on this device. During interactions, the prompt text for the current image or surprise is sent to the model, and the tool's name is saved to the character's memory and may come up in later conversations.",
         "avatarToolCreateName": "Tool name",
         "avatarToolCreateNamePlaceholder": "1–{{count}} characters; use letters, numbers, spaces, “-”, or “_”",
         "avatarToolCreateDefaultImage": "Default image",
         "avatarToolCreateChooseImage": "Choose image",
         "avatarToolCreateNoImage": "No image selected",
+        "avatarToolCreateToolImages": "Tool images",
+        "avatarToolCreateToolImagesHint": "Choose an initial image.",
+        "avatarToolCreateToolImageNumber": "Tool image {{number}}",
+        "avatarToolCreateEditToolImage": "Edit {{image}}",
+        "avatarToolCreateNoImageMeaning": "No interaction description",
+        "avatarToolCreateInitialImage": "Initial image",
+        "avatarToolCreateAddToolImage": "Add tool image",
+        "avatarToolCreateImageMeaningOptional": "Interaction description (optional)",
+        "avatarToolCreateImageMeaningForImage": "Interaction description for tool image {{number}} (optional)",
+        "avatarToolCreateInitialImageRemoveError": "Choose another initial image before removing this one.",
+        "avatarToolCreateReferencedImageRemoveError": "This image is used by {{locations}}. Change those image actions before removing it.",
         "avatarToolCreateDefaultImageHint": "Shown until an image change is triggered; it grows in the interaction area.",
         "avatarToolCreateChangeMode": "Image switching",
         "avatarToolCreateModePressSwap": "Switch while held",
@@ -914,9 +1042,13 @@
         "avatarToolDelete": "Delete {{name}}",
         "avatarToolDeleteConfirm": "Delete “{{name}}”? This cannot be undone.",
         "avatarToolDeleteError": "Could not delete this tool. Please try again.",
+        "avatarToolDeletePendingSaveError": "An earlier deletion of this tool didn't finish, so changes can't be saved. Delete this tool, then create it again.",
+        "avatarToolRecoveryPendingError": "An earlier change to this tool was interrupted and couldn't be recovered automatically, so it can't be changed or deleted right now.",
+        "avatarToolTemporarilyUnavailable": "Temporarily unavailable",
         "avatarToolLibrary": "Tool library",
         "avatarToolEquipped": "Equipped",
         "avatarToolEquip": "Equip",
+        "avatarToolNotYetEquippable": "Not yet equippable",
         "avatarToolNoAvailableTools": "No tools available",
         "avatarToolCancel": "Cancel",
         "avatarToolSave": "Save changes",
@@ -3026,7 +3158,7 @@
         "reasonEnrollmentActive": "A new voice profile is being enrolled. Voice activation will not start and standby audio will not be uploaded until enrollment finishes.",
         "reasonRuntimeDegraded": "Voice activation is temporarily unavailable; standby audio will not be uploaded.",
         "reasonUnsupportedAsrRoute": "The current voice route is not ready for voice activation; standby audio will not be uploaded while activation is on.",
-        "reasonShadowMode": "Voice activation is observing only and has not authorized standby audio to upload.",
+        "featureDisabled": "Voice identity is turned off, so enrollment and voice activation are unavailable. A saved voice profile can still be deleted.",
         "sessionWaiting": "Waiting for you to speak and activate voice chat",
         "sessionActive": "Voice chat is active",
         "sessionUnavailable": "Voice activation is temporarily unavailable; standby audio will not be uploaded",
@@ -5715,6 +5847,186 @@
             "finalTitle": "Final summary",
             "roundLabel": "Round {{round}}",
             "noRounds": "No completed rounds yet."
+        }
+    },
+    "clickGuide": {
+        "tour": "Click guide",
+        "back": "Previous",
+        "next": "Next",
+        "skip": "End guide",
+        "unavailable": "This button is unavailable for now. Choose Next to continue.",
+        "nativeFallback": "If the ball cannot be clicked, choose Next to continue.",
+        "skipTools": "Skip tools for now",
+        "toolContinueHint": "Click the highlighted button to continue. It will not run the tool.",
+        "finishButton": "Finish",
+        "close": "Close",
+        "saveFailed": "Could not save. Please try again.",
+        "resetButton": "Reactivate tutorial",
+        "resetSuccess": "Click guide reset. Reload the home page to start. Your seven-day progress is unchanged.",
+        "choice": {
+            "title": "Which tutorial would you like to replay?",
+            "body": "Choose the click guide or restart the seven-day story tutorial. The click guide keeps your seven-day progress.",
+            "click": "Click guide",
+            "sevenDay": "Seven-day tutorial"
+        },
+        "chatOverview": {
+            "title": "Capsule chat",
+            "body": "Type “你好” here and press Enter to send it."
+        },
+        "chatOverviewSend": {
+            "body": "Ready? Press Enter to send your message."
+        },
+        "chatOverviewDraft": {
+            "body": "You already have an unsent message or attachment. We’ll leave it untouched; choose Next to see the chat history."
+        },
+        "chatOverviewBack": {
+            "body": "This is the chat capsule. Your conversation and draft are unchanged; choose Next to revisit chat history."
+        },
+        "history": {
+            "title": "Chat history",
+            "body": "Click the blue bar above the capsule to open the conversation."
+        },
+        "historyClose": {
+            "title": "Close history",
+            "body": "Click the blue bar again to close history and return to chat."
+        },
+        "minimize": {
+            "title": "Minimize chat",
+            "body": "Click the ball on the left to turn the chat into a small desktop ball."
+        },
+        "restore": {
+            "title": "Restore chat",
+            "body": "Click the ball again to bring the capsule back and keep chatting."
+        },
+        "tools": {
+            "title": "Chat tools",
+            "body": "Hover over the button on the right to open the tool wheel."
+        },
+        "toolsDraft": {
+            "body": "Text or an attachment turns the right-hand button into Send. To try the tool wheel, clear the text or remove the attachment yourself; or choose Skip tools and keep your draft."
+        },
+        "screenshot": {
+            "title": "Screenshot",
+            "body": "Scroll or drag the wheel to switch tools. A screenshot is added to your message."
+        },
+        "avatar": {
+            "title": "Interaction tools",
+            "body": "Open this tray when you want to play with your character. You can choose and arrange your favorite tools."
+        },
+        "avatarTools": {
+            "title": "Your tool bar",
+            "body": "Tools appear in your saved order. The edit button at the end changes your favorites. The paw here is an interaction tool, separate from Agent."
+        },
+        "translate": {
+            "title": "Subtitle translation",
+            "body": "Turn on subtitle translation when you want help following another language. Click again to turn it off."
+        },
+        "jukebox": {
+            "title": "Jukebox",
+            "body": "The jukebox lets you listen to music while you chat. Song selection and playback controls are inside."
+        },
+        "import": {
+            "title": "Import image",
+            "body": "Import image lets you choose a picture from your device and add it to the chat."
+        },
+        "export": {
+            "title": "Export chat",
+            "body": "Export chat lets you select messages, preview them, and save a copy."
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "This switches chat into Galgame mode, with reply choices for continuing the conversation. Click again to return to regular chat."
+        },
+        "floatingOverviewContinueHint": "Click any highlighted button to continue. It will not open the feature.",
+        "floatingOverview": {
+            "title": "Buttons beside your character",
+            "body": "The buttons beside your character open voice, Agent, Neko Universe, settings, and rest."
+        },
+        "mic": {
+            "title": "Voice chat",
+            "body": "Use the microphone to start or stop voice chat. The small arrow opens microphone, volume, and screen-sharing options."
+        },
+        "micSettings": {
+            "title": "Voice settings",
+            "body": "Click the small arrow beside the microphone. Devices and volume can also be adjusted here."
+        },
+        "screen": {
+            "title": "Screen sharing",
+            "body": "Choose a screen or window here. The switch beside it starts or stops sharing. Sharing is optional."
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "The paw opens Agent tools for help with your computer, browser, and plugins. You can view task progress and stop tasks in the task panel."
+        },
+        "agentMaster": {
+            "title": "Agent switch",
+            "body": "This master switch enables Agent. The task panel shows progress and lets you stop tasks. You do not need to enable it."
+        },
+        "social": {
+            "title": "Meow universe",
+            "body": "Neko Universe unlocks after three calendar days for new users. Open the community here once it is available."
+        },
+        "settings": {
+            "title": "Settings",
+            "body": "Find your character, voice, chat preferences, and memories in Settings."
+        },
+        "proactive": {
+            "title": "Proactive chat",
+            "body": "Allow your character to start conversations when you want. No change is required."
+        },
+        "privacy": {
+            "title": "Privacy mode",
+            "body": "Control proactive visual access here. Keep your preferred privacy setting."
+        },
+        "memory": {
+            "title": "Memory browser",
+            "body": "View and manage memories here. This is also where you can reset either tutorial separately."
+        },
+        "goodbye": {
+            "title": "Go home",
+            "body": "Send your character to rest here. You can call them back whenever you like."
+        },
+        "return": {
+            "title": "Call back",
+            "body": "Click Recall to bring your character back beside you."
+        },
+        "lock": {
+            "title": "Position lock",
+            "body": "The lock keeps your character in place. When unlocked, drag to move and use the scroll wheel to resize."
+        },
+        "finish": {
+            "title": "Ready to explore",
+            "body": "That’s the tour. To see it again, reset the click guide in Settings → Memory Browser."
+        },
+        "connection": {
+            "title": "Chat window unavailable",
+            "body": "The chat window did not respond. Open it, then reload the home page to retry. This guide has not been marked complete."
+        },
+        "closeMenu": "Close menu and continue",
+        "openedWindow": {
+            "title": "Back to where we were",
+            "body": "You can reopen this page from the same shortcut whenever you need it. Click the highlighted close button now, and we’ll move on to the other features.",
+            "close": "Close page and continue",
+            "pending": "If the page asks you to save or confirm, finish that first. The guide continues once the page closes.",
+            "manualClose": "This page is already open in another window. Close it there, then return here; the guide will continue automatically.",
+            "returnToPage": "Go to the open page"
+        },
+        "socialClose": {
+            "title": "Return from the community",
+            "body": "The community is open. Click × to close it and return to the shortcuts beside your character."
+        },
+        "micMenu": {
+            "body": "This menu contains microphone, volume, and screen-sharing options. When you’re done looking, close the menu to continue."
+        },
+        "agentMenu": {
+            "body": "These switches choose which tools Agent can use. The task panel shows progress. You can leave the settings as they are and close the menu when you’re ready."
+        },
+        "settingsMenu": {
+            "body": "Character, voice, and chat settings are grouped here. For now, just get to know the shortcuts; you can change settings later. Use the button below to close the menu."
+        },
+        "sections": {
+            "chat": "Chat capsule",
+            "floating": "Character buttons"
         }
     }
 }

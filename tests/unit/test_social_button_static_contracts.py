@@ -630,7 +630,7 @@ const window = {
     t: key => 'T:' + key,
 };
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
-const fetch = async url => {
+const fetch = async (url, options = {}) => {
     requests.push(url);
     if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
     if (url === '/api/system/client-id') return response({ client_id: 'device-id' });
@@ -640,7 +640,10 @@ const fetch = async url => {
         if (scenario === 'delegate_409') return response({ error: 'not_logged_in' }, 409);
         if (scenario === 'delegate_503_session_saved') return response({ error: 'identity_verification_unavailable' }, 503);
         if (scenario === 'delegate_ok') return response({ native_delegate: 'desktop-delegate' });
-        return new Promise(() => {});
+        // 像真实 fetch 一样在 abort 时 reject；否则流程永远等不到结束，断言根本不会执行。
+        return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
     }
     if (url === '/api/card-drop/auth-status') {
         if (scenario === 'delegate_slow_status_500') return response({}, 500);
@@ -655,7 +658,8 @@ const fetch = async url => {
     for (let i = 0; i < 6; i += 1) { await flush(); advance(1000); }
     await flush();
     if (scenario.startsWith('delegate_slow')) {
-        // 挂起的 delegate 请求本身有 120s 上限；放开它让流程收尾。
+        // 挂起的 delegate 请求本身有 120s 上限：首次请求和重试各推进一次，让流程收尾。
+        advance(120000); await flush();
         advance(120000); await flush();
     }
     await flow;
@@ -664,10 +668,14 @@ const fetch = async url => {
     assert.equal(requests.filter(url => url === '/api/card-drop/oauth/start').length, 0);
     assert.equal(externalOpens, 0);
     assert.equal(delegateRequests, expectedDelegateRequests + (scenario.startsWith('delegate_slow') ? 1 : 0));
+    assert.equal(timers.size, 0, 'every deadline is cleared or fired');
+    console.log('SCENARIO_COMPLETE');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+    # 挂起的 promise 会让 node 以 0 退出而不跑断言，必须确认脚本真的走到了末尾。
+    assert "SCENARIO_COMPLETE" in result.stdout, result.stdout + result.stderr
 
 
 @pytest.mark.unit

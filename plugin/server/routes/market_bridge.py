@@ -77,6 +77,7 @@ _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
+_MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
@@ -823,77 +824,153 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
-async def _fetch_authoritative_market_override_release(
-    payload: MarketInstallRequest,
-) -> dict[str, object]:
-    market_id = str(payload.plugin_id or "").strip()
-    base_url = _normalized_base_url(MARKET_API_URL)
-    if not market_id or not base_url:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "market_catalog_not_configured",
-                "message": "builtin override requires a configured Market catalog",
-            },
-        )
+class _MarketCatalogError(Exception):
+    """Catalogue lookup failure; callers wrap it as HTTPException or _TaskError."""
 
-    channel = str(payload.channel or "stable").strip() or "stable"
-    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=3.0),
-            follow_redirects=False,
-        ) as client:
-            response = await client.get(url, params={"channel": channel})
-        if 300 <= response.status_code < 400:
-            raise httpx.HTTPStatusError(
-                "Market catalog redirect rejected",
-                request=response.request,
-                response=response,
-            )
-        response.raise_for_status()
-        releases = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "code": "market_catalog_unavailable",
-                "message": "Market release metadata could not be verified",
-            },
-        ) from exc
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
-    if not isinstance(releases, list):
-        releases = []
-    requested_version = str(payload.version or "").strip()
-    release = next(
-        (
-            item
-            for item in releases
-            if isinstance(item, dict)
-            and str(item.get("version") or "").strip() == requested_version
-            and str(item.get("channel") or "stable").strip() == channel
-        ),
-        None,
+
+_MARKET_CATALOG_HTTP_STATUS = {
+    "market_catalog_not_configured": 503,
+    "market_catalog_unavailable": 502,
+    "market_release_mismatch": 409,
+}
+
+
+def _market_release_request_error(payload: MarketInstallRequest) -> str | None:
+    """Return why ``payload`` cannot be matched to a catalogue release, if at all."""
+
+    if not str(payload.plugin_id or "").strip() or not str(payload.version or "").strip():
+        return "Market 安装需要市场插件 ID 和版本"
+    channel = str(payload.channel or "").strip()
+    if channel and channel not in ("stable", "beta"):
+        return "Market 安装的发布通道只能是 stable 或 beta"
+    return None
+
+
+def _market_catalog_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(_MARKET_RELEASE_CHECK_TIMEOUT, connect=3.0),
+        follow_redirects=False,
     )
+
+
+def _select_market_release(
+    releases: list[Any],
+    *,
+    version: str,
+    channel: str | None,
+    package_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    """Pick the public, non-yanked catalog row for ``version`` / ``channel``.
+
+    ``channel=None`` matches either channel; when the same version is
+    published on both, the row carrying ``package_sha256`` wins.
+    """
+
+    candidates = [
+        item
+        for item in releases
+        if isinstance(item, dict)
+        and str(item.get("version") or "").strip() == version
+        and (channel is None or str(item.get("channel") or "stable").strip() == channel)
+        and not item.get("yanked_at")
+    ]
+    for item in candidates:
+        if package_sha256 and str(item.get("package_sha256") or "").strip().lower() == package_sha256:
+            return item
+    return candidates[0] if candidates else None
+
+
+async def _fetch_market_release(payload: MarketInstallRequest) -> dict[str, Any]:
+    """Fetch the catalogue row that authorizes ``payload``.
+
+    Shared by the builtin override preflight and the install task binding,
+    so both reach the same verdict for the same catalogue response.
+    """
+
+    request_error = _market_release_request_error(payload)
+    if request_error is not None:
+        raise _MarketCatalogError("market_release_mismatch", request_error)
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        raise _MarketCatalogError("market_catalog_not_configured", "未配置插件市场")
+    market_id = str(payload.plugin_id or "").strip()
+    version = str(payload.version or "").strip()
+    channel = str(payload.channel or "").strip() or None
+    params = {"include_yanked": "false"}
+    if channel is not None:
+        params["channel"] = channel
+    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
+    unavailable = _MarketCatalogError(
+        "market_catalog_unavailable", "暂时无法核对市场发布信息，请稍后重试",
+    )
+    try:
+        # HTTPX phase timeouts alone do not bound total response time.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with _market_catalog_client() as client:
+                response = await client.get(url, params=params)
+                if response.status_code in (404, 422):
+                    try:
+                        detail = response.json().get("detail")
+                    except (ValueError, AttributeError):
+                        detail = None
+                    # A missing route answers FastAPI's generic "Not Found";
+                    # an unknown or malformed plugin ID answers with its own
+                    # detail. Only the latter says the plugin is unlisted.
+                    if response.status_code == 422 or (
+                        isinstance(detail, str) and detail.strip() not in ("", "Not Found")
+                    ):
+                        raise _MarketCatalogError("market_release_mismatch", "插件未被市场公开收录")
+                    logger.warning(
+                        "Market catalogue route missing: status={} origin={}",
+                        response.status_code,
+                        base_url,
+                    )
+                    raise unavailable
+                response.raise_for_status()
+                releases = response.json()
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+        logger.warning("Market catalogue lookup failed: origin={} error={!r}", base_url, exc)
+        raise unavailable from exc
+    if not isinstance(releases, list):
+        raise _MarketCatalogError("market_catalog_unavailable", "市场发布信息格式无效")
+    release = _select_market_release(
+        releases,
+        version=version,
+        channel=channel,
+        package_sha256=payload.package_sha256,
+    )
+    if release is None:
+        raise _MarketCatalogError("market_release_mismatch", "市场中没有有效的对应发布版本")
+    return release
+
+
+def _market_override_release_evidence(
+    payload: MarketInstallRequest,
+    release: dict[str, Any],
+) -> dict[str, object]:
+    """Check an override request against its catalogue row; return the evidence."""
+
     canonical_package_url = str(
         payload.canonical_package_url or payload.package_url or ""
     ).strip()
-    if release is None:
-        mismatch = True
-    else:
-        mismatch = any(
-            (
-                str(release.get("package_url") or "").strip() != canonical_package_url,
-                str(release.get("package_sha256") or "").strip().lower()
-                != payload.package_sha256,
-                bool(payload.payload_hash)
-                and str(release.get("payload_hash") or "").strip()
-                != str(payload.payload_hash or "").strip(),
-                bool(payload.published_at)
-                and str(release.get("created_at") or release.get("published_at") or "").strip()
-                != str(payload.published_at or "").strip(),
-            )
+    mismatch = any(
+        (
+            str(release.get("package_url") or "").strip() != canonical_package_url,
+            str(release.get("package_sha256") or "").strip().lower()
+            != payload.package_sha256,
+            bool(payload.payload_hash)
+            and str(release.get("payload_hash") or "").strip()
+            != str(payload.payload_hash or "").strip(),
+            bool(payload.published_at)
+            and str(release.get("created_at") or release.get("published_at") or "").strip()
+            != str(payload.published_at or "").strip(),
         )
+    )
     if mismatch:
         raise HTTPException(
             status_code=409,
@@ -902,17 +979,28 @@ async def _fetch_authoritative_market_override_release(
                 "message": "builtin override request does not match the Market catalog",
             },
         )
-
-    assert release is not None
     return {
-        "plugin_market_id": market_id,
-        "version": requested_version,
-        "channel": channel,
+        "plugin_market_id": str(payload.plugin_id or "").strip(),
+        "version": str(payload.version or "").strip(),
+        "channel": str(release.get("channel") or "stable").strip(),
         "package_url": canonical_package_url,
         "package_sha256": payload.package_sha256,
         "payload_hash": release.get("payload_hash"),
         "published_at": release.get("created_at") or release.get("published_at"),
     }
+
+
+async def _fetch_authoritative_market_override_release(
+    payload: MarketInstallRequest,
+) -> dict[str, object]:
+    try:
+        release = await _fetch_market_release(payload)
+    except _MarketCatalogError as exc:
+        raise HTTPException(
+            status_code=_MARKET_CATALOG_HTTP_STATUS[exc.code],
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return _market_override_release_evidence(payload, release)
 
 
 async def _build_market_override_confirmation(
@@ -1165,6 +1253,12 @@ async def market_install(
     旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
+    request_error = _market_release_request_error(payload)
+    if request_error is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "market_release_mismatch", "message": request_error},
+        )
     # ``exclude=True`` affects serialization only; Pydantic still accepts these
     # fields from request bodies. Strip all caller-provided server evidence and
     # add back only values verified during this request.
@@ -3168,6 +3262,57 @@ async def _report_market_install_best_effort(
         )
 
 
+async def _bind_market_package_hash(
+    payload: MarketInstallRequest,
+) -> tuple[MarketInstallRequest, dict[str, Any]]:
+    """Bind install bytes to a public, non-yanked Market release.
+
+    Download URLs (including user-selected proxies) remain unchanged. The
+    catalogue supplies the hash used to authorize the installed bytes and
+    the release metadata recorded for them. This runs before download and
+    before taking any plugin operation lock. Returns the bound payload and
+    the catalogue row, which later task steps reuse instead of refetching.
+    """
+    try:
+        release = await _fetch_market_release(payload)
+    except _MarketCatalogError as exc:
+        raise _TaskError(code=exc.code, message=exc.message) from exc
+    try:
+        raw_hash = release.get("package_sha256")
+        authoritative_hash = _normalize_required_sha256(raw_hash if isinstance(raw_hash, str) else None)
+    except ValueError as exc:
+        raise _TaskError(code="market_release_mismatch", message="市场中没有有效的对应发布版本") from exc
+    if authoritative_hash != payload.package_sha256:
+        raise _TaskError(code="market_release_mismatch", message="插件包 SHA256 与市场发布记录不一致")
+
+    # Provenance written to the lock and reported to /me/installs comes from
+    # the catalogue row, never from the caller. A caller payload_hash is
+    # bound to the package bytes, so disagreement is rejected. The caller's
+    # canonical URL and published_at are only replaced: the catalogue may
+    # move a release to a new URL, and some callers pair published_at with
+    # a different release row of the same plugin.
+    catalog_payload_hash = str(release.get("payload_hash") or "").strip() or None
+    requested_payload_hash = str(payload.payload_hash or "").strip()
+    if requested_payload_hash and requested_payload_hash.lower() != (catalog_payload_hash or "").lower():
+        raise _TaskError(code="market_release_mismatch", message="插件 payload hash 与市场发布记录不一致")
+    catalog_package_url = str(release.get("package_url") or "").strip() or None
+    if catalog_package_url is None:
+        raise _TaskError(code="market_release_mismatch", message="市场发布记录缺少插件包来源地址")
+    catalog_published_at = (
+        str(release.get("created_at") or release.get("published_at") or "").strip() or None
+    )
+    bound = payload.model_copy(update={
+        "version": str(payload.version or "").strip(),
+        # Callers may omit the channel; the matched row decides it.
+        "channel": str(release.get("channel") or "stable").strip(),
+        "package_sha256": authoritative_hash,
+        "payload_hash": catalog_payload_hash,
+        "canonical_package_url": catalog_package_url,
+        "published_at": catalog_published_at,
+    })
+    return bound, release
+
+
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
 
@@ -3189,12 +3334,25 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
 
     try:
         _raise_if_task_cancel_requested(task)
+        _set_task_stage(
+            task, status="pending", stage="pending", progress=0.0,
+            message="正在核对市场发布信息...",
+        )
+        try:
+            payload, market_release = await _bind_market_package_hash(payload)
+        except _TaskError:
+            _raise_if_task_cancel_requested(task)
+            raise
+        _raise_if_task_cancel_requested(task)
         if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)
         elif payload.mode == "upgrade":
-            await _do_upgrade(task, payload, log_ctx)
+            await _do_upgrade(task, payload, log_ctx, market_release=market_release)
         elif payload.mode == "reinstall":
-            await _do_upgrade(task, payload, log_ctx, record_as_reinstall=True)
+            await _do_upgrade(
+                task, payload, log_ctx,
+                record_as_reinstall=True, market_release=market_release,
+            )
         else:  # pragma: no cover — Pydantic Literal already enforces this
             raise _TaskError(
                 code="invalid_mode",
@@ -3342,6 +3500,9 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "override_rollback_incomplete": "内置插件升级失败，回滚未完整完成，请检查插件状态",
     "override_source_changed": "插件来源已变化，请刷新后重试",
     "override_start_failed": "Market 版本启动失败，已尝试恢复内置版本",
+    "market_release_mismatch": "安装请求与市场发布记录不一致，请刷新市场页面后重试",
+    "market_catalog_unavailable": "暂时无法核对市场发布信息，请稍后重试",
+    "market_catalog_not_configured": "未配置插件市场地址",
 }
 
 
@@ -3648,12 +3809,15 @@ async def _do_upgrade(
     log_ctx: dict[str, Any],
     *,
     record_as_reinstall: bool = False,
+    market_release: dict[str, Any] | None = None,
 ) -> None:
     """Replace an installed Market plugin through the shared file transaction.
 
     Market owns artifact download, hash verification and source provenance.
     The shared replacement module owns stop, backup, deployment, restart and
     directory rollback, exactly as it does for locally imported packages.
+    ``market_release`` is the catalogue row already bound by the task; when
+    absent the builtin override check fetches it.
     """
 
     requested_plugin_id = payload.plugin_id or ""
@@ -3708,7 +3872,10 @@ async def _do_upgrade(
     authoritative_release: dict[str, object] | None = None
     if continues_builtin_override:
         try:
-            authoritative_release = await _fetch_authoritative_market_override_release(payload)
+            if market_release is None:
+                authoritative_release = await _fetch_authoritative_market_override_release(payload)
+            else:
+                authoritative_release = _market_override_release_evidence(payload, market_release)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             raise _TaskError(
