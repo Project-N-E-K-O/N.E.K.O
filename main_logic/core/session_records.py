@@ -10,6 +10,7 @@ from functools import wraps
 
 _start_context = contextvars.ContextVar("session_start_operation", default=None)
 MAX_LIVE_LLM_CONNECTIONS = 3
+INPUT_DISPATCH_DEFERRED = object()
 
 
 @dataclass(eq=False)

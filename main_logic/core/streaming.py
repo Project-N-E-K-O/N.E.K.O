@@ -22,6 +22,7 @@ Method-only mixin: every instance attribute is assigned in
 import asyncio
 import json
 import time
+from .session_records import INPUT_DISPATCH_DEFERRED
 from websockets import exceptions as web_exceptions
 from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -183,10 +184,12 @@ class StreamingMixin:
                                     dropped_text_for_voice += 1
                                     next_unprocessed = index + 1
                                     continue
-                                await self._process_stream_data_internal(
+                                result = await self._process_stream_data_internal(
                                     message,
                                     on_dispatch_attempted=mark_dispatch_attempted,
                                 )
+                                if result is INPUT_DISPATCH_DEFERRED:
+                                    return  # finally restores this item and its suffix.
                                 # A normal early return (validation failure or
                                 # an intentional drop) is terminal handling,
                                 # even though it never reaches a provider.
@@ -485,6 +488,8 @@ class StreamingMixin:
             )
             if not owns_ready_flush:
                 logger.debug("Session正在启动中，跳过...")
+                if callable(on_dispatch_attempted):
+                    return INPUT_DISPATCH_DEFERRED
                 return
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建

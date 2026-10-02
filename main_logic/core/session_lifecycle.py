@@ -194,6 +194,12 @@ class SessionOwnershipMixin:
 
         async def flush():
             while self.session is session and not record.retired:
+                if getattr(self, '_starting_session_count', 0) > 0:
+                    operation = record.operation
+                    if operation is self._start_operation and operation is not None and operation.valid:
+                        await operation.finished.wait()
+                        continue
+                    return  # The replacement owns the queued suffix.
                 async with self.input_cache_lock:
                     idle_event = (
                         getattr(self, '_pending_input_flush_idle_event', None)
@@ -224,6 +230,7 @@ class SessionOwnershipMixin:
                     and self.session is record.session
                     and not record.retired
                     and bool(self.pending_input_data)
+                    and getattr(self, '_starting_session_count', 0) == 0
                     and not getattr(self, '_deferred_pending_input_flush_count', 0)
                 )
                 if should_retry:

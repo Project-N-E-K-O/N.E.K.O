@@ -24,6 +24,54 @@ class Manager(TtsRuntimeMixin, TtsLifecycleMixin):
 
 
 @pytest.mark.asyncio
+async def test_interrupt_during_retired_fallback_clears_pending_speech():
+    manager = Manager()
+    releases = [Event(), Event()]
+    old = install(manager, releases[0])
+    manager.session = object()
+    manager.use_tts = True
+    manager._cancel_tts_soft_flush = MagicMock()
+    manager._cancel_game_speech_completion_wait = MagicMock()
+    manager._clear_game_speech_correlation = MagicMock()
+    manager._discard_pending_ai_voice_echo = MagicMock()
+    manager._tts_done_queued_for_turn = False
+    manager._enqueue_tts_text_chunk = MagicMock()
+    waiting = asyncio.Event()
+
+    def fallback(stage):
+        manager._retire_tts_runtime(old, stop_handler=False)
+        manager.tts_pending_chunks = [("interrupted", "old speech")]
+        manager._tts_done_pending_until_ready = True
+        waiting.set()
+        raise TtsCapacityError("exclusive worker still alive")
+
+    def start(**kwargs):
+        install(manager, releases[1])
+
+    manager._activate_configured_tts_fallback = fallback
+    manager._start_tts_thread = start
+    token = tts_output_runtime.set(old)
+    task = asyncio.create_task(manager._activate_configured_tts_fallback_after_capacity("test", old))
+    tts_output_runtime.reset(token)
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        await manager._clear_tts_pipeline()
+        assert manager.tts_pending_chunks == []
+        assert not manager._tts_done_pending_until_ready
+        manager._cancel_game_speech_completion_wait.assert_called()
+        releases[0].set()
+        assert await asyncio.wait_for(task, 2)
+        manager.tts_ready = True
+        await manager._flush_tts_pending_chunks()
+        manager._enqueue_tts_text_chunk.assert_not_called()
+    finally:
+        for release in releases:
+            release.set()
+        manager._retire_tts_runtime(manager._snapshot_tts_runtime())
+        await asyncio.gather(task, *(r.cleanup_task for r in manager._tts_runtimes if r.cleanup_task), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_capacity_retry_waits_for_all_workers_before_exclusive_replacement():
     manager = Manager()
     releases = [Event(), Event()]

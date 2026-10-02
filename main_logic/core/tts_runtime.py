@@ -1212,7 +1212,9 @@ class TtsRuntimeMixin:
         runtime = self._snapshot_tts_runtime()
         request_queue = self.tts_request_queue
         response_queue = self.tts_response_queue
-        if not self._tts_runtime_is_current(runtime) or not self._tts_output_is_current():
+        # A retired installed runtime can still own fallback replay. Clear
+        # that conversation output, but never accept a stale worker callback.
+        if not self._tts_output_is_current():
             return
 
         def clear_responses():
@@ -1236,7 +1238,7 @@ class TtsRuntimeMixin:
         self._cancel_game_speech_completion_wait()
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
-        if self.tts_thread and self.tts_thread.is_alive():
+        if self._tts_runtime_is_current(runtime) and self.tts_thread and self.tts_thread.is_alive():
             clear_responses()
             try:
                 request_queue.put(("__interrupt__", None))
@@ -1248,7 +1250,7 @@ class TtsRuntimeMixin:
             await asyncio.sleep(0.02)
             clear_responses()
         async with self.tts_cache_lock:
-            if (not self._tts_runtime_is_current(runtime)
+            if (runtime is not getattr(self, "_tts_runtime", None)
                     or response_queue is not self.tts_response_queue
                     or not self._tts_output_is_current()):
                 return
