@@ -41,8 +41,7 @@ Every function here is pure and synchronous.
   the peer from forging.
 
 Localised words (the neutral family term, the generic peer label) live in
-``config/prompts/prompts_visit.py``; this module never imports it, callers
-pass them in.
+``config/prompts/prompts_visit.py`` and are passed in by the callers.
 """
 
 from __future__ import annotations

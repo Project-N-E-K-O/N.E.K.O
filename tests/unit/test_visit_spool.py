@@ -646,7 +646,11 @@ async def test_cancelled_open_releases_fd_and_registration(tmp_path, monkeypatch
             break
         await asyncio.sleep(0.01)
     assert not is_spool_open(sp.jsonl_path)
-    os.remove(sp.jsonl_path)   # fd 已关：Windows 上能删掉
+    # 只有头行的残留文件一并删掉：同 visit 重试能直接再 open
+    assert not sp.jsonl_path.exists()
+    retry = VisitSpool(tmp_path, vid(6))
+    await retry.open(header(vid(6)), now=NOW)
+    await retry.close()
 
 
 async def test_forget_keeps_pending_when_the_spool_header_is_malformed(tmp_path):

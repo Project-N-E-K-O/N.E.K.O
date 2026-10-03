@@ -802,7 +802,12 @@ class VisitSpool:
                     _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
     def _discard_orphan_open(self, fut: "concurrent.futures.Future[int]") -> None:
-        """Close the fd of an ``_open_sync`` whose awaiting ``open`` was cancelled."""
+        """Undo an ``_open_sync`` whose awaiting ``open`` was cancelled.
+
+        Closes the fd, deletes the file (it was created by this very
+        ``O_EXCL`` open, so it holds only the header) and drops the in-flight
+        registration, so a retry with the same visit id can open again.
+        """
         if fut.cancelled() or fut.exception() is not None:
             return
         try:
@@ -811,6 +816,13 @@ class VisitSpool:
             # fd 已失效也无妨：这里只负责不泄漏；登记照样要撤销
             logger.debug("visit spool: closing orphan fd failed: %s", exc)
         with _OPEN_SPOOLS_LOCK:
+            # 文件是这次 O_EXCL 新建的、只有头行（含对端身份）：留着会让同 visit 重试
+            # 抛 FileExistsError，也会把对端信息留到 7 天回收
+            try:
+                _unlink(self.jsonl_path)
+            except OSError as exc:
+                logger.warning("visit spool: removing orphan %s failed: %s",
+                               self.jsonl_path.name, exc)
             _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
     async def open(self, header: Mapping[str, Any], *, now: float) -> None:

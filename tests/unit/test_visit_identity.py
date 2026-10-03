@@ -257,9 +257,9 @@ def test_jti_window_evicts_oldest():
 # ── 黑名单与核验顺序 ──
 
 
-def test_blocklist_hit_is_peer_blocked(priv, pubkeys, tmp_path):
+async def test_blocklist_hit_is_peer_blocked(priv, pubkeys, tmp_path):
     bl = Blocklist(tmp_path)
-    bl.block(SUB, display_name_at_block="Mimi", now=NOW)
+    await bl.ablock(SUB, display_name_at_block="Mimi", now=NOW)
     with pytest.raises(PeerBlocked) as ei:
         _verify(mint_ticket(_claims(), priv), pubkeys=pubkeys, blocklist=bl)
     assert ei.value.finalize_reason == "peer_blocked"

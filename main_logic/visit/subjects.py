@@ -26,7 +26,7 @@ is a literal vertical bar)::
     person_id    = 'p_' + sha256(own_uid + '|' + peer_uid)[:24]
     peer_char_id = 'c_' + sha256(peer_uid + '|' + char_tag)[:24]
     vid          = role[0] + '_' + sha256(visit_uid + '|' + visit_id)[:24]
-    short_code   = visit_uid[:6].upper()
+    short_code   = visit_uid[:VISIT_SHORT_ID_LEN].upper()
 
 The three memory subjects of one visit, in recall budget priority order::
 
@@ -63,7 +63,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from config.visit_settings import VISIT_MEMORY_PLATFORM, VISIT_PEERS_FILENAME
+from config.visit_settings import VISIT_MEMORY_PLATFORM, VISIT_PEERS_FILENAME, VISIT_SHORT_ID_LEN
 from memory.scopes import MemoryScopeError, MemorySubject
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
@@ -142,8 +142,8 @@ def derive_vid(role: str, visit_uid: str, visit_id: str) -> str:
 
 
 def derive_short_code(visit_uid: str) -> str:
-    """Return ``visit_uid[:6].upper()``, the only id form ever shown in the UI."""
-    return _require_str(visit_uid, "visit_uid")[:6].upper()
+    """Return ``visit_uid[:VISIT_SHORT_ID_LEN].upper()`` (6 characters), the only id form shown in the UI."""
+    return _require_str(visit_uid, "visit_uid")[:VISIT_SHORT_ID_LEN].upper()
 
 
 def subject_wire(subject: MemorySubject) -> dict[str, str]:

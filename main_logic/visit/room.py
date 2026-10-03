@@ -345,6 +345,9 @@ class VisitRoom:
         self.own_lp = 0
         self.max_lp_seen = 0
         self._peer_max_new_lp = -1
+        # 必达消息的单调水位单独记：可丢的新行首片 / typing 可能先于首发丢失、随后
+        # 重传的必达消息到达，重传恰好补上 seq 时接收端看不出它是重传
+        self._peer_max_reliable_lp = -1
         self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp；LRU）
         # 被挤出 _seen_lns 的最大行号（按发送方前缀）：行号逐行递增，号不大于它的
         # 「新」ln 只能是被挤出的旧行重用，已无从比对首片 lp
@@ -419,7 +422,7 @@ class VisitRoom:
         return lp - max(self.max_lp_seen, self.own_lp) <= VISIT_LP_MAX_JUMP
 
     def observe_lp(self, lp: Any, *, ln: Optional[str] = None,
-                   is_retransmit: bool = False) -> Optional[str]:
+                   is_retransmit: bool = False, reliable: bool = False) -> Optional[str]:
         """Validate and observe the ``lp`` of a received message.
 
         Returns ``None`` when accepted (the local clock then covers it) or a
@@ -432,7 +435,13 @@ class VisitRoom:
         * ``'lp_regress'``: more than ``VISIT_LP_REGRESS_MAX`` below the highest
           value seen;
         * ``'lp_not_monotonic'``: below an ``lp`` the peer already used for an
-          earlier new line / control event;
+          earlier new line / control event. A ``reliable`` message (one that
+          carries a ``seq``) is compared only with earlier reliable messages:
+          their order is already fixed by ``seq``, and a lossy delta / typing
+          of a newer line may legitimately overtake a reliable message whose
+          first transmission was lost (its retransmission then fills the
+          ``seq`` gap exactly and cannot be told apart from a first send).
+          Lossy events are compared with every earlier new line / event;
         * ``'lp_changed'``: an already observed ``ln`` carries a different
           ``lp`` than its first piece (one line keeps one ``lp``; a changed
           value would move the line in ordering, staleness and history).
@@ -454,9 +463,12 @@ class VisitRoom:
         if not known_line and not is_retransmit:
             if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
                 return self._count_anomaly("lp_regress")
-            if lp < self._peer_max_new_lp:
+            floor = self._peer_max_reliable_lp if reliable else self._peer_max_new_lp
+            if lp < floor:
                 return self._count_anomaly("lp_not_monotonic")
             self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
+            if reliable:
+                self._peer_max_reliable_lp = max(self._peer_max_reliable_lp, lp)
         self.max_lp_seen = max(self.max_lp_seen, lp)
         if ln is not None:
             if known_line:

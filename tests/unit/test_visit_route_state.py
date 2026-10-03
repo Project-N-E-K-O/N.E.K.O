@@ -50,3 +50,14 @@ def test_lock_is_shared_while_referenced_and_released_when_idle():
     # A fresh lock is created on demand after the old one was collected.
     again = vrs._get_visit_route_lock("A")
     assert again is vrs._get_visit_route_lock("A")
+
+
+def test_a_replaced_slot_is_marked_inactive():
+    # 与 finalize 一致：还拿着旧 dict 的任务要看到状态翻转
+    from utils.visit_route_state import activate_visit_route, finalize_visit_route_state, get_visit_route_state
+
+    old = activate_visit_route("ReplaceNeko", phase="active")
+    new = activate_visit_route("ReplaceNeko")
+    assert old["visit_route_active"] is False
+    assert get_visit_route_state("ReplaceNeko") is new and new["visit_route_active"] is True
+    finalize_visit_route_state("ReplaceNeko")

@@ -181,10 +181,10 @@ def test_missing_file_is_empty(tmp_path):
     assert len(bl) == 0 and not bl.is_blocked(UID)
 
 
-def test_sync_block_roundtrip_and_schema(tmp_path):
+async def test_block_roundtrip_and_schema(tmp_path):
     bl = Blocklist.load(tmp_path)
-    assert bl.block(UID, display_name_at_block="Mimi", reason="rude", now=123.0)
-    assert not bl.block(UID, display_name_at_block="Mimi", now=124.0)
+    assert await bl.ablock(UID, display_name_at_block="Mimi", reason="rude", now=123.0)
+    assert not await bl.ablock(UID, display_name_at_block="Mimi", now=124.0)
     data = json.loads((tmp_path / VISIT_BLOCKLIST_FILENAME).read_text(encoding="utf-8"))
     assert data == {"blocked": [{
         "visit_uid": UID, "display_name_at_block": "Mimi", "blocked_at": 123.0, "reason": "rude",
@@ -192,7 +192,7 @@ def test_sync_block_roundtrip_and_schema(tmp_path):
     again = Blocklist.load(tmp_path)
     assert again.is_blocked(UID) and again.is_blocked(UID.upper())
     assert UID in again
-    assert again.unblock(UID) and not again.unblock(UID)
+    assert await again.aunblock(UID) and not await again.aunblock(UID)
     assert not Blocklist.load(tmp_path).is_blocked(UID)
 
 
@@ -220,21 +220,21 @@ async def test_async_writes_are_serialised(tmp_path):
     assert [e.visit_uid for e in reloaded.entries()] == uids
 
 
-def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
+async def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
     from main_logic.visit import limits
 
     bl = Blocklist.load(tmp_path)
 
-    def boom(*a, **k):
+    async def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(limits, "atomic_write_json", boom)
+    monkeypatch.setattr(limits, "atomic_write_json_async", boom)
     with pytest.raises(OSError):
-        bl.block(UID, display_name_at_block="Mimi")
+        await bl.ablock(UID, display_name_at_block="Mimi")
     assert not bl.is_blocked(UID)
 
 
-def test_corrupt_file_fails_closed_and_is_left_in_place(tmp_path):
+async def test_corrupt_file_fails_closed_and_is_left_in_place(tmp_path):
     # 读不出来不能当空表：那会把被拉黑的人放进来；原文件留在原处待修复
     from main_logic.visit.limits import BlocklistUnavailable
 
@@ -245,7 +245,7 @@ def test_corrupt_file_fails_closed_and_is_left_in_place(tmp_path):
     with pytest.raises(BlocklistUnavailable):
         bl.is_blocked(UID)
     with pytest.raises(BlocklistUnavailable):
-        bl.block(UID, display_name_at_block="Mimi")
+        await bl.ablock(UID, display_name_at_block="Mimi")
     assert path.read_text(encoding="utf-8") == "{not json"
     assert not (tmp_path / (VISIT_BLOCKLIST_FILENAME + ".corrupt")).exists()
 
@@ -283,15 +283,15 @@ def test_any_malformed_row_makes_the_list_unavailable(tmp_path, bad_row):
     assert Blocklist.load(tmp_path).available is False
 
 
-def test_blocklist_is_not_partitioned_by_account(tmp_path):
-    Blocklist.load(tmp_path).block(UID, display_name_at_block="Mimi")
+async def test_blocklist_is_not_partitioned_by_account(tmp_path):
+    await Blocklist.load(tmp_path).ablock(UID, display_name_at_block="Mimi")
     data = json.loads((tmp_path / VISIT_BLOCKLIST_FILENAME).read_text(encoding="utf-8"))
     assert set(data) == {"blocked"}
 
 
-def test_empty_uid_rejected(tmp_path):
+async def test_empty_uid_rejected(tmp_path):
     with pytest.raises(ValueError):
-        Blocklist.load(tmp_path).block("  ", display_name_at_block="x")
+        await Blocklist.load(tmp_path).ablock("  ", display_name_at_block="x")
 
 
 def test_missing_file_is_an_empty_available_list(tmp_path):
@@ -361,3 +361,8 @@ def test_token_bucket_caps_an_oversized_cost_only_when_asked():
     assert capped.fits(50)
     plain = TokenBucket.full(10.0, 10.0, 0.0)
     assert not plain.fits(50) and not plain.take(50, 100.0)
+
+
+def test_there_is_no_unlocked_sync_mutation_path():
+    # 同步 block / unblock 不拿锁，和 ablock 交错会互相冲掉：只留串行化的异步版
+    assert not hasattr(Blocklist, "block") and not hasattr(Blocklist, "unblock")

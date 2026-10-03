@@ -40,8 +40,9 @@
     display_name_at_block, blocked_at, reason?}]}``, keyed by ``visit_uid``.
     Not partitioned by community account: blocking protects the person at this
     machine and must survive an account switch. Loaded once into memory so the
-    hello verification can query it synchronously; every mutation is written
-    atomically, with sync and async twins.
+    hello verification can query it synchronously; every mutation goes
+    through the async, lock-serialised ``ablock`` / ``aunblock`` and is
+    written atomically.
 """
 
 from __future__ import annotations
@@ -65,7 +66,6 @@ from config.visit_settings import (
     VISIT_PEER_RECV_MSGS_PER_S,
 )
 from utils.file_utils import (
-    atomic_write_json,
     atomic_write_json_async,
     read_json,
     read_json_async,
@@ -508,24 +508,15 @@ class Blocklist:
         del entries[uid]
         return entries
 
-    def block(
-        self, visit_uid: str, *, display_name_at_block: str, reason: str | None = None,
-        now: float | None = None,
-    ) -> bool:
-        """Block ``visit_uid`` and persist; return False if it was already blocked."""
-        entries = self._with_block(visit_uid, display_name_at_block, reason, now)
-        if entries is None:
-            return False
-        atomic_write_json(self._path, self._payload(entries))
-        self._entries = entries
-        return True
-
     async def ablock(
         self, visit_uid: str, *, display_name_at_block: str, reason: str | None = None,
         now: float | None = None,
     ) -> bool:
-        """Async twin of :meth:`block` (serialised by an asyncio lock).
+        """Block ``visit_uid`` and persist; return False if it was already blocked.
 
+        The only mutation path (with :meth:`aunblock`): every change is
+        serialised by one asyncio lock, so concurrent blocks / unblocks never
+        rebuild the list from a stale view and drop each other's update.
         Cancellation-safe: the write-then-swap transaction runs shielded, so a
         cancelled caller never leaves the file and the in-memory list apart.
         """
@@ -543,17 +534,11 @@ class Blocklist:
             self._entries = entries
             return True
 
-    def unblock(self, visit_uid: str) -> bool:
-        """Remove ``visit_uid`` and persist; return False if it was not blocked."""
-        entries = self._without(visit_uid)
-        if entries is None:
-            return False
-        atomic_write_json(self._path, self._payload(entries))
-        self._entries = entries
-        return True
-
     async def aunblock(self, visit_uid: str) -> bool:
-        """Async twin of :meth:`unblock` (cancellation-safe like :meth:`ablock`)."""
+        """Remove ``visit_uid`` and persist; return False if it was not blocked.
+
+        Serialised and cancellation-safe like :meth:`ablock`.
+        """
         return await asyncio.shield(self._locked_txn(lambda: self._without(visit_uid)))
 
 

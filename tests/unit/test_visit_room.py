@@ -1002,3 +1002,16 @@ def test_a_fallback_reason_is_corrected_by_the_late_begin():
     assert room.wrap_up.reason == "recall"
     room.on_incoming_wrap_up("begin", "budget", 4, 1.3)
     assert room.wrap_up.reason == "recall"          # 真实原因只纠正一次，不被覆盖
+
+
+def test_a_retransmitted_reliable_line_overtaken_by_a_lossy_delta_is_accepted():
+    # seq2 首发丢失，下一行的可丢首片 lp=6 先到；seq2 重传（lp=5）补上缺口时看不出是重传：
+    # 不能按 lp_not_monotonic 丢掉——它的 seq 已被确认，这一行会永久消失
+    room = make_room("host")
+    assert room.observe_lp(1, ln="g:1", reliable=True) is None
+    assert room.observe_lp(6, ln="g:3") is None                       # 可丢 delta 抢先
+    assert room.observe_lp(5, ln="g:2", reliable=True) is None        # 重传的必达 text
+    # 必达消息之间仍然要单调
+    assert room.observe_lp(4, ln="g:9", reliable=True) == "lp_not_monotonic"
+    # 可丢的新行事件仍和所有已见新行比
+    assert room.observe_lp(5, ln="g:8") == "lp_not_monotonic"
