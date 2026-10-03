@@ -1458,7 +1458,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
 
     const isNamedProvider = value => !!value && value !== 'custom' && !value.startsWith('follow_');
     if (userInitiated && !_isLoadingSavedConfig && modelIdInput
-        && previousProvider !== provider && isNamedProvider(previousProvider) && isNamedProvider(provider)) {
+        && modelType !== 'omni' && modelType !== 'tts'
+        && previousProvider !== provider && isNamedProvider(provider)) {
         modelIdInput.value = '';
     }
     // Also remember follow modes that return early below.
@@ -1906,8 +1907,12 @@ function resolveSlotModelState(modelType, visited = new Set()) {
                 fixedModelProvider: '',
             };
         }
-        // 小游戏槽在 follow_* 下不采用输入值，跟随文本对话/摘要槽的结果或核心服务商的档位默认
-        if (provider === 'follow_assist') return mirrorSlotModelState(tier, visited);
+        // 小游戏槽跟随 API 时不采用输入值，直接取对应 API 的档位默认。
+        if (provider === 'follow_assist') return {
+            defaultModelId: getAssistTierModelId(tier),
+            acceptsTypedModelId: false,
+            fixedModelProvider: '',
+        };
         if (!_assistApiProviders[sourceKey]) {
             return {
                 defaultModelId: String((_coreApiProviders[sourceKey] || {}).core_model || '').trim(),

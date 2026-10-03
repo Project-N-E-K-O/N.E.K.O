@@ -16,7 +16,8 @@ async def race_candidate_requests(
     """Return first success; preserve each caller's failure-selection policy.
 
     Configured-order mode chooses the first configured completed failure (and
-    breaks simultaneous success ties by configured order). Otherwise failures
+    breaks simultaneous success ties by configured order). A still-pending
+    preferred candidate reports timeout rather than a fallback failure. Otherwise failures
     are selected in completion order. Every exit cancels and drains losers.
     """
     failures: dict[int, dict[str, Any]] = {}
@@ -44,6 +45,8 @@ async def race_candidate_requests(
             )
             if not done:
                 result = dict(timeout_result or {"success": False, "error_code": "timeout"})
+                if prefer_configured_order and 0 not in failures:
+                    return result
                 break
             order = range(len(tasks)) if prefer_configured_order else completion_order
             for index in order:

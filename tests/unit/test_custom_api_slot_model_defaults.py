@@ -55,6 +55,27 @@ _TEXT_TIERS = (
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('prefix,model_type,profile_key,text_prefix', [
+    ('gameMain', 'game_main', 'CONVERSATION_MODEL', 'conversation'),
+    ('gameSummary', 'game_summary', 'SUMMARY_MODEL', 'summary'),
+])
+@pytest.mark.parametrize('text_model', ['', 'user-core-model'])
+def test_game_follow_assist_keeps_assist_default_after_text_override(
+    config_manager, prefix, model_type, profile_key, text_prefix, text_model,
+):
+    profile = _profiles()['openrouter']
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen', 'assistApi': 'openrouter', 'coreApiKey': 'core-key',
+        'assistApiKeyOpenRouter': 'assist-key', 'enableCustomApi': True,
+        f'{text_prefix}ModelProvider': 'follow_core', f'{text_prefix}ModelId': text_model,
+        f'{prefix}ModelProvider': 'follow_assist',
+    })
+    resolved = config_manager.get_model_api_config(model_type)
+    assert resolved['model'] == profile[profile_key]
+    assert resolved['base_url'] == profile['OPENROUTER_URL']
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
 def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatch, provider_mode):
     profiles = _profiles()

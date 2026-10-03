@@ -271,6 +271,8 @@ async def list_models(req: ModelListRequest) -> dict:
         prefer_configured_order=True,
         timeout_result=_failure("timeout", "拉取模型列表超时"),
     )
+    if (req.provider_key or "").strip():
+        result.pop("check_url", None)
     if result.get("success"):
         logger.info(
             "[ModelList] %s 拉取到 %d 个模型",

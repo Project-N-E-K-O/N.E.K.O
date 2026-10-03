@@ -34,6 +34,21 @@ def model_catalog():
     return model_catalog
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('provider_key', ['', 'qwen'])
+def test_only_custom_endpoint_404_suggests_editing_url(config_manager, model_catalog, monkeypatch, provider_key):
+    target = {'urls': ['https://example.test/v1'], 'api_key': '', 'provider_type': 'openai'}
+    monkeypatch.setattr(model_catalog, '_resolve_provider_target', lambda *args: target)
+    monkeypatch.setattr(model_catalog, '_resolve_custom_target', lambda *args: target)
+
+    async def fetch(*args):
+        return {'success': False, 'error_code': 'unsupported', 'check_url': True}
+
+    monkeypatch.setattr(model_catalog, '_fetch_models', fetch)
+    result = asyncio.run(model_catalog.list_models(model_catalog.ModelListRequest(provider_key=provider_key)))
+    assert bool(result.get('check_url')) == (not provider_key)
+
+
 @pytest.fixture()
 def fetch_calls(monkeypatch, model_catalog):
     """Replace the network fetch and record where each request would go."""

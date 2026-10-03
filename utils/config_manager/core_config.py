@@ -1344,6 +1344,9 @@ class CoreConfigMixin:
 
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            assist_model_defaults = {
+                key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
+            }
             # URL / Model ID 字段：空值回退到已有配置。
             # API Key 字段：根据用户选择的 provider 决定是否覆盖：
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
@@ -1403,7 +1406,7 @@ class CoreConfigMixin:
                                 or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
                 if provider == 'follow_assist' and is_game_slot:
-                    return config.get(profile_key, '')
+                    return assist_model_defaults.get(profile_key, '')
                 return ''
 
             def _resolve_named_provider_model_id(prefix: str, provider: str) -> str:

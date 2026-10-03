@@ -2014,6 +2014,23 @@ def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_pa
     model.fill('deepseek-user-choice')
     mock_page.select_option('#conversationModelProvider', 'custom')
     expect(model).to_have_value('deepseek-user-choice')
+
+    mock_page.select_option('#conversationModelProvider', 'follow_assist')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    expect(model).to_have_value('')
+    mock_page.evaluate("""() => {
+        for (const type of ['tts']) {
+            const select = document.getElementById(`${type}ModelProvider`);
+            const target = Array.from(select.options).find(option =>
+                option.value === 'minimax');
+            select.dataset.currentProvider = 'follow_core';
+            select.value = target.value;
+            document.getElementById(`${type}ModelId`).value = 'user-runtime-model';
+            onCustomModelProviderChange(type, true);
+        }
+    }""")
+    expect(mock_page.locator('#ttsModelId')).to_have_value('user-runtime-model')
+    model.fill('deepseek-user-choice')
     mock_page.evaluate("""() => {
         _isLoadingSavedConfig = true;
         const select = document.getElementById('conversationModelProvider');

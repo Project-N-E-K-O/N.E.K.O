@@ -302,7 +302,7 @@ test('game slots mirror or follow the text slots and ignore their own input in f
 
     setSlot('gameMain', 'follow_assist', 'ignored');
     assert.deepEqual(plain(context.resolveSlotModelState('gameMain')), {
-        defaultModelId: 'my-chat-model', acceptsTypedModelId: false, fixedModelProvider: '',
+        defaultModelId: 'google/gemini-2.5-flash', acceptsTypedModelId: false, fixedModelProvider: '',
     });
 
     setSlot('gameSummary', 'follow_core');
@@ -312,7 +312,7 @@ test('game slots mirror or follow the text slots and ignore their own input in f
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {
     const { context, setSlot, select } = createPickerContext();
     setSlot('conversation', 'kimi_code', 'typed');
-    setSlot('gameMain', 'follow_assist');
+    setSlot('gameMain', 'follow_conversation');
     assert.deepEqual(plain(context.resolveSlotModelState('gameMain')), {
         defaultModelId: 'kimi-for-coding', acceptsTypedModelId: false, fixedModelProvider: 'kimi_code',
     });

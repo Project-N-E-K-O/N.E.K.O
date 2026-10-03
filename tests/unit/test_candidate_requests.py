@@ -58,6 +58,20 @@ async def test_timeout_cancels_all_candidates():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_pending_preferred_timeout_is_not_masked_by_fallback_404():
+    async def request(url):
+        if url == 'preferred':
+            await asyncio.Event().wait()
+        return {'success': False, 'error_code': 'unsupported'}
+
+    result = await race_candidate_requests(
+        ['preferred', 'fallback'], request, timeout=0.01, prefer_configured_order=True,
+    )
+    assert result['error_code'] == 'timeout'
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_caller_cancellation_drains_candidates():
     started = asyncio.Event()
     closed = []
