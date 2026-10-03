@@ -458,6 +458,10 @@ class PeerRoster:
         _require_str(own_char, "own_char")
         _require_str(pair_id, "pair_id")
         _require_str(peer_char_id, "peer_char_id")
+        if pair_id != derive_pair_id(self.own_uid, peer_uid):
+            # 名册里的 pair 必须是这一对推出来的：写进去的异值之后展开成撤销计划，
+            # 会被撤销日志的身份绑定校验拒绝，这个人就再也清除不了
+            raise ValueError("pair_id does not match own_uid / peer_uid")
 
         def fn(data: dict):
             peers = self._peers_mut(data)

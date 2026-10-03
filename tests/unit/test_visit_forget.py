@@ -652,3 +652,17 @@ async def test_void_pending_is_a_required_step_callback(tmp_path):
         await run_revocation(log, rev_id, roster=roster,
                              forget_subject=FakeMemoryServer().forget)  # type: ignore[call-arg]
     assert await log.load(rev_id) is not None
+
+
+async def test_close_refuses_a_log_with_pending_steps(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    with pytest.raises(ValueError):
+        await log.close(rev_id)
+    assert await log.load(rev_id) is not None
+    assert await run_revocation(log, rev_id, roster=roster,
+                                forget_subject=FakeMemoryServer().forget,
+                                void_pending=_no_void) is True
+    assert await log.load(rev_id) is None

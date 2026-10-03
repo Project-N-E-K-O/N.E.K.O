@@ -388,6 +388,12 @@ class RevocationLog:
     def _close_sync(self, rev_id: str) -> bool:
         path = self.path_for(rev_id)
         with path_lock(path):
+            # 日志是唯一的重放依据：还有步骤没做完（或读不出来）就不能删
+            record = self._load_sync(rev_id)
+            if record is None:
+                return False
+            if record["done_steps"] != record["steps"]:
+                raise ValueError("revocation log still has pending steps")
             try:
                 path.unlink()
                 return True
@@ -480,7 +486,11 @@ class RevocationLog:
         )
 
     async def close(self, rev_id: str) -> bool:
-        """Delete the log once every step is done; return whether a file was removed."""
+        """Delete the log once every step is done; return whether a file was removed.
+
+        Raises ``ValueError`` when a step is still pending (or the log cannot
+        be read): the log is the only replay record, so it is kept.
+        """
         return await asyncio.to_thread(self._close_sync, rev_id)
 
     async def list_open(self) -> list[dict]:
