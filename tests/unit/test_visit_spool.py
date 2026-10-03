@@ -1334,3 +1334,29 @@ async def test_a_deeply_nested_spool_line_is_dropped(tmp_path):
         f.write(("[" * 5000 + chr(10)).encode("utf-8"))
     got = await VisitSpool(tmp_path, vid(36)).read_back()
     assert [ln["text"] for ln in got.lines] == ["ok"] and got.dropped_lines == 1
+
+
+@pytest.mark.parametrize("lp", [-1, visit_settings.VISIT_LP_MAX + 1])
+async def test_spool_lines_reject_out_of_range_lamport_values(tmp_path, lp):
+    sp = await open_spool(tmp_path, vid(37))
+    with pytest.raises(ValueError):
+        await sp.append(line(lp))
+    await sp.append(line(1, "ok"))
+    await sp.close()
+    with open(sp.jsonl_path, "ab") as f:
+        f.write((json.dumps(line(lp)) + chr(10)).encode("utf-8"))
+    got = await VisitSpool(tmp_path, vid(37)).read_back()
+    assert [ln["lp"] for ln in got.lines] == [1] and got.dropped_lines == 1
+
+
+async def test_a_deeply_nested_state_file_is_treated_as_corrupt(tmp_path):
+    # 深层嵌套让 json.load 抛 RecursionError：按损坏处理，清扫照常走完
+    sp = VisitSpool(tmp_path, vid(38))
+    await sp.write_state(state_for())
+    sp.state_path.write_text("[" * 5000, encoding="utf-8")
+    with pytest.raises(SpoolStateError):
+        await sp.read_state()
+    old = NOW - 8 * 86400
+    os.utime(sp.state_path, (old, old))
+    deleted = await VisitSpool.sweep(tmp_path, NOW)    # 不冲出 RecursionError
+    assert sp.state_path in deleted

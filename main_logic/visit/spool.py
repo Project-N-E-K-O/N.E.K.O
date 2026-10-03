@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from config.visit_settings import (
+    VISIT_LP_MAX,
     VISIT_SPOOL_DIR_CAP_BYTES,
     VISIT_SPOOL_DIRNAME,
     VISIT_SPOOL_FSYNC_S,
@@ -258,8 +259,9 @@ def encode_spool_line(line: Mapping[str, Any]) -> bytes:
         raise ValueError(
             "spool line fields mismatch: missing=%s extra=%s" % (sorted(missing), sorted(extra))
         )
-    if not _is_int(line["lp"]):
-        raise ValueError("spool line lp must be an int")
+    if not _is_int(line["lp"]) or not 0 <= line["lp"] <= VISIT_LP_MAX:
+        # 与 wire / room 同一值域：越界的 lp 会把补录与上传的排序搞乱
+        raise ValueError("spool line lp must be an int in 0..VISIT_LP_MAX")
     if not isinstance(line["side"], str):
         raise ValueError("spool line side must be a string")
     if not _is_number(line["ts"]):
@@ -548,6 +550,9 @@ def _read_state_file(path: Path) -> dict | None:
             data = json.load(f)
     except FileNotFoundError:
         return None
+    except RecursionError as exc:
+        # 深层嵌套的 state.json：归入已有的「损坏」处理（ValueError），不能冲断整轮清扫 / 重放
+        raise SpoolStateError(f"{path.name} is too deeply nested") from exc
     return validate_state(data)
 
 

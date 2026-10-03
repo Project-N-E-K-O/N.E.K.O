@@ -391,10 +391,12 @@ class BlocklistUnavailable(RuntimeError):
 class _Snapshot:
     """The in-memory rows of one blocklist file, shared by every live instance on it."""
 
-    __slots__ = ("entries", "__weakref__")
+    __slots__ = ("entries", "available", "__weakref__")
 
     def __init__(self) -> None:
         self.entries: dict[str, BlockEntry] = {}
+        # 可用性也是共享的：任一实例发现文件读不出 / 坏了，所有实例一起 fail closed
+        self.available = True
 
 
 # 同一文件的所有实例共用一份快照（弱引用登记，没有实例引用后自动释放）：某个实例
@@ -424,9 +426,10 @@ class Blocklist:
     verification rejects every peer. Treating it as empty would let a
     blocked peer back in. Mutations write the new list first and only then
     swap it in, so a failed write leaves memory and disk consistent. All live
-    instances on the same file share one in-memory snapshot, so a block made
-    through any of them is seen by all (identity verification never keeps
-    consulting a stale list). Every
+    instances on the same file share one in-memory snapshot (rows and
+    availability), so a block made through any of them is seen by all and a
+    read failure seen by any of them fails all of them closed (identity
+    verification never keeps consulting a stale list). Every
     mutation runs as one read-modify-write transaction in a worker thread
     under the process-wide per-path lock (``subjects.path_lock``, the same
     registry the roster and spool use): it re-reads the file, applies its
@@ -441,9 +444,16 @@ class Blocklist:
         self._snap = _snapshot_for(self._path)
         if entries is not None:
             # 只有真的读过盘（或调用方显式给出）才刷新共享快照；不带 entries 构造的实例
-            # 不能把别的实例看到的拉黑记录清空
+            # 不能把别的实例看到的拉黑记录清空，也不能把共享的「不可用」翻回可用
             self._snap.entries = {e.visit_uid: e for e in entries}
-        self.available = available
+            self._snap.available = available
+        elif not available:
+            self._snap.available = False
+
+    @property
+    def available(self) -> bool:
+        """Whether the shared list is trustworthy (False after any failed read of the file)."""
+        return self._snap.available
 
     @property
     def _entries(self) -> dict[str, BlockEntry]:
@@ -482,7 +492,7 @@ class Blocklist:
                 return cls._from_payload(config_dir, read_json(path))
             except FileNotFoundError:
                 return cls(config_dir, ())
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RecursionError) as exc:
                 return cls._unavailable(config_dir, exc)
 
     @classmethod
@@ -587,12 +597,15 @@ class Blocklist:
                 payload = read_json(self._path)
             except FileNotFoundError:
                 self._entries = {}
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RecursionError) as exc:
+                # 共享快照一起标成不可用：身份核验手里的长期实例不能继续按旧表放人
+                self._snap.available = False
                 raise BlocklistUnavailable("visit blocklist could not be re-read") from exc
             else:
                 try:
                     fresh = _parse_entries(payload)
                 except ValueError as exc:
+                    self._snap.available = False
                     raise BlocklistUnavailable("visit blocklist is malformed") from exc
                 self._entries = {e.visit_uid: e for e in fresh}
             entries = build()

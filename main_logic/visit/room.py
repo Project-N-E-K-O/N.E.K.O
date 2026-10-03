@@ -260,6 +260,10 @@ class WrapUpState:
     abort_issued: bool = False
 
 
+def _ln_of(ref: Optional[LineRef]) -> Optional[str]:
+    return ref.line_id if ref is not None else None
+
+
 @dataclass
 class _PeerLine:
     speaker: SpeakerKind
@@ -755,7 +759,9 @@ class VisitRoom:
         finalizes the visit). A line addressed to this side's cat produces a
         ``ReplyPlan`` with ``not_before = now + tail_ms / 1000 + U(gap)``; a
         line truncated for an interrupting reason never gets a reply (see
-        ``IncomingLineDone.trunc_reason``).
+        ``IncomingLineDone.trunc_reason``). A final ``text`` whose speaker,
+        addressee, reply target or goodbye flag contradicts the line's first
+        piece is dropped as ``violation='line_meta_mismatch'``.
         """
         eff = RoomEffects()
         if self._phase == "ending":
@@ -771,6 +777,15 @@ class VisitRoom:
             return eff
         opened = self._peer_meta.pop(ln, None)
         self._peer_open.discard(ln)
+        if opened is not None and self._meta_mismatch(ev, opened):
+            # 同一行只能有一种解释：首片按人类开口（打断本侧、记人类插话）、收口又改成
+            # 猫娘行，会让六句规则的计数绕开。按协议异常丢弃这一行，不两种解释都用
+            self._peer_done.add(ln)
+            kind = self._count_anomaly("line_meta_mismatch")
+            if eff.violation is None:
+                eff.violation = kind
+            self._maybe_finalize_anomalies(eff)
+            return eff
         # 交叠在收口时判：同一发送方的 text 按 seq 有序，诚实的对端总是先收口旧行
         # 再开新行。较新的行先收口、较旧的已开口行还没收到 text，才是真交叠
         # （开口时分不清「旧行 text 排在缺口后」与「交叠」，见 on_incoming_start）
@@ -838,6 +853,19 @@ class VisitRoom:
             eff.cancel_pending_reply = True
             self.pending_reply = None
         return eff
+
+    @staticmethod
+    def _meta_mismatch(ev: IncomingLineDone, opened: _PeerLine) -> bool:
+        """True when the final ``text`` contradicts what the line's first piece declared."""
+        # 收口带全套元数据（sp/ad/rt）时逐项比；rt 只比行号（lp 由运行时按需解析）
+        if ev.speaker is not None and (
+            ev.speaker != opened.speaker
+            or ev.addressee_side != opened.addressee_side
+            or ev.addressee_kind != opened.addressee_kind
+            or _ln_of(ev.reply_to) != _ln_of(opened.reply_to)
+        ):
+            return True
+        return bool(ev.goodbye) != bool(opened.goodbye)
 
     def _on_peer_goodbye_done(self, eff: RoomEffects, ref: LineRef, tail_ms: int, now: float,
                               unseen_start: bool) -> None:

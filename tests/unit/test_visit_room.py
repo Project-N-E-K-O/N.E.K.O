@@ -1028,3 +1028,33 @@ def test_the_text_of_a_line_cut_off_by_wrap_up_is_accepted():
     assert room.observe_lp(2, reliable=True) == "lp_not_monotonic"
     # 值域与回退照常检查
     assert room.observe_lp(-1, ln="h:9", reliable=True, closes_line=True) == "lp_out_of_range"
+
+
+@pytest.mark.parametrize("change", [
+    {"speaker": "cat"}, {"to_kind": "human"}, {"goodbye": True},
+    {"reply_to": LineRef("h:1", 1, "host")},
+], ids=["speaker", "addressee", "goodbye", "reply_to"])
+def test_final_metadata_must_agree_with_the_opener(change):
+    # 首片按人类开口（打断、记人类插话），收口改成猫娘：绕开六句规则。按异常丢弃这一行
+    room = make_room("host")
+    peer = Peer(room)
+    r = peer.new_ref()
+    start_kw = {"speaker": "human"} if "speaker" in change else {}
+    peer.start(r, 1.0, **start_kw)
+    done_kw = dict(change)
+    before = room.peer_cat_lines_total
+    eff = peer.done(r, 2.0, **done_kw)
+    assert eff.violation == "line_meta_mismatch"
+    assert room.peer_cat_lines_total == before
+    assert eff.reply is None
+
+
+def test_final_addressee_side_must_agree_with_the_opener():
+    room = make_room("host")
+    peer = Peer(room)
+    r = peer.new_ref()
+    peer.start(r, 1.0)
+    ev = IncomingLineDone(r, False, 0, False, speaker="cat", addressee_side=room.peer_side,
+                          addressee_kind="cat")
+    eff = room.on_incoming_done(ev, 2.0)
+    assert eff.violation == "line_meta_mismatch" and room.peer_cat_lines_total == 0

@@ -535,3 +535,40 @@ def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch)
     monkeypatch.undo()
     assert held, "load must hold the per-path lock while it refreshes the shared snapshot"
     assert blocked.is_set() and verifier.is_blocked(UID)
+
+
+async def test_a_failed_read_fails_every_live_instance_closed(tmp_path):
+    # 任一实例发现文件坏了：身份核验手里的长期实例也要一起 fail closed
+    from main_logic.visit.limits import BlocklistUnavailable
+
+    verifier = Blocklist.load(tmp_path)
+    writer = Blocklist.load(tmp_path)
+    await writer.ablock(UID, display_name_at_block="Mimi")
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text("{broken", encoding="utf-8")
+    with pytest.raises(BlocklistUnavailable):
+        await writer.ablock("f" * 24, display_name_at_block="x")
+    assert verifier.available is False
+    with pytest.raises(BlocklistUnavailable):
+        verifier.is_blocked("e" * 24)
+    # 文件修好、重新加载成功后所有实例一起恢复
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text('{"blocked": []}', encoding="utf-8")
+    Blocklist.load(tmp_path)
+    assert verifier.available is True and not verifier.is_blocked(UID)
+    # 不带 entries 直接构造的实例不能把共享的「不可用」翻回可用
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text("{broken", encoding="utf-8")
+    Blocklist.load(tmp_path)
+    Blocklist(tmp_path)
+    assert verifier.available is False
+
+
+async def test_a_deeply_nested_blocklist_fails_closed(tmp_path):
+    # json 解析深层嵌套抛 RecursionError：和其他读不出的情况一样 fail closed，不冲出加载 / 拉黑
+    from main_logic.visit.limits import BlocklistUnavailable
+
+    writer = Blocklist.load(tmp_path)
+    (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text("[" * 5000, encoding="utf-8")
+    with pytest.raises(BlocklistUnavailable):
+        await writer.ablock(UID, display_name_at_block="Mimi")
+    assert writer.available is False
+    assert Blocklist.load(tmp_path).available is False
+    assert (await Blocklist.aload(tmp_path)).available is False
