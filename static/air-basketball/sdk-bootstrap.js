@@ -217,6 +217,12 @@ export function startGameRuntime(payload, options = {}) {
       if (!character) throw new Error(`Character ${identity.name} is no longer available`);
     }
     const result = await game.runtime.start(payload);
+    // A rejected (`degraded`) or route-less (`inactive`) start settles without
+    // throwing; only `running` means the backend route exists. Throw so the
+    // caller aborts the match instead of playing without a route.
+    if (game.runtime.state !== 'running') {
+      throw new Error(`Runtime did not start (state ${game.runtime.state}, HTTP ${result?.status ?? 'unknown'})`);
+    }
     await game.logger.enableAfterRuntimeStart();
     return result;
   });

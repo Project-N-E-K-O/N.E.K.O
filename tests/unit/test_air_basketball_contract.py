@@ -415,6 +415,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "abortMatchWithoutRuntime(currentMatch);" in game
     assert "await Promise.resolve(options.after).catch(() => undefined);" in sdk_bootstrap
     assert "if (game.runtime.session.characterName !== identity.name) {" in sdk_bootstrap
+    # runtime.start() settles without throwing on a rejected/inactive route.
+    assert "if (game.runtime.state !== 'running') {" in sdk_bootstrap
     assert "t('runtimeStartFailed')" in game
     # A bootstrap failing after connect() releases the client and tone URLs.
     assert "game.dispose();\n    revokeToneUrls();\n    throw error;" in sdk_bootstrap
