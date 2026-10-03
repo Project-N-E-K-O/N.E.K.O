@@ -38,6 +38,9 @@ import uuid
 import asyncio
 import time
 
+from utils.conversation_settings_constants import (
+    normalize_independent_asr_provider_preference_handshake,
+)
 from utils.logger_config import get_module_logger
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
@@ -717,10 +720,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # expected_session pins the identity for the gap between this check
             # and the fired task actually running. getattr-guarded like the rest
             # of this helper: narrow manager doubles do not carry every field.
-            _fire_task(
-                voice_mgr.end_session(
-                    expected_session=getattr(voice_mgr, "session", None)
-                )
+            voice_mgr.request_end_session(
+                expected_session=getattr(voice_mgr, "session", None)
             )
             return
         if message.get("action") == "voice_input_control":
@@ -780,7 +781,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 计入活跃连接（finally 必减）。greeting_check 判定真·新会话时据此排除
         # 「并发开第二个窗口」的情形。
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
+        malformed_frames = 0
         while True:
+            malformed = False
+            message = {}
+            data = None
             receive = getattr(websocket, "receive", None)
             if callable(receive):
                 ws_event = await receive()
@@ -790,22 +795,28 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if binary_payload is not None:
                     try:
                         message = _decode_binary_audio_frame(binary_payload)
-                    except ValueError as exc:
-                        logger.warning(
-                            "[%s] dropping malformed binary audio frame: %s",
-                            lanlan_name,
-                            exc,
-                        )
-                        continue
+                    except ValueError:
+                        malformed = True
                 else:
                     data = ws_event.get("text")
-                    if not isinstance(data, str):
-                        raise ValueError("WEBSOCKET_MESSAGE_INVALID")
-                    message = json.loads(data)
+                    malformed = not isinstance(data, str)
             else:
-                # 兼容只实现 receive_text 的测试 double。
+                # Test doubles and production share exactly the same parser.
                 data = await websocket.receive_text()
-                message = json.loads(data)
+            if data is not None and not malformed:
+                try:
+                    message = json.loads(data)
+                    malformed = not isinstance(message, dict)
+                except json.JSONDecodeError:
+                    malformed = True
+            if malformed:
+                message = {}
+                malformed_frames += 1
+                # Never log the raw frame or parser error (may include user data).
+                if malformed_frames == 1:
+                    logger.warning("[%s] dropping malformed websocket frame", lanlan_name)
+            else:
+                malformed_frames = 0
             _log_voice_lifecycle_request(
                 message,
                 connection_id=this_session_id,
@@ -816,7 +827,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                 await websocket.close()
                 break
-            if session_id.get(lanlan_name) != this_session_id:
+            if (session_id.get(lanlan_name) != this_session_id
+                    and not (malformed and (_owns_voice_connection() or _voice_identity_vacated()))):
                 # Separate connection identities: losing the global session_id
                 # (a newer window opened, or the newer window since closed and
                 # popped it) must not terminate an ongoing recording. While
@@ -851,9 +863,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                     await websocket.close()
                     break
-                await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
+                # 「正在前往另一个终端」是说给被踢下线的这条旧连接听的。
+                # send_status 走 mgr.websocket，而它此刻已经归新窗口所有——发过去
+                # 就成了刚接走角色的那个窗口收到「角色要离开」。格式与 send_status
+                # 一致，前端按同一条 status 翻译路径显示。
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status",
+                        "message": json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}),
+                    }))
+                except Exception as send_err:
+                    logger.debug(f"CHARACTER_SWITCHING_TERMINAL 未能送达旧连接: {send_err}")
                 await websocket.close()
                 break
+            if malformed:
+                if malformed_frames >= 10:
+                    await websocket.close(code=1008)
+                    break
+                continue
             action = message.get("action")
 
             # 处理语言设置（可以在任何消息中携带）
@@ -902,6 +929,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if isinstance(raw_optimization_override, bool)
                     else None
                 )
+                # Absent -> None (persisted setting decides); malformed -> "auto".
+                request_provider_preference_override = (
+                    normalize_independent_asr_provider_preference_handshake(
+                        message.get("independent_asr_provider_preference")
+                    )
+                )
                 # Handshake: the frontend rides its authoritative independent-ASR
                 # toggle along on every start_session so the route decision cannot
                 # use a stale persisted value (settings POST failed or still in
@@ -924,6 +957,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if callable(optimization_handshake_setter):
                     optimization_handshake_setter(
                         message.get("voice_input_resource_optimization_enabled")
+                    )
+                provider_preference_handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_independent_asr_provider_preference_handshake",
+                    None,
+                )
+                if callable(provider_preference_handshake_setter):
+                    provider_preference_handshake_setter(
+                        message.get("independent_asr_provider_preference")
                     )
                 input_type = message.get("input_type", "audio")
                 # 前端每次 start_session 自带的请求标识，原样回带进
@@ -961,6 +1003,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     handshake_override=request_handshake_override,
                                     resource_optimization_override=(
                                         request_optimization_override
+                                    ),
+                                    provider_preference_override=(
+                                        request_provider_preference_override
                                     ),
                                 )
                             )
@@ -1011,6 +1056,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             handshake_override=request_handshake_override,
                             resource_optimization_override=(
                                 request_optimization_override
+                            ),
+                            provider_preference_override=(
+                                request_provider_preference_override
                             ),
                         )
                     )
@@ -1106,12 +1154,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
                 if bool(message.get("goodbye_active")) or end_reason == "goodbye":
                     session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "pause_session":
                 logger.info("[%s] frontend requested pause_session", lanlan_name)
                 session_manager[lanlan_name].active_session_is_idle = True
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "voice_input_control":
                 # Any MicLease control message engages voice input for this
@@ -1172,6 +1220,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 mark_capture_client(lanlan_name, websocket, message)
 
             elif action == "capture_bridge_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
+            elif action == "capture_bridge_computer_use_response":
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 

@@ -38,7 +38,6 @@ async def test_cloudsave_manager_page_renders_with_or_without_character_query():
         steamworks=None,
         templates=templates,
         config_manager=SimpleNamespace(),
-        logger=None,
         initialize_character_data=None,
     )
 

@@ -14,6 +14,7 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.hot_reload_service import hot_reload_service
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import (
     _CrossLoopLock,
@@ -48,8 +49,8 @@ else:
     logger = get_logger("server.lifecycle")
 
 
-# 等 ProactiveBridge 的 SUB 连上的上限。比它自己那一秒的 PUB bind 等待留出
-# 余量，又短到起不来时不会让人以为应用卡死了。
+# 等 ProactiveBridge 的 SUB 连上的上限。bridge 现在一起来就连接并订阅，正常
+# 情况下微秒级就绪；这个上限只是兜底，短到起不来时不会让人以为应用卡死了。
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
@@ -117,6 +118,11 @@ class ServerLifecycleService:
         # Consecutive failed health probes against the CURRENT runner. Reset on a
         # healthy probe and whenever the runner is replaced.
         self._plane_probe_failures = 0
+        # Plugin source hot-reload watcher (no-op unless NEKO_PLUGIN_HOT_RELOAD
+        # is enabled). Must stop before the hosts below: a reload firing
+        # mid-teardown would race the shutdown it is being torn down by.
+        self._hot_reload_service = hot_reload_service
+        self._hot_reload_started = False
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -457,11 +463,18 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        # A short shutdown wait may leave an old shielded reload alive. Drain it
+        # while both gates remain closed before admitting the next server run.
+        await self._hot_reload_service.wait_for_stopped()
         # Reopen the gate a previous shutdown closed: this service instance is
         # reused across a restart in the same process, and a latched-closed gate
         # would make every delivery-path start a no-op for the new run.
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
+        # 同样重置插件操作门闩：关停时置位的门闩会让 start_plugin 拒绝启动，
+        # 重启后必须放开，否则所有插件启动都会吃 409。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = False
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -504,6 +517,9 @@ class ServerLifecycleService:
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.debug("metrics collector started")
+
+        # 关闭时是 no-op：PLUGIN_HOT_RELOAD 默认 false，必须显式开启。
+        self._hot_reload_started = self._hot_reload_service.start()
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -653,12 +669,11 @@ class ServerLifecycleService:
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
-        # 等约一秒才连上——PUB/SUB 对缺席的订阅方是丢弃，所以那扇窗口里推的
+        # 连上并订阅——PUB/SUB 对缺席的订阅方是丢弃，所以订阅就绪之前推的
         # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
         #
-        # 顺序只是第一步：SUB 的连接延迟本身还在（bridge 线程要先等约一秒让
-        # message_plane 的 PUB bind 完），所以下面在放插件进来之前会等
-        # wait_for_proactive_subscriber。
+        # 顺序只是第一步：SUBSCRIBE 传播到 PUB 侧本身还有一小段延迟，所以下
+        # 面在放插件进来之前会等 wait_for_proactive_subscriber。
         #
         # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
         # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
@@ -720,10 +735,9 @@ class ServerLifecycleService:
             )
             failed.append("proactive_bridge")
 
-        # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
-        # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
-        # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
-        # 起不来也不能把整个启动挂在这儿。
+        # 等订阅方真正连上再放插件进来。只把 start 挪到插件前面并不能关掉窗
+        # 口——SUBSCRIBE 传播到 PUB 侧仍有一小段延迟。有界等待：bridge 被禁
+        # 用或已经死了就立刻返回，起不来也不能把整个启动挂在这儿。
         #
         # A timeout here is NOT a failure by itself -- the SUB may still connect
         # after this bounded wait and the components are up, so retrying would
@@ -813,12 +827,29 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
+        # 关停门闩：在动任何插件宿主之前置位，让 start_plugin 拒绝启动新插件。
+        # 被 asyncio.shield 保护的 in-flight reload 若在 host 快照之后才注册新
+        # host，那个子进程就是没人停止的孤儿。startup() 开头会重置。
+        from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
+        _lifecycle_module._operations_shutting_down = True
+
         try:
             emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
             logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
+
+        # 先停热重载 watcher 再动任何插件宿主：它触发的 reload 是完整的
+        # stop+start 事务，和关停流程并发会把插件留在半启动状态。in-flight
+        # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
+        if self._hot_reload_started or self._hot_reload_service.is_running:
+            try:
+                await self._hot_reload_service.stop(timeout=0.05)
+                self._hot_reload_started = False
+            except Exception as exc:
+                had_errors = True
+                logger.warning("failed to stop plugin hot-reload watcher: {}", exc)
 
         # Phase 1: sync signals (instant)
         for stop_fn, label in [
@@ -882,7 +913,9 @@ class ServerLifecycleService:
             had_errors = True
             logger.warning("failed to cleanup plugin communication resources: {}", exc)
 
-        # Phase 4: clear registry so next startup() / manual start_plugin() is clean
+        # Phase 4: clear registry for the next startup(), which reopens the gate.
+        # Keep the shutdown latch closed until then: an old reload may still finish.
+        _lifecycle_module._hot_reload_failed.clear()
         try:
             with state.acquire_plugin_hosts_write_lock():
                 state.plugin_hosts.clear()

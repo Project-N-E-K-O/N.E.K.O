@@ -12,6 +12,108 @@ from plugin.server.application.plugins.operation_lock import plugin_operation_lo
 
 pytestmark = pytest.mark.plugin_unit
 
+
+@pytest.mark.asyncio
+async def test_shutdown_reserves_host_budget_and_keeps_registration_gate_closed(monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service
+
+    service = module.ServerLifecycleService()
+    timeouts = []
+    hosts_stopped = []
+
+    class Watcher:
+        is_running = True
+
+        async def stop(self, timeout):
+            timeouts.append(timeout)
+            assert lifecycle_service._operations_shutting_down
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def stop_hosts():
+        hosts_stopped.append(True)
+        return False
+
+    monkeypatch.setattr(lifecycle_service, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {"demo"})
+    monkeypatch.setattr(service, "_hot_reload_service", Watcher())
+    monkeypatch.setattr(service, "_shutdown_hosts", stop_hosts)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module.metrics_collector, "stop", noop)
+    monkeypatch.setattr(module.status_manager, "shutdown_status_consumer", noop)
+    monkeypatch.setattr(module.bus_subscription_manager, "stop", noop)
+    monkeypatch.setattr(module.plugin_router, "stop", noop)
+    monkeypatch.setattr(module.state, "close_plugin_resources", lambda: None)
+    for name in ("plugin_hosts", "plugins", "event_handlers"):
+        monkeypatch.setattr(module.state, name, {})
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda payload: None)
+    result = await service._shutdown_internal()
+    assert not result.had_errors
+    assert timeouts == [0.05]
+    assert hosts_stopped == [True]
+    assert lifecycle_service._operations_shutting_down
+    assert not lifecycle_service._hot_reload_failed
+
+
+@pytest.mark.asyncio
+async def test_restart_drains_old_reload_before_reopening_host_gate(monkeypatch):
+    from plugin.server.application.plugins import hot_reload_service as hot_reload
+    from plugin.server.application.plugins import lifecycle_service
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    rejected = []
+
+    async def old_reload():
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        try:
+            lifecycle_service._register_or_replace_host_sync("old-generation", object())
+        except Exception as exc:
+            rejected.append(exc)
+
+    watcher = hot_reload.PluginHotReloadService()
+    watcher._stop_event = asyncio.Event()
+    watcher._task = asyncio.create_task(old_reload())
+    await entered.wait()
+    monkeypatch.setattr(lifecycle_service, "_operations_shutting_down", True)
+    await watcher.stop(timeout=0.01)
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(service, "_hot_reload_service", watcher)
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda payload: None)
+
+    class StartupReached(Exception):
+        pass
+
+    def reached_new_generation():
+        assert not lifecycle_service._operations_shutting_down
+        raise StartupReached
+
+    monkeypatch.setattr(service, "_clear_runtime_state", reached_new_generation)
+    startup = asyncio.create_task(service.startup())
+    try:
+        await asyncio.sleep(0.02)
+        assert not startup.done()
+        assert lifecycle_service._operations_shutting_down
+        release.set()
+        with pytest.raises(StartupReached):
+            await startup
+        assert len(rejected) == 1
+        assert rejected[0].code == "PLUGIN_OPERATION_SHUTTING_DOWN"
+        assert "old-generation" not in module.state.plugin_hosts
+    finally:
+        release.set()
+        await watcher.stop(timeout=1)
+        if not startup.done():
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+
 # Stands in for the runner the real ``_start_message_plane`` assigns. Stubs
 # must set it: ``_start_delivery_path_locked`` decides whether to bind the
 # bridges by asking whether a runner exists, so a stub that reports success
@@ -1075,7 +1177,7 @@ def test_plane_bridge_start_does_not_recall_the_retired_thread() -> None:
     assert not _touches_self_stop(plane_bridge._Bridge._run)
 
 
-def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
+def test_proactive_bridge_start_does_not_recall_the_retired_thread(monkeypatch) -> None:
     """Same hazard on the SUB side, with the same fix.
 
     A recalled proactive thread stays subscribed to the PUB endpoint of the
@@ -1088,6 +1190,8 @@ def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
         pytest.skip("pyzmq not available")
 
     bridge = pb.ProactiveBridge()
+    # This tests event ownership only; never connect to a running local server.
+    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed, finished: stop.wait(3))
     bridge.start()
     first_stop = bridge._stop
     assert bridge._thread is not None

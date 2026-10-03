@@ -3464,6 +3464,7 @@ class UniversalTutorialManager {
     }
 
     async startAvatarFloatingGuideRound(day, options = {}) {
+        if (window.isNekoClickGuideActive) return false;
         const round = normalizeAvatarFloatingGuideRound(day);
         const source = options.source || 'manual';
         if (!this.isTutorialRunning && !window.isInTutorial && this._teardownPromise) {
@@ -3677,6 +3678,9 @@ class UniversalTutorialManager {
             return;
         }
 
+        if (window.NekoClickGuide?.handleStartup && await window.NekoClickGuide.handleStartup(this)) {
+            return;
+        }
         const hasSeen = this.hasSeenTutorial(this.currentPage);
         if (this.currentPage === 'home') {
             const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();

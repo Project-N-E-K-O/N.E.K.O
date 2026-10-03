@@ -109,7 +109,7 @@ defineEmits<{
 }>()
 
 const entryCount = computed(() => {
-  return props.plugin.entries?.length || 0
+  return props.plugin.entry_count ?? props.plugin.entries?.length ?? 0
 })
 
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))

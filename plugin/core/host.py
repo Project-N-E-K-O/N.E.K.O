@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime, timezone
 import importlib
 import importlib.machinery
 import importlib.util
@@ -10,6 +11,7 @@ import json
 import math
 import multiprocessing
 import os
+import socket
 import sys
 import threading
 import time
@@ -17,8 +19,14 @@ import hashlib
 import types
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Iterator, Optional, Type
 
+from config import (
+    MAIN_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    USER_PLUGIN_SERVER_PORT,
+)
 from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
@@ -92,6 +100,137 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 
 
 _TIMEOUT_UNSET = object()
+
+
+# ============================================================================
+# fork 后丢掉继承来的宿主 HTTP socket
+# ============================================================================
+
+# 插件进程是裸 multiprocessing.Process 起的，POSIX 上即 fork：子进程整份继承宿主
+# 的 fd 表，其中就有宿主各个 HTTP 服务的监听 socket 和每一条已 accept 的浏览器
+# 连接。子进程从不读它们，而 TCP socket 是在**最后一个引用**关闭时才断开的——
+# 于是宿主自己 close() 之后不再发 FIN，对端（浏览器，以及走 httpx 连接池的内部
+# 调用方）把这条连接当成空闲 keep-alive 留在池子里复用，下一个请求就堆进内核接收
+# 缓冲、没有任何人读，永久挂死。表现就是插件管理页转圈点不动、刷新一下又好了、
+# 再用一会儿又卡。
+#
+# 判据是「本地端口属于本进程在 serve 的 HTTP 服务端口」：监听 socket 和从它 accept
+# 出来的连接共用同一个本地端口，而任何客户端 socket 的本地端口都是临时端口，所以
+# 这条判据天然只命中宿主的 HTTP 服务，不会误伤别的 socket。
+#
+# 四个端口都要丢，因为 fork 出插件进程的那个进程是谁取决于拓扑：源码运行是
+# agent_server 进程 fork（只有 agent / 插件两个服务在里面），而打包版默认走 merged
+# 拓扑（见 launcher_core.runtime._should_use_merged_mode），main / memory / agent /
+# 插件四个服务同进程——于是 48911（主界面）和 48912（记忆服务）的监听与已 accept
+# 连接同样被子进程继承。只丢后两个的话，主界面一样会被黑洞化。
+# 端口常量随 NEKO_* 环境与 config 全局在每个进程导入前对齐（launcher 的
+# _reload_runtime_config_from_env / _sync_runtime_config_globals），这里读到的是
+# 本进程实际 bind 的值；将来若有新拓扑把别的 HTTP 服务并进来，这里是唯一改动点。
+#
+# 不写成「枚举本进程所有监听 socket」：libzmq 的 TCP 监听也是普通 AF_INET 监听
+# socket，同样挂在本进程的 fd 表上，而 ZMQ 是刻意不能替它关的（见下）。
+#
+# ZMQ 一律不碰：它们挂在 zmq.Context.instance() 这个进程级单例上，fork 之后
+# libzmq 的记账里还留着这些 fd 号，替它把 fd 关掉，号码一旦被复用，zmq_ctx_term
+# 就会去关一个无关的 fd。AF_UNIX 也不碰——state.plugin_response_map 那套 Manager
+# proxy 就是故意让子进程继承的。
+#
+# 客户端方向的继承面不在这次收口里：子进程同样可能继承到宿主发往这些端口的客户端
+# socket（本地端口是临时端口，判据不命中）。它不会让别人挂住，只是让那条连接晚一个
+# keepalive 周期才断，先不动。
+_HOST_HTTP_PORTS = frozenset({
+    MAIN_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    USER_PLUGIN_SERVER_PORT,
+})
+_INET_FAMILIES = frozenset({socket.AF_INET, socket.AF_INET6})
+
+_INHERITED_HOST_SOCKETS_CLOSED = 0
+
+
+def _iter_open_fds() -> Iterator[int]:
+    """本进程当前持有的 fd（跳过 stdio）。
+
+    只有能列「本进程 fd 目录」的平台才谈得上靠 fork 继承：Linux 是 /proc/self/fd，
+    macOS / BSD 是 fdescfs 的 /dev/fd（同样是按进程、同样只列数字）。两个都没有时
+    什么都不枚举——典型是 Windows 的 spawn：子进程 re-exec，宿主的 fd 根本带不过去，
+    钩子在那里无事可做。macOS 上 multiprocessing 默认也是 spawn，但打包版走 merged
+    拓扑并显式用 fork（app/main_server/__init__.py 的 set_start_method），所以
+    /dev/fd 不是可选项而是覆盖面的一部分。
+    """
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                fd = int(entry)
+            except ValueError:
+                continue
+            if fd > 2:
+                yield fd
+        return
+
+
+def _is_host_http_socket(fd: int) -> bool:
+    """这个 fd 是不是宿主的某个 HTTP 服务 socket（监听 socket，或它 accept 出来的连接）。
+
+    fd 归调用方：这里只借一个包装对象看一眼，detach 保证它析构时不会再关一次。
+    家族用包装对象的 ``.family`` 判：CPython 在只给 fileno 时是用 getsockname() 的
+    sa_family 反推的（见 Modules/socketmodule.c 的 sock_initobj），不依赖 SO_DOMAIN，
+    而 Windows 与 Darwin 的 socket 头文件都没有 SO_DOMAIN。
+    """
+    try:
+        probe = socket.socket(fileno=fd)
+    except OSError:
+        return False  # 管道 / 文件 / epoll / signalfd…… 本来就不是 socket
+    try:
+        # AF_UNIX 的 getsockname() 给的是路径字符串（未命名时是空串），所以家族要判在
+        # 取端口之前——短路的 `and` 保证那里永远不会去下标一个字符串。
+        return probe.family in _INET_FAMILIES and probe.getsockname()[1] in _HOST_HTTP_PORTS
+    except OSError:
+        return False
+    finally:
+        probe.detach()
+
+
+def _close_inherited_host_sockets() -> None:
+    """丢掉宿主的 HTTP 服务 socket（注册在 after_in_child 上）。
+
+    fork 之后立刻跑，早于子进程建立的任何 socket，也早于插件代码。这里不能抛
+    异常——它跑在 fork 钩子里，抛出去就是子进程带着半关的 fd 表继续跑
+    （CPython 只把它当 unraisable 打到 stderr，不会停住子进程）。
+
+    关的动作（os.close）与判定分开，是因为判定要在所有平台都能被测试卡住，
+    而 os.close 一个裸 socket fd 是 POSIX 的事；反正这个钩子本身也只在有 fork 的
+    平台上会被触发。
+    """
+    global _INHERITED_HOST_SOCKETS_CLOSED
+    closed = 0
+    for fd in _iter_open_fds():
+        if not _is_host_http_socket(fd):
+            continue
+        try:
+            os.close(fd)
+            closed += 1
+        except OSError:
+            pass
+    _INHERITED_HOST_SOCKETS_CLOSED = closed
+
+
+def inherited_host_sockets_closed() -> int:
+    """上一次 fork 里丢掉的宿主 socket 数，供子进程启动日志观测。"""
+    return _INHERITED_HOST_SOCKETS_CLOSED
+
+
+_FORK_SOCKET_HOOK_REGISTERED = False
+
+if hasattr(os, "register_at_fork"):
+    # POSIX only；spawn 平台子进程自己 re-exec，继承面根本不存在。
+    os.register_at_fork(after_in_child=_close_inherited_host_sockets)
+    _FORK_SOCKET_HOOK_REGISTERED = True
 
 
 # ============================================================================
@@ -768,6 +907,7 @@ def _plugin_process_runner(
     uplink_token = str(uplink_token or "").strip()
     if not uplink_token:
         raise ValueError("Plugin child process requires an uplink token")
+    state.mark_plugin_child_process()
 
     # 保存进程级 stop event
     process_stop_event = stop_event
@@ -782,6 +922,15 @@ def _plugin_process_runner(
         _setup_logging_interception(logger, project_root)
     except Exception as e:
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
+
+    # 宿主是 fork 出来的，fd 表整份跟了过来；宿主的 HTTP socket 已在 fork 钩子里
+    # 丢掉（见文件顶部 _close_inherited_host_sockets），这里只留一条可观测的痕迹。
+    released_sockets = inherited_host_sockets_closed()
+    if released_sockets:
+        logger.info(
+            "[Plugin Process] released {} host socket(s) inherited over fork",
+            released_sockets,
+        )
     
     # ── ZMQ child-side transport ─────────────────────────────────
     child_transport_kwargs: dict[str, object] = {}
@@ -910,17 +1059,52 @@ def _plugin_process_runner(
                 pass
             return
 
+        startup_config_fingerprint: str | None = None
+        effective_cfg: dict[str, object] = {}
+        try:
+            from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+
+            resolved_config = resolve_plugin_config_from_path(
+                plugin_id,
+                config_path=Path(config_path),
+            )
+            resolved_effective_cfg = resolved_config["effective_config"]
+            if not isinstance(resolved_effective_cfg, dict):
+                raise TypeError("Startup effective config must be a mapping")
+            effective_cfg = resolved_effective_cfg
+            ctx._set_effective_config_cache(effective_cfg)
+            # Keep the applied identity in the child, where the effective
+            # configuration is actually resolved immediately before startup.
+            # The parent must not hash its earlier pre-spawn snapshot.
+            from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+            startup_config_fingerprint = fingerprint_config(effective_cfg)
+        except Exception as e:
+            logger.debug("[Plugin Process] Could not resolve startup config: {}", type(e).__name__)
+
         instance = cls(ctx)
 
-        # 获取 freezable 属性列表和持久化模式
+        if startup_config_fingerprint is None:
+            # Retain the SDK read fallback when child-side resolution fails.
+            # Only a successful read can establish the loaded identity.
+            try:
+                fallback_cfg = asyncio.run(instance.config.dump(timeout=3.0))
+                if not isinstance(fallback_cfg, dict):
+                    raise TypeError("Startup effective config must be a mapping")
+                effective_cfg = fallback_cfg
+                ctx._set_effective_config_cache(effective_cfg)
+                from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+                startup_config_fingerprint = fingerprint_config(effective_cfg)
+            except Exception as e:
+                logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
+
+        # 配置覆盖实例默认值；保留旧 checkpoint 配置的回退顺序。
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
         persist_mode = getattr(instance, "__persist_mode__", None)
         if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
-        # 从 effective config 读取 persist_mode（包含 profile 覆写）
+            persist_mode = getattr(instance, "__freeze_mode__", "off")
         try:
-            effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
             # 新配置项 [plugin_state]
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
@@ -938,6 +1122,7 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
             logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+
         # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
         ctx._restored_from_freeze = False
         
@@ -1209,6 +1394,8 @@ def _plugin_process_runner(
                 startup_data: dict[str, Any] = {
                     "status": "ready" if startup_success else "failed",
                 }
+                if startup_config_fingerprint:
+                    startup_data["config_fingerprint"] = startup_config_fingerprint
                 if startup_error is not None:
                     startup_data["startup_error"] = startup_error
                 res_sender.put(
@@ -1953,6 +2140,12 @@ class PluginHost:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
+        # Set only after the child reports a successful startup handshake and
+        # the parent confirms that the process is still alive.  Keeping this
+        # on the host makes the applied identity belong to the process owner,
+        # rather than to a caller's best-effort reload result.
+        self.applied_config_fingerprint: str | None = None
+        self.applied_config_loaded_at: str | None = None
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
         # ZMQ transport: 4 PUSH/PULL socket channels replace 5 mp.Queues.
@@ -1985,6 +2178,8 @@ class PluginHost:
                 plugin_id, e
             )
 
+        # POSIX 上这就是 fork：子进程整份继承宿主的 fd 表。宿主的 HTTP socket 由
+        # _close_inherited_host_sockets 在子进程里丢掉（见文件顶部）。
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(
@@ -2135,6 +2330,28 @@ class PluginHost:
                         self.plugin_id,
                         startup_result["startup_error"],
                     )
+
+                # The child owns the effective configuration it actually
+                # loaded.  Record it only after the handshake succeeds and a
+                # second liveness check passes. A tolerated startup warning
+                # does not change which configuration the child loaded.
+                # Timeouts and dead processes must not advance this identity.
+                if (
+                    isinstance(startup_result, dict)
+                    and (
+                        startup_result.get("status") == "ready"
+                        or (
+                            startup_failure_policy != "fail"
+                            and startup_result.get("status") == "failed"
+                            and startup_result.get("startup_error")
+                        )
+                    )
+                    and self.process.is_alive()
+                ):
+                    fingerprint = startup_result.get("config_fingerprint")
+                    if isinstance(fingerprint, str) and fingerprint:
+                        self.applied_config_fingerprint = fingerprint
+                        self.applied_config_loaded_at = datetime.now(timezone.utc).isoformat()
                 return startup_result
             except asyncio.CancelledError:
                 await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)

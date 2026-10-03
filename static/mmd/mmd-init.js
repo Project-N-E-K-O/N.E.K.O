@@ -377,6 +377,7 @@
             '/static/mmd/mmd-expression.js',
             '/static/mmd/mmd-animation.js',
             ...(!lightweightEmbed ? [
+                '/static/avatar/avatar-touch-gestures.js',
                 '/static/mmd/mmd-interaction.js',
                 '/static/mmd/mmd-cursor-follow.js'
             ] : []),
@@ -467,6 +468,7 @@ async function autoInitMMDOnMainPage() {
     if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
         await window.__nekoStorageLocationStartupBarrier;
     }
+    await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
 
     if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
         && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {

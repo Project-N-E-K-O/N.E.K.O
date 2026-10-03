@@ -79,22 +79,13 @@ from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
     ToolResult,
-    _MAX_TOOL_IMAGE_B64_BYTES,
-    _MAX_TOOL_IMAGES,
     looks_like_tool_envelope,
-    parse_tool_images,
     tool_result_from_envelope,
-    tool_result_output_payload,
 )
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
-
-# Re-export under the historical private names so existing unit tests keep
-# importing from this module.
-_parse_tool_images = parse_tool_images
-_tool_result_output_payload = tool_result_output_payload
 
 
 def _validate_local_callback_url(url: str) -> str:

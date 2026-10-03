@@ -95,6 +95,9 @@ class _ProtocolManager:
     async def end_session(self, *_args, **_kwargs) -> None:
         self.calls.append(("end_session", None))
 
+    def request_end_session(self, **kwargs):
+        return asyncio.create_task(self.end_session(**kwargs))
+
     async def send_status(self, payload: str) -> None:
         self.statuses.append(json.loads(payload))
 
@@ -875,6 +878,22 @@ _LEASE_RELEASE_MESSAGE = {
 _PAUSE_SESSION_MESSAGE = {"action": "pause_session"}
 
 
+_SWITCHING_TERMINAL_STATUS = {
+    "code": "CHARACTER_SWITCHING_TERMINAL",
+    "details": {"name": "Lan"},
+}
+
+
+def _statuses_sent_to(socket) -> list:
+    """Decode the status payloads a fake socket received directly."""
+    statuses = []
+    for payload in socket.sent_text:
+        frame = json.loads(payload)
+        if frame.get("type") == "status":
+            statuses.append(json.loads(frame["message"]))
+    return statuses
+
+
 class _TwoPhaseWebSocket(_EventWebSocket):
     """Socket that delivers a first burst, then holds until released.
 
@@ -1189,10 +1208,11 @@ async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
     call_names = [name for name, _payload in manager.calls]
     assert call_names.count("begin") == 2
     assert call_names.count("stream_data") == 1
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(stale_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
 
 @pytest.mark.asyncio
@@ -1301,10 +1321,9 @@ async def test_recording_survives_second_text_socket_and_its_text_message(
     assert superseded_pcm in stream_payloads
     assert [name for name, _payload in manager.calls].count("control") == 2
     assert manager._avatar_position is sentinel
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     # The chat window's text takeover worked unchanged: text session started
     # and its text message dispatched, without ever claiming voice.
@@ -1557,10 +1576,11 @@ async def test_superseded_voice_socket_non_voice_message_is_still_closed(
     assert recording_socket.closed is True
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     chat_socket.release.set()
     await chat_task
@@ -1614,10 +1634,9 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
     # lost a character switch it was not part of.
     assert manager.active_session_is_idle is True
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     call_names = [name for name, _payload in manager.calls]
     # The lease release still applies -- that is how the backend learns the
@@ -1679,10 +1698,9 @@ async def test_superseded_recorder_pause_does_not_end_a_newer_text_session(
     assert "end_session" not in call_names
     # Still not a character switch -- the recorder keeps its socket either way.
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     chat_socket.release.set()
     await chat_task
@@ -1729,10 +1747,11 @@ async def test_pause_from_a_socket_that_lost_voice_is_still_a_character_switch(
 
     assert recording_socket.closed is True
     assert "end_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     takeover_socket.release.set()
     await takeover_task
@@ -1804,3 +1823,114 @@ async def test_each_start_task_keeps_its_own_voice_handshake_overrides(
         (False, True),
         (True, False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_session_forwards_normalized_provider_preference_handshake(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    shared_values: list[object] = []
+    manager.set_independent_asr_provider_preference_handshake = (
+        shared_values.append
+    )
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "faster_whisper",
+            },
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "qwen",
+            },
+            {"action": "start_session", "input_type": "text"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    deferred: list[object] = []
+    monkeypatch.setattr(websocket_router, "_fire_task", deferred.append)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*deferred)
+
+    starts = [kwargs for name, kwargs in manager.calls if name == "start_session"]
+    # Accepted value passes through, a malformed one becomes "auto", and an
+    # absent field (older frontend / non-authoritative window) stays None so
+    # the persisted setting decides.
+    assert [kwargs["provider_preference_override"] for kwargs in starts] == [
+        "faster_whisper",
+        "auto",
+        None,
+    ]
+    assert shared_values == ["faster_whisper", "qwen", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['{', 'null', '[]', '123', '"x"'])
+async def test_bad_json_frame_does_not_disconnect_and_valid_frame_resets_budget(monkeypatch, text):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    # Repeated bursts of nine bad frames with valid messages between them must
+    # survive; raw user data must not be passed to lifecycle logging.
+    socket.events = ([{'type': 'websocket.receive', 'text': text}] * 9
+                     + [{'type': 'websocket.receive', 'text': '{}'}]) * 2
+    socket.events.append({'type': 'websocket.disconnect', 'code': 1000})
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert not socket.closed
+    assert not any('SERVER_ERROR' in item for item in socket.sent_text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text_only', [False, True])
+async def test_bad_frame_budget_applies_to_both_receive_apis(monkeypatch, text_only):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    socket.events = [{'type': 'websocket.receive', 'text': 'null'}] * 20
+    codes = []
+    async def close(code=1000):
+        codes.append(code)
+        socket.closed = True
+    socket.close = close
+    if text_only:
+        async def receive_text():
+            return socket.events.pop(0)['text']
+        socket.receive = None
+        socket.receive_text = receive_text
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert codes == [1008]
+    assert len(socket.events) == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owns_voice', [False, True])
+async def test_bad_frame_uses_voice_identity_and_stale_terminal_notice(monkeypatch, owns_voice):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    session_ids, _ = _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    received_claim = False
+    async def receive():
+        nonlocal received_claim
+        if not received_claim:
+            received_claim = True
+            return {'type': 'websocket.receive', 'text': json.dumps(_LEASE_SYNC_MESSAGE)}
+        if socket.events:
+            socket.events.clear()
+            old_id = session_ids['Lan']
+            session_ids['Lan'] = 'new-window'
+            manager._voice_lease_connection_id = str(old_id) if owns_voice else 'new-window'
+            return {'type': 'websocket.receive', 'text': 'null'}
+        return {'type': 'websocket.disconnect', 'code': 1000}
+    socket.receive = receive
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert socket.closed is (not owns_voice)
+    notices = [item for item in socket.sent_text if 'CHARACTER_SWITCHING_TERMINAL' in item]
+    assert bool(notices) is (not owns_voice)

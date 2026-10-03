@@ -5,7 +5,7 @@ import inspect
 import json
 import os
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -167,7 +167,6 @@ async def test_rename_cancellation_during_release_runs_admission_rollback(tmp_pa
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -221,7 +220,6 @@ async def test_delete_cancellation_during_release_runs_admission_rollback(tmp_pa
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -275,7 +273,6 @@ async def test_release_false_compensation_preserves_cancellation(tmp_path, opera
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -339,7 +336,6 @@ async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -379,7 +375,6 @@ async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -446,7 +441,6 @@ async def test_delete_cancellation_waits_for_config_worker_before_rollback(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -632,7 +626,6 @@ async def test_add_cancellation_finishes_post_publish_initialization(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_init_one,
@@ -1365,6 +1358,173 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
     assert "你" not in context
 
 
+def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
+    """Character config with master rename events and a persisted prompt locale."""
+    from memory.persona import PersonaManager
+
+    cm = _make_config_manager(Path(td))
+    bootstrap_local_cloudsave_environment(cm)
+    characters = cm.load_characters()
+    characters["主人"]["_reserved"] = {
+        "ai_context": {
+            "rename_events": [
+                {"type": "profile_rename", "old_name": "博士", "new_name": "IKUN"},
+                {"type": "profile_rename", "old_name": "IKUN", "new_name": "哀坤"},
+                {"type": "profile_rename", "old_name": "哀坤", "new_name": "棍母"},
+            ]
+        }
+    }
+    her_name = characters.get("当前猫娘") or next(iter(characters["猫娘"]))
+    cm.save_characters(characters)
+    locale_dir = Path(cm.memory_dir) / her_name
+    locale_dir.mkdir(parents=True, exist_ok=True)
+    locale_path = locale_dir / "prompt_locale.json"
+    locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
+
+    pm = PersonaManager()
+    pm._config_manager = cm
+    persona = {"master": {"facts": []}, "neko": {"facts": []}}
+
+    def rename_text() -> str:
+        for fact in persona["master"]["facts"]:
+            text = str(fact.get("text") or "")
+            if text.startswith(("改名记录:", "Profile Rename Record:")):
+                return text
+        return ""
+
+    return SimpleNamespace(
+        cm=cm,
+        pm=pm,
+        persona=persona,
+        her_name=her_name,
+        locale_path=locale_path,
+        rename_text=rename_text,
+    )
+
+
+@pytest.mark.unit
+def test_persona_card_sync_pins_rename_fact_to_durable_locale():
+    """Neither the process language nor language_context may rewrite a saved rename fact.
+
+    Persona refine temporarily switches the global language to the session
+    locale, while the embedding sweep and other ensure paths see the process
+    language. Both persist the persona, so the same master rename fact used to
+    flip between languages on every 30-minute pass.
+    """
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        pm, persona, her_name = fx.pm, fx.persona, fx.her_name
+        locale_path, _rename_text = fx.locale_path, fx.rename_text
+
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is True
+            pinned = _rename_text()
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is False
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert pinned.startswith("改名记录:")
+        assert "博士、IKUN、哀坤" in pinned
+        assert "棍母" in pinned
+        assert "Profile Rename Record" not in pinned
+        assert _rename_text() == pinned
+
+        locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is True
+            switched = _rename_text()
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert switched.startswith("Profile Rename Record:")
+        assert "博士, IKUN, 哀坤" in switched
+        assert "棍母" in switched
+        assert _rename_text() == switched
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_persona_card_sync_pins_rename_fact_off_the_event_loop():
+    """The async ensure path writes the same pinned sentence, reading files off the loop."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        original_locale = fx.cm._read_durable_prompt_locale
+        original_load = fx.cm.load_characters
+
+        def _recording_locale(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_locale(*args, **kwargs)
+
+        def _recording_load(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_load(*args, **kwargs)
+
+        fx.cm._read_durable_prompt_locale = _recording_locale
+        fx.cm.load_characters = _recording_load
+
+        with language_context("en"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
+
+        assert fx.rename_text().startswith("改名记录:")
+        assert read_threads and all(t != loop_thread for t in read_threads)
+
+
+@pytest.mark.unit
+def test_persona_card_sync_reads_character_config_once():
+    """A second read could fall back to default characters and sync them over the card."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loads = 0
+        original_load = fx.cm.load_characters
+
+        def _counting_load(*args, **kwargs):
+            nonlocal loads
+            loads += 1
+            return original_load(*args, **kwargs)
+
+        fx.cm.load_characters = _counting_load
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        assert loads == 1
+        assert fx.rename_text().startswith("改名记录:")
+
+
+@pytest.mark.unit
+def test_persona_card_sync_skips_when_durable_locale_read_fails_transiently():
+    """A transient locale read error must skip the pass, not write the process language."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        pinned = fx.rename_text()
+        assert pinned.startswith("改名记录:")
+
+        real_open = open
+
+        def _flaky_open(path, *args, **kwargs):
+            if str(path).endswith("prompt_locale.json"):
+                raise PermissionError("sidecar locked by cloud sync")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", _flaky_open), language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == pinned
+
+
 @pytest.mark.unit
 def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
     monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
@@ -1432,13 +1592,13 @@ async def test_character_management_and_recent_save_regression():
         async def _noop_any(*args, **kwargs):
             return None
 
-        with patch("utils.config_manager._config_manager", cm):
+        force_disable_agent = AsyncMock(return_value=True)
+        with patch("utils.config_manager._config_manager", cm), ExitStack() as stack:
             init_shared_state(
                 role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1446,6 +1606,18 @@ async def test_character_management_and_recent_save_regression():
             )
 
             characters_router_module = reload_module("main_routers.characters_router.crud")
+            # set_current_catgirl POSTs set_agent_enabled=False to the real tool
+            # server on 127.0.0.1:48915; left unpatched, every run of this test
+            # turns off the cat paw of the N.E.K.O instance running on this
+            # machine. Patched on crud after the reload so the real function is
+            # restored for later tests sharing the loaded module.
+            stack.enter_context(
+                patch.object(
+                    characters_router_module,
+                    "force_disable_agent_for_character_switch",
+                    force_disable_agent,
+                )
+            )
             memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
@@ -1497,6 +1669,10 @@ async def test_character_management_and_recent_save_regression():
             )
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
+            assert [call.args[0] for call in force_disable_agent.await_args_list] == [
+                "测试角色",
+                initial_name,
+            ]
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
@@ -1526,7 +1702,6 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1575,7 +1750,6 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1647,7 +1821,6 @@ async def test_unsafe_name_rescue_retires_the_sidecar_stores(unsafe_name):
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1733,7 +1906,6 @@ async def test_character_read_endpoints_disable_caching():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1786,7 +1958,6 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1827,7 +1998,6 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1945,7 +2115,6 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2071,7 +2240,6 @@ async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monke
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2129,7 +2297,6 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2235,7 +2402,6 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2339,7 +2505,6 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2407,7 +2572,6 @@ async def test_rename_error_rollback_finishes_when_request_is_cancelled(tmp_path
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -2471,7 +2635,6 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2550,7 +2713,6 @@ async def test_deleted_workshop_character_casefold_variant_is_not_restored_by_st
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2630,7 +2792,6 @@ async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2701,7 +2862,6 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2803,7 +2963,6 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2898,7 +3057,6 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2991,7 +3149,6 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_b
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3076,7 +3233,6 @@ async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_ex
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3153,7 +3309,6 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3430,7 +3585,6 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3500,7 +3654,6 @@ async def test_sync_workshop_character_cards_preserves_persona_override_written_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3582,7 +3735,6 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3663,7 +3815,6 @@ async def test_sync_workshop_character_cards_aborts_when_latest_catgirl_map_is_m
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3729,7 +3880,6 @@ async def test_sync_workshop_character_cards_skips_face_writes_when_maintenance_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3799,7 +3949,6 @@ async def test_sync_workshop_character_cards_counts_errors_when_new_face_backfil
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3860,7 +4009,6 @@ async def test_sync_workshop_character_cards_counts_errors_when_existing_face_ba
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3933,7 +4081,6 @@ async def test_sync_workshop_character_cards_uses_character_specific_preview_in_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4008,7 +4155,6 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4118,7 +4264,6 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4187,7 +4332,6 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4246,7 +4390,6 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4300,7 +4443,6 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4378,7 +4520,6 @@ async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4441,7 +4582,6 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4508,7 +4648,6 @@ def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4556,7 +4695,6 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4616,7 +4754,6 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -5216,7 +5353,6 @@ async def test_early_delete_failure_tells_the_rollback_nothing_was_retired(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -5274,7 +5410,6 @@ async def test_rename_rollback_restores_both_sides_of_the_retirement(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -5409,7 +5544,6 @@ async def test_a_raising_delete_still_tells_the_rollback_it_retired(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,

@@ -56,8 +56,14 @@ class _HotSwapRuntimeStub:
         route_key: str,
         resource_optimization_enabled: bool,
         user_language: str | None = None,
+        provider_preference: str | None = None,
     ) -> AsrStartResult:
-        _ = (route_key, resource_optimization_enabled, user_language)
+        _ = (
+            route_key,
+            resource_optimization_enabled,
+            user_language,
+            provider_preference,
+        )
         self.active_provider = (
             "provider-b" if self.start_status is AsrStartStatus.READY else None
         )
@@ -149,7 +155,7 @@ async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() 
     )
 
     barrier = source.index("async with core_voice_session_lock")
-    close = source.index("old_main_session.close()", barrier)
+    close = source.index("self._close_owned_session(old_main_session)", barrier)
     promote = source.index("self.session = new_session", close)
     barrier_exit = source.index("if not _promote_allowed", promote)
     assert barrier < close < promote < barrier_exit

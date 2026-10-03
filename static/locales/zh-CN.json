@@ -560,12 +560,15 @@
         "clearScreenshotsConfirm": "确定要清空所有待发送的截图吗？"
     },
     "errors": {
+        "ASR_PROVIDER_WARMUP_TIMEOUT": "本地语音识别模型准备超时，本次语音输入已停止。第一次使用需要从 HuggingFace 下载模型；网络较慢或连不上时，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "ASR_PROVIDER_QUEUE_TIMEOUT": "本地语音识别排队等待太久，本次语音输入已停止。可能是之前的识别还没结束，请稍后重新开始语音会话；如果经常出现，可以关闭本地语音识别。",
         "emotionTimeout": "情感分析超时",
         "noAudioTrack": "没有可用的音频轨道",
         "cameraStreamFailed": "无法获取摄像头流",
         "characterConfigFailed": "无法获取角色配置",
         "API_ARREARS": "💥 您的API已欠费。如使用第三方平台请尽快充值。",
-        "API_QUOTA_TIME": "💥 免费API限额已耗尽，请更换API或明天再试。",
+        "API_QUOTA_TIME": "💥 免费API限额已耗尽，请稍后再试或更换API。",
+        "API_ACCESS_DENIED": "💥 免费服务拒绝了当前网络的访问，已停止自动重连。",
         "API_RATE_LIMIT": "💥 API达到限额或请求过于频繁(429)，请稍后再试。",
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
@@ -612,6 +615,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "角色设定已更新，页面即将刷新",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "云存档角色已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
         "INVALID_INPUT_TYPE": "无效的输入类型: {{input_type}}",
@@ -828,10 +832,123 @@
         "avatarToolSlotFull": "请先卸下一个道具。",
         "avatarToolManagerTitle": "管理道具",
         "avatarToolCreateTitle": "创建自定义道具",
+        "avatarToolWorkspaceLocalOnly": "仅保存在本机",
+        "avatarToolWorkspaceNodeA11y": "按 Enter 选择此交互，使用方向键移动。",
+        "avatarToolWorkspaceEdgeA11y": "按 Enter 选择此连接，按 Delete 删除。",
+        "avatarToolWorkspaceControls": "画布控件",
+        "avatarToolWorkspaceZoomIn": "放大",
+        "avatarToolWorkspaceZoomOut": "缩小",
+        "avatarToolWorkspaceFitView": "适配视图",
+        "avatarToolWorkspaceMiniMap": "交互总览",
+        "avatarToolWorkspaceHandle": "节点连线边界",
+        "avatarToolWorkspaceHandleTop": "上边连接区域",
+        "avatarToolWorkspaceHandleRight": "右边连接区域",
+        "avatarToolWorkspaceHandleBottom": "下边连接区域",
+        "avatarToolWorkspaceHandleLeft": "左边连接区域",
+        "avatarToolInitialImageNode": "初始图片",
+        "avatarToolInitialImageMissing": "尚未选择初始图片",
+        "avatarToolInitialImageNodeHint": "互动流程从这张图片开始",
+        "avatarToolInitialConnection": "初始图片连接",
+        "avatarToolInitialConnectionHint": "道具开始时，会在显示初始图片的同时等待这项互动。",
+        "avatarToolOverview": "全图概览",
+        "avatarToolOverviewShow": "显示全图概览",
+        "avatarToolOverviewHide": "隐藏全图概览",
+        "avatarToolOverviewPosition": "全图概览位置",
+        "avatarToolOverviewTopLeft": "将全图概览移到左上角",
+        "avatarToolOverviewTopRight": "将全图概览移到右上角",
+        "avatarToolOverviewBottomLeft": "将全图概览移到左下角",
+        "avatarToolOverviewBottomRight": "将全图概览移到右下角",
+        "avatarToolWorkspaceEmptyTitle": "尚未添加互动",
+        "avatarToolWorkspaceEmptyBody": "鼠标点击、延时和它们之间的连接会显示在这里。",
+        "avatarToolWorkspaceCanvasReady": "画布已就绪",
+        "avatarToolWorkspaceCanvasLoading": "正在准备画布…",
+        "avatarToolWorkspaceCanvasTitle": "互动流程",
+        "avatarToolWorkspaceEditorTitle": "道具编辑",
+        "avatarToolWorkspaceSettingsTitle": "道具设置",
+        "avatarToolWorkspaceCanvasHint": "自由拖动节点，松手后自动对齐 · 从节点边缘拖动连线 · 滚动平移",
+        "avatarToolEdgeStyle": "连接线样式",
+        "avatarToolEdgeStyleOrthogonal": "折线",
+        "avatarToolEdgeStyleCurved": "曲线",
+        "avatarToolCreateEditArea": "编辑区域",
+        "avatarToolInteractionSettings": "互动设置",
+        "avatarToolInteractionAddGroup": "添加互动",
+        "avatarToolInteractionAdd": "添加",
+        "avatarToolInteractionMouseClick": "鼠标点击",
+        "avatarToolInteractionAfterTime": "延时切换",
+        "avatarToolPresetGroup": "预设",
+        "avatarToolPresetReplaceConfirm": "应用预设会替换当前互动流程。是否继续？",
+        "avatarToolPresetPressSwap": "按下切换",
+        "avatarToolPresetPressSwapHint": "“鼠标点击 1”的“按下时”切换图片，“松开时”恢复。",
+        "avatarToolPresetClickAdvance": "依次切换",
+        "avatarToolPresetClickAdvanceHint": "“鼠标点击 1”→“鼠标点击 2”→“鼠标点击 3”依次切换图片，之后停止。",
+        "avatarToolPresetCycleStop": "轮播切换",
+        "avatarToolPresetCycleStopHint": "“延时切换 1”“延时切换 2”“延时切换 3”自动轮播；“鼠标点击 1”后经“延时切换 4”继续轮播。",
+        "avatarToolPresetReferenceWith": "参考：{{tool}}",
+        "avatarToolPresetFlowLabel": "流程示意",
+        "avatarToolPresetPressSwapFlow": "鼠标点击 1：按下时切换 → 松开时恢复",
+        "avatarToolPresetClickAdvanceFlow": "鼠标点击 1 → 鼠标点击 2 → 鼠标点击 3 → 结束",
+        "avatarToolPresetCycleStopFlow": "延时切换 1 → 延时切换 2 → 延时切换 3 → 循环；鼠标点击 1 → 延时切换 4 → 继续轮播",
+        "avatarToolPresetSetupLabel": "后续设置",
+        "avatarToolPresetPressSwapSetup": "在“鼠标点击 1”中，分别给“按下时”和“松开时”选择图片。",
+        "avatarToolPresetClickAdvanceSetup": "在“鼠标点击 1”“鼠标点击 2”“鼠标点击 3”中，分别给“松开时”选择第 1、2、3 张图；“鼠标点击 3”后流程结束。",
+        "avatarToolPresetCycleStopSetup": "在“延时切换 1”“延时切换 2”“延时切换 3”的“切换为”中选择轮播图片，并在“鼠标点击 1”的“松开时”选择停留图片。前三项“延时切换”的“等待”控制轮播速度，“延时切换 4”的“等待”控制停留时间。",
+        "avatarToolPresetCycleScope": "这里只参考猜拳的轮播、点击停留和延时继续节奏，不包含胜负判断或结果动画。",
+        "avatarToolPresetReferenceNotice": "示例只用于理解流程。应用预设只会添加可修改的流程，不会带入参考图片，也不会替你选择节点图片。",
+        "avatarToolInteractionClickNumber": "鼠标点击 {{number}}",
+        "avatarToolInteractionDelayNumber": "延时切换 {{number}}",
+        "avatarToolInteractionNodeHasError": "这项互动需要修改",
+        "avatarToolInteractionPressTiming": "按下时",
+        "avatarToolInteractionReleaseTiming": "松开时",
+        "avatarToolInteractionWaitTime": "等待",
+        "avatarToolInteractionThenShow": "切换为",
+        "avatarToolInteractionKeepImage": "图片不变",
+        "avatarToolImageName": "图片名称",
+        "avatarToolInteractionName": "互动名称",
+        "avatarToolEditableNameHint": "点击名称即可重命名",
+        "avatarToolEditableNameLengthError": "名称不能超过 {{count}} 个字符。",
+        "avatarToolEditableNameInvalidError": "名称可使用文字、数字、空格、“-”和“_”。",
+        "avatarToolImageNameDuplicate": "“{{name}}”已用于另一张图片，请换一个名称。",
+        "avatarToolInteractionNameDuplicate": "“{{name}}”已用于另一项互动，请换一个名称。",
+        "avatarToolInteractionMissingImage": "图片已不存在",
+        "avatarToolInteractionMillisecondsValue": "{{count}} 毫秒",
+        "avatarToolInteractionNotSet": "未设置",
+        "avatarToolInteractionUnknown": "未知互动",
+        "avatarToolInteractionAfterLabel": "在{{interaction}}之后",
+        "avatarToolInteractionStartPosition": "初始图片显示后",
+        "avatarToolInteractionFlow": "互动流程",
+        "avatarToolInitialConnectionRequired": "请将初始图片连接到至少一项互动。",
+        "avatarToolInteractionActionImageMissing": "{{interaction}}使用的图片已不存在。",
+        "avatarToolInteractionDelayInvalid": "请为{{interaction}}填写大于 0 的等待时间。",
+        "avatarToolInteractionDelayImageMissing": "请为{{interaction}}选择“图片不变”或要切换到的图片。",
+        "avatarToolInteractionLinkMissing": "一条连接指向了已不存在的互动。",
+        "avatarToolInteractionDuplicateLink": "同两项互动之间存在重复连接。",
+        "avatarToolInteractionUnreachable": "无法从初始图片到达{{interaction}}。",
+        "avatarToolInteractionAmbiguousClick": "{{position}}存在无法区分的鼠标点击：{{interaction}}。",
+        "avatarToolInteractionAmbiguousDelay": "{{position}}存在无法区分的 {{delay}} 毫秒延时：{{interaction}}。",
+        "avatarToolInteractionInvalid": "这项互动需要修改。",
+        "avatarToolInteractionErrorSummary": "互动流程有 {{count}} 个问题",
+        "avatarToolInteractionTooMany": "互动流程中有 {{count}} 个互动，请删除部分互动，最多保留 {{max}} 个。",
+        "avatarToolInteractionConnection": "连接",
+        "avatarToolInteractionConnectionFromTo": "{{from}} → {{to}}",
+        "avatarToolInteractionRemoveConnection": "删除连接",
+        "avatarToolInteractionConnectionHint": "前一项互动完成后，道具会等待这条连接指向的互动。",
+        "avatarToolInteractionSelectTitle": "选择一项互动",
+        "avatarToolInteractionSelectHint": "在左侧画布添加或选择一项完整互动，即可在这里进行设置。",
+        "avatarToolInteractionDuplicate": "复制",
+        "avatarToolInteractionRemove": "删除",
+        "avatarToolInteractionClickHint": "按下时和松开时属于同一次鼠标点击；连接从完整点击继续。",
+        "avatarToolInteractionDelayDuration": "等待时间",
+        "avatarToolInteractionMilliseconds": "毫秒",
+        "avatarToolInteractionTargetImage": "切换为",
+        "avatarToolInteractionChooseImage": "选择一张图片",
+        "avatarToolInteractionFixBeforeSave": "请先修正互动流程中的问题。",
+        "avatarToolEditorWindowTitle": "自定义道具编辑器",
+        "avatarToolEditorOpenError": "无法打开道具编辑器。",
         "avatarToolCreateSaveError": "无法保存该道具，请稍后重试。",
         "avatarToolCreateNameRequired": "请输入道具名称。",
         "avatarToolCreateNameLengthError": "道具名称需为 1–{{count}} 个字符。",
         "avatarToolCreateNameInvalidError": "道具名称可使用文字、数字、空格、“-”和“_”。",
+        "avatarToolCreateNameDuplicate": "“{{name}}”已被其他道具使用，请换一个名称。",
         "avatarToolCreateDefaultImageRequired": "请选择默认图片。",
         "avatarToolCreateChangeImageRequired": "请选择变化图片。",
         "avatarToolCreateChangeImageRequiredNumber": "请选择变化图片 {{number}}。",
@@ -842,6 +959,10 @@
         "avatarToolCreateSpecialImageRequired": "请选择彩蛋图片。",
         "avatarToolCreateImageSizeError": "图片不能超过 {{size}}。",
         "avatarToolCreateImageInvalidError": "无法使用这张图片，请选择其他 PNG。",
+        "avatarToolCreateImagePixelsError": "图片尺寸过大，请选择总像素不超过 {{count}} 的 PNG。",
+        "avatarToolCreateOptionalMeaningLengthError": "互动描述不能超过 {{count}} 个字符。",
+        "avatarToolCreateImagesRequired": "请至少添加一张道具图片。",
+        "avatarToolCreateInitialImageRequired": "请选择一张初始图片。",
         "avatarToolCreateSpecialProbabilityInvalid": "请选择 1%–100% 的触发概率。",
         "avatarToolCreateToolLimitError": "自定义道具已达上限。",
         "avatarToolCreateStorageLimitError": "本机存储空间不足，无法保存新道具。",
@@ -859,12 +980,23 @@
         "avatarToolCreateSpecialImage": "彩蛋图片",
         "avatarToolCreateSpecialMeaningPlaceholder": "例如：“{{user}}”用猫爪轻轻碰“{{character}}”时掉出了奖励。",
         "avatarToolCreateSpecialSound": "彩蛋音效（可选）",
-        "avatarToolCreatePrivacy": "图片和音效仅存本机；互动时，名称和对应描述会发送给模型。",
+        "avatarToolCreatePrivacy": "图片和音效仅存本机；互动时，当前图片或彩蛋对应的提示词会发送给模型，道具名称会记入角色的记忆，之后的对话中可能会用到。",
         "avatarToolCreateName": "道具名称",
         "avatarToolCreateNamePlaceholder": "1–{{count}} 个字符，可使用文字、数字、空格、“-”和“_”",
         "avatarToolCreateDefaultImage": "默认图片",
         "avatarToolCreateChooseImage": "选择图片",
         "avatarToolCreateNoImage": "未选择图片",
+        "avatarToolCreateToolImages": "道具图片",
+        "avatarToolCreateToolImagesHint": "请选择一张初始图片。",
+        "avatarToolCreateToolImageNumber": "道具图片 {{number}}",
+        "avatarToolCreateEditToolImage": "编辑{{image}}",
+        "avatarToolCreateNoImageMeaning": "未填写互动描述",
+        "avatarToolCreateInitialImage": "初始图片",
+        "avatarToolCreateAddToolImage": "添加道具图片",
+        "avatarToolCreateImageMeaningOptional": "互动描述（可选）",
+        "avatarToolCreateImageMeaningForImage": "道具图片 {{number}} 的互动描述（可选）",
+        "avatarToolCreateInitialImageRemoveError": "请先将另一张图片设为初始图片，再删除当前图片。",
+        "avatarToolCreateReferencedImageRemoveError": "{{locations}} 正在使用这张图片，请先修改对应的图片动作。",
         "avatarToolCreateDefaultImageHint": "未触发切图时显示；进入互动范围时放大。",
         "avatarToolCreateChangeMode": "切图方式",
         "avatarToolCreateModePressSwap": "按住时切换",
@@ -910,9 +1042,13 @@
         "avatarToolDelete": "删除{{name}}",
         "avatarToolDeleteConfirm": "确定删除“{{name}}”吗？删除后无法恢复。",
         "avatarToolDeleteError": "无法删除该道具，请稍后重试。",
+        "avatarToolDeletePendingSaveError": "该道具上次的删除没有完成，暂时无法保存修改。请先删除该道具，再重新创建。",
+        "avatarToolRecoveryPendingError": "该道具上次的修改被中断，且无法自动恢复，暂时无法修改或删除。",
+        "avatarToolTemporarilyUnavailable": "暂时不可用",
         "avatarToolLibrary": "道具库",
         "avatarToolEquipped": "已装备",
         "avatarToolEquip": "装备",
+        "avatarToolNotYetEquippable": "暂不可装备",
         "avatarToolNoAvailableTools": "暂无可用道具",
         "avatarToolCancel": "取消",
         "avatarToolSave": "保存更改",
@@ -995,6 +1131,9 @@
         "switched": "已切换麦克风 (下一次录音生效)",
         "switchFailed": "切换麦克风失败: {{error}}",
         "networkError": "切换麦克风失败：网络错误",
+        "voiceInputRecoveryRecovering": "正在恢复语音识别…",
+        "voiceInputRecoveryReady": "语音识别已恢复",
+        "voiceInputRecoveryFailed": "语音识别恢复失败，请重试",
         "accessFailed": "无法访问麦克风",
         "gainLabel": "麦克风增益",
         "gainHint": "0dB为原始音量，正值放大、负值减小",
@@ -1040,7 +1179,16 @@
         "voiceRecognitionSettingsPending": "◐ 设置将在下次语音会话生效",
         "voiceResourceOptimization": "智能资源优化",
         "voiceResourceOptimizationHintOn": "空闲时减少连接和音频上传",
-        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用"
+        "voiceResourceOptimizationHintOff": "持续保持语音识别，可能增加网络和资源占用",
+        "localAsr": "本地语音识别",
+        "localAsrHint": "在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型",
+        "localAsrDependencyMissing": "本地语音识别需要 faster-whisper，但尚未安装，本次语音输入已停止。请先安装，或关闭本地语音识别，然后重新开始语音会话。",
+        "localAsrPreparing": "正在加载本地语音识别模型，第一次使用还需要先下载，可能要几分钟。模型就绪后会识别你的第一句话，请稍候再继续说。",
+        "localAsrModelLoadFailed": "本地语音识别模型加载失败，本次语音输入已停止。首次使用需要从 HuggingFace 下载模型；如果连不上，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "localAsrReloading": "正在重新加载本地语音识别模型，请稍候。模型就绪后会识别你的第一句话。",
+        "localAsrReady": "本地语音识别已就绪",
+        "localAsrWarmupTimeout": "本地语音识别模型准备超时，本次语音输入已停止。第一次使用需要从 HuggingFace 下载模型；网络较慢或连不上时，可以设置环境变量 HF_ENDPOINT（例如 https://hf-mirror.com）后重启，或者关闭本地语音识别。",
+        "localAsrQueueTimeout": "本地语音识别排队等待太久，本次语音输入已停止。可能是之前的识别还没结束，请稍后重新开始语音会话；如果经常出现，可以关闭本地语音识别。"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -1151,6 +1299,7 @@
             "qwen": "通义千问",
             "grok": "Grok",
             "soniox": "Soniox",
+            "faster_whisper": "faster-whisper（本地）",
             "free": "免费版",
             "dummy": "测试服务",
             "unknown": "未知服务"
@@ -1717,6 +1866,7 @@
         "mimoDirectLinkUnsupported": "MiMo 暂不支持直链克隆，请改用本地文件上传",
         "directLinkUnsupported": "当前服务商暂不支持直链克隆，请改用本地文件上传",
         "doubaoTtsApiRequired": "此功能需要豆包语音 API Key，请在 API 管理簿中填写豆包语音(火山引擎) Key",
+        "glmTtsApiRequired": "此功能需要智谱 GLM API Key，请在 API 设置中填写智谱（GLM）Key",
         "vllmOmniNotice": "本地 vLLM-Omni 服务，无需 API Key，请确保已配置本地服务地址",
         "vllmRefTextLabel": "参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）",
         "vllmRefTextHint": "逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降",
@@ -1736,6 +1886,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
             "doubao_tts": "豆包语音(火山引擎)",
+            "glm_tts": "智谱GLM声音复刻",
             "vllm_omni": "vLLM-Omni（本地克隆）"
         },
         "sourcePreset": "预制",
@@ -2560,6 +2711,7 @@
         "socialUnavailable": "社交服务不可用",
         "socialDisabled": "社交服务已禁用",
         "socialOAuthPrompt": "请在浏览器完成统一账号登录",
+        "socialSettingsLoginPrompt": "桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录",
         "welcomeBack": "{{name}}回来了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",
@@ -2648,11 +2800,15 @@
             "never": "不再提醒"
         },
         "screenSource": {
+            "browserPickerHint": "开始分享时，浏览器会让你选择标签页、窗口或屏幕。",
+            "mobileCameraHint": "开始分享时，将使用你的摄像头。",
             "notAvailable": "当前环境无法选择屏幕来源",
             "loading": "加载中...",
             "noSources": "没有可用的屏幕源",
             "loadFailed": "获取屏幕源失败",
             "screens": "屏幕",
+            "genericScreen": "屏幕",
+            "genericWindow": "窗口",
             "screenLabel": "屏幕 {{index}}",
             "windows": "窗口",
             "titleFilterPlaceholder": "筛选窗口标题",
@@ -2661,8 +2817,11 @@
             "rememberWindow": "记住窗口",
             "rememberedWindowUnavailable": "无法唯一找到记住的窗口，请重新选择屏幕来源",
             "selected": "已选择 {{source}}",
+            "current": "当前来源：{{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享",
-            "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源"
+            "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源",
+            "clickToChoose": "点击选择屏幕来源",
+            "chooseAgain": "重新选择屏幕来源"
         },
         "deviceSwitchFailed": "设备切换失败",
         "deviceSwitching": "设备切换中...",
@@ -2938,9 +3097,10 @@
         "pageTitle": "Owner 声纹",
         "title": "Owner 声纹",
         "profileStatus": "声纹状态",
-        "localOnly": "仅在本机处理",
-        "privacyTitle": "四段短语音，完成本机声纹录入",
-        "privacyBody": "使用同一麦克风，以正常音量说四句不同的完整话。语音仅在本机处理，验证成功后才会加密保存声纹。",
+        "localOnly": "发送到此页面使用的 N.E.K.O. 服务处理",
+        "privacyTitle": "三段参考录音和一段验证录音",
+        "privacyBody": "使用同一麦克风和正常音量完成三段参考录音，再完成一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务进行处理，验证成功后才会加密保存声纹。 每段自然说满约 1.5 秒即可保存，系统会补齐分析所需时长。",
+        "activeRecordingBody": "请用平时的音量和语速朗读下面这句话，说满约 1.5 秒即可保存；系统会补齐分析所需时长。",
         "recordingHints": "录音提示",
         "progressLabel": "声纹录入进度",
         "hintSameMicrophone": "保持使用同一麦克风",
@@ -2974,6 +3134,14 @@
         "preparingRecording": "准备录音…",
         "recordingStartsInSeconds": "{{seconds}} 秒后开始",
         "recording": "正在录音…",
+        "finish": "说完了，保存",
+        "finishTooSoon": "请继续说话约 1.5 秒后再保存。",
+        "recordingRule": "每段自然说满约 1.5 秒即可保存；系统会自动补齐分析所需时长（前 3 段补齐到 3 秒，第 4 段补齐到 5 秒）。",
+        "voiceWaiting": "等待说话",
+        "voiceDetected": "检测到声音",
+        "voiceQuiet": "声音偏小，请靠近麦克风",
+        "nextSegment": "开始下一段",
+        "retrySegment": "重录本段",
         "cancel": "取消录入",
         "delete": "删除声纹",
         "reenroll": "重新录入",
@@ -2992,18 +3160,21 @@
         "reasonEnrollmentActive": "正在录入新声纹；完成前不会启动声纹激活，待机音频不会上传",
         "reasonRuntimeDegraded": "声纹激活运行时暂时不可用，待机音频不会上传",
         "reasonUnsupportedAsrRoute": "当前语音路线暂未接入声纹激活；开启期间待机音频不会上传",
-        "reasonShadowMode": "声纹激活当前仅观察，尚未允许上传待机音频",
+        "featureDisabled": "声纹功能当前已关闭，无法录入或开启声纹激活；已保存的声纹仍可删除。",
         "sessionWaiting": "等待你说话来激活语音对话",
         "sessionActive": "语音对话已激活",
         "sessionUnavailable": "声纹激活暂时不可用，待机音频不会上传",
         "enrollmentComplete": "Owner 声纹已保存，声纹激活已开启。",
         "microphoneDenied": "无法使用麦克风，请检查权限和设备。",
         "requestFailed": "操作失败，请稍后重试。",
+        "retryConnection": "重试连接",
         "errorModelUnavailable": "声纹模型资源不可用，无法开始录入。源码运行请执行 uv run python scripts/prepare_speaker_model.py；正式版本请修复或重新安装后重试。",
         "errorAudioProcessingUnavailable": "录音处理暂时不可用，请重新启动麦克风后重试。",
         "errorInvalidPcm": "录音格式无效，请重新录入。",
         "errorAudioTooLong": "录音时间过长，请重新录入。",
+        "errorIncompleteCapture": "录音没有完整采集，请重试。",
         "errorSpeechTooShort": "没有检测到足够的人声，请重录当前段。",
+        "errorSilence": "没有检测到声音，请检查麦克风后重试。",
         "errorVolumeTooLow": "录音音量过低，请重录当前段。",
         "errorSevereClipping": "录音出现严重爆音，请重录当前段。",
         "errorNoSpeechDetected": "没有检测到足够的真实人声，请重录当前段。",
@@ -3012,7 +3183,29 @@
         "errorSegmentOutOfOrder": "录入进度已变化，请按当前步骤继续。",
         "errorSegmentInProgress": "当前录音仍在检查，请稍后继续。",
         "errorStaleEnrollment": "本次录入已过期，请重新开始。",
+        "errorInsufficientTime": "剩余时间不足以完成下一段录音，请重新开始录入。",
         "errorSecureStorageUnavailable": "本机安全存储不可用，无法保存声纹。",
+        "phaseIdle": "准备录入",
+        "phasePreparing": "正在准备录音…",
+        "phaseRecording": "正在录音…",
+        "phaseChecking": "正在检查声音质量…",
+        "phaseSegmentReady": "本段已保存，可以继续下一段",
+        "phaseRetry": "请重录当前段",
+        "phaseFinalizing": "正在完成声纹保存…",
+        "phaseSuccess": "声纹录入完成",
+        "segmentCurrent": "第 {{index}} 段（当前）",
+        "segmentCompleted": "第 {{index}} 段（已完成）",
+        "segmentPending": "第 {{index}} 段（待录入）",
+        "recoveryRecovering": "正在恢复语音识别…",
+        "recoveryReady": "语音识别已恢复",
+        "recoveryFailed": "语音识别恢复失败，请重试",
+        "startEnrollment": "开始录入",
+        "stepCount": "第 {{current}} / {{total}} 段",
+        "backendUnavailable": "无法连接声纹服务，请检查网络后重试。",
+        "initializationFailed": "声纹录入初始化失败，请检查连接后重试。",
+        "saveFailed": "声纹保存未完成，请稍后重试。",
+        "qualityCheckFailed": "声音质量未达标，请重录当前段。",
+        "errorInconsistentSegments": "几段声音差异较大，请从第 1 段重新录入。",
         "deleteConfirm": "删除后需要重新录入才能使用声纹激活。"
     },
     "settings": {
@@ -3192,6 +3385,8 @@
             "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
             "connectivityCheck": "猫爪 LLM 连接检查中...",
+            "screenShareRequired": "开启猫爪键鼠控制前，请先授权共享整个屏幕。",
+            "screenSharePendingReload": "屏幕捕获授权请求仍在等待，请刷新页面后重试。",
             "precheckFailed": "猫爪预检失败：{{reason}}",
             "toggleFailed": "Agent切换失败: {{error}}"
         },
@@ -4456,6 +4651,7 @@
     },
     "Jukebox": {
         "title": "点歌台",
+        "settingsShort": "管理/导入",
         "minimize": "最小化",
         "close": "关闭",
         "loading": "加载中...",
@@ -4483,6 +4679,8 @@
         "switchPlaybackMode": "切换播放模式",
         "lockSongSort": "锁定歌曲排序",
         "unlockSongSort": "解锁歌曲排序",
+        "songSortLockTooltipLocked": "歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序",
+        "songSortLockTooltipUnlocked": "歌曲排序已解锁：可以拖动歌曲调整顺序，点击后锁定防误拖",
         "previousSong": "上一首",
         "nextSong": "下一首",
         "playError": "音乐播放器未初始化",
@@ -5651,6 +5849,186 @@
             "finalTitle": "最终结算",
             "roundLabel": "第 {{round}} 轮",
             "noRounds": "还没有完成的轮次。"
+        }
+    },
+    "clickGuide": {
+        "tour": "点击引导",
+        "back": "上一步",
+        "next": "下一步",
+        "skip": "结束引导",
+        "unavailable": "这个按钮暂时不可用，点“下一步”继续。",
+        "nativeFallback": "如果毛绒球暂时点不了，可以点“下一步”继续。",
+        "skipTools": "先跳过工具",
+        "toolContinueHint": "点高亮按钮继续，不会执行功能。",
+        "finishButton": "完成引导",
+        "close": "关闭",
+        "saveFailed": "保存失败，请重试。",
+        "resetButton": "重新激活教程",
+        "resetSuccess": "点击引导已重置，刷新主页即可开始。七天教程进度保持不变。",
+        "choice": {
+            "title": "想重新体验哪种教程？",
+            "body": "选择点击引导，或重新开始七日剧情教程。点击引导不会清除七日教程进度。",
+            "click": "点击引导",
+            "sevenDay": "七天教程"
+        },
+        "chatOverview": {
+            "title": "胶囊聊天框",
+            "body": "在这里输入“你好”，按回车发送。"
+        },
+        "chatOverviewSend": {
+            "body": "写好了。按回车发送。"
+        },
+        "chatOverviewDraft": {
+            "body": "这里已有未发送的内容。我们先保留它，点“下一步”查看聊天记录，避免误发你的草稿。"
+        },
+        "chatOverviewBack": {
+            "body": "这里是胶囊聊天框。聊天记录和草稿都会保留；点“下一步”可以重新查看历史记录。"
+        },
+        "history": {
+            "title": "查看聊天记录",
+            "body": "点胶囊上方的蓝条，展开刚才的聊天记录。"
+        },
+        "historyClose": {
+            "title": "收起聊天记录",
+            "body": "再点蓝条收起记录，回到聊天框。"
+        },
+        "minimize": {
+            "title": "收起聊天框",
+            "body": "点左边的毛球，聊天框会缩成桌面上的小毛球。"
+        },
+        "restore": {
+            "title": "恢复聊天框",
+            "body": "现在聊天框变成了一颗毛绒球。再点它一下，就能展开回来，继续聊天。"
+        },
+        "tools": {
+            "title": "打开工具轮盘",
+            "body": "把鼠标移到右侧按钮上，就会展开工具轮盘。"
+        },
+        "toolsDraft": {
+            "body": "输入框有文字或附件时，右侧会变成发送按钮。想体验工具轮盘，可以自己清空文字或移除附件；也可以点“先跳过工具”，保留草稿继续。"
+        },
+        "screenshot": {
+            "title": "截图",
+            "body": "滚动鼠标滚轮或拖动轮盘可以切换工具。截图会加入消息附件。"
+        },
+        "avatar": {
+            "title": "互动道具",
+            "body": "想和角色玩点小互动，就从这里打开道具栏。常用道具可以自己挑选和调整。"
+        },
+        "avatarTools": {
+            "title": "常用道具",
+            "body": "道具按你保存的顺序排列，末尾的编辑按钮可以调整常用道具。这里的猫爪是互动道具，与后面的 Agent 不同。"
+        },
+        "translate": {
+            "title": "字幕翻译",
+            "body": "看不懂字幕时，可以从这里开启翻译。再点一次就能关闭。"
+        },
+        "jukebox": {
+            "title": "点歌台",
+            "body": "点歌台可以边聊边听歌；选歌和播放控制都在里面。"
+        },
+        "import": {
+            "title": "导入图片",
+            "body": "导入图片会从设备中选择图片，并把它加到聊天附件。"
+        },
+        "export": {
+            "title": "导出对话",
+            "body": "导出对话可以挑选消息、预览，再保存到设备。"
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "想用选项来接话，可以开启 Galgame 模式。再点一次就能回到普通聊天。"
+        },
+        "floatingOverviewContinueHint": "点任意高亮按钮继续，不会打开功能。",
+        "floatingOverview": {
+            "title": "模型旁的快捷按钮",
+            "body": "角色旁的按钮分别通向语音、Agent、喵宇宙、设置和回窝。"
+        },
+        "mic": {
+            "title": "语音聊天",
+            "body": "想直接说话，就用麦克风按钮开始语音聊天，再点一次结束。旁边的小箭头里可以选麦克风、调音量，也能设置屏幕分享。"
+        },
+        "micSettings": {
+            "title": "语音设置",
+            "body": "点击麦克风旁的小箭头。麦克风、播放设备和音量也在这里调整。"
+        },
+        "screen": {
+            "title": "屏幕共享",
+            "body": "在这里选择要分享的屏幕或窗口，右侧按钮控制开始和停止共享。不需要开启也能继续。"
+        },
+        "agent": {
+            "title": "Agent 功能",
+            "body": "猫爪按钮里是 Agent 功能，可以让我帮你处理电脑、浏览器或插件里的任务。任务面板能查看进度，也能随时停止。"
+        },
+        "agentMaster": {
+            "title": "Agent 总开关",
+            "body": "这里控制 Agent 是否启用，任务面板可以查看进度和停止任务。不要求打开开关。"
+        },
+        "social": {
+            "title": "喵宇宙",
+            "body": "喵宇宙在新用户使用满三个自然日后解锁，届时可以从这里进入社区。"
+        },
+        "settings": {
+            "title": "设置",
+            "body": "角色、声音、聊天偏好和记忆，都可以在设置里找到。"
+        },
+        "proactive": {
+            "title": "主动聊天",
+            "body": "想让我主动找你说话时，可以在这里开启。保留当前设置也可以。"
+        },
+        "privacy": {
+            "title": "隐私模式",
+            "body": "在这里控制主动视觉访问，按自己的隐私偏好设置即可。"
+        },
+        "memory": {
+            "title": "记忆浏览器",
+            "body": "查看和管理记忆，也可以在这里分别重置点击引导和七天教程。"
+        },
+        "goodbye": {
+            "title": "回窝",
+            "body": "点回窝让角色休息；想继续时，再把她叫回来。"
+        },
+        "return": {
+            "title": "召回角色",
+            "body": "想继续陪伴时，就点召回按钮。现在点一下，把我叫回来吧。"
+        },
+        "lock": {
+            "title": "锁定位置",
+            "body": "小锁可以固定角色的位置，避免不小心拖走。解锁后，拖动可以移动角色，滚轮可以放大缩小。"
+        },
+        "finish": {
+            "title": "可以自由探索啦",
+            "body": "引导结束。想再看一遍，可以在“设置 → 记忆浏览”重置点击引导。"
+        },
+        "connection": {
+            "title": "聊天窗口未就绪",
+            "body": "聊天窗口没有响应。请打开聊天窗口，刷新主页后重试。本次没有记为完成。"
+        },
+        "closeMenu": "收起菜单，继续",
+        "openedWindow": {
+            "title": "回到刚才的地方",
+            "body": "以后需要时，随时可以从刚才的入口打开这个页面。现在点高亮的关闭按钮回来，我们继续看其他功能。",
+            "close": "关闭页面，继续",
+            "pending": "如果页面提示保存或确认，先按页面提示处理。页面关闭后，引导会自动继续。",
+            "manualClose": "这个页面已经在另一个窗口打开了。请在那个窗口里关闭页面，回来后引导会自动继续。",
+            "returnToPage": "回到已打开的页面"
+        },
+        "socialClose": {
+            "title": "从喵宇宙回来",
+            "body": "喵宇宙已经打开了。点 × 关闭这个页面，就能回到角色旁边，继续认识快捷按钮。"
+        },
+        "micMenu": {
+            "body": "这个菜单里可以选麦克风、调音量和设置屏幕分享。先认识这些入口就够了；看完点“收起菜单，继续”。"
+        },
+        "agentMenu": {
+            "body": "这里的开关决定 Agent 能用哪些辅助功能，任务面板用来看进度。你可以先看看，不用急着改设置；看完收起菜单就行。"
+        },
+        "settingsMenu": {
+            "body": "角色、声音和聊天设置都分组放在这里。今天先认识入口，以后需要时再来调整。点下方按钮收起菜单。"
+        },
+        "sections": {
+            "chat": "胶囊聊天框",
+            "floating": "角色旁边的按钮"
         }
     }
 }

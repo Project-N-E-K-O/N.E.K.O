@@ -2688,8 +2688,12 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
         "function getButtonZone",
         1,
     )[0]
-    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+    position_sidepanel_block = source.split("function positionSidePanel(", 1)[1].split(
         "window.AvatarPopupUI =",
+        1,
+    )[0]
+    popup_measurement_block = source.split("function getPopupPlacementRect(", 1)[1].split(
+        "function getOverlayViewport",
         1,
     )[0]
 
@@ -2697,7 +2701,9 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "window.__nekoNiriPetPhysicalCrop" in source
     assert "return api.isActive() ? api : null;" in source
     assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
-    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
+    assert "getPopupPlacementRect(popup, placementApi)" in position_popup_block
+    assert "makePlacementRect(popup.getBoundingClientRect())" in popup_measurement_block
+    assert "return toPlacementRect(rect, api);" in popup_measurement_block
     assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
     assert "try {\n            const state = api.getState();" in source
     assert "try {\n            const virtualRect = api.toVirtualRect({" in source

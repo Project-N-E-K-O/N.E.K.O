@@ -1225,7 +1225,6 @@ async def test_restored_tutorial_routes_supply_static_asset_version_to_template(
         steamworks=None,
         templates=_DummyTemplates(),
         config_manager=SimpleNamespace(),
-        logger=None,
         initialize_character_data=None,
     )
 
@@ -3883,54 +3882,6 @@ def test_get_model_api_config_tts_custom_prefers_qwen_profile(monkeypatch):
 
 
 
-
-
-async def test_publish_analyze_and_plan_event_writes_expected_payload(monkeypatch):
-    from main_logic.agent_bridge import publish_analyze_and_plan_event
-
-    class DummyWriter:
-        def __init__(self):
-            self.buffer = b""
-
-        def write(self, data):
-            self.buffer += data
-
-        async def drain(self):
-            return None
-
-        def close(self):
-            return None
-
-        async def wait_closed(self):
-            return None
-
-    writer = DummyWriter()
-
-    async def fake_open_connection(host, port):
-        assert host == "127.0.0.1"
-        assert isinstance(port, int)
-        return object(), writer
-
-    monkeypatch.setattr("main_logic.agent_bridge.asyncio.open_connection", fake_open_connection)
-
-    messages = [{"role": "user", "content": "hello"}]
-    ok = await publish_analyze_and_plan_event(messages, "LanLan")
-    assert ok is True
-    payload = json.loads(writer.buffer.decode("utf-8").strip())
-    assert payload["type"] == "analyze_and_plan"
-    assert payload["messages"] == messages
-    assert payload["lanlan_name"] == "LanLan"
-
-
-async def test_publish_analyze_and_plan_event_returns_false_on_error(monkeypatch):
-    from main_logic.agent_bridge import publish_analyze_and_plan_event
-
-    async def fake_open_connection(_host, _port):
-        raise OSError("down")
-
-    monkeypatch.setattr("main_logic.agent_bridge.asyncio.open_connection", fake_open_connection)
-    ok = await publish_analyze_and_plan_event([], "LanLan")
-    assert ok is False
 
 
 async def test_agent_event_bus_publish_session_event_without_bridge_returns_false():

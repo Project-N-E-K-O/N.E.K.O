@@ -130,7 +130,6 @@ from .api_shared import (  # noqa: F401
     channels,
     datetime,
     get_config_manager,
-    get_session_manager,
     httpx,
     json,
     log_config,
@@ -151,6 +150,51 @@ class ToolCorrectionPayload(BaseModel):
     correct_tool: str = Field(min_length=1)
     correct_instruction: str = Field(min_length=1)
     user_note: str = ""
+
+
+def _plugin_list_change_token() -> tuple:
+    """Cheap in-process change signal for the analyze-turn plugin list cache.
+
+    The plugin server is embedded in this process. Its lifecycle bus revision
+    is bumped on every start/stop/reload/delete/load event, but a plugin
+    process that dies on its own emits no event — so the set of hosts whose
+    process is still alive (the same check ``GET /plugins`` uses to report
+    ``running``) is part of the token too.
+
+    Called synchronously on the event loop, so it must never wait on the
+    plugin-hosts read/write lock: the snapshot is taken without blocking and,
+    when no snapshot is available at all, the token is reported unreadable
+    (the executor then refetches ``/plugins`` asynchronously).
+
+    A live process whose plugin ``GET /plugins`` would no longer report as
+    ``running`` (``runtime_source_missing`` / ``runtime_load_state == "failed"``,
+    see ``_resolve_plugin_status``) is left out of the alive set, so marking
+    it moves the token and a failed refresh cannot keep offering it.
+
+    The handlers revision covers dynamic entry register/unregister (e.g.
+    ``disable_entry``), which changes ``/plugins`` without a lifecycle event.
+    """
+    from plugin.core.state import state as plugin_state
+
+    hosts = plugin_state.get_plugin_hosts_snapshot_nowait()
+    plugins_meta = plugin_state.get_plugins_snapshot_nowait()
+    if hosts is None or plugins_meta is None:
+        raise RuntimeError("plugin snapshot unavailable without blocking")
+    alive = []
+    for plugin_id, host in hosts.items():
+        meta = plugins_meta.get(plugin_id)
+        if isinstance(meta, dict) and (
+            meta.get("runtime_source_missing") is True
+            or meta.get("runtime_load_state") == "failed"
+        ):
+            continue
+        try:
+            if host.is_alive():
+                alive.append(str(plugin_id))
+        except Exception:
+            continue
+    revision = (plugin_state.get_bus_rev("lifecycle"), plugin_state.get_event_handlers_revision())
+    return revision, tuple(sorted(alive))
 
 
 def _check_agent_api_gate() -> Dict[str, Any]:
@@ -740,9 +784,12 @@ async def startup():
 
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
+            # Returns the running plugin list on success (may be empty when no
+            # plugin is running), or None when the fetch failed / timed out /
+            # returned a bad payload, so the caller keeps its last good cache.
+            # force_refresh only bypasses the caller-side cache: GET /plugins
+            # reads no refresh parameter (only ``locale``), so none is sent.
             url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
-            if force_refresh:
-                url += "?refresh=true"
             try:
                 async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                     r = await client.get(url)
@@ -751,8 +798,11 @@ async def startup():
                             data = r.json()
                         except Exception as parse_err:
                             logger.debug(f"[Agent] plugin_list_provider parse error: {parse_err}")
-                            data = {}
-                        raw = data.get("plugins", []) or []
+                            return None
+                        raw = data.get("plugins") if isinstance(data, dict) else None
+                        if not isinstance(raw, list):
+                            logger.debug("[Agent] plugin_list_provider got malformed payload")
+                            return None
                         # ISOLATION BOUNDARY: only expose RUNNING plugins to the
                         # analyzer / plugin LLM. Without this filter, every plugin
                         # the host knows about (including disabled, stopped,
@@ -807,14 +857,16 @@ async def startup():
                                     )
                                 ]
                         return running
+                    logger.debug(f"[Agent] plugin_list_provider http status {r.status_code}")
             except Exception as e:
                 logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
-            return []
+            return None
 
         # inject http-based provider so DirectTaskExecutor can pick up user_plugin_server plugins
         try:
             Modules.task_executor.set_plugin_list_provider(_http_plugin_provider)
             logger.debug("[Agent] Registered http plugin_list_provider for task_executor")
+            Modules.task_executor.set_plugin_list_change_token(_plugin_list_change_token)
         except Exception as e:
             logger.warning(f"[Agent] Failed to inject plugin_list_provider into task_executor: {e}")
     except Exception as e:
@@ -1323,7 +1375,6 @@ async def cancel_task(task_id: str):
                 Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
-                    conversation_id=info.get("conversation_id") or info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
                 ),

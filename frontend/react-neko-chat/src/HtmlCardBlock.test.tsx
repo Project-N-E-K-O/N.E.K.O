@@ -17,7 +17,10 @@ async function buttonIn(container: HTMLElement) {
   return frame.contentDocument!.querySelector('button')!;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  delete window.nekoLocalMutationSecurity;
+  vi.unstubAllGlobals();
+});
 
 describe('HTML card buttons', () => {
   it('shares and batches theme synchronization without replacing content or pending actions', async () => {
@@ -160,6 +163,50 @@ describe('HTML card buttons', () => {
     await act(async () => finish({ ok: true, json: async () => ({ result: { message: 'Playing' } }) }));
     expect(screen.getByRole('status')).toHaveTextContent('Playing');
     expect(button.disabled).toBe(false);
+  });
+
+  it('sends mutation headers and refreshes the token once after a csrf rejection', async () => {
+    const getMutationHeaders = vi.fn()
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'old-token' })
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'new-token' });
+    const refreshToken = vi.fn().mockResolvedValue(undefined);
+    window.nekoLocalMutationSecurity = { getMutationHeaders, refreshToken };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'csrf_validation_failed' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: { message: 'Playing' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetch);
+    const { container } = render(<HtmlCardBlock block={block} />);
+    fireEvent.click(await buttonIn(container));
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Playing'));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(getMutationHeaders).toHaveBeenCalledTimes(2);
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect((fetch.mock.calls[0][1] as RequestInit).headers).toMatchObject({ 'X-CSRF-Token': 'old-token' });
+    expect((fetch.mock.calls[1][1] as RequestInit).headers).toMatchObject({ 'X-CSRF-Token': 'new-token' });
+  });
+
+  it('does not retry a second csrf rejection', async () => {
+    const getMutationHeaders = vi.fn().mockResolvedValue({ 'X-CSRF-Token': 'token' });
+    const refreshToken = vi.fn().mockResolvedValue(undefined);
+    window.nekoLocalMutationSecurity = { getMutationHeaders, refreshToken };
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error_code: 'csrf_validation_failed' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const { container } = render(<HtmlCardBlock block={block} />);
+    fireEvent.click(await buttonIn(container));
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Plugin action failed'));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(refreshToken).toHaveBeenCalledTimes(1);
   });
 
   it('shows backend errors and cancels a pending request on replacement', async () => {

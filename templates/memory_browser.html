@@ -8,6 +8,7 @@
     <title data-i18n="memory.title">记忆浏览 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/tutorial/click-guide/click-guide.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/memory_browser.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
@@ -168,6 +169,9 @@
                             </div>
                             <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetSelectedTutorial()" disabled>
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
+                            </button>
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="click-guide-reset-btn" onclick="resetClickGuide()">
+                                <span data-i18n="clickGuide.resetButton">重新激活教程</span>
                             </button>
                         </div>
                     </div>
@@ -472,6 +476,9 @@
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/click-guide/state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/click-guide/reactivation.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

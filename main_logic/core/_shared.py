@@ -175,10 +175,15 @@ _proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
     contextvars.ContextVar('_proactive_published_text_chunks', default=None)
 )
 
-# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
-# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
+# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效 / 免费服务黑白名单拦截）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID', 'API_ACCESS_DENIED'}
+# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（配额不定时重试，但回复时的隐式重试照常）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
+# TTS worker 未就绪后的定时 respawn 间隔；API_RATE_LIMIT 按次翻倍，封顶到下一个常量
+TTS_RESPAWN_DELAY_SECONDS = 13
+TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS = 300
+# 限流截止时刻的容差，只给定时 respawn：asyncio 定时器可按时钟精度提前唤醒，不能被自己的截止时刻拦下
+TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS = 1.0
 
 
 _STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
@@ -267,6 +272,41 @@ class FreshScreenshot:
     b64: str = ""
     source: str = ""
     avatar_position: dict | None = None
+
+
+@dataclass(eq=False)
+class _ReplyTurn:
+    """The host turn one Offline reply was started for.
+
+    Core opens one when it hands a reply to the Offline client and binds that
+    reply's completion (and, on the text path, its discard) callback to it. A
+    callback can run long after its reply started: ``close()`` retires the
+    generation, but a reply parked in a slow tool call or a retry backoff only
+    unwinds when that await returns, and its completion still runs then
+    because nothing else closes a turn cut by a close. The shared per-turn
+    fields (``_active_text_request_id``, ``_pending_turn_meta``) may belong to
+    a newer turn by that time, so the callbacks act from this snapshot
+    instead.
+
+    ``speech_id`` is the host turn token the reply speaks under. It is mutable
+    only so that the rotations that start no turn (the hot-swap promotion, a
+    truncation recovery) can carry an open reply along (``_carry_reply_turn``).
+    ``session`` is the client the reply was handed to, attached right before
+    the hand-over. Identity only (``eq=False``): the manager compares its open
+    reply by ``is``.
+
+    ``turn_ended`` is set once the reply's turn end has gone out. A final
+    discard (RESPONSE_TOO_LONG, or a RESPONSE_LENGTH_TRUNCATED recovery) ends
+    the turn itself, and the completion that runs after it must not end it a
+    second time. Only a turn end actually sent counts: a recovery that stood
+    down before its turn end leaves the completion to close the turn.
+    """
+
+    speech_id: str | None
+    request_id: str | None = None
+    meta: dict | None = None
+    session: Any = None
+    turn_ended: bool = False
 
 
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:

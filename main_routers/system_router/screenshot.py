@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from utils import capture_bridge
+from utils.desktop_capture import capture_desktop_screenshot
 from utils.pyautogui_diagnostics import classify_pyautogui_import_error
 from utils.screenshot_utils import (
     compress_screenshot,
@@ -239,27 +240,28 @@ async def backend_screenshot(request: Request):
             status_code=501,
         )
 
-    try:
-        import pyautogui
-    except Exception as exc:
-        reason = classify_pyautogui_import_error(exc, platform_name=sys.platform)
-        logger.error(
-            "后端截图初始化失败: reason=%s, error_type=%s",
-            reason,
-            type(exc).__name__,
-        )
-        return _json_no_store_response(
-            {
-                "success": False,
-                "error": "pyautogui unavailable",
-                "reason": reason,
-            },
-            status_code=501,
-        )
+    if not sys.platform.startswith("linux"):
+        try:
+            import pyautogui
+        except Exception as exc:
+            reason = classify_pyautogui_import_error(exc, platform_name=sys.platform)
+            logger.error(
+                "后端截图初始化失败: reason=%s, error_type=%s",
+                reason,
+                type(exc).__name__,
+            )
+            return _json_no_store_response(
+                {
+                    "success": False,
+                    "error": "pyautogui unavailable",
+                    "reason": reason,
+                },
+                status_code=501,
+            )
 
     try:
         def _capture_rgb_screenshot():
-            shot = pyautogui.screenshot()
+            shot = capture_desktop_screenshot()
             if shot.mode in ('RGBA', 'LA', 'P'):
                 shot = shot.convert('RGB')
             return shot

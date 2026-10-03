@@ -23,6 +23,7 @@ LOCAL_AVATAR_TOOL_ID_PATTERN = re.compile(
     r"^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 LOCAL_AVATAR_TOOL_REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
+LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN = re.compile(r"^img-[a-z0-9]+(?:-[a-z0-9]+)*$")
 AVATAR_INTERACTION_TOOL_CONTRACT = {
     "lollipop": {
         "actions": {
@@ -159,6 +160,7 @@ def normalize_avatar_interaction_payload(
             "action_id", "actionId", "target", "pointer", "timestamp",
             "text_context", "textContext", "intensity", "touch_zone", "touchZone",
             "change_index", "changeIndex",
+            "image_id", "imageId",
             "tool_revision", "toolRevision",
             "special_triggered", "specialTriggered",
         }
@@ -237,6 +239,7 @@ def normalize_avatar_interaction_payload(
         touch_zone = ""
 
     change_index = None
+    image_id = None
     tool_revision = None
     if local_tool:
         tool_revision = str(get_avatar_interaction_payload_value(
@@ -247,17 +250,42 @@ def normalize_avatar_interaction_payload(
             or LOCAL_AVATAR_TOOL_REVISION_PATTERN.fullmatch(tool_revision) is None
         ):
             return None
-        raw_change_index = get_avatar_interaction_payload_value(
-            payload, "change_index", "changeIndex", None
-        )
-        if (
-            isinstance(raw_change_index, bool)
-            or not isinstance(raw_change_index, int)
-            or raw_change_index < 0
-            or raw_change_index > 2**53 - 1
-        ):
+        if tool_revision.startswith("3-"):
+            if "change_index" in payload or "changeIndex" in payload:
+                return None
+            if ("image_id" in payload) == ("imageId" in payload):
+                return None
+            image_id = get_avatar_interaction_payload_value(payload, "image_id", "imageId", None)
+            if (
+                not isinstance(image_id, str)
+                or len(image_id) > 80
+                or LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.fullmatch(image_id) is None
+            ):
+                return None
+            if "special_triggered" in payload and "specialTriggered" in payload:
+                return None
+            if carries_boolean_field and not isinstance(
+                get_avatar_interaction_payload_value(
+                    payload, "special_triggered", "specialTriggered", None
+                ), bool
+            ):
+                return None
+        elif tool_revision.startswith("2-"):
+            if "image_id" in payload or "imageId" in payload:
+                return None
+            raw_change_index = get_avatar_interaction_payload_value(
+                payload, "change_index", "changeIndex", None
+            )
+            if (
+                isinstance(raw_change_index, bool)
+                or not isinstance(raw_change_index, int)
+                or raw_change_index < 0
+                or raw_change_index > 2**53 - 1
+            ):
+                return None
+            change_index = raw_change_index
+        else:
             return None
-        change_index = raw_change_index
 
     pointer_payload = payload.get("pointer")
     pointer: Optional[dict[str, float]] = None
@@ -314,7 +342,10 @@ def normalize_avatar_interaction_payload(
         })
         if local_tool:
             normalized["tool_revision"] = tool_revision
-            normalized["change_index"] = change_index
+            if image_id is not None:
+                normalized["image_id"] = image_id
+            else:
+                normalized["change_index"] = change_index
             if carries_boolean_field:
                 normalized["special_triggered"] = boolean_value
         else:

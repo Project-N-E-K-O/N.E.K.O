@@ -332,12 +332,6 @@ environment:
   - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
   - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
 
-  # 模型配置
-  - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
-  - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
-  - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
-  - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
-
   # SSL 配置
   - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
   - SSL_DAYS=${SSL_DAYS:-365000}
@@ -651,8 +645,7 @@ N.E.K.O/
 │   ├── computer_use.py          # 电脑操控
 │   ├── browser_use_adapter.py   # 浏览器自动化
 │   ├── openclaw_adapter.py      # OpenClaw 云端连接
-│   ├── task_executor.py         # 任务执行引擎
-│   └── 📁 cua/                  # Computer Use Agent 子系统
+│   └── task_executor.py         # 任务执行引擎
 ├── 📁 config/                   # ⚙️ 配置管理模块
 │   ├── api_providers.json       # API服务商配置
 │   └── 📁 prompts/              # 角色、系统和功能提示词

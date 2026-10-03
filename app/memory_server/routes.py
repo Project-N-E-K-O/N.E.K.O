@@ -46,6 +46,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.screen_comment_guard import project_screen_history
 from utils.language_utils import (
     get_global_language_full,
     is_supported_language_code,
@@ -1028,9 +1029,6 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 lanlan_name,
                 on_compress_done=review._on_compress_done,
             )
-            # 旧模块已禁用（性能不足）：
-            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # 异步事实提取（不阻塞返回，失败静默跳过）
@@ -1165,6 +1163,23 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             return {"status": "error", "message": str(e)}
 
 
+def _screen_guarded_recent_history(history):
+    """Recent history as it may be rendered into a new session's prompt.
+
+    Session renewal and restarts bring this history back as system-prompt
+    text, where the offline client's request-view projection never sees it.
+    Apply the same screen-chain rewrite here, on the structured messages
+    before they are flattened. What follows this history in the new session
+    is the user speaking, so the run at its end counts as the one before the
+    current turn (``trailing_turn``). The independent-delivery marker does
+    not survive this store, so an unmarked run is judged by position alone.
+    Known boundary: core renders its own session cache right after this
+    history and judges it separately (``NotifyMixin._convert_cache_to_str``),
+    so a chain split between the two is not joined.
+    """
+    return project_screen_history(list(history), trailing_turn=True)
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
@@ -1180,7 +1195,9 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    history = _screen_guarded_recent_history(
+        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    )
     _, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
@@ -3907,7 +3924,9 @@ async def _new_dialog(
             time=get_timestamp(),
         )
 
-        for i in await runtime.recent_history_manager.aget_recent_history(lanlan_name):
+        for i in _screen_guarded_recent_history(
+            await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+        ):
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"

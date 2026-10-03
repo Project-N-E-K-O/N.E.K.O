@@ -5,6 +5,8 @@ import pytest
 
 from tests.node_harness import run_node_script
 
+pytestmark = pytest.mark.frontend_contract
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_PATH = PROJECT_ROOT / "static" / "vrm" / "motion" / "runtime.js"

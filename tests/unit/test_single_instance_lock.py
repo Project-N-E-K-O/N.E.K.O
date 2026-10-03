@@ -262,27 +262,13 @@ def test_contention_is_reported_as_owned_not_as_an_error(runtime_dir, monkeypatc
 
 
 @pytest.mark.unit
-def test_startup_lock_facade_delegates_to_the_single_primitive(runtime_dir):
-    from utils import port_utils
-
-    assert port_utils.acquire_startup_lock() is True
+def test_module_level_release_frees_the_active_handle(runtime_dir):
+    assert single_instance.acquire_single_instance(instance_id="abc") is not None
     assert single_instance.active_handle() is not None
 
-    port_utils.release_startup_lock()
+    single_instance.release_single_instance()
     assert single_instance.active_handle() is None
     assert single_instance.owner_status()[0] == single_instance.OWNER_FREE
-
-
-@pytest.mark.unit
-def test_startup_lock_facade_reports_a_live_holder(runtime_dir):
-    from utils import port_utils
-
-    holder = _start_holder(runtime_dir)
-    try:
-        assert port_utils.acquire_startup_lock() is False
-    finally:
-        holder.kill()
-        holder.wait(timeout=10)
 
 
 @pytest.mark.unit

@@ -1668,6 +1668,37 @@ class TestVllmOmniRawKeyPassthrough:
         assert config_manager.load_voice_storage()['__DOUBAO_TTS__112997'] == {}
 
     @pytest.mark.unit
+    def test_glm_tts_cloned_voice_is_listed_and_deletable(self, config_manager):
+        """Dual to the doubao test: a GLM clone in __GLM_TTS__{suffix} must merge
+        into the current-API voice list (selected by voice_meta.provider at
+        dispatch, independent of the active core/TTS provider) and must be
+        deletable through the standard delete endpoint."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyGlm': 'glm-key-1234',
+        })
+        config_manager.save_voice_storage({
+            '__GLM_TTS__key-1234': {
+                'voice_clone_20260926_001': {
+                    'voice_id': 'voice_clone_20260926_001',
+                    'provider': 'glm_tts',
+                    'source': 'clone',
+                },
+            },
+        })
+
+        assert config_manager.get_tts_api_key('glm_tts') == 'glm-key-1234'
+
+        voices = config_manager.get_voices_for_current_api(for_listing=True)
+
+        assert voices['voice_clone_20260926_001']['provider'] == 'glm_tts'
+        assert config_manager.validate_voice_id('voice_clone_20260926_001') is True
+        assert config_manager.delete_voice_for_current_api('voice_clone_20260926_001') is True
+        assert config_manager.load_voice_storage()['__GLM_TTS__key-1234'] == {}
+
+    @pytest.mark.unit
     def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {

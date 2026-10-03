@@ -41,8 +41,14 @@ These documents preserve design intent and implementation context. They are grou
 
 ## Security, persistence, and incident analysis
 
+- [Screen-history isolation and local references](./screen-history-local-reference) — Chinese-only. Stage 0A-1 (request-side rewrite of chained screen comments) is implemented; explicit reference selection, delivery and context isolation remain a proposal.
 - [Local mutation endpoint authentication](./security/local-mutation-auth)
 - [Steam Auto-Cloud synchronization](./cloud-save-sync-optimization-plan)
 - [Telemetry distribution and Steam user ID race](./telemetry-distribution-race-impact)
+
+## Approved proposals (not yet implemented)
+
+- [Catgirl visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
+  - [T1~T5 on-device measurements](./visit-infrastructure-t1-t5) — Chinese-only. Implemented record (2026-10-02): same-origin iframe checks in the real Electron Pet window; all passed on Windows (one compatibility-mode T2 blank-frame run was excluded by the owner as operator interference; 0 blanks in 7,700 re-tested frames); macOS T3/T4 is still pending.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.

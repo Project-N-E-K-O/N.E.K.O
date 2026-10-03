@@ -47,6 +47,15 @@ export default {
     removeHint: "¿Detener el plugin y eliminar el vínculo? Se conservarán el código y los datos de ejecución.",
   },
   common: {
+    surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
+    surfaceApplyLanguage: "Aplicar idioma y recargar panel",
+    surfaceApplyLanguageConfirm: "Al recargar el panel se descartará el trabajo sin guardar. ¿Continuar?",
+
+    languageLoading: "Cargando idioma; la interfaz sigue disponible",
+    languageLoadFailed: "No se pudo cargar el idioma. Se mantiene el idioma actual.",
+    languageRetry: "Reintentar idioma",
+    languageReload: "Recargar página",
+
     loading: 'Cargando...',
     refresh: 'Actualizar',
     search: 'Buscar',
@@ -147,6 +156,8 @@ export default {
     installTaskLost: 'La tarea de instalación ya no existe. Comprueba el estado del plugin antes de reintentar.',
     installDialogTitle: 'Instalando {name}',
     installDialogTitleUpgrade: 'Actualizando {name}',
+    installFailedTitle: 'Error de instalación: {name}',
+    installFailedTitleUpgrade: 'Error de actualización: {name}',
     installCompleted: 'Instalación completada',
     installCompletedUpgrade: 'Actualización completada',
     rollbackRunning: 'La instalación falló; revirtiendo...',
@@ -162,6 +173,16 @@ export default {
       failed: 'Fallido',
       canceled: 'Cancelado',
     },
+    installStep: {
+      download: 'Descarga',
+      verify: 'Verificación',
+      install: 'Instalación',
+      replace: 'Reemplazo de archivos',
+      rollback: 'Reversión',
+      completed: 'Listo',
+    },
+    installDetails: 'Detalles',
+    installDetailsHide: 'Ocultar detalles',
     noDownloadUrl: 'No hay URL de descarga disponible',
     pairRequired: 'Se requiere emparejar Bridge Token',
     recommended: 'Recomendado',
@@ -236,10 +257,30 @@ export default {
     packageHashMismatch: 'Falló la verificación del paquete del plugin.',
     downloadFailed: 'Falló la descarga del paquete del plugin.',
     marketListFetchFailed: 'El Market de plugins no está disponible temporalmente.',
+    catalogNotConfigured: 'La dirección del Market de plugins no está configurada.',
+    releaseMismatch: 'La solicitud de instalación no coincide con el registro de publicación del Market. Actualiza el Market de plugins e inténtalo de nuevo.',
     unsafeProfilePath: 'La ruta registrada del perfil del paquete no es segura.',
     packageIdentityMismatch: 'La identidad del paquete no coincide con el plugin de destino.',
     confirmationChanged: 'El plugin o el paquete cambió después de confirmar. Revisa el nuevo plan.',
     confirmationRequired: 'Confirma el plan de actualización actual antes de instalar.'
+  },
+  pluginUpdates: {
+    button: 'Buscar actualizaciones',
+    buttonBusy: 'Comprobando…',
+    title: 'Actualizaciones de plugins',
+    titleWithCount: 'Actualizaciones de plugins ({count})',
+    checking: 'Comprobando actualizaciones…',
+    refresh: 'Actualizar',
+    close: 'Cerrar',
+    dragHint: 'Arrastra para mover',
+    allUpToDate: 'Todos los plugins están actualizados',
+    checkIncomplete: 'No se pudieron comprobar algunos plugins. Consulta los registros del servidor.',
+    update: 'Actualizar',
+    updating: 'Actualizando…',
+    updateAll: 'Actualizar todo',
+    updateAllProgress: 'Actualizando {done}/{total}',
+    updateSucceeded: 'Actualizado: {name}',
+    manualRequired: 'Actualiza este plugin desde la página del mercado',
   },
   settings: {
     channel: 'Canal de actualización',
@@ -306,6 +347,7 @@ export default {
     installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
+    configSchemaInvalid: 'El esquema de configuración del complemento no es válido. Se muestra el editor de configuración genérico.',
     title: 'Plugins',
     name: 'Nombre del plugin',
     id: 'ID del plugin',
@@ -399,6 +441,7 @@ export default {
     addItem: 'Añadir elemento',
     fieldName: 'Nombre del campo',
     fieldNameRequired: 'El nombre del campo es obligatorio',
+    readOnlyField: 'Este campo es de solo lectura y no se puede añadir.',
     invalidFieldKey: 'Nombre de campo no válido',
     fieldType: 'Tipo de campo',
     duplicateFieldKey: 'El nombre del campo ya existe. Elige otro.',
@@ -551,6 +594,8 @@ export default {
       blockedLegacyPlugin: 'Todavía hay una versión anterior de este plugin instalada. Desinstala {plugin} antes de continuar.',
       blockedOwnershipUnknown: 'No se pudo verificar quién es propietario de la carpeta del plugin. Restaura el registro del origen de instalación antes de reintentarlo.',
       blockedInstallSourceReadOnly: 'El registro del origen de instalación no está disponible o es de solo lectura. Restáuralo antes de reintentarlo.',
+      installSucceeded: 'Instalación completada. Se procesaron {count} plugin(s).',
+      completedWithWarnings: '{plugin} se instaló, pero con advertencias: {reasons}',
       rollbackCompleted: 'La actualización falló y se restauró la versión anterior.',
       rollbackIncomplete: 'La actualización falló y la reversión quedó incompleta. Comprueba el estado del plugin antes de continuar.',
       error: {
@@ -561,6 +606,7 @@ export default {
         pluginManifestInvalid: 'El plugin.toml no es válido. Pide al autor que lo corrija y vuelva a empaquetarlo.',
         identityMismatch: 'El nombre de la carpeta del plugin no coincide con el ID de plugin.toml. Pide al autor que corrija el paquete.',
         hashMismatch: 'El contenido del paquete no coincide con los datos de verificación. Se rechazó la instalación y no se conservaron cambios.',
+        profileOwnershipConflict: 'Ya existe una carpeta de perfiles para este paquete que no le pertenece, posiblemente restos de una instalación anterior. No se instaló nada.',
         inspectFailed: 'No se pudo inspeccionar este paquete de plugin. Comprueba que el archivo exista y sea un paquete N.E.K.O válido, y vuelve a intentarlo.',
         verifyFailed: 'No se pudo verificar este paquete de plugin. Descárgalo de nuevo o pide al autor que lo vuelva a crear, y vuelve a intentarlo.',
         installFailed: 'No se pudo instalar este paquete de plugin. No se conservaron cambios de instalación sin confirmar.'
@@ -777,6 +823,7 @@ export default {
     serviceUnavailable: 'Servicio no disponible',
     networkError: 'Error de red. Comprueba tu conexión.',
     requestTimeout: 'La solicitud agotó el tiempo de espera. Inténtalo de nuevo.',
+    csrfBootstrapFailed: 'No se pudo obtener el token de seguridad. Si usas un proxy inverso, asegúrate de que reenvíe /security/csrf-token al servidor de plugins.',
     pluginLifecycleTimeout: 'El inicio o reinicio del plugin agotó el tiempo de espera. Revisa los registros del plugin.'
   },
   welcome: {

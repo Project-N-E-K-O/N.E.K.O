@@ -320,15 +320,15 @@ def _alnum_runs(tokens: list[str]) -> list[str]:
     """
     out: list[str] = []
     for token in tokens:
-        run = ""
+        run: list[str] = []
         for ch in token:
             if ch.isalnum():
-                run += ch
+                run.append(ch)
             elif run:
-                out.append(run)
-                run = ""
+                out.append(''.join(run))
+                run = []
         if run:
-            out.append(run)
+            out.append(''.join(run))
     return out
 
 

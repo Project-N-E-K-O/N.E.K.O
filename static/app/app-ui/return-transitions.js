@@ -1180,6 +1180,11 @@
 
     I.hideReturnBallContainer = function hideReturnBallContainer(container, reason = 'return-ball-hide') {
         if (!container) return;
+        const button = container.querySelector && container.querySelector('.neko-idle-return-btn');
+        [window.NekoDesktopWindowEdgePeek, window.NekoDesktopWindowTopEdgePerch].forEach((runner) => {
+            if (runner && typeof runner.cancel === 'function') runner.cancel(button, { reason: reason || 'return-ball-hide' });
+        });
+        I.clearNekoIdleCat1EdgePeek(container);
         cancelReturnBallReveal(container);
         I.restoreSavedReturnBallStyle(container);
         resetReturnBallTemporaryStyle(container);
@@ -1203,6 +1208,8 @@
 
     function clearLive2DPeekReturnBallEdgeAnchor(container) {
         if (!container) return;
+        const button = getNekoIdleCat1EdgePeekButton(container);
+        if (button && window.NekoEdgePeekController) window.NekoEdgePeekController.clear(button);
         container.removeAttribute('data-neko-live2d-peek-anchor');
         container.__nekoLive2DPeekEdgeAnchor = null;
     }
@@ -1230,6 +1237,10 @@
 
         container.setAttribute('data-neko-live2d-peek-anchor', edge);
         container.__nekoLive2DPeekEdgeAnchor = Object.assign({}, edgeAnchor, { edge });
+        const button = getNekoIdleCat1EdgePeekButton(container);
+        if (button && window.NekoEdgePeekController) {
+            window.NekoEdgePeekController.begin({ button, container, mode: 'live2d-edge-peek', edge, phase: 'peeking' });
+        }
         container.style.left = `${left}px`;
         container.style.top = `${top}px`;
         container.style.right = '';
@@ -1597,9 +1608,10 @@
             : null;
     }
 
-    I.clearNekoIdleCat1EdgePeek = function clearNekoIdleCat1EdgePeek(container) {
+    I.clearNekoIdleCat1EdgePeek = function clearNekoIdleCat1EdgePeek(container, options = {}) {
         const button = getNekoIdleCat1EdgePeekButton(container);
         if (!button) return;
+        if (!options.preserveController && window.NekoEdgePeekController) window.NekoEdgePeekController.clear(button);
         NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
             button.classList.remove(className);
         });
@@ -1682,6 +1694,9 @@
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
+        if (window.NekoEdgePeekController) {
+            window.NekoEdgePeekController.begin({ button, container, mode: 'drag-edge', phase: 'peeking', edge: placement.edge });
+        }
         return true;
     }
 
@@ -1758,6 +1773,7 @@
         I.clearReturnBallDragRecoveryTimer(state);
         I.clearMultiWindowReturnBallDeferredWork(state);
         if (state.container) {
+            if (state.handlePointerDown) state.container.removeEventListener('pointerdown', state.handlePointerDown, true);
             state.container.removeEventListener('mousedown', state.handleMouseDown, true);
             state.container.removeEventListener('touchstart', state.handleTouchStart, true);
             state.container.removeEventListener('click', state.handleClick, true);
@@ -1779,6 +1795,14 @@
         }
 
         if (state.container) {
+            const edgeButton = getNekoIdleCat1EdgePeekButton(state.container);
+            const edgeMode = window.NekoEdgePeekController && window.NekoEdgePeekController.getActiveMode(edgeButton);
+            // A desktop presentation may have taken over the same button.
+            if (!edgeMode || edgeMode === 'drag-edge') {
+                I.clearNekoIdleCat1EdgePeek(state.container);
+            } else {
+                I.clearNekoIdleCat1EdgePeek(state.container, { preserveController: true });
+            }
             I.restoreSavedReturnBallStyle(state.container, state);
             resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');

@@ -23,6 +23,7 @@ Facts are indexed in TimeIndexedMemory's FTS5 table for later retrieval.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -266,7 +267,7 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     """
     out: list[dict] = []
     pos: dict = {}
-    for entry in list(existing) + list(incoming):
+    for entry in itertools.chain(existing, incoming):
         if not isinstance(entry, dict):
             continue
         identity = _fact_scoped_identity(entry)

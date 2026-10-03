@@ -20,11 +20,14 @@ def test_independent_asr_terminal_status_clears_partial_preview():
         1,
     )[1]
 
-    # The preview clear and the route-flag reset now live in the shared
-    # teardown helper (it is also used by the startup-failure path, which can
-    # never emit a BLOCKED lifecycle event). The terminal tail must call it
-    # before showing its per-code toast.
-    assert terminal_branch.index("tearDownBlockedVoiceRoute();") < terminal_branch.index(
+    # Injection failure is a per-turn delivery failure. It must leave the
+    # independent-ASR route alive so later turns can still be accepted.
+    injection_tail = terminal_branch.split("if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING')", 1)[0]
+    assert "tearDownBlockedVoiceRoute();" not in injection_tail
+    # Actual startup failures follow the injection branch and must still use
+    # the shared fail-closed teardown before showing their toast.
+    startup_tail = terminal_branch.split("// Terminal startup failure", 1)[1]
+    assert startup_tail.index("tearDownBlockedVoiceRoute();") < startup_tail.index(
         "showStatusToast"
     )
     teardown_fn = source.split("function tearDownBlockedVoiceRoute() {", 1)[1].split(

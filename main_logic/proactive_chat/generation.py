@@ -28,6 +28,7 @@ from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
     ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
     ANTI_REPEAT_INJECT_TOP_K,
+    ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS,
     ANTI_REPEAT_REGEN_THRESHOLD,
     PROACTIVE_PHASE1_FETCH_PER_SOURCE,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
@@ -83,6 +84,7 @@ from .state import (
     _PROACTIVE_SIMILARITY_THRESHOLD,
     ProactiveSimilarityMatch,
     _find_similar_recent_proactive_chat,
+    _find_verbatim_recent_proactive_chat,
     _is_recent_proactive_material,
     _proactive_material_key,
     _proactive_turn_still_owned,
@@ -320,10 +322,15 @@ class ProactiveModelConfig:
     vision_base_url: str | None = ""
     vision_api_key: str = ""
     vision_provider_type: str | None = None
+    vision_is_custom: bool = False
 
     @property
     def has_vision_model(self) -> bool:
-        return bool(self.vision_model and self.vision_api_key)
+        # 自定义视觉端点（本地 Ollama / 局域网 OpenAI 兼容服务）常常故意不填
+        # Key，和 screenshot_utils 的判据对齐：自定义配置下空 Key 也算已配置。
+        return bool(
+            self.vision_model and (self.vision_api_key or self.vision_is_custom)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1283,14 +1290,22 @@ async def _guard_phase2_output(
             material_key,
         )
     )
+    # See ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS: fresh MEME material keeps the
+    # text-dedup exemption except for a pure verbatim repeat, and a hit rewrites
+    # once instead of dropping the meme outright.
+    literal_regen_only = (
+        exempt_text_dedup and dedup_tag in ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS
+    )
     if exempt_text_dedup:
         active_logger.info(
             "[%s] proactive text-dedup exempt: tag=%s (model_tag=%s) "
-            "material=%r (fresh material, skip similarity+BM25)",
+            "material=%r (fresh material, skip %s)",
             lanlan_name,
             dedup_tag,
             source_tag,
             material_key or "(none)",
+            "similarity+BM25 except verbatim" if literal_regen_only
+            else "similarity+BM25",
         )
 
     # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
@@ -1349,12 +1364,18 @@ async def _guard_phase2_output(
     # the recent-chat window twice on the block path. Both guard sites in this
     # module go through the match object directly; the tuple wrapper stays in
     # ``state`` for its other callers.
-    literal_match = (
-        ProactiveSimilarityMatch()
-        if exempt_text_dedup
-        else _find_similar_recent_proactive_chat(lanlan_name, response_text)
-    )
-    is_duplicate = literal_match.is_duplicate
+    if literal_regen_only:
+        literal_match = _find_verbatim_recent_proactive_chat(
+            lanlan_name, response_text
+        )
+    elif exempt_text_dedup:
+        literal_match = ProactiveSimilarityMatch()
+    else:
+        literal_match = _find_similar_recent_proactive_chat(
+            lanlan_name, response_text
+        )
+    literal_regen_triggered = literal_regen_only and literal_match.is_duplicate
+    is_duplicate = literal_match.is_duplicate and not literal_regen_only
     similarity_score = literal_match.best_score
     if is_duplicate:
         record_anti_repeat_decision(
@@ -1461,7 +1482,11 @@ async def _guard_phase2_output(
     else:
         bm25_total, bm25_terms = 0.0, {}
 
-    if unanswered_repeat_triggered or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+    if (
+        unanswered_repeat_triggered
+        or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
+        or literal_regen_triggered
+    ):
         initial_source_tag = source_tag
         if unanswered_repeat_triggered:
             avoid_terms = _merge_regen_avoid_terms(
@@ -1472,6 +1497,14 @@ async def _guard_phase2_output(
                 ),
                 unanswered_repeat_signal.repeated_terms,
             )
+        elif literal_regen_triggered:
+            # Only reachable on the exempt path, where BM25/unanswered never
+            # score, so the repeated fragment is the whole avoidance signal.
+            avoid_terms = (
+                [literal_match.common_fragment]
+                if literal_match.common_fragment
+                else []
+            )
         else:
             avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
         repeat_reasons = tuple(
@@ -1479,6 +1512,7 @@ async def _guard_phase2_output(
             for reason, triggered in (
                 ("bm25", bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD),
                 ("unanswered_repeat", unanswered_repeat_triggered),
+                ("literal_similarity", literal_regen_triggered),
             )
             if triggered
         )
@@ -1486,6 +1520,9 @@ async def _guard_phase2_output(
             response_text,
             avoid_terms,
             language=proactive_lang,
+            fallback_fragment=(
+                literal_match.common_fragment if literal_regen_triggered else ""
+            ),
         )
 
         def record_regen_effect(
@@ -1520,17 +1557,21 @@ async def _guard_phase2_output(
 
         active_logger.info(
             "[%s] proactive regen (bm25_score=%.2f threshold=%.2f "
-            "unanswered_repeat=%s)",
+            "unanswered_repeat=%s literal_similarity=%s)",
             lanlan_name,
             bm25_total,
             ANTI_REPEAT_REGEN_THRESHOLD,
             unanswered_repeat_triggered,
+            f"{similarity_score:.3f}" if literal_regen_triggered else "-",
         )
         print(
             f"[{lanlan_name}] 主动搭话触发 regen "
             f"(bm25={bm25_total:.2f}, unanswered_repeat="
-            f"{unanswered_repeat_triggered}, "
-            f"避开={avoid_terms})"
+            f"{unanswered_repeat_triggered}, literal_repeat="
+            f"{literal_regen_triggered}, "
+            # A verbatim hit's avoid term is the whole caption; keep it out of
+            # the persisted stdout log like the other literal-guard paths do.
+            f"避开={'(整句配文)' if literal_regen_triggered else avoid_terms})"
         )
         avoid_message = render_regen_avoid_instruction(
             avoid_terms,
@@ -1791,11 +1832,12 @@ async def _guard_phase2_output(
                     )
                 )
             )
-        regen_match = (
-            ProactiveSimilarityMatch()
-            if regen_exempt_text_dedup
-            else _find_similar_recent_proactive_chat(lanlan_name, cleaned)
-        )
+        if not regen_exempt_text_dedup:
+            regen_match = _find_similar_recent_proactive_chat(lanlan_name, cleaned)
+        elif regen_dedup_tag in ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS:
+            regen_match = _find_verbatim_recent_proactive_chat(lanlan_name, cleaned)
+        else:
+            regen_match = ProactiveSimilarityMatch()
         regen_duplicate = regen_match.is_duplicate
         regen_similarity = regen_match.best_score
         if regen_duplicate:
@@ -2111,16 +2153,31 @@ _PROACTIVE_HSPACE_PATTERN = rf"[{re.escape(_PROACTIVE_HORIZONTAL_SPACES)}]"
 _PROACTIVE_SOURCE_PREFIX_LABELS = (
     ("current screen observation", "CHAT"),
     ("screen observation", "CHAT"),
+    ("current screen content", "CHAT"),
+    ("current screen display", "CHAT"),
+    ("current screenshot", "CHAT"),
     ("current screen", "CHAT"),
     ("screen content", "CHAT"),
     ("screen display", "CHAT"),
+    ("screen image", "CHAT"),
     ("active window", "CHAT"),
     ("当前屏幕观察", "CHAT"),
     ("当前活跃窗口", "CHAT"),
+    ("当前屏幕内容", "CHAT"),
+    ("当前屏幕显示", "CHAT"),
+    ("当前屏幕画面", "CHAT"),
+    ("当前屏幕截图", "CHAT"),
     ("屏幕观察", "CHAT"),
     ("当前屏幕", "CHAT"),
     ("屏幕内容", "CHAT"),
     ("屏幕显示", "CHAT"),
+    ("屏幕画面", "CHAT"),
+    ("屏幕截图", "CHAT"),
+    ("当前画面", "CHAT"),
+    ("画面内容", "CHAT"),
+    ("当前窗口", "CHAT"),
+    ("窗口内容", "CHAT"),
+    ("窗口标题", "CHAT"),
     ("当前界面", "CHAT"),
     ("屏幕", "CHAT"),
     ("screenshot", "CHAT"),
@@ -2167,6 +2224,16 @@ _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset(
         "上轮未收尾话题",
         "屏幕内容",
         "屏幕显示",
+        "当前屏幕内容",
+        "当前屏幕显示",
+        "当前屏幕画面",
+        "当前屏幕截图",
+        "屏幕截图",
+        "当前画面",
+        "画面内容",
+        "当前窗口",
+        "窗口内容",
+        "窗口标题",
     }
 )
 

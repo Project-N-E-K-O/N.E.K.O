@@ -474,7 +474,14 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=av"
+          # PyAV wheel 里部分扩展模块旁带同名的 Cython 纯 Python 模式 .py 源码（含 import cython）；
+          # --include-package 会遍历目录把这些 .py 编进去盖掉 .so/.pyd，冻结后 import 失败。
+          # 改用 --include-module，子模块走正常 import 解析选扩展模块；Nuitka 对"扩展模块 vs 源码"
+          # 的默认值标为未决且版本未锁定，--no-prefer-source-code 把它显式钉住（翻成源码优先会复现同样失败）。
+          # av.video.frame.to_image() 在扩展模块内部 lazy import PIL，Nuitka 看不到，靠其他模块顶层
+          # import PIL 带进包；check_frozen_media 冒烟覆盖这条路径。契约见 tests/unit/test_pyav_packaging_contract.py。
+          NUITKA_OPTS="$NUITKA_OPTS --include-module=av"
+          NUITKA_OPTS="$NUITKA_OPTS --no-prefer-source-code"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
@@ -625,7 +632,10 @@ jobs:
           rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           rem 纯数据目录，漏了引导页内容/图片打包后 404。
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=av
+          rem PyAV 部分 .pyd 旁带 Cython 纯 Python 模式 .py 源码，--include-package 会把它们编进去盖掉 .pyd；
+          rem 用 --include-module 走正常解析，--no-prefer-source-code 钉住扩展模块优先。详见上方 Unix 构建注释。
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-module=av
+          set NUITKA_OPTS=%NUITKA_OPTS% --no-prefer-source-code
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette

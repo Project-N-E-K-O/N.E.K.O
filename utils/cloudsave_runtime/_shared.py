@@ -167,14 +167,15 @@ LEGACY_RUNTIME_DIR_NAMES = (
 #
 # 模式必须和各模块自己的事务命名逐字一致，两个方向都会出事：放宽了会把无关的
 # 隐藏条目（``.cache.backup`` 之类）当成用户内容，拦下本该发生的迁移；收紧了
-# 会漏掉真正的仅存副本，重新变成静默删除。只收「更新被打断」这一类 ——
-# ``.uploading``（还没创建成功）和 ``.deleting``（用户就是要删）都不算内容。
+# 会漏掉真正的仅存副本，重新变成静默删除。还要识别 ``.deleting.unverified``：
+# 它说明删除实际移动的对象尚未确认，旁边的 ``.deleting`` 可能保存着并发新版本。
+# ``.uploading`` 和不带未确认授权的普通 ``.deleting`` 仍不算内容。
 _AVATAR_TOOL_ID_PATTERN_SOURCE = (
     r"local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS = {
     "avatar_tools": re.compile(
-        rf"^\.{_AVATAR_TOOL_ID_PATTERN_SOURCE}\.(?:backup|updating)$"
+        rf"^\.{_AVATAR_TOOL_ID_PATTERN_SOURCE}\.(?:backup|updating|deleting\.unverified)$"
     ),
 }
 

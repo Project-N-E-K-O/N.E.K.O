@@ -52,6 +52,62 @@ async def test_pending_delivery_spans_reservation_queue_and_active_dispatch() ->
     assert dispatcher.has_pending_delivery is False
 
 
+async def test_pending_turn_tokens_cover_queued_and_active_envelopes() -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    first = _envelope(1)
+    second = _envelope(2)
+    reserved = _envelope(3)
+    for envelope in (first, second, reserved):
+        assert dispatcher.try_reserve(envelope.final_key) is True
+    dispatcher.submit(first)
+    dispatcher.submit(second)
+    await dispatch_started.wait()
+
+    # A bare reservation has no accepted final yet, so it is not owed Core.
+    assert dispatcher.pending_turn_tokens() == frozenset(
+        {first.turn_token, second.turn_token}
+    )
+
+    dispatcher.invalidate_all()
+    assert dispatcher.pending_turn_tokens() == frozenset()
+    release_dispatch.set()
+
+
+async def test_accepted_reservation_is_pending_until_submit_release_or_purge() -> (
+    None
+):
+    dispatcher = TranscriptDispatcher(AsyncMock())
+    submitted = _envelope(1)
+    released = _envelope(2)
+    purged = _envelope(3)
+    with pytest.raises(RuntimeError, match="ASR_TRANSCRIPT_SLOT_NOT_RESERVED"):
+        dispatcher.mark_accepted(submitted.final_key, submitted.turn_token)
+    for envelope in (submitted, released, purged):
+        assert dispatcher.try_reserve(envelope.final_key) is True
+        dispatcher.mark_accepted(envelope.final_key, envelope.turn_token)
+
+    assert dispatcher.pending_turn_tokens() == frozenset(
+        {submitted.turn_token, released.turn_token, purged.turn_token}
+    )
+    dispatcher.release(released.final_key)
+    assert dispatcher.holds_accepted(released.final_key) is False
+    dispatcher.submit(submitted)
+    assert dispatcher.holds_accepted(submitted.final_key) is False
+    assert submitted.turn_token in dispatcher.pending_turn_tokens()
+    dispatcher.release(submitted.final_key)
+    assert submitted.turn_token in dispatcher.pending_turn_tokens()
+    dispatcher.invalidate_all()
+    assert dispatcher.holds_accepted(purged.final_key) is False
+    assert dispatcher.pending_turn_tokens() == frozenset()
+
+
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
     release_first = asyncio.Event()
     delivered: list[int] = []
@@ -145,6 +201,7 @@ async def test_old_worker_unwind_cannot_clear_new_active_dispatch() -> None:
     release_new.set()
     await asyncio.wait_for(wait_idle, 1)
     assert dispatcher._active is None
+    assert dispatcher.pending_turn_tokens() == frozenset()
 
 
 async def test_wait_idle_returns_while_next_turn_slot_is_reserved() -> None:

@@ -47,6 +47,15 @@ export default {
     removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
   },
   common: {
+    surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
+    surfaceApplyLanguage: "Apply language and reload panel",
+    surfaceApplyLanguageConfirm: "Reloading the panel discards its unsaved work. Continue?",
+
+    languageLoading: "Loading language; the interface remains available",
+    languageLoadFailed: "Language could not load. The current language was kept.",
+    languageRetry: "Retry language",
+    languageReload: "Reload page",
+
     loading: 'Loading...',
     refresh: 'Refresh',
     search: 'Search',
@@ -147,6 +156,8 @@ export default {
     installTaskLost: 'The install task is no longer available. Check the plugin state before retrying.',
     installDialogTitle: 'Installing {name}',
     installDialogTitleUpgrade: 'Upgrading {name}',
+    installFailedTitle: 'Install failed: {name}',
+    installFailedTitleUpgrade: 'Upgrade failed: {name}',
     installCompleted: 'Install completed',
     installCompletedUpgrade: 'Upgrade completed',
     rollbackRunning: 'Install failed; rolling back...',
@@ -162,6 +173,16 @@ export default {
       failed: 'Failed',
       canceled: 'Cancelled',
     },
+    installStep: {
+      download: 'Download',
+      verify: 'Verify',
+      install: 'Install',
+      replace: 'Replace files',
+      rollback: 'Roll back',
+      completed: 'Done',
+    },
+    installDetails: 'Details',
+    installDetailsHide: 'Hide details',
     noDownloadUrl: 'No download URL available',
     pairRequired: 'Bridge Token pairing required',
     recommended: 'Recommended',
@@ -236,10 +257,30 @@ export default {
     packageHashMismatch: 'Plugin package verification failed.',
     downloadFailed: 'The plugin package download failed.',
     marketListFetchFailed: 'The Plugin Market is temporarily unavailable.',
+    catalogNotConfigured: 'The Plugin Market address is not configured.',
+    releaseMismatch: 'The install request does not match the Market release record. Refresh the Plugin Market and try again.',
     unsafeProfilePath: 'The recorded package profile path is unsafe.',
     packageIdentityMismatch: 'The package identity does not match the target plugin.',
     confirmationChanged: 'The plugin or package changed after confirmation. Review the new plan and try again.',
     confirmationRequired: 'Confirm the current upgrade plan before installing.'
+  },
+  pluginUpdates: {
+    button: 'Check for updates',
+    buttonBusy: 'Checking…',
+    title: 'Plugin updates',
+    titleWithCount: 'Plugin updates ({count})',
+    checking: 'Checking for updates…',
+    refresh: 'Refresh',
+    close: 'Close',
+    dragHint: 'Drag to move',
+    allUpToDate: 'All plugins are up to date',
+    checkIncomplete: 'Some plugins could not be checked. See Server Logs for details.',
+    update: 'Update',
+    updating: 'Updating…',
+    updateAll: 'Update all',
+    updateAllProgress: 'Updating {done}/{total}',
+    updateSucceeded: 'Updated: {name}',
+    manualRequired: 'Update this one from the Plugin Market page',
   },
   settings: {
     channel: 'Update channel',
@@ -306,6 +347,7 @@ export default {
     installFallback: 'Could not select a mirror source; using GitHub Direct.'
   },
   plugins: {
+    configSchemaInvalid: 'The plugin configuration schema is invalid. Showing the generic configuration editor.',
     title: 'Plugins',
     name: 'Plugin Name',
     id: 'Plugin ID',
@@ -399,6 +441,7 @@ export default {
     addItem: 'Add Item',
     fieldName: 'Field Name',
     fieldNameRequired: 'Field name is required',
+    readOnlyField: 'This field is read-only and cannot be added.',
     invalidFieldKey: 'Invalid field name',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',
@@ -551,6 +594,8 @@ export default {
       blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
       blockedOwnershipUnknown: 'N.E.K.O could not verify who owns the existing plugin directory. Restore its install-source record before trying again.',
       blockedInstallSourceReadOnly: 'The install-source record is unavailable or read-only. Restore it before trying again.',
+      installSucceeded: 'Install complete. Processed {count} plugin(s).',
+      completedWithWarnings: '{plugin} was installed, but with warnings: {reasons}',
       rollbackCompleted: 'The upgrade failed and the previous version was restored.',
       rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.',
       error: {
@@ -561,6 +606,7 @@ export default {
         pluginManifestInvalid: 'A plugin.toml in this package is invalid. Ask the plugin author to fix and rebuild it.',
         identityMismatch: 'The plugin folder name and the ID in plugin.toml do not match. Ask the plugin author to fix the package.',
         hashMismatch: 'The package contents do not match its verification data. Nothing was installed.',
+        profileOwnershipConflict: 'A profile folder for this package already exists but does not belong to it, possibly left over from an earlier install. Nothing was installed.',
         inspectFailed: 'Could not inspect this plugin package. Check that the file exists and is a valid N.E.K.O package, then try again.',
         verifyFailed: 'Could not verify this plugin package. Download it again or ask the author to rebuild it, then try again.',
         installFailed: 'The plugin package could not be installed. No confirmed installation changes were kept.'
@@ -777,6 +823,7 @@ export default {
     serviceUnavailable: 'Service unavailable',
     networkError: 'Network error. Please check your connection.',
     requestTimeout: 'The request timed out. Please try again.',
+    csrfBootstrapFailed: 'Could not obtain the security token. If you use a reverse proxy, make sure it forwards /security/csrf-token to the plugin server.',
     pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {

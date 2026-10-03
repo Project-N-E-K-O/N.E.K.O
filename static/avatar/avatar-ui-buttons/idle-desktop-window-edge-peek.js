@@ -397,6 +397,9 @@
         const edgeClass = `${EDGE_CLASS_PREFIX}${state.target.edge}`;
         state.button.classList.add(edgeClass);
         state.container.classList.add(PEEKING_CLASS, edgeClass, CUE_CLASS);
+        if (window.NekoEdgePeekController && state.button) {
+            window.NekoEdgePeekController.setPhase(state.button, 'peeking');
+        }
         state.cueTimer = window.setTimeout(() => {
             if (currentAction !== state || state.phase !== 'peeking') return;
             state.cueTimer = 0;
@@ -449,6 +452,9 @@
         if (!state || currentAction !== state || state.phase === 'idle') return false;
         stopFramesAndTimers(state);
         state.phase = 'idle';
+        if (window.NekoEdgePeekController && state.button) {
+            window.NekoEdgePeekController.clear(state.button);
+        }
         clearOwnClasses(state);
         if (!options || options.restoreArt !== false) restoreIdleArt(state);
         state.target = null;
@@ -567,6 +573,16 @@
             peekCycleTimer: 0,
         };
         currentAction = state;
+        if (window.NekoEdgePeekController) {
+            window.NekoEdgePeekController.begin({
+                button: state.button,
+                container: state.container,
+                mode: 'desktop-window',
+                edge: state.target && state.target.edge,
+                phase: 'walking',
+                sourceRunner: 'idle-desktop-window-edge-peek',
+            });
+        }
         bindRemovalObserver(state);
         targetState.opportunity = TARGET_OPPORTUNITY_CONSUMED;
         setWalkingClasses(state);

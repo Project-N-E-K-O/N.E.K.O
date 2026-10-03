@@ -108,8 +108,8 @@ const dialog = ref(false)
 const sourceDir = ref('')
 const preview = ref<DevelopmentRegistration | null>(null)
 const rebinding = ref<DevelopmentRegistration | null>(null)
-const statuses = computed(() => new Map(store.pluginsWithStatus.map((plugin) => [plugin.id, plugin.status])))
-const entriesByPlugin = computed(() => new Map(store.pluginsWithStatus.map((plugin) => [plugin.id, plugin.entries || []])))
+const statuses = computed(() => new Map(store.pluginSummariesWithStatus.map((plugin) => [plugin.id, plugin.status])))
+const entriesByPlugin = computed(() => new Map(store.pluginSummariesWithStatus.map((plugin) => [plugin.id, plugin.entries || []])))
 const status = (id: string) => statuses.value.get(id) || 'stopped'
 const statusKeys: Record<string, string> = { load_failed: 'status.loadFailed', source_missing: 'status.sourceMissing' }
 const statusLabel = (id: string) => statusKeys[status(id)] || `status.${status(id)}`
@@ -119,7 +119,7 @@ async function refresh() {
   const wasBusy = busy.value
   busy.value = true
   try {
-    const [state] = await Promise.all([getDevelopment(), store.fetchPlugins(true), store.fetchPluginStatus()])
+    const [state] = await Promise.all([getDevelopment(), store.fetchPluginSummaries(true), store.fetchPluginStatus(undefined, true)])
     enabled.value = state.enabled
     records.value = state.registrations
     emit('registrations-change', records.value.length)

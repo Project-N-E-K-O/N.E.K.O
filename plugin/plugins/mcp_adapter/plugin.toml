@@ -2,7 +2,7 @@
 name = "MCP Adapter"
 type = "adapter"
 description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
-short_description = "Connect to MCP servers and expose their tools as NEKO plugin entries. Gateway mode for external tool integration."
+short_description = "Connect to MCP servers and expose their tools as NEKO plugin entries."
 keywords = [
     "mcp",
     "MCP",
@@ -49,10 +49,6 @@ backend = "file"
 persist_mode = "auto"
 
 [mcp_servers]
-
-[adapter]
-mode = "gateway"
-priority = 0
 
 [mcp_adapter]
 connect_timeout = 30

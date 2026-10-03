@@ -131,6 +131,7 @@
     }
 
     function isTutorialGuardActive() {
+        if (window.isNekoClickGuideActive === true) return true;
         try {
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {

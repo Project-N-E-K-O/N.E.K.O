@@ -15,7 +15,7 @@ import os
 import struct
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, ClassVar, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Collection, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -49,6 +49,10 @@ from main_logic.voice_input.activation import (
     AudioFrame,
     OutputCommit,
 )
+from main_logic.voice_input.wake_word.transcript import (
+    _WakeNameCorrection,
+    correct_wake_name_prefix,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -67,6 +71,9 @@ from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
+)
+from utils.conversation_settings_constants import (
+    normalize_independent_asr_provider_preference_handshake,
 )
 from utils.game_route_state import get_active_game_route_generation_identity
 from main_logic import core as _core_facade
@@ -380,6 +387,7 @@ class AsrRuntimeMixin:
         self._voice_activation_session_anchor: int | None = None
         self._voice_activation_handoff: _VoiceActivationHandoff | None = None
         self._voice_activation_delivery_revision = 0
+        self._wake_name_correction: _WakeNameCorrection | None = None
         self._voice_activation_native_output_identity: (
             tuple[ActivationGeneration, object, int | None] | None
         ) = None
@@ -392,6 +400,10 @@ class AsrRuntimeMixin:
         self._native_activation_reconnect_timeout_s = 10.0
         self._voice_input_resource_optimization_handshake_override: bool | None = None
         self._voice_input_resource_optimization_session_value: bool | None = None
+        self._independent_asr_provider_preference_handshake_override: (
+            str | None
+        ) = None
+        self._independent_asr_provider_preference_session_value: str | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -428,6 +440,7 @@ class AsrRuntimeMixin:
             on_failure=self._handle_core_asr_failure,
             on_status=self._send_core_asr_status,
             on_lifecycle=self._send_core_asr_lifecycle,
+            capture_ingress_token=self._capture_ingress_token,
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
 
@@ -547,6 +560,16 @@ class AsrRuntimeMixin:
             "_voice_input_resource_optimization_session_value",
         ):
             self._voice_input_resource_optimization_session_value = None
+        if not hasattr(
+            self,
+            "_independent_asr_provider_preference_handshake_override",
+        ):
+            self._independent_asr_provider_preference_handshake_override = None
+        if not hasattr(
+            self,
+            "_independent_asr_provider_preference_session_value",
+        ):
+            self._independent_asr_provider_preference_session_value = None
         if not hasattr(self, "_core_asr_preview_turn_id"):
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
@@ -1390,6 +1413,54 @@ class AsrRuntimeMixin:
             or ingress_token == self._capture_ingress_token()
         )
 
+    def _independent_asr_transport_is_ready(self) -> bool:
+        runtime = getattr(self, "_asr_runtime", None)
+        session = getattr(runtime, "_asr_session", None)
+        return bool(session is not None and getattr(session, "is_ready", True))
+
+    def _voice_input_ready_is_current(
+        self,
+        source_identity: tuple[object, ...],
+        session_epoch: int,
+    ) -> bool:
+        return bool(
+            self._core_asr_operation_identity_matches(source_identity)
+            and session_epoch
+            == self._core_asr_identity_ingress_token(source_identity).session_epoch
+            and self._voice_lease_owner == "core"
+            and self._voice_lease_synchronized
+            and not self._voice_lease_hard_muted
+            and self._asr_route_mode == "independent"
+            and self._independent_asr_transport_is_ready()
+        )
+
+    def _voice_input_recovery_failure_is_current(
+        self,
+        source_identity: tuple[object, ...],
+        session_epoch: int,
+        failure_ingress_token: VoiceIngressToken | None = None,
+    ) -> bool:
+        # Failure cannot reuse the ready predicate: the transport is already
+        # dead, so requiring `_independent_asr_transport_is_ready()` would
+        # suppress the only event the frontend uses to enter `failed`.
+        current_token = self._core_asr_identity_ingress_token(source_identity)
+        if (
+            failure_ingress_token is not None
+            and (
+                failure_ingress_token.session_epoch != current_token.session_epoch
+                or failure_ingress_token.connection_id != current_token.connection_id
+                or failure_ingress_token.lease_generation
+                != current_token.lease_generation
+                or failure_ingress_token.route_generation
+                != current_token.route_generation
+            )
+        ):
+            return False
+        return bool(
+            self._core_asr_operation_identity_matches(source_identity)
+            and session_epoch == current_token.session_epoch
+        )
+
     def _ingress_token_matches(self, token: VoiceIngressToken) -> bool:
         return bool(
             token.connection_id == self._voice_lease_connection_id
@@ -1907,6 +1978,7 @@ class AsrRuntimeMixin:
         # The local anchor, scorer, capture sequence and idle clock survive.
         self._voice_activation_bound_session = ticket.target_session
         self._voice_activation_delivery_revision += 1
+        self._preserve_wake_name_correction_after_delivery_revision()
         try:
             resumed = await ticket.runtime.resume_output(ticket)
         except BaseException:
@@ -2167,6 +2239,23 @@ class AsrRuntimeMixin:
         self._voice_session_activation_degraded = (
             decision.state is ActivationState.UNAVAILABLE
         )
+        status = (generation, decision.state, decision.reason)
+        if (
+            decision.reason == "wake_word_detected"
+            and decision.state is ActivationState.REPLAYING
+            and self._asr_route_mode == "independent"
+            and status != self._voice_session_activation_status
+        ):
+            self._wake_name_correction = _WakeNameCorrection(
+                generation=generation,
+                runtime=self._voice_session_activation_runtime,
+                delivery_revision=self._voice_activation_delivery_revision,
+            )
+        elif (
+            decision.reason == "owner_confirmed"
+            or decision.state not in {ActivationState.REPLAYING, ActivationState.ACTIVE}
+        ):
+            self._wake_name_correction = None
         if decision.reason in {"owner_confirmed", "wake_word_detected"}:
             self._voice_activation_delivery_batch = (
                 getattr(self, "_voice_activation_delivery_batch", 0) + 1
@@ -2343,6 +2432,20 @@ class AsrRuntimeMixin:
             value if isinstance(value, bool) else None
         )
 
+    def set_independent_asr_provider_preference_handshake(
+        self,
+        value: object,
+    ) -> None:
+        """Pin one session's independent-ASR provider choice from start_session.
+
+        An absent field defers to the persisted setting; a malformed one is
+        treated as "auto" (follow the Core route).
+        """
+        self._ensure_asr_runtime_state()
+        self._independent_asr_provider_preference_handshake_override = (
+            normalize_independent_asr_provider_preference_handshake(value)
+        )
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
@@ -2350,6 +2453,7 @@ class AsrRuntimeMixin:
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
         connect_budget_seconds: float | None = None,
     ) -> None:
         """Resolve the microphone route for one session start.
@@ -2557,6 +2661,43 @@ class AsrRuntimeMixin:
             self._voice_input_resource_optimization_session_value = (
                 resolved_optimization_value
             )
+        # Same precedence as the resource-optimization choice: this start's own
+        # handshake snapshot, else the accepted session value (internal
+        # re-entries such as hot swap), else the shared handshake field, else
+        # the persisted setting. The handshake wins because the persisted value
+        # is stale while the settings POST is still in flight or has failed.
+        if provider_preference_override is ...:
+            provider_preference_handshake = getattr(
+                self,
+                "_independent_asr_provider_preference_session_value",
+                None,
+            )
+            if provider_preference_handshake is None:
+                provider_preference_handshake = getattr(
+                    self,
+                    "_independent_asr_provider_preference_handshake_override",
+                    None,
+                )
+        else:
+            provider_preference_handshake = (
+                normalize_independent_asr_provider_preference_handshake(
+                    provider_preference_override
+                )
+            )
+        provider_preference = (
+            provider_preference_handshake
+            if provider_preference_handshake is not None
+            else normalize_independent_asr_provider_preference_handshake(
+                settings.get("independentAsrProviderPreference", "auto")
+            )
+        )
+        if provider_preference_override is not ...:
+            # Only an accepted start_session supplies this argument; internal
+            # provider restarts reuse its resolved value instead of the shared
+            # field that a losing or deduplicated request may have overwritten.
+            self._independent_asr_provider_preference_session_value = (
+                provider_preference
+            )
         if not enabled:
             self._set_microphone_route("native")
             await self._send_core_asr_status(
@@ -2594,6 +2735,11 @@ class AsrRuntimeMixin:
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.
             "user_language": getattr(self, "user_language", None),
+            # Provider choice ("auto" follows the Core route): handshake first,
+            # persisted setting as the fallback. The route capability check
+            # above already ran, so a Core without independent-ASR support
+            # never reaches this preference.
+            "provider_preference": provider_preference,
         }
         if self._speaker_shadow_factory is not None:
             start_kwargs["speaker_shadow_factory"] = self._speaker_shadow_factory
@@ -2662,6 +2808,7 @@ class AsrRuntimeMixin:
         remaining_deadline_seconds: float,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
     ) -> None:
         """Re-decide the microphone route for a deduplicated same-mode start.
 
@@ -2727,6 +2874,7 @@ class AsrRuntimeMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            provider_preference_override=provider_preference_override,
             connect_budget_seconds=remaining_deadline_seconds,
         )
 
@@ -2779,10 +2927,19 @@ class AsrRuntimeMixin:
 
         if still_current is not None and not still_current():
             return
-        await self._asr_runtime.abort(reason)
+        correction = self._current_wake_name_correction()
+        keep_turns = await self._asr_runtime.abort(reason)
         if still_current is not None and not still_current():
             return
-        self._invalidate_voice_pcm_sync(reason)
+        if (
+            correction is not None
+            and self._wake_name_correction is correction
+            and correction.turn_token in keep_turns
+        ):
+            # abort may advance audio generation before Core tears down the
+            # activation. Preserve eligibility captured before that await.
+            correction.preserved_final = True
+        self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
@@ -4731,8 +4888,22 @@ class AsrRuntimeMixin:
                     "ingress_backpressure"
                 )
 
-    def _invalidate_voice_pcm_sync(self, reason: str) -> None:
-        self._voice_input_registry.invalidate_utterance(reason=reason)
+    def _invalidate_voice_pcm_sync(
+        self,
+        reason: str,
+        *,
+        keep_turns: Collection[VoiceTurnToken] = (),
+    ) -> None:
+        correction = self._current_wake_name_correction()
+        if correction is not None and correction.turn_token in keep_turns:
+            # The activation may close, but this pinned final still owns its
+            # one-shot correction. Never transfer it to the next turn.
+            correction.preserved_final = True
+        else:
+            self._wake_name_correction = None
+        self._voice_input_registry.invalidate_utterance(
+            reason=reason, keep=keep_turns,
+        )
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
         self._native_activation_idle_reconnect_identity = None
@@ -4776,6 +4947,7 @@ class AsrRuntimeMixin:
     ) -> None:
         self._ensure_asr_runtime_state()
         self._voice_input_transition_generation += 1
+        transition_snapshot = self._voice_input_transition_generation
         previous = (
             self._voice_lease_owner,
             self._voice_lease_hard_muted,
@@ -4810,6 +4982,27 @@ class AsrRuntimeMixin:
         self._voice_input_suppressed = bool(reasons)
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
+        if (
+            owner == "core"
+            and not hard_muted
+            and not focus_suppressed
+            and (previous[1] or previous[2])
+            and reason in {"hard_unmute", "focus_resume", "lease_sync"}
+            and self._asr_route_mode == "independent"
+            and self._voice_input_transition_generation == transition_snapshot
+            and self._voice_lease_owner == "core"
+            and not self._voice_lease_hard_muted
+            and not self._voice_lease_focus_suppressed
+        ):
+            logger.info(
+                "[voice-recovery] unmute_requested owner=%s route=%s "
+                "lease_generation=%s route_generation=%s session_epoch=%s",
+                owner,
+                self._asr_route_mode,
+                self._voice_lease_generation,
+                self._microphone_route_generation,
+                getattr(self._asr_runtime, "_asr_session_epoch", -1),
+            )
         should_abort = (
             force_abort or self._voice_lease_requires_abort or previous != current
         )
@@ -4837,6 +5030,26 @@ class AsrRuntimeMixin:
         elif should_abort:
             await self._asr_runtime.abort(reason)
             await self._voice_input_registry.wait_idle()
+            # Hard mute deliberately aborts the old transport.  The matching
+            # unmute transition must explicitly resume the independent ASR
+            # lifecycle; otherwise the frontend remains in recovery forever
+            # because no new transport can emit a ready status.
+            if (
+                owner == "core"
+                and not hard_muted
+                and not focus_suppressed
+                and (previous[1] or previous[2])
+                and reason in {"hard_unmute", "focus_resume", "lease_sync"}
+                and self._asr_route_mode == "independent"
+                and self._voice_input_transition_generation == transition_snapshot
+                and self._voice_lease_owner == "core"
+                and not self._voice_lease_hard_muted
+                and not self._voice_lease_focus_suppressed
+            ):
+                logger.info("[voice-recovery] restart_requested reason=%s lease_generation=%s", reason, self._voice_lease_generation)
+                restart = getattr(self._asr_runtime, "_ensure_transport_restart_task", None)
+                if callable(restart):
+                    restart()
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(
@@ -4958,6 +5171,19 @@ class AsrRuntimeMixin:
                 notified = True
         if status is not None:
             await self._send_core_asr_status(status)
+            # The first send can deliver the display plane while the
+            # voice-owner plane is still unsettled. Give that recovery notice
+            # one bounded follow-up while the lease is current; after revoke,
+            # the identity fence must reject stale callbacks.
+            if (
+                status.code
+                in {
+                    "ASR_INDEPENDENT_FAILED",
+                    "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                }
+                and operation_is_current()
+            ):
+                await self._send_core_asr_status(status)
             notified = True
         if notified and not operation_is_current():
             return False
@@ -5132,6 +5358,7 @@ class AsrRuntimeMixin:
         return True
 
     async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
+        self._clear_wake_name_correction(self._wake_name_correction_for_turn(token))
         self._voice_input_registry.invalidate_utterance(
             token,
             reason="asr_turn_abandoned",
@@ -5161,6 +5388,53 @@ class AsrRuntimeMixin:
             and pending_delivery()
         )
 
+    def _current_wake_name_correction(self) -> _WakeNameCorrection | None:
+        ticket = self._wake_name_correction
+        if ticket is None:
+            return None
+        if ticket.preserved_final:
+            if (
+                self._asr_route_mode == "independent"
+                and ticket.turn_token is not None
+                and ticket.turn_token.ingress.session_epoch == self._capture_ingress_token().session_epoch
+                and self._ingress_token_matches(ticket.turn_token.ingress)
+            ):
+                return ticket
+            self._clear_wake_name_correction(ticket)
+            return None
+        status = self._voice_session_activation_status
+        if (
+            self._asr_route_mode != "independent"
+            or self._voice_session_activation_runtime is not ticket.runtime
+            or self._voice_activation_delivery_revision != ticket.delivery_revision
+            or self._capture_voice_session_activation_generation() != ticket.generation
+            or status is None
+            or status[0] != ticket.generation
+            or status[1] not in {ActivationState.REPLAYING, ActivationState.ACTIVE}
+        ):
+            self._clear_wake_name_correction(ticket)
+            return None
+        return ticket
+
+    def _wake_name_correction_for_turn(
+        self, token: VoiceTurnToken,
+    ) -> _WakeNameCorrection | None:
+        ticket = self._current_wake_name_correction()
+        return ticket if ticket is not None and ticket.turn_token == token else None
+
+    def _clear_wake_name_correction(
+        self, ticket: _WakeNameCorrection | None,
+    ) -> None:
+        # Cleanup after an await belongs only to the ticket captured before it.
+        if ticket is not None and self._wake_name_correction is ticket:
+            self._wake_name_correction = None
+
+    def _preserve_wake_name_correction_after_delivery_revision(self) -> None:
+        """Keep a live wake ticket valid across an in-place session handoff."""
+        ticket = self._wake_name_correction
+        if ticket is not None and ticket.runtime is self._voice_session_activation_runtime:
+            ticket.delivery_revision = self._voice_activation_delivery_revision
+
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
         # A lease transition activates its next consumer before waiting for
@@ -5173,9 +5447,20 @@ class AsrRuntimeMixin:
             or not self._voice_input_accepts_pcm()
         ):
             return False
-        if not self._voice_input_registry.begin_utterance(token):
-            return False
-        return await self._voice_input_registry.prepare_utterance(token)
+        ticket = self._current_wake_name_correction()
+        if ticket is not None and ticket.turn_token is None:
+            ticket.turn_token = token
+        else:
+            ticket = None
+        prepared = False
+        try:
+            if not self._voice_input_registry.begin_utterance(token):
+                return False
+            prepared = await self._voice_input_registry.prepare_utterance(token)
+            return prepared
+        finally:
+            if not prepared:
+                self._clear_wake_name_correction(ticket)
 
     async def _dispatch_voice_input_partial(
         self,
@@ -5187,7 +5472,12 @@ class AsrRuntimeMixin:
         self,
         event: VoiceTranscriptEvent,
     ) -> None:
-        result = await self._voice_input_registry.dispatch_final(event)
+        ticket = self._wake_name_correction_for_turn(event.turn_token)
+        try:
+            result = await self._voice_input_registry.dispatch_final(event)
+        finally:
+            # Empty finals and non-Core consumers never enter Core's callback.
+            self._clear_wake_name_correction(ticket)
         if result is VoiceInputDispatchResult.CALLBACK_FAILED:
             await self._send_core_asr_status(
                 AsrStatusEvent(
@@ -5210,6 +5500,9 @@ class AsrRuntimeMixin:
         reason: str,
     ) -> None:
         del reason
+        self._clear_wake_name_correction(
+            self._wake_name_correction_for_turn(context.token)
+        )
         try:
             await self._send_core_asr_preview_clear(context.external_turn_id)
         finally:
@@ -5238,6 +5531,11 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_turn_prepare turn_id=%s session_epoch=%s provider=independent_asr",
+            external_turn_id,
+            token.ingress.session_epoch,
+        )
         self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
@@ -5259,6 +5557,28 @@ class AsrRuntimeMixin:
             )
 
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+        arbiter = getattr(session_ref, "_response_arbiter", None)
+        runtime = getattr(self, "_asr_runtime", None)
+        capture_identity = getattr(runtime, "_capture_runtime_identity", None)
+        identity = capture_identity(ingress_token=token.ingress, turn_token=token) if callable(capture_identity) else None
+        pause_owner_alive = None
+        if arbiter is not None and not getattr(session_ref, "_is_gemini", False):
+            def pause_owner_alive(owner):
+                lifecycle = getattr(runtime, "_asr_lifecycle", None)
+                return bool(
+                    owner == external_turn_id
+                    and operation_is_current()
+                    and runtime is self._asr_runtime
+                    and identity is not None
+                    and runtime._runtime_identity_matches(identity)
+                    and lifecycle is not None
+                    and lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+                    and lifecycle.snapshot.turn_id == token.turn_id
+                    and runtime._asr_turn_prepared
+                )
+
+            pause_owner_alive.pause_owner = external_turn_id
+            arbiter.pause_owner_alive = pause_owner_alive
         preparation_succeeded = False
         try:
             if callable(prepare):
@@ -5288,6 +5608,11 @@ class AsrRuntimeMixin:
             await self.handle_new_message()
             if operation_is_current():
                 preparation_succeeded = True
+                logger.info(
+                    "[voice-chain] stage=asr_turn_ready turn_id=%s session_epoch=%s",
+                    external_turn_id,
+                    token.ingress.session_epoch,
+                )
                 return True
             if abandon_on_failure:
                 self._abandon_core_voice_turn(
@@ -5314,8 +5639,19 @@ class AsrRuntimeMixin:
                 "[%s] independent ASR turn preparation failed",
                 self.lanlan_name,
             )
+            logger.info(
+                "[voice-chain] stage=asr_turn_prepare_failed turn_id=%s session_epoch=%s",
+                external_turn_id,
+                token.ingress.session_epoch,
+            )
             return False
         finally:
+            if (
+                not preparation_succeeded
+                and arbiter is not None
+                and getattr(arbiter, "pause_owner_alive", None) is pause_owner_alive
+            ):
+                arbiter.pause_owner_alive = None
             if (
                 not preparation_succeeded
                 and self._core_asr_preview_turn_id == external_turn_id
@@ -5369,6 +5705,13 @@ class AsrRuntimeMixin:
     ) -> None:
         token = event.turn_token.ingress
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_transcript_dispatch turn_id=%s session_epoch=%s provider=%s text_len=%d",
+            external_turn_id,
+            token.session_epoch,
+            event.provider,
+            len(event.text.strip()),
+        )
         if session_ref is None:
             session_ref = getattr(self, "session", None)
         prepared_session_ref = session_ref
@@ -5380,6 +5723,10 @@ class AsrRuntimeMixin:
                 or session_ref is None
             ):
                 return
+            ticket = self._wake_name_correction_for_turn(event.turn_token)
+            if ticket is not None:
+                self._clear_wake_name_correction(ticket)
+                event = replace(event, text=correct_wake_name_prefix(event.text))
             if not event.text.strip():
                 # An empty final still completed the turn provider-side (e.g.
                 # the OpenAI/Step stalled-item timeouts): Core deliberately
@@ -5433,6 +5780,11 @@ class AsrRuntimeMixin:
             accepted = await self.handle_input_transcript(
                 event.text,
                 **transcript_kwargs,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_transcript_accepted turn_id=%s accepted=%s",
+                external_turn_id,
+                accepted,
             )
             def route_still_core() -> bool:
                 """The route-identity half, re-checkable across an await.
@@ -5833,12 +6185,10 @@ class AsrRuntimeMixin:
         route_operation_generation = self._asr_route_operation_generation
 
         def failure_is_current() -> bool:
-            return bool(
-                self._core_asr_operation_identity_matches(source_identity)
-                and event.session_epoch
-                == self._core_asr_identity_ingress_token(
-                    source_identity
-                ).session_epoch
+            return self._voice_input_recovery_failure_is_current(
+                source_identity,
+                event.session_epoch,
+                event.ingress_token,
             )
 
         async with self._asr_notification_lock:
@@ -5888,9 +6238,35 @@ class AsrRuntimeMixin:
                 post_transition_identity
             ),
             status=(
-                AsrStatusEvent(code=event.code, provider=event.provider,
-                               session_epoch=event.session_epoch)
-                if event.code in {"ASR_INPUT_DELIVERY_FAILED", "ASR_INPUT_DELIVERY_UNCERTAIN"}
+                AsrStatusEvent(
+                    code=event.code,
+                    provider=event.provider,
+                    session_epoch=event.session_epoch,
+                    reason=event.reason,
+                    # The failure token was validated before this handler's
+                    # own independent -> blocked transition. Rebase only its
+                    # route generation to that transition so the status still
+                    # carries the original lease/session identity while a
+                    # competing route change remains fenced.
+                    ingress_token=(
+                        replace(
+                            event.ingress_token,
+                            route_generation=(
+                                self._core_asr_identity_ingress_token(
+                                    post_transition_identity
+                                ).route_generation
+                            ),
+                        )
+                        if event.ingress_token is not None
+                        else None
+                    ),
+                )
+                if event.code in {
+                    "ASR_INPUT_DELIVERY_FAILED",
+                    "ASR_INPUT_DELIVERY_UNCERTAIN",
+                    "ASR_INDEPENDENT_FAILED",
+                    "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                }
                 else None
             ),
         )
@@ -5898,34 +6274,184 @@ class AsrRuntimeMixin:
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
+            current_token = self._core_asr_identity_ingress_token(source_identity)
             if (
                 not self._core_asr_operation_identity_matches(source_identity)
                 or event.session_epoch
-                != self._core_asr_identity_ingress_token(source_identity).session_epoch
+                != current_token.session_epoch
+                or (
+                    event.ingress_token is not None
+                    and event.code
+                    in {
+                        "ASR_INDEPENDENT_FAILED",
+                        "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                    }
+                    and not self._voice_input_recovery_failure_is_current(
+                        source_identity,
+                        event.session_epoch,
+                        event.ingress_token,
+                    )
+                )
             ):
                 return
             delivery_failure = event.code in {
                 "ASR_INPUT_DELIVERY_FAILED", "ASR_INPUT_DELIVERY_UNCERTAIN",
             }
-            notice = (event, source_identity)
+            # Independent-ASR failures can arrive through two notification
+            # paths for the same runtime event: the failure callback emits the
+            # status before revoking the lease, then the worker callback may
+            # publish its queued status after that callback returns.  Keep the
+            # pre-revoke ordering, but keep separate per-plane delivery
+            # ledgers for the primary and recovery notices.  A retry can then
+            # fill only the plane that failed, while the route-operation
+            # generation lets a later recovery episode reuse the same session
+            # epoch without being hidden by an old ledger.
+            independent_failure_notice = None
+            independent_failure_progress = None
+            if event.code in {
+                "ASR_INDEPENDENT_FAILED",
+                "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+            }:
+                independent_failure_notice = (
+                    event.code,
+                    event.provider,
+                    event.session_epoch,
+                    self._asr_route_operation_generation,
+                )
+                stored_progress = getattr(
+                    self, "_voice_independent_failure_delivery", None
+                )
+                if (
+                    stored_progress is None
+                    or stored_progress[0] != independent_failure_notice
+                ):
+                    stored_progress = (
+                        independent_failure_notice,
+                        {"primary": set(), "recovery": set()},
+                    )
+                    self._voice_independent_failure_delivery = stored_progress
+                independent_failure_progress = stored_progress[1]
+                if all(
+                    plane in independent_failure_progress["primary"]
+                    for plane in ("display_delivered", "voice_owner_settled")
+                ) and all(
+                    plane in independent_failure_progress["recovery"]
+                    for plane in ("display_delivered", "voice_owner_settled")
+                ):
+                    return
+            # The failure callback may rebase the token's route generation
+            # while moving the route to ``blocked``.  The subsequent worker
+            # status still carries the original token, so using the full
+            # event/operation identity here would treat one failure as two
+            # notices.  Session epoch plus code/provider is the stable
+            # identity of one runtime failure; a later recovery creates a
+            # new epoch before it can reuse this key.
+            notice = (event.code, event.provider, event.session_epoch)
             if (delivery_failure
                     and getattr(self, "_voice_delivery_failure_notice", None) == notice):
                 return
+            status_details = {
+                "provider": event.provider,
+                "session_epoch": event.session_epoch,
+            }
+            if event.reason:
+                status_details["reason"] = event.reason
+            if event.code in {
+                "ASR_INDEPENDENT_FAILED",
+                "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+            }:
+                status_details["lease_generation"] = (
+                    event.ingress_token.lease_generation
+                    if event.ingress_token is not None
+                    else self._voice_lease_generation
+                )
             delivered = await self._send_voice_control_status(
                 json.dumps(
                     {
                         "code": event.code,
-                        "details": {
-                            "provider": event.provider,
-                            "session_epoch": event.session_epoch,
-                        },
+                        "details": status_details,
                     }
                 ),
+                progress=(None, independent_failure_progress["primary"])
+                if independent_failure_progress is not None
+                else None,
                 still_current=lambda: self._core_asr_operation_identity_matches(source_identity),
             )
             if (delivery_failure and any(delivered)
                     and self._core_asr_operation_identity_matches(source_identity)):
                 self._voice_delivery_failure_notice = notice
+            if event.code == "ASR_INDEPENDENT_READY":
+                logger.info("[voice-recovery] transport_ready session_epoch=%s", event.session_epoch)
+                # A transport-ready callback is not sufficient on its own:
+                # the lease or route may have changed while the ASR task was
+                # connecting.  Only advertise readiness for the currently
+                # owned, unmuted independent route and a live session.
+                ready_allowed = self._voice_input_ready_is_current(
+                    source_identity,
+                    event.session_epoch,
+                )
+                if not ready_allowed:
+                    logger.info("[voice-recovery] ready_suppressed session_epoch=%s", event.session_epoch)
+                    return
+                # Re-capture immediately before emission to fence changes
+                # made while preparing the notification.
+                if not self._voice_input_ready_is_current(
+                    source_identity,
+                    event.session_epoch,
+                ):
+                    logger.info("[voice-recovery] ready_suppressed_stale session_epoch=%s", event.session_epoch)
+                    return
+                logger.info("[voice-recovery] ready_emitting session_epoch=%s lease_generation=%s", event.session_epoch, self._voice_lease_generation)
+                await self._send_voice_control_status(
+                    json.dumps({"code": "VOICE_INPUT_READY", "details": {"session_epoch": event.session_epoch, "lease_generation": self._voice_lease_generation}}),
+                    still_current=lambda: self._voice_input_ready_is_current(
+                        source_identity,
+                        event.session_epoch,
+                    ),
+                )
+            elif event.code in {"ASR_INDEPENDENT_FAILED", "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE"}:
+                logger.info("[voice-recovery] failure session_epoch=%s code=%s", event.session_epoch, event.code)
+                # The original status send above is an await; re-check before
+                # publishing the recovery-failure identity used by the frontend.
+                recovery_lease_generation = (
+                    event.ingress_token.lease_generation
+                    if event.ingress_token is not None
+                    else self._voice_lease_generation
+                )
+                if not self._voice_input_recovery_failure_is_current(
+                    source_identity,
+                    event.session_epoch,
+                    event.ingress_token,
+                ):
+                    logger.info(
+                        "[voice-recovery] failure_suppressed_stale session_epoch=%s lease_generation=%s",
+                        event.session_epoch,
+                        recovery_lease_generation,
+                    )
+                    return
+                logger.info(
+                    "[voice-recovery] failure_emitting session_epoch=%s lease_generation=%s",
+                    event.session_epoch,
+                    recovery_lease_generation,
+                )
+                await self._send_voice_control_status(
+                    json.dumps(
+                        {
+                            "code": "VOICE_INPUT_RECOVERY_FAILED",
+                            "details": {
+                                "session_epoch": event.session_epoch,
+                                "lease_generation": recovery_lease_generation,
+                                "reason": "ASR_INDEPENDENT_FAILED",
+                            },
+                        }
+                    ),
+                    progress=(None, independent_failure_progress["recovery"]),
+                    still_current=lambda: self._voice_input_recovery_failure_is_current(
+                        source_identity,
+                        event.session_epoch,
+                        event.ingress_token,
+                    ),
+                )
 
     async def _send_core_asr_lifecycle(
         self,
@@ -5948,6 +6474,7 @@ class AsrRuntimeMixin:
                             "state": event.state,
                             "route_mode": self._asr_route_mode,
                             "session_epoch": event.session_epoch,
+                            **({"reason": event.reason} if event.reason else {}),
                         },
                     }
                 ),

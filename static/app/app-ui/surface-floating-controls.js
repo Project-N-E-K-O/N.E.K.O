@@ -433,16 +433,138 @@
 
         const SOCIAL_OPEN_DEDUPE_MS = 1200;
         const SOCIAL_OPEN_RELEASE_DELAY_MS = 800;
+        const SOCIAL_WINDOW_NAME = 'neko-social';
+        const SOCIAL_OAUTH_CALLBACK_PATHS = new Set([
+            '/oauth/callback',
+            '/api/card-drop/oauth/callback'
+        ]);
 
         function getSocialOpenState() {
             if (!window.__nekoSocialOpenState || typeof window.__nekoSocialOpenState !== 'object') {
                 window.__nekoSocialOpenState = {
                     inFlight: false,
                     lastStartedAt: 0,
-                    releaseTimer: null
+                    releaseTimer: null,
+                    generation: 0,
+                    // Keep the community window singleton across click handlers;
+                    // only a closed window may be opened again.
+                    windowRef: null
                 };
             }
             return window.__nekoSocialOpenState;
+        }
+
+        function getOpenSocialWindow() {
+            const state = getSocialOpenState();
+            const socialWindow = state.windowRef;
+            if (!socialWindow) return null;
+            try {
+                if (socialWindow.closed) {
+                    state.windowRef = null;
+                    state.inFlight = false;
+                    state.lastStartedAt = 0;
+                    state.generation = (Number(state.generation) || 0) + 1;
+                    if (state.releaseTimer) {
+                        clearTimeout(state.releaseTimer);
+                        state.releaseTimer = null;
+                    }
+                    return null;
+                }
+            } catch (_) {
+                // A cross-origin WindowProxy may reject property access. Keep the
+                // reference in that case; focus() below is still safe to try.
+            }
+            return socialWindow;
+        }
+
+        function rememberSocialWindow(socialWindow, generation = null) {
+            const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return socialWindow;
+            }
+            if (socialWindow) {
+                state.windowRef = socialWindow;
+            }
+            return socialWindow;
+        }
+
+        function forgetSocialWindow(socialWindow, generation = null) {
+            const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return;
+            }
+            if (!socialWindow || state.windowRef === socialWindow) {
+                state.windowRef = null;
+            }
+        }
+
+        function focusOpenSocialWindow() {
+            const socialWindow = getOpenSocialWindow();
+            if (!socialWindow) return false;
+            if (isSocialOAuthCallbackWindow(socialWindow)) {
+                // Let the click flow probe the named window again and reuse it
+                // for the community feed instead of trapping the user on the
+                // completed OAuth callback page.
+                forgetSocialWindow(socialWindow);
+                return false;
+            }
+            try {
+                if (typeof socialWindow.focus === 'function') socialWindow.focus();
+            } catch (_) {
+                // If the native window disappeared between the closed check and
+                // focus(), clear the stale reference so the next click can reopen it.
+                forgetSocialWindow(socialWindow);
+                return false;
+            }
+            return true;
+        }
+
+        function isSocialOpenRequestCurrent(generation) {
+            return generation === null
+                || generation === undefined
+                || Number(getSocialOpenState().generation) === Number(generation);
+        }
+
+        function isSocialOAuthCallbackWindow(socialWindow) {
+            if (!socialWindow) return false;
+            try {
+                const href = String(socialWindow.location && socialWindow.location.href || '');
+                const callbackUrl = new URL(href, window.location.href);
+                return callbackUrl.origin === window.location.origin
+                    && SOCIAL_OAUTH_CALLBACK_PATHS.has(
+                        callbackUrl.pathname.replace(/\/+$/, '') || '/'
+                    );
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function probeNamedSocialWindow() {
+            let socialWindow = null;
+            try {
+                // An empty URL returns an existing named window without navigating
+                // it. If the name is not present, it creates the blank popup that
+                // the browser flow can reuse for the current user gesture.
+                socialWindow = window.open('', SOCIAL_WINDOW_NAME);
+            } catch (_) {
+                return null;
+            }
+            if (!socialWindow) return null;
+            try {
+                const href = String(socialWindow.location && socialWindow.location.href || '');
+                return {
+                    socialWindow,
+                    // The OAuth callback is a completed one-shot page, not the
+                    // community surface. Reuse that named window for the next
+                    // feed navigation instead of focusing a dead-end callback.
+                    existing: href !== '' && href !== 'about:blank'
+                        && !isSocialOAuthCallbackWindow(socialWindow)
+                };
+            } catch (_) {
+                // A cross-origin community page cannot expose location to the
+                // opener; that is the existing-window case we need to recover.
+                return { socialWindow, existing: true };
+            }
         }
 
         function shouldIgnoreSocialOpenRequest() {
@@ -458,16 +580,25 @@
             }
             state.inFlight = true;
             state.lastStartedAt = now;
+            state.generation = (Number(state.generation) || 0) + 1;
             return false;
         }
 
-        function releaseSocialOpenRequest() {
+        function releaseSocialOpenRequest(generation = null) {
             const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return;
+            }
             if (state.releaseTimer) {
                 clearTimeout(state.releaseTimer);
             }
+            const releaseGeneration = generation === null ? null : Number(generation);
             state.releaseTimer = setTimeout(() => {
                 const latestState = getSocialOpenState();
+                if (releaseGeneration !== null
+                    && Number(latestState.generation) !== releaseGeneration) {
+                    return;
+                }
                 latestState.inFlight = false;
                 latestState.releaseTimer = null;
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
@@ -566,15 +697,42 @@
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
-        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
+        // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
+        // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
+                return;
+            }
+            if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
                 return;
             }
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
+            const socialOpenGeneration = typeof getSocialOpenState === 'function'
+                ? (Number(getSocialOpenState().generation) || 0)
+                : null;
+            const releaseSocialOpenRequestForFlow = () => {
+                if (typeof releaseSocialOpenRequest === 'function') {
+                    releaseSocialOpenRequest(socialOpenGeneration);
+                }
+            };
             const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            let pendingSocialWindow = null;
+            if (!isElectron && typeof probeNamedSocialWindow === 'function') {
+                const probe = probeNamedSocialWindow();
+                if (probe && probe.existing) {
+                    rememberSocialWindow(probe.socialWindow, socialOpenGeneration);
+                    try { probe.socialWindow.focus && probe.socialWindow.focus(); } catch (_) { /* ignore */ }
+                    const releaseExistingSocialWindowRequest = releaseSocialOpenRequestForFlow;
+                    releaseExistingSocialWindowRequest();
+                    return;
+                }
+                if (probe && probe.socialWindow) {
+                    pendingSocialWindow = probe.socialWindow;
+                    rememberSocialWindow(pendingSocialWindow, socialOpenGeneration);
+                }
+            }
             let socialOpenRequestReleased = false;
             let popupRef = null;
             const closePopup = () => {
@@ -586,9 +744,16 @@
                         popupRef.close();
                     }
                 } catch (_) { /* ignore */ }
+                if (typeof forgetSocialWindow === 'function') {
+                    forgetSocialWindow(popupRef, socialOpenGeneration);
+                }
                 popupRef = null;
             };
             const navigateBrowserPopup = (targetUrl, options = {}) => {
+                if (typeof isSocialOpenRequestCurrent === 'function'
+                    && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
+                    return true;
+                }
                 if (!popupRef) {
                     return false;
                 }
@@ -625,21 +790,22 @@
                 }
                 return navigated;
             };
-            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
+            const waitForOAuthCompletion = async (timeoutMs) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
-                    if (requirePopup) {
-                        if (!popupRef) {
+                    if (!popupRef) {
+                        return false;
+                    }
+                    try {
+                        if (popupRef.closed) {
+                            if (typeof forgetSocialWindow === 'function') {
+                                forgetSocialWindow(popupRef, socialOpenGeneration);
+                            }
+                            popupRef = null;
                             return false;
                         }
-                        try {
-                            if (popupRef.closed) {
-                                popupRef = null;
-                                return false;
-                            }
-                        } catch (_) { /* ignore */ }
-                    }
+                    } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -662,6 +828,10 @@
                 return false;
             };
             const openElectronSocialWindow = (targetUrl) => {
+                if (typeof isSocialOpenRequestCurrent === 'function'
+                    && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
+                    return true;
+                }
                 // frameName=neko-social：NEKO-PC setWindowOpenHandler 靠名字识别社区窗，
                 // 强制 frame/thickFrame + 原生最小/最大/关（尤其 Windows 右上角）。
                 // features 为兜底提示；最终以主进程 overrideBrowserWindowOptions 为准。
@@ -675,6 +845,9 @@
                 );
                 if (!socialWin) {
                     return false;
+                }
+                if (typeof rememberSocialWindow === 'function') {
+                    rememberSocialWindow(socialWin, socialOpenGeneration);
                 }
                 registerSocialThemeTarget(socialWin, resolvedTargetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
@@ -720,6 +893,7 @@
                         signal: controller.signal,
                     });
                     if (!response.ok) {
+                        // 后端只在确实没有桌面会话时回 409；凭据并发轮换、云端暂不可验证都回 503。
                         if (response.status === 409) {
                             return { nativeDelegate: '', loginState: 'logged-out' };
                         }
@@ -796,7 +970,8 @@
                 if (!nativeDelegate && pendingProofs.nativeHandoff) {
                     nativeDelegate = (await pendingProofs.nativeHandoff).nativeDelegate;
                 }
-                if (!nativeDelegate) {
+                // 已明确判定未登录时重试也只会再拿一次 409，白白多一次本地往返并延长 social-open 锁。
+                if (!nativeDelegate && !pendingProofs.loggedOut) {
                     const retryHandoff = await fetchNativeDelegate();
                     nativeDelegate = retryHandoff.nativeDelegate;
                 }
@@ -826,7 +1001,12 @@
                     // 浏览器通常只为一次用户手势放行一个弹窗。先保留唯一的
                     // WindowProxy，完成登录态判断后再决定导航到社区或 OAuth。
                     // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
-                    popupRef = window.open('about:blank', '_blank');
+                    if (pendingSocialWindow) {
+                        popupRef = pendingSocialWindow;
+                        pendingSocialWindow = null;
+                    } else {
+                        popupRef = window.open('about:blank', '_blank');
+                    }
                     if (!popupRef) {
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
@@ -836,6 +1016,9 @@
                             );
                         }
                         return;
+                    }
+                    if (typeof rememberSocialWindow === 'function') {
+                        rememberSocialWindow(popupRef, socialOpenGeneration);
                     }
                     try {
                         const popupRoot = popupRef.document.documentElement;
@@ -900,7 +1083,7 @@
                     targetUrl.searchParams.set('cid', clientId);
                 }
                 url = targetUrl.toString();
-                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
+                // 先打开猫娘社区。桌面端的登录在设置页完成，这里不再另开浏览器。
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
@@ -912,21 +1095,27 @@
                 }
                 const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
+                // 只有明确判定为未登录才提示去设置页登录；delegate 超时且 auth-status
+                // 兜底也失败时状态未知，已登录用户不能被误提示。
+                let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';
                 if (initialNativeHandoff.loginState === 'unknown') {
                     try {
                         const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                            // 云端暂时校验不了（离线、超时、5xx）时本地会话仍在，
+                            // 后端以 session_saved 标出；这种情况不是登出，不能提示去登录。
+                            communityLoggedOut = !communityLoggedIn
+                                && !(statusJson && statusJson.session_saved);
                         }
                     } catch (statusErr) {
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                     }
                 }
-                if (!communityLoggedIn) {
+                if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
-                    let oauthLaunched = false;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -945,10 +1134,7 @@
                                         expiresInSec * 1000
                                     );
                                 }
-                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
-                                    await window.electronShell.openExternal(authUrl);
-                                    oauthLaunched = true;
-                                } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
@@ -958,10 +1144,9 @@
                                         );
                                     }
                                 } else {
-                                    oauthLaunched = true;
                                     browserOAuthStarted = true;
                                 }
-                                if (oauthLaunched && typeof window.showStatusToast === 'function') {
+                                if (browserOAuthStarted && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
                                     const oauthPrompt = (typeof window.t === 'function')
                                         ? window.t(oauthPromptKey)
@@ -978,14 +1163,11 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
-                            || (!isElectron && browserOAuthStarted);
-                        if (shouldWaitForOAuth) {
-                            releaseSocialOpenRequest();
+                        if (browserOAuthStarted) {
+                            releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
-                                browserOAuthTimeoutMs,
-                                !isElectron
+                                browserOAuthTimeoutMs
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();
@@ -997,11 +1179,7 @@
                                     refreshedTargetUrl,
                                     refreshedHandoff.nativeDelegate
                                 );
-                                if (isElectron) {
-                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
-                                        console.warn('[social] failed to refresh Electron community window after OAuth');
-                                    }
-                                } else if (popupRef) {
+                                if (popupRef) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
                                         console.warn('[social] failed to navigate browser community window after OAuth');
                                         closePopup();
@@ -1021,18 +1199,32 @@
                                 initialNativeHandoff.nativeDelegate,
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
-                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                                    loggedOut: communityLoggedOut
                                 }
                             );
                         }
                     }
                 } else {
+                    if (communityLoggedOut && typeof window.showStatusToast === 'function') {
+                        const settingsPromptKey = 'app.socialSettingsLoginPrompt';
+                        const settingsPrompt = (typeof window.t === 'function')
+                            ? window.t(settingsPromptKey)
+                            : '';
+                        window.showStatusToast(
+                            (settingsPrompt && settingsPrompt !== settingsPromptKey)
+                                ? settingsPrompt
+                                : '桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录',
+                            4000
+                        );
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,
                         {
                             nativeHandoff: initialNativeHandoffPromise,
-                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                            loggedOut: communityLoggedOut
                         }
                     );
                 }
@@ -1049,7 +1241,7 @@
                 }
             } finally {
                 if (!socialOpenRequestReleased) {
-                    releaseSocialOpenRequest();
+                    releaseSocialOpenRequestForFlow();
                 }
             }
         });

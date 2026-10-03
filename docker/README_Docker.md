@@ -44,15 +44,6 @@ docker/
 | `NEKO_MONITOR_SERVER_PORT` | 监控服务器端口 | `48913` |
 | `NEKO_TOOL_SERVER_PORT` | 工具服务器端口 | `48915` |
 
-#### 模型配置（高级）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_SUMMARY_MODEL` | 摘要模型 | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | 纠错模型 | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | 情感分析模型 | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | 视觉模型 | `qwen3-vl-plus-2025-09-23` |
-
 ### 方式二：配置文件（高级用户）
 
 运行时配置位于容器的 `/home/neko/.local/share/N.E.K.O/config`。挂载 `./neko-home:/home/neko` 即可持久化；不要再挂载镜像内的 `/app/config`。
@@ -234,19 +225,6 @@ NEKO_MAIN_SERVER_PORT=48911
 NEKO_MEMORY_SERVER_PORT=48912
 NEKO_MONITOR_SERVER_PORT=48913
 NEKO_TOOL_SERVER_PORT=48915
-```
-
-#### 模型选择
-```bash
-NEKO_SUMMARY_MODEL=qwen-plus
-NEKO_CORRECTION_MODEL=qwen-max
-NEKO_EMOTION_MODEL=qwen-turbo
-NEKO_VISION_MODEL=qwen3-vl-plus-2025-09-23
-```
-
-#### MCP Router
-```bash
-NEKO_MCP_ROUTER_URL=http://localhost:3283
 ```
 
 ## 🐛 故障排查

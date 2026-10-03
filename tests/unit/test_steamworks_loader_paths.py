@@ -1,5 +1,9 @@
 import ast
+import ctypes
+import importlib
 import os
+import platform
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -119,15 +123,35 @@ def test_logger_config_source_mode_root_ignores_cwd(tmp_path):
 
 
 @pytest.mark.unit
-def test_steamworks_prepend_env_path_preserves_existing_entries_without_duplicates(monkeypatch):
+def test_importing_steamworks_does_not_mutate_library_search_path(monkeypatch):
     import steamworks as steamworks_module
 
     monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join(("/existing/lib", "/fallback/lib")))
+    importlib.reload(steamworks_module)
 
-    steamworks_module._prepend_env_path("LD_LIBRARY_PATH", "/new/lib")
-    first_pass = os.environ["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert first_pass == ["/new/lib", "/existing/lib", "/fallback/lib"]
+    assert os.environ["LD_LIBRARY_PATH"].split(os.pathsep) == [
+        "/existing/lib",
+        "/fallback/lib",
+    ]
 
-    steamworks_module._prepend_env_path("LD_LIBRARY_PATH", "/new/lib")
-    second_pass = os.environ["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert second_pass == ["/new/lib", "/existing/lib", "/fallback/lib"]
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    sys.platform not in ("linux", "linux2") or platform.machine() not in ("x86_64", "amd64"),
+    reason="bundled Steamworks libraries are Linux x86_64 binaries",
+)
+def test_linux_steamworks_absolute_preload_does_not_need_ld_library_path(monkeypatch):
+    steamworks_dir = REPO_ROOT / "steamworks"
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+
+    steam_api = ctypes.CDLL(
+        str(steamworks_dir / "libsteam_api.so"),
+        mode=os.RTLD_GLOBAL | os.RTLD_LAZY,
+    )
+    wrapper = ctypes.CDLL(
+        str(steamworks_dir / "SteamworksPy.so"),
+        mode=os.RTLD_GLOBAL | os.RTLD_LAZY,
+    )
+
+    assert steam_api is not None
+    assert wrapper is not None
