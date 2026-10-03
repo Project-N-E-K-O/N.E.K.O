@@ -118,3 +118,8 @@ def test_invariant_checker_rejects_a_broken_relation(monkeypatch):
     monkeypatch.setattr(vs, "VISIT_SELF_RECONNECT_S", 28)
     with pytest.raises(ValueError, match="self reconnect"):
         vs._check_invariants()
+
+
+def test_debrief_commit_backoff_caps_at_one_hour():
+    # 暂时性写入失败的退避：30 s / 2 min / 10 min / 1 h，之后一直取最后一项（owner 2026-10-02）
+    assert vs.VISIT_DEBRIEF_COMMIT_BACKOFF_S == (30, 120, 600, 3600)

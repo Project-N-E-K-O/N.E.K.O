@@ -607,6 +607,9 @@ VISIT_DIARY_FACTS_MAX = 3
 VISIT_DIARY_FACT_MAX_CHARS = 60
 """Max characters of one visit fact."""
 
+VISIT_DEBRIEF_COMMIT_BACKOFF_S = (30, 120, 600, 3600)
+"""Back-off (s) after the n-th transient diary-commit failure; the last item repeats, no attempt cap."""
+
 VISIT_LAST_SUMMARY_HANDOFF_S = 8
 """Wait limit for the previous visit's last-summary commit before opening."""
 

@@ -36,6 +36,7 @@ from main_logic.visit.spool import (
     VisitSpool,
     encode_spool_line,
     is_digestable,
+    new_debrief_writes,
     new_state,
     validate_header,
     validate_state,
@@ -231,7 +232,8 @@ CANONICAL_FIELDS = {
     # own_uid：按社区账号分区的本侧账号（崩溃补录派生人级主体用，不随「清除这个人」抹除）
     "own_uid", "own_char", "own_char_uid", "pair_id", "peer_uid", "peer_char_id",
     "digested_through_lp", "digest_runs", "finalized", "debrief_choice",
-    "debrief_pending", "debrief_writes", "debrief_chip_pending",
+    "debrief_pending", "debrief_writes", "debrief_retry", "debrief_commit_error",
+    "debrief_chip_pending",
     "last_summary_done", "memory_enabled", "digest_writes",
 }
 
@@ -250,7 +252,11 @@ async def test_state_field_set_is_exactly_canonical(tmp_path):
     await sp.write_state(state_for())
     on_disk = json.loads(sp.state_path.read_text(encoding="utf-8"))
     assert set(on_disk) == CANONICAL_FIELDS
-    assert on_disk["debrief_writes"] == {"facts": False, "cache": False}
+    assert on_disk["debrief_writes"] == {
+        "facts": False, "cache": False, "facts_written": 0, "facts_unconfirmed": False,
+        "cache_unconfirmed": False, "facts_inflight": False, "cache_inflight": False,
+    }
+    assert on_disk["debrief_retry"] is None and on_disk["debrief_commit_error"] is None
     assert on_disk["debrief_pending"] is None
 
 
@@ -268,11 +274,11 @@ async def test_state_extra_field_rejected(tmp_path):
         await VisitSpool(tmp_path, vid(1)).write_state(state)
 
 
-@pytest.mark.parametrize("choice", [None, "ask_later", "diary", "forget"])
+@pytest.mark.parametrize("choice", [None, "ask_later", "diary", "forget", "abandoned"])
 async def test_state_allowed_choices(tmp_path, choice):
     state = dict(state_for(), debrief_choice=choice)
     if choice == "diary":
-        state["debrief_writes"] = {"facts": True, "cache": True}
+        state["debrief_writes"] = dict(new_debrief_writes(), facts=True, cache=True)
     await VisitSpool(tmp_path, vid(1)).write_state(state)
 
 
@@ -518,7 +524,7 @@ async def test_sweep_over_cap_keeps_unsettled_and_pending_uploads(tmp_path):
     # 一场已结清的旧场次。
     done = VisitSpool(tmp_path, vid(3))
     await done.write_state(dict(settled(state_for()), debrief_choice="diary",
-                                debrief_writes={"facts": True, "cache": True}))
+                                debrief_writes=dict(new_debrief_writes(), facts=True, cache=True)))
     _age(done.state_path, 2)
 
     deleted = await VisitSpool.sweep(tmp_path, NOW)
@@ -676,7 +682,7 @@ async def test_sweep_keeps_a_half_committed_diary_past_retention(tmp_path):
     state = state_for()
     state["debrief_choice"] = "committing:diary"
     state["debrief_pending"] = {"diary": "d", "facts": []}
-    state["debrief_writes"] = {"facts": True, "cache": False}
+    state["debrief_writes"] = dict(new_debrief_writes(), facts=True, facts_written=1)
     await sp.write_state(state)
     old = NOW - 30 * 86400
     os.utime(sp.state_path, (old, old))
@@ -750,7 +756,8 @@ async def test_unreadable_state_grace_uses_the_state_files_own_age(tmp_path, mon
     monkeypatch.setattr(spool_mod, "_read_state_file", locked)
     await VisitSpool.sweep(tmp_path, NOW)
     assert sp.state_path.exists()
-    assert sp.jsonl_path.exists()      # 整场一起保留，不只是 state.json
+    # 只豁免 state.json（补写依据）：.jsonl 不因提交态豁免，读不了 state 时同样照常过期
+    assert not sp.jsonl_path.exists()
 
 
 async def test_cancelled_close_still_closes_the_fd(tmp_path, monkeypatch):
@@ -1160,7 +1167,8 @@ def test_digest_run_keys_must_be_contiguous_and_match_the_count(runs, count):
 def test_a_half_written_diary_is_neither_valid_nor_settled(writes):
     from main_logic.visit.spool import validate_state, visit_settled
 
-    state = dict(settled(state_for()), debrief_choice="diary", debrief_writes=writes)
+    state = dict(settled(state_for()), debrief_choice="diary",
+                 debrief_writes=dict(new_debrief_writes(), **writes))
     assert not visit_settled(state)
     with pytest.raises(SpoolStateError):
         validate_state(state)
@@ -1456,3 +1464,105 @@ async def test_write_state_binds_the_document_to_its_visit(tmp_path):
     assert (await sp.read_state())["visit_id"] == vid(48)
     with pytest.raises(SpoolStateError):
         await VisitSpool(tmp_path, vid(49)).write_state(written)
+
+
+
+_PENDING = {"diary": "today", "facts": ["f1"]}
+_ERROR = {"step": "cache", "status": 422, "at": NOW, "seq": 1}
+
+
+def failed_state(**kw) -> dict:
+    return dict(state_for(), debrief_choice="commit_failed:diary", debrief_pending=_PENDING,
+                debrief_commit_error=_ERROR,
+                debrief_writes=dict(new_debrief_writes(), facts=True, facts_written=1), **kw)
+
+
+async def test_commit_failed_requires_pending_and_an_error(tmp_path):
+    # 永久性失败：补写只靠 debrief_pending；失败块靠 debrief_commit_error 说明哪步失败、按 seq 换块
+    sp = VisitSpool(tmp_path, vid(50))
+    await sp.write_state(failed_state())
+    with pytest.raises(SpoolStateError):
+        await sp.write_state(dict(failed_state(), debrief_pending=None))
+    with pytest.raises(SpoolStateError):
+        await sp.write_state(dict(failed_state(), debrief_commit_error=None))
+
+
+@pytest.mark.parametrize("change", [
+    {"debrief_writes": {"facts": True, "cache": False}},
+    {"debrief_writes": dict(new_debrief_writes(), facts_written=-1)},
+    {"debrief_writes": dict(new_debrief_writes(), facts_written=True)},
+    {"debrief_writes": dict(new_debrief_writes(), cache_inflight=1)},
+    {"debrief_retry": {"attempts": 1}},
+    {"debrief_retry": {"attempts": -1, "next_at": NOW}},
+    {"debrief_retry": {"attempts": 1, "next_at": "soon"}},
+    {"debrief_commit_error": dict(_ERROR, step="diary")},
+    {"debrief_commit_error": dict(_ERROR, seq=0)},
+    {"debrief_commit_error": dict(_ERROR, status=True)},
+    {"debrief_commit_error": {"step": "cache", "status": 422}},
+], ids=["writes-old-shape", "written-negative", "written-bool", "inflight-int", "retry-missing",
+        "retry-negative", "retry-str", "error-step", "error-seq", "error-status", "error-missing"])
+def test_debrief_progress_fields_are_validated(change):
+    with pytest.raises(SpoolStateError):
+        validate_state(dict(failed_state(), **change))
+
+
+def test_debrief_retry_and_error_accept_their_shapes():
+    validate_state(failed_state(debrief_retry={"attempts": 3, "next_at": NOW + 600}))
+    validate_state(dict(failed_state(), debrief_choice="committing:diary",
+                        debrief_retry={"attempts": 0, "next_at": NOW}))
+
+
+@pytest.mark.parametrize("choice", ["committing:diary", "commit_failed:diary"])
+async def test_sweep_keeps_the_state_of_a_pinned_commit_but_not_its_transcript(tmp_path, choice):
+    # 两种提交态只保留 state.json（补写依据），.jsonl 照常过期
+    sp = await open_spool(tmp_path, vid(51))
+    await sp.append(line(1))
+    await sp.close()
+    await sp.write_state(dict(failed_state(), debrief_choice=choice))
+    _age(sp.state_path, 30)
+    _age(sp.jsonl_path, 30)
+    deleted = await VisitSpool.sweep(tmp_path, NOW)
+    assert sp.state_path.exists() and sp.jsonl_path in deleted
+
+
+@pytest.mark.parametrize("choice", ["committing:diary", "commit_failed:diary"])
+async def test_cap_sweep_reclaims_the_transcript_of_a_pinned_commit_only(tmp_path, monkeypatch, choice):
+    sp = await open_spool(tmp_path, vid(52))
+    await sp.append(line(1))
+    await sp.close()
+    await sp.write_state(dict(settled(failed_state()), debrief_choice=choice))
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    deleted = await VisitSpool.sweep(tmp_path, NOW)
+    assert deleted == [sp.jsonl_path] and sp.state_path.exists()
+    # 只剩 state.json 后再扫也不动它
+    assert await VisitSpool.sweep(tmp_path, NOW) == [] and sp.state_path.exists()
+
+
+async def test_a_committing_visit_drops_its_transcript_once_the_region_is_settled(tmp_path):
+    # 进入提交态后重试只用 debrief_pending：digest 与摘要完成即可删 .jsonl
+    sp = await open_spool(tmp_path, vid(53))
+    await sp.append(line(1))
+    await sp.close()
+    await sp.write_state(dict(settled(failed_state()), debrief_choice="committing:diary"))
+    assert await sp.delete_if_settled() is True
+    assert not sp.jsonl_path.exists() and sp.state_path.exists()
+
+
+async def test_abandon_is_only_allowed_from_a_permanent_failure(tmp_path):
+    sp = VisitSpool(tmp_path, vid(54))
+    await sp.write_state(dict(failed_state(), debrief_choice="committing:diary"))
+    with pytest.raises(SpoolStateError):
+        await sp.mark_forget(final_choice="abandoned")
+    with pytest.raises(SpoolStateError):
+        await sp.mark_forget()
+    await sp.write_state(failed_state(debrief_retry={"attempts": 2, "next_at": NOW}))
+    with pytest.raises(SpoolStateError):
+        await sp.mark_forget()                              # 失败态只能放弃，不能改记「不记」
+    await sp.mark_forget(final_choice="abandoned")
+    state = await sp.read_state()
+    assert state["debrief_choice"] == "abandoned" and state["debrief_pending"] is None
+    assert state["debrief_writes"]["facts"] is True        # 已写成的那步不撤回
+    assert state["debrief_retry"] is None
+    await sp.mark_forget(final_choice="abandoned")          # 幂等
+    with pytest.raises(ValueError):
+        await sp.mark_forget(final_choice="diary")

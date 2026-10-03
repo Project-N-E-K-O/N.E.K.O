@@ -121,9 +121,22 @@ DEBRIEF_CHOICES = (
     "generating:diary",
     "preview:diary",
     "committing:diary",
+    "commit_failed:diary",
     "diary",
     "forget",
+    "abandoned",
 )
+# 「记成日记」提交中 / 永久性失败待用户处理：state.json 里的 debrief_pending 与写入进度是
+# 补写的唯一依据，两种清理都不删它（.jsonl 不因此豁免，重试只需要 state.json）
+_COMMIT_PINNED_CHOICES = ("committing:diary", "commit_failed:diary")
+_DEBRIEF_WRITE_FLAGS = (
+    "facts", "cache", "facts_unconfirmed", "cache_unconfirmed", "facts_inflight", "cache_inflight",
+)
+# mark_forget 的两种终态各自允许从哪些状态进入（同一终态重复记录幂等）
+_FORGET_SOURCES = {
+    "forget": (None, "ask_later", "generating:diary", "preview:diary", "forget"),
+    "abandoned": ("commit_failed:diary", "abandoned"),
+}
 STATE_FIELDS = frozenset({
     "visit_id",
     "own_uid",
@@ -138,6 +151,8 @@ STATE_FIELDS = frozenset({
     "debrief_choice",
     "debrief_pending",
     "debrief_writes",
+    "debrief_retry",
+    "debrief_commit_error",
     "debrief_chip_pending",
     "last_summary_done",
     "memory_enabled",
@@ -288,6 +303,13 @@ def encode_spool_line(line: Mapping[str, Any]) -> bytes:
     return data
 
 
+def new_debrief_writes() -> dict:
+    """Return the initial ``debrief_writes`` progress record (nothing written, nothing in flight)."""
+    record: dict[str, Any] = {name: False for name in _DEBRIEF_WRITE_FLAGS}
+    record["facts_written"] = 0
+    return record
+
+
 def new_state(
     *,
     own_uid: str,
@@ -324,7 +346,9 @@ def new_state(
         "finalized": None,
         "debrief_choice": None,
         "debrief_pending": None,
-        "debrief_writes": {"facts": False, "cache": False},
+        "debrief_writes": new_debrief_writes(),
+        "debrief_retry": None,
+        "debrief_commit_error": None,
         "debrief_chip_pending": False,
         "last_summary_done": False,
         "memory_enabled": memory_enabled,
@@ -349,10 +373,15 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     """Check ``state`` against the canonical schema and return a deep copy.
 
     The field set must match ``STATE_FIELDS`` exactly. ``debrief_choice`` is
-    restricted to ``DEBRIEF_CHOICES``; ``preview:diary`` and
-    ``committing:diary`` require a non-empty ``debrief_pending`` (it is
-    persisted before either state is entered) and ``generating:diary``
-    requires it to be empty. Raises :class:`SpoolStateError`.
+    restricted to ``DEBRIEF_CHOICES``; ``preview:diary``,
+    ``committing:diary`` and ``commit_failed:diary`` require a non-empty
+    ``debrief_pending`` (it is persisted before any of them is entered),
+    ``commit_failed:diary`` also a ``debrief_commit_error``, and
+    ``generating:diary`` an empty one. ``debrief_writes`` carries the
+    two-step progress (``facts`` / ``cache`` done, ``facts_written``,
+    ``*_unconfirmed``, ``*_inflight``); ``debrief_retry`` is null or
+    ``{attempts, next_at}``; ``debrief_commit_error`` is null or
+    ``{step, status, at, seq}``. Raises :class:`SpoolStateError`.
 
     ``visit_id`` is ``None`` only in a document not yet written; with the
     ``visit_id`` argument (every read and write) it must equal it.
@@ -409,7 +438,7 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
         if not isinstance(facts, list) or not all(isinstance(f, str) for f in facts):
             raise SpoolStateError("debrief_pending.facts must be a list of strings")
     pending_empty = pending is None or (not pending["diary"] and not pending["facts"])
-    if choice in ("preview:diary", "committing:diary") and pending_empty:
+    if choice in ("preview:diary",) + _COMMIT_PINNED_CHOICES and pending_empty:
         raise SpoolStateError(f"{choice} requires a persisted debrief_pending")
     if choice == "generating:diary" and pending is not None:
         raise SpoolStateError("generating:diary requires an empty debrief_pending")
@@ -424,10 +453,32 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     writes = state["debrief_writes"]
     if (
         not isinstance(writes, Mapping)
-        or set(writes) != {"facts", "cache"}
-        or not all(isinstance(v, bool) for v in writes.values())
+        or set(writes) != set(_DEBRIEF_WRITE_FLAGS) | {"facts_written"}
+        or not all(isinstance(writes[name], bool) for name in _DEBRIEF_WRITE_FLAGS)
+        or not _is_int(writes["facts_written"]) or writes["facts_written"] < 0
     ):
-        raise SpoolStateError("debrief_writes must be {facts: bool, cache: bool}")
+        raise SpoolStateError(
+            "debrief_writes must be {facts, cache, *_unconfirmed, *_inflight: bool, facts_written: int >= 0}"
+        )
+    retry = state["debrief_retry"]
+    if retry is not None and not (
+        isinstance(retry, Mapping) and set(retry) == {"attempts", "next_at"}
+        and _is_int(retry["attempts"]) and retry["attempts"] >= 0 and _is_number(retry["next_at"])
+    ):
+        # 退避计数与下次时间持久化，重启接着算、不绕过退避
+        raise SpoolStateError("debrief_retry must be null or {attempts: int >= 0, next_at: number}")
+    error = state["debrief_commit_error"]
+    if error is not None and not (
+        isinstance(error, Mapping) and set(error) == {"step", "status", "at", "seq"}
+        and error["step"] in ("facts", "cache") and _is_int(error["status"])
+        and _is_number(error["at"]) and _is_int(error["seq"]) and error["seq"] >= 1
+    ):
+        raise SpoolStateError(
+            "debrief_commit_error must be null or {step: facts|cache, status: int, at: number, seq: int >= 1}"
+        )
+    if choice == "commit_failed:diary" and error is None:
+        # 「写入失败」块要据它说明哪步失败、按 seq 换新块；没有它就重放不出失败块
+        raise SpoolStateError("commit_failed:diary requires a debrief_commit_error")
     for name in ("debrief_chip_pending", "last_summary_done", "memory_enabled"):
         if not isinstance(state[name], bool):
             raise SpoolStateError(f"{name} must be a bool")
@@ -508,14 +559,25 @@ def region_settled(state: Mapping[str, Any]) -> bool:
 
 
 def debrief_settled(state: Mapping[str, Any]) -> bool:
-    """Whether the debrief reached a final outcome (or never applies: memory off)."""
+    """Whether the debrief no longer needs the transcript (or never applies: memory off).
+
+    True for a final outcome (``diary`` with both writes, ``forget``,
+    ``abandoned``) and also for ``committing:diary`` / ``commit_failed:diary``:
+    from then on retries only use ``state.json.debrief_pending``. Those two
+    still pin ``state.json`` itself (see :func:`debrief_pins_state`).
+    """
     if not is_digestable(state):
         return True
     choice = state.get("debrief_choice")
     if choice == "diary":
         writes = state.get("debrief_writes") or {}
         return writes.get("facts") is True and writes.get("cache") is True
-    return choice == "forget"
+    return choice in ("forget", "abandoned") + _COMMIT_PINNED_CHOICES
+
+
+def debrief_pins_state(state: Mapping[str, Any] | None) -> bool:
+    """Whether ``state.json`` must survive both sweeps: a diary commit is in flight or failed."""
+    return bool(state) and state.get("debrief_choice") in _COMMIT_PINNED_CHOICES
 
 
 def visit_settled(state: Mapping[str, Any]) -> bool:
@@ -584,9 +646,11 @@ def _read_state_file(path: Path) -> dict | None:
 
 
 def _retention_exempt(state_path: Path, age_s: float) -> bool:
-    """Whether a visit's files must survive the 7-day expiry this round.
+    """Whether a visit's ``state.json`` must survive the 7-day expiry this round.
 
-    True for an in-flight diary commit (``committing:diary``). When
+    True while a diary commit is in flight or failed permanently
+    (``committing:diary`` / ``commit_failed:diary``): ``debrief_pending``
+    and the write progress are the only basis of the retry. When
     ``state.json`` exists but cannot be read (``OSError``, e.g. locked by
     antivirus or backup) the visit is kept for at most one more retention
     period (``age_s`` below twice the retention), so a transient lock never
@@ -603,7 +667,7 @@ def _retention_exempt(state_path: Path, age_s: float) -> bool:
         logger.warning("visit spool: state %s unreadable (%s); %s",
                        state_path.name, exc, "keeping it this sweep" if keep else "reclaiming")
         return keep
-    return bool(state and state.get("debrief_choice") == "committing:diary")
+    return debrief_pins_state(state)
 
 
 def _names_pair(doc: dict | None, own_char_uid: str, pair_ids: frozenset[str]) -> bool:
@@ -1051,8 +1115,16 @@ class VisitSpool:
             return False
         return await asyncio.to_thread(self._delete_if_settled_sync)
 
-    async def mark_forget(self) -> bool:
+    async def mark_forget(self, *, final_choice: str = "forget") -> bool:
         """Record the debrief choice ``forget`` (no private memory is written).
+
+        ``final_choice='abandoned'`` records the user abandoning a permanently
+        failed diary commit instead: allowed only from ``commit_failed:diary``
+        (or again from ``abandoned``); the step already written is not undone
+        and the spool is deleted by the same rule, the final choice staying
+        ``abandoned`` meanwhile. ``forget`` is allowed from ``null`` /
+        ``ask_later`` / ``generating:diary`` / ``preview:diary`` (or again
+        from ``forget``). Any other state raises :class:`SpoolStateError`.
 
         The ``.jsonl`` is deleted right away only when every digest batch of
         every run and the last-visit summary are done; otherwise it is kept
@@ -1061,13 +1133,18 @@ class VisitSpool:
         the ``.jsonl`` was deleted now.
         """
 
+        if final_choice not in _FORGET_SOURCES:
+            raise ValueError("final_choice must be 'forget' or 'abandoned'")
+
         def mutate(state: dict) -> None:
-            if state["debrief_choice"] in ("committing:diary", "diary"):
+            if state["debrief_choice"] not in _FORGET_SOURCES[final_choice]:
+                # 已开始 / 已完成的提交不能改记成「不记」；放弃只对永久性失败开放
                 raise SpoolStateError(
-                    f"cannot forget from debrief_choice={state['debrief_choice']!r}"
+                    f"cannot record {final_choice} from debrief_choice={state['debrief_choice']!r}"
                 )
-            state["debrief_choice"] = "forget"
+            state["debrief_choice"] = final_choice
             state["debrief_pending"] = None
+            state["debrief_retry"] = None
             state["debrief_chip_pending"] = False
 
         async def txn() -> bool:
@@ -1341,9 +1418,11 @@ class VisitSpool:
                 if now - st.st_mtime <= _RETENTION_S:
                     remaining.append((visit_id, suffix, path, st))
                     continue
-                # 「记成日记」写到一半（committing:diary）不设期限：state.json 里的
-                # debrief_writes / debrief_pending 是补写的唯一依据，删了就永远半截
-                if suffix not in _UPLOAD_SUFFIXES and _retention_exempt(
+                # 「记成日记」提交中 / 永久性失败待处理（committing / commit_failed:diary）
+                # 不设期限：state.json 里的 debrief_writes / debrief_pending 是补写的唯一依据，
+                # 删了就永远半截。只豁免 state.json：.jsonl 照常到期，否则几场被忽略的
+                # 永久失败就能把转录一直堆着
+                if suffix == STATE_SUFFIX and _retention_exempt(
                     state_path, state_age.get(visit_id, now - st.st_mtime),
                 ):
                     remaining.append((visit_id, suffix, path, st))
@@ -1386,6 +1465,9 @@ class VisitSpool:
                 state = _try_read_state(state_path)
                 if state is None or not visit_settled(state):
                     continue
+                # 提交中 / 永久性失败的场次（锁内重判）：转录可以回收，state.json 必须留着
+                if debrief_pins_state(state):
+                    files = [(p, st) for p, st in files if p != state_path]
                 # 这场还被某个实例开着写（关闭排在队列里）：整场跳过，不能只删 state.json
                 # 留下转录，下一轮就再也判不出它已结清
                 with _OPEN_SPOOLS_LOCK:
@@ -1403,11 +1485,13 @@ class VisitSpool:
 
         1. Every file older than ``VISIT_SPOOL_RETENTION_DAYS`` (by mtime) is
            deleted, pending uploads included (their seven-day limit), except
-           the files of a visit whose diary commit is in flight
-           (``committing:diary``): those stay until both writes finish.
+           the ``state.json`` of a visit whose diary commit is in flight or
+           failed permanently (``committing:diary`` / ``commit_failed:diary``):
+           it stays until both writes finish or the user abandons.
         2. If the directory still exceeds ``VISIT_SPOOL_DIR_CAP_BYTES``, only
-           settled visits (digest and last summary done, debrief final) are
-           reclaimed, oldest first, until it fits. Unsettled visits, however
+           settled visits (digest and last summary done, debrief final or
+           committing) are reclaimed, oldest first, until it fits; a
+           committing / failed visit keeps its ``state.json``. Unsettled visits, however
            large, and pending ``.upload.json`` / ``.upload.jsonl`` files are
            never deleted for size; the admission cap
            ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them instead.
