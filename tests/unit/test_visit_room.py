@@ -979,3 +979,19 @@ def test_remembered_aborted_line_ids_are_bounded():
         room.on_incoming_abort(f"g:{i}", 1.0, reason="human_interrupt")
     assert len(room._aborted) <= _SEEN_LNS_MAX
     assert f"g:{_SEEN_LNS_MAX * 3 - 1}" in room._aborted
+
+
+def test_a_started_cat_line_reserves_its_text_slot():
+    # 19 条已发 + 1 行猫娘在说：人类行不能再占第 20 个名额，否则收口的 text 成了第 21 条
+    room = make_room("host")
+    own = Own(room)
+    for i in range(19):
+        own.human(i * 0.1)
+    assert room.may_start_cat_line(2.0) == (True, "ok")
+    cat = own.new_ref()
+    room.on_local_line_started(cat, None, False, 2.0)
+    assert not room.can_accept_local_line(2.5)
+    room.on_local_line_done(cat, False, 3.0)
+    assert not room.can_accept_local_line(3.5)        # 已发 20 条
+    assert room.can_accept_local_line(10.05)          # 只滑出一条：收口后预留已释放，19 < 20
+    assert room.can_accept_local_line(10.25)          # 最早的几条滑出窗口

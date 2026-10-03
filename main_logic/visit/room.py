@@ -382,6 +382,9 @@ class VisitRoom:
 
         # 限速
         self._own_text_sends: deque[float] = deque()
+        # 已开口、还没发 text{final} 的本侧猫娘行：每行收口时必发一条 text，开口即占名额，
+        # 免得说话途中插进来的人类行用掉最后一个名额、收口的 text 越过硬上限
+        self._own_text_reserved: set[str] = set()
         self._in_tokens = self._in_burst
         self._in_last: Optional[float] = None
         self.inbound_text_accepted = 0
@@ -962,9 +965,13 @@ class VisitRoom:
             self._own_text_sends.popleft()
 
     def can_accept_local_line(self, now: float) -> bool:
-        """Own ``text`` hard limit: fewer than 20 sent in the last 10 s (cat + human)."""
+        """Own ``text`` hard limit: fewer than 20 in the last 10 s (cat + human).
+
+        A cat line that has started but not yet sent its ``text{final}`` holds
+        one reserved slot until :meth:`on_local_line_done`.
+        """
         self._prune_own_text(now)
-        return len(self._own_text_sends) < self._own_text_limit
+        return len(self._own_text_sends) + len(self._own_text_reserved) < self._own_text_limit
 
     def on_local_human_line(self, ref: LineRef, now: float) -> RoomEffects:
         """The local human's line was accepted (call after ``can_accept_local_line``).
@@ -998,6 +1005,7 @@ class VisitRoom:
         self._local_speaking_goodbye = bool(goodbye)
         self._local_speaking_reply_to = reply_to
         self.pending_reply = None
+        self._own_text_reserved.add(ref.line_id)
         if goodbye:
             w = self._wrap
             if self._phase == "active":
@@ -1022,6 +1030,7 @@ class VisitRoom:
         for the host's farewell unless it already started.
         """
         eff = RoomEffects()
+        self._own_text_reserved.discard(ref.line_id)
         if self.local_speaking is not None and self.local_speaking.line_id == ref.line_id:
             self.local_speaking = None
             self._local_speaking_goodbye = False

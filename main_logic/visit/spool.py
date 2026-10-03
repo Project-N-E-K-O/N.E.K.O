@@ -326,9 +326,11 @@ def new_state(
 def _check_batch_map(value: Any, where: str) -> None:
     if not isinstance(value, dict):
         raise SpoolStateError(f"{where} must be an object")
+    # 写入方按 0..N-1 建批次表：有缺口（{"1": true}）或非规范写法（"01"）说明丢了批次，
+    # 结清判定只看剩下的值，会在缺的那批从未确认时删掉转录
+    if set(value) != {str(i) for i in range(len(value))}:
+        raise SpoolStateError(f"{where} keys must be the batch numbers 0..N-1")
     for key, done in value.items():
-        if not (isinstance(key, str) and key.isdigit()):
-            raise SpoolStateError(f"{where} keys must be batch numbers")
         if not isinstance(done, bool):
             raise SpoolStateError(f"{where}[{key}] must be a bool")
 

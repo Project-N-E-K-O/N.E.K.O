@@ -702,8 +702,12 @@ class PeerRoster:
         ``ended_at``. Never creates entries. Returns whether it wrote. The
         entry is read strictly: a damaged entry (for example a stored summary
         whose ``ended_at`` is not a number) raises :class:`RosterCorruptError`
-        instead of being overwritten.
+        instead of being overwritten. ``ended_at`` must be a finite number
+        (``ValueError`` otherwise), the same rule strict reads apply.
         """
+        if not _is_finite_number(ended_at):
+            # 写进去的 bool / NaN 会让之后的严格读把整个条目判坏，连清除都删不掉它
+            raise ValueError("ended_at must be a finite number")
 
         def fn(data: dict):
             # 严格读：已有摘要的 ended_at 坏了时无从判断新旧，覆盖会把可恢复的记录冲掉

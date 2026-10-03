@@ -643,3 +643,14 @@ async def test_set_last_summary_refuses_to_overwrite_a_damaged_summary(tmp_path,
     with pytest.raises(RosterCorruptError):
         await roster.clear_last_summary(PEER_X, "A")
     assert roster.path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("bad", [True, float("nan"), float("inf"), "5"])
+async def test_set_last_summary_refuses_a_malformed_ended_at(tmp_path, bad):
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair, _ = await _upsert(roster, PEER_X, "A")
+    before = roster.path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        await roster.set_last_summary(PEER_X, "A", visit_id="V" * 22, ended_at=bad,
+                                      text="t", pair_id=pair)
+    assert roster.path.read_text(encoding="utf-8") == before

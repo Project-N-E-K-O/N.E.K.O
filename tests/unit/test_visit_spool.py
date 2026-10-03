@@ -1109,3 +1109,19 @@ async def test_cancelled_mark_forget_still_deletes_a_settled_transcript(tmp_path
             break
         await asyncio.sleep(0.01)
     assert not sp.jsonl_path.exists()
+
+
+@pytest.mark.parametrize("batches", [{"1": True}, {"0": True, "2": True}, {"00": True}, {"01": True, "0": True}])
+def test_digest_batch_maps_must_be_contiguous_from_zero(batches):
+    # 缺批次的表会让结清判定只看剩下的值，转录在缺的那批从未确认时被删
+    from main_logic.visit.spool import validate_state
+
+    state = settled(state_for())
+    validate_state(state)
+    for part in ("group", "segments"):
+        damaged = dict(state)
+        record = dict(state["digest_writes"]["0"])
+        record[part] = batches
+        damaged["digest_writes"] = {"0": record}
+        with pytest.raises(SpoolStateError):
+            validate_state(damaged)
