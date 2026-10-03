@@ -520,12 +520,18 @@ def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch)
         asyncio.run(writer.ablock(UID, display_name_at_block="Mimi"))
         blocked.set()
 
+    # load 停在读盘之后时是否持有这把逐路径锁：这正是被测的性质，判定不依赖计时
+    from main_logic.visit.subjects import path_lock
+
+    held = path_lock(verifier.path).locked()
     blocker = threading.Thread(target=block)
     blocker.start()
-    finished_early = blocked.wait(0.5)        # 有锁：拉黑等 load 完成
+    if not held:
+        # 锁失效时确定地复现「拉黑先完成、旧表随后覆盖」：等拉黑做完再放行 load
+        assert blocked.wait(5)
     release_load.set()
     loader.join(10)
     blocker.join(10)
     monkeypatch.undo()
-    assert not finished_early
-    assert verifier.is_blocked(UID)
+    assert held, "load must hold the per-path lock while it refreshes the shared snapshot"
+    assert blocked.is_set() and verifier.is_blocked(UID)
