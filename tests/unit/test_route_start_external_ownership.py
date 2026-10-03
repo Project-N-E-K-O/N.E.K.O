@@ -435,6 +435,37 @@ async def test_a_state_whose_release_keeps_failing_is_dropped_after_the_retry_li
     assert cue[DELIVERY_ACK_FUTURE_KEY].result() is False
 
 
+@pytest.mark.asyncio
+async def test_a_state_dropped_after_its_token_left_still_declines_parked_callbacks(
+    _icebreaker_clean, monkeypatch,
+):
+    """The token is gone but a later step failed: the next sweep drops the
+    state without a release attempt, and must still decline what is parked.
+
+    Mutation: declining the inbox only on the retry-limit path turns this red.
+    """
+    from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+    from main_logic.watch_together.live import LiveInbox
+
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    inbox = LiveInbox()
+    cue = _parked_cue()
+    assert inbox.accept(cue) is True
+    with reset_game_route_state():
+        gr_runtime._game_route_states[("Lan", "drawing_guess")] = {
+            "lanlan_name": "Lan",
+            "game_type": "drawing_guess",
+            "game_route_active": False,
+            "exit_started_at": 0.0,
+            _TAKEOVER_CALLBACK_INBOX_KEY: inbox,
+        }
+
+        await gr_runtime._drop_expired_route_states(now=10**9)
+
+        assert ("Lan", "drawing_guess") not in gr_runtime._game_route_states
+    assert cue[DELIVERY_ACK_FUTURE_KEY].result() is False
+
+
 class _LanguageManager:
     def __init__(self):
         self.user_language = "zh-CN"

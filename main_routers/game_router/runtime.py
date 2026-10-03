@@ -5132,8 +5132,8 @@ async def cleanup_expired_sessions():
             logger.warning("🎮 清理过期游戏路由状态失败: err=%s", e, exc_info=True)
 
 
-# How many sweeps retry a state whose release keeps failing before it is
-# dropped anyway (logged as an error; its token may still be held).
+# How many failed sweeps before a state whose release keeps failing is dropped
+# anyway (logged as an error; its token may still be held).
 _EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS = 5
 _EXPIRED_ROUTE_RELEASE_FAILURES_KEY = "_expired_release_failures"
 
@@ -5155,9 +5155,11 @@ async def _drop_expired_route_states(now: float) -> None:
     state (and whatever token it still holds) in place for the next sweep
     instead of dropping the token with it, and does not stop the others.
     After ``_EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS`` failed sweeps the state is
-    dropped anyway with an error log, and its parked callbacks are declined.
-    The retry covers the release itself: once the token is gone, a failure in
-    the later steps (inbox handback, voice resume) is not retried.
+    dropped anyway with an error log. Whatever path drops a state, callbacks
+    still parked in its inbox are declined right before, so none is left
+    waiting for a delivery ack. The retry covers the release itself: once the
+    token is gone, a failure in the later steps (inbox handback, voice resume)
+    is not retried.
     """
     expired_routes = [
         (k, v) for k, v in list(_game_route_states.items())
@@ -5198,16 +5200,22 @@ async def _drop_expired_route_states(now: float) -> None:
                     key, failures, exc, exc_info=failures == 1,
                 )
                 continue
+            token_held = state.get(_TAKEOVER_TOKEN_KEY) is not None
             logger.error(
-                "🎮 清理过期游戏路由状态连续失败 %s 次，放弃释放并丢弃（takeover 令牌可能仍被持有）: key=%s err=%s",
-                failures, key, exc, exc_info=True,
+                "🎮 清理过期游戏路由状态连续失败 %s 次，放弃并丢弃%s: key=%s err=%s",
+                failures,
+                "（takeover 令牌可能仍被持有）" if token_held else "",
+                key,
+                exc,
+                exc_info=True,
             )
-            # Parked callbacks would otherwise never get their delivery ack.
-            try:
-                _close_takeover_callback_inbox(state, None, handoff=False)
-            except Exception as close_exc:
-                logger.warning("🎮 丢弃过期游戏路由时拒收暂扣回调失败: key=%s err=%s", key, close_exc)
         # The same holds after this key's own voice resume.
         if _game_route_states.get(key) is state:
+            # Decline whatever is still parked (a no-op once the inbox was
+            # closed on the normal path), so no callback is left without ack.
+            try:
+                _close_takeover_callback_inbox(state, handoff=False)
+            except Exception as close_exc:
+                logger.warning("🎮 丢弃过期游戏路由时拒收暂扣回调失败: key=%s err=%s", key, close_exc)
             _game_route_states.pop(key, None)
             logger.info("🎮 清理过期游戏路由状态: %s", key)
