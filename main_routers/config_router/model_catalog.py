@@ -247,15 +247,18 @@ async def list_models(req: ModelListRequest) -> dict:
 
     result: dict[str, Any] = _failure("unknown", "没有可用的端点")
     deadline = asyncio.get_running_loop().time() + _MODEL_LIST_TIMEOUT_SECONDS
-    for url in target["urls"]:
+    for index, url in enumerate(target["urls"]):
+        remaining = max(0, deadline - asyncio.get_running_loop().time())
+        # Reserve a fair share of the total budget for each remaining fallback.
+        candidate_timeout = remaining / (len(target["urls"]) - index)
         try:
             result = await asyncio.wait_for(
                 _fetch_models(url, target["api_key"], target["provider_type"]),
-                timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                timeout=candidate_timeout,
             )
         except asyncio.TimeoutError:
             result = _failure("timeout", "拉取模型列表超时")
-            break
+            continue
         if result.get("success"):
             logger.info(
                 "[ModelList] %s 拉取到 %d 个模型",

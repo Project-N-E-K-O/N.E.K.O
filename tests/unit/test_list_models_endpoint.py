@@ -97,6 +97,33 @@ def test_model_list_total_timeout_cancels_fetch(config_manager, model_catalog, m
     assert cancelled == [True]
 
 
+@pytest.mark.unit
+def test_slow_first_candidate_leaves_time_for_healthy_fallback(config_manager, model_catalog, monkeypatch):
+    calls = []
+    cancelled = []
+
+    async def fetch(url, *_args):
+        calls.append(url)
+        if url == 'https://slow.test/v1':
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(url)
+        return {'success': True, 'models': [{'id': 'fallback-model'}], 'resolved_url': url}
+
+    monkeypatch.setattr(model_catalog, '_MODEL_LIST_TIMEOUT_SECONDS', 0.1)
+    monkeypatch.setattr(model_catalog, '_resolve_provider_target', lambda *_args: {
+        'urls': ['https://slow.test/v1', 'https://healthy.test/v1'],
+        'api_key': 'sk-test', 'provider_type': 'openai_compatible',
+    })
+    monkeypatch.setattr(model_catalog, '_fetch_models', fetch)
+    result = _run(model_catalog, provider_key='qwen_intl')
+    assert result['success'] is True
+    assert result['resolved_url'] == 'https://healthy.test/v1'
+    assert calls == ['https://slow.test/v1', 'https://healthy.test/v1']
+    assert cancelled == ['https://slow.test/v1']
+
+
 def _status_error(error_cls, status_code: int):
     request = httpx.Request('GET', 'https://upstream.example.test/v1/models')
     response = httpx.Response(status_code, request=request)
