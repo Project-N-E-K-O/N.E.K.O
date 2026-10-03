@@ -398,6 +398,32 @@ def test_adaptive_option_keeps_niri_virtual_coordinate_ownership(page: Page):
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("active", [False, True])
+def test_popup_uses_virtual_bounds_only_for_active_niri_crop(page: Page, active):
+    page.set_viewport_size({"width": 400, "height": 400})
+    page.set_content('''
+        <div style="position:fixed;left:300px;top:20px;width:48px;height:48px">
+          <button id="live2d-btn-mic" style="width:48px;height:48px"></button>
+          <div id="live2d-popup-mic" style="position:absolute;width:220px;height:120px;
+            transform:translateX(-10px)"></div>
+        </div>
+    ''')
+    page.evaluate("""active=>{
+        window.__virtualRectCalls=0;
+        window.__nekoNiriPetPhysicalCrop={isActive:()=>active,
+            getState:()=>({virtualBounds:{width:1920,height:1080}}),
+            toVirtualRect:r=>{window.__virtualRectCalls++;return {...r,x:r.x+1000,y:r.y+100}}};
+    }""", active)
+    page.add_script_tag(path=str(ROOT / "static/avatar/avatar-popup-common.js"))
+    result = page.evaluate("""()=>{
+        const popup=document.getElementById('live2d-popup-mic');
+        const position=AvatarPopupUI.positionPopup(popup,{buttonId:'mic'});
+        return {opensLeft:position.opensLeft,usedVirtualRect:window.__virtualRectCalls>0};
+    }""")
+    assert result == {"opensLeft": not active, "usedVirtualRect": active}
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("width,height", [(240, 160), (260, 160), (240, 180), (280, 180)])
 def test_compact_panel_remeasures_wrapped_header_and_relaxes_footer(page: Page, width, height):
     install_voice_popover_harness(page, deferred_permission=False)
