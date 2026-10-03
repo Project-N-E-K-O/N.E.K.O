@@ -937,3 +937,18 @@ def test_mismatched_protocol_hello_still_requires_a_positive_seq():
     with pytest.raises(ValueError):
         vw.decode_msg(json.dumps(future), cmd=1)
     assert vw.decode_msg(json.dumps(dict(future, seq=1)), cmd=1)["seq"] == 1
+
+
+def test_wire_budget_stops_where_a_capping_sanitizer_starts_cutting():
+    # sanitize_relay_text 按 token 截断：只量截断后的文本会一直放行，TTS 念的比
+    # 最终 text 里带的多，两边历史分叉
+    from main_logic.visit.sanitize import clean_relay_text, sanitize_relay_text
+
+    budget = vw.WireBudget(visit_id=VID, header=_HEADER, sanitize=sanitize_relay_text,
+                           clean=clean_relay_text)
+    for _ in range(400):
+        budget.take("word " * 5)
+        if budget.exhausted:
+            break
+    assert budget.exhausted
+    assert budget.outbound_text() == clean_relay_text(budget.accepted_text)

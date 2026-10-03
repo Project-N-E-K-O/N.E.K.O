@@ -282,6 +282,7 @@ async def test_hello_ticket_never_persisted(tmp_path):
     # 已 ack 之后重连，同样从内存重发同一 hello
     tx.on_ack(2, 2.0)
     assert tx.resend_hello(3.0)
+    assert tx.resend_hello(3.0) and tx.resend_hello(3.0)   # 连续重连只留一份待发
     resent = tx.due(3.0)
     assert [f.payload["ticket"] for f in resent if f.t == "hello"] == [TICKET]
     await tx.close()

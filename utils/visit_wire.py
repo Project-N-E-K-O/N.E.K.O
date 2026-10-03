@@ -1191,7 +1191,13 @@ class WireBudget:
     ``redact`` / ``sanitize`` are injected (``redact_outbound`` /
     ``sanitize_relay_text`` live in ``main_logic``). ``redact`` may return a
     plain string or the ``(text, spans)`` tuple described on
-    ``ClauseSplitter``; only the text is used here. The search assumes the
+    ``ClauseSplitter``; only the text is used here. A ``sanitize`` that caps
+    its output (``sanitize_relay_text`` cuts by tokens and bytes) must come
+    with ``clean``, the same chain without the caps (``clean_relay_text``):
+    a candidate whose sanitized form differs from its cleaned form was cut,
+    so it does not fit. Without it the budget would only ever measure the
+    already-cut text and keep accepting deltas TTS would speak but the final
+    ``text`` would not carry. The search assumes the
     outbound size grows with the buffer; if a redaction makes it shrink, the
     accepted prefix is still guaranteed to fit, merely not maximal.
     """
@@ -1204,12 +1210,14 @@ class WireBudget:
         max_pieces: int = VISIT_PIECES_MAX,
         redact: RedactFn = _identity,
         sanitize: Callable[[str], str] = _identity,
+        clean: Optional[Callable[[str], str]] = None,
     ) -> None:
         self._visit_id = require_visit_id(visit_id)
         self._header = dict(header)
         self._max_pieces = int(max_pieces)
         self._redact = redact
         self._sanitize = sanitize
+        self._clean = clean
         self._raw = ""
         self.exhausted = False
 
@@ -1223,7 +1231,10 @@ class WireBudget:
         return self._sanitize(_redacted_only(self._redact, self._raw))
 
     def _fits(self, raw: str) -> bool:
-        out = self._sanitize(_redacted_only(self._redact, raw))
+        redacted = _redacted_only(self._redact, raw)
+        out = self._sanitize(redacted)
+        if self._clean is not None and out != self._clean(redacted):
+            return False                      # sanitize 自己截掉了内容
         if len(out.encode("utf-8")) > VISIT_TEXT_MAX_BYTES:
             return False
         payload = widest_text_payload(self._header, out)

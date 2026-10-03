@@ -474,7 +474,9 @@ class VisitOutbox:
             if item.emitted and item.seq not in self._urgent:
                 self._urgent.appendleft(item.seq)
             return True
-        self._oneshot.append(item)
+        # 暂停 / 令牌不足时连续多次重连只留一份：重复的带票帧会占满限速桶、拖住必达消息
+        if not any(queued is item for queued in self._oneshot):
+            self._oneshot.append(item)
         return True
 
     # ------------------------------------------------------------------

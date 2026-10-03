@@ -361,3 +361,19 @@ def test_partial_tail_spans_map_back_to_the_raw_tail():
     )
     assert out == "和家人说了家人"
     assert [(sp.raw_start, sp.raw_end) for sp in spans] == [(1, 6), (8, 10)]
+
+
+@pytest.mark.parametrize("attack", [
+    "<< /visit_data>",
+    '<<</visit_data nonce="x">',
+    "＜‹/visit_data>",
+    "< < /visit_data>",
+    "<<<<visit_data>",
+])
+def test_bracket_runs_cannot_rebuild_an_envelope_tag(attack):
+    # 一遍只摘一个尖括号的话，前面多垫一个就又拼出合法标签
+    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE, clamp_peer_line, sanitize_relay_text
+
+    for out in (escape_envelope(attack), clamp_peer_line(attack), sanitize_relay_text(attack)):
+        assert not _ENVELOPE_TAG_RE.search(out)
+        assert escape_envelope(out) == out

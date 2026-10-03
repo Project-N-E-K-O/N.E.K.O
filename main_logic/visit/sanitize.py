@@ -109,12 +109,20 @@ def escape_envelope(text: str) -> str:
 
     Runs of three or more ``=`` (ASCII or full-width) fold to a single ``=``
     so no ``======X======`` delimiter can be forged; any opening of the
-    envelope tag loses its angle bracket. Idempotent.
+    envelope tag loses its angle bracket, repeated until none is left (a run
+    such as ``<< /visit_data>`` would otherwise leave a valid tag behind).
+    Idempotent.
     """
     if not text:
         return ""
     text = _DELIMITER_RUN_RE.sub("=", text)
-    return _ENVELOPE_TAG_RE.sub(lambda m: m.group(0)[1:].lstrip(), text)
+    # 一遍只摘掉紧贴标签的那个尖括号：前面再多一个就又拼出合法标签，所以做到不动点。
+    # 每遍至少删一个字符，必然终止
+    while True:
+        escaped = _ENVELOPE_TAG_RE.sub(lambda m: m.group(0)[1:].lstrip(), text)
+        if escaped == text:
+            return text
+        text = escaped
 
 
 def make_envelope_nonce() -> str:
@@ -250,6 +258,16 @@ def sanitize_relay_text(text: str, *, max_tokens: int = VISIT_LINE_MAX_TOKENS) -
     text = defang_markdown_media(text)
     text = _truncate_tokens(text, max_tokens)
     return clamp_text_utf8(text, VISIT_TEXT_MAX_BYTES)
+
+
+def clean_relay_text(text: str) -> str:
+    """:func:`sanitize_relay_text` without its size caps (no token / byte cut).
+
+    For callers that must tell whether the capped form lost text: the capped
+    result differs from this one exactly when a cap cut something (the wire
+    budget passes it as ``WireBudget(clean=...)``).
+    """
+    return defang_markdown_media(escape_envelope(strip_control_chars(text or "")))
 
 
 def clamp_peer_line(text: str, *, max_tokens: int = VISIT_LINE_MAX_TOKENS) -> str:
