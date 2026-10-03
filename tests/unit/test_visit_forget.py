@@ -666,3 +666,21 @@ async def test_close_refuses_a_log_with_pending_steps(tmp_path):
                                 forget_subject=FakeMemoryServer().forget,
                                 void_pending=_no_void) is True
     assert await log.load(rev_id) is None
+
+
+async def test_mark_done_refuses_out_of_order_steps(tmp_path):
+    # 乱序记完成会写出非前缀 done_steps，之后整份日志都读不出来
+    from main_logic.visit.forget import STEP_WIPE_SPOOL as _WIPE
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    plan = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
+    rev_id = await log.open_plan(plan)
+    with pytest.raises(ValueError):
+        await log.mark_done(rev_id, _WIPE)
+    await log.mark_done(rev_id, plan.steps[0])
+    await log.mark_done(rev_id, plan.steps[0])          # 已完成的重复记录：幂等
+    record = await log.load(rev_id)
+    assert record["done_steps"] == [plan.steps[0]]
+    assert await log.list_open() != []

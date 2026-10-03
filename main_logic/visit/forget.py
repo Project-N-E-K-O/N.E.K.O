@@ -381,6 +381,11 @@ class RevocationLog:
                 raise ValueError(f"unknown revocation step {step!r}")
             if step in record["done_steps"]:
                 return
+            # 只接受下一个待做步骤：乱序记完成会写出非前缀的 done_steps，之后每次读取都
+            # 被校验拒绝，list_all_open 随之全局 fail closed、挡住重放与新串门
+            pending = record["steps"][len(record["done_steps"])]
+            if step != pending:
+                raise ValueError(f"revocation step {step!r} is not the next pending step")
             record["done_steps"].append(step)
             record["updated_at"] = now
             atomic_write_json(path, record)
@@ -480,7 +485,11 @@ class RevocationLog:
         return copy.deepcopy(record)
 
     async def mark_done(self, rev_id: str, step: str, *, now: float | None = None) -> None:
-        """Record ``step`` as done (idempotent)."""
+        """Record ``step`` as done (idempotent).
+
+        Only the next pending step may be recorded; any other step raises
+        ``ValueError`` so ``done_steps`` always stays a prefix of ``steps``.
+        """
         await asyncio.to_thread(
             self._mark_done_sync, rev_id, step, time.time() if now is None else now
         )

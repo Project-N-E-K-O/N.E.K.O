@@ -699,11 +699,15 @@ class PeerRoster:
         Writes only when ``by_char[own_char]`` exists and its ``pairs`` holds
         ``pair_id`` (a completed "forget this person" must not be undone by a
         late summary), and only when no stored summary has a later
-        ``ended_at``. Never creates entries. Returns whether it wrote.
+        ``ended_at``. Never creates entries. Returns whether it wrote. The
+        entry is read strictly: a damaged entry (for example a stored summary
+        whose ``ended_at`` is not a number) raises :class:`RosterCorruptError`
+        instead of being overwritten.
         """
 
         def fn(data: dict):
-            entry = self._char_view(data, peer_uid, own_char)
+            # 严格读：已有摘要的 ended_at 坏了时无从判断新旧，覆盖会把可恢复的记录冲掉
+            entry = self._char_view_strict(data, peer_uid, own_char)
             if entry is None:
                 return False, False
             pairs = entry.get("pairs")
@@ -740,10 +744,14 @@ class PeerRoster:
         return await asyncio.to_thread(self._read, fn)
 
     async def clear_last_summary(self, peer_uid: str, own_char: str) -> bool:
-        """Delete ``by_char[own_char].last_summary`` of one person (first forget step)."""
+        """Delete ``by_char[own_char].last_summary`` of one person (first forget step).
+
+        Reads strictly: a damaged entry raises :class:`RosterCorruptError` so
+        the revocation step stays pending instead of being recorded as done.
+        """
 
         def fn(data: dict):
-            entry = self._char_view(data, peer_uid, own_char)
+            entry = self._char_view_strict(data, peer_uid, own_char)
             if entry is None or "last_summary" not in entry:
                 return False, False
             del entry["last_summary"]

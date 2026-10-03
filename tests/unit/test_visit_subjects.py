@@ -621,3 +621,25 @@ async def test_upsert_refuses_a_pair_id_not_derived_from_the_pair(tmp_path):
         await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
                             char_tag="f" * 32, char_display_name="cat", now=1.0)
     assert not roster.path.exists()
+
+
+@pytest.mark.parametrize("bad_ended_at", ["10", True, float("nan")])
+async def test_set_last_summary_refuses_to_overwrite_a_damaged_summary(tmp_path, bad_ended_at):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair, _ = await _upsert(roster, PEER_X, "A")
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]["last_summary"] = {
+        "visit_id": "V" * 22, "ended_at": bad_ended_at, "text": "old",
+    }
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.set_last_summary(PEER_X, "A", visit_id="W" * 22, ended_at=5.0,
+                                      text="new", pair_id=pair)
+    with pytest.raises(RosterCorruptError):
+        await roster.clear_last_summary(PEER_X, "A")
+    assert roster.path.read_text(encoding="utf-8") == before
