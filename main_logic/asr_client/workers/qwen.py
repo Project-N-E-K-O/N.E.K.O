@@ -51,7 +51,6 @@ _QWEN_FINISH_TIMEOUT_SECONDS = 3.0
 _QWEN_SETUP_TIMEOUT_SECONDS = 2.0
 _QWEN_RECOVERY_TIMEOUT_SECONDS = 12.0
 _QWEN_RECONNECT_MAX_ATTEMPTS = 3
-_QWEN_PENDING_PAUSE_MAX_AGE_SECONDS = 1.5
 # Local pause candidates do not take endpoint authority away from Qwen.  They
 # only start this grace period; resumed speech or a provider endpoint cancels
 # it.  If the provider remains silent, session.finish asks it to settle the
@@ -117,10 +116,10 @@ class _QwenConnectionState:
     fallback_key: _ItemKey | None = None
     fallback_timer_task: asyncio.Task[None] | None = None
     pending_local_pause: tuple[int, int] | None = None
-    pending_local_pause_at: float = 0.0
-    local_speech_started_at: float = 0.0
+    local_speech_cycle: int = 0
+    provider_speech_cycles: dict[int, int] = field(default_factory=dict)
+    last_provider_final_cycle: int = -1
     local_speech_active: bool = False
-    last_provider_final_at: float = 0.0
     provider_endpoint_utterance_ids: set[int] = field(default_factory=set)
     reconnect_after_finish: bool = False
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
@@ -234,6 +233,9 @@ def _qwen_cancel_provider_fallback(
 
 
 def _qwen_retire_provider_key(state: _QwenConnectionState, key: _ItemKey) -> None:
+    state.last_provider_final_cycle = max(
+        state.last_provider_final_cycle, state.provider_speech_cycles.pop(key[2], 0)
+    )
     state.provider_endpoint_utterance_ids.discard(key[2])
     if state.current_provider_utterance_id == key[2]:
         state.current_provider_utterance_id = None
@@ -525,7 +527,13 @@ async def _qwen_sender(
                 if (
                     key is not None
                     and state.fallback_due.is_set()
-                    and key[2] == state.current_provider_utterance_id
+                    and (
+                        key[2] == state.current_provider_utterance_id
+                        or (
+                            state.pending_local_pause == (key[0], key[1])
+                            and key[2] == state.next_utterance_id
+                        )
+                    )
                     and key[2] not in state.provider_endpoint_utterance_ids
                 ):
                     _qwen_cancel_provider_fallback(state)
@@ -564,10 +572,20 @@ async def _qwen_sender(
                     if config.endpointing_mode == "provider":
                         if request.speech_active:
                             if not state.local_speech_active:
-                                state.local_speech_started_at = time.monotonic()
+                                state.local_speech_cycle += 1
+                                # Provider VAD can detect the initial onset
+                                # before the local detector confirms it.
+                                current = state.current_provider_utterance_id
+                                if current is not None and state.provider_speech_cycles.get(current) == 0:
+                                    state.provider_speech_cycles[current] = state.local_speech_cycle
                             state.local_speech_active = True
                             _qwen_cancel_provider_fallback(state)
-                        elif state.current_provider_utterance_id is not None:
+                        elif (
+                            state.current_provider_utterance_id is not None
+                            and state.provider_speech_cycles.get(
+                                state.current_provider_utterance_id, 0
+                            ) == state.local_speech_cycle
+                        ):
                             state.local_speech_active = False
                             key = (
                                 request.generation,
@@ -577,18 +595,20 @@ async def _qwen_sender(
                             if key[2] not in state.provider_endpoint_utterance_ids:
                                 _qwen_arm_provider_fallback(state, key)
                         elif (
-                            state.next_utterance_id == 1
-                            or state.local_speech_started_at > state.last_provider_final_at
+                            state.local_speech_cycle > state.last_provider_final_cycle
                         ):
-                            # The local pause can reach the worker before the
-                            # provider's speech_started event. Retain it by
-                            # generation and buffer epoch so that the later
-                            # provider utterance can arm the same fallback.
+                            # A pending pause owns a fresh local speech cycle,
+                            # not the arrival time of another turn's final.
+                            # Start its bounded grace even without a provider
+                            # item: session.finish can settle buffered speech.
+                            _qwen_arm_provider_fallback(state, (
+                                request.generation, request.buffer_epoch,
+                                state.next_utterance_id,
+                            ))
                             state.pending_local_pause = (
                                 request.generation,
                                 request.buffer_epoch,
                             )
-                            state.pending_local_pause_at = time.monotonic()
                             state.local_speech_active = False
                         else:
                             state.local_speech_active = False
@@ -791,15 +811,18 @@ async def _qwen_receiver(
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
                 pending_pause = state.pending_local_pause
-                _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
+                # Adopt the already-running grace; a delayed start must not
+                # discard the pause or extend its recovery deadline.
+                pending_fallback = (
+                    pending_pause == (key[0], key[1]) and state.fallback_key == key
+                )
+                if not pending_fallback:
+                    _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
                 state.pending_local_pause = None
                 state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
-                if (
-                    pending_pause == (key[0], key[1])
-                    and time.monotonic() - state.pending_local_pause_at
-                    <= _QWEN_PENDING_PAUSE_MAX_AGE_SECONDS
-                ):
+                state.provider_speech_cycles[key[2]] = state.local_speech_cycle
+                if pending_pause == (key[0], key[1]) and not pending_fallback and not state.reconnect_after_finish:
                     _qwen_arm_provider_fallback(state, key)
                 await response_queue.put(
                     _AsrWorkerEvent(
@@ -888,7 +911,6 @@ async def _qwen_receiver(
                     else state.legacy_manual_key
                 )
                 if key is not None:
-                    state.last_provider_final_at = time.monotonic()
                     _qwen_retire_provider_key(state, key)
                     await response_queue.put(
                         _AsrWorkerEvent(
