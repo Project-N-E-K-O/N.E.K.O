@@ -997,6 +997,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             # message hits the ownership check above and closes.
                             logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
                             continue
+                        if get_active_external_route(lanlan_name) is not external_route:
+                            # The route that declined is no longer the owner;
+                            # its decision does not cover the current one.
+                            logger.info("[%s] start_session dropped: external route changed during its claim", lanlan_name)
+                            continue
                     elif external_route is not None:
                         # Kinds without on_start_session (the game route) keep
                         # the original branch: text is ack-only, audio starts

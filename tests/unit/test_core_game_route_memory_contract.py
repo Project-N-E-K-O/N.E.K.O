@@ -5223,3 +5223,32 @@ async def test_audio_auto_start_rechecks_after_an_awaited_route_claim(meanwhile)
         mgr._process_stream_data_internal.assert_awaited_once()
     else:
         mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_claim():
+    """Mutation: dropping the post-claim route re-check turns this red."""
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    mgr = _make_auto_start_manager()
+
+    async def _decline_after_replacement(_name, _message):
+        await asyncio.sleep(0)
+        register_external_route_kind(ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_external_route_unclaimed,
+            on_start_session=AsyncMock(return_value=True),
+            finalize_for_character=_external_route_no_routes,
+        ))
+        return False
+
+    _register_external_route_kind("visit", active=True, on_start_session=_decline_after_replacement)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()

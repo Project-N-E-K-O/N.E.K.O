@@ -2162,3 +2162,45 @@ async def test_superseded_socket_does_not_start_a_session_after_a_route_declines
     await websocket_router.websocket_endpoint(websocket, "Lan")
 
     assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
+    monkeypatch,
+) -> None:
+    """A declining route that was replaced meanwhile does not speak for the new owner.
+
+    Mutation: dropping the post-claim route re-check turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+
+    async def _decline_after_replacement(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        external_route_registry.register_external_route_kind(
+            external_route_registry.ExternalRouteKind(
+                kind="visit",
+                is_active=lambda _name: True,
+                route_stream_message=AsyncMock(return_value=False),
+                on_start_session=AsyncMock(return_value=True),
+                finalize_for_character=_finalize_none,
+            )
+        )
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_after_replacement,
+            finalize_for_character=_finalize_none,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
