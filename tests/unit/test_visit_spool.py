@@ -1598,3 +1598,25 @@ def test_final_and_transcript_release_are_separate_predicates(choice, final, rel
     state = dict(failed_state(), debrief_choice=choice)
     assert debrief_final(state) is final
     assert debrief_releases_transcript(state) is releases
+
+
+async def test_cap_sweep_keeps_the_state_when_the_transcript_cannot_be_deleted(tmp_path, monkeypatch):
+    # 转录删不掉时不能先删 state：否则下一轮读不到 state，判不出已结清，转录一直占容量
+    sp = await open_spool(tmp_path, vid(56))
+    await sp.append(line(1))
+    await sp.close()
+    await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    real = spool_mod._unlink
+
+    def unlink(path):
+        if path == sp.jsonl_path:
+            raise PermissionError("in use")
+        return real(path)
+
+    monkeypatch.setattr(spool_mod, "_unlink", unlink)
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    assert await VisitSpool.sweep(tmp_path, NOW) == []
+    assert sp.jsonl_path.exists() and sp.state_path.exists()
+    monkeypatch.setattr(spool_mod, "_unlink", real)
+    deleted = await VisitSpool.sweep(tmp_path, NOW)             # 锁解开后下一轮整场回收
+    assert set(deleted) == {sp.jsonl_path, sp.state_path}

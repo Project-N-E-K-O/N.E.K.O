@@ -1487,10 +1487,17 @@ class VisitSpool:
                 with _OPEN_SPOOLS_LOCK:
                     if _spool_key(jsonl) in _OPEN_SPOOLS:
                         continue
-                    for path, st in files:
+                    # state.json 最后删，且前面有任何一个删不掉就留着它：先删了 state、转录却
+                    # 删不掉，下一轮读不到 state 就再也判不出这场已结清，转录一直占着容量
+                    failed = False
+                    for path, st in sorted(files, key=lambda f: f[0] == state_path):
+                        if path == state_path and failed:
+                            break
                         if _sweep_unlink(path):
                             deleted.append(path)
                             total -= st.st_size
+                        elif path.exists():
+                            failed = True
         return deleted
 
     @classmethod
