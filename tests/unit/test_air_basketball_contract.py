@@ -430,6 +430,16 @@ def test_air_basketball_mvp_interaction_contract():
     assert "this.aim = aim;" in physics
     # A VRM loaded after cancellation is disposed before it is dropped.
     assert "vrmModule.VRMUtils?.deepDispose?.(gltf.scene);" in avatar_host
+    # VRM 0.x models are turned to face the camera before they are added.
+    assert avatar_host.index("vrmModule.VRMUtils?.rotateVRM0?.(vrm);") < avatar_host.index("next.scene.add(vrm.scene);")
+    # Our pagehide cleanup runs after the SDK's page-exit handler (registered by
+    # configure()), so the SDK can beacon the route end before anything is disposed.
+    assert ".finally(() => window.addEventListener('pagehide', disposeGameSdk, { once:true }));" in game
+    assert game.count("window.addEventListener('pagehide', disposeGameSdk") == 1
+    # Once the route runs, a logging failure must not abort the match and strand it.
+    assert "await game.logger.enableAfterRuntimeStart()\n      .catch(" in sdk_bootstrap
+    # Optional SFX preloads can neither abort bootstrap nor go unhandled.
+    assert "void Promise.resolve(audio.preloadSfx(key)).catch(() => undefined);" in sdk_bootstrap
     assert "if (game.runtime.session.characterName !== identity.name) {" in sdk_bootstrap
     # runtime.start() settles without throwing on a rejected/inactive route.
     assert "if (game.runtime.state !== 'running') {" in sdk_bootstrap
@@ -497,6 +507,9 @@ def test_air_basketball_mvp_interaction_contract():
             ROOT.joinpath("static", "locales", f"{locale}.json").read_text(encoding="utf-8")
         )
         assert expected_keys <= payload["airBasketball"].keys()
+        # Formatted like the rest of the file, not a single minified line.
+        raw = ROOT.joinpath("static", "locales", f"{locale}.json").read_text(encoding="utf-8")
+        assert '    "airBasketball": {\n        "title": ' in raw, locale
         assert not {"nekoReady", "nekoAiming", "nekoFever", "lose", "disrupted"} & payload["airBasketball"].keys()
         assert payload["airBasketball"]["feverOn"].endswith("+1")
 

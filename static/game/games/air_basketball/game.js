@@ -1823,12 +1823,14 @@ window.addEventListener('pageshow', event => {
 });
 if (sdkContext) {
   prewarmNekoVoice(opponentName);
-  // Release the SDK on exit even if runtime configuration fails.
-  window.addEventListener('pagehide', disposeGameSdk, { once:true });
   void configureGameRuntime(
     () => ({ currentState:runtimeSnapshot() }),
     context => runtimeEndPayload(context?.type || 'page-exit')
-  ).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
+  ).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error))
+    // configure() registers the SDK's page-exit handler, which beacons the route
+    // end before disposing. Register this cleanup after it (pagehide listeners run
+    // in order), and whether or not configuration succeeded.
+    .finally(() => window.addEventListener('pagehide', disposeGameSdk, { once:true }));
   void initNekoAvatar(sdkGame, sdkIdentity, identity => {
     applyOpponentName(identity?.name);
     prewarmNekoVoice(identity?.name);

@@ -109,7 +109,12 @@ async function bootstrap() {
       resources:{ sfx },
       settings:{ maxConcurrent:12, maxPreloadEntries:32 }
     });
-    Object.keys(sfx).forEach(key => audio.preloadSfx(key));
+    // Preloading is optional; a failure must neither abort bootstrap nor go unhandled.
+    Object.keys(sfx).forEach(key => {
+      try {
+        void Promise.resolve(audio.preloadSfx(key)).catch(() => undefined);
+      } catch (_) { /* optional preload */ }
+    });
     sdkContext = Object.freeze({ game, identity, audio });
     return sdkContext;
   } catch (error) {
@@ -231,7 +236,10 @@ export function startGameRuntime(payload) {
     if (game.runtime.state !== 'running') {
       throw new Error(`Runtime did not start (state ${game.runtime.state}, HTTP ${result?.status ?? 'unknown'})`);
     }
-    await game.logger.enableAfterRuntimeStart();
+    // The route is running now; a logging failure must not abort the match and
+    // strand that route (the next start would be refused as already active).
+    await game.logger.enableAfterRuntimeStart()
+      .catch(error => console.warn('[air_basketball] SDK logging could not be enabled', error));
     return result;
   });
 }

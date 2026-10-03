@@ -338,7 +338,8 @@ re-applied inside the same synchronous call, so nothing (speech, commands) can
 run unbound in between and no `bindCharacter()` is needed. Every Avatar that is
 mounted (or still mounting) must have been mounted with that same `characterName`;
 otherwise reset fails with `invalid_state` before changing anything, because a
-kept Avatar must not show another character. The name is not looked up again; a
+kept Avatar must not show another character. If the host still refuses the name,
+the reset completes (idle, unbound) and then throws. The name is not looked up again; a
 game that must confirm the character still exists can call the read-only
 `game.avatar.getCharacter(name)` before `runtime.start()`. Without an existing
 binding, `keepCharacter` is a no-op.

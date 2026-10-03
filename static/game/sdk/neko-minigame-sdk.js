@@ -3895,7 +3895,9 @@
         }
         // Opt-in: carry the bound character across the reset (a replay that keeps
         // its mounted Avatar). It is re-applied synchronously inside reset, so no
-        // speech or command can run unbound in between. Checked before any side effect.
+        // speech or command can run unbound in between. Transport support and Avatar
+        // ownership are checked before any side effect; a host that still refuses the
+        // name finishes the reset unbound and then throws (see below).
         const keptCharacterName = resetOptions.keepCharacter === true
           ? runtimeSession().characterName
           : '';
@@ -3939,7 +3941,14 @@
         // If a new route-loss path is ever added, retire the generation THERE.
         const state = transport.resetRuntime({ newSession: resetOptions.newSession === true });
         characterBindingLocked = false;
-        if (keptCharacterName) transport.bindRuntimeCharacter(keptCharacterName);
+        let keepCharacterError = null;
+        if (keptCharacterName) {
+          try {
+            transport.bindRuntimeCharacter(keptCharacterName);
+          } catch (error) {
+            keepCharacterError = error;
+          }
+        }
         memoryConsentEnabled = false;
         memoryConsentLocked = false;
         memoryConsentConfigured = false;
@@ -3950,6 +3959,9 @@
         }));
         setRuntimePhase('idle', resetOptions.newSession ? 'new-session' : 'reset');
         startPageExitLifecycle();
+        // The host already dropped its session; leave a complete idle reset rather
+        // than a half-reset runtime, then report that the character was not kept.
+        if (keepCharacterError) throw normalizeTransportError(keepCharacterError, 'runtime.reset');
         const normalized = !keptCharacterName && state && typeof state === 'object'
           ? state
           : transport.getRuntimeState();

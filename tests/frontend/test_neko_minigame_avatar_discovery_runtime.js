@@ -536,6 +536,17 @@ async function characterBinding() {
         'keepCharacter must also vet a mount that is still pending');
       mountGate.resolve(); (await pendingForeign).dispose();
       assert.equal(client.runtime.reset({newSession:true, keepCharacter:true}).characterName, 'Neko');
+      // A host that refuses the kept name: the reset still completes, then throws.
+      // Leave a real ended route first so a half-finished reset would stay `ended`.
+      await client.runtime.start();
+      await client.runtime.end();
+      assert.equal(client.runtime.state, 'ended');
+      const hostBind = h.bindRuntimeCharacter;
+      h.bindRuntimeCharacter = () => { throw new Error('host refused'); };
+      assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}));
+      h.bindRuntimeCharacter = hostBind;
+      assert.equal(client.runtime.state, 'idle', 'a refused keep must not leave a half-reset runtime');
+      assert.equal(client.runtime.session.characterName, '');
       client.runtime.reset({newSession:true});
       assert.equal(h.routeLanlanName, '', 'without the opt-in reset still clears the binding');
       assert.equal(client.runtime.reset({keepCharacter:true}).characterName, '',

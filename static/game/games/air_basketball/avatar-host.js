@@ -107,6 +107,8 @@ function createRawController({ signal, fitLive2DModel }) {
       throwIfAborted(signal);
       throw new Error('Current character VRM is invalid');
     }
+    // VRM 0.x models face -Z; turn them toward the camera like vrm-core does.
+    vrmModule.VRMUtils?.rotateVRM0?.(vrm);
     next.scene.add(vrm.scene);
     next.currentModel = { vrm, gltf, scene:vrm.scene, url:path };
     vrm.scene.visible = true;
