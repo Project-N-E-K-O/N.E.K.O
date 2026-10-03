@@ -23,8 +23,8 @@ from utils.game_route_state import (
 def _pinnable_external_route(lanlan_name: str):
     """The active non-game route that can receive this character's voice turns.
 
-    It must take voice transcripts and report an instance id to pin the turn
-    to; anything else is None.
+    It must take voice transcripts and report a non-empty string instance id
+    to pin the turn to; anything else is None.
     """
     route = get_active_external_route(lanlan_name)
     if (
@@ -32,8 +32,12 @@ def _pinnable_external_route(lanlan_name: str):
         or route.kind == "game"
         or route.route_voice_transcript is None
         or route.current_instance is None
-        or not route.current_instance(lanlan_name)
     ):
+        return None
+    # Same rule as the registry's same_external_route_owner: only a non-empty
+    # string pins an instance.
+    instance = route.current_instance(lanlan_name)
+    if not isinstance(instance, str) or not instance:
         return None
     return route
 

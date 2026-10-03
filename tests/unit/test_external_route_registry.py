@@ -583,3 +583,18 @@ async def test_stream_message_is_not_leaked_when_the_owner_reports_no_instance(e
     ))
 
     assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("instance", [7, ("visit", 1)], ids=["int", "tuple"])
+async def test_independent_asr_ignores_a_route_reporting_a_non_string_instance(
+    empty_registry, instance,
+):
+    # Mutation: accepting any truthy id turns this red.
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_voice_transcript=AsyncMock(return_value=True), instance=instance,
+    ))
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert consumer.is_available() is False
+    assert await consumer.prepare_turn(_voice_token(turn_id=11)) is False
