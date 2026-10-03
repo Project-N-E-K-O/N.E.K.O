@@ -272,16 +272,19 @@ def _dict_at(parent: dict, key: str) -> dict:
     return value
 
 
-def _check_char_entry(entry: Any, where: str, *, pair: str | None = None) -> dict:
+def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
+                      peer: str | None = None) -> dict:
     """Validate one ``by_char`` entry the way strict roster reads do.
 
     The entry must be an object; ``pairs`` (when present) a list of non-empty
     ids; ``chars`` (when present) an object mapping non-empty ids to objects
     whose ``last_seen`` (when present) is a finite number; ``last_summary``
-    (when present) an object or null whose ``ended_at`` (when present) is a
-    finite number. With ``pair`` (the id derived from the enclosing account
-    and peer), every stored pair must equal it and appear once. Raises
-    :class:`RosterCorruptError`.
+    (when present) an object or null; an object must carry a finite
+    ``ended_at``. With ``pair`` (the id derived from the enclosing account
+    and peer), every stored pair must equal it and appear once. With ``peer``
+    (the enclosing ``peer_uid``), every ``chars`` key must equal
+    ``derive_peer_char_id(peer, info["char_tag"])`` with a non-empty string
+    ``char_tag``. Raises :class:`RosterCorruptError`.
     """
     if not isinstance(entry, dict):
         raise RosterCorruptError(f"{where}: by_char entry is not an object")
@@ -297,6 +300,14 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None) -> dic
     ):
         # 值也要是 object：改名合并遇到同一 id 时会静默丢掉坏的一边
         raise RosterCorruptError(f"{where}: chars is not an object of id -> object")
+    # 键必须由这个 peer 与记录里的 char_tag 推出：键被改坏时，按它展开的清除计划会抹掉
+    # 无关的主体、删掉名册条目并关日志，真正的 group_participant 记忆从此再也找不到
+    if peer is not None and any(
+        not isinstance(info.get("char_tag"), str) or not info["char_tag"]
+        or cid != derive_peer_char_id(peer, info["char_tag"])
+        for cid, info in chars.items()
+    ):
+        raise RosterCorruptError(f"{where}: chars ids do not derive from this peer and char_tag")
     # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
     # 把较新的记录覆盖掉
     if any("last_seen" in info and not _is_finite_number(info["last_seen"])
@@ -437,7 +448,8 @@ class PeerRoster:
             node = node[key]
             if not isinstance(node, dict):
                 raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
-        return _check_char_entry(node, self.path.name, pair=_pair_of(self.own_uid, peer_uid))
+        return _check_char_entry(node, self.path.name, pair=_pair_of(self.own_uid, peer_uid),
+                                 peer=peer_uid)
 
     def _mutate(self, fn) -> Any:
         with path_lock(self.path):
@@ -488,6 +500,10 @@ class PeerRoster:
             # 名册里的 pair 必须是这一对推出来的：写进去的异值之后展开成撤销计划，
             # 会被撤销日志的身份绑定校验拒绝，这个人就再也清除不了
             raise ValueError("pair_id does not match own_uid / peer_uid")
+        _require_str(char_tag, "char_tag")
+        if peer_char_id != derive_peer_char_id(peer_uid, char_tag):
+            # 写进去的键推不出来，下一次严格读就把整个条目判坏
+            raise ValueError("peer_char_id does not match peer_uid / char_tag")
 
         def fn(data: dict):
             peers = self._peers_mut(data)
@@ -513,7 +529,7 @@ class PeerRoster:
             entry = _dict_at(by_char, own_char)
             # 已有条目按严格读同一套规则校验：坏掉的 pairs 重建成 []、坏掉的 chars
             # 记录被直接覆盖，都会在下一次原子写里永久丢掉可恢复的数据
-            _check_char_entry(entry, self.path.name, pair=pair_id)
+            _check_char_entry(entry, self.path.name, pair=pair_id, peer=peer_uid)
             pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
                 pairs.append(pair_id)
@@ -715,10 +731,11 @@ class PeerRoster:
                     pair = _pair_of(account_uid, peer_uid)
                     # 源或目标条目（含嵌套的 pairs / chars）坏了：覆盖或合并都会丢掉
                     # 可恢复的数据（字符串 pairs 会被拆成单个字符），改名事务保留标记
-                    entry = _check_char_entry(by_char[old], self.path.name, pair=pair)
+                    entry = _check_char_entry(by_char[old], self.path.name, pair=pair,
+                                              peer=peer_uid)
                     target = by_char.get(new)
                     if new in by_char:
-                        _check_char_entry(target, self.path.name, pair=pair)
+                        _check_char_entry(target, self.path.name, pair=pair, peer=peer_uid)
                     del by_char[old]
                     by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1

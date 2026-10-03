@@ -125,6 +125,7 @@ DEBRIEF_CHOICES = (
     "forget",
 )
 STATE_FIELDS = frozenset({
+    "visit_id",
     "own_uid",
     "own_char",
     "own_char_uid",
@@ -296,8 +297,12 @@ def new_state(
     peer_uid: str | None,
     peer_char_id: str | None,
     memory_enabled: bool,
+    visit_id: str | None = None,
 ) -> dict:
     """Return a fresh canonical ``state.json`` document for one visit.
+
+    ``visit_id`` may be left ``None``: :meth:`VisitSpool.write_state` binds
+    the document to its own visit when writing it.
 
     ``memory_enabled`` is the ``visitMemoryEnabled`` value read once when the
     visit activates; it stays fixed for the whole visit. ``own_uid`` is this
@@ -307,6 +312,7 @@ def new_state(
     It is not a peer field and survives "forget this person".
     """
     state = {
+        "visit_id": visit_id,
         "own_uid": own_uid,
         "own_char": own_char,
         "own_char_uid": own_char_uid,
@@ -339,7 +345,7 @@ def _check_batch_map(value: Any, where: str) -> None:
             raise SpoolStateError(f"{where}[{key}] must be a bool")
 
 
-def validate_state(state: Any) -> dict:
+def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     """Check ``state`` against the canonical schema and return a deep copy.
 
     The field set must match ``STATE_FIELDS`` exactly. ``debrief_choice`` is
@@ -347,6 +353,9 @@ def validate_state(state: Any) -> dict:
     ``committing:diary`` require a non-empty ``debrief_pending`` (it is
     persisted before either state is entered) and ``generating:diary``
     requires it to be empty. Raises :class:`SpoolStateError`.
+
+    ``visit_id`` is ``None`` only in a document not yet written; with the
+    ``visit_id`` argument (every read and write) it must equal it.
     """
     if not isinstance(state, Mapping):
         raise SpoolStateError("state must be an object")
@@ -356,6 +365,15 @@ def validate_state(state: Any) -> dict:
             "state fields mismatch: missing=%s extra=%s"
             % (sorted(STATE_FIELDS - keys), sorted(keys - STATE_FIELDS))
         )
+    stored = state["visit_id"]
+    if stored is not None:
+        try:
+            require_visit_id(stored)
+        except ValueError as exc:
+            raise SpoolStateError("state visit_id is malformed") from exc
+    if visit_id is not None and stored != visit_id:
+        # 被换过 / 复制过的 state.json：别的场次的归属不能套到这一场的文件上
+        raise SpoolStateError("state.json belongs to another visit")
     for name in ("own_uid", "own_char", "own_char_uid"):
         if not isinstance(state[name], str) or not state[name]:
             raise SpoolStateError(f"{name} must be a non-empty string")
@@ -549,6 +567,9 @@ def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
 
 
 def _read_state_file(path: Path) -> dict | None:
+    # 文件名就是场次：state 里没有对得上的 visit_id 时（文件被换过 / 复制过）不能信它的归属，
+    # 退役、清除、改名都会按它去动别的场次的文件
+    expected = path.name[: -len(STATE_SUFFIX)] if path.name.endswith(STATE_SUFFIX) else None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -557,7 +578,9 @@ def _read_state_file(path: Path) -> dict | None:
     except RecursionError as exc:
         # 深层嵌套的 state.json：归入已有的「损坏」处理（ValueError），不能冲断整轮清扫 / 重放
         raise SpoolStateError(f"{path.name} is too deeply nested") from exc
-    return validate_state(data)
+    if expected is None:
+        raise SpoolStateError(f"{path.name} is not a state file name")
+    return validate_state(data, visit_id=expected)
 
 
 def _retention_exempt(state_path: Path, age_s: float) -> bool:
@@ -961,13 +984,28 @@ class VisitSpool:
     # ── state.json ──
 
     def _write_state_sync(self, state: Mapping[str, Any]) -> dict:
-        clean = validate_state(state)
+        if not isinstance(state, Mapping):
+            validate_state(state)    # 抛出统一的 SpoolStateError
+        given = state.get("visit_id")
+        if given is not None and given != self.visit_id:
+            raise SpoolStateError("state visit_id does not match this spool")
+        if "visit_id" in state:
+            state = {**state, "visit_id": self.visit_id}
+        clean = validate_state(state, visit_id=self.visit_id)
         with path_lock(self.state_path):
             atomic_write_json(self.state_path, clean)
         return clean
 
     async def write_state(self, state: Mapping[str, Any]) -> dict:
-        """Validate and atomically write ``state.json``; return the written copy."""
+        """Validate and atomically write ``state.json``; return the written copy.
+
+        The document is bound to this spool's visit: a ``None``
+        ``visit_id`` is filled in (the key itself is required like every
+        other field), a different one raises
+        :class:`SpoolStateError`. Reads require the stored ``visit_id`` to
+        match the file name, so a swapped or copied ``state.json`` is treated
+        as corrupt instead of lending its ownership to another visit.
+        """
         return await asyncio.to_thread(self._write_state_sync, state)
 
     async def read_state(self) -> dict | None:
@@ -980,7 +1018,7 @@ class VisitSpool:
             if state is None:
                 raise FileNotFoundError(str(self.state_path))
             mutate(state)
-            clean = validate_state(state)
+            clean = validate_state(state, visit_id=self.visit_id)
             atomic_write_json(self.state_path, clean)
             return clean
 

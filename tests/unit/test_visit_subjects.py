@@ -368,6 +368,11 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("chars", []),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__(
         "last_summary", {"visit_id": "V" * 22, "text": "x"}),
+    # chars 的键被改坏、char_tag 还在：展开的清除计划会抹错主体
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__(
+        "chars", {"c_" + "9" * 24: {"char_tag": "f" * 32, "last_seen": 1.0}}),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"].__setitem__(
+        derive_peer_char_id("peer_x", "f" * 32), {"last_seen": 1.0}),
 ])
 async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
     # JSON 合法但结构坏了：严格读不能把它当成「没有条目」
@@ -376,7 +381,7 @@ async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     damage(data)
@@ -389,7 +394,7 @@ async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
 
 async def test_strict_reads_treat_missing_keys_as_absent(tmp_path):
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     assert await roster.get_char_entry("peer_y", "A", strict=True) is None
     assert await roster.get_char_entry("peer_x", "B", strict=True) is None
@@ -409,7 +414,7 @@ async def test_strict_reads_reject_damaged_pair_or_char_ids(tmp_path, damage):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     damage(data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"])
@@ -430,7 +435,7 @@ async def test_remove_char_fails_closed_on_a_damaged_target(tmp_path, damage):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     damage(data)
@@ -442,7 +447,7 @@ async def test_remove_char_fails_closed_on_a_damaged_target(tmp_path, damage):
 async def test_remove_char_on_an_absent_entry_is_a_no_op(tmp_path):
     roster = PeerRoster(tmp_path, own_uid="own_a")
     assert await roster.remove_char("peer_x", "A") is False
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     assert await roster.remove_char("peer_x", "B") is False
     assert await roster.remove_char("peer_y", "A") is False
@@ -460,14 +465,14 @@ async def test_upsert_refuses_to_rebuild_damaged_containers(tmp_path, damage):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     damage(data)
     before = _json.dumps(data)
     roster.path.write_text(before, encoding="utf-8")
     with pytest.raises(RosterCorruptError):
-        await roster.upsert("peer_y", "A", pair_id=derive_pair_id("own_a", "peer_y"), peer_char_id="c_" + "2" * 24,
+        await roster.upsert("peer_y", "A", pair_id=derive_pair_id("own_a", "peer_y"), peer_char_id=derive_peer_char_id("peer_y", "e" * 32),
                             char_tag="e" * 32, char_display_name="cat", now=2.0)
     assert roster.path.read_text(encoding="utf-8") == before
 
@@ -478,13 +483,13 @@ async def test_upsert_refuses_a_malformed_existing_peer_row(tmp_path):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     data["accounts"]["own_a"]["peers"]["peer_x"] = ["damaged"]
     roster.path.write_text(_json.dumps(data), encoding="utf-8")
     with pytest.raises(RosterCorruptError):
-        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                             char_tag="f" * 32, char_display_name="cat", now=2.0)
 
 
@@ -500,7 +505,7 @@ async def test_rename_char_fails_on_any_malformed_partition(tmp_path, damage):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     damage(data)
@@ -515,14 +520,14 @@ async def test_upsert_refuses_a_malformed_pairs_list(tmp_path):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["pairs"] = "p" * 24
     before = _json.dumps(data)
     roster.path.write_text(before, encoding="utf-8")
     with pytest.raises(RosterCorruptError):
-        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                             char_tag="f" * 32, char_display_name="cat", now=2.0)
     assert roster.path.read_text(encoding="utf-8") == before
 
@@ -533,7 +538,7 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A2"] = "damaged"
@@ -566,7 +571,7 @@ async def test_rename_char_refuses_malformed_nested_data(tmp_path, side, damage)
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
     for char in ("A", "A2"):
-        await roster.upsert("peer_x", char, pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+        await roster.upsert("peer_x", char, pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                             char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"][side].update(damage)
@@ -604,14 +609,14 @@ async def test_upsert_refuses_malformed_existing_character_records(tmp_path, dam
     from main_logic.visit.subjects import RosterCorruptError
 
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     data = _json.loads(roster.path.read_text(encoding="utf-8"))
     data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].update(damage)
     before = _json.dumps(data)
     roster.path.write_text(before, encoding="utf-8")
     with pytest.raises(RosterCorruptError):
-        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                             char_tag="f" * 32, char_display_name="cat", now=2.0)
     assert roster.path.read_text(encoding="utf-8") == before
 
@@ -620,7 +625,7 @@ async def test_upsert_refuses_a_pair_id_not_derived_from_the_pair(tmp_path):
     # 名册里存了异值 pair，之后的撤销计划会被身份绑定校验拒绝，这个人就清除不了
     roster = PeerRoster(tmp_path, own_uid="own_a")
     with pytest.raises(ValueError):
-        await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+        await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                             char_tag="f" * 32, char_display_name="cat", now=1.0)
     assert not roster.path.exists()
 
@@ -712,11 +717,19 @@ async def test_a_deeply_nested_roster_is_treated_as_corrupt(tmp_path):
 async def test_upsert_rejects_a_bad_observation_time_before_writing(tmp_path, now):
     # 坏的 now 写进 last_seen 后，下一次严格读就把条目判坏：必须在改动前拒绝
     roster = PeerRoster(tmp_path, own_uid="own_a")
-    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id=derive_peer_char_id("peer_x", "f" * 32),
                         char_tag="f" * 32, char_display_name="cat", now=1.0)
     before = roster.path.read_bytes()
     with pytest.raises(ValueError):
         await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"),
-                            peer_char_id="c_" + "2" * 24, char_tag="f" * 32, now=now)
+                            peer_char_id=derive_peer_char_id("peer_x", "f" * 32), char_tag="f" * 32, now=now)
     assert roster.path.read_bytes() == before
     assert await roster.get_char_entry("peer_x", "A", strict=True) is not None
+
+
+async def test_upsert_rejects_a_char_id_that_does_not_derive_from_the_tag(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    with pytest.raises(ValueError):
+        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"),
+                            peer_char_id="c_" + "1" * 24, char_tag="f" * 32, now=1.0)
+    assert not roster.path.exists()

@@ -226,6 +226,8 @@ async def test_fsync_cadence_is_30_seconds(tmp_path):
 
 
 CANONICAL_FIELDS = {
+    # visit_id：绑定场次，读时必须与文件名一致（换过 / 复制过的 state.json 不可信）
+    "visit_id",
     # own_uid：按社区账号分区的本侧账号（崩溃补录派生人级主体用，不随「清除这个人」抹除）
     "own_uid", "own_char", "own_char_uid", "pair_id", "peer_uid", "peer_char_id",
     "digested_through_lp", "digest_runs", "finalized", "debrief_choice",
@@ -1423,3 +1425,34 @@ async def test_sweep_continues_past_a_file_it_cannot_delete(tmp_path, monkeypatc
     assert old.state_path in deleted                                  # 过期回收没被中断
     assert VisitSpool(tmp_path, vid(45)).state_path in deleted         # 容量回收也没被中断
     assert all(p.exists() for p in stuck) and not set(deleted) & stuck
+
+
+async def test_a_swapped_state_file_is_not_trusted(tmp_path):
+    # state 里没有场次就认不出被换过的文件：退役会按错位的归属删掉别的角色的转录
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = await open_spool(tmp_path, vid(46), own_char_uid="uid_b")
+    await mine.append(line(1))
+    await mine.close()
+    await mine.write_state(state_for(own_char_uid="uid_b"))
+    theirs = await open_spool(tmp_path, vid(47), own_char_uid="uid_c")
+    await theirs.append(line(1))
+    await theirs.close()
+    await theirs.write_state(state_for(own_char_uid="uid_c"))
+    a, b = mine.state_path.read_bytes(), theirs.state_path.read_bytes()
+    mine.state_path.write_bytes(b)
+    theirs.state_path.write_bytes(a)
+    with pytest.raises(SpoolStateError):
+        await mine.read_state()
+    with pytest.raises(SpoolStateUnreadable):
+        await VisitSpool.retire_char(tmp_path, "uid_b")
+    assert mine.jsonl_path.exists() and theirs.jsonl_path.exists()
+
+
+async def test_write_state_binds_the_document_to_its_visit(tmp_path):
+    sp = VisitSpool(tmp_path, vid(48))
+    written = await sp.write_state(state_for())
+    assert written["visit_id"] == vid(48)
+    assert (await sp.read_state())["visit_id"] == vid(48)
+    with pytest.raises(SpoolStateError):
+        await VisitSpool(tmp_path, vid(49)).write_state(written)
