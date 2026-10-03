@@ -28,7 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from utils.external_route_registry import get_active_external_route
+from utils.external_route_registry import external_route_identity
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -321,14 +321,14 @@ class StreamingMixin:
                 # 外部路由可以认领语音自动建会话（不经 websocket_router 的
                 # start_session 分支的那条语音入口）；没有路由认领时原样建会话。
                 if mode == 'audio':
-                    claimed_by = get_active_external_route(self.lanlan_name)
+                    claimed_by = external_route_identity(self.lanlan_name)
                     if await _core_facade.route_external_start_session(
                         self.lanlan_name, {'input_type': 'audio'},
                     ):
                         return
                     # A route that declined may have been replaced while it
                     # decided; its answer does not cover the new owner.
-                    if get_active_external_route(self.lanlan_name) is not claimed_by:
+                    if external_route_identity(self.lanlan_name) != claimed_by:
                         return
                     # The claim check may have suspended: another frame can
                     # have started a session meanwhile. Audio arriving during a

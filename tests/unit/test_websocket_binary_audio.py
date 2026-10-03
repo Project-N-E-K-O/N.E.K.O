@@ -2204,3 +2204,39 @@ async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
     await websocket_router.websocket_endpoint(websocket, "Lan")
 
     assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_is_dropped_when_a_new_instance_of_the_kind_took_over(
+    monkeypatch,
+) -> None:
+    """Same registered kind, new route instance: the old instance's answer is stale.
+
+    Mutation: comparing only the kind object (not its instance) turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"id": "visit-1"}
+
+    async def _decline_as_next_instance_starts(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        instance["id"] = "visit-2"
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_as_next_instance_starts,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: instance["id"],
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" not in [name for name, _payload in manager.calls]

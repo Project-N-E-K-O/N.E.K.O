@@ -55,6 +55,7 @@ from .shared_state import (
 # registry; the hijack points below only talk to the registry.
 from . import game_router as _game_router  # noqa: F401
 from utils.external_route_registry import (
+    external_route_identity,
     get_active_external_route,
     route_external_microphone_audio,
     route_external_stream_message,
@@ -983,6 +984,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
                     external_route = get_active_external_route(lanlan_name)
+                    claimed_route = external_route_identity(lanlan_name)
                     if external_route is not None and external_route.on_start_session is not None:
                         # The route decides this start itself; an unclaimed
                         # start falls through to the ordinary session path.
@@ -997,7 +999,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             # message hits the ownership check above and closes.
                             logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
                             continue
-                        if get_active_external_route(lanlan_name) is not external_route:
+                        if external_route_identity(lanlan_name) != claimed_route:
                             # The route that declined is no longer the owner;
                             # its decision does not cover the current one.
                             logger.info("[%s] start_session dropped: external route changed during its claim", lanlan_name)

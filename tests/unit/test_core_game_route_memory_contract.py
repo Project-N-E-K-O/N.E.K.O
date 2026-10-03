@@ -5252,3 +5252,33 @@ async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_cla
 
     mgr.start_session.assert_not_awaited()
     mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_is_dropped_when_a_new_instance_of_the_kind_took_over():
+    """Mutation: comparing only the kind object (not its instance) turns this red."""
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    mgr = _make_auto_start_manager()
+    instance = {"id": "visit-1"}
+
+    async def _decline_as_next_instance_starts(_name, _message):
+        await asyncio.sleep(0)
+        instance["id"] = "visit-2"
+        return False
+
+    register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_external_route_unclaimed,
+        on_start_session=_decline_as_next_instance_starts,
+        finalize_for_character=_external_route_no_routes,
+        current_instance=lambda _name: instance["id"],
+    ))
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()

@@ -110,6 +110,19 @@ def get_active_external_route(lanlan_name: str) -> ExternalRouteKind | None:
     return None
 
 
+def external_route_identity(lanlan_name: str) -> tuple[ExternalRouteKind, str | None] | None:
+    """The active route and its instance id (if the kind reports one), or None.
+
+    Lets a caller that awaited on the route check afterwards that the same
+    route instance -- not just the same kind -- still owns the character.
+    """
+    spec = get_active_external_route(lanlan_name)
+    if spec is None:
+        return None
+    instance = spec.current_instance(lanlan_name) if spec.current_instance is not None else None
+    return spec, instance
+
+
 def is_external_route_active(lanlan_name: str) -> bool:
     """True iff some registered kind currently owns ``lanlan_name``'s input."""
     return get_active_external_route(lanlan_name) is not None
