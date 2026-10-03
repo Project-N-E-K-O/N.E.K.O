@@ -1496,7 +1496,9 @@ class VisitSpool:
                         if _sweep_unlink(path):
                             deleted.append(path)
                             total -= st.st_size
-                        elif path.exists():
+                        else:
+                            # 不再用 exists() 区分「本来就没了」：访问出错时它也返回 False。
+                            # 偏保守：这一轮留下 state，下一轮读到它再回收
                             failed = True
         return deleted
 
