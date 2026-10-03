@@ -51,11 +51,7 @@ def _kind(
         on_page_signal=on_page_signal,
         is_locked=None if locked is None else (lambda _name: locked),
         has_background_tasks=None if background is None else (lambda _name: background),
-        current_instance=(
-            (lambda _name: instance) if instance is not None
-            else (lambda _name: "instance-1") if on_start_session is not None
-            else None
-        ),
+        current_instance=lambda _name: "instance-1" if instance is None else instance,
     )
 
 
@@ -241,6 +237,7 @@ def test_game_router_registers_its_original_handlers():
     assert spec.is_locked is game_router.is_game_route_locked
     assert spec.has_background_tasks is None
     assert spec.on_page_signal is None
+    assert spec.current_instance is game_router._game_route_instance
 
 
 def _voice_token(turn_id: int = 1) -> VoiceTurnToken:
@@ -358,7 +355,7 @@ async def test_independent_asr_does_not_prepare_for_a_route_without_a_voice_hand
 async def test_independent_asr_does_not_prepare_for_a_route_without_an_instance_id(empty_registry):
     handler = AsyncMock(return_value=True)
     registry.register_external_route_kind(
-        _kind("visit", active=True, route_voice_transcript=handler)
+        _kind("visit", active=True, route_voice_transcript=handler, instance="")
     )
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
@@ -405,7 +402,7 @@ def test_independent_asr_availability_matches_what_prepare_accepts(
         "visit",
         active=True,
         route_voice_transcript=AsyncMock(return_value=True) if with_handler else None,
-        instance="visit-1" if with_instance else None,
+        instance="visit-1" if with_instance else "",
     ))
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
@@ -430,6 +427,7 @@ async def test_microphone_audio_is_dropped_only_when_consumed_without_passthroug
         on_start_session=None,
         finalize_for_character=_no_routes,
         audio_passthrough=passthrough,
+        current_instance=lambda _name: "visit-1",
     ))
 
     assert await registry.route_external_microphone_audio("Lan") is drop
@@ -447,15 +445,16 @@ async def test_independent_asr_ignores_a_route_reporting_an_empty_instance(empty
     assert await consumer.prepare_turn(_voice_token(turn_id=9)) is False
 
 
-def test_a_kind_claiming_session_starts_must_report_its_instance(empty_registry):
-    # Callers re-check (kind, instance) after awaiting on_start_session; without
-    # an instance id that re-check cannot tell two instances of the kind apart.
+@pytest.mark.parametrize("claims_starts", [True, False])
+def test_every_kind_must_report_its_instance(empty_registry, claims_starts):
+    # Every awaited dispatch re-checks (kind, instance); without an instance id
+    # that re-check cannot tell two instances of the kind apart.
     with pytest.raises(ValueError, match="current_instance"):
         registry.register_external_route_kind(ExternalRouteKind(
             kind="visit",
             is_active=lambda _name: True,
             route_stream_message=_unclaimed,
-            on_start_session=AsyncMock(return_value=True),
+            on_start_session=AsyncMock(return_value=True) if claims_starts else None,
             finalize_for_character=_no_routes,
         ))
 
@@ -476,6 +475,7 @@ async def test_stream_message_follows_an_owner_change_during_handling(empty_regi
             route_stream_message=_unclaimed,
             on_start_session=None,
             finalize_for_character=_no_routes,
+            current_instance=lambda _name: None,
         ))
         registry.register_external_route_kind(_kind(
             "other", active=True, route_stream_message=new_owner, instance="other-1",
@@ -504,3 +504,59 @@ async def test_stream_message_goes_to_ordinary_chat_when_the_owner_left_during_h
     ))
 
     assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is False
+
+
+@pytest.mark.asyncio
+async def test_microphone_audio_follows_an_owner_change_during_the_announcement(empty_registry):
+    """A replaced owner's decision and passthrough rule do not apply to the new owner.
+
+    Mutation: returning the stale result without re-checking the owner turns
+    this red -- the PCM would flow to the ordinary session.
+    """
+    new_owner = AsyncMock(return_value=True)
+
+    async def _passthrough_then_replaced(_name, _message):
+        registry.register_external_route_kind(_kind("visit", active=False, instance="visit-1"))
+        registry.register_external_route_kind(_kind(
+            "other", active=True, route_stream_message=new_owner, instance="other-1",
+        ))
+        return True
+
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_passthrough_then_replaced,
+        on_start_session=None,
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: "visit-1",
+        audio_passthrough=True,
+    ))
+
+    assert await registry.route_external_microphone_audio("Lan") is True
+    new_owner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_microphone_audio_goes_to_ordinary_session_when_the_owner_left(empty_registry):
+    async def _consume_and_end(_name, _message):
+        registry._reset_for_tests()
+        return True
+
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=_consume_and_end, instance="visit-1",
+    ))
+
+    assert await registry.route_external_microphone_audio("Lan") is False
+
+
+def test_game_route_instance_tells_routes_apart(monkeypatch):
+    """Two game sessions of the same kind must not share an instance id."""
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        assert game_router._game_route_instance("Lan") is None
+        gr_runtime._activate_game_route("soccer", "match-1", "Lan")
+        first = game_router._game_route_instance("Lan")
+        gr_runtime._activate_game_route("soccer", "match-2", "Lan")
+        second = game_router._game_route_instance("Lan")
+
+    assert first and second and first != second

@@ -51,14 +51,13 @@ class ExternalRouteKind:
 
     ``route_voice_transcript`` receives ``(lanlan_name, transcript, **route_kwargs)``
     exactly as the independent ASR consumer passes them, so a kind can register
-    its pre-existing handler object unchanged. ``current_instance`` returns an
-    opaque id of the route instance currently active for the character (e.g. a
-    session id); a non-game kind must provide it to receive independent-ASR
-    transcripts, so an utterance captured for one instance is never delivered
+    its pre-existing handler object unchanged. ``current_instance`` (required)
+    returns an opaque id of the route instance currently active for the
+    character (e.g. a session id): every dispatch that awaits a handler
+    re-checks ``(kind, instance)`` afterwards, and independent-ASR turns are
+    pinned to it, so a decision or utterance of one instance never carries over
     to the next instance of the same kind. ``is_locked`` defaults to
-    ``is_active``; ``has_background_tasks`` defaults to "never". A kind that
-    provides ``on_start_session`` must also provide ``current_instance``:
-    callers awaiting that claim re-check the route instance afterwards.
+    ``is_active``; ``has_background_tasks`` defaults to "never".
 
     Microphone PCM on the main socket is announced to the route as
     ``{"input_type": "audio", "stt_provider": "realtime"}``. When the route
@@ -76,7 +75,7 @@ class ExternalRouteKind:
     on_page_signal: Callable[[str, dict], Awaitable[bool]] | None = None
     is_locked: Callable[[str], bool] | None = None
     has_background_tasks: Callable[[str], bool] | None = None
-    current_instance: Callable[[str], str | None] | None = None
+    current_instance: Callable[[str], str | None] | None = None  # required at registration
     audio_passthrough: bool = False
 
 
@@ -92,10 +91,8 @@ def register_external_route_kind(spec: ExternalRouteKind) -> None:
         raise TypeError("spec must be an ExternalRouteKind")
     if not isinstance(spec.kind, str) or not spec.kind.strip():
         raise ValueError("ExternalRouteKind.kind must be a non-empty string")
-    if spec.on_start_session is not None and spec.current_instance is None:
-        raise ValueError(
-            "ExternalRouteKind with on_start_session must also provide current_instance"
-        )
+    if spec.current_instance is None:
+        raise ValueError("ExternalRouteKind must provide current_instance")
     _kinds[spec.kind] = spec
 
 
@@ -224,13 +221,24 @@ async def route_external_microphone_audio(lanlan_name: str) -> bool:
     Returns True when the PCM must not reach the ordinary session: the route
     consumed the announcement and does not declare ``audio_passthrough``.
     """
-    spec = get_active_external_route(lanlan_name)
-    if spec is None:
-        return False
-    consumed = await spec.route_stream_message(
-        lanlan_name, {"input_type": "audio", "stt_provider": "realtime"},
-    )
-    return bool(consumed) and not spec.audio_passthrough
+    for _ in range(_STREAM_MESSAGE_MAX_OWNER_CHANGES + 1):
+        identity = external_route_identity(lanlan_name)
+        if identity is None:
+            return False
+        spec, _instance = identity
+        consumed = await spec.route_stream_message(
+            lanlan_name, {"input_type": "audio", "stt_provider": "realtime"},
+        )
+        # The handler may suspend: a decision (and passthrough rule) of an owner
+        # that has since been replaced does not apply to the current one.
+        if external_route_identity(lanlan_name) == identity:
+            return bool(consumed) and not spec.audio_passthrough
+        logger.info(
+            "external route changed while announcing microphone audio: lanlan=%s kind=%s",
+            lanlan_name,
+            spec.kind,
+        )
+    return True
 
 
 async def route_external_start_session(lanlan_name: str, message: dict) -> bool:

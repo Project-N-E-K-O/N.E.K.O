@@ -5003,7 +5003,7 @@ def _register_external_route_kind(kind, *, active, locked=None, on_start_session
         on_start_session=on_start_session,
         finalize_for_character=_external_route_no_routes,
         is_locked=None if locked is None else (lambda _name: locked),
-        current_instance=None if on_start_session is None else (lambda _name: "instance-1"),
+        current_instance=lambda _name: "instance-1",
     ))
 
 

@@ -200,6 +200,7 @@ def _install_protocol_endpoint(
             route_stream_message=_route_external,
             on_start_session=None,
             finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "test-instance",
         )
     )
     return session_ids, route_external_calls
@@ -2057,6 +2058,7 @@ async def test_route_consuming_microphone_audio_stops_pcm_unless_passthrough(
             on_start_session=None,
             finalize_for_character=_finalize_none,
             audio_passthrough=passthrough,
+            current_instance=lambda _name: "test-instance",
         )
     )
 
@@ -2117,6 +2119,7 @@ async def test_superseded_recording_socket_honours_route_audio_consumption(
             on_start_session=None,
             finalize_for_character=_finalize_none,
             audio_passthrough=passthrough,
+            current_instance=lambda _name: "test-instance",
         )
     )
     recording_socket.release.set()

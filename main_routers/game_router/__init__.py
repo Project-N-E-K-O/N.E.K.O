@@ -424,6 +424,15 @@ from utils.external_route_registry import (  # noqa: E402
     ExternalRouteKind,
     register_external_route_kind,
 )
+from utils.game_route_state import (  # noqa: E402
+    get_active_game_route_generation_identity,
+)
+
+
+def _game_route_instance(lanlan_name: str) -> str | None:
+    """Opaque id of the active game route: game type, session and SDK generation."""
+    identity = get_active_game_route_generation_identity(lanlan_name)
+    return "\x1f".join(identity) if identity else None
 
 
 
@@ -437,6 +446,7 @@ def _register_external_route_kind() -> None:
         finalize_for_character=finalize_game_routes_for_character,
         route_voice_transcript=route_external_voice_transcript,
         is_locked=is_game_route_locked,
+        current_instance=_game_route_instance,
         # Game voice uses the ordinary realtime session as its STT provider.
         audio_passthrough=True,
     ))

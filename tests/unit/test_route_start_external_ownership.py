@@ -56,6 +56,7 @@ def _register_visit(*, active: bool, locked: bool | None = None) -> None:
         on_start_session=None,
         finalize_for_character=_no_routes,
         is_locked=None if locked is None else (lambda name: locked and name == "Lan"),
+        current_instance=lambda _name: "test-instance",
     ))
 
 
