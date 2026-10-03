@@ -412,6 +412,11 @@ def get_vrm_animations():
                 animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
                 for anim_file in animation_files:
                     try:
+                        # 引导移动内部资源需要 movement 播放选项，不提供给普通动作选择器。
+                        if url_prefix == VRM_STATIC_ANIMATION_PATH and anim_file.name in {
+                            "world-walk.vrma", "world-walk.vrma.gz"
+                        }:
+                            continue
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
                         

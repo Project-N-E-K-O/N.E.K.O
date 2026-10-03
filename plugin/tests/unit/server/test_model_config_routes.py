@@ -78,7 +78,7 @@ def model_setup(tmp_path, monkeypatch):
 @pytest.fixture
 async def model_client(model_setup):
     app, _, _ = model_setup
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
         yield client
 
 

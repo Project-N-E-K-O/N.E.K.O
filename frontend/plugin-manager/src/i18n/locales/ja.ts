@@ -823,6 +823,7 @@ export default {
     serviceUnavailable: 'サービスが利用できません',
     networkError: 'ネットワークエラー。接続を確認してください。',
     requestTimeout: 'リクエストがタイムアウトしました。もう一度お試しください。',
+    csrfBootstrapFailed: 'セキュリティトークンを取得できませんでした。リバースプロキシを使用している場合は、/security/csrf-token がプラグインサーバーに転送されているか確認してください。',
     pluginLifecycleTimeout: 'プラグインの起動または再起動がタイムアウトしました。プラグインログを確認してください。'
   },
   welcome: {

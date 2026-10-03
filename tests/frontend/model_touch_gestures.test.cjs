@@ -252,7 +252,9 @@ test('VRM and MMD adapters use model scaling and preserve the projected pinch an
         interaction._checkAndSwitchDisplay = async () => false;
         interaction._snapModelIntoScreen = async () => false;
         interaction.initDragAndZoom();
+        if (kind === 'vrm') { interaction.isMoving = true; interaction.moveTarget = new THREE.Vector3(0, 4, 0); }
         h.canvas.fire('pointerdown', pointer(10, 400, 400));
+        if (kind === 'vrm') assert.equal(interaction.isMoving, false, 'touch owns the position after cancelling guidance');
         h.canvas.fire('pointerdown', pointer(20, 600, 400));
         h.document.fire('pointermove', pointer(10, 300, 400));
         h.document.fire('pointermove', pointer(20, 700, 400));
