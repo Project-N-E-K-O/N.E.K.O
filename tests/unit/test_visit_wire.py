@@ -1465,3 +1465,27 @@ def test_one_char_deltas_wall_clock():
     elapsed = time.perf_counter() - start
     if os.environ.get("RUN_PERF_TESTS", "").lower() == "true":
         assert elapsed < 1.0, elapsed
+
+
+@pytest.mark.parametrize("repl", ["家里人", "家"])
+@pytest.mark.parametrize("step", [1, 2, 100])
+@pytest.mark.parametrize("segmented", [False, True])
+def test_clause_text_is_sliced_on_redacted_offsets(repl, step, segmented):
+    # 替换词与原名长度不同：字幕首片要按脱敏文本的偏移切，句号不能丢、也不能带出后文
+    from main_logic.visit.sanitize import redact_outbound_boundary, redact_outbound_with_spans
+
+    names = ["小明"]
+
+    def redact(s):
+        return redact_outbound_with_spans(s, family_names=names, replacement=repl)
+
+    sp = vw.ClauseSplitter(redact=redact,
+                           redact_boundary=redact_outbound_boundary(names) if segmented else None)
+    text = "小明。后来我们去玩了。真好"
+    out = []
+    for i in range(0, len(text), step):
+        out += sp.feed(text[i:i + step])
+    out += sp.flush()
+    assert [(c.text, c.raw) for c in out] == [
+        (repl + "。", "小明。"), ("后来我们去玩了。", "后来我们去玩了。"), ("真好", "真好"),
+    ]
