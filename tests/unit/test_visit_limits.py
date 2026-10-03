@@ -366,3 +366,38 @@ def test_token_bucket_caps_an_oversized_cost_only_when_asked():
 def test_there_is_no_unlocked_sync_mutation_path():
     # 同步 block / unblock 不拿锁，和 ablock 交错会互相冲掉：只留串行化的异步版
     assert not hasattr(Blocklist, "block") and not hasattr(Blocklist, "unblock")
+
+
+async def test_two_instances_on_one_file_keep_each_others_rows(tmp_path):
+    # 两个实例各自一把锁、各自旧视图时，后写的整表会冲掉先写的拉黑记录
+    a = Blocklist.load(tmp_path)
+    b = Blocklist.load(tmp_path)
+    other = "f" * 24
+    assert await a.ablock(UID, display_name_at_block="A", now=1.0)
+    assert await b.ablock(other, display_name_at_block="B", now=2.0)
+    on_disk = Blocklist.load(tmp_path)
+    assert on_disk.is_blocked(UID) and on_disk.is_blocked(other)
+    assert b.is_blocked(UID)                      # 写入时顺带刷新到最新
+    assert await a.aunblock(other)                # a 手里原本没有这条，也能解除
+    assert not Blocklist.load(tmp_path).is_blocked(other)
+
+
+async def test_concurrent_writes_from_two_instances_are_serialised(tmp_path, monkeypatch):
+    import asyncio
+
+    from main_logic.visit import limits
+
+    a = Blocklist.load(tmp_path)
+    b = Blocklist.load(tmp_path)
+    real = limits.atomic_write_json_async
+
+    async def slow(path, payload):
+        await asyncio.sleep(0.05)
+        await real(path, payload)
+
+    monkeypatch.setattr(limits, "atomic_write_json_async", slow)
+    other = "e" * 24
+    await asyncio.gather(a.ablock(UID, display_name_at_block="A", now=1.0),
+                         b.ablock(other, display_name_at_block="B", now=2.0))
+    on_disk = Blocklist.load(tmp_path)
+    assert on_disk.is_blocked(UID) and on_disk.is_blocked(other)

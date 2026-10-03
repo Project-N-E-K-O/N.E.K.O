@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -386,6 +387,20 @@ class BlocklistUnavailable(RuntimeError):
     """The blocklist file exists but could not be read; it must not be treated as empty."""
 
 
+# 同一个黑名单文件的所有实例共用一把写锁（弱引用登记，没有实例引用后自动释放）：
+# 各自一把锁时，两个实例的 ablock 互不串行，后写的整表会冲掉先写的那条
+_BLOCKLIST_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _blocklist_lock(path: Path) -> asyncio.Lock:
+    key = os.path.normcase(str(path.resolve()))
+    lock = _BLOCKLIST_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _BLOCKLIST_LOCKS[key] = lock
+    return lock
+
+
 class Blocklist:
     """In-memory view of ``config_dir/visit_blocklist.json`` with atomic writes.
 
@@ -396,14 +411,17 @@ class Blocklist:
     and every mutation raise :class:`BlocklistUnavailable`, and identity
     verification rejects every peer. Treating it as empty would let a
     blocked peer back in. Mutations write the new list first and only then
-    swap it in, so a failed write leaves memory and disk consistent.
+    swap it in, so a failed write leaves memory and disk consistent. Every
+    instance on the same file shares one write lock, and each mutation
+    re-reads the file under it before applying its change, so two instances
+    never overwrite each other's rows.
     """
 
     def __init__(self, config_dir: str | os.PathLike[str], entries: Iterable[BlockEntry] = (),
                  *, available: bool = True) -> None:
         self._path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
         self._entries: dict[str, BlockEntry] = {e.visit_uid: e for e in entries}
-        self._lock = asyncio.Lock()
+        self._lock = _blocklist_lock(self._path)
         self.available = available
 
     @property
@@ -515,8 +533,10 @@ class Blocklist:
         """Block ``visit_uid`` and persist; return False if it was already blocked.
 
         The only mutation path (with :meth:`aunblock`): every change is
-        serialised by one asyncio lock, so concurrent blocks / unblocks never
-        rebuild the list from a stale view and drop each other's update.
+        serialised by one asyncio lock shared by all instances on this file
+        and re-reads the file under it, so concurrent blocks / unblocks (even
+        from different instances) never rebuild the list from a stale view and
+        drop each other's update.
         Cancellation-safe: the write-then-swap transaction runs shielded, so a
         cancelled caller never leaves the file and the in-memory list apart.
         """
@@ -527,6 +547,20 @@ class Blocklist:
         # 写盘与切内存是一个事务：若调用方在写盘途中被取消，事务照常做完（shield），
         # 锁也一直持有到内存与磁盘一致，免得已拉黑的人在内存里还没生效、或被后续写入冲掉
         async with self._lock:
+            self._require_available()
+            # 锁内先读盘上最新的整表：别的实例可能刚写过，用自己手里的旧视图重建会冲掉它
+            try:
+                payload = await read_json_async(self._path)
+            except FileNotFoundError:
+                self._entries = {}
+            except (OSError, ValueError) as exc:
+                raise BlocklistUnavailable("visit blocklist could not be re-read") from exc
+            else:
+                try:
+                    fresh = _parse_entries(payload)
+                except ValueError as exc:
+                    raise BlocklistUnavailable("visit blocklist is malformed") from exc
+                self._entries = {e.visit_uid: e for e in fresh}
             entries = build()
             if entries is None:
                 return False
