@@ -5270,6 +5270,45 @@ async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_cla
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["circuit_open", "cooldown"])
+async def test_audio_auto_start_asks_the_route_before_core_only_gates(gate):
+    """Core's start circuit / cooldown only gate an ordinary session; a route
+    that claims the start is asked first.
+
+    Mutation: checking those gates before the route offer turns this red.
+    """
+    mgr = _make_auto_start_manager()
+    if gate == "circuit_open":
+        mgr._session_start_circuit_open = True
+    else:
+        mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=True)
+    claim = AsyncMock(return_value=True)
+    _register_external_route_kind("visit", active=True, on_start_session=claim)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    claim.assert_awaited_once()
+    mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unclaimed_audio_auto_start_still_respects_the_core_circuit():
+    mgr = _make_auto_start_manager()
+    mgr._session_start_circuit_open = True
+    _register_external_route_kind("visit", active=True, on_start_session=AsyncMock(return_value=False))
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_audio_auto_start_asks_the_new_instance_when_the_kind_took_over():
     """The old instance's decline is stale: the new instance decides (and claims).
 

@@ -227,6 +227,7 @@ async def _offer_to_current_owner(
     offer: Callable[[ExternalRouteKind], Awaitable[tuple[Any, bool]]],
     *,
     what: str,
+    claim_outlives_owner: bool = False,
 ) -> tuple[ExternalRouteKind | None, Any]:
     """Run ``offer`` against the route that owns ``lanlan_name`` until it sticks.
 
@@ -234,6 +235,10 @@ async def _offer_to_current_owner(
     Otherwise the handler may have suspended, and an answer from a route
     instance that has since been replaced does not speak for the current
     owner: the offer is repeated against whoever owns the character now.
+    With ``claim_outlives_owner``, a truthy result (the route took the input)
+    also stands when no route owns the character afterwards: the route that
+    took it has simply ended (e.g. the input ended it), and there is nobody
+    else to offer it to; only a different owner gets it re-offered.
     Returns ``(spec, result)`` of the owner whose answer stands, ``(None, None)``
     when no route owns the character, or ``(None, _UNSETTLED)`` when the owner
     kept changing. Each owner read is reused as the next attempt's starting
@@ -249,6 +254,8 @@ async def _offer_to_current_owner(
             return spec, result
         current = external_route_identity(lanlan_name)
         if same_external_route_owner(identity, current):
+            return spec, result
+        if claim_outlives_owner and result and current is None:
             return spec, result
         logger.info(
             "external route changed while handling %s: lanlan=%s kind=%s",
@@ -273,16 +280,18 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> Rout
     """Offer a main-socket ``stream_data`` message to the active route.
 
     CLAIMED: the route consumed it (the caller skips the ordinary chat path).
-    UNCLAIMED: no route took it; it goes to the ordinary path. A "not
-    consumed" from a route instance replaced while it decided is re-offered to
-    the current owner. UNSETTLED: the owner kept changing; the message reached
-    nobody and must not leak into ordinary chat either.
+    UNCLAIMED: no route took it; it goes to the ordinary path. An answer from
+    a route instance replaced while it decided -- consumed or not -- is
+    re-offered to the current owner; a route that consumed the message and
+    then ended keeps it. UNSETTLED: the owner kept changing; the message
+    reached nobody and must not leak into ordinary chat either.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
-        consumed = bool(await spec.route_stream_message(lanlan_name, message))
-        return consumed, consumed
+        return bool(await spec.route_stream_message(lanlan_name, message)), False
 
-    _spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="stream_data")
+    _spec, consumed = await _offer_to_current_owner(
+        lanlan_name, offer, what="stream_data", claim_outlives_owner=True,
+    )
     if consumed is _UNSETTLED:
         return RouteClaim.UNSETTLED
     return RouteClaim.CLAIMED if consumed else RouteClaim.UNCLAIMED
@@ -320,14 +329,17 @@ async def route_external_start_session(
     (see ``ExternalRouteKind``). Every awaited answer -- a claim as well as a
     decline -- only stands if the same route instance still owns the
     character; otherwise the current owner is asked, so a claim made by an
-    instance that has since been replaced cannot swallow the start.
+    instance that has since been replaced cannot swallow the start. A route
+    that claimed the start and then ended keeps it.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
         if spec.on_start_session is None:
             return False, True
         return bool(await spec.on_start_session(lanlan_name, message)), False
 
-    spec, claimed = await _offer_to_current_owner(lanlan_name, offer, what="start_session")
+    spec, claimed = await _offer_to_current_owner(
+        lanlan_name, offer, what="start_session", claim_outlives_owner=True,
+    )
     if claimed is _UNSETTLED:
         return RouteClaim.UNSETTLED, None
     if claimed:

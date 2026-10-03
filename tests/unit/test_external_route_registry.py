@@ -635,6 +635,63 @@ async def test_active_game_route_with_blank_session_id_keeps_its_microphone_audi
 
 
 @pytest.mark.asyncio
+async def test_a_stream_message_consumed_by_a_replaced_instance_is_reoffered(empty_registry):
+    """Mutation: treating "consumed" as final (no owner re-check) turns this
+    red -- the replacement owner would never see the message."""
+    instance = {"id": "visit-1"}
+    asked = []
+
+    async def _consume_then_replaced(_name, _message):
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return True
+        return False
+
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_consume_then_replaced,
+        on_start_session=AsyncMock(return_value=False),
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: instance["id"],
+    ))
+
+    claim = await registry.route_external_stream_message("Lan", {"input_type": "text"})
+
+    assert asked == ["visit-1", "visit-2"]
+    assert claim is registry.RouteClaim.UNCLAIMED
+
+
+@pytest.mark.asyncio
+async def test_a_stream_message_consumed_by_a_route_that_then_ended_stays_consumed(empty_registry):
+    """The input that ended the route must not leak into ordinary chat.
+
+    Mutation: re-offering when no route owns the character any more turns this red.
+    """
+    active = {"value": True}
+
+    async def _consume_and_end(_name, _message):
+        await asyncio.sleep(0)
+        active["value"] = False
+        return True
+
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: active["value"],
+        route_stream_message=_consume_and_end,
+        on_start_session=AsyncMock(return_value=False),
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: "visit-1" if active["value"] else None,
+    ))
+
+    claim = await registry.route_external_stream_message("Lan", {"input_type": "text"})
+
+    assert claim is registry.RouteClaim.CLAIMED
+
+
+@pytest.mark.asyncio
 async def test_a_claim_from_an_instance_replaced_while_claiming_is_reasked(empty_registry):
     """A claim only stands if the same instance still owns the character.
 
