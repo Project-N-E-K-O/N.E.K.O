@@ -158,6 +158,41 @@ async def test_shutdown_after_clear_during_finish_balances_control_queue():
     await asyncio.wait_for(requests.join(), 1)
 
 
+@pytest.mark.parametrize("successor", [False, True])
+async def test_session_setup_timeout_is_connection_failure_not_backpressure(monkeypatch, successor):
+    async def on_send(ws, payload):
+        kind = json.loads(payload)["type"]
+        if kind == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif kind == "session.finish":
+            await ws.server_send({"type": "session.finished"})
+
+    silent = _FakeWebSocket()
+    first = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(first, silent) if successor else _FakeConnector(silent)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(qwen, "_QWEN_RECONNECT_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    worker = asyncio.create_task(qwen.qwen_asr_worker(
+        requests, responses, "key", AsrSessionConfig(endpointing_mode="provider"),
+    ))
+    try:
+        if successor:
+            await _next_event(responses, "ready")
+            await first.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
+            await _next_event(responses, "utterance_started")
+            requests.put_nowait(_AsrWorkerRequest("activity", 0, speech_active=False))
+        error = await _next_event(responses, "error")
+        assert error.error_code == "ASR_QWEN_CONNECTION_FAILED"
+        assert "response delivery" not in error.error_message
+        await asyncio.wait_for(worker, 1)
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
 @pytest.mark.parametrize("offset", [-100_000, 100_000])
 async def test_recovery_capacity_deadline_ignores_loop_clock_origin(monkeypatch, offset):
     from main_logic.asr_client import _infra

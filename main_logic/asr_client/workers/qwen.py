@@ -98,6 +98,10 @@ _QWEN_SUPPORTED_LANGUAGES = frozenset(
 _ItemKey: TypeAlias = tuple[int, int, int]
 
 
+class _QwenResponseDeliveryTimeout(TimeoutError):
+    """A response consumer failed to make capacity within the delivery budget."""
+
+
 @dataclass(slots=True)
 class _QwenConnectionState:
     generation: int
@@ -285,9 +289,12 @@ async def _qwen_emit_empty_finals_for_pending_items(
 ) -> None:
     """Fence unresolved provider items before retiring a finished connection."""
 
-    async with asyncio.timeout(_QWEN_FINAL_DELIVERY_TIMEOUT_SECONDS):
-        for item_id, key in list(state.item_keys.items()):
-            await _qwen_publish_item_final(response_queue, state, item_id, key, "")
+    try:
+        async with asyncio.timeout(_QWEN_FINAL_DELIVERY_TIMEOUT_SECONDS):
+            for item_id, key in list(state.item_keys.items()):
+                await _qwen_publish_item_final(response_queue, state, item_id, key, "")
+    except TimeoutError as exc:
+        raise _QwenResponseDeliveryTimeout("Qwen final settlement timed out") from exc
 
 
 async def _qwen_publish_item_final(
@@ -318,7 +325,10 @@ async def _qwen_publish_item_final(
                 state.final_deliveries.pop(item_id, None)
 
         task.add_done_callback(delivered)
-    await asyncio.wait_for(asyncio.shield(task), _QWEN_FINAL_DELIVERY_TIMEOUT_SECONDS)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), _QWEN_FINAL_DELIVERY_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise _QwenResponseDeliveryTimeout("Qwen final delivery timed out") from exc
 
 
 async def _qwen_send_finish(ws: Any, state: _QwenConnectionState) -> None:
@@ -815,12 +825,14 @@ async def _qwen_sender(
                 "Qwen ASR connection closed unexpectedly",
             )
         return "error", None
-    except Exception:
+    except Exception as exc:
         await _emit_qwen_error_once(
             response_queue,
             state,
-            "ASR_QWEN_WORKER_FAILED",
-            "Qwen ASR sender failed",
+            "ASR_STREAM_BACKPRESSURE" if isinstance(exc, _QwenResponseDeliveryTimeout)
+            else "ASR_QWEN_WORKER_FAILED",
+            "Qwen ASR response delivery timed out" if isinstance(exc, _QwenResponseDeliveryTimeout)
+            else "Qwen ASR sender failed",
         )
         return "error", None
     finally:
@@ -1137,14 +1149,16 @@ async def _qwen_receiver(
             )
             return "error"
         return "closed"
-    except Exception:
+    except Exception as exc:
         if state.intentional_close.is_set():
             return "closed"
         await _emit_qwen_error_once(
             response_queue,
             state,
-            "ASR_QWEN_WORKER_FAILED",
-            "Qwen ASR receiver failed",
+            "ASR_STREAM_BACKPRESSURE" if isinstance(exc, _QwenResponseDeliveryTimeout)
+            else "ASR_QWEN_WORKER_FAILED",
+            "Qwen ASR response delivery timed out" if isinstance(exc, _QwenResponseDeliveryTimeout)
+            else "Qwen ASR receiver failed",
         )
         return "error"
 
@@ -1324,10 +1338,10 @@ async def qwen_asr_worker(
                     await _emit_qwen_error_once(
                         response_queue, state,
                         "ASR_CREDENTIALS_REJECTED" if _qwen_is_auth_rejection(exc)
-                        else "ASR_STREAM_BACKPRESSURE" if isinstance(exc, TimeoutError)
+                        else "ASR_STREAM_BACKPRESSURE" if isinstance(exc, _QwenResponseDeliveryTimeout)
                         else "ASR_QWEN_CONNECTION_FAILED",
                         "Qwen ASR credentials were rejected" if _qwen_is_auth_rejection(exc)
-                        else "Qwen ASR response delivery timed out" if isinstance(exc, TimeoutError)
+                        else "Qwen ASR response delivery timed out" if isinstance(exc, _QwenResponseDeliveryTimeout)
                         else "Qwen ASR connection or session setup failed",
                     )
                 outcome = "error"
