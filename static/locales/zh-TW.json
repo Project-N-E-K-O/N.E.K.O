@@ -1335,6 +1335,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，國內無法使用）",
             "orcarouter": "OrcaRouter（Claude 閘道，國內無法使用）",
+            "requesty": "Requesty（模型路由，國內無法使用）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（自部署）"
         },
@@ -1410,6 +1411,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "免費版無需API Key",
@@ -4004,7 +4006,7 @@
             },
             "step6": {
                 "title": "🔑 輔助 API Key",
-                "desc": "如果妳選擇了阿里作為輔助 API，需要在這裡填寫阿里的 API Key。如果不填寫，系統會使用核心 API 的 Key。"
+                "desc": "請在這裡填寫所選輔助 API 服務商的 Key。留空時通常回退到核心 API 的 Key；要求專用 Key 的服務商不支援此回退，必須另外填寫。"
             },
             "step7": {
                 "title": "🔧 自定義 API 配置",

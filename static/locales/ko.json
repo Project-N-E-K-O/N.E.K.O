@@ -1335,6 +1335,7 @@
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter(모델 통합 플랫폼)",
             "orcarouter": "OrcaRouter(Claude 게이트웨이)",
+            "requesty": "Requesty(모델 라우터)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1410,6 +1411,7 @@
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
@@ -4004,7 +4006,7 @@
             },
             "step6": {
                 "title": "🔑 보조 API 키",
-                "desc": "Alibaba를 보조 API로 사용하는 경우 여기에 Alibaba의 API 키를 입력하세요. 비어 있으면 핵심 API 키를 사용합니다."
+                "desc": "선택한 보조 API 제공업체의 API 키를 여기에 입력하세요. 비워 두면 일반적으로 핵심 API 키를 사용하지만, 전용 키가 필요한 제공업체에는 이 대체 방식이 적용되지 않습니다."
             },
             "step7": {
                 "title": "🔧 사용자 정의 API 구성",
