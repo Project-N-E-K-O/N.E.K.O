@@ -309,8 +309,9 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None) -> dic
     summary = entry.get("last_summary")
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
-    if summary is not None and "ended_at" in summary and not _is_finite_number(summary["ended_at"]):
-        raise RosterCorruptError(f"{where}: last_summary ended_at is not a number")
+    # 缺 ended_at 也算坏：写者总会写上它，没有它就无从判断新旧，迟到的回调会无序覆盖
+    if summary is not None and not _is_finite_number(summary.get("ended_at")):
+        raise RosterCorruptError(f"{where}: last_summary ended_at is missing or not a number")
     return entry
 
 
@@ -467,11 +468,18 @@ class PeerRoster:
     ) -> None:
         """Record that ``peer_uid`` visited local character ``own_char``.
 
+        ``now`` must be a finite number (``ValueError`` otherwise, before any
+        change): it is stored as ``last_seen``, which strict reads require to
+        be one.
+
         Creates the peer and its ``by_char[own_char]`` entry if needed, adds
         ``pair_id`` to ``pairs`` and ``peer_char_id`` to ``chars``, and bumps
         ``last_seen``. ``display_name`` (the person) is only replaced when
         given; ``short_code`` is derived from ``peer_uid``.
         """
+        if not _is_finite_number(now):
+            # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
+            raise ValueError("now must be a finite number")
         _require_str(peer_uid, "peer_uid")
         _require_str(own_char, "own_char")
         _require_str(pair_id, "pair_id")

@@ -34,8 +34,11 @@ from main_logic.visit.spool import (
     SpoolLineTooLarge,
     SpoolStateError,
     VisitSpool,
+    encode_spool_line,
     is_digestable,
     new_state,
+    validate_header,
+    validate_state,
 )
 
 DAY = 86400.0
@@ -1371,3 +1374,52 @@ async def test_read_back_rejects_a_spool_of_another_visit(tmp_path):
     other.jsonl_path.write_bytes(sp.jsonl_path.read_bytes())
     got = await other.read_back()
     assert got.header is None and got.lines == [] and got.dropped_lines == 2
+
+
+@pytest.mark.parametrize("v", [True, 1.0], ids=["true", "float"])
+def test_spool_header_version_must_be_the_integer_one(v):
+    with pytest.raises(ValueError):
+        validate_header(dict(header(vid(41)), v=v))
+
+
+@pytest.mark.parametrize("side", ["visitor", "", 1])
+def test_spool_line_side_must_be_a_protocol_role(side):
+    with pytest.raises(ValueError):
+        encode_spool_line(dict(line(1), side=side))
+
+
+def test_digest_watermarks_stay_in_the_lamport_range():
+    # 越界水位没有合法行够得着：不能据此判结清删转录
+    state = settled(state_for())
+    state["digest_writes"]["0"]["through_lp"] = visit_settings.VISIT_LP_MAX + 1
+    state["digested_through_lp"] = visit_settings.VISIT_LP_MAX + 1
+    with pytest.raises(SpoolStateError):
+        validate_state(state)
+
+
+async def test_sweep_continues_past_a_file_it_cannot_delete(tmp_path, monkeypatch):
+    # 删不掉的旧文件（被占用 / 没权限）留到下一轮，其他过期文件与容量回收照常做
+    locked = VisitSpool(tmp_path, vid(42))
+    await locked.write_state(state_for())
+    old = VisitSpool(tmp_path, vid(43))
+    await old.write_state(state_for())
+    _age(locked.state_path, 8)
+    _age(old.state_path, 8)
+    for n, days in ((44, 3), (45, 1)):
+        sp = VisitSpool(tmp_path, vid(n))
+        await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+        _age(sp.state_path, days)
+    real = spool_mod._unlink
+    stuck = {locked.state_path, VisitSpool(tmp_path, vid(44)).state_path}
+
+    def unlink(path):
+        if path in stuck:
+            raise PermissionError("in use")
+        return real(path)
+
+    monkeypatch.setattr(spool_mod, "_unlink", unlink)
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    deleted = await VisitSpool.sweep(tmp_path, NOW)
+    assert old.state_path in deleted                                  # 过期回收没被中断
+    assert VisitSpool(tmp_path, vid(45)).state_path in deleted         # 容量回收也没被中断
+    assert all(p.exists() for p in stuck) and not set(deleted) & stuck

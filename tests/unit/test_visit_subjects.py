@@ -366,6 +366,8 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"].__setitem__("A", 1),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("pairs", "p"),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__("chars", []),
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].__setitem__(
+        "last_summary", {"visit_id": "V" * 22, "text": "x"}),
 ])
 async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
     # JSON 合法但结构坏了：严格读不能把它当成「没有条目」
@@ -704,3 +706,17 @@ async def test_a_deeply_nested_roster_is_treated_as_corrupt(tmp_path):
     with pytest.raises(RosterCorruptError):
         await roster.get_char_entry(PEER_X, "A", strict=True)
     assert await roster.get_char_entry(PEER_X, "A") is None     # 宽松读照旧按空表
+
+
+@pytest.mark.parametrize("now", [True, float("nan"), float("inf"), "1"], ids=["bool", "nan", "inf", "str"])
+async def test_upsert_rejects_a_bad_observation_time_before_writing(tmp_path, now):
+    # 坏的 now 写进 last_seen 后，下一次严格读就把条目判坏：必须在改动前拒绝
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"), peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    before = roster.path.read_bytes()
+    with pytest.raises(ValueError):
+        await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"),
+                            peer_char_id="c_" + "2" * 24, char_tag="f" * 32, now=now)
+    assert roster.path.read_bytes() == before
+    assert await roster.get_char_entry("peer_x", "A", strict=True) is not None

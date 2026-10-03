@@ -213,8 +213,9 @@ def validate_header(header: Mapping[str, Any]) -> dict:
             "spool header fields mismatch: missing=%s extra=%s"
             % (sorted(set(HEADER_FIELDS) - keys), sorted(keys - set(HEADER_FIELDS)))
         )
-    if header["v"] != 1:
-        raise ValueError("spool header v must be 1")
+    if type(header["v"]) is not int or header["v"] != 1:
+        # true / 1.0 与 1 相等：按类型判，只认整数 1
+        raise ValueError("spool header v must be the integer 1")
     require_visit_id(header["visit_id"])
     if header["role"] not in ("host", "guest"):
         raise ValueError("spool header role must be host or guest")
@@ -262,8 +263,9 @@ def encode_spool_line(line: Mapping[str, Any]) -> bytes:
     if not _is_int(line["lp"]) or not 0 <= line["lp"] <= VISIT_LP_MAX:
         # 与 wire / room 同一值域：越界的 lp 会把补录与上传的排序搞乱
         raise ValueError("spool line lp must be an int in 0..VISIT_LP_MAX")
-    if not isinstance(line["side"], str):
-        raise ValueError("spool line side must be a string")
+    if line["side"] not in ("host", "guest"):
+        # 只有两种协议角色：别的字符串会在补录排序时被错归属、上传时过不了 schema
+        raise ValueError("spool line side must be host or guest")
     if not _is_number(line["ts"]):
         raise ValueError("spool line ts must be a number")
     if line["from"] not in LINE_SPEAKERS:
@@ -429,8 +431,10 @@ def validate_state(state: Any) -> dict:
             )
         if not _is_number(record["requested_at"]):
             raise SpoolStateError(f"digest_writes[{run}].requested_at must be a number")
-        if not _is_int(record["through_lp"]):
-            raise SpoolStateError(f"digest_writes[{run}].through_lp must be an int")
+        if not _is_int(record["through_lp"]) or not 0 <= record["through_lp"] <= VISIT_LP_MAX:
+            # 越界的水位没有任何合法行够得着；digested_through_lp 必须等于某轮的 through_lp
+            # （或 -1），所以它也随之限定在 -1..VISIT_LP_MAX
+            raise SpoolStateError(f"digest_writes[{run}].through_lp must be an int in 0..VISIT_LP_MAX")
         _check_batch_map(record["group"], f"digest_writes[{run}].group")
         _check_batch_map(record["segments"], f"digest_writes[{run}].segments")
     # 每轮从上一轮的水位之后开始，through_lp 严格递增；digested_through_lp 只在一轮全部
@@ -675,6 +679,18 @@ def _unlink(path: Path) -> bool:
         path.unlink()
         return True
     except FileNotFoundError:
+        return False
+
+
+def _sweep_unlink(path: Path) -> bool:
+    """:func:`_unlink` for the sweep: any other ``OSError`` is logged and the file kept."""
+    try:
+        return _unlink(path)
+    except OSError as exc:
+        # 被占用（Windows 共享冲突）/ 没权限 / 名字像转录的目录：留到下一轮，不能中断整轮清扫，
+        # 否则一个长期锁住的旧文件会让所有其他回收都做不了
+        logger.warning("visit spool: could not delete %s (%s); keeping it for a later sweep",
+                       path.name, exc)
         return False
 
 
@@ -1294,7 +1310,10 @@ class VisitSpool:
                 ):
                     remaining.append((visit_id, suffix, path, st))
                     continue
-                if _unlink(path):
+                if not _sweep_unlink(path):
+                    if path.exists():
+                        remaining.append((visit_id, suffix, path, st))
+                else:
                     deleted.append(path)
                     if suffix in _UPLOAD_SUFFIXES:
                         logger.warning(
@@ -1335,7 +1354,7 @@ class VisitSpool:
                     if _spool_key(jsonl) in _OPEN_SPOOLS:
                         continue
                     for path, st in files:
-                        if _unlink(path):
+                        if _sweep_unlink(path):
                             deleted.append(path)
                             total -= st.st_size
         return deleted
@@ -1354,5 +1373,8 @@ class VisitSpool:
            large, and pending ``.upload.json`` / ``.upload.jsonl`` files are
            never deleted for size; the admission cap
            ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them instead.
+
+        A file that cannot be deleted (locked, no permission, a directory) is
+        logged and kept for a later sweep; the rest of the sweep continues.
         """
         return await asyncio.to_thread(cls._sweep_sync, Path(config_dir), now)
