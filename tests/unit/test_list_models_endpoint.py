@@ -143,6 +143,30 @@ def test_slow_preferred_candidate_gets_full_budget(config_manager, model_catalog
     assert result['resolved_url'] == 'https://preferred.test/v1'
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('fallback_stalls', [True, False])
+def test_preferred_auth_error_survives_fallback_failure(
+    config_manager, model_catalog, monkeypatch, fallback_stalls,
+):
+    async def fetch(url, *_args):
+        if url == 'https://preferred.test/v1':
+            return {'success': False, 'error_code': 'auth_failed', 'error': 'invalid key'}
+        if fallback_stalls:
+            await asyncio.Event().wait()
+        await asyncio.sleep(0)
+        return {'success': False, 'error_code': 'network_error'}
+
+    monkeypatch.setattr(model_catalog, '_MODEL_LIST_TIMEOUT_SECONDS', 0.03)
+    monkeypatch.setattr(model_catalog, '_resolve_provider_target', lambda *_args: {
+        'urls': ['https://preferred.test/v1', 'https://fallback.test/v1'],
+        'api_key': 'bad', 'provider_type': 'openai_compatible',
+    })
+    monkeypatch.setattr(model_catalog, '_fetch_models', fetch)
+    result = _run(model_catalog, provider_key='qwen_intl')
+    assert result['error_code'] == 'auth_failed'
+    assert result['error'] == 'invalid key'
+
+
 def _status_error(error_cls, status_code: int):
     request = httpx.Request('GET', 'https://upstream.example.test/v1/models')
     response = httpx.Response(status_code, request=request)

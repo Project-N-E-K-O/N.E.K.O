@@ -250,6 +250,7 @@ async def list_models(req: ModelListRequest) -> dict:
     tasks = [asyncio.create_task(_fetch_models(url, target["api_key"], target["provider_type"]))
              for url in target["urls"]]
     pending = set(tasks)
+    failures = {}
     try:
         while pending:
             done, pending = await asyncio.wait(
@@ -271,6 +272,11 @@ async def list_models(req: ModelListRequest) -> dict:
                         len(result["models"]),
                     )
                     return result
+                failures[task] = result
+        # Keep the preferred endpoint's concrete error instead of masking it
+        # with a later fallback timeout or a less relevant regional error.
+        if failures:
+            result = next(failures[task] for task in tasks if task in failures)
     finally:
         for task in tasks:
             if not task.done():
