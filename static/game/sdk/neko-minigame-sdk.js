@@ -2204,6 +2204,8 @@
     let characterBindingPending = false;
     let characterBindingLocked = false;
     let avatarMountsPending = 0;
+    // Configs of mounts still awaiting the host, so keepCharacter can vet them too.
+    const pendingAvatarConfigs = new Set();
     const audioControllers = new Set();
     let audioMountsPending = 0;
     let disposed = false;
@@ -3899,6 +3901,17 @@
           : '';
         if (keptCharacterName && typeof transport.bindRuntimeCharacter !== 'function') {
           fail('transport_unavailable', 'Character binding unavailable');
+        }
+        // Every kept Avatar, mounted or still mounting, must declare this very
+        // character; an undeclared or foreign one would show another character
+        // in the new session.
+        if (keptCharacterName && ![
+          ...[...avatarRenderers].map((renderer) => renderer.config),
+          ...pendingAvatarConfigs,
+        ].every((config) => config.characterName === keptCharacterName)) {
+          fail('invalid_state', 'keepCharacter requires every Avatar to be mounted for the kept character', {
+            operation: 'runtime.reset',
+          });
         }
         stopRuntimeMonitoring();
         stopRuntimeOperation();
@@ -5696,6 +5709,7 @@
         }
         const config = normalizeAvatarConfig(configInput);
         avatarMountsPending += 1;
+        pendingAvatarConfigs.add(config);
         let raw;
         try {
           raw = await transport.mountAvatar(config);
@@ -5703,6 +5717,7 @@
           throw normalizeTransportError(error, 'avatar.mount');
         } finally {
           avatarMountsPending -= 1;
+          pendingAvatarConfigs.delete(config);
         }
         if (!raw || typeof raw !== 'object' || typeof raw.dispose !== 'function') {
           try { raw?.dispose?.(); } catch (_) { /* invalid host controller cleanup */ }

@@ -520,6 +520,22 @@ async function characterBinding() {
       assert.equal(h.routeLanlanName, 'Neko');
       assert.equal(client.runtime.session.characterName, 'Neko');
       assert.notEqual(client.runtime.session.id, firstSession, 'newSession must still mint a session');
+      // A kept Avatar must belong to the kept character, mounted or still mounting.
+      for (const characterName of ['Other', undefined]) {
+        const foreign = await client.avatar.mount({...config, slot:'guest', characterName});
+        assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}), {code:'invalid_state'},
+          `keepCharacter kept an Avatar mounted for ${characterName || 'no character'}`);
+        assert.equal(h.routeLanlanName, 'Neko', 'a refused reset must not change the binding');
+        foreign.dispose();
+      }
+      const mountGate = deferred();
+      h.mountAvatar = async () => { await mountGate.promise; return {dispose() {}}; };
+      const pendingForeign = client.avatar.mount({...config, slot:'guest', characterName:'Other'});
+      await tick();
+      assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}), {code:'invalid_state'},
+        'keepCharacter must also vet a mount that is still pending');
+      mountGate.resolve(); (await pendingForeign).dispose();
+      assert.equal(client.runtime.reset({newSession:true, keepCharacter:true}).characterName, 'Neko');
       client.runtime.reset({newSession:true});
       assert.equal(h.routeLanlanName, '', 'without the opt-in reset still clears the binding');
       assert.equal(client.runtime.reset({keepCharacter:true}).characterName, '',
