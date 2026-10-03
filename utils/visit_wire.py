@@ -1491,6 +1491,8 @@ class _CutScanner:
 
     def next_cut(self, pending: str, *, final: bool, holdback: int) -> Optional[int]:
         """Length of the next clause, or None to wait for more text."""
+        # 只有没下刀（即没超 VISIT_DELTA_TEXT_MAX_BYTES）才保存状态，所以 _text 不超过
+        # 800 个字符：这次前缀比较是与整句长度无关的定长 memcmp
         if self._text and pending.startswith(self._text):
             (start, raw_bytes, enc, cjk, words, in_word, in_token, token_space,
              token_ascii, first_ns, last_ns) = self._state

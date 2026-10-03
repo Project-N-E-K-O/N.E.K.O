@@ -1400,34 +1400,68 @@ def test_clause_splitter_boundary_mode_requires_reported_spans():
         splitter.feed("小明来了。")
 
 
-def test_one_char_deltas_stay_linear_in_the_line_length():
-    """A 4 KB line fed one character at a time: the budget and the splitter cost
-    must follow the delta, not the buffer. The whole-buffer versions take about
-    a second each here (seconds on slower machines); the incremental ones take
-    tens of milliseconds."""
-    import time
+_LINEAR_ASCII = ("hello world, this is a test. Alice says hi. " * 100)[:VISIT_TEXT_MAX_BYTES]
+_LINEAR_MIXED = ("hello world, this is a test. Alice says hi to 小明 again. " * 80)[:4096]
+_LINEAR_CJK = ("今天的天气很好我们一起去公园散步吧" * 300)[:2000]   # 无标点：整段靠硬上限下刀
 
-    _red_str, red_spans, boundary = _real_redactors()
-    ascii_line = ("hello world, this is a test. Alice says hi. " * 100)[:VISIT_TEXT_MAX_BYTES]
-    line = ("hello world, this is a test. Alice says hi to 小明 again. " * 80)[:4096]
 
-    start = time.perf_counter()
+def _feed_one_char_at_a_time(redact, boundary) -> None:
     budget = vw.WireBudget(visit_id=VID, header=_HEADER)
-    for ch in ascii_line:
+    for ch in _LINEAR_ASCII:
         assert budget.take(ch) == ch
-    assert budget.accepted_text == ascii_line and not budget.exhausted
+    assert budget.accepted_text == _LINEAR_ASCII and not budget.exhausted
     assert budget.take("!") == "" and budget.exhausted      # 第 4097 字节
-    budget_s = time.perf_counter() - start
-
-    cjk = ("今天的天气很好我们一起去公园散步吧" * 300)[:2000]   # 无标点：整段靠硬上限下刀
-    start = time.perf_counter()
-    for text in (line, cjk):
-        splitter = vw.ClauseSplitter(redact=red_spans, redact_boundary=boundary, holdback_chars=6)
+    for text in (_LINEAR_MIXED, _LINEAR_CJK):
+        splitter = vw.ClauseSplitter(redact=redact, redact_boundary=boundary, holdback_chars=6)
         clauses = []
         for ch in text:
             clauses += splitter.feed(ch)
         clauses += splitter.flush()
         assert "".join(c.raw for c in clauses) == text
-    splitter_s = time.perf_counter() - start
-    assert budget_s < 0.4, budget_s
-    assert splitter_s < 0.8, splitter_s
+
+
+def test_one_char_deltas_do_work_proportional_to_the_line(monkeypatch):
+    """A 4 KB line fed one character at a time, counted deterministically instead
+    of timed: fragment() runs a constant number of times, redaction reads O(line)
+    characters in total and the boundary scan touches each character O(1) times.
+    The whole-buffer versions read ~8.4M characters in redaction and rescan the
+    unreleased tail on every feed (11x-120x the scan work here)."""
+    _red_str, red_spans, boundary = _real_redactors()
+    seen = {"fragment": 0, "redact": 0, "scan": 0}
+    real_fragment, real_esc2 = vw.fragment, vw._esc2_len
+
+    def counting_fragment(payload_json, **kw):
+        seen["fragment"] += 1
+        return real_fragment(payload_json, **kw)
+
+    def counting_redact(s):
+        seen["redact"] += len(s)
+        return red_spans(s)
+
+    def counting_esc2(ch):
+        seen["scan"] += 1                 # 分句扫描每看一个字符调用一次
+        return real_esc2(ch)
+
+    monkeypatch.setattr(vw, "fragment", counting_fragment)
+    monkeypatch.setattr(vw, "_esc2_len", counting_esc2)
+    _feed_one_char_at_a_time(counting_redact, boundary)
+    total = len(_LINEAR_MIXED) + len(_LINEAR_CJK)
+    assert seen["fragment"] <= 2, seen
+    assert seen["redact"] <= 4 * total, seen
+    assert seen["scan"] <= 2 * total, seen
+
+
+@pytest.mark.performance
+def test_one_char_deltas_wall_clock():
+    """Wall-clock companion of the work-count test (thresholds only with
+    RUN_PERF_TESTS=true, like the other performance tests): the whole-buffer
+    versions take about a second for the budget and three for the splitter on
+    a desktop; the incremental ones take milliseconds and ~0.1 s."""
+    import time
+
+    _red_str, red_spans, boundary = _real_redactors()
+    start = time.perf_counter()
+    _feed_one_char_at_a_time(red_spans, boundary)
+    elapsed = time.perf_counter() - start
+    if os.environ.get("RUN_PERF_TESTS", "").lower() == "true":
+        assert elapsed < 1.0, elapsed
