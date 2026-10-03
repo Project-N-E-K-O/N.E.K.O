@@ -1407,9 +1407,13 @@ class CoreConfigMixin:
                     # URL 和 Key 已换成核心服务商的，模型也必须取核心服务商的；沿用快照里
                     # 的值（辅助 API 的模型）会把 A 家的模型名发到 B 家的端点。
                     follow_core_profile = assist_api_profiles.get(core_api_value)
+                    if core_api_value == assist_api_value and assist_model_override:
+                        return assist_model_override
                     if isinstance(follow_core_profile, dict):
-                        return follow_core_profile.get(profile_key, '') or config.get(profile_key, '')
-                    return config.get('CORE_MODEL', '') if is_game_slot else ''
+                        return (follow_core_profile.get(profile_key, '')
+                                or follow_core_profile.get('CONVERSATION_MODEL', '')
+                                or config.get('CORE_MODEL', ''))
+                    return config.get('CORE_MODEL', '')
                 if provider == 'follow_assist' and is_game_slot:
                     return config.get(profile_key, '')
                 return ''
@@ -1422,7 +1426,9 @@ class CoreConfigMixin:
                 named_profile = assist_api_profiles.get(provider)
                 if not isinstance(named_profile, dict):
                     return ''
-                return str(named_profile.get(profile_key) or '').strip()
+                if provider == assist_api_value and assist_model_override:
+                    return assist_model_override
+                return str(named_profile.get(profile_key) or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)

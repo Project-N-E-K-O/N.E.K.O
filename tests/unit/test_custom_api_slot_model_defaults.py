@@ -54,6 +54,35 @@ _TEXT_TIERS = (
 )
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
+@pytest.mark.parametrize('prefix,model_type,profile_key', _TEXT_TIERS)
+def test_same_provider_blank_slots_inherit_assist_override(
+    config_manager, provider_mode, prefix, model_type, profile_key,
+):
+    _write_core_config(config_manager, {
+        'coreApi': 'openai', 'assistApi': 'openai',
+        'coreApiKey': 'sk-test', 'assistModelIds': {'openai': 'gpt-user-pick'},
+        'enableCustomApi': True, f'{prefix}ModelProvider': provider_mode,
+        f'{prefix}ModelId': '',
+    })
+    assert config_manager.get_model_api_config(model_type)['model'] == 'gpt-user-pick'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
+def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatch, provider_mode):
+    profiles = _profiles()
+    profiles['openai']['VISION_MODEL'] = ''
+    monkeypatch.setattr('utils.config_manager.get_assist_api_profiles', lambda: profiles)
+    _write_core_config(config_manager, {
+        'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
+        'assistModelIds': {'qwen': 'qwen-user-pick'}, 'enableCustomApi': True,
+        'visionModelProvider': provider_mode, 'visionModelId': '',
+    })
+    assert config_manager.get_model_api_config('vision')['model'] == profiles['openai']['CONVERSATION_MODEL']
+
+
 class TestFollowCoreBlankModel:
 
     @pytest.mark.unit

@@ -216,6 +216,16 @@ class TestAssistModelOverride:
 
 
 class TestAssistModelIdsApi:
+    @pytest.mark.unit
+    def test_provider_catalog_exposes_only_merged_model_defaults(self, core_config_router, monkeypatch):
+        monkeypatch.setattr('utils.api_config_loader.get_assist_api_profiles', lambda: {
+            'openai': {'VISION_MODEL': 'merged-vision', 'OPENROUTER_API_KEY': 'secret'},
+        })
+        response = asyncio.run(core_config_router.get_api_providers_config())
+        assert response['success'] is True
+        assert response['assist_model_defaults']['openai']['VISION_MODEL'] == 'merged-vision'
+        assert 'OPENROUTER_API_KEY' not in response['assist_model_defaults']['openai']
+
 
     @pytest.mark.unit
     def test_get_returns_the_normalized_map(self, config_manager, core_config_router):

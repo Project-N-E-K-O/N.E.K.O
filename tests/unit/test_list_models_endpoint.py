@@ -64,6 +64,39 @@ def _run(model_catalog, **payload):
     return asyncio.run(model_catalog.list_models(request))
 
 
+@pytest.mark.unit
+def test_auth_failure_does_not_probe_more_candidates(config_manager, model_catalog, monkeypatch):
+    calls = []
+
+    async def fail(url, *_args):
+        calls.append(url)
+        return {'success': False, 'error_code': 'auth_failed'}
+
+    monkeypatch.setattr(model_catalog, '_resolve_provider_target', lambda *_args: {
+        'urls': ['https://a.test/v1', 'https://b.test/v1'],
+        'api_key': 'bad', 'provider_type': 'openai_compatible',
+    })
+    monkeypatch.setattr(model_catalog, '_fetch_models', fail)
+    assert _run(model_catalog, provider_key='qwen')['error_code'] == 'auth_failed'
+    assert calls == ['https://a.test/v1']
+
+
+@pytest.mark.unit
+def test_model_list_total_timeout_cancels_fetch(config_manager, model_catalog, monkeypatch):
+    cancelled = []
+
+    async def slow(*_args):
+        try:
+            await asyncio.sleep(1)
+        finally:
+            cancelled.append(True)
+
+    monkeypatch.setattr(model_catalog, '_MODEL_LIST_TIMEOUT_SECONDS', 0.01)
+    monkeypatch.setattr(model_catalog, '_fetch_models', slow)
+    assert _run(model_catalog, url='http://localhost:8000/v1')['error_code'] == 'timeout'
+    assert cancelled == [True]
+
+
 def _status_error(error_cls, status_code: int):
     request = httpx.Request('GET', 'https://upstream.example.test/v1/models')
     response = httpx.Response(status_code, request=request)

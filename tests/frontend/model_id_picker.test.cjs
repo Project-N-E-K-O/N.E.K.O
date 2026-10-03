@@ -85,6 +85,13 @@ function createElement(id, attributes = {}) {
         textContent: '',
         dataset: {},
         attributes: { ...attributes },
+        listeners: {},
+        addEventListener(type, callback) {
+            (this.listeners[type] ||= []).push(callback);
+        },
+        dispatchEvent(event) {
+            (this.listeners[event.type] || []).forEach(callback => callback(event));
+        },
         getAttribute(name) {
             return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
         },
@@ -104,6 +111,8 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         return element;
     };
     add('coreApiSelect');
+    add('api-key-form');
+    add('useMimoTokenPlan');
     add('assistApiSelect');
     add('assistModelIdInput', { 'data-i18n-placeholder': 'api.assistModelIdPlaceholder', placeholder: '留空则各功能使用服务商默认模型' });
     add('assistModelIdHint');
@@ -166,6 +175,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
             omni: 'core_model',
         },
         _assistApiProviders: ASSIST_PROVIDERS,
+        _assistModelDefaults: {},
         _coreApiProviders: CORE_PROVIDERS,
         _keyBookApiProviders: {},
         _imageProviders: IMAGE_PROVIDERS,
@@ -190,12 +200,15 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         'collectAssistModelIdsForSave', 'getAssistTierModelId', 'resolveSlotModelState', 'applyModelIdPlaceholder',
         'buildAssistModelDefaultsText', 'refreshAssistModelIdField', 'refreshModelIdHints',
         'resolveAssistModelPickerRequest', 'resolveSlotModelPickerRequest', 'resolveImageModelPickerRequest',
-        'fetchModelList', 'getModelPickerErrorMessage',
+        'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers',
     ];
     vm.runInContext([
+        sourceBetween('function getProviderDefaultModelId(', 'function setModelIdFieldHidden('),
         sourceBetween('// ==================== 模型 ID 选择器 ====================', '// ==================== 加载API服务商选项 ===================='),
         ...exported.map(name => `globalThis.${name} = ${name};`),
         'globalThis.readAssistModelIds = () => _assistModelIds;',
+        'globalThis.invalidateModelLists = invalidateModelLists;',
+        'globalThis.focusModelIdPickerOption = focusModelIdPickerOption;',
     ].join('\n'), context, { filename: SOURCE_PATH });
 
     const el = id => elements.get(id);
@@ -292,7 +305,7 @@ test('follow_core text slots use the core provider default, not the assist overr
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'x/override');
+    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime-preview');
     assert.equal(el('assistModelIdInput').value, 'x/override');
 });
 
@@ -316,7 +329,7 @@ test('named and custom slots fall back the same way as the backend snapshot', ()
     assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'qwen3.8-flash');
 
     setSlot('agent', 'mimo');
-    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'google/gemini-3-flash-preview');
+    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.5');
 
     setSlot('conversation', 'custom');
     assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'google/gemini-2.5-flash');
@@ -516,6 +529,75 @@ test('model list failures are mapped to error codes and not cached', async () =>
     assert.equal((await context.fetchModelList(body)).error_code, 'empty');
     assert.equal((await context.fetchModelList(body)).error_code, 'auth_failed');
     assert.equal(state.fetchCalls.length, 4);
+});
+
+test('same-provider slots inherit the assist override and merged defaults', () => {
+    const { context, select, setSlot } = createPickerContext();
+    select('assistApiSelect', 'qwen');
+    context.loadAssistModelIds({ assistApi: 'qwen', assistModelIds: { qwen: 'qwen-picked' } });
+    for (const mode of ['follow_core', 'qwen']) {
+        setSlot('vision', mode);
+        assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen-picked');
+    }
+    select('assistApiSelect', 'openrouter');
+    context._assistModelDefaults.qwen = { VISION_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
+    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'merged-qwen');
+});
+
+test('named realtime and TTS providers never list conversation models', () => {
+    const { context, setSlot, el, state } = createPickerContext();
+    for (const type of ['omni', 'tts']) {
+        setSlot(type, 'qwen');
+        assert.equal(context.resolveSlotModelPickerRequest(type).reason, 'unsupported');
+        setSlot(type, 'custom');
+        el(`${type}ModelUrl`).value = 'http://localhost:8000/v1';
+        assert.ok(context.resolveSlotModelPickerRequest(type).body);
+    }
+    state.ttsMeta.local = { editable_endpoint: true };
+    setSlot('tts', 'local');
+    assert.ok(context.resolveSlotModelPickerRequest('tts').body);
+});
+
+test('credential and Token Plan changes discard cached and pending model lists', async () => {
+    let finish;
+    let calls = 0;
+    const response = { ok: true, json: async () => ({ success: true, models: [{ id: 'a' }] }) };
+    const { context, el } = createPickerContext({ fetchImpl: () => {
+        calls += 1;
+        return calls === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(response);
+    } });
+    context.initModelIdPickers();
+    const body = { provider_key: 'openrouter', api_key: MASKED };
+    const pending = context.fetchModelList(body);
+    el('useMimoTokenPlan').dispatchEvent({ type: 'change' });
+    finish(response);
+    await pending;
+    await context.fetchModelList(body);
+    assert.equal(calls, 2);
+    el('api-key-form').dispatchEvent({ type: 'input', target: { id: 'assistApiKeyInput' } });
+    await context.fetchModelList(body);
+    assert.equal(calls, 3);
+});
+
+test('typing a slot refreshes only that slot and its game mirror', async () => {
+    const { context, el } = createPickerContext();
+    context.initModelIdPickers();
+    const untouched = el('visionModelId').placeholder;
+    el('conversationModelId').value = 'my-chat-model';
+    el('conversationModelId').dispatchEvent({ type: 'input' });
+    await Promise.resolve();
+    assert.equal(el('gameMainModelId').placeholder, '当前使用：my-chat-model');
+    assert.equal(el('visionModelId').placeholder, untouched);
+});
+
+test('arrow navigation scrolls the menu without scrolling the page', () => {
+    const { context } = createPickerContext();
+    let focusOptions;
+    const option = { offsetTop: 150, offsetHeight: 30, focus: options => { focusOptions = options; } };
+    const menuScroll = { offsetTop: 10, scrollTop: 0, clientHeight: 100, querySelectorAll: () => [option] };
+    context.focusModelIdPickerOption({ menuScroll }, 1);
+    assert.deepEqual(plain(focusOptions), { preventScroll: true });
+    assert.equal(menuScroll.scrollTop, 70);
 });
 
 test('error messages prefer picker texts, then connectivity texts, then the backend message', () => {

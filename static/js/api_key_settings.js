@@ -12,6 +12,7 @@ let _isLoadingSavedConfig = false;
 let _apiKeyRegistry = {};
 // 辅助API服务商完整信息（从后端加载）
 let _assistApiProviders = {};
+let _assistModelDefaults = {};
 // 仅用于 API 管理簿 / 专用模型配置的 provider，不进入辅助 API 下拉
 let _keyBookApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
@@ -1766,12 +1767,25 @@ const MODEL_PICKER_UNAVAILABLE_TEXT = {
 };
 // 聚合平台动辄上千个模型，全部渲染会拖慢输入，其余的靠关键字筛选
 const MODEL_PICKER_RENDER_LIMIT = 200;
-// 后端会依次尝试服务商的全部候选地址，每个最多等 15 秒
-const MODEL_PICKER_REQUEST_TIMEOUT_MS = 60000;
+// 后端全部候选共用 15 秒预算，前端另留传输余量。
+const MODEL_PICKER_REQUEST_TIMEOUT_MS = 20000;
 const _modelListCache = new Map();
+let _modelListCacheGeneration = 0;
 const _modelIdPickers = new Map();
 let _modelIdPickersInitialized = false;
 let _modelIdHintsRefreshQueued = false;
+let _modelIdHintsPendingTypes = new Set();
+let _modelIdHintsRefreshAll = false;
+
+function invalidateModelLists() {
+    _modelListCacheGeneration += 1;
+    _modelListCache.clear();
+    _modelIdPickers.forEach(picker => {
+        picker.requestSeq += 1;
+        closeProviderSelectDropdown(picker.wrapper);
+    });
+    scheduleModelIdHintsRefresh();
+}
 
 function translateModelPickerText(key, fallback, params = null) {
     if (window.t) {
@@ -1805,11 +1819,12 @@ function usesFixedModels(providerKey) {
     return !!providerKey && (isFreeModelProvider(providerKey) || isFixedModelProvider(providerKey));
 }
 
-// 后端的档位默认只来自辅助服务商表（assist_api_profiles），核心或管理簿 profile 不参与
+// 优先采用后端合并后的默认值；旧后端缺少该字段时复用已有默认模型函数。
 function getAssistProfileTierModelId(providerKey, tier) {
-    const profile = _assistApiProviders[providerKey];
     const field = MODEL_PROVIDER_FIELD_BY_TYPE[tier];
-    return profile && field && profile[field] ? String(profile[field]).trim() : '';
+    const defaults = _assistModelDefaults[providerKey];
+    if (defaults && field) return String(defaults[field.toUpperCase()] || '').trim();
+    return getProviderDefaultModelId(providerKey, tier);
 }
 
 function getAssistDefaultTierModelId(providerKey, tier) {
@@ -1925,7 +1940,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
 
     const isGameSlot = modelType === 'gameMain' || modelType === 'gameSummary';
     if (followsApi) {
-        const sourceKey = provider === 'follow_core' ? getSelectedCoreProviderKey() : getSelectedAssistProviderKey();
+        const sourceKey = getProviderModeSourceKey(modelType, provider);
         if (usesFixedModels(sourceKey)) {
             return {
                 defaultModelId: getAssistProfileTierModelId(sourceKey, tier),
@@ -1936,7 +1951,10 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         if (!isGameSlot) {
             return {
                 defaultModelId: provider === 'follow_core'
-                    ? (getAssistProfileTierModelId(sourceKey, tier) || getAssistTierModelId(tier))
+                    ? ((sourceKey === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
+                        || getAssistProfileTierModelId(sourceKey, tier)
+                        || getAssistProfileTierModelId(sourceKey, 'conversation')
+                        || String((_coreApiProviders[sourceKey] || {}).core_model || '').trim())
                     : getAssistTierModelId(tier),
                 acceptsTypedModelId: true,
                 fixedModelProvider: '',
@@ -1951,8 +1969,10 @@ function resolveSlotModelState(modelType, visited = new Set()) {
                 fixedModelProvider: '',
             };
         }
-        const coreTierModel = getAssistProfileTierModelId(sourceKey, tier);
-        if (!coreTierModel) return mirrorSlotModelState(tier, visited);
+        const coreTierModel = (sourceKey === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
+            || getAssistProfileTierModelId(sourceKey, tier)
+            || getAssistProfileTierModelId(sourceKey, 'conversation')
+            || String((_coreApiProviders[sourceKey] || {}).core_model || '').trim();
         return { defaultModelId: coreTierModel, acceptsTypedModelId: false, fixedModelProvider: '' };
     }
 
@@ -1962,7 +1982,8 @@ function resolveSlotModelState(modelType, visited = new Set()) {
             return { defaultModelId: namedModel, acceptsTypedModelId: false, fixedModelProvider: provider };
         }
         return {
-            defaultModelId: namedModel || (isGameSlot ? '' : getAssistTierModelId(tier)),
+            defaultModelId: (provider === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
+                || namedModel || getAssistProfileTierModelId(provider, 'conversation'),
             acceptsTypedModelId: true,
             fixedModelProvider: '',
         };
@@ -2102,6 +2123,7 @@ function resolveSlotModelPickerRequest(modelType) {
         );
     }
 
+    if (modelType === 'omni' || modelType === 'tts') return { reason: 'unsupported' };
     const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType });
     if (provider === 'follow_assist') {
         return buildProviderModelListRequest(getSelectedAssistProviderKey(), resolved.key, { useTokenPlan: true });
@@ -2134,6 +2156,7 @@ function resolveImageModelPickerRequest() {
 async function fetchModelList(body) {
     const cacheKey = JSON.stringify(body);
     if (_modelListCache.has(cacheKey)) return _modelListCache.get(cacheKey);
+    const generation = _modelListCacheGeneration;
 
     let response;
     try {
@@ -2172,7 +2195,7 @@ async function fetchModelList(body) {
     if (models.length === 0) return { success: false, error_code: 'empty', error: '' };
 
     const normalized = { success: true, models };
-    _modelListCache.set(cacheKey, normalized);
+    if (generation === _modelListCacheGeneration) _modelListCache.set(cacheKey, normalized);
     return normalized;
 }
 
@@ -2261,7 +2284,14 @@ function focusModelIdPickerOption(picker, step) {
     const nextIndex = currentIndex === -1
         ? (step > 0 ? 0 : options.length - 1)
         : Math.min(options.length - 1, Math.max(0, currentIndex + step));
-    options[nextIndex].focus();
+    const option = options[nextIndex];
+    option.focus({ preventScroll: true });
+    const top = option.offsetTop - picker.menuScroll.offsetTop;
+    const bottom = top + option.offsetHeight;
+    if (top < picker.menuScroll.scrollTop) picker.menuScroll.scrollTop = top;
+    else if (bottom > picker.menuScroll.scrollTop + picker.menuScroll.clientHeight) {
+        picker.menuScroll.scrollTop = bottom - picker.menuScroll.clientHeight;
+    }
 }
 
 async function openModelIdPicker(picker) {
@@ -2310,23 +2340,35 @@ function refreshModelIdPickerButton(picker) {
     }
 }
 
-function refreshModelIdHints() {
-    syncAssistModelIdInput();
-    refreshAssistModelIdField();
-    MODEL_TYPES.forEach(modelType => {
+function refreshModelIdHints(types = null) {
+    if (!types || types.has('assist')) {
+        syncAssistModelIdInput();
+        refreshAssistModelIdField();
+    }
+    MODEL_TYPES.filter(modelType => !types || types.has(modelType)).forEach(modelType => {
         applyModelIdPlaceholder(document.getElementById(`${modelType}ModelId`), resolveSlotModelState(modelType));
     });
-    refreshImageModelIdPlaceholder();
-    _modelIdPickers.forEach(refreshModelIdPickerButton);
+    if (!types || types.has('image')) refreshImageModelIdPlaceholder();
+    _modelIdPickers.forEach(picker => {
+        if (!types || Array.from(types).some(type => picker.input.id === `${type}ModelId`
+            || (type === 'assist' && picker.input.id === 'assistModelIdInput'))) {
+            refreshModelIdPickerButton(picker);
+        }
+    });
 }
 
 // 合并同一轮同步代码里的多次触发（加载配置时会逐个槽位联动）
-function scheduleModelIdHintsRefresh() {
+function scheduleModelIdHintsRefresh(types = null) {
+    if (Array.isArray(types)) types.forEach(type => _modelIdHintsPendingTypes.add(type));
+    else _modelIdHintsRefreshAll = true;
     if (_modelIdHintsRefreshQueued) return;
     _modelIdHintsRefreshQueued = true;
     queueMicrotask(() => {
         _modelIdHintsRefreshQueued = false;
-        refreshModelIdHints();
+        const pending = _modelIdHintsRefreshAll ? null : _modelIdHintsPendingTypes;
+        _modelIdHintsRefreshAll = false;
+        _modelIdHintsPendingTypes = new Set();
+        refreshModelIdHints(pending);
     });
 }
 
@@ -2419,12 +2461,31 @@ function initModelIdPickers() {
     });
     initModelIdPicker(document.getElementById('imageModelId'), resolveImageModelPickerRequest);
 
-    const watchedInputIds = ['assistModelIdInput', 'imageModelUrl'];
-    MODEL_TYPES.forEach(modelType => watchedInputIds.push(`${modelType}ModelId`, `${modelType}ModelUrl`));
-    watchedInputIds.forEach(id => {
+    ['assistModelIdInput', 'imageModelUrl'].forEach(id => {
         const input = document.getElementById(id);
-        if (input) input.addEventListener('input', scheduleModelIdHintsRefresh);
+        if (input) input.addEventListener('input', () => scheduleModelIdHintsRefresh(
+            id === 'assistModelIdInput' ? ['assist', ...MODEL_TYPES] : ['image']
+        ));
     });
+    MODEL_TYPES.forEach(modelType => {
+        ['ModelId', 'ModelUrl'].forEach(suffix => {
+            const input = document.getElementById(`${modelType}${suffix}`);
+            if (input) input.addEventListener('input', () => {
+                const affected = [modelType];
+                ['gameMain', 'gameSummary'].forEach(gameType => {
+                    const select = document.getElementById(`${gameType}ModelProvider`);
+                    if (select && select.value === `follow_${modelType}`) affected.push(gameType);
+                });
+                scheduleModelIdHintsRefresh(affected);
+            });
+        });
+    });
+    // 凭证和端点模式变化时，包括掩码密钥对应的服务端值，都使旧列表失效。
+    document.getElementById('api-key-form').addEventListener('input', event => {
+        if (/key/i.test(event.target.id)) invalidateModelLists();
+    });
+    const tokenPlan = document.getElementById('useMimoTokenPlan');
+    if (tokenPlan) tokenPlan.addEventListener('change', invalidateModelLists);
     // 不在 onImageProviderChange 里调度：图片设置的前端测试会把那段代码单独拿去执行
     const imageProviderSelect = document.getElementById('imageModelProvider');
     if (imageProviderSelect) imageProviderSelect.addEventListener('change', scheduleModelIdHintsRefresh);
@@ -2443,6 +2504,7 @@ async function loadApiProviders() {
                 populateImageProviders(data.image_providers || {});
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
+                _assistModelDefaults = data.assist_model_defaults || {};
                 _keyBookApiProviders = data.keybook_api_providers_full || {};
 
                 // TTS provider 元数据（后端 tts_provider_registry → ui_metadata）：
@@ -3790,6 +3852,7 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                invalidateModelLists();
                 // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
                 // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
                 // 其余密钥继续用这一轮临时缓存维持显示。
