@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -196,7 +197,8 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
         self._held_audio_bytes = 0
         self._held_audio_items = 0
         # A worker may temporarily retire its transport while keeping queued
-        # audio. Recovery gets a bounded deadline, never a larger audio budget.
+        # audio. Recovery gets a time.monotonic() deadline, never a larger
+        # audio budget. This transport contract is provider-neutral.
         self.transport_recovery_deadline = 0.0
 
     def hold_dequeued_audio(
@@ -1657,8 +1659,7 @@ class _RealtimeAsrSessionImpl:
         self,
         request: _AsrWorkerRequest,
     ) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
         while (
             self._queued_audio_bytes() + len(request.audio)
             > _ACTIVE_QUEUE_MAX_AUDIO_BYTES
@@ -1666,13 +1667,13 @@ class _RealtimeAsrSessionImpl:
         ):
             if self._closing_event.is_set() or self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
-            remaining = deadline - loop.time()
+            remaining = deadline - time.monotonic()
             recovery_deadline = (
                 self._request_queue.transport_recovery_deadline
                 if isinstance(self._request_queue, _AsrRequestQueue) else 0.0
             )
-            if recovery_deadline > loop.time():
-                remaining = max(deadline, recovery_deadline) - loop.time()
+            if recovery_deadline > time.monotonic():
+                remaining = max(deadline, recovery_deadline) - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
                     "ASR_STREAM_BACKPRESSURE: active audio queue exceeded "

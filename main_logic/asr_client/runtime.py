@@ -4122,8 +4122,20 @@ class IndependentAsrRuntime:
                     session.signal_local_activity_nowait(speech_active=active)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("[%s] local ASR activity hint failed", self.display_name)
+        except Exception as exc:
+            expected = isinstance(exc, RuntimeError) and str(exc) in {
+                "ASR_ACTIVITY_HINT_BACKPRESSURE",
+                "ASR_SESSION_NOT_READY: session is not ready",
+            }
+            logger.warning(
+                "[%s] local ASR activity hint failed: category=%s type=%s",
+                self.display_name,
+                "backpressure_or_not_ready" if expected else "session_error",
+                type(exc).__name__,
+            )
+            # The boolean below checks runtime ownership, not observer
+            # delivery. An optional hint failure must not suppress detector
+            # state changes or the following PCM frame.
         return self._runtime_identity_matches(identity)
 
     async def _handle_independent_asr_activity(

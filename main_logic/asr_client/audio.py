@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
@@ -119,6 +121,57 @@ _WireCallback: TypeAlias = Callable[["VoiceTurnToken", Any, int], Awaitable[None
 _FailureCallback: TypeAlias = Callable[["VoiceTurnToken", BaseException], Awaitable[None]]
 
 
+class _CommandQueue(asyncio.Queue[_Command]):
+    """FIFO with separately counted optional observations and normal commands."""
+
+    def _init(self, maxsize: int) -> None:
+        self.commands: deque[_Command] = deque()
+        self._queue = self.commands
+        self.normal_count = 0
+        self.pause_count = 0
+
+    def _put(self, command: _Command) -> None:
+        self.commands.append(command)
+        if isinstance(command, AsrPauseHintCommand):
+            self.pause_count += 1
+        else:
+            self.normal_count += 1
+
+    def _get(self) -> _Command:
+        command = self.commands.popleft()
+        if isinstance(command, AsrPauseHintCommand):
+            self.pause_count -= 1
+        else:
+            self.normal_count -= 1
+        return command
+
+    def qsize(self) -> int:
+        return len(self.commands)
+
+    def remove_pause_hints(self) -> list[AsrPauseHintCommand]:
+        if not self.pause_count:
+            return []
+        hints = [c for c in self.commands if isinstance(c, AsrPauseHintCommand)]
+        for hint in hints:
+            self.commands.remove(hint)
+            self.pause_count -= 1
+            self.task_done()
+        return hints
+
+
+def _log_hint_failure(error: BaseException) -> None:
+    # Exception messages can contain provider/user payloads. Log only type
+    # and our known control code, never the raw exception or transcript.
+    expected = isinstance(error, RuntimeError) and str(error) in {
+        "ASR_ACTIVITY_HINT_BACKPRESSURE", "ASR_SESSION_NOT_READY: session is not ready",
+    }
+    logging.getLogger(__name__).warning(
+        "ASR activity hint failed: category=%s type=%s",
+        "backpressure_or_not_ready" if expected else "session_error",
+        type(error).__name__,
+    )
+
+
 class AsrAudioDispatcher:
     """Serialize all writes for one logical turn before its seal barrier."""
 
@@ -138,7 +191,7 @@ class AsrAudioDispatcher:
         self._max_commands = max_commands
         # One separately budgeted observation may accompany a full PCM queue;
         # it must never consume the last slot available to normal commands.
-        self._queue: asyncio.Queue[_Command] = asyncio.Queue(maxsize=max_commands + 1)
+        self._queue = _CommandQueue(maxsize=max_commands + 1)
         self._worker: asyncio.Task[None] | None = None
         self._failure_tasks: set[asyncio.Task[None]] = set()
         self._generation = 0
@@ -283,11 +336,13 @@ class AsrAudioDispatcher:
                 def finish_hint(finished):
                     self._pause_hint_tasks.discard(finished)
                     if not finished.cancelled():
-                        finished.exception()
+                        error = finished.exception()
+                        if error is not None:
+                            _log_hint_failure(error)
 
                 task.add_done_callback(finish_hint)
             return True
-        if any(isinstance(command, AsrPauseHintCommand) for command in self._queue._queue):
+        if self._queue.pause_count:
             # Optional observation cannot evict or abort queued PCM.
             raise RuntimeError("ASR_ACTIVITY_HINT_BACKPRESSURE")
         completed = asyncio.get_running_loop().create_future()
@@ -299,20 +354,21 @@ class AsrAudioDispatcher:
             return await completed
         # The microphone must continue feeding the detector while PCM drains.
         # Consume optional observer failures; they must not fail queued audio.
-        completed.add_done_callback(
-            lambda future: future.exception() if not future.cancelled() else None
-        )
+        def finish_hint_delivery(future):
+            if not future.cancelled():
+                error = future.exception()
+                if error is not None:
+                    _log_hint_failure(error)
+
+        completed.add_done_callback(finish_hint_delivery)
         return True
 
     def cancel_pending_pause_hints(self) -> None:
         self._pause_hint_revision += 1
-        for command in tuple(self._queue._queue):
-            if isinstance(command, AsrPauseHintCommand):
-                self._queue._queue.remove(command)
-                self._enqueued_at.pop(id(command), None)
-                if not command.completed.done():
-                    command.completed.set_result(False)
-                self._queue.task_done()
+        for command in self._queue.remove_pause_hints():
+            self._enqueued_at.pop(id(command), None)
+            if not command.completed.done():
+                command.completed.set_result(False)
         for task in tuple(self._pause_hint_tasks):
             task.cancel()
 
@@ -332,9 +388,7 @@ class AsrAudioDispatcher:
         try:
             if (
                 not isinstance(command, AsrPauseHintCommand)
-                and self._queue.qsize() >= self._max_commands
-                and sum(not isinstance(queued, AsrPauseHintCommand)
-                        for queued in self._queue._queue) >= self._max_commands
+                and self._queue.normal_count >= self._max_commands
             ):
                 raise asyncio.QueueFull
             self._queue.put_nowait(command)
