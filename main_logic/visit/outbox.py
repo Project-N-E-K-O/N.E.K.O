@@ -115,7 +115,6 @@ from main_logic.visit.spool import OUTBOX_SUFFIX, _scan
 from utils.logger_config import get_module_logger
 from utils.visit_wire import (
     RELIABLE_TYPES,
-    VISIT_ID_RE,
     cmd_of,
     encode_msg,
     is_reliable,
