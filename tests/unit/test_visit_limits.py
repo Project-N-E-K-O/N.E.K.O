@@ -309,11 +309,7 @@ async def test_permission_error_fails_closed_instead_of_empty(tmp_path, monkeypa
     def locked(*_a, **_k):
         raise PermissionError("locked by another process")
 
-    async def alocked(*_a, **_k):
-        raise PermissionError("locked by another process")
-
     monkeypatch.setattr(limits, "read_json", locked)
-    monkeypatch.setattr(limits, "read_json_async", alocked)
     assert Blocklist.load(tmp_path).available is False
     assert (await Blocklist.aload(tmp_path)).available is False
 
@@ -483,4 +479,53 @@ async def test_a_block_through_one_instance_is_seen_by_every_live_instance(tmp_p
     # 不带 entries 直接构造的实例不能清空别人看到的表
     await panel.ablock(UID, display_name_at_block="Mimi")
     Blocklist(tmp_path)
+    assert verifier.is_blocked(UID)
+
+
+def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch):
+    # load 读到旧文件后停住，此时另一个实例拉黑：有锁时拉黑要等 load 刷完快照，
+    # 不会被旧内容覆盖；没锁时 load 随后用旧表冲掉共享快照，核验放行刚拉黑的人
+    import asyncio
+    import threading
+
+    from main_logic.visit import limits
+
+    verifier = Blocklist.load(tmp_path)
+    writer = Blocklist.load(tmp_path)
+    load_read, release_load = threading.Event(), threading.Event()
+    real_read = limits.read_json
+    calls = {"n": 0}
+
+    def read_hook(path):
+        calls["n"] += 1
+        first = calls["n"] == 1
+        try:
+            result: object = real_read(path)
+        except FileNotFoundError as exc:
+            result = exc
+        if first:                                 # 第一次是 load：读完停住
+            load_read.set()
+            release_load.wait(5)
+        if isinstance(result, FileNotFoundError):
+            raise result
+        return result
+
+    monkeypatch.setattr(limits, "read_json", read_hook)
+    loader = threading.Thread(target=lambda: Blocklist.load(tmp_path))
+    loader.start()
+    assert load_read.wait(5)
+    blocked = threading.Event()
+
+    def block():
+        asyncio.run(writer.ablock(UID, display_name_at_block="Mimi"))
+        blocked.set()
+
+    blocker = threading.Thread(target=block)
+    blocker.start()
+    finished_early = blocked.wait(0.5)        # 有锁：拉黑等 load 完成
+    release_load.set()
+    loader.join(10)
+    blocker.join(10)
+    monkeypatch.undo()
+    assert not finished_early
     assert verifier.is_blocked(UID)
