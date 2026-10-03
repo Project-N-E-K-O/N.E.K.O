@@ -154,6 +154,8 @@ class RealtimeAsrSession(Protocol):
 
     async def signal_local_activity(self, *, speech_active: bool) -> None: ...
 
+    def signal_local_activity_nowait(self, *, speech_active: bool) -> None: ...
+
     async def clear_audio_buffer(self) -> None: ...
 
     async def close(self) -> None: ...
@@ -213,7 +215,7 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
     ) -> tuple[_AsrWorkerRequest, _QueuedAudioHold | None]:
         """Atomically transfer dequeued audio into the held budget."""
 
-        request = await super().get()
+        request = await self.get()
         return request, self.hold_dequeued_audio(request)
 
     def _release_held_audio(self, audio_bytes: int) -> None:
@@ -706,6 +708,28 @@ class _RealtimeAsrSessionImpl:
                     speech_active=speech_active,
                 )
             )
+
+    def signal_local_activity_nowait(self, *, speech_active: bool) -> None:
+        """Submit an observation without waiting behind PCM backpressure.
+
+        The control queue is unbounded. There is no suspension between checking
+        the owner and capturing its generation/epoch; this cannot seal or clear
+        audio and does not need the stream operation lock.
+        """
+        if (
+            self._provider_policy is None
+            or not self._provider_policy.observes_local_activity
+            or self._state is not _SessionState.READY
+            or self._closing_event.is_set()
+            or self._request_queue is None
+            or self._worker_task is None
+            or self._worker_task.done()
+        ):
+            return
+        self._request_queue.put_nowait(_AsrWorkerRequest(
+            kind="activity", generation=self._generation,
+            buffer_epoch=self._buffer_epoch, speech_active=speech_active,
+        ))
 
     async def clear_audio_buffer(self) -> None:
         async with self._operation_lock:

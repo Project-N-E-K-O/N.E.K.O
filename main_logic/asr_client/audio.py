@@ -267,11 +267,14 @@ class AsrAudioDispatcher:
     async def wait_idle(self) -> None:
         await self._queue.join()
 
-    async def signal_pause_after_audio(self, session_ref: Any) -> bool:
+    async def signal_pause_after_audio(self, session_ref: Any, *, wait_for_delivery: bool = True) -> bool:
         """Place an observational hint behind current PCM, ahead of later PCM."""
         token = self.active_turn
         if token is None or self._session_ref is not session_ref:
-            await session_ref.signal_local_activity(speech_active=False)
+            if wait_for_delivery:
+                await session_ref.signal_local_activity(speech_active=False)
+            else:
+                session_ref.signal_local_activity_nowait(speech_active=False)
             return True
         if self._queue.full():
             # Optional observation cannot evict or abort queued PCM.
@@ -281,7 +284,14 @@ class AsrAudioDispatcher:
             self._generation, token, session_ref, completed, self._pause_hint_revision
         )):
             return False
-        return await completed
+        if wait_for_delivery:
+            return await completed
+        # The microphone must continue feeding the detector while PCM drains.
+        # Consume optional observer failures; they must not fail queued audio.
+        completed.add_done_callback(
+            lambda future: future.exception() if not future.cancelled() else None
+        )
+        return True
 
     def cancel_pending_pause_hints(self) -> None:
         self._pause_hint_revision += 1

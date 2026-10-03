@@ -388,6 +388,14 @@ async def test_shutdown_during_finish_closes_old_session_without_reconnect(monke
         await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
         await asyncio.wait_for(finish_sent.wait(), 1)
         await requests.put(_AsrWorkerRequest("shutdown", 0, utterance_id=2))
+        await asyncio.sleep(0)
+        assert not task.done()
+        await first.server_send({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "old", "transcript": "last sentence",
+        })
+        assert (await _next_event(responses, "final")).text == "last sentence"
+        await first.server_send({"type": "session.finished"})
         closed = await _next_event(responses, "closed", timeout=2)
         assert closed.utterance_id == 2
         await asyncio.wait_for(task, 1)
@@ -732,7 +740,8 @@ async def test_stale_pause_cannot_finish_next_provider_turn(monkeypatch):
         await asyncio.gather(sender, receiver, return_exceptions=True)
 
 
-async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeypatch):
+@pytest.mark.parametrize("final_before_hint", [False, True])
+async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeypatch, final_before_hint):
     monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
     state = qwen._QwenConnectionState(0, 0, 1, False)
     state.configured.set()
@@ -746,12 +755,17 @@ async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeyp
             item = f"item-{cycle}"
             await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": item})
             await _next_event(responses, "utterance_started")
+            if final_before_hint:
+                await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                                      "item_id": item, "transcript": item})
+                await _next_event(responses, "final")
             await requests.put(_AsrWorkerRequest("activity", 0, speech_active=True))
             await asyncio.wait_for(requests.join(), 1)
-            assert state.provider_speech_cycles[cycle] == cycle
-            await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
-                                  "item_id": item, "transcript": item})
-            await _next_event(responses, "final")
+            if not final_before_hint:
+                assert state.provider_speech_cycles[cycle] == cycle
+                await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                                      "item_id": item, "transcript": item})
+                await _next_event(responses, "final")
             await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
             await asyncio.wait_for(requests.join(), 1)
             assert state.last_provider_final_cycle == cycle
@@ -806,9 +820,9 @@ async def test_reconnect_attempt_budget_and_setup_timeout(monkeypatch, setup):
         return ws
 
     monkeypatch.setattr(qwen.websockets, "connect", connect)
-    monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 0.5 if setup == "disconnect" else 0.01)
     state = qwen._QwenConnectionState(0, 0, 2, False)
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(asyncio.TimeoutError if setup == "no_ack" else ConnectionError):
         await qwen._qwen_open_connection(
             qwen._QWEN_CN_URL, "key", {}, responses,
             AsrSessionConfig(endpointing_mode="provider"), state,
@@ -1092,3 +1106,33 @@ async def test_overlap_pause_survives_old_endpoint_until_new_provider_start(
         sender.cancel()
         receiver.cancel()
         await asyncio.gather(sender, receiver, return_exceptions=True)
+
+async def test_successor_setup_uses_remaining_total_recovery_budget(monkeypatch):
+    entered = asyncio.Event()
+    finish_setup = asyncio.Event()
+
+    async def connect(*_args, **_kwargs):
+        entered.set()
+        await finish_setup.wait()
+        return _FakeWebSocket(initial=[{"type": "session.updated"}])
+
+    monkeypatch.setattr(qwen.websockets, "connect", connect)
+    state = qwen._QwenConnectionState(0, 0, 2, False)
+    task = asyncio.create_task(qwen._qwen_open_connection(
+        qwen._QWEN_CN_URL, "key", {}, asyncio.Queue(),
+        AsrSessionConfig(endpointing_mode="provider"), state,
+        recovery_deadline=time.monotonic() + 4,
+    ))
+    try:
+        await entered.wait()
+        await asyncio.sleep(2.05)
+        assert not task.done()
+        finish_setup.set()
+        ws, receiver = await asyncio.wait_for(task, 1)
+        receiver.cancel()
+        await asyncio.gather(receiver, return_exceptions=True)
+        await ws.close()
+    finally:
+        finish_setup.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

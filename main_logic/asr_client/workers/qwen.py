@@ -48,7 +48,7 @@ _QWEN_INTL_URL = (
     f"wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model={_QWEN_MODEL}"
 )
 _QWEN_FINISH_TIMEOUT_SECONDS = 3.0
-_QWEN_SETUP_TIMEOUT_SECONDS = 2.0
+_QWEN_SETUP_TIMEOUT_SECONDS = 10.0
 _QWEN_RECOVERY_TIMEOUT_SECONDS = 12.0
 _QWEN_RECONNECT_MAX_ATTEMPTS = 3
 # Local pause candidates do not take endpoint authority away from Qwen.  They
@@ -356,7 +356,12 @@ async def _qwen_finish_and_reconnect(
                 queue_task = None
                 if arrived.kind == "shutdown":
                     deferred_shutdown = arrived
-                    break
+                    # Closing the microphone does not cancel the flush already
+                    # sent to the provider. Preserve its final within the same
+                    # original deadline, without opening a successor session.
+                    if finish_task in done:
+                        break
+                    continue
                 # Keep the deferral bounded: leave subsequent audio in the
                 # public queue so its existing backpressure still applies.
                 deferred_requests.append(arrived)
@@ -458,8 +463,24 @@ async def _qwen_get_request(
 ) -> _AsrWorkerRequest:
     if deferred_requests:
         return deferred_requests.popleft()
-    request = await request_queue.get()
     if isinstance(request_queue, _AsrRequestQueue) and audio_holds is not None:
+        request, hold = await request_queue.get_with_audio_hold()
+        if hold is not None:
+            audio_holds[id(request)] = hold
+    else:
+        request = await request_queue.get()
+    return request
+
+
+def _qwen_get_request_nowait(
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
+    deferred_requests: deque[_AsrWorkerRequest],
+    audio_holds: dict[int, _QueuedAudioHold],
+) -> _AsrWorkerRequest:
+    if deferred_requests:
+        return deferred_requests.popleft()
+    request = request_queue.get_nowait()
+    if isinstance(request_queue, _AsrRequestQueue):
         hold = request_queue.hold_dequeued_audio(request)
         if hold is not None:
             audio_holds[id(request)] = hold
@@ -522,11 +543,9 @@ async def _qwen_sender(
                     if asyncio.current_task().cancelling():
                         raise
                     try:
-                        request = request_queue.get_nowait()
-                        if isinstance(request_queue, _AsrRequestQueue):
-                            hold = request_queue.hold_dequeued_audio(request)
-                            if hold is not None:
-                                audio_holds[id(request)] = hold
+                        request = _qwen_get_request_nowait(
+                            request_queue, deferred_requests, audio_holds,
+                        )
                     except asyncio.QueueEmpty:
                         request = None
             if request is None:
@@ -597,7 +616,7 @@ async def _qwen_sender(
                                 not in state.provider_endpoint_utterance_ids
                                 or state.provider_speech_cycles.get(
                                     state.current_provider_utterance_id, 0
-                                ) == state.local_speech_cycle
+                                ) >= state.local_speech_cycle
                             )
                         ):
                             # Local resume need not create a provider turn.
@@ -678,11 +697,7 @@ async def _qwen_sender(
 
                 if request.kind == "clear":
                     _qwen_cancel_provider_fallback(state)
-                    state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await _qwen_close_transport(ws, state)
                     return "clear", request
 
                 if request.kind == "shutdown":
@@ -871,7 +886,9 @@ async def _qwen_receiver(
                 state.provider_speech_cycles[key[2]] = (
                     state.local_speech_cycle
                     if state.local_speech_active or pending_pause == (key[0], key[1])
-                    else 0
+                    # Reserve the upcoming confirmation cycle even if the
+                    # provider also finalizes before that hint is processed.
+                    else state.local_speech_cycle + 1
                 )
                 if pending_pause == (key[0], key[1]) and not pending_fallback and not state.reconnect_after_finish:
                     _qwen_arm_provider_fallback(state, key)
@@ -1056,6 +1073,7 @@ async def _qwen_open_connection(
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     config: AsrSessionConfig,
     state: _QwenConnectionState,
+    *, recovery_deadline: float = 0.0,
 ) -> tuple[Any, asyncio.Task[str]]:
     policy = resolve_provider_policy("qwen", config.endpointing_mode)
     # Initial connection retries are owned by the runtime. Keep its policy
@@ -1067,9 +1085,12 @@ async def _qwen_open_connection(
         try:
             # One owner-level deadline bounds the whole setup and preserves
             # external cancellation even when an inner await just completed.
-            async with asyncio.timeout(
-                10.0 if state.emit_ready else _QWEN_SETUP_TIMEOUT_SECONDS
-            ):
+            setup_timeout = _QWEN_SETUP_TIMEOUT_SECONDS
+            if recovery_deadline:
+                setup_timeout = min(setup_timeout, recovery_deadline - time.monotonic())
+            if setup_timeout <= 0:
+                raise asyncio.TimeoutError
+            async with asyncio.timeout(setup_timeout):
                 ws = await websockets.connect(
                     url, additional_headers={"Authorization": f"Bearer {api_key}"},
                     close_timeout=0.5,
@@ -1079,7 +1100,16 @@ async def _qwen_open_connection(
                     name="qwen-asr-receiver",
                 )
                 await ws.send(json.dumps(session_update))
-                await state.configured.wait()
+                configured = asyncio.create_task(state.configured.wait())
+                try:
+                    await asyncio.wait(
+                        {configured, receiver}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if not state.configured.is_set():
+                        raise ConnectionError("Qwen closed before session.updated")
+                finally:
+                    configured.cancel()
+                    await asyncio.gather(configured, return_exceptions=True)
             return ws, receiver
         except BaseException as exc:
             if receiver is not None:
@@ -1094,8 +1124,11 @@ async def _qwen_open_connection(
                 raise
             state.intentional_close.clear()
             state.configured.clear()
-            await asyncio.sleep(min(policy.connect_retry_cap_seconds,
-                                    policy.connect_retry_base_seconds * 2**attempt))
+            delay = min(policy.connect_retry_cap_seconds,
+                        policy.connect_retry_base_seconds * 2**attempt)
+            if recovery_deadline:
+                delay = min(delay, max(0.0, recovery_deadline - time.monotonic()))
+            await asyncio.sleep(delay)
     raise AssertionError("unreachable Qwen connection attempt")
 
 
@@ -1146,6 +1179,7 @@ async def qwen_asr_worker(
             try:
                 ws, receiver_task = await _qwen_open_connection(
                     url, api_key, session_update, response_queue, config, state,
+                    recovery_deadline=getattr(request_queue, "transport_recovery_deadline", 0.0),
                 )
                 if isinstance(request_queue, _AsrRequestQueue):
                     request_queue.transport_recovery_deadline = 0.0
@@ -1221,11 +1255,7 @@ async def qwen_asr_worker(
                 # and its background close can both cancel this worker. A
                 # second cancellation during gather must not skip ws.close().
                 if ws is not None:
-                    state.intentional_close.set()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+                    await _qwen_close_transport(ws, state)
                 pending_tasks = [
                     task
                     for task in (sender_task, receiver_task, stalled_watch_task)

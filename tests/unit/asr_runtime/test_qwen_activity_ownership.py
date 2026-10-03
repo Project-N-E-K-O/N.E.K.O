@@ -107,6 +107,13 @@ async def test_same_frame_activity_preserves_final_observed_state(monkeypatch, q
         await original(speech_active=speech_active)
 
     monkeypatch.setattr(session, "signal_local_activity", observe)
+    original_nowait = session.signal_local_activity_nowait
+
+    def observe_nowait(*, speech_active):
+        hints.append((speech_active, session.provider_wire_audio_ms))
+        original_nowait(speech_active=speech_active)
+
+    monkeypatch.setattr(session, "signal_local_activity_nowait", observe_nowait)
     component._asr_detector._feed_result = DetectorFeedResult(
         tuple(SpeechActivityEvent[name] for name in sequence), True
     )
@@ -277,7 +284,7 @@ async def test_pause_hint_follows_pending_pcm_before_capturing_position(
             await asyncio.wait_for(entered.wait(), 1)
         await asyncio.sleep(0)
         assert hints == []
-        assert not task.done()
+        assert task.done() is (source == "same_frame")
         if resume_while_pending:
             await component._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED, component._asr_session_epoch
@@ -578,4 +585,31 @@ async def test_current_qwen_activity_preserves_turns_and_cancellation(
             hint_task.cancel()
             await asyncio.gather(hint_task, return_exceptions=True)
         await component.close()
+        await session.close()
+
+async def test_submit_resume_does_not_wait_for_stream_operation_lock(qwen_sessions):
+    make_session, _, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    await component._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch
+    )
+    component._asr_detector._feed_result = DetectorFeedResult(
+        (SpeechActivityEvent.SPEECH_RESUMED,), True
+    )
+    await session._operation_lock.acquire()
+    try:
+        result = await asyncio.wait_for(component.submit(
+            ProcessedVoiceFrame(b"\0" * 3200, 16000, None),
+            ingress_token=component._asr_current_ingress_token,
+        ), 0.5)
+        assert result.status is runtime_module.AsrSubmitStatus.ACCEPTED
+        assert session._operation_lock.locked()
+    finally:
+        session._operation_lock.release()
+        await component._asr_audio_dispatcher.wait_idle()
+        await component._asr_audio_dispatcher.close()
         await session.close()
