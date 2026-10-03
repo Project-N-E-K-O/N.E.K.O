@@ -1323,6 +1323,11 @@
         settingsMicVolumeWatchdog = null;
     }
 
+    // watchdog 还在才表示设置页这轮试麦还在。
+    function isSettingsMicSessionActive() {
+        return settingsMicVolumeWatchdog != null;
+    }
+
     // 只由设置页发起的 start 布置；让位后重建 probe 不续期，保证总时长有上限。
     function armSettingsMicVolumeWatchdog() {
         clearSettingsMicVolumeWatchdog();
@@ -1334,8 +1339,10 @@
 
     // 正式录音开始占用麦克风时，临时 probe 立即让位，避免两路流同时占着麦克风。
     function yieldSettingsMicVolumeProbeToLive() {
-        if (!settingsMicVolumeTest) return;
-        if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
+        // 只让位还在跑的 probe。failed 是终态：重建失败后设置页已经收尾，
+        // 再改成 live 会让录音结束时把麦克风重新打开，而且没有 watchdog 收场。
+        // failed 标记本身不持有流（重建失败时流已就地释放），不需要 release。
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
         releaseSettingsMicVolumeProbe();
         settingsMicVolumeTest = { mode: 'live' };
     }
@@ -2586,6 +2593,13 @@
             if (!liveOnly && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'failed') {
                 return { recording: false, percent: 0, tone: 'idle', failed: true };
             }
+            // 没有进行中的试麦（页面重载过、watchdog 已到点）：设置页还在轮询说明它以为测试还在，
+            // 如实告诉它会话已不存在，而不是让它对着 0 音量等满一轮。
+            // 判定看 watchdog 而不是 probe：重开 probe（切换设备 / 录音结束后恢复）期间
+            // probe 暂时为空，但 watchdog 一直有效，不能误报。
+            if (!liveOnly && !isSettingsMicSessionActive()) {
+                return { recording: false, percent: 0, tone: 'idle', noSession: true };
+            }
             return { recording: false, percent: 0, tone: 'idle' };
         }
         // 用时域数据反映 worklet/AI 实际收到的线性振幅。
@@ -2940,12 +2954,15 @@
     // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
     // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
     function resumeSettingsMicVolumeProbeAfterLive() {
+        // 会话已经结束就不要再开设备。
+        if (!isSettingsMicSessionActive()) return;
         if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
         if (isLiveMicCaptureActiveOrPending()) return;
         reopenSettingsMicVolumeProbe();
     }
 
     function restartSettingsMicVolumeProbe() {
+        if (!isSettingsMicSessionActive()) return;
         if (!settingsMicVolumeTest) return;
         if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
         reopenSettingsMicVolumeProbe();
@@ -2962,7 +2979,8 @@
     // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
     // 入口先计时，兜住挂起中的 start；成功后再从头计时，让 20s 从设置页 15s 倒计时开始时算起。
     // 被 stop / 新一轮 start 越过的旧 start 不碰 watchdog。
-    // 失败时带上 error（NotAllowedError 等），设置页据此区分“去授权”和“设备不可用”。
+    // 失败时带上 error（NotAllowedError 等）。桌面端目前失败只回 { ok: false }，
+    // 设置页还不按这个字段区分“去授权”和“设备不可用”；字段先留给日志和后续接线。
     // start 期间被内部 reopen（切换设备）越过不算失败，跟随那次 reopen 的结果；
     // 被 stop 或设置页新一轮 start 越过才是过期。
     async function startSettingsMicVolumeTestFromSettings() {
@@ -4047,6 +4065,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     window.removeEventListener(entry[0], entry[1]);
                 });
                 voiceWindowListeners = [];
+                stopMicPopupLayoutTracking();
                 // Tear down the shared action state as well as its DOM. This
                 // clears an old render's pending hover-collapse timer so it
                 // cannot remove a subwindow created by the next render.
@@ -4200,9 +4219,47 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             leftColumn.appendChild(volumeContainer);
 
             var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var MIC_ACTION_HOVER_BRIDGE_MS = 900;
             var activeMicActionKey = null;
             var micActionHoverCollapseTimer = null;
             var micActionHoverOpenGeneration = 0;
+            var micHoverPointer = null;
+            var micHoverPointerTracking = false;
+            var micPopupLayout = null;
+
+            function rememberMicHoverPointer(event) {
+                micHoverPointer = { x: event.clientX, y: event.clientY };
+            }
+
+            function stopMicHoverPointerTracking() {
+                if (!micHoverPointerTracking) return;
+                document.removeEventListener('pointermove', rememberMicHoverPointer, true);
+                micHoverPointerTracking = false;
+            }
+
+            function isPointerInMicHoverBridge() {
+                var panel = getOwnedMicSubwindow();
+                var action = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]');
+                if (!panel || !action || !micHoverPointer) return false;
+                var a = action.getBoundingClientRect();
+                var b = panel.getBoundingClientRect();
+                var p = micHoverPointer;
+                var padding = 8;
+                // A narrow trapezoid joins the facing edges. Unlike a bounding
+                // rectangle, it does not keep a remote blank area active.
+                function between(value, start, end) { return value >= start && value <= end; }
+                function corridor(value, cross, start, end, lowStart, highStart, lowEnd, highEnd) {
+                    if (!between(value, start - padding, end + padding)) return false;
+                    var t = Math.max(0, Math.min(1, (value - start) / Math.max(1, end - start)));
+                    return between(cross, lowStart + (lowEnd - lowStart) * t - padding,
+                        highStart + (highEnd - highStart) * t + padding);
+                }
+                if (b.right <= a.left) return corridor(p.x, p.y, b.right, a.left, b.top, b.bottom, a.top, a.bottom);
+                if (a.right <= b.left) return corridor(p.x, p.y, a.right, b.left, a.top, a.bottom, b.top, b.bottom);
+                if (b.bottom <= a.top) return corridor(p.y, p.x, b.bottom, a.top, b.left, b.right, a.left, a.right);
+                if (a.bottom <= b.top) return corridor(p.y, p.x, a.bottom, b.top, a.left, a.right, b.left, b.right);
+                return false;
+            }
 
             function getOwnedMicSubwindow() {
                 var ownerSelector = micPopup.id
@@ -4216,6 +4273,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     clearTimeout(micActionHoverCollapseTimer);
                     micActionHoverCollapseTimer = null;
                 }
+                stopMicHoverPointerTracking();
             }
 
             function isMicActionHoverSurfaceActive() {
@@ -4235,11 +4293,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 activeMicActionKey = null;
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    if (micPopupLayout) micPopupLayout.setPanel(null);
                     panel.remove();
                 });
             }
 
-            function scheduleMicActionHoverCollapse() {
+            function scheduleMicActionHoverCollapse(event) {
                 clearMicActionHoverCollapseTimer();
                 // Screen-source settings contain text input and OS-mediated
                 // interactions (for example IME candidate windows). Leaving
@@ -4248,16 +4307,28 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // disposed. Other lightweight action panels keep the shared
                 // delayed hover-collapse behavior.
                 if (activeMicActionKey === 'screen') return;
-                micActionHoverCollapseTimer = setTimeout(function () {
+                if (event) rememberMicHoverPointer(event);
+                micHoverPointerTracking = true;
+                document.addEventListener('pointermove', rememberMicHoverPointer, true);
+                var bridgeStartedAt = Date.now();
+                function attemptCollapse() {
                     micActionHoverCollapseTimer = null;
-                    if (isMicActionHoverSurfaceActive()) return;
+                    if (isMicActionHoverSurfaceActive()) {
+                        stopMicHoverPointerTracking();
+                        return;
+                    }
+                    if (isPointerInMicHoverBridge() && Date.now() - bridgeStartedAt < MIC_ACTION_HOVER_BRIDGE_MS) {
+                        micActionHoverCollapseTimer = setTimeout(attemptCollapse, 90);
+                        return;
+                    }
                     closeMicSubwindow();
                     leftColumn.querySelectorAll(
                         '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
                     ).forEach(function (surface) {
                         surface.style.background = 'transparent';
                     });
-                }, MIC_ACTION_HOVER_COLLAPSE_MS);
+                }
+                micActionHoverCollapseTimer = setTimeout(attemptCollapse, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
 
             leftColumn.addEventListener('mouseenter', function () {
@@ -4278,8 +4349,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 panel.addEventListener('mouseenter', function () {
                     clearMicActionHoverCollapseTimer();
                 });
-                panel.addEventListener('mouseleave', function () {
-                    scheduleMicActionHoverCollapse();
+                panel.addEventListener('mouseleave', function (event) {
+                    scheduleMicActionHoverCollapse(event);
                 });
             }
 
@@ -4314,7 +4385,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 var anchor = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]') || micPopup;
                 if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
                     panel._popupElement = micPopup;
-                    window.AvatarPopupUI.positionSidePanel(panel, anchor);
+                    window.AvatarPopupUI.positionSidePanel(panel, anchor, { adaptivePlacement: true });
                     // These panels appear immediately; keep the shared scale
                     // without the entry-animation offset used by other menus.
                     window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
@@ -4356,15 +4427,39 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 panel.style.top = top + 'px';
             }
 
-            addVoiceWindowListener('resize', function () {
+            function syncMicPopupLayout() {
+                if (voiceControlsDisposed || !isPopupAvailable()) return;
+                var popupUi = window.AvatarPopupUI;
+                if (popupUi && popupUi.positionPopup && micPopup.closest('[id$="-floating-buttons"]')) {
+                    var prefix = micPopup.id.split('-popup-')[0];
+                    popupUi.positionPopup(micPopup, { buttonId: 'mic', buttonPrefix: prefix + '-btn-',
+                        triggerPrefix: prefix + '-trigger-icon-', preserveDirection: true });
+                }
                 positionMicSubwindow(getOwnedMicSubwindow());
-            });
+            }
+
+            function stopMicPopupLayoutTracking() {
+                if (micPopupLayout) micPopupLayout.disconnect();
+                micPopupLayout = null;
+            }
+
+            function startMicPopupLayoutTracking() {
+                var popupUi = window.AvatarPopupUI;
+                if (popupUi && popupUi.observePopupLayout) {
+                    micPopupLayout = popupUi.observePopupLayout(micPopup, syncMicPopupLayout, {
+                        anchors: Array.from(leftColumn.querySelectorAll('[data-neko-mic-main-action-row]'))
+                    });
+                } else {
+                    addVoiceWindowListener('resize', syncMicPopupLayout);
+                }
+            }
 
             function createMicSubwindow(title, iconText, width) {
                 // Keep activeMicActionKey; only tear down the previous DOM panel.
                 clearMicActionHoverCollapseTimer();
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    if (micPopupLayout) micPopupLayout.setPanel(null);
                     panel.remove();
                 });
                 var panel = document.createElement('div');
@@ -4402,6 +4497,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 panel.addEventListener('click', stopSubwindowEvent);
 
                 var header = document.createElement('div');
+                header.setAttribute('data-neko-sidepanel-header', '');
                 Object.assign(header.style, {
                     display: 'flex',
                     alignItems: 'center',
@@ -4445,15 +4541,23 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 closeBtn.addEventListener('click', function (e) {
                     e.stopPropagation();
                     closeMicSubwindow();
+                    // A compact panel can cover its own opener. Removing it
+                    // must not treat the newly exposed row as a fresh hover.
+                    var hit = document.elementFromPoint(e.clientX, e.clientY);
+                    var action = hit && hit.closest('[data-neko-mic-main-action]');
+                    if (action && leftColumn.contains(action)) action._nekoMicHoverDismissed = true;
                 });
 
                 var headerActions = document.createElement('div');
                 Object.assign(headerActions.style, {
                     display: 'flex',
+                    flexWrap: 'wrap',
                     alignItems: 'center',
                     justifyContent: 'flex-end',
                     gap: '7px',
-                    flexShrink: '0'
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    flexShrink: '1'
                 });
                 headerActions.appendChild(closeBtn);
 
@@ -4464,6 +4568,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 var body = document.createElement('div');
                 body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
+                body.setAttribute('data-neko-sidepanel-body', '');
                 Object.assign(body.style, {
                     display: 'flex',
                     flex: '1 1 auto',
@@ -4473,10 +4578,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     overflowY: 'auto'
                 });
                 panel.appendChild(body);
-                panel._nekoMicSubwindowBody = body;
+                var content = document.createElement('div');
+                content.setAttribute('data-neko-sidepanel-content', '');
+                Object.assign(content.style, { display: 'flex', flexDirection: 'column',
+                    flex: '0 0 auto', minWidth: '0', gap: '4px' });
+                body.appendChild(content);
+                panel._nekoMicSubwindowBody = content;
                 attachTransientMicPopupScrollbar(body, panel);
 
                 document.body.appendChild(panel);
+                if (micPopupLayout) micPopupLayout.setPanel(panel);
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
                 return panel;
             }
@@ -4547,6 +4658,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // Resolve hover permission at event time: desktop bridges may
                 // arrive after rendering.
                 button.addEventListener('mouseenter', function (event) {
+                    if (button._nekoMicHoverDismissed) return;
                     var openOnHover = typeof interactionOptions.openOnHover === 'function'
                         ? interactionOptions.openOnHover()
                         : interactionOptions.openOnHover !== false;
@@ -4557,15 +4669,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         actionSurface().style.background = 'var(--neko-popup-hover)';
                     }
                 });
-                button.addEventListener('mouseleave', function () {
+                button.addEventListener('mouseleave', function (event) {
+                    button._nekoMicHoverDismissed = false;
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
                     if (button._nekoMicActionRow) return;
                     actionSurface().style.background = 'transparent';
-                    scheduleMicActionHoverCollapse();
+                    scheduleMicActionHoverCollapse(event);
                 });
                 button.addEventListener('click', function (e) {
                     e.stopPropagation();
+                    button._nekoMicHoverDismissed = false;
                     openActionPanel(e);
                 });
                 return button;
@@ -4599,9 +4713,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 row.addEventListener('mouseenter', function () {
                     clearMicActionHoverCollapseTimer();
                 });
-                row.addEventListener('mouseleave', function () {
+                row.addEventListener('mouseleave', function (event) {
                     row.style.background = 'transparent';
-                    scheduleMicActionHoverCollapse();
+                    scheduleMicActionHoverCollapse(event);
                 });
                 return row;
             }
@@ -4914,12 +5028,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         display: 'flex',
                         alignItems: 'center',
                         gap: '6px',
+                        minWidth: '0',
                         color: 'var(--neko-popup-text-sub)',
                         fontSize: '11px',
                         fontWeight: '500',
                         whiteSpace: 'nowrap'
                     });
                     var rememberText = document.createElement('span');
+                    Object.assign(rememberText.style, { minWidth: '0', overflow: 'hidden',
+                        textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                     rememberText.textContent = window.t
                         ? window.t('app.screenSource.rememberWindow')
                         : '记住窗口';
@@ -5109,6 +5226,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             // 组装
             micPopup.appendChild(leftColumn);
+            startMicPopupLayoutTracking();
 
             startMicVolumeVisualization();
             return true;

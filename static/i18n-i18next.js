@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 点击引导与最新 main 的语言包共用新缓存版本。
-    const LOCALE_VERSION = '2026-10-03-core-key-picker-hint';
+    // 合并 main 空气投篮文案与模型选择器提示，统一刷新语言包缓存。
+    const LOCALE_VERSION = '2026-10-03-model-picker-main-merge-round5';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

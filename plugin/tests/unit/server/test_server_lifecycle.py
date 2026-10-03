@@ -1177,7 +1177,7 @@ def test_plane_bridge_start_does_not_recall_the_retired_thread() -> None:
     assert not _touches_self_stop(plane_bridge._Bridge._run)
 
 
-def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
+def test_proactive_bridge_start_does_not_recall_the_retired_thread(monkeypatch) -> None:
     """Same hazard on the SUB side, with the same fix.
 
     A recalled proactive thread stays subscribed to the PUB endpoint of the
@@ -1190,6 +1190,8 @@ def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
         pytest.skip("pyzmq not available")
 
     bridge = pb.ProactiveBridge()
+    # This tests event ownership only; never connect to a running local server.
+    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed, finished: stop.wait(3))
     bridge.start()
     first_stop = bridge._stop
     assert bridge._thread is not None

@@ -72,6 +72,30 @@ async def test_pending_preferred_timeout_is_not_masked_by_fallback_404():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize('error_code', ['auth_failed', 'key_required', 'core_key_required'])
+async def test_preferred_credential_error_returns_without_waiting_for_fallback(error_code):
+    fallback_started = asyncio.Event()
+    fallback_closed = asyncio.Event()
+
+    async def request(url):
+        if url == 'preferred':
+            await fallback_started.wait()
+            return {'success': False, 'error_code': error_code}
+        fallback_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            fallback_closed.set()
+
+    result = await asyncio.wait_for(race_candidate_requests(
+        ['preferred', 'fallback'], request, timeout=10, prefer_configured_order=True,
+    ), timeout=0.5)
+    assert result['error_code'] == error_code
+    assert fallback_closed.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_caller_cancellation_drains_candidates():
     started = asyncio.Event()
     closed = []

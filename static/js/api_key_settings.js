@@ -1459,7 +1459,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
     const isNamedProvider = value => !!value && value !== 'custom' && !value.startsWith('follow_');
     if (userInitiated && !_isLoadingSavedConfig && modelIdInput
         && modelType !== 'omni' && modelType !== 'tts'
-        && previousProvider !== provider && isNamedProvider(provider)) {
+        && previousProvider !== provider
+        && (isNamedProvider(provider) || provider === 'follow_core' || provider === 'follow_assist')) {
         modelIdInput.value = '';
     }
     // Also remember follow modes that return early below.

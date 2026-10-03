@@ -2018,6 +2018,11 @@ def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_pa
     mock_page.select_option('#conversationModelProvider', 'follow_assist')
     mock_page.select_option('#conversationModelProvider', 'openai')
     expect(model).to_have_value('')
+    for follow_mode in ['follow_core', 'follow_assist']:
+        model.fill('gpt-user-choice')
+        mock_page.select_option('#conversationModelProvider', follow_mode)
+        expect(model).to_have_value('')
+        mock_page.select_option('#conversationModelProvider', 'openai')
     mock_page.evaluate("""() => {
         for (const type of ['tts']) {
             const select = document.getElementById(`${type}ModelProvider`);

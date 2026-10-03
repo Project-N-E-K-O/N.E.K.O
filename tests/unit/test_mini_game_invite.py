@@ -1726,12 +1726,13 @@ def test_invite_game_configs_and_i18n_complete():
         'soccer': '/soccer_demo',
         'badminton': '/badminton_demo',
         'drawing_guess': '/drawing_guess_demo',
+        'air_basketball': '/air_basketball',
     }
     assert set(MINI_GAME_INVITE_AVAILABLE_GAMES) == set(expected_urls)
     for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
         url = expected_urls[game]
         assert MINI_GAME_LAUNCH_URL_BY_GAME[game] == url
-        for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+        for lang in ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
             assert MINI_GAME_INVITE_LINES_BY_GAME[game][lang].strip()
             work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME[game][lang]
             assert work_break_prompt.strip()

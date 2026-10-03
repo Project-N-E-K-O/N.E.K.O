@@ -55,6 +55,10 @@ async def race_candidate_requests(
                 result = tasks[index].result()
                 if result.get("success"):
                     return result
+                if prefer_configured_order and index == 0 and result.get("error_code") in (
+                    "auth_failed", "key_required", "core_key_required",
+                ):
+                    return result
                 failures[index] = result
         if failures:
             index = min(failures) if prefer_configured_order else next(
