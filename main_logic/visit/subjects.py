@@ -589,6 +589,21 @@ class PeerRoster:
     ) -> list[dict[str, str]]:
         """Expand every visit subject of one person under one local character.
 
+        See :meth:`expand` (this returns only its subjects).
+        """
+        return (await self.expand(peer_uid, own_char, current))[1]
+
+    async def expand(
+        self,
+        peer_uid: str,
+        own_char: str,
+        current: tuple[str, str] | None = None,
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Return ``(pair_ids, subjects)`` of one person from one roster snapshot.
+
+        Both come from the same locked read, so a concurrent ``upsert`` can
+        never make them disagree (forget planning relies on that).
+
         Order: ``group_chat(pair)`` for each pair, then
         ``group_participant(pair, peer_char)`` for each pair times each known
         peer character, then ``participant(person_id)``. ``current`` is the
@@ -634,7 +649,7 @@ class PeerRoster:
             for char_id in chars:
                 add(group_participant_subject(pair_id, char_id))
         add(participant_subject(derive_person_id(self.own_uid, peer_uid)))
-        return out
+        return list(pairs), out
 
     async def rename_char(self, old: str, new: str) -> int:
         """Move ``by_char[old]`` to ``by_char[new]`` for every peer in one atomic write.

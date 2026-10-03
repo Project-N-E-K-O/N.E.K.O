@@ -599,7 +599,9 @@ def _split_ticket(ticket: Any) -> tuple[str, dict[str, Any], bytes]:
         claims = json.loads(
             claims_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys,
         )
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        # 深层嵌套（"[[[[…"）让 json.loads 抛 RecursionError：同样是一张坏票，
+        # 必须按 TicketRejected 走拒绝流程，不能冲出核验函数
         raise MalformedTicket("undecodable segment") from exc
     if not isinstance(claims, dict):
         raise MalformedTicket("claims must be an object")

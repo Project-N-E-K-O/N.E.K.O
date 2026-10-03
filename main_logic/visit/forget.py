@@ -172,11 +172,9 @@ async def plan_forget_person(
     Only ``by_char[own_char]`` contributes; other local characters' entries
     with the same person stay untouched.
     """
-    subjects = await roster.expand_subjects(peer_uid, own_char, current)
-    entry = await roster.get_char_entry(peer_uid, own_char, strict=True) or {}
-    pair_ids = [p for p in entry.get("pairs") or [] if isinstance(p, str) and p]
-    if current is not None and current[0] and current[0] not in pair_ids:
-        pair_ids.append(current[0])
+    # subjects 与 pair_ids 来自同一次加锁读：分两次读时中间插进一次 upsert，两者会对不上，
+    # open_plan 随即因「pair_ids 与主体不一致」报错
+    pair_ids, subjects = await roster.expand(peer_uid, own_char, current)
     return ForgetPlan(
         own_uid=roster.own_uid,
         peer_uid=peer_uid,

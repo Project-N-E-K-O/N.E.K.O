@@ -684,3 +684,21 @@ async def test_mark_done_refuses_out_of_order_steps(tmp_path):
     record = await log.load(rev_id)
     assert record["done_steps"] == [plan.steps[0]]
     assert await log.list_open() != []
+
+
+async def test_forget_planning_reads_the_roster_once(tmp_path, monkeypatch):
+    # 两次读之间的 upsert 会让 subjects 与 pair_ids 来自不同快照：规划只能读一次
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    reads = {"n": 0}
+    real = roster._read
+
+    def counting(fn, strict=False):
+        reads["n"] += 1
+        return real(fn, strict)
+
+    monkeypatch.setattr(roster, "_read", counting)
+    plan = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
+    assert reads["n"] == 1
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    assert await log.open_plan(plan) == plan.revocation_id

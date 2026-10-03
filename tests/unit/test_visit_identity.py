@@ -602,3 +602,11 @@ def test_blocklist_unavailable_is_one_exception_family(priv):
     pk = PubkeySet.build(now=NOW, fetched=_fresh(), builtin=_builtin(priv))
     with pytest.raises(BlocklistUnavailable):
         _verify(mint_ticket(_claims(), priv), pubkeys=pk, blocklist=Raising())
+
+
+def test_deeply_nested_claims_are_a_malformed_ticket(pubkeys):
+    # json.loads 对深层嵌套抛 RecursionError：要按 TicketRejected 拒绝，不能冲出去
+    ticket = b64url_encode(b"[" * 1400) + "." + b64url_encode(b"\x00" * 64)
+    assert len(ticket) <= 2048
+    with pytest.raises(TicketRejected):
+        _verify(ticket, pubkeys=pubkeys, blocklist=SpyBlocklist())

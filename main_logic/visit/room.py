@@ -422,7 +422,8 @@ class VisitRoom:
         return lp - max(self.max_lp_seen, self.own_lp) <= VISIT_LP_MAX_JUMP
 
     def observe_lp(self, lp: Any, *, ln: Optional[str] = None,
-                   is_retransmit: bool = False, reliable: bool = False) -> Optional[str]:
+                   is_retransmit: bool = False, reliable: bool = False,
+                   closes_line: bool = False) -> Optional[str]:
         """Validate and observe the ``lp`` of a received message.
 
         Returns ``None`` when accepted (the local clock then covers it) or a
@@ -441,7 +442,12 @@ class VisitRoom:
           of a newer line may legitimately overtake a reliable message whose
           first transmission was lost (its retransmission then fills the
           ``seq`` gap exactly and cannot be told apart from a first send).
-          Lossy events are compared with every earlier new line / event;
+          Lossy events are compared with every earlier new line / event.
+          ``closes_line`` (the ``text`` of a line) skips this check: a line's
+          ``lp`` is allocated when it opens, but its ``text`` is sent when it
+          closes, so any reliable message the sender emitted in between (the
+          ``wrap_up{begin}`` that cuts the line off, for instance) carries a
+          larger ``lp`` and legitimately precedes it in ``seq`` order;
         * ``'lp_changed'``: an already observed ``ln`` carries a different
           ``lp`` than its first piece (one line keeps one ``lp``; a changed
           value would move the line in ordering, staleness and history).
@@ -464,7 +470,9 @@ class VisitRoom:
             if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
                 return self._count_anomaly("lp_regress")
             floor = self._peer_max_reliable_lp if reliable else self._peer_max_new_lp
-            if lp < floor:
+            # 收口一行的 text 带的是开口时分配的 lp：开口到收口之间发出的必达消息
+            # （收尾时掐断这一行的 wrap_up{begin}）lp 更大、seq 更前，不能据此判它逆序
+            if not closes_line and lp < floor:
                 return self._count_anomaly("lp_not_monotonic")
             self._peer_max_new_lp = max(self._peer_max_new_lp, lp)
             if reliable:

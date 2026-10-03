@@ -1015,3 +1015,16 @@ def test_a_retransmitted_reliable_line_overtaken_by_a_lossy_delta_is_accepted():
     assert room.observe_lp(4, ln="g:9", reliable=True) == "lp_not_monotonic"
     # 可丢的新行事件仍和所有已见新行比
     assert room.observe_lp(5, ln="g:8") == "lp_not_monotonic"
+
+
+def test_the_text_of_a_line_cut_off_by_wrap_up_is_accepted():
+    # §3.6.3 ⑤：host 先发 wrap_up{begin, lp=3}，再发被掐断那一行 h:2 的 text（lp=2）；
+    # 这一行的首片没被看到（tx_backpressure / 全丢）时也不能按逆序拒掉
+    room = make_room("guest")
+    assert room.observe_lp(1, ln="h:1", reliable=True, closes_line=True) is None
+    assert room.observe_lp(3, reliable=True) is None                      # wrap_up begin
+    assert room.observe_lp(2, ln="h:2", reliable=True, closes_line=True) is None
+    # 必达控制消息之间仍按必达水位比
+    assert room.observe_lp(2, reliable=True) == "lp_not_monotonic"
+    # 值域与回退照常检查
+    assert room.observe_lp(-1, ln="h:9", reliable=True, closes_line=True) == "lp_out_of_range"
