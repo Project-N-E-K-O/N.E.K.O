@@ -321,14 +321,15 @@ async function lostSessionIsReportedCase() {
   await yieldEnv.mod.startMicCapture();           // probe yields to live recording
   assert(yieldEnv.mod.sampleMicVolumeLevel().noSession !== true,
          'while recording runs (probe yielded) sampler must not report noSession');
-  // watchdog 到点：录音期间超时
+  // watchdog 到点：录音期间超时，试麦会话随 watchdog 一起结束（stopSettingsMicVolumeTest），
+  // 设置页收到 noSession 后正常收尾，录音本身继续。
   activeWatchdogTimers(yieldTimers)[0].callback();
-  assert(yieldEnv.mod.sampleMicVolumeLevel().noSession !== true,
-         'watchdog expiry during live recording must not report noSession');
+  assert(yieldEnv.mod.sampleMicVolumeLevel().noSession === true,
+         'watchdog expiry during recording ends the mic-test session; noSession is expected');
   yieldEnv.mod.stopRecording({ notifyServer: false });
   await settle(10);
   assert(yieldEnv.mod.sampleMicVolumeLevel().noSession === true,
-         'after recording ends and watchdog already expired, noSession is reported');
+         'after recording ends, mic-test session is still gone; noSession is still reported');
 }
 
 async function deadTrackFallsBackCase() {
@@ -600,8 +601,14 @@ async function failedReopenDoesNotReviveProbeCase() {
          'the settings start follows the failed reopen');
   assert(env.mod.sampleMicVolumeLevel().failed === true, 'the failed marker stays after the reopen');
   assert(activeWatchdogTimers(timers).length === 0, 'the failed start disarms the watchdog');
-  assert(!isLive(env.streams[0]), 'the probe that was parked is released');
+  // failed 状态不持有流：重建失败的 catch 路径已经调用 stopMicrophoneStreamTracks，
+  // markFailed 设 { mode: 'failed' } 时流已关闭。yieldSettingsMicVolumeProbeToLive 跳过
+  // releaseSettingsMicVolumeProbe 是安全的，因为没有残留流。
+  assert(!isLive(env.streams[0]), 'the probe that was parked is released by the failed reopen catch path');
 
+  // 验证 failed 模式在正式录音 yield 时不会泄漏 stream：
+  // 正式录音开始，yieldSettingsMicVolumeProbeToLive 跳过 release（mode 是 failed）。
+  // 录音结束后依然没有新的 getUserMedia，流的数量不变。
   const callsAfterFailure = env.getUserMediaCalls.length;
   await env.win.selectMicrophone('mic-C');
   await settle(10);
