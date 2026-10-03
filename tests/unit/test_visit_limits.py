@@ -572,3 +572,32 @@ async def test_a_deeply_nested_blocklist_fails_closed(tmp_path):
     assert writer.available is False
     assert Blocklist.load(tmp_path).available is False
     assert (await Blocklist.aload(tmp_path)).available is False
+
+
+async def test_a_mutation_recovers_from_a_transient_read_failure(tmp_path, monkeypatch):
+    # 一次临时读盘失败把共享状态标成不可用后，文件恢复时下一次拉黑的重读成功即全部恢复，
+    # 不必等调用方另外 load
+    from main_logic.visit import limits
+    from main_logic.visit.limits import BlocklistUnavailable
+
+    verifier = Blocklist.load(tmp_path)
+    writer = Blocklist.load(tmp_path)
+    real_read = limits.read_json
+
+    def locked(*_a, **_k):
+        raise PermissionError("locked by another process")
+
+    monkeypatch.setattr(limits, "read_json", locked)
+    with pytest.raises(BlocklistUnavailable):
+        await writer.ablock(UID, display_name_at_block="Mimi")
+    assert verifier.available is False
+    monkeypatch.setattr(limits, "read_json", real_read)
+    assert await writer.ablock(UID, display_name_at_block="Mimi") is True
+    assert verifier.available is True and verifier.is_blocked(UID)
+    # 文件已存在时同样恢复（走解析成功的分支）
+    monkeypatch.setattr(limits, "read_json", locked)
+    with pytest.raises(BlocklistUnavailable):
+        await writer.aunblock(UID)
+    monkeypatch.setattr(limits, "read_json", real_read)
+    assert await writer.aunblock(UID) is True
+    assert verifier.available is True and not verifier.is_blocked(UID)

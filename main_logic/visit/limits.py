@@ -420,10 +420,13 @@ class Blocklist:
 
     Build with :meth:`load` / :meth:`aload`. A missing file is an empty list.
     An unreadable or malformed file fails closed: the file is left untouched
-    (a transient read error recovers on the next load, a corrupt file stays
-    available for repair), :attr:`available` is False, :meth:`is_blocked`
-    and every mutation raise :class:`BlocklistUnavailable`, and identity
-    verification rejects every peer. Treating it as empty would let a
+    (a corrupt file stays available for repair), :attr:`available` is False,
+    :meth:`is_blocked` and every mutation that still cannot re-read the file
+    raise :class:`BlocklistUnavailable`, and identity verification rejects
+    every peer. Any later successful read of the file (a :meth:`load` /
+    :meth:`aload`, or the re-read at the start of a mutation) restores
+    availability for every instance, so a transient read error never
+    leaves the list stuck unavailable. Treating it as empty would let a
     blocked peer back in. Mutations write the new list first and only then
     swap it in, so a failed write leaves memory and disk consistent. All live
     instances on the same file share one in-memory snapshot (rows and
@@ -591,12 +594,14 @@ class Blocklist:
 
     def _txn_sync(self, build) -> bool:
         with path_lock(self._path):
-            self._require_available()
+            # 不先查 available：之前的读盘失败可能只是临时的（被占用 / 杀毒锁定），
+            # 锁内这次重读成功就说明文件已恢复，所有实例随之恢复可用
             # 锁内先读盘上最新的整表：别的实例可能刚写过，用自己手里的旧视图重建会冲掉它
             try:
                 payload = read_json(self._path)
             except FileNotFoundError:
                 self._entries = {}
+                self._snap.available = True
             except (OSError, ValueError, RecursionError) as exc:
                 # 共享快照一起标成不可用：身份核验手里的长期实例不能继续按旧表放人
                 self._snap.available = False
@@ -608,6 +613,7 @@ class Blocklist:
                     self._snap.available = False
                     raise BlocklistUnavailable("visit blocklist is malformed") from exc
                 self._entries = {e.visit_uid: e for e in fresh}
+                self._snap.available = True
             entries = build()
             if entries is None:
                 return False
