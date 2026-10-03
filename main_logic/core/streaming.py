@@ -28,7 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from utils.external_route_registry import StartSessionClaim
+from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -326,7 +326,7 @@ class StreamingMixin:
                     claim, _route = await _core_facade.route_external_start_session(
                         self.lanlan_name, {'input_type': 'audio'},
                     )
-                    if claim is not StartSessionClaim.UNCLAIMED:
+                    if claim is not RouteClaim.UNCLAIMED:
                         return
                     # The claim check may have suspended: another frame can
                     # have started a session meanwhile. Audio arriving during a

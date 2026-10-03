@@ -869,9 +869,7 @@ async def test_deferred_stt_announcement_skips_a_route_that_ended_before_it_ran(
     """
     manager = _ProtocolManager()
     websocket = _EventWebSocket([{"action": "start_session", "input_type": "audio"}])
-    _session_ids, _route_calls = _install_protocol_endpoint(
-        monkeypatch, manager=manager, websocket=websocket,
-    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
     active = {"value": True}
     announcements = []
 
@@ -2342,19 +2340,23 @@ async def test_start_session_falls_through_when_the_declining_route_ended(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("request_id", ["req-1", None])
 async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changing(
-    monkeypatch,
+    monkeypatch, request_id,
 ) -> None:
-    """An owner that never settles gets the start failed back with its request id.
+    """An owner that never settles gets the start failed back (with its request
+    id when it sent one; unaddressed otherwise, so the latest start resets).
 
-    Mutation: dropping the UNSETTLED start silently (no session_failed) turns
-    this red; so does starting the ordinary session instead.
+    Mutation: dropping the UNSETTLED start silently (no session_failed), or
+    only answering requests that carry an id, turns this red; so does starting
+    the ordinary session instead.
     """
     manager = _ProtocolManager()
     manager.send_session_failed = AsyncMock()
-    websocket = _EventWebSocket(
-        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
-    )
+    start = {"action": "start_session", "input_type": "audio"}
+    if request_id:
+        start["request_id"] = request_id
+    websocket = _EventWebSocket([start])
     _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
     instance = {"n": 0}
 
@@ -2378,4 +2380,44 @@ async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changin
     await asyncio.gather(*list(websocket_router._ws_bg_tasks))
 
     assert "start_session" not in [name for name, _payload in manager.calls]
-    manager.send_session_failed.assert_awaited_once_with("audio", request_id="req-1")
+    manager.send_session_failed.assert_awaited_once_with("audio", request_id=request_id)
+
+
+@pytest.mark.asyncio
+async def test_stream_data_gets_a_turn_end_when_the_owner_keeps_changing(
+    monkeypatch,
+) -> None:
+    """Text that reached no route still settles its request on the frontend.
+
+    Mutation: dropping the UNSETTLED message without a turn end turns this
+    red; so does handing it to the ordinary chat path.
+    """
+    manager = _ProtocolManager()
+    manager._emit_agent_callback_turn_end = AsyncMock()
+    websocket = _EventWebSocket([
+        {"action": "stream_data", "input_type": "text", "data": "hi", "request_id": "req-text"},
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"n": 0}
+
+    async def _decline_and_hand_over(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        instance["n"] += 1
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_decline_and_hand_over,
+            on_start_session=AsyncMock(return_value=False),
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: f"visit-{instance['n']}",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "stream_data" not in [name for name, _payload in manager.calls]
+    manager._emit_agent_callback_turn_end.assert_awaited_once_with("req-text")

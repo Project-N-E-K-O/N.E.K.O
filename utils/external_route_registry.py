@@ -260,14 +260,23 @@ async def _offer_to_current_owner(
     return None, _UNSETTLED
 
 
-async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
+class RouteClaim(Enum):
+    """How the external routes answered a stream message or session start."""
+
+    CLAIMED = "claimed"  # a route took it; the caller does nothing more
+    UNCLAIMED = "unclaimed"  # nobody took it; see the function for the route
+    UNSETTLED = "unsettled"  # the owner kept changing; the caller must settle
+                             # the request itself (it reached no route)
+
+
+async def route_external_stream_message(lanlan_name: str, message: dict) -> RouteClaim:
     """Offer a main-socket ``stream_data`` message to the active route.
 
-    Returns True when the route consumed it (the caller must then skip the
-    ordinary chat path). A "not consumed" from a route instance replaced while
-    it decided is re-offered to the current owner (or, with no owner left, the
-    message goes to the ordinary path). An owner that keeps changing gets the
-    message dropped rather than leaked into ordinary chat.
+    CLAIMED: the route consumed it (the caller skips the ordinary chat path).
+    UNCLAIMED: no route took it; it goes to the ordinary path. A "not
+    consumed" from a route instance replaced while it decided is re-offered to
+    the current owner. UNSETTLED: the owner kept changing; the message reached
+    nobody and must not leak into ordinary chat either.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
         consumed = bool(await spec.route_stream_message(lanlan_name, message))
@@ -275,8 +284,8 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
 
     _spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="stream_data")
     if consumed is _UNSETTLED:
-        return True
-    return bool(consumed)
+        return RouteClaim.UNSETTLED
+    return RouteClaim.CLAIMED if consumed else RouteClaim.UNCLAIMED
 
 
 async def route_external_microphone_audio(lanlan_name: str) -> bool:
@@ -299,40 +308,33 @@ async def route_external_microphone_audio(lanlan_name: str) -> bool:
     return spec is not None and bool(consumed) and not spec.audio_passthrough
 
 
-class StartSessionClaim(Enum):
-    """How the external routes answered a session start."""
-
-    CLAIMED = "claimed"  # a route took the start; the caller does nothing more
-    UNCLAIMED = "unclaimed"  # see route_external_start_session for the route
-    UNSETTLED = "unsettled"  # the owner kept changing; the caller gives up
-
-
 async def route_external_start_session(
     lanlan_name: str,
     message: dict,
-) -> tuple[StartSessionClaim, ExternalRouteKind | None]:
+) -> tuple[RouteClaim, ExternalRouteKind | None]:
     """Let the route owning ``lanlan_name`` decide a session start.
 
     ``(UNCLAIMED, None)``: no route owns the character, or the owner declined;
     the ordinary start runs. ``(UNCLAIMED, spec)``: the owner has no
     ``on_start_session``, so the default start handling for ``spec`` applies
-    (see ``ExternalRouteKind``). A decline from a route replaced while it
-    decided is re-asked of the current owner, like stream messages.
+    (see ``ExternalRouteKind``). Every awaited answer -- a claim as well as a
+    decline -- only stands if the same route instance still owns the
+    character; otherwise the current owner is asked, so a claim made by an
+    instance that has since been replaced cannot swallow the start.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
         if spec.on_start_session is None:
             return False, True
-        claimed = bool(await spec.on_start_session(lanlan_name, message))
-        return claimed, claimed
+        return bool(await spec.on_start_session(lanlan_name, message)), False
 
     spec, claimed = await _offer_to_current_owner(lanlan_name, offer, what="start_session")
     if claimed is _UNSETTLED:
-        return StartSessionClaim.UNSETTLED, None
+        return RouteClaim.UNSETTLED, None
     if claimed:
-        return StartSessionClaim.CLAIMED, spec
+        return RouteClaim.CLAIMED, spec
     if spec is not None and spec.on_start_session is None:
-        return StartSessionClaim.UNCLAIMED, spec
-    return StartSessionClaim.UNCLAIMED, None
+        return RouteClaim.UNCLAIMED, spec
+    return RouteClaim.UNCLAIMED, None
 
 
 async def route_external_voice_transcript(

@@ -55,7 +55,7 @@ from .shared_state import (
 # registry; the hijack points below only talk to the registry.
 from . import game_router as _game_router  # noqa: F401
 from utils.external_route_registry import (
-    StartSessionClaim,
+    RouteClaim,
     route_external_microphone_audio,
     route_external_start_session,
     route_external_stream_message,
@@ -990,7 +990,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         lanlan_name,
                         {"input_type": input_type, "request_id": request_id},
                     )
-                    if claim is StartSessionClaim.CLAIMED:
+                    if claim is RouteClaim.CLAIMED:
                         continue
                     if session_id.get(lanlan_name) != this_session_id:
                         # A newer window took the session while the route
@@ -998,17 +998,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         # message hits the ownership check above and closes.
                         logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
                         continue
-                    if claim is StartSessionClaim.UNSETTLED:
+                    if claim is RouteClaim.UNSETTLED:
                         # The owner kept changing while deciding: give up and
                         # tell the requester, so its preparing state resets.
+                        # Without a request id the failure goes out unaddressed
+                        # and the frontend resets its latest start.
                         logger.info("[%s] start_session failed: external route kept changing during its claim", lanlan_name)
-                        if request_id:
-                            _fire_task(
-                                session_manager[lanlan_name].send_session_failed(
-                                    'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
-                                    request_id=request_id,
-                                )
+                        _fire_task(
+                            session_manager[lanlan_name].send_session_failed(
+                                'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
+                                request_id=request_id,
                             )
+                        )
                         continue
                     if external_route is not None:
                         # Default start handling for a route without
@@ -1125,8 +1126,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if input_type == "audio":
                     if await route_external_microphone_audio(lanlan_name):
                         continue
-                elif await route_external_stream_message(lanlan_name, message):
-                    continue
+                else:
+                    claim = await route_external_stream_message(lanlan_name, message)
+                    if claim is RouteClaim.UNSETTLED:
+                        # The owner kept changing: the input reached no route
+                        # and must not leak into ordinary chat, but its request
+                        # still needs a turn end or its bubble stays pending.
+                        logger.info("[%s] stream_data dropped: external route kept changing while handling it", lanlan_name)
+                        await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
+                        continue
+                    if claim is RouteClaim.CLAIMED:
+                        continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")

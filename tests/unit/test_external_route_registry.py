@@ -2,6 +2,7 @@
 hijack points that now go through it (design doc §5 PR-01)."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -140,7 +141,7 @@ def test_exclude_kind_skips_only_the_callers_own_kind(empty_registry):
 @pytest.mark.asyncio
 async def test_start_session_claims_need_an_active_route_with_a_handler(empty_registry):
     start = registry.route_external_start_session
-    Claim = registry.StartSessionClaim
+    Claim = registry.RouteClaim
     assert await start("Lan", {"input_type": "audio"}) == (Claim.UNCLAIMED, None)
 
     # No handler: default start handling for that route.
@@ -176,7 +177,7 @@ def test_a_kind_without_start_handler_must_pass_audio_through(empty_registry):
 
 @pytest.mark.asyncio
 async def test_stream_message_goes_to_the_active_route_only(empty_registry):
-    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is False
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is registry.RouteClaim.UNCLAIMED
 
     handler = AsyncMock(return_value=True)
     registry.register_external_route_kind(
@@ -184,7 +185,7 @@ async def test_stream_message_goes_to_the_active_route_only(empty_registry):
     )
     message = {"input_type": "text", "data": "hi"}
 
-    assert await registry.route_external_stream_message("Lan", message) is True
+    assert await registry.route_external_stream_message("Lan", message) is registry.RouteClaim.CLAIMED
     handler.assert_awaited_once_with("Lan", message)
 
 
@@ -368,6 +369,32 @@ async def test_independent_asr_final_is_not_delivered_to_the_next_instance_of_th
 
 
 @pytest.mark.asyncio
+async def test_independent_asr_final_is_pinned_to_the_instance_not_the_registered_kind(empty_registry):
+    # The same registered kind object moves on to its next instance. Mutation:
+    # pinning the kind object (ignoring the instance id) turns this red.
+    handler = AsyncMock(return_value=True)
+    instance = {"id": "visit-1"}
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_unclaimed,
+        on_start_session=AsyncMock(return_value=False),
+        finalize_for_character=_no_routes,
+        route_voice_transcript=handler,
+        current_instance=lambda _name: instance["id"],
+    ))
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _voice_token(turn_id=6)
+    assert await consumer.prepare_turn(token) is True
+
+    instance["id"] = "visit-2"
+    with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
+        await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hi"))
+
+    handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_independent_asr_does_not_prepare_for_a_route_without_a_voice_handler(empty_registry):
     registry.register_external_route_kind(_kind("visit", active=True, instance="visit-1"))
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
@@ -512,7 +539,7 @@ async def test_stream_message_follows_an_owner_change_during_handling(empty_regi
     ))
     message = {"input_type": "text", "data": "hi"}
 
-    assert await registry.route_external_stream_message("Lan", message) is True
+    assert await registry.route_external_stream_message("Lan", message) is registry.RouteClaim.CLAIMED
     new_owner.assert_awaited_once_with("Lan", message)
 
 
@@ -528,7 +555,7 @@ async def test_stream_message_goes_to_ordinary_chat_when_the_owner_left_during_h
         "visit", active=True, route_stream_message=_decline_and_end, instance="visit-1",
     ))
 
-    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is False
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is registry.RouteClaim.UNCLAIMED
 
 
 @pytest.mark.asyncio
@@ -588,6 +615,58 @@ def test_game_route_instance_tells_routes_apart(monkeypatch):
     assert first and second and first != second
 
 
+@pytest.mark.asyncio
+async def test_active_game_route_with_blank_session_id_keeps_its_microphone_audio(monkeypatch):
+    """An active game always has an instance id, even with a blank session id.
+
+    The voice identity helpers skip blank session ids; deriving the instance
+    from them would make every dispatch look like an owner change and drop the
+    whole game's PCM. Mutation: building the instance from
+    get_active_game_route_generation_identity turns this red.
+    """
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        gr_runtime._activate_game_route("soccer", "   ", "Lan")
+        assert game_router._game_route_instance("Lan")
+        identity = registry.external_route_identity("Lan")
+        assert registry.same_external_route_owner(identity, registry.external_route_identity("Lan"))
+        # The game passes its PCM through to realtime (its STT provider).
+        assert await registry.route_external_microphone_audio("Lan") is False
+
+
+@pytest.mark.asyncio
+async def test_a_claim_from_an_instance_replaced_while_claiming_is_reasked(empty_registry):
+    """A claim only stands if the same instance still owns the character.
+
+    Mutation: treating a claim as final (no owner re-check) turns this red --
+    the defunct instance's claim would swallow the start.
+    """
+    instance = {"id": "visit-1"}
+    asked = []
+
+    async def _claim_then_replaced(_name, _message):
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return True
+        return False
+
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_unclaimed,
+        on_start_session=_claim_then_replaced,
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: instance["id"],
+    ))
+
+    result = await registry.route_external_start_session("Lan", {"input_type": "audio"})
+
+    assert asked == ["visit-1", "visit-2"]
+    assert result == (registry.RouteClaim.UNCLAIMED, None)
+
+
 @pytest.mark.parametrize("empty_instance", [None, "", 0])
 def test_an_unpinnable_instance_never_counts_as_the_same_owner(empty_registry, empty_instance):
     # Mutation: plain tuple equality turns this red -- two instances that both
@@ -608,7 +687,7 @@ async def test_stream_message_is_not_leaked_when_the_owner_reports_no_instance(e
         "visit", active=True, route_stream_message=handler, instance="",
     ))
 
-    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is True
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is registry.RouteClaim.UNSETTLED
 
 
 @pytest.mark.asyncio

@@ -11,35 +11,36 @@ from main_logic.voice_turn.contracts import (
     VoiceTurnToken,
 )
 from utils.external_route_registry import (
+    ExternalRouteKind,
+    external_route_identity,
     get_active_external_route,
     is_external_route_active,
     route_external_voice_transcript,
+    same_external_route_owner,
 )
 from utils.game_route_state import (
     get_active_game_route_generation_identity as get_active_game_route_identity,
 )
 
 
-def _pinnable_external_route(lanlan_name: str):
-    """The active non-game route that can receive this character's voice turns.
+def _pinnable_external_route(
+    lanlan_name: str,
+) -> tuple[ExternalRouteKind, str | None] | None:
+    """Registry identity of the active non-game route that takes voice turns.
 
-    It must take voice transcripts and report a non-empty string instance id
-    to pin the turn to; anything else is None.
+    The registry decides what can be pinned: an identity that does not even
+    match itself (no usable instance id) is not pinnable, so a turn is never
+    delivered to an instance the registry's own re-checks could not tell apart.
     """
-    route = get_active_external_route(lanlan_name)
-    if (
-        route is None
-        or route.kind == "game"
-        or route.route_voice_transcript is None
-        or route.current_instance is None
-    ):
+    identity = external_route_identity(lanlan_name)
+    if identity is None:
         return None
-    # Same rule as the registry's same_external_route_owner: only a non-empty
-    # string pins an instance.
-    instance = route.current_instance(lanlan_name)
-    if not isinstance(instance, str) or not instance:
+    route = identity[0]
+    if route.kind == "game" or route.route_voice_transcript is None:
         return None
-    return route
+    if not same_external_route_owner(identity, identity):
+        return None
+    return identity
 
 
 @dataclass(slots=True)
@@ -59,7 +60,7 @@ class GameVoiceInputConsumer:
         init=False,
         repr=False,
     )
-    _prepared_external_kinds: dict[VoiceTurnToken, tuple[str, str]] = field(
+    _prepared_external_kinds: dict[VoiceTurnToken, tuple[ExternalRouteKind, str | None]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -85,12 +86,10 @@ class GameVoiceInputConsumer:
                 identity = (identity[0], identity[1], "")
             self._prepared_routes[token] = identity
             return True
-        route = _pinnable_external_route(lanlan_name)
-        if route is None:
+        pinned = _pinnable_external_route(lanlan_name)
+        if pinned is None:
             return False
-        self._prepared_external_kinds[token] = (
-            route.kind, str(route.current_instance(lanlan_name)),
-        )
+        self._prepared_external_kinds[token] = pinned
         return True
 
     async def on_partial(self, event: VoicePartialEvent) -> None:
@@ -99,22 +98,16 @@ class GameVoiceInputConsumer:
     async def on_final(self, event: VoiceTranscriptEvent) -> None:
         token = event.turn_token
         request_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
-        external_route = self._prepared_external_kinds.pop(token, None)
-        if external_route is not None:
-            external_kind, external_instance = external_route
+        pinned = self._prepared_external_kinds.pop(token, None)
+        if pinned is not None:
             lanlan_name = self.lanlan_name()
-            route = _pinnable_external_route(lanlan_name)
-            if (
-                route is None
-                or route.kind != external_kind
-                or str(route.current_instance(lanlan_name)) != external_instance
-            ):
+            if not same_external_route_owner(pinned, external_route_identity(lanlan_name)):
                 raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
             routed = await route_external_voice_transcript(
                 lanlan_name,
                 event.text,
                 request_id=request_id,
-                route_instance=external_instance,
+                route_instance=pinned[1],
             )
             if not routed:
                 raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
