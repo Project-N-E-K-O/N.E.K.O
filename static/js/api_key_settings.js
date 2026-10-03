@@ -2129,7 +2129,11 @@ function resolveSlotModelPickerRequest(modelType) {
         return buildProviderModelListRequest(getSelectedAssistProviderKey(), resolved.key, { useTokenPlan: true });
     }
     if (provider === 'follow_core') {
-        return buildProviderModelListRequest(getSelectedCoreProviderKey(), resolved.key);
+        const request = buildProviderModelListRequest(
+            getSelectedCoreProviderKey(), getRealKey(document.getElementById('apiKeyInput'))
+        );
+        if (request.body) request.body.key_source = 'core';
+        return request;
     }
     return buildProviderModelListRequest(provider, resolved.key);
 }
@@ -2201,11 +2205,18 @@ async function fetchModelList(body) {
 
 function getModelPickerErrorMessage(result) {
     const errorCode = (result && result.error_code) || 'unknown';
+    let message = (result && result.error) || errorCode;
     for (const key of [`api.modelPicker.error.${errorCode}`, `connectivity.error.${errorCode}`]) {
         const translated = window.t ? window.t(key) : key;
-        if (translated && translated !== key) return translated;
+        if (translated && translated !== key) {
+            message = translated;
+            break;
+        }
     }
-    return (result && result.error) || errorCode;
+    if (result && result.check_url) message += ' ' + translateModelPickerText(
+        'api.modelPicker.error.urlHint', '请检查 API URL 是否缺少 /v1 等路径前缀。'
+    );
+    return message;
 }
 
 function renderModelIdPickerMessage(picker, message) {
@@ -4710,7 +4721,9 @@ const ConnectivityManager = {
             }
             omitMaskedSecretFromConnectivity(result);
             const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
-            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
+            result.model = getAssistModelOverride();
+            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url)
+                + (result.model ? `|model:${result.model}` : '');
             return result;
         }
 
@@ -4989,6 +5002,7 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_scope === 'assist') body.model = model || '';
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5128,7 +5142,8 @@ const ConnectivityManager = {
         if (!assistResult.secretMasked && assistCacheId && !keyConfigs[assistCacheId]) {
             keyConfigs[assistCacheId] = {
                 provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
-                url: assistResult.url, api_key: assistResult.key || '', provider_type: assistResult.providerType, is_free: assistIsFree
+                url: assistResult.url, api_key: assistResult.key || '', model: assistResult.model || '',
+                provider_type: assistResult.providerType, is_free: assistIsFree
             };
         }
 
@@ -5789,6 +5804,8 @@ function initConnectivityLights() {
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
+        const assistModelInput = document.getElementById('assistModelIdInput');
+        if (assistModelInput) assistModelInput.addEventListener('input', handleAssistKeyChange);
         assistApiKeyInput.addEventListener('change', handleAssistKeyChange);
         const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
         if (mimoTokenPlanKeyInput) {

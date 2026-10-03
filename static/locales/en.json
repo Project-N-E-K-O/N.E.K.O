@@ -1370,6 +1370,7 @@
                 "missingUrl": "Enter the API URL first"
             },
             "error": {
+                "urlHint": "Check whether the API URL is missing a path prefix such as /v1.",
                 "unsupported": "This endpoint does not provide a model list; enter the model ID manually",
                 "key_required": "A saved key only works with the address it was saved for; re-enter the API key",
                 "rate_limited": "Too many requests; try again later",

@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 点击引导与最新 main 的语言包共用新缓存版本。
-    const LOCALE_VERSION = '2026-10-03-assist-model-picker';
+    const LOCALE_VERSION = '2026-10-03-model-picker-url-hint';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

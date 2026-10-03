@@ -95,6 +95,22 @@ class TestSchemaValidation:
         assert resp.success is False
         assert resp.error_code == "timeout"
 
+    @pytest.mark.parametrize('fixed_flag,expected', [('false', 'draft-model'), ('true', 'default-model')])
+    async def test_assist_probe_uses_draft_override_unless_fixed(self, fixed_flag, expected):
+        fake_config = {'assist_api_providers': {'openai': {
+            'openrouter_url': 'https://api.openai.com/v1',
+            'conversation_model': 'default-model', 'fixed_model': fixed_flag,
+        }}}
+        probe = AsyncMock(return_value={'success': True})
+        with patch('utils.api_config_loader.get_config', return_value=fake_config), patch(
+            'main_routers.config_router.connectivity._test_openai_compatible', new=probe,
+        ):
+            result = await _endpoint_test_connectivity(ConnectivityTestRequest(
+                provider_key='openai', provider_scope='assist', api_key='sk-test', model='draft-model',
+            ))
+        assert result['success'] is True
+        assert probe.call_args.kwargs['model'] == expected
+
     async def test_endpoint_returns_missing_params_for_empty_url(self):
         """Empty url → missing_params (Req 1.4)."""
         req = ConnectivityTestRequest(url="", api_key="sk-valid")

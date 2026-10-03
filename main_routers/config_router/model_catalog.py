@@ -33,6 +33,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from utils.http.url import same_endpoint
+from utils.config_manager import _as_bool
 
 
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
@@ -59,6 +60,7 @@ class ModelListRequest(BaseModel):
     api_key: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
     model_type: Optional[str] = ""
+    key_source: Optional[str] = ""
 
 
 def _failure(error_code: str, error: str) -> dict[str, Any]:
@@ -85,7 +87,7 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
     profile = (api_config.get("assist_api_providers") or {}).get(provider_key)
     if not isinstance(profile, dict):
         return _failure("unsupported", "未知的服务商")
-    if profile.get("is_free_version") or profile.get("fixed_model"):
+    if _as_bool(profile.get("is_free_version")) or _as_bool(profile.get("fixed_model")):
         return _failure("unsupported", "该服务商的模型是固定的")
 
     urls = _normalize_provider_url_candidates(profile, "openrouter_url")
@@ -94,7 +96,10 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
     override_url = (req.url or "").strip()
     # 前端只能把 MiMo 切到 HTTPS 的 Token Plan 节点；其他服务商的地址一律以 api_providers.json 为准。
     if override_url and provider_key == "mimo" and _is_mimo_token_plan_url(override_url):
-        urls = [override_url]
+        urls = [override_url] + [
+            url for url in _normalize_provider_url_candidates(profile, "token_plan_openrouter_url")
+            if url != override_url and _is_mimo_token_plan_url(url)
+        ]
         use_token_plan = True
         resolved_url_key = "assist:mimo_token_plan"
 
@@ -115,6 +120,10 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
         api_key = submitted_key.strip()
     elif use_token_plan:
         api_key = str(core_cfg.get("assistApiKeyMimoTokenPlan") or "").strip()
+    elif req.key_source == "core":
+        if core_cfg.get("coreApi") != provider_key:
+            return _failure("key_required", "核心服务商已改变，请重新填写 API Key")
+        api_key = str(core_cfg.get("coreApiKey") or "").strip()
     else:
         api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
 
@@ -178,7 +187,10 @@ def _normalize_model_entries(
 def _classify_model_list_error(exc: Exception, provider_type: str) -> dict[str, Any]:
     status = getattr(exc, "status_code", None)
     if status in (404, 405):
-        return _failure("unsupported", "该端点不提供模型列表，请手动填写模型 ID")
+        result = _failure("unsupported", "该端点不提供模型列表，请手动填写模型 ID")
+        if status == 404:
+            result["check_url"] = True
+        return result
     if status == 429:
         return _failure("rate_limited", "请求过于频繁，请稍后再试")
     classify = _classify_anthropic_error if provider_type == "anthropic" else _classify_openai_error

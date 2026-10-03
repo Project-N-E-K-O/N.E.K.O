@@ -111,6 +111,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         return element;
     };
     add('coreApiSelect');
+    add('apiKeyInput');
     add('api-key-form');
     add('useMimoTokenPlan');
     add('assistApiSelect');
@@ -542,6 +543,23 @@ test('same-provider slots inherit the assist override and merged defaults', () =
     select('assistApiSelect', 'openrouter');
     context._assistModelDefaults.qwen = { VISION_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'merged-qwen');
+});
+
+test('follow_core picker uses the core input and marks stored credential origin', () => {
+    const { context, el, state, setSlot } = createPickerContext();
+    setSlot('vision', 'follow_core');
+    state.customKey = 'other-book-key';
+    el('apiKeyInput').value = 'core-draft-key';
+    assert.equal(context.resolveSlotModelPickerRequest('vision').body.api_key, 'core-draft-key');
+    assert.equal(context.resolveSlotModelPickerRequest('vision').body.key_source, 'core');
+});
+
+test('a model-list 404 adds a URL path hint to the localized error', () => {
+    const { context } = createPickerContext({ translations: {
+        'api.modelPicker.error.unsupported': 'No catalog',
+        'api.modelPicker.error.urlHint': 'Check /v1',
+    } });
+    assert.equal(context.getModelPickerErrorMessage({ error_code: 'unsupported', check_url: true }), 'No catalog Check /v1');
 });
 
 test('named realtime and TTS providers never list conversation models', () => {

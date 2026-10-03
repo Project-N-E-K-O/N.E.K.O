@@ -174,6 +174,40 @@ def _status_error(error_cls, status_code: int):
 
 
 class TestBuiltinProvider:
+    @pytest.mark.unit
+    def test_core_key_source_matches_runtime_and_binds_provider(self, model_catalog):
+        config = {'assist_api_providers': {'openai': {'openrouter_url': 'https://api.openai.com/v1'}}}
+        req = model_catalog.ModelListRequest(provider_key='openai', key_source='core', api_key=_SENTINEL)
+        stored = {'coreApi': 'openai', 'coreApiKey': 'core-key', 'assistApiKeyOpenAI': 'book-key'}
+        assert model_catalog._resolve_provider_target(req, stored, config)['api_key'] == 'core-key'
+        stored['coreApi'] = 'qwen'
+        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'key_required'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('flag', ['fixed_model', 'is_free_version'])
+    @pytest.mark.parametrize('value,blocked', [('false', False), ('0', False), ('true', True), ('1', True)])
+    def test_string_provider_flags_match_runtime(self, model_catalog, flag, value, blocked):
+        config = {'assist_api_providers': {'openai': {
+            'openrouter_url': 'https://api.openai.com/v1', flag: value,
+        }}}
+        target = model_catalog._resolve_provider_target(
+            model_catalog.ModelListRequest(provider_key='openai'), {}, config,
+        )
+        assert ('error_code' in target) == blocked
+
+    @pytest.mark.unit
+    def test_token_plan_keeps_all_safe_regions(self, model_catalog):
+        urls = _raw_assist_profile('mimo')['token_plan_openrouter_urls']
+        config = {'assist_api_providers': {'mimo': {
+            'token_plan_openrouter_urls': urls + ['http://token-plan-cn.xiaomimimo.com/v1', 'https://evil.test/v1'],
+        }}}
+        target = model_catalog._resolve_provider_target(
+            model_catalog.ModelListRequest(provider_key='mimo', url=urls[0]),
+            {'assistApiKeyMimoTokenPlan': 'token-key'}, config,
+        )
+        assert target['urls'] == urls
+        assert target['api_key'] == 'token-key'
+
 
     @pytest.mark.unit
     def test_endpoint_comes_from_the_registry_not_the_page(self, config_manager, model_catalog, fetch_calls):

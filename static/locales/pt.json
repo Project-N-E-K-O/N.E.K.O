@@ -1370,6 +1370,7 @@
                 "missingUrl": "Informe a URL da API primeiro"
             },
             "error": {
+                "urlHint": "Verifique se falta um prefixo de caminho, como /v1, na URL da API.",
                 "unsupported": "Este endpoint não fornece uma lista de modelos; digite o ID do modelo manualmente",
                 "key_required": "Uma chave salva só funciona com o endereço para o qual foi salva; digite a chave de API novamente",
                 "rate_limited": "Solicitações demais; tente novamente mais tarde",

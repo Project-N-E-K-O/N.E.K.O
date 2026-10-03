@@ -1370,6 +1370,7 @@
                 "missingUrl": "请先填写 API URL"
             },
             "error": {
+                "urlHint": "请检查 API URL 是否缺少 /v1 等路径前缀。",
                 "unsupported": "该端点不提供模型列表，请手动填写模型ID",
                 "key_required": "已保存的 Key 只能用于保存时的地址，请重新填写 API Key",
                 "rate_limited": "请求过于频繁，请稍后再试",
