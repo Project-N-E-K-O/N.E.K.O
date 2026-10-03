@@ -370,7 +370,7 @@ async def test_forget_keeps_spool_until_region_digest_done(tmp_path):
     assert await sp.delete_if_settled() is False
     assert sp.jsonl_path.exists()
     assert await sp.delete_if_settled() is False      # 这一轮还没计入 digest_runs
-    await sp.update_state(last_summary_done=True, digest_runs=1)
+    await sp.update_state(last_summary_done=True, digest_runs=1, digested_through_lp=1)
     assert await sp.delete_if_settled() is True
     assert not sp.jsonl_path.exists()
 
@@ -1144,7 +1144,7 @@ def test_digest_run_keys_must_be_contiguous_and_match_the_count(runs, count):
     with pytest.raises(SpoolStateError):
         validate_state(damaged)
     # 最后一轮还在跑（已登记、未计入 digest_runs）是合法的
-    validate_state(dict(good, digest_runs=0))
+    validate_state(dict(good, digest_runs=0, digested_through_lp=-1))
 
 
 @pytest.mark.parametrize("writes", [{"facts": True, "cache": False}, {"facts": False, "cache": True}])
@@ -1263,3 +1263,28 @@ async def test_rename_skips_an_open_spool_and_reports_busy(tmp_path):
         await VisitSpool.rename_own_char(tmp_path, "old", "new")
     assert (await idle.read_state())["own_char"] == "new"   # 其余场次照常改名
     await live.close()
+
+
+@pytest.mark.parametrize("change", [
+    {"digested_through_lp": 999},                      # 水位超出任何已完成的轮次
+    {"digested_through_lp": -1},                       # 已完成一轮却没推进水位
+    {"digest_runs": 0},                                # 没有完成的轮次却有水位
+])
+def test_digest_watermark_must_match_the_completed_runs(change):
+    from main_logic.visit.spool import validate_state
+
+    with pytest.raises(SpoolStateError):
+        validate_state(dict(settled(state_for()), **change))
+
+
+def test_digest_run_watermarks_must_increase():
+    from main_logic.visit.spool import validate_state
+
+    good = settled(state_for())
+    record = good["digest_writes"]["0"]
+    runs = {"0": record, "1": dict(record, through_lp=record["through_lp"])}
+    with pytest.raises(SpoolStateError):
+        validate_state(dict(good, digest_writes=runs, digest_runs=2))
+    runs["1"] = dict(record, through_lp=record["through_lp"] + 5)
+    validate_state(dict(good, digest_writes=runs, digest_runs=2,
+                        digested_through_lp=record["through_lp"] + 5))

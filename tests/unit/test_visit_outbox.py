@@ -825,3 +825,16 @@ def test_encoded_size_is_an_upper_bound_for_text(tmp_path):
     actual = wire_size(encode_msg(dict(msg, seq=2 ** 32 - 1, i_done=255)), visit_id=tx.visit_id)
     assert est == actual
     assert tx.encoded_size(dict(msg, i_done=0)) == actual
+
+
+def test_a_rejected_first_delta_leaves_no_line_behind(tmp_path):
+    # 首片字段坏了被拒：不能把坏的头部留在 _lines 里，修正后的重试要能成功
+    tx = make_outbox(tmp_path)
+    good = {"t": "line_delta", "ln": "h:1", "lp": 3, "txt": "hi", "sp": "c", "ad": "gc",
+            "rt": "", "wu": False}
+    with pytest.raises(ValueError):
+        tx.send(dict(good, ad="nowhere"), now=0.0)
+    assert "h:1" not in tx._lines
+    tx.send(good, now=0.0)
+    frames = tx.due(0.0)
+    assert [f.payload.get("ad") for f in frames if f.t == "line_delta"] == ["gc"]

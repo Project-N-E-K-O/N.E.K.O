@@ -61,6 +61,10 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# 服务端每段都带 trust 块（_trust_response_block）；persisted=null 表示这段没有要落盘的
+_TRUST_OK = {"persisted": None}
+
+
 def _ok_response(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path.endswith("/scoped_context"):
@@ -72,9 +76,9 @@ def _ok_response(request: httpx.Request) -> httpx.Response:
         if "segments" in body:
             return httpx.Response(200, json={
                 "status": "processed",
-                "segments": [{"status": "ok"} for _ in body["segments"]],
+                "segments": [{"status": "ok", "trust": _TRUST_OK} for _ in body["segments"]],
             })
-        return httpx.Response(200, json={"status": "processed"})
+        return httpx.Response(200, json={"status": "processed", "trust": _TRUST_OK})
     if path.endswith("/scoped_forget"):
         return httpx.Response(200, json={"status": "forgotten"})
     return httpx.Response(200, json={"status": "recorded"})
@@ -418,7 +422,7 @@ async def test_batch_is_false_unless_every_segment_is_ok():
     def responder(request):
         return httpx.Response(200, json={
             "status": "processed",
-            "segments": [{"status": "ok"}, {"status": "failed"}],
+            "segments": [{"status": "ok", "trust": _TRUST_OK}, {"status": "failed"}],
         })
 
     segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
@@ -572,10 +576,38 @@ async def test_mentions_require_a_recorded_confirmation(body):
 @pytest.mark.parametrize("top", [{"status": "failed"}, {}, {"status": None}])
 async def test_batch_requires_the_top_level_processed_status(top):
     def responder(request):
-        return httpx.Response(200, json=dict(top, segments=[{"status": "ok"}]))
+        return httpx.Response(200, json=dict(top, segments=[{"status": "ok", "trust": _TRUST_OK}]))
 
     segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
     client, http = _client(_Recorder(responder))
+    async with http:
+        result = await client.post_history_batch("Lanlan", segments=[segment])
+    assert result.segments_ok == (False,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trust", ["missing", "not-an-object", {}, {"persisted": "yes"}])
+async def test_history_requires_a_valid_trust_block(trust):
+    # 截断 / 畸形的 trust 块不能当成「已落盘」：调用方会丢掉一段未确认的信任修正
+    def body_with(extra):
+        return {"status": "processed"} if trust == "missing" else dict(
+            {"status": "processed"}, trust=("x" if trust == "not-an-object" else trust))
+
+    def single(request):
+        return httpx.Response(200, json=body_with(None))
+
+    client, http = _client(_Recorder(single))
+    async with http:
+        assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES) is False
+
+    def batch(request):
+        seg = {"status": "ok"}
+        if trust != "missing":
+            seg["trust"] = "x" if trust == "not-an-object" else trust
+        return httpx.Response(200, json={"status": "processed", "segments": [seg]})
+
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    client, http = _client(_Recorder(batch))
     async with http:
         result = await client.post_history_batch("Lanlan", segments=[segment])
     assert result.segments_ok == (False,)

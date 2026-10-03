@@ -565,13 +565,17 @@ class VisitOutbox:
             header = {k: msg.get(k) for k in _DELTA_FIRST_FIELDS}
             if any(v is None for v in header.values()):
                 raise ValueError("first line_delta of a line requires sp/ad/rt/wu")
-            line = self._lines[ln] = _Line(header=header)
-        if line.closed or line.dropped:
-            self.dropped_lossy += 1
-            return
+        else:
+            if line.closed or line.dropped:
+                self.dropped_lossy += 1
+                return
+            header = line.header
         base = {"t": "line_delta", "v": msg.get("v", 1), "ln": ln, "lp": msg.get("lp"), "txt": txt}
-        # 先校验一次（i 取 0、带首片字段），坏数据在入队时就报错而不是在 due() 里
-        encode_msg({**base, "i": 0, **(line.header or {})})
+        # 先校验一次（i 取 0、带首片字段），坏数据在入队时就报错而不是在 due() 里；
+        # 校验通过才登记这一行，被拒的首片不会留下坏的头部字段让修正后的重试一直失败
+        encode_msg({**base, "i": 0, **(header or {})})
+        if line is None:
+            line = self._lines[ln] = _Line(header=header)
 
         prev = self._last_queued_delta(ln)
         if (prev is not None and not final_piece and not prev.final_piece

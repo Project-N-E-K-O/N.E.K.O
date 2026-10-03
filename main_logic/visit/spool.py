@@ -431,6 +431,19 @@ def validate_state(state: Any) -> dict:
             raise SpoolStateError(f"digest_writes[{run}].through_lp must be an int")
         _check_batch_map(record["group"], f"digest_writes[{run}].group")
         _check_batch_map(record["segments"], f"digest_writes[{run}].segments")
+    # 每轮从上一轮的水位之后开始，through_lp 严格递增；digested_through_lp 只在一轮全部
+    # 完成时推进到该轮 through_lp。对不上的水位会让结清判定与补录各说各话：恢复以为
+    # 已抽到 999，却没有任何一轮覆盖那些句子，转录照样被删
+    previous = -1
+    for i in range(len(runs)):
+        through = runs[str(i)]["through_lp"]
+        if through <= previous:
+            raise SpoolStateError("digest_writes through_lp must increase run by run")
+        previous = through
+    completed = state["digest_runs"]
+    expected = runs[str(completed - 1)]["through_lp"] if completed else -1
+    if state["digested_through_lp"] != expected:
+        raise SpoolStateError("digested_through_lp does not match the last completed digest run")
     return copy.deepcopy(dict(state))
 
 

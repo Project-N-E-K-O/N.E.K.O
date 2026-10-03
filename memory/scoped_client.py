@@ -477,14 +477,18 @@ class ScopedMemoryClient:
 
 
 def _trust_settled(result: Any) -> bool:
-    """False when the server reports ``trust.persisted is False`` (retain and retry).
+    """True only when the trust block confirms the write (``persisted`` true / null).
 
-    ``app/memory_server/routes.py::_trust_response_block``: ``ok`` with
-    ``persisted`` true / null may be dropped, ``ok`` with ``persisted`` false
-    must be kept and retried, otherwise an owner trust correction is lost.
+    ``app/memory_server/routes.py::_trust_response_block``: the server always
+    sends a ``trust`` object with a ``persisted`` key; ``ok`` with ``persisted``
+    true / null may be dropped, ``ok`` with ``persisted`` false must be kept
+    and retried, otherwise an owner trust correction is lost. A missing,
+    non-object or incomplete block is a truncated / malformed response and
+    is treated like ``false``.
     """
     trust = result.get("trust") if isinstance(result, dict) else None
-    return not (isinstance(trust, dict) and trust.get("persisted") is False)
+    # 缺块 / 非对象 / 缺 persisted：没有确认就不能丢，按未落盘处理
+    return isinstance(trust, dict) and "persisted" in trust and trust["persisted"] in (True, None)
 
 
 def _put_retry_identity(
