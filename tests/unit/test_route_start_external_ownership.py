@@ -350,6 +350,76 @@ async def test_a_failing_expired_route_state_is_kept_and_does_not_stop_the_other
     assert flaky.takeover_owner() is None
 
 
+@pytest.mark.asyncio
+async def test_a_state_replaced_during_the_sweep_is_left_alone(_icebreaker_clean, monkeypatch):
+    """While one expired state's voice resume awaits, a /route/start replaces
+    another expired key with a live state; the sweep must leave that one (and
+    its takeover) untouched.
+
+    Mutation: re-reading the state by key instead of using the one found
+    expired turns this red.
+    """
+    first = TakeoverManagerDouble(lanlan_name="First", _voice_lease_owner="game")
+    second = TakeoverManagerDouble()
+    first_token = first.acquire_takeover("game", AsyncMock())
+    old_second_token = second.acquire_takeover("game", AsyncMock())
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"First": first, "Lan": second})
+
+    async def _new_route_starts_meanwhile():
+        new_token = second.acquire_takeover("game", AsyncMock())
+        gr_runtime._game_route_states[("Lan", "drawing_guess")] = {
+            "lanlan_name": "Lan",
+            "game_type": "drawing_guess",
+            "game_route_active": True,
+            _TAKEOVER_TOKEN_KEY: new_token,
+        }
+
+    first._resume_independent_voice_input_after_game = _new_route_starts_meanwhile
+    with reset_game_route_state():
+        for lanlan, token in (("First", first_token), ("Lan", old_second_token)):
+            gr_runtime._game_route_states[(lanlan, "drawing_guess")] = {
+                "lanlan_name": lanlan,
+                "game_type": "drawing_guess",
+                "game_route_active": False,
+                "exit_started_at": 0.0,
+                _TAKEOVER_TOKEN_KEY: token,
+            }
+
+        await gr_runtime._drop_expired_route_states(now=10**9)
+
+        live = gr_runtime._game_route_states.get(("Lan", "drawing_guess"))
+        assert live is not None and live["game_route_active"] is True
+        assert _TAKEOVER_TOKEN_KEY in live
+        assert ("First", "drawing_guess") not in gr_runtime._game_route_states
+    assert first.takeover_owner() is None
+    assert second.takeover_owner() == "game"
+
+
+@pytest.mark.asyncio
+async def test_a_state_whose_release_keeps_failing_is_dropped_after_the_retry_limit(
+    _icebreaker_clean, monkeypatch,
+):
+    """Mutation: retrying forever (no attempt limit) turns this red."""
+    broken = TakeoverManagerDouble()
+    broken.release_takeover = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": broken})
+    with reset_game_route_state():
+        gr_runtime._game_route_states[("Lan", "drawing_guess")] = {
+            "lanlan_name": "Lan",
+            "game_type": "drawing_guess",
+            "game_route_active": False,
+            "exit_started_at": 0.0,
+            _TAKEOVER_TOKEN_KEY: object(),
+        }
+        for _ in range(gr_runtime._EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS - 1):
+            await gr_runtime._drop_expired_route_states(now=10**9)
+            assert ("Lan", "drawing_guess") in gr_runtime._game_route_states
+
+        await gr_runtime._drop_expired_route_states(now=10**9)
+
+        assert ("Lan", "drawing_guess") not in gr_runtime._game_route_states
+
+
 class _LanguageManager:
     def __init__(self):
         self.user_language = "zh-CN"

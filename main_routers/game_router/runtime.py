@@ -5132,6 +5132,12 @@ async def cleanup_expired_sessions():
             logger.warning("🎮 清理过期游戏路由状态失败: err=%s", e, exc_info=True)
 
 
+# Sweeps a state whose release keeps failing is retried before it is dropped
+# anyway (logged as an error), so it cannot stay locked and warn forever.
+_EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS = 5
+_EXPIRED_ROUTE_RELEASE_FAILURES_KEY = "_expired_release_failures"
+
+
 async def _drop_expired_route_states(now: float) -> None:
     """Forget inactive route states whose exit started too long ago.
 
@@ -5148,17 +5154,21 @@ async def _drop_expired_route_states(now: float) -> None:
     Each state is handled on its own: a failure is logged and leaves that
     state (and whatever token it still holds) in place for the next sweep
     instead of dropping the token with it, and does not stop the others.
+    After ``_EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS`` failed sweeps the state is
+    dropped anyway with an error log.
     """
     expired_routes = [
-        k for k, v in list(_game_route_states.items())
+        (k, v) for k, v in list(_game_route_states.items())
         if (
             not v.get("game_route_active")
             and now - float(v.get("exit_started_at", v.get("last_activity", 0)) or 0) > _SESSION_TIMEOUT_SECONDS
         )
     ]
-    for key in expired_routes:
-        state = _game_route_states.get(key)
-        if not state:
+    for key, state in expired_routes:
+        # An earlier key's voice resume awaits: a /route/start may have put a
+        # new state at this key meanwhile (or revived this one). Only the
+        # state found expired is handled; a newer one is never touched.
+        if _game_route_states.get(key) is not state or state.get("game_route_active"):
             continue
         try:
             if state.get(_TAKEOVER_TOKEN_KEY) is not None:
@@ -5178,10 +5188,19 @@ async def _drop_expired_route_states(now: float) -> None:
                     except Exception as exc:
                         logger.warning("🎮 清理过期游戏路由时恢复语音输入失败: key=%s err=%s", key, exc)
         except Exception as exc:
-            logger.warning("🎮 清理过期游戏路由状态失败，下次再试: key=%s err=%s", key, exc, exc_info=True)
-            continue
-        # A /route/start during the voice resume may have put a new state at
-        # this key; only the expired one is dropped.
+            failures = int(state.get(_EXPIRED_ROUTE_RELEASE_FAILURES_KEY) or 0) + 1
+            state[_EXPIRED_ROUTE_RELEASE_FAILURES_KEY] = failures
+            if failures < _EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS:
+                logger.warning(
+                    "🎮 清理过期游戏路由状态失败，下次再试: key=%s attempt=%s err=%s",
+                    key, failures, exc, exc_info=failures == 1,
+                )
+                continue
+            logger.error(
+                "🎮 清理过期游戏路由状态连续失败 %s 次，放弃释放并丢弃: key=%s err=%s",
+                failures, key, exc, exc_info=True,
+            )
+        # The same holds after this key's own voice resume.
         if _game_route_states.get(key) is state:
             _game_route_states.pop(key, None)
-        logger.info("🎮 清理过期游戏路由状态: %s", key)
+            logger.info("🎮 清理过期游戏路由状态: %s", key)
