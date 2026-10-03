@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from plugin.server.routes import plugins as routes
 from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins import operation_lock
+from plugin.server.infrastructure import development_access
 from plugin.server.infrastructure.mutation_auth import AUTOSTART_CSRF_TOKEN, MAIN_SERVER_PORT
 
 
@@ -428,6 +429,41 @@ async def test_development_denies_nonlocal_and_cross_site_requests(app, peer, ho
             assert response.status_code == 403
             assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
     assert not store.development_enabled_sync()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin,expected_status",
+    [
+        ("http://localhost:48911", 200),
+        ("http://localhost:5173", 200),
+        ("http://localhost:48912", 403),
+        ("http://127.0.0.1:65535", 403),
+        ("null", 403),
+    ],
+)
+async def test_development_origin_requires_exact_configured_port(app, origin, expected_status):
+    async with client(
+        app,
+        headers={"X-Neko-Development": "1", "Origin": origin},
+    ) as http:
+        response = await http.get("/plugins/development")
+    assert response.status_code == expected_status, response.text
+
+
+def test_development_origins_include_runtime_plugin_port(monkeypatch):
+    monkeypatch.delenv("NEKO_DEVELOPMENT_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    assert "http://127.0.0.1:49888" in development_access._configured_development_origins()
+
+
+@pytest.mark.parametrize("value", ["0", "65536", "not-a-port"])
+def test_development_origins_ignore_invalid_runtime_plugin_port(monkeypatch, value):
+    monkeypatch.delenv("NEKO_DEVELOPMENT_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", value)
+    origins = development_access._configured_development_origins()
+    assert "http://127.0.0.1:48916" in origins
+    assert all(not origin.endswith(f":{value}") for origin in origins)
 
 
 @pytest.mark.asyncio

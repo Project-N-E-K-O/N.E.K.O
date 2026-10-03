@@ -49,8 +49,8 @@ else:
     logger = get_logger("server.lifecycle")
 
 
-# 等 ProactiveBridge 的 SUB 连上的上限。比它自己那一秒的 PUB bind 等待留出
-# 余量，又短到起不来时不会让人以为应用卡死了。
+# 等 ProactiveBridge 的 SUB 连上的上限。bridge 现在一起来就连接并订阅，正常
+# 情况下微秒级就绪；这个上限只是兜底，短到起不来时不会让人以为应用卡死了。
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
@@ -669,12 +669,11 @@ class ServerLifecycleService:
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
-        # 等约一秒才连上——PUB/SUB 对缺席的订阅方是丢弃，所以那扇窗口里推的
+        # 连上并订阅——PUB/SUB 对缺席的订阅方是丢弃，所以订阅就绪之前推的
         # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
         #
-        # 顺序只是第一步：SUB 的连接延迟本身还在（bridge 线程要先等约一秒让
-        # message_plane 的 PUB bind 完），所以下面在放插件进来之前会等
-        # wait_for_proactive_subscriber。
+        # 顺序只是第一步：SUBSCRIBE 传播到 PUB 侧本身还有一小段延迟，所以下
+        # 面在放插件进来之前会等 wait_for_proactive_subscriber。
         #
         # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
         # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
@@ -736,10 +735,9 @@ class ServerLifecycleService:
             )
             failed.append("proactive_bridge")
 
-        # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
-        # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
-        # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
-        # 起不来也不能把整个启动挂在这儿。
+        # 等订阅方真正连上再放插件进来。只把 start 挪到插件前面并不能关掉窗
+        # 口——SUBSCRIBE 传播到 PUB 侧仍有一小段延迟。有界等待：bridge 被禁
+        # 用或已经死了就立刻返回，起不来也不能把整个启动挂在这儿。
         #
         # A timeout here is NOT a failure by itself -- the SUB may still connect
         # after this bounded wait and the components are up, so retrying would

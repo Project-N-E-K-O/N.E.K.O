@@ -155,7 +155,7 @@ async def test_ordinary_config_does_not_wait_for_development_operation(workspace
     (ordinary / "plugin.toml").write_text('[plugin]\nid="ordinary"\n', encoding="utf-8")
     state.plugins["ordinary"] = {"config_path": str(ordinary / "plugin.toml")}
     monkeypatch.setenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "1")
-    async with client(app, peer="192.168.1.2") as http:
+    async with client(app, peer="127.0.0.1") as http:
         async with operation_lock.plugin_operation_lock.hold():
             response = await asyncio.wait_for(http.put("/plugin/ordinary/config/profiles/default",
                 json={"config": {"settings": {"value": "ordinary"}}}), 3)
@@ -191,7 +191,7 @@ async def test_ordinary_request_keeps_source_and_host_after_metadata_takeover(wo
         return await original(**kwargs)
 
     monkeypatch.setattr(routes.config_command_service, method, delayed)
-    async with client(app, peer="192.168.1.2") as http:
+    async with client(app, peer="127.0.0.1") as http:
         async with operation_lock.plugin_operation_lock.hold():
             request = http.post("/plugin/ordinary/config/hot-update",
                 json={"config": {"settings": {"value": "captured"}}, "mode": "permanent"}) if hot_update else http.put(
@@ -242,7 +242,13 @@ async def test_development_config_requires_local_current_reference(workspace, me
                       headers={} if access == "missing_header" else {"X-Neko-Development": "1"}) as http:
         response = await http.request(method, "/plugin/demo/config" + suffix, params=params, json=body)
     assert response.status_code == (409 if access == "stale" else 403), response.text
-    assert response.headers["X-Error-Code"] == ("DEVELOPMENT_STALE" if access == "stale" else "DEVELOPMENT_ACCESS_DENIED")
+    # Config writes pass the shared mutation guard first: a LAN peer without
+    # browser provenance is rejected there, before the development check.
+    mutation = method in {"PUT", "DELETE"} or suffix in {"/profiles/default/activate", "/hot-update"}
+    expected = ("DEVELOPMENT_STALE" if access == "stale"
+                else "csrf_validation_failed" if access == "lan" and mutation
+                else "DEVELOPMENT_ACCESS_DENIED")
+    assert response.headers["X-Error-Code"] == expected
     assert source_bytes(record.source_dir) == before
 
 

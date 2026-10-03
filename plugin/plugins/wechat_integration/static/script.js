@@ -1,6 +1,76 @@
 const pluginId = 'wechat_integration';
 const RUNS_URL = '/runs';
 const RUN_POLL_DELAY_MS = 500;
+let csrfTokenPromise = null;
+const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000;
+// After a token rejection the deployment requires the token (strict mode),
+// so the retry waits longer for a slow but valid bootstrap.
+const CSRF_BOOTSTRAP_RETRY_TIMEOUT_MS = 30000;
+
+async function mutationHeaders(timeoutMs = CSRF_BOOTSTRAP_TIMEOUT_MS) {
+    if (!csrfTokenPromise) {
+        // A hung bootstrap must not block the action: abort it so the
+        // tokenless fallback below runs.
+        const bootstrapAbort = new AbortController();
+        const bootstrapTimer = setTimeout(() => bootstrapAbort.abort(), timeoutMs);
+        csrfTokenPromise = fetch('/security/csrf-token', { credentials: 'same-origin', signal: bootstrapAbort.signal })
+            .then(async (response) => {
+                if (!response.ok) throw new Error(`CSRF token bootstrap failed: HTTP ${response.status}`);
+                const data = await response.json();
+                if (!data || typeof data.csrf_token !== 'string' || !data.csrf_token) {
+                    throw new Error('CSRF token bootstrap returned an invalid token');
+                }
+                return data.csrf_token;
+            })
+            .finally(() => clearTimeout(bootstrapTimer));
+    }
+    // Each caller bounds its own wait: a long strict-mode retry must not hold
+    // other actions past their own limit. The shared bootstrap keeps running.
+    const pending = csrfTokenPromise;
+    let waitTimer;
+    try {
+        const token = await Promise.race([pending, new Promise((resolve) => { waitTimer = setTimeout(() => resolve(null), timeoutMs); })]);
+        if (token) return { 'X-CSRF-Token': token };
+        console.warn('CSRF token not ready; sending without it');
+        return {};
+    } catch (error) {
+        // The server accepts tokenless plugin-page writes by default, so a
+        // missing bootstrap (e.g. a proxy without /security/csrf-token)
+        // must not block the request. Retry the bootstrap next time.
+        if (csrfTokenPromise === pending) csrfTokenPromise = null;
+        console.warn('CSRF token unavailable; sending without it:', error);
+        return {};
+    } finally {
+        clearTimeout(waitTimer);
+    }
+}
+
+async function isCsrfTokenFailure(response) {
+    if (response.headers.get('X-CSRF-Failure') === 'token') return true;
+    try {
+        const data = await response.clone().json();
+        return Boolean(data && data.detail && data.detail.csrf_failure === 'token');
+    } catch (error) {
+        return false;
+    }
+}
+
+// A stale cached token is rejected even though sending none would pass, so
+// on a token rejection refetch it and retry once; other failures pass through.
+async function postWithCsrfRetry(url, body) {
+    for (let attempt = 0; ; attempt += 1) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(await mutationHeaders(attempt === 0 ? CSRF_BOOTSTRAP_TIMEOUT_MS : CSRF_BOOTSTRAP_RETRY_TIMEOUT_MS)),
+            },
+            body,
+        });
+        if (attempt > 0 || response.status !== 403 || !(await isCsrfTokenFailure(response))) return response;
+        csrfTokenPromise = null;
+    }
+}
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -16,11 +86,7 @@ function pluginErrorMessage(error) {
 }
 
 async function callPlugin(entry, args = {}) {
-    const resp = await fetch(RUNS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plugin_id: pluginId, entry_id: entry, args })
-    });
+    const resp = await postWithCsrfRetry(RUNS_URL, JSON.stringify({ plugin_id: pluginId, entry_id: entry, args }));
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const { run_id, id } = await resp.json();
     const runId = run_id || id;

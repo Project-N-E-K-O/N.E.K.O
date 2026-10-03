@@ -823,6 +823,7 @@ export default {
     serviceUnavailable: 'Serviço indisponível',
     networkError: 'Erro de rede. Verifique sua conexão.',
     requestTimeout: 'A solicitação expirou. Tente novamente.',
+    csrfBootstrapFailed: 'Não foi possível obter o token de segurança. Se você usa um proxy reverso, verifique se ele encaminha /security/csrf-token para o servidor de plugins.',
     pluginLifecycleTimeout: 'O início ou reinício do plugin expirou. Verifique os logs do plugin.'
   },
   welcome: {

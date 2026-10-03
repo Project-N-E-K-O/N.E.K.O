@@ -22,6 +22,8 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   csrfRetryAttempted?: boolean
   /** Bootstrap errors carry caller display options but cannot retry a mutation. */
   csrfBootstrapFailed?: boolean
+  /** A best-effort mutation was sent without a token because bootstrap failed. */
+  csrfTokenUnavailable?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -152,8 +154,13 @@ export function isRequestTimeout(error: AxiosError): boolean {
 let pendingHealthProbe: Promise<boolean> | null = null
 
 const CSRF_TOKEN_HEADER = 'X-CSRF-Token'
+/** Longest a mutation that does not require the token waits for bootstrap. */
+const BEST_EFFORT_TOKEN_WAIT_MS = 2000
+/** After a failed bootstrap, such mutations skip it for this long. */
+const CSRF_BOOTSTRAP_RETRY_AFTER_MS = 30000
 let csrfToken: string | null = null
 let pendingCsrfToken: Promise<string> | null = null
+let lastCsrfBootstrapFailureAt = 0
 
 function isMutationMethod(method: unknown): boolean {
   return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
@@ -169,23 +176,33 @@ function requestPath(url: unknown): string {
 }
 
 /**
- * Mirrors the plugin server routes guarded by require_plugin_mutation_access:
- * lifecycle actions plus package upload/install (including legacy aliases).
- * Keep it in lockstep with the server; a guarded route missing here fails
- * with a token 403 that is never refreshed or retried.
+ * Mirrors the plugin server routes that always require the token
+ * (PluginMutationGuardedRoute / require_plugin_mutation_access): lifecycle
+ * actions and plugin-cli package build/import, including legacy aliases.
+ * Without a token the server rejects these, so a failed bootstrap stops them
+ * before the request (and any package body) is sent.
  */
-function isCsrfProtectedPluginMutation(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
+function requiresCsrfToken(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
   if (!isMutationMethod(config.method)) return false
   const path = requestPath(config.url)
   const method = config.method?.toLowerCase()
-  if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path)
+  if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path) || path === '/plugin-cli/upload'
   return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
     || /^\/plugins\/(?:refresh|reload)$/.test(path)
     || (method === 'post'
-      && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack)$/.test(path))
+      && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack|build|pack)$/.test(path))
 }
 
-/** Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts apply after it. */
+/**
+ * Fetch the per-process mutation token once, sharing concurrent callers.
+ *
+ * Every mutation carries the token when it is available, so deployments that
+ * set NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN keep working. Only the routes in
+ * requiresCsrfToken() fail closed on a bootstrap failure; other mutations
+ * (plugin-page routes, read-only POSTs) are sent without it and the server
+ * decides. Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts
+ * apply after it.
+ */
 function loadCsrfToken(): Promise<string> {
   if (csrfToken) return Promise.resolve(csrfToken)
   if (pendingCsrfToken) return pendingCsrfToken
@@ -202,12 +219,44 @@ function loadCsrfToken(): Promise<string> {
     }
     csrfToken = value
     return value
+  }).catch((error: unknown) => {
+    lastCsrfBootstrapFailureAt = Date.now()
+    throw error
   }).finally(() => {
     if (pendingCsrfToken === requestPromise) pendingCsrfToken = null
   })
 
   pendingCsrfToken = requestPromise
   return requestPromise
+}
+
+/** Stop waiting for the shared bootstrap when the caller cancels its request. */
+function untilCanceled<T>(promise: Promise<T>, signal: AxiosRequestConfig['signal']): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new axios.CanceledError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new axios.CanceledError())
+    signal.addEventListener?.('abort', onAbort)
+    promise.then(resolve, reject).finally(() => signal.removeEventListener?.('abort', onAbort))
+  })
+}
+
+/**
+ * Token for a mutation that the server accepts without one by default.
+ *
+ * A proxy that does not forward /security/csrf-token (or a hung endpoint)
+ * must not delay such requests: wait briefly, skip bootstrap for a while
+ * after a failure, and return null so the request is sent without a token.
+ * A slow bootstrap keeps running for later callers.
+ */
+function loadCsrfTokenBestEffort(): Promise<string | null> {
+  if (csrfToken) return Promise.resolve(csrfToken)
+  if (Date.now() - lastCsrfBootstrapFailureAt < CSRF_BOOTSTRAP_RETRY_AFTER_MS) return Promise.resolve(null)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), BEST_EFFORT_TOKEN_WAIT_MS)
+  })
+  return Promise.race([loadCsrfToken().catch(() => null), timeout]).finally(() => clearTimeout(timer))
 }
 
 function isCsrfValidationFailure(error: AxiosError): boolean {
@@ -269,14 +318,30 @@ const service: AxiosInstance = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    if (isCsrfProtectedPluginMutation(config)) {
-      // Protected calls are fail-closed: bootstrap failure means the original
-      // state-changing request is never sent. Other mutation APIs are outside
-      // this contract and must not depend on the plugin token service.
+    if (isMutationMethod(config.method) && !requiresCsrfToken(config)) {
+      // The server does not require the token here by default; send the
+      // request without it and let a later token rejection explain why. A
+      // retry after a token rejection means this deployment does require it,
+      // so wait for the full bootstrap, ignoring the short cap and cooldown.
+      const token = await untilCanceled(
+        (config as ErrorDisplayRequestConfig).csrfRetryAttempted
+          ? loadCsrfToken().catch(() => null)
+          : loadCsrfTokenBestEffort(),
+        config.signal,
+      )
+      if (token) {
+        if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
+        writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
+      } else {
+        ;(config as ErrorDisplayRequestConfig).csrfTokenUnavailable = true
+      }
+    } else if (isMutationMethod(config.method)) {
       let token: string
       try {
-        token = await loadCsrfToken()
+        token = await untilCanceled(loadCsrfToken(), config.signal)
       } catch (cause) {
+        if (axios.isCancel(cause)) throw cause
+        // Token-required calls are fail-closed: the original request is never sent.
         // Bootstrap is shared by concurrent callers. Create a separate error
         // for each caller instead of mutating its shared config/display policy.
         const source = axios.isAxiosError(cause) ? cause : undefined
@@ -325,7 +390,7 @@ service.interceptors.response.use(
     if (
       isCsrfValidationFailure(error)
       && requestConfig
-      && isCsrfProtectedPluginMutation(requestConfig)
+      && isMutationMethod(requestConfig.method)
       && !requestConfig.csrfBootstrapFailed
       && !requestConfig.csrfRetryAttempted
     ) {
@@ -348,7 +413,20 @@ service.interceptors.response.use(
 
     let message = i18n.global.t('messages.requestFailed')
     let confirmedDisconnected = false
-    
+
+    // A failed token bootstrap (404 from a proxy without the route, 403,
+    // invalid body) is not the original operation's status: say so instead
+    // of the generic or silent 403/404 handling. Timeouts keep their message.
+    // Only a token rejection points at the bootstrap; an Origin rejection does not.
+    const tokenRejectedAfterBootstrapFailure = Boolean(requestConfig?.csrfTokenUnavailable)
+      && isCsrfValidationFailure(error)
+    if ((requestConfig?.csrfBootstrapFailed && !isRequestTimeout(error)) || tokenRejectedAfterBootstrapFailure) {
+      if (!suppressErrorMessage) {
+        ElMessage.error(i18n.global.t('messages.csrfBootstrapFailed'))
+      }
+      return Promise.reject(error)
+    }
+
     if (error.response) {
       try {
         const connectionStore = useConnectionStore()

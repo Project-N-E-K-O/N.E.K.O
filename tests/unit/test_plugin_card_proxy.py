@@ -3,8 +3,45 @@ import json
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from main_routers import plugin_card_router as cards
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_cross_site_action_before_internal_post(monkeypatch):
+    app = FastAPI()
+    app.include_router(cards.router)
+    posted = False
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            nonlocal posted
+            posted = True
+            return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(cards, "get_internal_http_client", lambda: Client())
+    # The shared helper owns the token; patch its source rather than relying
+    # on process-level configuration in this route-level test.
+    from main_routers.system_router import _shared
+    monkeypatch.setattr(_shared, "AUTOSTART_CSRF_TOKEN", "test-token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        response = await client.post(
+            "/api/plugin-cards/demo/action/play",
+            headers={
+                "Origin": "https://attacker.example",
+                "X-CSRF-Token": "test-token",
+            },
+            json={"card_id": "one", "target_lanlan": "Alice"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
+    assert posted is False
 
 
 @pytest.mark.parametrize("presentation", ["chat", "agent"])

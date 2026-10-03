@@ -17,8 +17,13 @@ from plugin.server.application.runs import RunService
 from plugin.server.application.runs.service import RunRecord
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 
 router = APIRouter()
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.runs")
 run_service = RunService()
 
@@ -27,7 +32,7 @@ class RunCancelPayload(BaseModel):
     reason: str | None = None
 
 
-@router.post("/runs", response_model=RunCreateResponse)
+@mutation_router.post("/runs", response_model=RunCreateResponse)
 async def runs_create(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
     try:
         client_host = request.client.host if request.client is not None else None
@@ -44,7 +49,7 @@ async def runs_get(run_id: str) -> RunRecord:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/runs/{run_id}/uploads")
+@mutation_router.post("/runs/{run_id}/uploads")
 async def runs_create_upload(run_id: str, request: Request) -> UploadSessionResponse:
     raw_body: object | None
     try:
@@ -66,7 +71,7 @@ async def runs_create_upload(run_id: str, request: Request) -> UploadSessionResp
         raise_http_from_domain(error, logger=logger)
 
 
-@router.put("/uploads/{upload_id}")
+@mutation_router.put("/uploads/{upload_id}")
 async def uploads_put(upload_id: str, request: Request) -> UploadBlobResponse:
     try:
         return await run_service.upload_blob(upload_id=upload_id, chunks=request.stream())
@@ -83,7 +88,7 @@ async def runs_get_blob(run_id: str, blob_id: str) -> FileResponse:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/runs/{run_id}/cancel", response_model=RunRecord)
+@mutation_router.post("/runs/{run_id}/cancel", response_model=RunRecord)
 async def runs_cancel(
     run_id: str,
     payload: RunCancelPayload | None = Body(default=None),
@@ -93,6 +98,11 @@ async def runs_cancel(
         return run_service.cancel_run(run_id, reason=reason)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+# Keep GET handlers on the plain router while applying the shared pre-body
+# guard only to the state-changing routes above.
+router.include_router(mutation_router)
 
 
 @router.get("/runs/{run_id}/export")
