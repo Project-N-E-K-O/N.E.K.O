@@ -23,6 +23,31 @@ import main_routers.community_oauth as O
 USER_ID = "11111111-1111-4111-8111-111111111111"
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_sends_device_territory_for_initial_recommendation_language(monkeypatch):
+    calls = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return SimpleNamespace(status_code=200, json=lambda: {"created": True, "user": {"recommendation_locale": "ja"}})
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(O, "community_locale_hints", lambda: {"locale": "en", "region": "JP"})
+    result = await O._bootstrap_session("https://community.example", "test-access")
+    assert calls == [("https://community.example/api/auth/session/bootstrap", {
+        "headers": {"Authorization": "Bearer test-access"},
+        "json": {"locale": "en", "region": "JP"},
+    })]
+    assert result["user"]["recommendation_locale"] == "ja"
+
+
 @pytest.fixture
 def oauth_app(tmp_path, monkeypatch):
     auth = tmp_path / "community_auth.json"

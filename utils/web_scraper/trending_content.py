@@ -25,6 +25,7 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.community_locale import community_locale_hints
 import random
 import re
 import time
@@ -55,9 +56,8 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
-# The community API's discover feed is deliberately fetched as its first page
-# of 60 cards. The caller's smaller ``limit`` is applied after normalization,
-# so Phase 1 keeps its existing prompt budget while still getting a varied pool.
+# Fetch a fresh server recommendation round with a bounded candidate budget.
+# The caller's smaller limit preserves Phase 1's existing prompt budget.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
 NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
 NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
@@ -77,7 +77,7 @@ def _neko_community_urls() -> tuple[str, str]:
     """Return community feed and discover URLs for the configured social host."""
 
     base_url = social_base_url().rstrip("/")
-    return f"{base_url}/api/feed", f"{base_url}/discover"
+    return f"{base_url}/api/feed/recommendations", f"{base_url}/discover"
 
 
 def _same_community_origin(left: str, right: str) -> bool:
@@ -2138,14 +2138,14 @@ async def _fetch_neko_community_payload(
     client: httpx.AsyncClient,
     feed_api: str,
     *,
-    params: dict[str, int],
+    payload: dict[str, Any],
     headers: dict[str, str],
 ) -> tuple[int, Any | None]:
     """Read one bounded community feed response before JSON decoding."""
 
     body = bytearray()
     async with client.stream(
-        "GET", feed_api, params=params, headers=headers, timeout=10.0
+        "POST", feed_api, json=payload, headers=headers, timeout=10.0
     ) as response:
         if response.status_code in {401, 403}:
             return response.status_code, None
@@ -2167,7 +2167,9 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "Referer": discover_url,
             "User-Agent": XHH_USER_AGENT,
         }
-        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        hints = await asyncio.to_thread(community_locale_hints)
+        request_payload = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        headers["Accept-Language"] = hints["locale"]
         access_token = ""
         if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
@@ -2182,30 +2184,24 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                 follow_redirects=False,
             ) as client:
                 status_code, payload = await _fetch_neko_community_payload(
-                    client, feed_api, params=params, headers=headers
+                    client, feed_api, payload=request_payload, headers=headers
                 )
             # A permission/scope mismatch must not suppress the public discovery feed.
             if status_code in {401, 403}:
                 authenticated = False
                 headers.pop("Authorization", None)
+                request_payload["locale"] = hints["locale"]
                 _, payload = await _fetch_neko_community_payload(
-                    get_external_http_client(), feed_api, params=params, headers=headers
+                    get_external_http_client(), feed_api, payload=request_payload, headers=headers
                 )
         else:
+            request_payload["locale"] = hints["locale"]
             _, payload = await _fetch_neko_community_payload(
-                get_external_http_client(), feed_api, params=params, headers=headers
+                get_external_http_client(), feed_api, payload=request_payload, headers=headers
             )
         posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts:
-            raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
-        # The feed API ranks cards by hot score, so this first page's order is
-        # near-static within a day. Feeding Phase 1 that fixed order every
-        # round made the same candidate prefix — and the same logged top
-        # titles — reappear on every proactive cycle. Shuffle the bounded
-        # pool so each round presents a fresh slice of it; the source-history
-        # cooldown (keyed by dedupe_key, order-independent) still keeps
-        # already-delivered cards out.
-        random.shuffle(posts)
+        # Preserve personalized server order. An exhausted eligible pool is a
+        # valid empty result; never fall back to hot cards or mark candidates read.
         return {
             "success": True,
             "posts": posts,
