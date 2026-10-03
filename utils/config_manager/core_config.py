@@ -1225,17 +1225,18 @@ class CoreConfigMixin:
             if use_mimo_token_plan
             else assist_api_key_fields.get(assist_api_value)
         )
+        is_requesty_assist = assist_api_value == 'requesty'
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
-            if derived_key:
+            if derived_key and not is_requesty_assist:
                 config['AUDIO_API_KEY'] = derived_key
 
         # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
         # its legacy fallback independently of the text router credential.
         if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if derived_key or assist_api_value == 'requesty':
+        if derived_key or is_requesty_assist:
             # Requesty's missing dedicated key must stay empty for text/Agent.
             config['OPENROUTER_API_KEY'] = derived_key
         elif not config['OPENROUTER_API_KEY']:

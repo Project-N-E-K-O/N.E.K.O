@@ -270,7 +270,7 @@ class TestRequestyResolution:
         assert cfg['ASSIST_API_KEY_REQUESTY'] == requesty_key
         assert cfg['OPENROUTER_API_KEY'] == requesty_key
         assert cfg['AUDIO_API_KEY'] == (
-            requesty_key or (core_key if core_provider != 'free' else '')
+            core_key if core_provider != 'free' else ''
         )
         assert cfg['AGENT_MODEL_API_KEY'] == requesty_key
         for task, model in {
@@ -305,13 +305,14 @@ class TestRequestyResolution:
         assert config_manager.get_model_api_config('conversation')['api_key'] == ''
 
     @pytest.mark.unit
-    def test_missing_router_key_preserves_cosyvoice_voice_storage(self, config_manager):
-        """An empty Requesty text key must not disable saving or listing cloned voices."""
+    @pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+    def test_requesty_key_preserves_cosyvoice_voice_storage(self, config_manager, requesty_key):
+        """A Requesty text key must not change voice buckets across assist switches."""
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'coreApiKey': 'sk-dashscope-core',
             'assistApi': 'requesty',
-            'assistApiKeyRequesty': '',
+            'assistApiKeyRequesty': requesty_key,
         })
         config_manager.save_voice_for_current_api('cosyvoice-existing', {
             'name': 'Existing cloned voice',
@@ -320,7 +321,15 @@ class TestRequestyResolution:
         stored = config_manager.load_voice_storage()
         assert 'cosyvoice-existing' in stored['sk-dashscope-core']
         assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
-        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == requesty_key
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            'assistApiKeyRequesty': requesty_key,
+        })
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
 
 
 # ---------------------------------------------------------------------------

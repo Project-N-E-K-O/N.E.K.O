@@ -70,7 +70,7 @@
 
 - 提供商和字段的对应关系见 `config/api_providers.json` 的 `api_key_registry`；`assistApiKeyMimoTokenPlan` 是 `useMimoTokenPlan` 为 true 时 MiMo 改用的 Key。
 - 除 Requesty 外，当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
-- Requesty 的文本和 Agent 请求只使用专用字段 `assistApiKeyRequesty`，不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=requesty` 不足以使用 Requesty；请在 Web UI 的密钥簿中填写 Requesty Key，或在持久化的 `core_config.json` 中设置该字段。当前 entrypoint 不支持 `NEKO_ASSIST_API_KEY_REQUESTY`。TTS 使用的 `AUDIO_API_KEY` 保留原有回退逻辑。
+- Requesty 的文本和 Agent 请求只使用专用字段 `assistApiKeyRequesty`，不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=requesty` 不足以使用 Requesty；请在 Web UI 的密钥簿中填写 Requesty Key，或在持久化的 `core_config.json` 中设置该字段。当前 entrypoint 不支持 `NEKO_ASSIST_API_KEY_REQUESTY`。Requesty 的文本 Key 不会写入 TTS 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
 - `mcpToken`（`NEKO_MCP_TOKEN`）：entrypoint 仍会写入这个字段，配置接口也仍会保存它，但当前代码只是把它转存成 `get_core_config()` 返回值里的 `MCP_ROUTER_API_KEY`，没有任何地方读取，填不填都不影响运行。
 
 ### 3. 服务器端口配置
@@ -297,7 +297,7 @@ Agent API Key 的取法：
 2. 以 `DEFAULT_CORE_CONFIG` 为模板，叠加 `core_config.json` 的内容；文件缺失、无法解析或内容不是 JSON 对象时，只用模板。
 3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；MiniMax、MiMo、ElevenLabs、豆包语音、Requesty 的 Key 也从不回退。
 4. 按 `coreApi` 取核心 profile，按 `assistApi` 取辅助 profile，用 `config.update()` 覆盖前面的地址和模型。`free` 的 profile 还带占位 Key `free-access`：核心为 `free` 时覆盖 `CORE_API_KEY`，辅助为 `free` 时覆盖 `AUDIO_API_KEY` / `OPENROUTER_API_KEY`。文件里没写 `assistApi` 时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；未知的 `assistApi` 回退到 `qwen`。`resolvedProviderUrls` 里如果存有连通性测试选定的地址，并且它属于该提供商的候选地址，就用它替换默认地址。
-5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；通常仍为空时改用 `coreApiKey`（`free-access` 除外）。Requesty 的 `OPENROUTER_API_KEY` 必须使用专用 Key，空值保持为空；TTS 使用的 `AUDIO_API_KEY` 保留原有回退。Agent 的模型、地址和 Key 默认跟随辅助 API。
+5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；通常仍为空时改用 `coreApiKey`（`free-access` 除外）。Requesty 的 `OPENROUTER_API_KEY` 必须使用专用 Key，空值保持为空；Requesty 的文本 Key 不写入 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退。Agent 的模型、地址和 Key 默认跟随辅助 API。
 6. `enableCustomApi` 为 `true` 时，应用第 7 节的自定义模型字段（GPT-SoVITS 的 TTS 地址不受这个开关限制）。
 7. 改写免费线路地址：只处理域名为 `lanlan.tech` 或其子域（如 `www.lanlan.tech`）的 `*_URL`。直播模式生效时（`config/livestream_config.json` 里，或没有这个文件时 `api_providers.json` 的 `livestream_config` 里，`enabled` 为 `true` 且 `server_prefix` 非空），路径为 `/core`、`/text/v1`、`/tts` 的地址先改用 `server_prefix` 开头的地址；否则在判定为非中国大陆网络时，把域名中的 `lanlan.tech` 换成 `lanlan.app`。`AGENT_MODEL_URL` 不做区域改写。
 
