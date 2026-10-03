@@ -399,10 +399,21 @@ async def test_a_state_replaced_during_the_sweep_is_left_alone(_icebreaker_clean
 async def test_a_state_whose_release_keeps_failing_is_dropped_after_the_retry_limit(
     _icebreaker_clean, monkeypatch,
 ):
-    """Mutation: retrying forever (no attempt limit) turns this red."""
+    """Dropped after the retry limit, with its parked callbacks declined so
+    they are not left waiting for a delivery ack forever.
+
+    Mutation: retrying forever (no attempt limit), or dropping the state
+    without closing its inbox, turns this red.
+    """
+    from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+    from main_logic.watch_together.live import LiveInbox
+
     broken = TakeoverManagerDouble()
     broken.release_takeover = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
     gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": broken})
+    inbox = LiveInbox()
+    cue = _parked_cue()
+    assert inbox.accept(cue) is True
     with reset_game_route_state():
         gr_runtime._game_route_states[("Lan", "drawing_guess")] = {
             "lanlan_name": "Lan",
@@ -410,14 +421,18 @@ async def test_a_state_whose_release_keeps_failing_is_dropped_after_the_retry_li
             "game_route_active": False,
             "exit_started_at": 0.0,
             _TAKEOVER_TOKEN_KEY: object(),
+            _TAKEOVER_CALLBACK_INBOX_KEY: inbox,
         }
         for _ in range(gr_runtime._EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS - 1):
             await gr_runtime._drop_expired_route_states(now=10**9)
             assert ("Lan", "drawing_guess") in gr_runtime._game_route_states
 
+            assert not cue[DELIVERY_ACK_FUTURE_KEY].done()
+
         await gr_runtime._drop_expired_route_states(now=10**9)
 
         assert ("Lan", "drawing_guess") not in gr_runtime._game_route_states
+    assert cue[DELIVERY_ACK_FUTURE_KEY].result() is False
 
 
 class _LanguageManager:
