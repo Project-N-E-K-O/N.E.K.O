@@ -18,7 +18,8 @@
 Pure functions and small stateful helpers shared by the visit backend
 (``main_logic/visit``) and the transport router. Lives in ``utils/`` (L1), so
 it only imports ``config`` and the standard library / pydantic; callers inject
-anything that lives higher up (``redact_outbound``, ``sanitize_relay_text``).
+anything that lives higher up (``redact_outbound``, ``redact_outbound_boundary``,
+``sanitize_relay_text``).
 
 Contents, grouped by concern:
 
@@ -49,6 +50,7 @@ import json
 import logging
 import re
 import unicodedata
+from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -1106,10 +1108,29 @@ def fit_text_to_wire(
 RedactSpans = Sequence[tuple[int, int, int, int]]
 RedactResult = Union[str, tuple[str, RedactSpans]]
 RedactFn = Callable[[str], RedactResult]
+RedactBoundary = Callable[[str], bool]
 
 
 def _identity(s: str) -> str:
     return s
+
+
+# 只用 C 层字符串操作量长度：流式热路径上不做逐字符的 Python 循环
+_SURROGATE_RE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
+_CONTROL_RE = re.compile("[" + chr(0) + "-" + chr(0x1F) + "]")
+
+
+def _utf8_len(s: str) -> int:
+    """UTF-8 bytes of ``s``; a lone surrogate counts 3 like ``_utf8_len_char``."""
+    return len(s.encode("utf-8", "surrogatepass"))
+
+
+def _esc2_text_len(s: str) -> int:
+    """``sum(_esc2_len(c) for c in s)`` computed with C-level string operations."""
+    n = _utf8_len(s) + 3 * (s.count('"') + s.count("\\"))
+    for ch in _CONTROL_RE.findall(s):
+        n += _esc2_len(ch) - 1
+    return n
 
 
 class _OffsetMap:
@@ -1117,55 +1138,72 @@ class _OffsetMap:
 
     ``spans`` are ``(raw_start, raw_end, red_start, red_end)`` replacement
     regions, ascending and disjoint; outside them both strings are identical.
+    Lookups bisect the span starts. ``extend_shifted`` / ``truncate`` let a
+    map of committed segments carry a temporary tail.
     """
 
     def __init__(self, raw: str, red: str, spans: RedactSpans) -> None:
+        self._rs: list[int] = []
+        self._re: list[int] = []
+        self._ds: list[int] = []
+        self._de: list[int] = []
         prev_raw = prev_red = 0
-        norm: list[tuple[int, int, int, int]] = []
         for span in spans:
             rs, re_, ds, de = (int(x) for x in span)
             if not (prev_raw <= rs <= re_ <= len(raw) and prev_red <= ds <= de <= len(red)):
                 raise ValueError("redact spans must be ascending, disjoint and in range")
             if raw[prev_raw:rs] != red[prev_red:ds]:
                 raise ValueError("redact spans leave unequal text between replacements")
-            norm.append((rs, re_, ds, de))
+            self._push(rs, re_, ds, de)
             prev_raw, prev_red = re_, de
         if raw[prev_raw:] != red[prev_red:]:
             raise ValueError("redact spans leave unequal trailing text")
-        self.spans = norm
 
+    def __len__(self) -> int:
+        return len(self._rs)
+
+    def _push(self, rs: int, re_: int, ds: int, de: int) -> None:
+        self._rs.append(rs)
+        self._re.append(re_)
+        self._ds.append(ds)
+        self._de.append(de)
+
+    def extend_shifted(self, other: "_OffsetMap", raw_off: int, red_off: int) -> None:
+        """Append ``other``'s spans moved to start at ``(raw_off, red_off)``."""
+        for rs, re_, ds, de in zip(other._rs, other._re, other._ds, other._de):
+            self._push(rs + raw_off, re_ + raw_off, ds + red_off, de + red_off)
+
+    def truncate(self, count: int) -> None:
+        """Keep only the first ``count`` spans."""
+        for lst in (self._rs, self._re, self._ds, self._de):
+            del lst[count:]
+
+    # 三个查询等价于按顺序线性扫描：起点 < pos 的区间是一段前缀，其中只有最后一个可能盖住 pos
     def red_to_raw(self, pos: int) -> int:
-        shift = 0
-        for _rs, re_, ds, de in self.spans:
-            if pos <= ds:
-                break
-            if pos < de:
-                return re_
-            shift = re_ - de
-        return pos + shift
+        k = bisect_left(self._ds, pos) - 1
+        if k < 0:
+            return pos
+        if pos < self._de[k]:
+            return self._re[k]
+        return pos + self._re[k] - self._de[k]
 
     def raw_to_red(self, pos: int) -> int:
-        shift = 0
-        for rs, re_, _ds, de in self.spans:
-            if pos <= rs:
-                break
-            if pos < re_:
-                return de
-            shift = de - re_
-        return pos + shift
+        k = bisect_left(self._rs, pos) - 1
+        if k < 0:
+            return pos
+        if pos < self._re[k]:
+            return self._de[k]
+        return pos + self._de[k] - self._re[k]
 
     def red_span_around(self, pos: int) -> Optional[tuple[int, int]]:
         """The replacement span strictly containing redacted position ``pos``, if any."""
-        for _rs, _re, ds, de in self.spans:
-            if ds < pos < de:
-                return ds, de
-            if ds >= pos:
-                break
+        k = bisect_left(self._ds, pos) - 1
+        if k >= 0 and pos < self._de[k]:
+            return self._ds[k], self._de[k]
         return None
 
 
-def _run_redact(fn: RedactFn, raw: str) -> tuple[str, _OffsetMap]:
-    result = fn(raw)
+def _map_redaction(raw: str, result: Any, *, derive: bool) -> tuple[str, _OffsetMap]:
     if isinstance(result, tuple):
         red, spans = result
         if not isinstance(red, str):
@@ -1175,9 +1213,20 @@ def _run_redact(fn: RedactFn, raw: str) -> tuple[str, _OffsetMap]:
         raise ValueError("redact must return str or (str, spans)")
     if result == raw:
         return result, _OffsetMap(raw, result, ())
+    if not derive:
+        # difflib 在整句上推出的区间与分段推出的不一定相同，分段模式只能接受自报区间
+        raise ValueError("redact_boundary requires redact to return (text, spans)")
     matcher = difflib.SequenceMatcher(None, raw, result, autojunk=False)
     spans = [(i1, i2, j1, j2) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"]
     return result, _OffsetMap(raw, result, spans)
+
+
+def _run_redact(fn: RedactFn, raw: str) -> tuple[str, _OffsetMap]:
+    return _map_redaction(raw, fn(raw), derive=True)
+
+
+def _run_redact_segment(fn: RedactFn, raw: str) -> tuple[str, _OffsetMap]:
+    return _map_redaction(raw, fn(raw), derive=False)
 
 
 def _redacted_only(fn: RedactFn, raw: str) -> str:
@@ -1187,6 +1236,58 @@ def _redacted_only(fn: RedactFn, raw: str) -> str:
     if not isinstance(result, str):
         raise ValueError("redact must return str or (str, spans)")
     return result
+
+
+class _SegmentedRedaction:
+    """Redaction of a growing buffer that restarts after boundary characters.
+
+    Relies on the ``redact_boundary`` contract: for any ``a + b`` where ``a``
+    ends with a character ``boundary`` accepts, ``redact(a + b)`` is
+    ``redact(a)`` followed by ``redact(b)`` (texts concatenated, spans of
+    ``b`` shifted). The buffer is kept as committed segments, each ending with
+    such a character, plus an open tail; only the tail is redacted again.
+    ``red`` / ``map`` hold the committed part (``map`` only when
+    ``with_spans``).
+    """
+
+    def __init__(self, fn: RedactFn, boundary: RedactBoundary, *, with_spans: bool) -> None:
+        self._fn = fn
+        self._boundary = boundary
+        self._with_spans = with_spans
+        self.raw_end = 0          # raw[:raw_end] 已提交
+        self.red = ""             # redact(raw[:raw_end]) 的文本
+        self.map = _OffsetMap("", "", ())
+        self._scanned = 0         # raw[:_scanned] 已查过边界字符
+        self._cut = 0             # raw[:_scanned] 里最后一个边界字符之后的位置
+
+    def advance(self, raw: str) -> None:
+        """Commit ``raw`` (an extension of every earlier argument) up to its last boundary."""
+        for i in range(self._scanned, len(raw)):
+            if self._boundary(raw[i]):
+                self._cut = i + 1
+        self._scanned = len(raw)
+        if self._cut > self.raw_end:
+            seg = raw[self.raw_end:self._cut]
+            if self._with_spans:
+                red, omap = _run_redact_segment(self._fn, seg)
+                self.map.extend_shifted(omap, self.raw_end, len(self.red))
+            else:
+                red = _redacted_only(self._fn, seg)
+            self.red += red
+            self.raw_end = self._cut
+
+    def tail_text(self, raw: str, extra: str = "") -> str:
+        """Redacted text of ``raw[raw_end:] + extra``."""
+        seg = raw[self.raw_end:] + extra
+        return _redacted_only(self._fn, seg) if seg else ""
+
+    def tail(self, raw: str) -> tuple[str, _OffsetMap]:
+        """Redacted text and offset map of ``raw[raw_end:]``."""
+        seg = raw[self.raw_end:]
+        if not seg:
+            # 契约：redact(a + '') == redact(a)，所以空尾的脱敏结果只能是空
+            return "", _OffsetMap("", "", ())
+        return _run_redact_segment(self._fn, seg)
 
 
 class WireBudget:
@@ -1214,6 +1315,21 @@ class WireBudget:
     ``text`` would not carry. The search assumes the
     outbound size grows with the buffer; if a redaction makes it shrink, the
     accepted prefix is still guaranteed to fit, merely not maximal.
+
+    ``redact_boundary`` (optional) is the restart predicate described on
+    ``ClauseSplitter``; with it only the text after the last accepted
+    boundary character is redacted again for each candidate. Only the text
+    half of that contract is used here, so a plain-string ``redact`` works.
+
+    Cost: every answer equals measuring the whole candidate, but the work
+    is kept proportional to the delta where that is provable. Piece counts
+    use an exact additive escaped length and a greedy-packing bound, so
+    ``fragment`` only runs within a few dozen bytes of the piece limit. With
+    the default identity ``redact`` / ``sanitize`` and no ``clean`` the
+    outbound form is the buffer itself and its sizes are tracked
+    incrementally. Injected ``sanitize`` / ``clean`` are black boxes and
+    still see the whole buffer per candidate (a token cap has no sound
+    incremental bound: appending text can re-merge earlier BPE tokens).
     """
 
     def __init__(
@@ -1225,6 +1341,7 @@ class WireBudget:
         redact: RedactFn = _identity,
         sanitize: Callable[[str], str] = _identity,
         clean: Optional[Callable[[str], str]] = None,
+        redact_boundary: Optional[RedactBoundary] = None,
     ) -> None:
         self._visit_id = require_visit_id(visit_id)
         self._header = dict(header)
@@ -1234,6 +1351,16 @@ class WireBudget:
         self._clean = clean
         self._raw = ""
         self.exhausted = False
+        self._plain = redact is _identity and sanitize is _identity and clean is None
+        self._seg = (
+            _SegmentedRedaction(redact, redact_boundary, with_spans=False)
+            if redact is not _identity and redact_boundary is not None else None
+        )
+        self._raw_bytes = 0       # 仅 plain 模式：已接受文本的 UTF-8 字节
+        self._raw_esc = 0         # 仅 plain 模式：已接受文本两次转义后的字节
+        # 出站文本两次转义后不超过它就一定 <= max_pieces 片；首次完整测量成功后才设
+        # （header 不合法时 encode_msg 抛错的时机保持与逐次完整测量相同）
+        self._esc_cap: Optional[int] = None
 
     @property
     def accepted_text(self) -> str:
@@ -1244,34 +1371,72 @@ class WireBudget:
         """``sanitize(redact(accepted_text))``: the outbound form that was budgeted."""
         return self._sanitize(_redacted_only(self._redact, self._raw))
 
-    def _fits(self, raw: str) -> bool:
-        redacted = _redacted_only(self._redact, raw)
+    def _certain_esc_cap(self) -> int:
+        # fragment 贪心装片：除最后一片外每片装了 > budget - 6 字节（单字符转义后最多 6 B），
+        # 所以 n 片意味着 W >= (n-1)(budget-5)+1；W <= max_pieces*(budget-5) 时 n <= max_pieces。
+        # budget 取三位数 i/n 时最小的那个，任一位宽下都成立
+        if not 1 <= self._max_pieces <= 999:
+            return -1
+        overhead = len(_envelope_text(self._visit_id[:8], _U32_MAX, 999, 999, "").encode("utf-8"))
+        budget = VISIT_PIECE_MAX_BYTES - overhead
+        base = _esc_len(encode_msg(widest_text_payload(self._header, "")))
+        return self._max_pieces * (budget - 5) - base
+
+    def _pieces_fit(self, out: str) -> bool:
+        pieces = _text_pieces(widest_text_payload(self._header, out), self._visit_id)
+        if self._esc_cap is None:
+            self._esc_cap = self._certain_esc_cap()
+        return pieces <= self._max_pieces
+
+    def _fits(self, tail: str) -> bool:
+        """Whether ``accepted_text + tail`` fits; the same answer as a full measurement."""
+        if self._plain and self._esc_cap is not None and _SURROGATE_RE.search(tail) is None:
+            if self._raw_bytes + _utf8_len(tail) > VISIT_TEXT_MAX_BYTES:
+                return False
+            if self._raw_esc + _esc2_text_len(tail) <= self._esc_cap:
+                return True
+            return self._pieces_fit(self._raw + tail)
+        if self._redact is _identity:
+            redacted = self._raw + tail
+        elif self._seg is not None:
+            redacted = self._seg.red + self._seg.tail_text(self._raw, tail)
+        else:
+            redacted = _redacted_only(self._redact, self._raw + tail)
         out = self._sanitize(redacted)
         if self._clean is not None and out != self._clean(redacted):
             return False                      # sanitize 自己截掉了内容
         if len(out.encode("utf-8")) > VISIT_TEXT_MAX_BYTES:
             return False
-        payload = widest_text_payload(self._header, out)
-        return _text_pieces(payload, self._visit_id) <= self._max_pieces
+        if self._esc_cap is not None and _esc2_text_len(out) <= self._esc_cap:
+            return True
+        return self._pieces_fit(out)
+
+    def _accept(self, text: str) -> None:
+        self._raw += text
+        if self._plain:
+            self._raw_bytes += _utf8_len(text)
+            self._raw_esc += _esc2_text_len(text)
+        if self._seg is not None:
+            self._seg.advance(self._raw)
 
     def take(self, delta: str) -> str:
         """Accept as much of ``delta`` as the line's wire budget allows; see the class doc."""
         if self.exhausted or not delta:
             return ""
-        if self._fits(self._raw + delta):
-            self._raw += delta
+        if self._fits(delta):
+            self._accept(delta)
             return delta
         lo, hi = 0, len(delta)
         while hi - lo > 1:
             mid = (lo + hi) // 2
-            if self._fits(self._raw + delta[:mid]):
+            if self._fits(delta[:mid]):
                 lo = mid
             else:
                 hi = mid
         combined = self._raw + delta
         k = _safe_cut(combined, len(self._raw) + lo, floor=len(self._raw)) - len(self._raw)
         accepted = delta[:k]
-        self._raw += accepted
+        self._accept(accepted)
         self.exhausted = True
         return accepted
 
@@ -1294,10 +1459,6 @@ class Clause:
     raw: str
 
 
-def _strip_len(s: str) -> int:
-    return len(s.strip())
-
-
 def _hard_cut(pending: str, k: int, holdback: int) -> int:
     """Cut for a clause whose first ``k`` characters fit and the ``k+1``-th does not."""
     limit = k - holdback if k - holdback >= 1 else k
@@ -1310,68 +1471,96 @@ def _hard_cut(pending: str, k: int, holdback: int) -> int:
     return _safe_cut(pending, limit, floor=1)
 
 
-def _next_cut(pending: str, *, final: bool, holdback: int) -> Optional[int]:
-    """Length of the next clause at the head of ``pending``, or None to wait for more text.
+class _CutScanner:
+    """Finds the length of the next clause at the head of ``pending``.
 
     The decision only depends on the characters up to the boundary plus one
     character of lookahead (or up to the first character that overflows the
     delta budget), so feeding a line in any chunking yields the same cuts.
+    The scan is a left-to-right state machine; when it ends without a cut
+    the state is kept, and the next call resumes from it if the new
+    ``pending`` starts with the text already scanned (otherwise it starts
+    over). Results are identical to a fresh scan.
     """
-    n = len(pending)
-    raw_bytes = 0
-    enc = _DELTA_OVERHEAD
-    cjk = 0
-    words = 0
-    in_word = False
-    in_token = False       # 处在句末 / 换行 / 合格逗号之后的边界记号里
-    token_space = False    # 记号里已出现空白（之后只吸收空白）
-    token_ascii = False    # 记号目前只有 ASCII 句末符（"3.14" 之类不算边界）
-    for k in range(n):
-        ch = pending[k]
-        if in_token:
-            continues = ch.isspace() or (not token_space and (
-                ch in _END_MARKS or ch in _COMMA_MARKS or ch in _CLOSERS))
-            if continues:
-                if ch.isspace():
-                    token_space = True
-                elif ch not in _ASCII_END_MARKS:
-                    token_ascii = False
-            else:
-                in_token = False
-                decimal_like = token_ascii and not token_space and ch.isascii() and ch.isalnum()
-                if not decimal_like and _strip_len(pending[:k]) >= VISIT_CLAUSE_MIN_CHARS:
-                    return k
-        b = _utf8_len_char(ch)
-        w = _esc2_len(ch)
-        if raw_bytes + b > VISIT_DELTA_TEXT_MAX_BYTES or enc + w > VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES:
-            return _hard_cut(pending, k, holdback)
-        raw_bytes += b
-        enc += w
-        if in_token:
-            continue
-        if ch in _END_MARKS or ch == "\n":
-            in_token = True
-            token_space = ch == "\n"
-            token_ascii = ch in _ASCII_END_MARKS
-            in_word = False
-        elif ch in _COMMA_MARKS and (cjk >= VISIT_CLAUSE_SOFT_MAX_CHARS
-                                     or words >= VISIT_CLAUSE_SOFT_MAX_LATIN_WORDS):
-            in_token = True
-            token_space = False
-            token_ascii = False
-            in_word = False
-        elif is_cjk_char(ch):
-            cjk += 1
-            in_word = False
-        elif ch.isalnum():
-            if not in_word:
-                words += 1
-                in_word = True
+
+    __slots__ = ("_text", "_state")
+
+    def __init__(self) -> None:
+        self._text = ""
+        self._state: tuple = ()
+
+    def next_cut(self, pending: str, *, final: bool, holdback: int) -> Optional[int]:
+        """Length of the next clause, or None to wait for more text."""
+        # 只有没下刀（即没超 VISIT_DELTA_TEXT_MAX_BYTES）才保存状态，所以 _text 不超过
+        # 800 个字符：这次前缀比较是与整句长度无关的定长 memcmp
+        if self._text and pending.startswith(self._text):
+            (start, raw_bytes, enc, cjk, words, in_word, in_token, token_space,
+             token_ascii, first_ns, last_ns) = self._state
         else:
+            start = raw_bytes = cjk = words = 0
+            enc = _DELTA_OVERHEAD
             in_word = False
-    if final and n > 0:
-        return n
-    return None
+            in_token = False       # 处在句末 / 换行 / 合格逗号之后的边界记号里
+            token_space = False    # 记号里已出现空白（之后只吸收空白）
+            token_ascii = False    # 记号目前只有 ASCII 句末符（"3.14" 之类不算边界）
+            first_ns = last_ns = -1   # 已扫部分首 / 末个非空白字符：len(pending[:k].strip()) 的增量形式
+        self._text = ""
+        n = len(pending)
+        for k in range(start, n):
+            ch = pending[k]
+            if in_token:
+                continues = ch.isspace() or (not token_space and (
+                    ch in _END_MARKS or ch in _COMMA_MARKS or ch in _CLOSERS))
+                if continues:
+                    if ch.isspace():
+                        token_space = True
+                    elif ch not in _ASCII_END_MARKS:
+                        token_ascii = False
+                else:
+                    in_token = False
+                    decimal_like = token_ascii and not token_space and ch.isascii() and ch.isalnum()
+                    stripped = last_ns - first_ns + 1 if first_ns >= 0 else 0
+                    if not decimal_like and stripped >= VISIT_CLAUSE_MIN_CHARS:
+                        return k
+            if not ch.isspace():
+                if first_ns < 0:
+                    first_ns = k
+                last_ns = k
+            b = _utf8_len_char(ch)
+            w = _esc2_len(ch)
+            if raw_bytes + b > VISIT_DELTA_TEXT_MAX_BYTES or enc + w > VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES:
+                return _hard_cut(pending, k, holdback)
+            raw_bytes += b
+            enc += w
+            if in_token:
+                continue
+            if ch in _END_MARKS or ch == "\n":
+                in_token = True
+                token_space = ch == "\n"
+                token_ascii = ch in _ASCII_END_MARKS
+                in_word = False
+            elif ch in _COMMA_MARKS and (cjk >= VISIT_CLAUSE_SOFT_MAX_CHARS
+                                         or words >= VISIT_CLAUSE_SOFT_MAX_LATIN_WORDS):
+                in_token = True
+                token_space = False
+                token_ascii = False
+                in_word = False
+            elif is_cjk_char(ch):
+                cjk += 1
+                in_word = False
+            elif ch.isalnum():
+                if not in_word:
+                    words += 1
+                    in_word = True
+            else:
+                in_word = False
+        if final and n > 0:
+            return n
+        if not final:
+            self._text = pending
+            self._state = (n, raw_bytes, enc, cjk, words, in_word, in_token, token_space,
+                           token_ascii, first_ns, last_ns)
+        return None
 
 
 class ClauseSplitter:
@@ -1413,6 +1602,22 @@ class ClauseSplitter:
       prefix-stable on the part already released (true for whole-word
       replacement once the holdback above is respected).
 
+    ``redact_boundary`` (optional) is a predicate on single characters: it
+    may accept ``ch`` only if, for any ``a`` ending with ``ch`` and any
+    ``b``, ``redact(a + b)`` equals ``redact(a)`` followed by ``redact(b)``
+    (texts concatenated, spans of ``b`` shifted by ``len(a)`` and
+    ``len(redact(a)[0])``; ``redact('')`` is empty).
+    ``main_logic.visit.sanitize.redact_outbound_boundary`` builds it for
+    ``redact_outbound_with_spans``. With it the buffer is redacted in
+    segments that end at accepted characters and only the open tail is
+    redacted again on each ``feed``; ``redact`` must then report spans for
+    any text it changes (a plain changed string raises ``ValueError``). The
+    clauses are the same as with whole-buffer redaction. Without it every
+    ``feed`` redacts the whole buffer (with ``difflib`` for plain strings).
+    The default identity ``redact`` does no redaction work at all, and the
+    boundary scan resumes where the previous ``feed`` stopped, so the cost
+    of a ``feed`` follows the delta and the unreleased tail, not the line.
+
     ``feed(delta)`` returns the clauses completed by this delta; ``flush()``
     returns the rest and closes the splitter (``feed`` afterwards raises
     ``RuntimeError``). Each ``Clause`` carries ``raw``, the slice of the
@@ -1425,7 +1630,13 @@ class ClauseSplitter:
     ``raw`` invariant still holds.
     """
 
-    def __init__(self, *, redact: RedactFn = _identity, holdback_chars: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        redact: RedactFn = _identity,
+        holdback_chars: int = 0,
+        redact_boundary: Optional[RedactBoundary] = None,
+    ) -> None:
         if holdback_chars < 0:
             raise ValueError("holdback_chars must be >= 0")
         self._redact = redact
@@ -1433,6 +1644,11 @@ class ClauseSplitter:
         self._raw = ""
         self._emitted_raw = 0
         self._closed = False
+        self._scanner = _CutScanner()
+        self._seg = (
+            _SegmentedRedaction(redact, redact_boundary, with_spans=True)
+            if redact is not _identity and redact_boundary is not None else None
+        )
 
     def feed(self, delta: str) -> list[Clause]:
         """Append ``delta``; return the clauses it completes (possibly empty)."""
@@ -1452,21 +1668,51 @@ class ClauseSplitter:
         return out
 
     def _drain(self, *, final: bool) -> list[Clause]:
-        red, omap = _run_redact(self._redact, self._raw)
-        e_red = omap.raw_to_red(self._emitted_raw)
-        out: list[Clause] = []
-        while e_red < len(red):
+        seg = self._seg
+        if self._redact is _identity:
+            omap: Optional[_OffsetMap] = None
+            e_red = self._emitted_raw
+            pending = self._raw[e_red:]
+        elif seg is None:
+            red, omap = _run_redact(self._redact, self._raw)
+            e_red = omap.raw_to_red(self._emitted_raw)
             pending = red[e_red:]
-            cut = _next_cut(pending, final=final, holdback=self._holdback)
+        else:
+            seg.advance(self._raw)
+            tail_red, tail_map = seg.tail(self._raw)
+            omap = seg.map
+            committed = len(omap)
+            omap.extend_shifted(tail_map, seg.raw_end, len(seg.red))
+            try:
+                e_red = omap.raw_to_red(self._emitted_raw)
+                if e_red >= len(seg.red):
+                    pending = tail_red[e_red - len(seg.red):]
+                else:
+                    pending = seg.red[e_red:] + tail_red
+                return self._cut(e_red, pending, omap, final)
+            finally:
+                omap.truncate(committed)
+        return self._cut(e_red, pending, omap, final)
+
+    def _cut(self, base: int, pending: str, omap: Optional[_OffsetMap], final: bool) -> list[Clause]:
+        # pending 是脱敏全文从 base 起的部分；omap 为 None 表示未脱敏（位置一一对应）
+        out: list[Clause] = []
+        e_red = base
+        while e_red - base < len(pending):
+            rest = pending[e_red - base:] if e_red > base else pending
+            cut = self._scanner.next_cut(rest, final=final, holdback=self._holdback)
             if cut is None:
                 break
-            span = omap.red_span_around(e_red + cut)
-            if span is not None:
-                # 不在替换词中间下刀：优先切在替换词之前，否则整词带走
-                cut = span[0] - e_red if span[0] > e_red else span[1] - e_red
+            if omap is not None:
+                span = omap.red_span_around(e_red + cut)
+                if span is not None:
+                    # 不在替换词中间下刀：优先切在替换词之前，否则整词带走
+                    cut = span[0] - e_red if span[0] > e_red else span[1] - e_red
             new_red = e_red + cut
-            new_raw = max(omap.red_to_raw(new_red), self._emitted_raw)
-            out.append(Clause(text=red[e_red:new_red], raw=self._raw[self._emitted_raw:new_raw]))
+            new_raw = new_red if omap is None else omap.red_to_raw(new_red)
+            new_raw = max(new_raw, self._emitted_raw)
+            out.append(Clause(text=pending[e_red - base:new_red - base],
+                              raw=self._raw[self._emitted_raw:new_raw]))
             e_red = new_red
             self._emitted_raw = new_raw
         if final and self._emitted_raw < len(self._raw):

@@ -30,6 +30,8 @@ Every function here is pure and synchronous.
   replacement of family names (casefold + Unicode normalisation) with a
   neutral term supplied by the caller; the span variant also returns an
   offset map back to the original text for speech-time estimation.
+  :func:`redact_outbound_boundary` tells streaming callers where that
+  redaction may restart, so they only redact the text after it.
 * :func:`neutralize_display_name` -- a peer display name that impersonates a
   local family member / cat / the system becomes ``generic label + short id``.
 * :func:`assert_no_peer_ngram` -- refuses home-coming text that copies any
@@ -48,7 +50,7 @@ from __future__ import annotations
 import re
 import secrets
 import unicodedata
-from typing import Iterable, NamedTuple, Optional, Sequence
+from typing import Callable, Iterable, NamedTuple, Optional, Sequence
 
 from config.visit_settings import (
     VISIT_LINE_MAX_TOKENS,
@@ -79,6 +81,10 @@ def strip_control_chars(text: str) -> str:
     """
     if not text:
         return ""
+    if text.isprintable():
+        # isprintable 为真即不含 Cc / Cf / Cs / Zl / Zp（与 unicodedata 同一份 UCD）：
+        # 没有要删或要换成 \n 的字符，原样返回，省掉逐字符查类别
+        return text
     text = _LINE_BREAK_RE.sub(lambda m: _LINE_BREAKS[m.group(0)], text)
     out = []
     for ch in text:
@@ -515,6 +521,30 @@ def redact_outbound(text: str, *, family_names: Iterable[str], replacement: str,
     )[0]
 
 
+def redact_outbound_boundary(family_names: Iterable[str]) -> Callable[[str], bool]:
+    """Restart predicate of :func:`redact_outbound_with_spans` for streaming buffers.
+
+    Pass the result as ``redact_boundary`` to ``utils.visit_wire.ClauseSplitter``
+    / ``WireBudget`` together with a redact bound to the same ``family_names``
+    (and ``partial_tail=False``). It accepts a character ``ch`` when, for any
+    ``a`` ending with ``ch`` and any ``b``, redacting ``a + b`` equals
+    redacting ``a`` and ``b`` separately and concatenating (spans of ``b``
+    shifted). That holds when ``ch`` folds to at least one character, none of
+    them occurs in any folded name (so no match can cover ``ch`` or end
+    right after it), and its last folded character is not a word character
+    (so a match starting right after ``ch`` passes the word-start rule
+    exactly as at the start of a string). Most CJK characters, spaces and
+    punctuation qualify; letters of space-delimited scripts never do.
+    """
+    name_chars = frozenset("".join(_prepare_names(family_names)))
+
+    def boundary(ch: str) -> bool:
+        folded = _fold_char(ch)
+        return bool(folded) and not _is_word_char(folded[-1]) and name_chars.isdisjoint(folded)
+
+    return boundary
+
+
 def map_redacted_offset(spans: Sequence[RedactSpan], out_offset: int, *, inside: str = "end") -> int:
     """Map an offset of the redacted text back to the original text.
 
@@ -692,6 +722,7 @@ __all__ = [
     "neutralize_display_name",
     "ngram_units",
     "redact_outbound",
+    "redact_outbound_boundary",
     "redact_outbound_with_spans",
     "sanitize_relay_text",
     "strip_control_chars",

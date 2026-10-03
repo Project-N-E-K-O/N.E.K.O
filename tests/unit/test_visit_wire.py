@@ -987,3 +987,481 @@ def test_fit_text_keeps_the_whole_line_when_only_the_reason_changed():
     assert vw._text_pieces(dict(msg, trunc_reason="wire_size"), VID) <= VISIT_PIECES_MAX
     out = vw.fit_text_to_wire(msg, visit_id=VID)
     assert out["txt"] == msg["txt"] and out["trunc_reason"] == "wire_size"
+
+
+# ── Incremental WireBudget / ClauseSplitter vs the whole-buffer original ──
+# 下面是增量化之前的整句实现，原样留作参照（只改了名字、模块内名字加 vw. 前缀）：
+# 优化后的接受前缀、exhausted、出站文本、分句切点与 raw 都必须与它逐字节一致
+
+class _RefOffsetMap:
+    def __init__(self, raw, red, spans):
+        prev_raw = prev_red = 0
+        norm = []
+        for span in spans:
+            rs, re_, ds, de = (int(x) for x in span)
+            if not (prev_raw <= rs <= re_ <= len(raw) and prev_red <= ds <= de <= len(red)):
+                raise ValueError("redact spans must be ascending, disjoint and in range")
+            if raw[prev_raw:rs] != red[prev_red:ds]:
+                raise ValueError("redact spans leave unequal text between replacements")
+            norm.append((rs, re_, ds, de))
+            prev_raw, prev_red = re_, de
+        if raw[prev_raw:] != red[prev_red:]:
+            raise ValueError("redact spans leave unequal trailing text")
+        self.spans = norm
+
+    def red_to_raw(self, pos):
+        shift = 0
+        for _rs, re_, ds, de in self.spans:
+            if pos <= ds:
+                break
+            if pos < de:
+                return re_
+            shift = re_ - de
+        return pos + shift
+
+    def raw_to_red(self, pos):
+        shift = 0
+        for rs, re_, _ds, de in self.spans:
+            if pos <= rs:
+                break
+            if pos < re_:
+                return de
+            shift = de - re_
+        return pos + shift
+
+    def red_span_around(self, pos):
+        for _rs, _re, ds, de in self.spans:
+            if ds < pos < de:
+                return ds, de
+            if ds >= pos:
+                break
+        return None
+
+
+def _ref_run_redact(fn, raw):
+    import difflib
+    result = fn(raw)
+    if isinstance(result, tuple):
+        red, spans = result
+        if not isinstance(red, str):
+            raise ValueError("redact must return str or (str, spans)")
+        return red, _RefOffsetMap(raw, red, spans)
+    if not isinstance(result, str):
+        raise ValueError("redact must return str or (str, spans)")
+    if result == raw:
+        return result, _RefOffsetMap(raw, result, ())
+    matcher = difflib.SequenceMatcher(None, raw, result, autojunk=False)
+    spans = [(i1, i2, j1, j2) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"]
+    return result, _RefOffsetMap(raw, result, spans)
+
+
+def _ref_redacted_only(fn, raw):
+    result = fn(raw)
+    if isinstance(result, tuple):
+        result = result[0]
+    if not isinstance(result, str):
+        raise ValueError("redact must return str or (str, spans)")
+    return result
+
+
+class _RefWireBudget:
+    def __init__(self, *, visit_id, header, max_pieces=VISIT_PIECES_MAX, redact=vw._identity,
+                 sanitize=vw._identity, clean=None):
+        self._visit_id = vw.require_visit_id(visit_id)
+        self._header = dict(header)
+        self._max_pieces = int(max_pieces)
+        self._redact = redact
+        self._sanitize = sanitize
+        self._clean = clean
+        self._raw = ""
+        self.exhausted = False
+
+    @property
+    def accepted_text(self):
+        return self._raw
+
+    def outbound_text(self):
+        return self._sanitize(_ref_redacted_only(self._redact, self._raw))
+
+    def _fits(self, raw):
+        redacted = _ref_redacted_only(self._redact, raw)
+        out = self._sanitize(redacted)
+        if self._clean is not None and out != self._clean(redacted):
+            return False
+        if len(out.encode("utf-8")) > VISIT_TEXT_MAX_BYTES:
+            return False
+        payload = vw.widest_text_payload(self._header, out)
+        return vw._text_pieces(payload, self._visit_id) <= self._max_pieces
+
+    def take(self, delta):
+        if self.exhausted or not delta:
+            return ""
+        if self._fits(self._raw + delta):
+            self._raw += delta
+            return delta
+        lo, hi = 0, len(delta)
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if self._fits(self._raw + delta[:mid]):
+                lo = mid
+            else:
+                hi = mid
+        combined = self._raw + delta
+        k = vw._safe_cut(combined, len(self._raw) + lo, floor=len(self._raw)) - len(self._raw)
+        accepted = delta[:k]
+        self._raw += accepted
+        self.exhausted = True
+        return accepted
+
+
+def _ref_next_cut(pending, *, final, holdback):
+    n = len(pending)
+    raw_bytes = 0
+    enc = vw._DELTA_OVERHEAD
+    cjk = 0
+    words = 0
+    in_word = False
+    in_token = False
+    token_space = False
+    token_ascii = False
+    for k in range(n):
+        ch = pending[k]
+        if in_token:
+            continues = ch.isspace() or (not token_space and (
+                ch in vw._END_MARKS or ch in vw._COMMA_MARKS or ch in vw._CLOSERS))
+            if continues:
+                if ch.isspace():
+                    token_space = True
+                elif ch not in vw._ASCII_END_MARKS:
+                    token_ascii = False
+            else:
+                in_token = False
+                decimal_like = token_ascii and not token_space and ch.isascii() and ch.isalnum()
+                if not decimal_like and len(pending[:k].strip()) >= vw.VISIT_CLAUSE_MIN_CHARS:
+                    return k
+        b = vw._utf8_len_char(ch)
+        w = vw._esc2_len(ch)
+        if raw_bytes + b > VISIT_DELTA_TEXT_MAX_BYTES or enc + w > VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES:
+            return vw._hard_cut(pending, k, holdback)
+        raw_bytes += b
+        enc += w
+        if in_token:
+            continue
+        if ch in vw._END_MARKS or ch == "\n":
+            in_token = True
+            token_space = ch == "\n"
+            token_ascii = ch in vw._ASCII_END_MARKS
+            in_word = False
+        elif ch in vw._COMMA_MARKS and (cjk >= vw.VISIT_CLAUSE_SOFT_MAX_CHARS
+                                        or words >= vw.VISIT_CLAUSE_SOFT_MAX_LATIN_WORDS):
+            in_token = True
+            token_space = False
+            token_ascii = False
+            in_word = False
+        elif vw.is_cjk_char(ch):
+            cjk += 1
+            in_word = False
+        elif ch.isalnum():
+            if not in_word:
+                words += 1
+                in_word = True
+        else:
+            in_word = False
+    if final and n > 0:
+        return n
+    return None
+
+
+class _RefClauseSplitter:
+    def __init__(self, *, redact=vw._identity, holdback_chars=0):
+        self._redact = redact
+        self._holdback = int(holdback_chars)
+        self._raw = ""
+        self._emitted_raw = 0
+        self._closed = False
+
+    def feed(self, delta):
+        if self._closed:
+            raise RuntimeError("ClauseSplitter already flushed")
+        if not delta:
+            return []
+        self._raw += delta
+        return self._drain(final=False)
+
+    def flush(self):
+        if self._closed:
+            return []
+        out = self._drain(final=True)
+        self._closed = True
+        return out
+
+    def _drain(self, *, final):
+        red, omap = _ref_run_redact(self._redact, self._raw)
+        e_red = omap.raw_to_red(self._emitted_raw)
+        out = []
+        while e_red < len(red):
+            pending = red[e_red:]
+            cut = _ref_next_cut(pending, final=final, holdback=self._holdback)
+            if cut is None:
+                break
+            span = omap.red_span_around(e_red + cut)
+            if span is not None:
+                cut = span[0] - e_red if span[0] > e_red else span[1] - e_red
+            new_red = e_red + cut
+            new_raw = max(omap.red_to_raw(new_red), self._emitted_raw)
+            out.append(vw.Clause(text=red[e_red:new_red], raw=self._raw[self._emitted_raw:new_raw]))
+            e_red = new_red
+            self._emitted_raw = new_raw
+        if final and self._emitted_raw < len(self._raw):
+            out.append(vw.Clause(text="", raw=self._raw[self._emitted_raw:]))
+            self._emitted_raw = len(self._raw)
+        return out
+
+
+_DIFF_NAMES = ["小明", "Alice", "Ann", "が子", "지수", "O'Brien"]
+_DIFF_LABEL = "家人"
+_CTRL = [chr(0), chr(1), chr(0x1F), chr(0x7F), chr(0x85), chr(0x2028), chr(0x2029),
+         chr(0x200B), chr(0x200D), chr(0xFEFF), "\r", "\r\n", "\n", "\t"]
+_DIFF_POOLS = [
+    _CJK[:300],
+    ["小", "明", "小明", "小明来了", "阿明", "が", "子", "が子", "지", "수", "지수", "지숙"],
+    ["Alice", "alice", "ALICE", "Ann", "Anna", "xAnn", "Ann's", "O'Brien", "ａｌｉｃｅ",
+     "A" + chr(0x200B) + "lice", "word", "hello", "3.14", "1,000", " ", "  "],
+    ['"', "\\", '\\"', '"' * 3, "\\" * 4],
+    _CTRL,
+    ["[a](b)", "](", "![x](y)", "[", "]", "(", ")", "<http:x>", "<a@b>", "[id]: u"],
+    ["===", "＝＝＝", "======X======", "<visit_data>", "</ visit_data>", "<<visit_data"],
+    _EMOJI,
+    _PUNCT + list(".!?;,:") + ["。」", "…", "！？"],
+]
+
+
+def _diff_text(rng: random.Random, target: int, pools=None) -> str:
+    pools = pools or _DIFF_POOLS
+    weights = [6, 4, 4, 2, 1, 1, 1, 1, 3][:len(pools)]
+    parts: list[str] = []
+    size = 0
+    while size < target:
+        part = rng.choice(rng.choices(pools, weights=weights)[0])
+        parts.append(part)
+        size += len(part)
+    return "".join(parts)
+
+
+def _chunk(rng: random.Random, text: str, max_step: int) -> list[str]:
+    out = []
+    pos = 0
+    while pos < len(text):
+        step = rng.randint(1, max_step)
+        out.append(text[pos:pos + step])
+        pos += step
+    return out
+
+
+def _budget_log(budget, deltas) -> list:
+    log: list = []
+    for d in deltas:
+        try:
+            log.append((budget.take(d), budget.exhausted))
+        except Exception as exc:  # noqa: BLE001 - the exception type is part of the behaviour
+            log.append(("raised", type(exc).__name__))
+            return log
+    log.append((budget.accepted_text, budget.outbound_text()))
+    return log
+
+
+def _splitter_log(splitter, deltas) -> list:
+    log: list = []
+    try:
+        for d in deltas:
+            log.append([(c.text, c.raw) for c in splitter.feed(d)])
+        log.append([(c.text, c.raw) for c in splitter.flush()])
+    except Exception as exc:  # noqa: BLE001
+        log.append(("raised", type(exc).__name__))
+    return log
+
+
+def _real_redactors():
+    from functools import partial
+
+    from main_logic.visit.sanitize import (
+        redact_outbound,
+        redact_outbound_boundary,
+        redact_outbound_with_spans,
+    )
+    kw = {"family_names": _DIFF_NAMES, "replacement": _DIFF_LABEL}
+    return (partial(redact_outbound, **kw), partial(redact_outbound_with_spans, **kw),
+            redact_outbound_boundary(_DIFF_NAMES))
+
+
+def test_wire_budget_matches_whole_buffer_measurement_on_random_streams():
+    """Every take (accepted prefix, exhausted, exceptions) and the final outbound text
+    equal the original whole-buffer budget, with identity, plain-string and the
+    real redact + sanitize_relay_text + clean_relay_text injected. Mutations:
+    loosening the piece-count bound, skipping the surrogate guard or restarting
+    redaction after a letter all make some stream diverge."""
+    from main_logic.visit.sanitize import clean_relay_text, sanitize_relay_text
+
+    red_str, red_spans, boundary = _real_redactors()
+    escapy = [['"', "\\", "a", "好", chr(1), "\n"]]
+    configs = [
+        ("plain", {}, None, 4200, 40),
+        ("plain-escapes", {}, escapy, 2400, 12),
+        ("plain-2-pieces", {"max_pieces": 2}, None, 1500, 9),
+        ("str-redact", {"redact": lambda s: s.replace("小明", '"家"' * 3),
+                        "sanitize": lambda s: s.replace(chr(0), "")}, None, 2600, 30),
+        ("real", {"redact": red_str, "sanitize": sanitize_relay_text,
+                  "clean": clean_relay_text}, None, 1800, 25),
+        ("real-boundary", {"redact": red_str, "sanitize": sanitize_relay_text,
+                           "clean": clean_relay_text, "redact_boundary": boundary}, None, 1800, 25),
+        ("spans-boundary", {"redact": red_spans, "redact_boundary": boundary}, None, 2600, 30),
+    ]
+    rng = random.Random(20261003)
+    exhausted = 0
+    for name, kw, pools, target, max_step in configs:
+        for _ in range(4):
+            deltas = _chunk(rng, _diff_text(rng, rng.randint(target // 3, target), pools), max_step)
+            ref_kw = {k: v for k, v in kw.items() if k != "redact_boundary"}
+            ref = _budget_log(_RefWireBudget(visit_id=VID, header=_HEADER, **ref_kw), deltas)
+            got = _budget_log(vw.WireBudget(visit_id=VID, header=_HEADER, **kw), deltas)
+            assert got == ref, name
+            exhausted += any(len(e) == 2 and e[1] is True for e in ref[:-1])
+    assert exhausted >= 10          # 大部分流真的走到了上限与二分
+
+    # 孤立代理项：两边在同一次 take 抛同一种异常
+    for kw in ({}, {"redact": red_str, "redact_boundary": boundary}):
+        deltas = ["你好", "abc", "x" + chr(0xD800), "more"]
+        ref_kw = {k: v for k, v in kw.items() if k != "redact_boundary"}
+        ref = _budget_log(_RefWireBudget(visit_id=VID, header=_HEADER, **ref_kw), deltas)
+        assert ref[-1] == ("raised", "UnicodeEncodeError")
+        assert _budget_log(vw.WireBudget(visit_id=VID, header=_HEADER, **kw), deltas) == ref
+    # 非法 header：第一次 take 就抛，与原实现同一时机
+    bad_header = dict(_HEADER, ln="bad")
+    ref = _budget_log(_RefWireBudget(visit_id=VID, header=bad_header), ["a"])
+    assert ref == [("raised", "ValueError")]
+    assert _budget_log(vw.WireBudget(visit_id=VID, header=bad_header), ["a"]) == ref
+
+
+def test_clause_splitter_matches_whole_buffer_redaction_on_random_streams():
+    """Clause texts, raw slices and cut points equal the original splitter that
+    re-redacts the whole buffer on every feed, for identity, spans and plain-
+    string redaction and the real redact_outbound_with_spans with its restart
+    predicate. Mutations: resuming the boundary scan with a stale state,
+    committing a segment that does not end at a boundary character, or a
+    predicate that accepts letters all make some stream diverge."""
+    _red_str, red_spans, boundary = _real_redactors()
+    holdback = max(len(n) for n in _DIFF_NAMES) - 1
+    configs = [
+        ("identity", {}, 0, 900, 12),
+        ("identity-holdback", {"holdback_chars": 4}, 0, 900, 12),
+        ("fake-spans", {"redact": _span_redactor("小明", "那位家里人")}, holdback, 700, 8),
+        ("str-difflib", {"redact": lambda s: s.replace("小明", _DIFF_LABEL)}, holdback, 250, 6),
+        ("real-spans", {"redact": red_spans}, holdback, 600, 8),
+        ("real-spans-boundary", {"redact": red_spans, "redact_boundary": boundary},
+         holdback, 900, 8),
+        ("real-spans-boundary-1", {"redact": red_spans, "redact_boundary": boundary},
+         holdback, 400, 1),
+    ]
+    rng = random.Random(4096)
+    clauses = 0
+    for name, kw, hb, target, max_step in configs:
+        for _ in range(6):
+            deltas = _chunk(rng, _diff_text(rng, rng.randint(target // 3, target)), max_step)
+            kw = dict(kw)
+            kw.setdefault("holdback_chars", hb)
+            ref_kw = {k: v for k, v in kw.items() if k != "redact_boundary"}
+            ref = _splitter_log(_RefClauseSplitter(**ref_kw), deltas)
+            got = _splitter_log(vw.ClauseSplitter(**kw), deltas)
+            assert got == ref, name
+            clauses += sum(len(x) for x in ref if isinstance(x, list))
+    assert clauses > 500
+    # 以空白开头、只有一个可见字符就遇到边界：短句合并判据（strip 后长度）要逐字符续算
+    edge_lines = [" 。好的。", "  !x. y", "\n。好", " \t。。x", "  a。 b。", "\t\n 嗯。！好", " . 3.14. ok"]
+    for line in edge_lines:
+        for deltas in ([line], list(line)):
+            ref = _splitter_log(_RefClauseSplitter(), deltas)
+            assert _splitter_log(vw.ClauseSplitter(), deltas) == ref, line
+    # 长段无标点：只靠字节硬上限下刀，扫描状态要跨很多次 feed 续用
+    for unit in ("啊", "ab ", '"', "小明"):
+        line = unit * 700
+        deltas = _chunk(rng, line, 3)
+        for kw in ({}, {"redact": red_spans, "redact_boundary": boundary, "holdback_chars": holdback}):
+            ref_kw = {k: v for k, v in kw.items() if k != "redact_boundary"}
+            ref = _splitter_log(_RefClauseSplitter(**ref_kw), deltas)
+            assert _splitter_log(vw.ClauseSplitter(**kw), deltas) == ref, unit
+
+
+def test_clause_splitter_boundary_mode_requires_reported_spans():
+    # 分段模式下 difflib 推出的区间与整句不同，改动文本却不报区间的 redact 直接报错
+    splitter = vw.ClauseSplitter(redact=lambda s: s.replace("小明", _DIFF_LABEL),
+                                 redact_boundary=lambda ch: True)
+    assert splitter.feed("你好。") == []
+    with pytest.raises(ValueError):
+        splitter.feed("小明来了。")
+
+
+_LINEAR_ASCII = ("hello world, this is a test. Alice says hi. " * 100)[:VISIT_TEXT_MAX_BYTES]
+_LINEAR_MIXED = ("hello world, this is a test. Alice says hi to 小明 again. " * 80)[:4096]
+_LINEAR_CJK = ("今天的天气很好我们一起去公园散步吧" * 300)[:2000]   # 无标点：整段靠硬上限下刀
+
+
+def _feed_one_char_at_a_time(redact, boundary) -> None:
+    budget = vw.WireBudget(visit_id=VID, header=_HEADER)
+    for ch in _LINEAR_ASCII:
+        assert budget.take(ch) == ch
+    assert budget.accepted_text == _LINEAR_ASCII and not budget.exhausted
+    assert budget.take("!") == "" and budget.exhausted      # 第 4097 字节
+    for text in (_LINEAR_MIXED, _LINEAR_CJK):
+        splitter = vw.ClauseSplitter(redact=redact, redact_boundary=boundary, holdback_chars=6)
+        clauses = []
+        for ch in text:
+            clauses += splitter.feed(ch)
+        clauses += splitter.flush()
+        assert "".join(c.raw for c in clauses) == text
+
+
+def test_one_char_deltas_do_work_proportional_to_the_line(monkeypatch):
+    """A 4 KB line fed one character at a time, counted deterministically instead
+    of timed: fragment() runs a constant number of times, redaction reads O(line)
+    characters in total and the boundary scan touches each character O(1) times.
+    The whole-buffer versions read ~8.4M characters in redaction and rescan the
+    unreleased tail on every feed (11x-120x the scan work here)."""
+    _red_str, red_spans, boundary = _real_redactors()
+    seen = {"fragment": 0, "redact": 0, "scan": 0}
+    real_fragment, real_esc2 = vw.fragment, vw._esc2_len
+
+    def counting_fragment(payload_json, **kw):
+        seen["fragment"] += 1
+        return real_fragment(payload_json, **kw)
+
+    def counting_redact(s):
+        seen["redact"] += len(s)
+        return red_spans(s)
+
+    def counting_esc2(ch):
+        seen["scan"] += 1                 # 分句扫描每看一个字符调用一次
+        return real_esc2(ch)
+
+    monkeypatch.setattr(vw, "fragment", counting_fragment)
+    monkeypatch.setattr(vw, "_esc2_len", counting_esc2)
+    _feed_one_char_at_a_time(counting_redact, boundary)
+    total = len(_LINEAR_MIXED) + len(_LINEAR_CJK)
+    assert seen["fragment"] <= 2, seen
+    assert seen["redact"] <= 4 * total, seen
+    assert seen["scan"] <= 2 * total, seen
+
+
+@pytest.mark.performance
+def test_one_char_deltas_wall_clock():
+    """Wall-clock companion of the work-count test (thresholds only with
+    RUN_PERF_TESTS=true, like the other performance tests): the whole-buffer
+    versions take about a second for the budget and three for the splitter on
+    a desktop; the incremental ones take milliseconds and ~0.1 s."""
+    import time
+
+    _red_str, red_spans, boundary = _real_redactors()
+    start = time.perf_counter()
+    _feed_one_char_at_a_time(red_spans, boundary)
+    elapsed = time.perf_counter() - start
+    if os.environ.get("RUN_PERF_TESTS", "").lower() == "true":
+        assert elapsed < 1.0, elapsed
