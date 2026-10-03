@@ -2878,6 +2878,7 @@ class IndependentAsrRuntime:
         rnnoise_evidence = frame.rnnoise_evidence
         deferred_pause_revision: int | None = None
         submit_cancelled = False
+        pause_audio_session = None
 
         try:
             lifecycle = identity.lifecycle
@@ -3227,6 +3228,7 @@ class IndependentAsrRuntime:
                 payload,
                 sample_rate_hz=sample_rate_hz,
             )
+            pause_audio_session = asr_session
         except asyncio.CancelledError:
             submit_cancelled = True
             raise
@@ -3254,6 +3256,8 @@ class IndependentAsrRuntime:
         finally:
             if (
                 deferred_pause_revision is not None and not submit_cancelled
+                and pause_audio_session is not None
+                and self._asr_session is pause_audio_session
                 and self._asr_audio_dispatcher.pause_hint_revision == deferred_pause_revision
                 and self._ingress_token_matches(ingress_token)
                 and self._asr_lifecycle is identity.lifecycle

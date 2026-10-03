@@ -678,3 +678,59 @@ async def test_pause_publication_cannot_overtake_same_tick_resume(monkeypatch, q
         assert not any(json.loads(payload)["type"] == "session.finish" for payload in sockets[0].sent)
     finally:
         await session.close()
+
+@pytest.mark.parametrize("failure", ["blocked", "stale", "replaced"])
+async def test_failed_submit_does_not_forward_deferred_pause(monkeypatch, qwen_sessions, failure):
+    from main_logic.asr_client.lifecycle import AudioDecision, AudioDisposition
+
+    make_session, _, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    await component._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch,
+    )
+    component._asr_detector._feed_result = DetectorFeedResult(
+        (SpeechActivityEvent.CANDIDATE_PAUSE,), True,
+    )
+    hints = []
+
+    async def observe(*, speech_active):
+        hints.append(speech_active)
+
+    monkeypatch.setattr(session, "signal_local_activity", observe)
+    original_accept = component._asr_lifecycle.accept_audio
+
+    def accept(audio, **kwargs):
+        if failure == "blocked":
+            return AudioDecision(AudioDisposition.BLOCK)
+        if failure == "stale":
+            component._asr_session = object()
+        return original_accept(audio, **kwargs)
+
+    monkeypatch.setattr(component._asr_lifecycle, "accept_audio", accept)
+    original_observe = component._observe_provider_speaker_shadow
+
+    def shadow(*args, **kwargs):
+        original_observe(*args, **kwargs)
+        if failure == "replaced":
+            component._asr_session = object()
+
+    monkeypatch.setattr(component, "_observe_provider_speaker_shadow", shadow)
+    try:
+        result = await component.submit(
+            ProcessedVoiceFrame(b"\0" * 3200, 16000, None),
+            ingress_token=component._asr_current_ingress_token,
+        )
+        await component._asr_audio_dispatcher.wait_idle()
+        assert hints == []
+        if failure == "blocked":
+            assert result.status is runtime_module.AsrSubmitStatus.UNAVAILABLE
+        elif failure == "stale":
+            assert result.status is runtime_module.AsrSubmitStatus.STALE
+    finally:
+        component._asr_session = session
+        await component._asr_audio_dispatcher.close()
+        await session.close()

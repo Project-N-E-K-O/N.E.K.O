@@ -444,13 +444,38 @@ async def _qwen_finish_and_reconnect(
     await _qwen_emit_empty_finals_for_pending_items(response_queue, state)
     await _qwen_close_transport(ws, state)
     queued_requests = (*deferred_requests, *getattr(request_queue, "_queue", ()))
+    # finish already sealed this transport. Preserve accepted tail PCM for a
+    # successor, then process shutdown in FIFO order there. Only clear may
+    # invalidate audio before it; activity alone does not require a successor.
+    shutdown_index = next(
+        (i for i, request in enumerate(queued_requests) if request.kind == "shutdown"),
+        len(queued_requests),
+    )
+    before_shutdown = queued_requests[:shutdown_index]
+    last_clear = max(
+        (i for i, request in enumerate(before_shutdown) if request.kind == "clear"),
+        default=-1,
+    )
+    has_tail_audio = any(
+        request.kind == "audio" and request.audio
+        for request in before_shutdown[last_clear + 1:]
+    )
+    if has_tail_audio:
+        if deferred_shutdown is not None:
+            deferred_requests.append(deferred_shutdown)
+            deferred_shutdown = None
+        if deferred_clear is not None:
+            request_queue.task_done()
+            return "clear", deferred_clear
+        if last_clear < 0:
+            return "reconnect", None
     if deferred_shutdown is None and any(
         request.kind in {"shutdown", "clear"}
         for request in queued_requests
     ):
-        # clear discards the old epoch's successor tail; shutdown takes
-        # precedence over clear so closing never opens a redundant transport.
-        terminal_kind = "shutdown" if any(
+        # clear invalidates preceding PCM. Preserve any new-epoch PCM before
+        # shutdown; with no valid tail, shutdown avoids a needless connection.
+        terminal_kind = "clear" if last_clear >= 0 and has_tail_audio else "shutdown" if any(
             request.kind == "shutdown" for request in queued_requests
         ) else "clear"
         if deferred_clear is not None:
@@ -810,6 +835,13 @@ async def _qwen_sender(
                 if hold is not None:
                     hold.release()
                 request_queue.task_done()
+                if (
+                    isinstance(request_queue, _AsrRequestQueue)
+                    and request_queue.waiting_audio_items == 0
+                ):
+                    # Configured is not recovered: blocked producers need the
+                    # original recovery budget until retained PCM is drained.
+                    request_queue.transport_recovery_deadline = 0.0
     except asyncio.CancelledError:
         raise
     except ConnectionClosed:
@@ -1281,8 +1313,6 @@ async def qwen_asr_worker(
                         if isinstance(request_queue, _AsrRequestQueue) else 0.0
                     ),
                 )
-                if isinstance(request_queue, _AsrRequestQueue):
-                    request_queue.transport_recovery_deadline = 0.0
                 sender_task = asyncio.create_task(
                     _qwen_sender(
                         ws,
@@ -1295,16 +1325,18 @@ async def qwen_asr_worker(
                     ),
                     name="qwen-asr-sender",
                 )
-                # The watchdog never finishes on its own and stays out of the
-                # outcome wait; teardown below cancels it with its siblings.
+                # A failed final delivery in the watchdog must retire the
+                # connection, just like failure in the sender or receiver.
                 stalled_watch_task = asyncio.create_task(
                     _qwen_watch_stalled_items(response_queue, state),
                     name="qwen-asr-stalled-watch",
                 )
                 done, pending = await asyncio.wait(
-                    {sender_task, receiver_task},
+                    {sender_task, receiver_task, stalled_watch_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                if stalled_watch_task in done:
+                    await stalled_watch_task
                 if sender_task in done:
                     outcome, outcome_request = await sender_task
                 if (
