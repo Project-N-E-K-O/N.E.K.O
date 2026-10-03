@@ -586,10 +586,17 @@ async def _qwen_sender(
                             _qwen_cancel_provider_fallback(state)
                         elif (
                             state.current_provider_utterance_id is not None
-                            and state.provider_speech_cycles.get(
-                                state.current_provider_utterance_id, 0
-                            ) == state.local_speech_cycle
+                            and (
+                                state.current_provider_utterance_id
+                                not in state.provider_endpoint_utterance_ids
+                                or state.provider_speech_cycles.get(
+                                    state.current_provider_utterance_id, 0
+                                ) == state.local_speech_cycle
+                            )
                         ):
+                            # Local resume need not create a provider turn.
+                            # Until server VAD seals the current item, that
+                            # item owns the fallback regardless of local cycles.
                             state.local_speech_active = False
                             key = (
                                 request.generation,

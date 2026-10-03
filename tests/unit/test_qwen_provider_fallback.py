@@ -944,3 +944,45 @@ async def test_pause_without_provider_start_finishes_within_grace(monkeypatch):
         sender.cancel()
         receiver.cancel()
         await asyncio.gather(sender, receiver, return_exceptions=True)
+
+
+@pytest.mark.parametrize("endpoint", ["speech_stopped", "committed"])
+async def test_local_pause_resume_pause_keeps_current_provider_endpoint_authority(monkeypatch, endpoint):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    ws = _FakeWebSocket()
+    config = AsrSessionConfig(endpointing_mode="provider")
+    sender = asyncio.create_task(qwen._qwen_sender(ws, requests, responses, config, state))
+    receiver = asyncio.create_task(qwen._qwen_receiver(ws, responses, config, state))
+
+    async def activity(active):
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=active))
+        await asyncio.wait_for(requests.join(), 1)
+
+    try:
+        await activity(True)
+        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "current"})
+        await _next_event(responses, "utterance_started")
+        await activity(False)
+        assert state.fallback_key == (0, 0, 1)
+        await activity(True)
+        assert state.fallback_key is None
+        await activity(False)
+        timer = state.fallback_timer_task
+        assert state.local_speech_cycle == 2
+        assert state.fallback_key == (0, 0, 1)
+        assert state.pending_local_pause is None
+        await ws.server_send({"type": f"input_audio_buffer.{endpoint}", "item_id": "current"})
+        await _wait_until(lambda: state.fallback_key is None)
+        await asyncio.gather(timer, return_exceptions=True)
+        assert timer.cancelled() or timer.done()
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0\0"))
+        await asyncio.wait_for(requests.join(), 1)
+        assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
+        assert not sender.done()
+    finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)
