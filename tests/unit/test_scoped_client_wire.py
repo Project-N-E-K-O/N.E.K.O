@@ -611,3 +611,13 @@ async def test_history_requires_a_valid_trust_block(trust):
     async with http:
         result = await client.post_history_batch("Lanlan", segments=[segment])
     assert result.segments_ok == (False,)
+
+
+@pytest.mark.asyncio
+async def test_empty_batch_is_rejected_without_a_request():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    async with http:
+        with pytest.raises(ValueError):
+            await client.post_history_batch("Lanlan", segments=[])
+    assert recorder.requests == []

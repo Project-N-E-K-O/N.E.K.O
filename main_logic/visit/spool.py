@@ -590,21 +590,6 @@ def _try_read_state(path: Path) -> dict | None:
         return None
 
 
-def _read_header(path: Path) -> dict | None:
-    try:
-        with open(path, "rb") as f:
-            first = f.readline()
-    except FileNotFoundError:
-        return None
-    if not first.endswith(b"\n"):
-        return None
-    try:
-        header = json.loads(first)
-    except ValueError:
-        return None
-    return header if isinstance(header, dict) else None
-
-
 def _read_header_strict(path: Path, *, validate: bool = True) -> dict | None:
     """Read a spool header for the forget path: ``None`` only when the file is absent.
 

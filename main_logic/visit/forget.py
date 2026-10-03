@@ -547,7 +547,7 @@ async def run_revocation(
     roster: PeerRoster,
     forget_subject: ForgetSubject,
     void_pending: VoidPending,
-    own_char: str | None = None,
+    own_char: str,
 ) -> bool:
     """Execute (or resume) one revocation log step by step.
 
@@ -562,9 +562,12 @@ async def run_revocation(
     failed erase is never marked done. ``void_pending`` (required) drops
     the staged pending work of this person (diary facts, previews, ...); a
     caller with nothing staged passes a no-op explicitly, so that step is
-    never recorded as done without the cleanup having run. ``own_char`` is the character's
-    current name (resolved from ``own_char_uid`` by the caller); it defaults
-    to the name stored in the log. When every step is done the log is
+    never recorded as done without the cleanup having run. ``own_char``
+    (required) is the character's *current* name, resolved by the caller from
+    the log's ``own_char_uid``; the name stored in the log is never used,
+    because a rename between the log being opened and a replay would point
+    the roster steps at a name that no longer exists and close the log with
+    the entry and its summary still there. When every step is done the log is
     closed and ``True`` is returned; ``False`` means the log was already gone.
     """
     if roster.own_uid != log.own_uid:
@@ -575,9 +578,11 @@ async def run_revocation(
     if record["own_uid"] != log.own_uid:
         raise ValueError("revocation log belongs to another community account")
     peer_uid = record["peer_uid"]
-    char_name = own_char or record.get("own_char")
+    # 不回落到日志里存的名字：开日志后改过名的话，旧名下什么都找不到，名册步骤
+    # 「成功」却删不到条目和摘要，日志随之关闭、再无重放入口
+    char_name = own_char
     if not isinstance(char_name, str) or not char_name:
-        raise ValueError("the local character name of this revocation is unknown")
+        raise ValueError("own_char must be the character's current non-empty name")
     if STEP_REMOVE_CHAR not in record["done_steps"]:
         # 名册条目还在时，以它为准对账：日志里丢了某只对方猫娘的 group_participant
         # （或某个 pair）也能自洽通过校验，重放会清掉其余主体、删名册、关日志，

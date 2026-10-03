@@ -439,8 +439,13 @@ class ScopedMemoryClient:
         only when every segment came back ``"ok"``). The server commits the
         successful segments and reports them in request order, so callers
         retry only ``failed_positions`` instead of re-extracting the whole
-        batch.
+        batch. An empty ``segments`` raises ``ValueError`` without a request
+        (the server rejects it and there would be nothing to retry).
         """
+        if not segments:
+            # 服务端对空批次一律 422，结果里也没有可重试的位置：调用方的「只重试失败位」
+            # 循环会永远卡住。这是调用错误，直接报出来
+            raise ValueError("post_history_batch needs at least one segment")
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
         _put_retry_identity(body, idempotency_key, client_requested_at)

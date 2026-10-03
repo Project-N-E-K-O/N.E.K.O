@@ -337,8 +337,9 @@ class VisitOutbox:
     def encoded_size(self, msg: Mapping[str, Any]) -> tuple[int, int]:
         """``(pieces, bytes)`` of ``msg`` as it would go on the wire, for ``try_reserve``.
 
-        A missing ``seq`` / ``last_seq`` is measured at its widest (u32 max)
-        and a ``text``'s ``i_done`` always at its widest
+        A missing ``seq`` is measured at its widest (u32 max) and a missing
+        ``leave.last_seq`` as ``seq - 1`` (the schema's relation, same digit
+        count), and a ``text``'s ``i_done`` always at its widest
         (``VISIT_LINE_DELTA_MAX_I``; :meth:`send` and the first transmission
         rewrite it), so the result is an upper bound of what :meth:`send`
         will charge and callers need not fill internal fields.
@@ -347,7 +348,8 @@ class VisitOutbox:
         if is_reliable(str(payload.get("t"))):
             payload.setdefault("seq", _U32_MAX)
             if payload.get("t") == "leave":
-                payload.setdefault("last_seq", _U32_MAX)
+                # schema 要求 last_seq == seq - 1；seq 已按 u32 最大值估，last_seq 位数相同，仍是上界
+                payload.setdefault("last_seq", payload["seq"] - 1)
             if payload.get("t") == "text":
                 payload["i_done"] = VISIT_LINE_DELTA_MAX_I
         return wire_size(encode_msg(payload), visit_id=self.visit_id)
@@ -1028,8 +1030,11 @@ class InboxResult:
     ``seq`` order, a lossy one by itself). ``_unknown`` / ``_invalid``
     entries are no-op deliveries: the upper layer only counts them
     (``VisitRoom.record_unknown_type`` / ``record_anomaly``).
-    ``duplicate``: an already seen ``seq`` (or ``ln``); only an ``ack`` is
-    owed. ``early``: the ``wrap_up{ph:'speaking'}`` handed out ahead of a
+    ``duplicate``: this message itself was already seen (its ``seq``, or a
+    reused ``ln``) and is not delivered again; an ``ack`` is owed. It does
+    NOT mean "nothing to deliver": a duplicate can still fill a ``seq`` gap
+    and release buffered messages, so ``deliver`` must always be processed
+    whatever ``duplicate`` says. ``early``: the ``wrap_up{ph:'speaking'}`` handed out ahead of a
     gap. ``leave``: a ``leave`` seen for the first time (feed it to
     ``VisitLiveness.on_peer_leave_message`` with :attr:`contiguous_seq`).
     ``leave_gap_filled``: this call closed the gap before a pending

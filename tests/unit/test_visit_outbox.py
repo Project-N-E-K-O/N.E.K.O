@@ -838,3 +838,10 @@ def test_a_rejected_first_delta_leaves_no_line_behind(tmp_path):
     tx.send(good, now=0.0)
     frames = tx.due(0.0)
     assert [f.payload.get("ad") for f in frames if f.t == "line_delta"] == ["gc"]
+
+
+def test_encoded_size_of_a_leave_does_not_raise(tmp_path):
+    # schema 要求 last_seq == seq - 1：估算不能把两者都设成 u32 最大值
+    tx = make_outbox(tmp_path)
+    pieces, size = tx.encoded_size({"t": "leave", "reason": "home"})
+    assert pieces >= 1 and size > 0
