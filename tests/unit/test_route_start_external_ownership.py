@@ -228,6 +228,29 @@ async def test_icebreaker_restore_replaces_its_own_route_while_another_route_is_
     assert state["session_id"] == "icebreaker-day1-restored"
 
 
+@pytest.mark.asyncio
+async def test_icebreaker_restore_leaves_the_language_of_the_route_holding_the_slot(
+    _icebreaker_clean, monkeypatch,
+):
+    # Mutation: absorbing the request language on a restore while another
+    # route holds the slot turns this red.
+    manager = _LanguageManager()
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1")
+    _register_visit(active=True)
+
+    result = await icebreaker_router.icebreaker_route_start(_FakeRequest({
+        "lanlan_name": "Lan",
+        "session_id": "icebreaker-day1-restored",
+        "i18n_language": "ja",
+        "render_language": "ja",
+    }))
+
+    assert result["ok"] is True
+    assert manager.language_updates == []
+    assert manager.render_updates == []
+
+
 class _LanguageManager:
     def __init__(self):
         self.user_language = "zh-CN"

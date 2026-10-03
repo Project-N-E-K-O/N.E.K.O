@@ -1028,7 +1028,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             _claim_voice_input_connection()
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
-                            _fire_task(external_route.route_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            # Announced through the registry, so a route that
+                            # ends or is replaced before this task runs is not
+                            # notified in place of the current owner.
+                            _fire_task(route_external_microphone_audio(lanlan_name))
                             _fire_task(
                                 session_manager[lanlan_name].start_session(
                                     websocket,

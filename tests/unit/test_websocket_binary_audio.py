@@ -858,6 +858,55 @@ async def test_game_audio_route_never_claims_legacy_core_lease(
     ]
 
 
+@pytest.mark.asyncio
+async def test_deferred_stt_announcement_skips_a_route_that_ended_before_it_ran(
+    monkeypatch,
+) -> None:
+    """The default audio start announces STT in a background task; it goes
+    through the registry, so a route that ended meanwhile is not notified.
+
+    Mutation: calling the captured route's handler directly turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([{"action": "start_session", "input_type": "audio"}])
+    _session_ids, _route_calls = _install_protocol_endpoint(
+        monkeypatch, manager=manager, websocket=websocket,
+    )
+    active = {"value": True}
+    announcements = []
+
+    async def _announce(_name: str, message: dict) -> bool:
+        announcements.append(message)
+        return True
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: active["value"],
+            route_stream_message=_announce,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "game-1",
+            audio_passthrough=True,
+        )
+    )
+    reset_circuit = manager.reset_session_start_circuit
+
+    def _route_ends_before_background_tasks_run() -> None:
+        # Runs synchronously right before the announcement task is created.
+        active["value"] = False
+        reset_circuit()
+
+    manager.reset_session_start_circuit = _route_ends_before_background_tasks_run
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "reset_start_circuit" in [name for name, _payload in manager.calls]
+    assert announcements == []
+
+
+
 _LEASE_SYNC_MESSAGE = {
     "action": "voice_input_control",
     "event": "lease_sync",

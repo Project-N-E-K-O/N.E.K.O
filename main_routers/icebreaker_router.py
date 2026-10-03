@@ -288,17 +288,17 @@ async def icebreaker_route_start(request: Request):
         # change the shared session language the owning route is using.
         # A character already in an icebreaker route is replacing it (e.g. the
         # tutorial restoring with a new session id): that is not a new claim on
-        # the slot, and refusing it would strand the tutorial mid-way.
-        if (
-            not is_icebreaker_route_active(lanlan_name)
-            and is_external_route_locked(lanlan_name, exclude_kind="icebreaker")
-        ):
+        # the slot, and refusing it would strand the tutorial mid-way. It still
+        # leaves the language alone while another route holds the slot.
+        slot_taken = is_external_route_locked(lanlan_name, exclude_kind="icebreaker")
+        if slot_taken and not is_icebreaker_route_active(lanlan_name):
             logger.info(
                 "icebreaker route/start refused: external route owns lanlan=%s",
                 lanlan_name,
             )
             return {"ok": False, "reason": "route_owned_by_external"}
-        _absorb_request_language(data, lanlan_name)
+        if not slot_taken:
+            _absorb_request_language(data, lanlan_name)
         state = activate_icebreaker_route(lanlan_name, session_id)
     return {"ok": True, "state": _public_icebreaker_route_state(state)}
 
