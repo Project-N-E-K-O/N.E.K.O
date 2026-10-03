@@ -51,7 +51,11 @@ def _kind(
         on_page_signal=on_page_signal,
         is_locked=None if locked is None else (lambda _name: locked),
         has_background_tasks=None if background is None else (lambda _name: background),
-        current_instance=None if instance is None else (lambda _name: instance),
+        current_instance=(
+            (lambda _name: instance) if instance is not None
+            else (lambda _name: "instance-1") if on_start_session is not None
+            else None
+        ),
     )
 
 
@@ -441,3 +445,62 @@ async def test_independent_asr_ignores_a_route_reporting_an_empty_instance(empty
 
     assert consumer.is_available() is False
     assert await consumer.prepare_turn(_voice_token(turn_id=9)) is False
+
+
+def test_a_kind_claiming_session_starts_must_report_its_instance(empty_registry):
+    # Callers re-check (kind, instance) after awaiting on_start_session; without
+    # an instance id that re-check cannot tell two instances of the kind apart.
+    with pytest.raises(ValueError, match="current_instance"):
+        registry.register_external_route_kind(ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_unclaimed,
+            on_start_session=AsyncMock(return_value=True),
+            finalize_for_character=_no_routes,
+        ))
+
+
+@pytest.mark.asyncio
+async def test_stream_message_follows_an_owner_change_during_handling(empty_registry):
+    """A declining handler whose route was replaced meanwhile must not leak the text.
+
+    Mutation: returning the stale "not consumed" without re-checking the owner
+    turns this red -- the text would go to the ordinary chat session.
+    """
+    new_owner = AsyncMock(return_value=True)
+
+    async def _decline_after_replacement(_name, _message):
+        registry.register_external_route_kind(ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: False,
+            route_stream_message=_unclaimed,
+            on_start_session=None,
+            finalize_for_character=_no_routes,
+        ))
+        registry.register_external_route_kind(_kind(
+            "other", active=True, route_stream_message=new_owner, instance="other-1",
+        ))
+        return False
+
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=_decline_after_replacement, instance="visit-1",
+    ))
+    message = {"input_type": "text", "data": "hi"}
+
+    assert await registry.route_external_stream_message("Lan", message) is True
+    new_owner.assert_awaited_once_with("Lan", message)
+
+
+@pytest.mark.asyncio
+async def test_stream_message_goes_to_ordinary_chat_when_the_owner_left_during_handling(
+    empty_registry,
+):
+    async def _decline_and_end(_name, _message):
+        registry._reset_for_tests()
+        return False
+
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=_decline_and_end, instance="visit-1",
+    ))
+
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is False

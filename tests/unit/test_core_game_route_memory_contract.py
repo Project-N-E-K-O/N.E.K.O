@@ -5001,6 +5001,7 @@ def _register_external_route_kind(kind, *, active, locked=None, on_start_session
         on_start_session=on_start_session,
         finalize_for_character=_external_route_no_routes,
         is_locked=None if locked is None else (lambda _name: locked),
+        current_instance=None if on_start_session is None else (lambda _name: "instance-1"),
     ))
 
 
@@ -5241,6 +5242,7 @@ async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_cla
             route_stream_message=_external_route_unclaimed,
             on_start_session=AsyncMock(return_value=True),
             finalize_for_character=_external_route_no_routes,
+            current_instance=lambda _name: "instance-2",
         ))
         return False
 

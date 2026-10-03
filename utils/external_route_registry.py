@@ -56,7 +56,9 @@ class ExternalRouteKind:
     session id); a non-game kind must provide it to receive independent-ASR
     transcripts, so an utterance captured for one instance is never delivered
     to the next instance of the same kind. ``is_locked`` defaults to
-    ``is_active``; ``has_background_tasks`` defaults to "never".
+    ``is_active``; ``has_background_tasks`` defaults to "never". A kind that
+    provides ``on_start_session`` must also provide ``current_instance``:
+    callers awaiting that claim re-check the route instance afterwards.
 
     Microphone PCM on the main socket is announced to the route as
     ``{"input_type": "audio", "stt_provider": "realtime"}``. When the route
@@ -90,6 +92,10 @@ def register_external_route_kind(spec: ExternalRouteKind) -> None:
         raise TypeError("spec must be an ExternalRouteKind")
     if not isinstance(spec.kind, str) or not spec.kind.strip():
         raise ValueError("ExternalRouteKind.kind must be a non-empty string")
+    if spec.on_start_session is not None and spec.current_instance is None:
+        raise ValueError(
+            "ExternalRouteKind with on_start_session must also provide current_instance"
+        )
     _kinds[spec.kind] = spec
 
 
@@ -181,16 +187,35 @@ def is_character_lifecycle_locked(lanlan_name: str) -> bool:
     return False
 
 
+# How many times a stream message follows an owner change before it is dropped.
+_STREAM_MESSAGE_MAX_OWNER_CHANGES = 2
+
+
 async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
     """Offer a main-socket ``stream_data`` message to the active route.
 
     Returns True when the route consumed it (the caller must then skip the
-    ordinary chat path).
+    ordinary chat path). A handler may suspend; if the owning route instance
+    changed meanwhile, its "not consumed" no longer speaks for the character,
+    so the message is offered to the current owner instead (or, with no owner
+    left, goes to the ordinary path). An owner that keeps changing gets the
+    message dropped rather than leaked into ordinary chat.
     """
-    spec = get_active_external_route(lanlan_name)
-    if spec is None:
-        return False
-    return bool(await spec.route_stream_message(lanlan_name, message))
+    for _ in range(_STREAM_MESSAGE_MAX_OWNER_CHANGES + 1):
+        identity = external_route_identity(lanlan_name)
+        if identity is None:
+            return False
+        spec, _instance = identity
+        if await spec.route_stream_message(lanlan_name, message):
+            return True
+        if external_route_identity(lanlan_name) == identity:
+            return False
+        logger.info(
+            "external route changed while handling stream_data: lanlan=%s kind=%s",
+            lanlan_name,
+            spec.kind,
+        )
+    return True
 
 
 async def route_external_microphone_audio(lanlan_name: str) -> bool:

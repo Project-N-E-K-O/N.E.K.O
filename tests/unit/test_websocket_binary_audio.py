@@ -2001,6 +2001,7 @@ async def test_route_with_on_start_session_decides_the_session_start(monkeypatch
             route_stream_message=AsyncMock(return_value=False),
             on_start_session=_claim,
             finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
         )
     )
 
@@ -2156,6 +2157,7 @@ async def test_superseded_socket_does_not_start_a_session_after_a_route_declines
             route_stream_message=AsyncMock(return_value=False),
             on_start_session=_decline_after_takeover,
             finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
         )
     )
 
@@ -2187,6 +2189,7 @@ async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
                 route_stream_message=AsyncMock(return_value=False),
                 on_start_session=AsyncMock(return_value=True),
                 finalize_for_character=_finalize_none,
+                current_instance=lambda _name: "visit-2",
             )
         )
         return False
@@ -2198,6 +2201,7 @@ async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
             route_stream_message=AsyncMock(return_value=False),
             on_start_session=_decline_after_replacement,
             finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
         )
     )
 
