@@ -100,29 +100,54 @@ ENVELOPE_TAG = "visit_data"
 
 # ======X====== 成对分隔符（含全角 ＝）：3 个及以上折成 1 个，伪造不出分隔符。
 _DELIMITER_RUN_RE = re.compile("[=＝]{3,}")
-# 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data。
+# 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data（用于检测）。
+_TAG_BRACKETS = "<＜‹"
 _ENVELOPE_TAG_RE = re.compile(r"[<＜‹]\s*/?\s*" + ENVELOPE_TAG, re.IGNORECASE)
+_ENVELOPE_NAME_RE = re.compile(re.escape(ENVELOPE_TAG), re.IGNORECASE)
+
+
+def _strip_tag_openers(text: str) -> str:
+    # 以每个 visit_data 为锚向左走：跳过空白、可选斜杠、空白，再把紧挨着的一整串
+    # 尖括号（可夹空白）一次删掉。只摘一个的话 << /visit_data 剩下的又是合法标签；
+    # 用正则从每个尖括号起点重试则是平方级。向左最多走到上一个锚点，总体线性
+    out: list[str] = []
+    pos = 0
+    for m in _ENVELOPE_NAME_RE.finditer(text):
+        j = m.start()
+        while j > pos and text[j - 1].isspace():
+            j -= 1
+        if j > pos and text[j - 1] == "/":
+            j -= 1
+        while j > pos and text[j - 1].isspace():
+            j -= 1
+        k = j
+        while k > pos and (text[k - 1] in _TAG_BRACKETS or text[k - 1].isspace()):
+            k -= 1
+        while k < j and text[k] not in _TAG_BRACKETS:
+            k += 1                         # 尖括号串前面的空白不属于它，保留
+        if k < j:
+            out.append(text[pos:k])
+            out.append(text[j:m.end()].lstrip())
+        else:
+            out.append(text[pos:m.end()])
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def escape_envelope(text: str) -> str:
     """Neutralise prompt-delimiter and envelope-tag forgeries.
 
     Runs of three or more ``=`` (ASCII or full-width) fold to a single ``=``
-    so no ``======X======`` delimiter can be forged; any opening of the
-    envelope tag loses its angle bracket, repeated until none is left (a run
-    such as ``<< /visit_data>`` would otherwise leave a valid tag behind).
-    Idempotent.
+    so no ``======X======`` delimiter can be forged; every opening of the
+    envelope tag loses its whole run of angle brackets (a run such as
+    ``<< /visit_data>`` would otherwise leave a valid tag behind). Linear in
+    the text length. Idempotent.
     """
     if not text:
         return ""
     text = _DELIMITER_RUN_RE.sub("=", text)
-    # 一遍只摘掉紧贴标签的那个尖括号：前面再多一个就又拼出合法标签，所以做到不动点。
-    # 每遍至少删一个字符，必然终止
-    while True:
-        escaped = _ENVELOPE_TAG_RE.sub(lambda m: m.group(0)[1:].lstrip(), text)
-        if escaped == text:
-            return text
-        text = escaped
+    return _strip_tag_openers(text)
 
 
 def make_envelope_nonce() -> str:

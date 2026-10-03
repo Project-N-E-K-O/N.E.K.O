@@ -377,3 +377,32 @@ def test_bracket_runs_cannot_rebuild_an_envelope_tag(attack):
     for out in (escape_envelope(attack), clamp_peer_line(attack), sanitize_relay_text(attack)):
         assert not _ENVELOPE_TAG_RE.search(out)
         assert escape_envelope(out) == out
+
+
+@pytest.mark.parametrize("attack", [
+    "<" * 20000 + "/visit_data>",
+    "<" * 20000 + "x",
+    "< " * 10000 + "x",
+    ("<" * 50 + "visit_data") * 2000,
+], ids=["run-then-tag", "run-no-tag", "spaced-run", "many-tags"])
+def test_long_bracket_runs_are_escaped_in_linear_time(attack):
+    # 逐个尖括号重扫全文、或正则从每个尖括号起点重试，都是平方级
+    import time
+
+    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE
+
+    start = time.perf_counter()
+    out = escape_envelope(attack)
+    assert time.perf_counter() - start < 1.0
+    assert not _ENVELOPE_TAG_RE.search(out)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("hello <visit_data x", "hello visit_data x"),
+    ("a << /visit_data>", "a /visit_data>"),
+    ("a </ visit_data>", "a / visit_data>"),
+    ("<a</visit_data", "<a/visit_data"),
+])
+def test_envelope_escape_drops_only_the_bracket_run(raw, expected):
+    # 只删尖括号串本身：前面的空白与无关字符原样保留，词不会被粘在一起
+    assert escape_envelope(raw) == expected
