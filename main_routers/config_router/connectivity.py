@@ -20,6 +20,7 @@ Split out of the former monolithic ``main_routers/config_router.py``.
 """
 
 from ._shared import logger, router
+from .candidate_requests import race_candidate_requests
 
 import asyncio
 import ssl
@@ -566,7 +567,7 @@ async def _test_connectivity_candidates(
     if not urls:
         return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
 
-    async def _run_one(candidate_url: str) -> tuple[str, dict]:
+    async def _run_one(candidate_url: str) -> dict:
         if provider_type == "websocket":
             if sub_type == "vllm_omni_tts":
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
@@ -593,38 +594,19 @@ async def _test_connectivity_candidates(
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
-        return candidate_url, result
+        return result
 
-    tasks = [asyncio.create_task(_run_one(url)) for url in urls]
-    results: list[tuple[str, dict]] = []
-    try:
-        for task in asyncio.as_completed(tasks):
-            try:
-                candidate_url, result = await task
-            except Exception as exc:
-                candidate_url = ""
-                result = {"success": False, "error": str(exc), "error_code": "unknown"}
-            results.append((candidate_url, result))
-            if result.get("success"):
-                for pending in tasks:
-                    if not pending.done():
-                        pending.cancel()
-                resolved = dict(result)
-                resolved["resolved_url"] = candidate_url
-                return resolved
-    finally:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    first_url, first_result = results[0] if results else (urls[0], {"success": False, "error_code": "unknown"})
-    failed_urls = [url for url, _ in results if url]
-    result = dict(first_result)
+    result = await race_candidate_requests(urls, _run_one)
+    if result.get("success"):
+        return result
+    result = dict(result)
     result.setdefault("success", False)
     result["resolved_url"] = None
     if len(urls) > 1:
         result["error"] = result.get("error") or "所有候选 URL 均不可用"
         logger.info(
             "[ConnectivityTest] 候选 URL 均未通过: %s",
-            ", ".join(_redact_url_for_log(url) for url in failed_urls or [first_url]),
+            ", ".join(_redact_url_for_log(url) for url in urls),
         )
     return result
 

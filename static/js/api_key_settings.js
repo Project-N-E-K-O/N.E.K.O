@@ -1431,7 +1431,7 @@ function populateModelProviderDropdowns() {
         // Attach onchange (only once — skip if already bound from a previous call)
         if (!sel.dataset.providerChangeAttached) {
             sel.addEventListener('change', function () {
-                onCustomModelProviderChange(mt);
+                onCustomModelProviderChange(mt, true);
             });
             sel.dataset.providerChangeAttached = 'true';
         }
@@ -1442,7 +1442,7 @@ function populateModelProviderDropdowns() {
  * 当自定义模型的服务商选择变化时，自动填充 URL / Key
  * CRITICAL: omni 模型使用 core_url (WebSocket)，其他模型使用 openrouter_url (HTTPS)
  */
-function onCustomModelProviderChange(modelType) {
+function onCustomModelProviderChange(modelType, userInitiated = false) {
     const sel = document.getElementById(`${modelType}ModelProvider`);
     if (!sel) return;
 
@@ -1455,6 +1455,14 @@ function onCustomModelProviderChange(modelType) {
     const keyInput = document.getElementById(`${modelType}ModelApiKey`);
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
     const voiceInput = document.getElementById(`${modelType}VoiceId`);
+
+    const isNamedProvider = value => !!value && value !== 'custom' && !value.startsWith('follow_');
+    if (userInitiated && !_isLoadingSavedConfig && modelIdInput
+        && previousProvider !== provider && isNamedProvider(previousProvider) && isNamedProvider(provider)) {
+        modelIdInput.value = '';
+    }
+    // Also remember follow modes that return early below.
+    sel.dataset.currentProvider = provider;
 
     setModelIdFieldHidden(modelType, false);
 
@@ -1631,7 +1639,6 @@ function onCustomModelProviderChange(modelType) {
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
     }
-    sel.dataset.currentProvider = provider;
 }
 
 /**

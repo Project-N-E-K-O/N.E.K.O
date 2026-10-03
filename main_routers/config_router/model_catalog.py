@@ -16,6 +16,7 @@
 """Upstream model list endpoint (/list_models) for the API settings page."""
 
 from ._shared import logger, router
+from .candidate_requests import race_candidate_requests
 from .connectivity import (
     _classify_anthropic_error,
     _classify_openai_error,
@@ -263,43 +264,20 @@ async def list_models(req: ModelListRequest) -> dict:
     if "urls" not in target:
         return target
 
-    result: dict[str, Any] = _failure("unknown", "没有可用的端点")
-    deadline = asyncio.get_running_loop().time() + _MODEL_LIST_TIMEOUT_SECONDS
-    tasks = [asyncio.create_task(_fetch_models(url, target["api_key"], target["provider_type"]))
-             for url in target["urls"]]
-    pending = set(tasks)
-    failures = {}
-    try:
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, timeout=max(0, deadline - asyncio.get_running_loop().time()),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                result = _failure("timeout", "拉取模型列表超时")
-                break
-            # Prefer the configured order when several candidates complete together.
-            for task in tasks:
-                if task not in done:
-                    continue
-                result = task.result()
-                if result.get("success"):
-                    logger.info(
-                        "[ModelList] %s 拉取到 %d 个模型",
-                        _identify_provider_label(result.get("resolved_url", target["urls"][0]), False),
-                        len(result["models"]),
-                    )
-                    return result
-                failures[task] = result
-        # Keep the preferred endpoint's concrete error instead of masking it
-        # with a later fallback timeout or a less relevant regional error.
-        if failures:
-            result = next(failures[task] for task in tasks if task in failures)
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    result = await race_candidate_requests(
+        target["urls"],
+        lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
+        timeout=_MODEL_LIST_TIMEOUT_SECONDS,
+        prefer_configured_order=True,
+        timeout_result=_failure("timeout", "拉取模型列表超时"),
+    )
+    if result.get("success"):
+        logger.info(
+            "[ModelList] %s 拉取到 %d 个模型",
+            _identify_provider_label(result["resolved_url"], False),
+            len(result["models"]),
+        )
+        return result
     logger.info(
         "[ModelList] %s 拉取失败: %s",
         _identify_provider_label(target["urls"][0], False),

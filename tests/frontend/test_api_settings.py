@@ -1992,6 +1992,40 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
 
 
 @pytest.mark.frontend
+def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#conversationModelProvider option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    model = mock_page.locator('#conversationModelId')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    model.fill('gpt-user-choice')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'deepseek')
+    expect(model).to_have_value('')
+    expect(model).not_to_have_attribute('placeholder', 'gpt-user-choice')
+    model.fill('deepseek-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('deepseek-user-choice')
+    mock_page.evaluate("""() => {
+        _isLoadingSavedConfig = true;
+        const select = document.getElementById('conversationModelProvider');
+        select.dataset.currentProvider = 'openai';
+        select.value = 'deepseek';
+        onCustomModelProviderChange('conversation', true);
+        _isLoadingSavedConfig = false;
+    }""")
+    expect(model).to_have_value('deepseek-user-choice')
+
+
+@pytest.mark.frontend
 def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, running_server: str):
     """Keywords typed before the upstream model list arrives still filter it."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
