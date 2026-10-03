@@ -394,13 +394,45 @@ def test_air_basketball_mvp_interaction_contract():
     assert "{ after:latestSpeechPromise }" not in game
     assert "const RESULT_SPEECH_END_MAX_WAIT_MS = 12000;" in game
     # ...but it waits for actual playback: route finalize cancels speech still playing.
-    assert "latestSpeechPromise.then(() => waitForNekoSpeechIdle(RESULT_SPEECH_END_MAX_WAIT_MS))" in game
-    assert "export async function waitForNekoSpeechIdle(maxMs)" in sdk_bootstrap
-    assert "if (!state?.active && !state?.pendingAudioWork) finish();" in sdk_bootstrap
+    assert "waitForNekoSpeechPlayback(resultSpeechRequestId, RESULT_SPEECH_END_MAX_WAIT_MS)" in game
+    assert "export async function waitForNekoSpeechPlayback(requestId, maxMs)" in sdk_bootstrap
+    # Only this request's playback counts: start first, then stop.
+    assert "const ours = state?.requestId === requestId;" in sdk_bootstrap
+    assert "if (ours && playing) started = true;" in sdk_bootstrap
+    assert "waitForNekoSpeechIdle" not in game + sdk_bootstrap
+    # An interrupting line (the result) is not swallowed by the voice cooldown.
+    assert "if (!interrupt && now < voiceGuardUntil) return false;" in game
+    speak_body = game.split("function speakNeko(", 1)[1].split("\n}\n", 1)[0]
+    assert "return requestId;" in speak_body
     reset_body = game.split("function resetMatch() {", 1)[1].split("const currentMatch", 1)[0]
     assert "skipResultSpeechWait?.();" in reset_body
     finish_body = game.split("function finishMatch() {", 1)[1].split("\n}\n", 1)[0]
-    assert "cancelPlayerAction();" in finish_body
+    assert "stopMatchPlay();" in finish_body
+    stop_body = game.split("function stopMatchPlay() {", 1)[1].split("\n}\n", 1)[0]
+    assert "cancelPlayerAction();" in stop_body
+    # A replay waits for a pending Avatar mount, and a match never runs without its route.
+    assert "}, { after:avatarMountSettled() }).then(() => {" in game
+    assert "abortMatchWithoutRuntime(currentMatch);" in game
+    assert "await Promise.resolve(options.after).catch(() => undefined);" in sdk_bootstrap
+    assert "if (game.runtime.session.characterName !== identity.name) {" in sdk_bootstrap
+    assert "t('runtimeStartFailed')" in game
+    # A bootstrap failing after connect() releases the client and tone URLs.
+    assert "game.dispose();\n    revokeToneUrls();\n    throw error;" in sdk_bootstrap
+    # The Live2D opponent keeps a fixed renderer size.
+    assert "{ resizeMode:'fixed', width:320, height:440 }" in avatar_host
+    # Retained Avatars must declare their character.
+    assert "characterName:identity.name," in avatar
+    # The fallback label is re-rendered on language change, never re-prefixed.
+    assert "data-i18n-label" not in html
+    assert "setAvatarUnavailableLabel(t('avatarUnavailable'));" in game
+    assert "fallbackType?.dataset.label" not in avatar
+    # Physics steps mark HUD/focus updates; the frame writes them once.
+    recover_body = game.split("function recoverFocus(side, dt) {", 1)[1].split("\n}\n", 1)[0]
+    fever_body = game.split("function updateFever(side, dt) {", 1)[1].split("\n}\n", 1)[0]
+    assert "syncFocus(" not in recover_body and "frameSync.focus.add(side);" in recover_body
+    assert "syncHud(" not in fever_body and "frameSync.hud.add(side);" in fever_body
+    frame_body = game.split("function frame(now) {", 1)[1].split("\n}\n", 1)[0]
+    assert "flushFrameSync();" in frame_body
     release_body = game.split("function releasePlayerShot() {", 1)[1].split("\n}\n", 1)[0]
     assert "if (!state.running) {" in release_body
     # Runtime-written elements are re-rendered from state, not by data-i18n.
@@ -439,7 +471,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert '"air_basketball"' in reserved_routes
     expected_keys = {
         "title", "gestureHint", "chaosBall", "opponentReady", "voiceOpening",
-        "avatarUnavailable", "arenaLabel", "sdkUnavailable", "mouseStealCaught",
+        "avatarUnavailable", "arenaLabel", "sdkUnavailable", "runtimeStartFailed", "mouseStealCaught",
         "mouseStealEscape", "voiceMouseSteal",
     }
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):

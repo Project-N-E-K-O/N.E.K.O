@@ -6,6 +6,11 @@ const fallbackType = document.getElementById('air-neko-avatar-fallback-type');
 
 let reactionTimer = 0;
 let avatarController = null;
+let avatarMountPromise = Promise.resolve();
+// The fallback line is `<MODEL> · <label>`; keep both parts so a language switch
+// re-renders it instead of prefixing the already-composed text again.
+let fallbackModelLabel = '';
+let fallbackUnavailableLabel = fallbackType?.textContent || '';
 
 function hideRenderers() {
   for (const element of document.querySelectorAll('#air-neko-avatar .avatar-renderer')) element.hidden = true;
@@ -24,9 +29,25 @@ function showCurrentCharacterFallback(identity) {
   if (fallback) fallback.hidden = false;
   if (fallbackName) fallbackName.textContent = identity?.name || 'N.E.K.O';
   const type = identity?.live3dSubType || identity?.modelType || 'avatar';
-  const label = fallbackType?.dataset.label || fallbackType?.textContent || '';
-  if (fallbackType) fallbackType.textContent = `${String(type).toUpperCase()} · ${label}`;
+  fallbackModelLabel = String(type).toUpperCase();
+  renderFallbackType();
   markReady();
+}
+
+function renderFallbackType() {
+  if (fallbackType && fallbackModelLabel) {
+    fallbackType.textContent = `${fallbackModelLabel} · ${fallbackUnavailableLabel}`;
+  }
+}
+
+export function setAvatarUnavailableLabel(label) {
+  if (label) fallbackUnavailableLabel = label;
+  renderFallbackType();
+}
+
+// Settles (never rejects) once the opponent Avatar mount has finished either way.
+export function avatarMountSettled() {
+  return avatarMountPromise.then(() => undefined, () => undefined);
 }
 
 export async function initNekoAvatar(game, identity, onReady) {
@@ -37,13 +58,15 @@ export async function initNekoAvatar(game, identity, onReady) {
     return false;
   }
   try {
-    avatarController = await game.avatar.mount({
+    avatarMountPromise = game.avatar.mount({
       slot:'opponent',
+      characterName:identity.name,
       model:identity.model,
       viewport:{ mode:'container' },
       fit:{ mode:'contain', align:'bottom-center', padding:4, scaleMultiplier:1 },
       resize:{ mode:'container' }
     });
+    avatarController = await avatarMountPromise;
     markReady();
     return true;
   } catch (error) {

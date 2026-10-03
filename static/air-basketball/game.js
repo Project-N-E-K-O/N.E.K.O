@@ -9,7 +9,7 @@ const [i18nModule, physicsModule, avatarModule, sdkModule] = await Promise.all([
 ]);
 const { applyTranslations, t, voiceLine, voiceLines } = i18nModule;
 const { ShotLane, clamp } = physicsModule;
-const { initNekoAvatar, reactNeko } = avatarModule;
+const { avatarMountSettled, initNekoAvatar, reactNeko, setAvatarUnavailableLabel } = avatarModule;
 const {
   airBasketballSdkReady,
   configureGameRuntime,
@@ -20,7 +20,7 @@ const {
   speakNekoSpeech,
   startGameRuntime,
   unlockGameAudio,
-  waitForNekoSpeechIdle
+  waitForNekoSpeechPlayback
 } = sdkModule;
 // A failed bootstrap (missing character, host or capability) must not stop the
 // rest of this module from wiring the page; the start card reports it instead.
@@ -233,7 +233,17 @@ function recoverFocus(side, dt) {
   actor.hitGrace = Math.max(0, actor.hitGrace - dt);
   if (actor.focusRecoveryDelay > 0) return;
   actor.focus = clamp(actor.focus + ACTION_BALANCE.FOCUS_REGEN * dt, 0, ACTION_BALANCE.MAX_FOCUS);
-  syncFocus(side);
+  frameSync.focus.add(side);
+}
+
+// Physics steps only change numbers; the HUD and focus bars they touch are
+// written once per frame, after the steps.
+const frameSync = { hud:new Set(), focus:new Set() };
+function flushFrameSync() {
+  frameSync.hud.forEach(side => syncHud(side));
+  frameSync.focus.forEach(side => syncFocus(side));
+  frameSync.hud.clear();
+  frameSync.focus.clear();
 }
 
 // The travelling ball must sit above both cabinets instead of inheriting the
@@ -297,7 +307,8 @@ function speakNeko(lineKey, { kind='game-event', interrupt=false } = {}) {
   const lanlanName = String(opponentName || '').trim();
   if (!lanlanName || lanlanName === 'N.E.K.O') return false;
   const now = Date.now();
-  if (now < voiceGuardUntil) return false;
+  // An interrupting line (result, cursor steal, hit) replaces the current one.
+  if (!interrupt && now < voiceGuardUntil) return false;
   const holdMs = clamp(1200 + line.length * 85, 1500, 4200);
   voiceGuardUntil = now + holdMs;
   const requestId = `air-basketball-${++voiceSequence}-${now}`;
@@ -323,7 +334,7 @@ function speakNeko(lineKey, { kind='game-event', interrupt=false } = {}) {
     voiceGuardUntil = 0;
     console.warn('[air_basketball] SDK speech unavailable', error);
   });
-  return true;
+  return requestId;
 }
 
 function formatElapsed(seconds) {
@@ -343,6 +354,7 @@ function opponentStatus(kind) {
 // language switch would reset them to their static text). Remember what each
 // one shows and re-render it here instead.
 let nekoStatusKey = 'opponentReady';
+let runtimeStartFailed = false;
 function setNekoStatus(key) {
   nekoStatusKey = key;
   byId('neko-status-text').textContent = opponentStatus(key);
@@ -357,7 +369,12 @@ function renderLocalizedState() {
   setNekoStatus(nekoStatusKey);
   renderClockLabels(state.mode);
   startButton.textContent = t(resultBoard.hidden ? 'start' : 'again');
+  renderStartCopy();
+}
+
+function renderStartCopy() {
   if (!sdkContext) startCopy.textContent = t('sdkUnavailable');
+  else if (runtimeStartFailed) startCopy.textContent = t('runtimeStartFailed');
   else startCopy.textContent = selectedMode() === 'endless' ? t('endlessIntro') : t('intro');
 }
 
@@ -1339,6 +1356,7 @@ function runtimeEndPayload(reason = 'match-ended') {
 function resetMatch() {
   // A new match interrupts the previous result line anyway; end its route now.
   skipResultSpeechWait?.();
+  runtimeStartFailed = false;
   const currentMatch = ++matchSequence;
   const mode = selectedMode();
   const initialClock = mode === 'timed' ? ROUND_SECONDS : formatElapsed(0);
@@ -1383,15 +1401,29 @@ function resetMatch() {
     game_started:true,
     gameStartedElapsedMs:0,
     currentState:runtimeSnapshot()
-  }).then(() => {
+  }, { after:avatarMountSettled() }).then(() => {
     if (!state.running || currentMatch !== matchSequence) return;
     if (opponentName !== 'N.E.K.O') speakNeko('voiceOpening', { kind:'opening-line' });
   }).catch(error => {
     console.warn('[air_basketball] SDK runtime start failed', error);
+    abortMatchWithoutRuntime(currentMatch);
   });
 }
 
-function finishMatch() {
+// A match must not keep running without its backend route (no heartbeat,
+// memory or postgame); return to the start card and say why.
+function abortMatchWithoutRuntime(matchId) {
+  if (matchId !== matchSequence || !state.running) return;
+  stopMatchPlay();
+  runtimeStartFailed = true;
+  resultBoard.hidden = true;
+  startButton.textContent = t('start');
+  renderStartCopy();
+  showStartCard();
+}
+
+// Stop play without settling a result; shared by finishMatch and an aborted match.
+function stopMatchPlay() {
   state.running = false;
   // Drop any held aim, drag or avatar pointer: a release after this point must
   // not shoot into the final score or leave interference locked for next match.
@@ -1404,25 +1436,33 @@ function finishMatch() {
   playerLane.canvas.closest('.machine-screen').classList.remove('incoming-warning');
   playerLane.setFever(false);
   nekoLane.setFever(false);
+}
+
+function showStartCard() {
+  stopMatchButton.hidden = true;
+  overlay.hidden = false;
+  overlay.style.display = 'grid';
+  overlay.classList.remove('hidden');
+}
+
+function finishMatch() {
+  stopMatchPlay();
   byId('final-player').textContent = state.player.score;
   byId('final-neko').textContent = state.neko.score;
   byId('result-title').textContent = state.player.score === state.neko.score ? t('draw') : state.player.score > state.neko.score ? t('win') : opponentStatus('opponentWin');
   resultBoard.hidden = false;
   startButton.textContent = t('again');
-  stopMatchButton.hidden = true;
-  overlay.hidden = false;
-  overlay.style.display = 'grid';
-  overlay.classList.remove('hidden');
+  showStartCard();
   sound(state.player.score >= state.neko.score ? 640 : 260, .25, 'triangle');
-  const resultSpoken = state.player.score !== state.neko.score
+  const resultSpeechRequestId = state.player.score !== state.neko.score
     && speakNeko(state.neko.score > state.player.score ? 'voiceWin' : 'voiceLose', { kind:'match-result', interrupt:true });
   // Ending the route cancels speech that is still playing, so let the result
   // line finish first. Bound the wait well below the SDK's 60 s speech timeout,
   // and stop waiting as soon as the player starts another match.
   let resultSpeechSettled = null;
-  if (resultSpoken) {
+  if (resultSpeechRequestId) {
     resultSpeechSettled = Promise.race([
-      latestSpeechPromise.then(() => waitForNekoSpeechIdle(RESULT_SPEECH_END_MAX_WAIT_MS)),
+      latestSpeechPromise.then(() => waitForNekoSpeechPlayback(resultSpeechRequestId, RESULT_SPEECH_END_MAX_WAIT_MS)),
       new Promise(resolve => {
         skipResultSpeechWait = resolve;
         setTimeout(resolve, RESULT_SPEECH_END_MAX_WAIT_MS);
@@ -1439,7 +1479,7 @@ function updateFever(side, dt) {
   if (actor.fever <= 0) return;
   actor.fever = Math.max(0, actor.fever - dt);
   if (actor.fever === 0) laneFor(side).setFever(false);
-  syncHud(side);
+  frameSync.hud.add(side);
 }
 
 function activeAuxiliaryBallCount(owner = null) {
@@ -1719,6 +1759,7 @@ function frame(now) {
     stepLayoutCache = null;
   }
   syncTrackedGuestBall();
+  flushFrameSync();
   advanceMatchClock(frameSeconds);
   playerLane.draw();
   nekoLane.draw();
@@ -1745,7 +1786,7 @@ startButton.addEventListener('click', resetMatch);
 stopMatchButton.addEventListener('click', finishMatch);
 document.querySelectorAll('input[name="match-mode"]').forEach(input => {
   input.addEventListener('change', () => {
-    startCopy.textContent = selectedMode() === 'endless' ? t('endlessIntro') : t('intro');
+    renderStartCopy();
   });
 });
 soundToggle.addEventListener('click', () => {
@@ -1771,9 +1812,11 @@ function showSdkUnavailable() {
 updateSoundToggleLabel();
 applyOpponentName(opponentName);
 renderLocalizedState();
+setAvatarUnavailableLabel(t('avatarUnavailable'));
 window.addEventListener('localechange', () => {
   renderLocalizedState();
   updateSoundToggleLabel();
+  setAvatarUnavailableLabel(t('avatarUnavailable'));
 });
 window.addEventListener('pageshow', event => {
   if (event?.persisted) window.location.reload();

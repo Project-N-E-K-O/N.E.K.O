@@ -85,8 +85,4 @@ export function applyTranslations(root = document) {
     const value = translatedText(node.dataset.i18nAriaLabel);
     if (value !== null) node.setAttribute('aria-label', value);
   });
-  root.querySelectorAll('[data-i18n-label]').forEach(node => {
-    const value = translatedText(node.dataset.i18nLabel);
-    if (value !== null) node.dataset.label = value;
-  });
 }

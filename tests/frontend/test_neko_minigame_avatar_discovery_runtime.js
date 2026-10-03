@@ -524,6 +524,17 @@ async function characterBinding() {
       await assert.rejects(client.runtime.bindCharacter(undefined, {retainAvatars:true}), {code:'invalid_request'});
       assert.equal((await client.runtime.bindCharacter('Neko', {retainAvatars:true})).name, 'Neko');
       assert.equal(h.routeLanlanName, 'Neko');
+      // A renderer that does not declare this character must not be carried over.
+      for (const characterName of ['Other', undefined]) {
+        client.runtime.reset({newSession:true});
+        const foreign = await client.avatar.mount({...config, slot:'guest',
+          ...(characterName ? {characterName} : {characterName:undefined})});
+        await assert.rejects(client.runtime.bindCharacter('Neko', {retainAvatars:true}), {code:'invalid_state'},
+          `retainAvatars accepted an Avatar mounted for ${characterName || 'no character'}`);
+        assert.equal(h.routeLanlanName, '');
+        foreign.dispose();
+        assert.equal((await client.runtime.bindCharacter('Neko', {retainAvatars:true})).name, 'Neko');
+      }
       client.runtime.reset({newSession:true});
       known = new Set();
       assert.equal(await client.runtime.bindCharacter('Neko', {retainAvatars:true}), null,

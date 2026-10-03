@@ -205,7 +205,8 @@ declare namespace NekoMiniGame {
     /**
      * Resolve and bind locally before pregame requests. Omit name for current character.
      * `retainAvatars` re-validates the character this client already bound (for a replay
-     * after reset) without disposing its mounted Avatars; any other name is rejected.
+     * after reset) without disposing its mounted Avatars; any other name is rejected, and
+     * every mounted Avatar must have been mounted with that same `characterName`.
      */
     bindCharacter(
       name?: string,

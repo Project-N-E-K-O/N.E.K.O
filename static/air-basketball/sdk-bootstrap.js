@@ -95,22 +95,34 @@ async function bootstrap() {
     protocolVersion:'1',
     requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']
   }, { transport });
-  const requestedName = String(pageParams.get('lanlan_name') || '').trim();
-  const character = await game.runtime.bindCharacter(requestedName || undefined);
-  if (!character) throw new Error(`Character is unavailable (${requestedName || 'current'})`);
-  const identity = resolveIdentity(character);
-  const sfx = Object.fromEntries(toneSpecs.map(spec => {
-    const [frequency, duration, type] = spec;
-    return [toneKey(frequency, duration, type), [toneBlobUrl(frequency, duration, type)]];
-  }));
-  const audio = await game.audio.mount({
-    slot:'main',
-    resources:{ sfx },
-    settings:{ maxConcurrent:12, maxPreloadEntries:32 }
-  });
-  Object.keys(sfx).forEach(key => audio.preloadSfx(key));
-  sdkContext = Object.freeze({ game, identity, audio });
-  return sdkContext;
+  try {
+    const requestedName = String(pageParams.get('lanlan_name') || '').trim();
+    const character = await game.runtime.bindCharacter(requestedName || undefined);
+    if (!character) throw new Error(`Character is unavailable (${requestedName || 'current'})`);
+    const identity = resolveIdentity(character);
+    const sfx = Object.fromEntries(toneSpecs.map(spec => {
+      const [frequency, duration, type] = spec;
+      return [toneKey(frequency, duration, type), [toneBlobUrl(frequency, duration, type)]];
+    }));
+    const audio = await game.audio.mount({
+      slot:'main',
+      resources:{ sfx },
+      settings:{ maxConcurrent:12, maxPreloadEntries:32 }
+    });
+    Object.keys(sfx).forEach(key => audio.preloadSfx(key));
+    sdkContext = Object.freeze({ game, identity, audio });
+    return sdkContext;
+  } catch (error) {
+    // sdkContext is not set yet, so disposeGameSdk() cannot release these.
+    game.dispose();
+    revokeToneUrls();
+    throw error;
+  }
+}
+
+function revokeToneUrls() {
+  toneObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  toneObjectUrls.clear();
 }
 
 export const airBasketballSdkReady = bootstrap();
@@ -143,24 +155,38 @@ function enqueueLifecycle(operation) {
   return lifecycleTail;
 }
 
-// `speech.speak()` settles once the audio has been sent, not played. Ending the
-// route cancels whatever is still playing, so wait for the playback bridge to
-// report idle; `maxMs` bounds a stalled or silent bridge.
-export async function waitForNekoSpeechIdle(maxMs) {
+// `speech.speak()` settles once the audio has been sent, not played, and ending
+// the route cancels whatever is still playing. Wait for this request's playback
+// to start and then stop; an idle frame left by an earlier line must not count.
+// If it never starts (muted, bridge silent), give up after a short window;
+// `maxMs` bounds the whole wait.
+const SPEECH_PLAYBACK_START_WAIT_MS = 3000;
+export async function waitForNekoSpeechPlayback(requestId, maxMs) {
   const { game } = await airBasketballSdkReady;
   return new Promise(resolve => {
     let settled = false;
+    let started = false;
     let unsubscribe = null;
     const timer = setTimeout(() => finish(), maxMs);
+    const startTimer = setTimeout(() => {
+      if (!started) finish();
+    }, Math.min(maxMs, SPEECH_PLAYBACK_START_WAIT_MS));
     function finish() {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(startTimer);
       unsubscribe?.();
       resolve();
     }
     const check = state => {
-      if (!state?.active && !state?.pendingAudioWork) finish();
+      const ours = state?.requestId === requestId;
+      const playing = Boolean(state?.active || state?.pendingAudioWork);
+      if (!started) {
+        if (ours && playing) started = true;
+        return;
+      }
+      if (!ours || !playing) finish();
     };
     unsubscribe = game.speech.onState(check);
     if (settled) unsubscribe();
@@ -178,12 +204,15 @@ export async function configureGameRuntime(payload, pageExitPayload) {
   });
 }
 
-export function startGameRuntime(payload) {
+export function startGameRuntime(payload, options = {}) {
   return enqueueLifecycle(async ({ game, identity }) => {
-    if (['ended', 'inactive'].includes(game.runtime.state)) {
-      game.runtime.reset({ newSession:true });
-      // reset() clears the bound character. Re-validate the same one with the
-      // opponent Avatar still mounted; a renamed or deleted character is refused.
+    // Binding is refused while an Avatar mount is still pending.
+    await Promise.resolve(options.after).catch(() => undefined);
+    if (['ended', 'inactive'].includes(game.runtime.state)) game.runtime.reset({ newSession:true });
+    if (game.runtime.session.characterName !== identity.name) {
+      // reset() (or an earlier failed attempt) cleared the bound character.
+      // Re-validate the same one with the opponent Avatar still mounted; a
+      // renamed or deleted character is refused.
       const character = await game.runtime.bindCharacter(identity.name, { retainAvatars:true });
       if (!character) throw new Error(`Character ${identity.name} is no longer available`);
     }
@@ -206,6 +235,5 @@ export function disposeGameSdk() {
   const { game } = sdkContext;
   sdkContext = null;
   game.dispose();
-  toneObjectUrls.forEach(url => URL.revokeObjectURL(url));
-  toneObjectUrls.clear();
+  revokeToneUrls();
 }

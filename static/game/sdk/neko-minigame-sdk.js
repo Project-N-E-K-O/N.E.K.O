@@ -3950,9 +3950,15 @@
           fail('invalid_request', 'retainAvatars only re-binds the character this client already bound');
         }
         if (characterBindingPending) fail('busy', 'Character binding is pending');
+        // A retained Avatar must declare that it shows this very character; an
+        // undeclared or foreign renderer would otherwise carry over to the new session.
+        const avatarsBelongToRequested = () => [...avatarRenderers].every(
+          (state) => state.config.characterName === requested,
+        );
         const canBind = () => runtimePhase === 'idle' && !runtimeRouteEstablished
           && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked
-          && (retainAvatars || avatarRenderers.size === 0) && avatarMountsPending === 0;
+          && (retainAvatars ? avatarsBelongToRequested() : avatarRenderers.size === 0)
+          && avatarMountsPending === 0;
         if (!canBind()) fail('invalid_state', 'Bind before pregame requests or avatar mounting; dispose avatars and end/reset before changing character');
         if (typeof transport.bindRuntimeCharacter !== 'function') fail('transport_unavailable', 'Character binding unavailable');
         const generation = avatarQueryGeneration;

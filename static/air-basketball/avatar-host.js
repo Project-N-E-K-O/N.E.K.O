@@ -72,7 +72,9 @@ function createRawController({ signal, fitLive2DModel }) {
     const next = window.live2dManager;
     if (!next) throw new Error('Live2D renderer is unavailable');
     showRenderer('live2d');
-    await next.initPIXI('air-neko-live2d-canvas', 'air-neko-live2d', { width:320, height:440 });
+    // `fixed` keeps live2d-core from resizing to the host window on resize or
+    // display changes, which fights the SDK's resize(viewport, fit).
+    await next.initPIXI('air-neko-live2d-canvas', 'air-neko-live2d', { resizeMode:'fixed', width:320, height:440 });
     manager = next;
     for (const name of ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag']) {
       if (typeof next[name] !== 'function') next[name] = () => {};

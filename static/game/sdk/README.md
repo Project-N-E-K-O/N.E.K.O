@@ -1008,7 +1008,9 @@ if (!character) throw new Error('The character was renamed or removed');
 
 The name must equal the character this client last bound; any other name (or an
 omitted name) fails with `invalid_request`, because a different character must not
-inherit the mounted Avatar. The character is still looked up again, so a renamed
+inherit the mounted Avatar. Every mounted Avatar must also have been mounted with
+that same `characterName`; an Avatar mounted without one, or for another character,
+fails with `invalid_state`. The character is still looked up again, so a renamed
 or deleted character returns `null` without binding. Every other precondition
 (`idle`, no character-scoped requests, no pending mounts) is unchanged.
 
