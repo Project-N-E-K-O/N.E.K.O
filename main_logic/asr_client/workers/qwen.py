@@ -240,7 +240,7 @@ def _qwen_retire_provider_key(state: _QwenConnectionState, key: _ItemKey) -> Non
     if state.current_provider_utterance_id == key[2]:
         state.current_provider_utterance_id = None
     if state.fallback_key == key:
-        _qwen_cancel_provider_fallback(state)
+        _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
 
 
 def _qwen_arm_provider_fallback(
@@ -605,6 +605,15 @@ async def _qwen_sender(
                             )
                             if key[2] not in state.provider_endpoint_utterance_ids:
                                 _qwen_arm_provider_fallback(state, key)
+                                if state.provider_speech_cycles.get(key[2], 0) != state.local_speech_cycle:
+                                    # The provider may group this resume into
+                                    # its current item, or publish another item
+                                    # after a delayed endpoint. Preserve the
+                                    # pause as an observation, not a second
+                                    # timer. Only a new provider start adopts it.
+                                    state.pending_local_pause = (
+                                        request.generation, request.buffer_epoch
+                                    )
                         elif (
                             state.local_speech_cycle > state.last_provider_final_cycle
                         ):
@@ -853,7 +862,7 @@ async def _qwen_receiver(
                 if key is not None:
                     state.provider_endpoint_utterance_ids.add(key[2])
                     if state.fallback_key == key:
-                        _qwen_cancel_provider_fallback(state)
+                        _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
                 # Server VAD sealed the turn; the transcription final is
                 # still outstanding. Arm the stalled-item deadline so a
                 # delayed or missing completed event cannot leave the
@@ -870,7 +879,7 @@ async def _qwen_receiver(
                     if key is not None:
                         state.provider_endpoint_utterance_ids.add(key[2])
                         if state.fallback_key == key:
-                            _qwen_cancel_provider_fallback(state)
+                            _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
                     _qwen_arm_stalled_item_deadline(state, item_id)
                     continue
                 if (

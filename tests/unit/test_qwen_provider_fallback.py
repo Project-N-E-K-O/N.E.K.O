@@ -973,7 +973,7 @@ async def test_local_pause_resume_pause_keeps_current_provider_endpoint_authorit
         timer = state.fallback_timer_task
         assert state.local_speech_cycle == 2
         assert state.fallback_key == (0, 0, 1)
-        assert state.pending_local_pause is None
+        assert state.pending_local_pause == (0, 0)
         await ws.server_send({"type": f"input_audio_buffer.{endpoint}", "item_id": "current"})
         await _wait_until(lambda: state.fallback_key is None)
         await asyncio.gather(timer, return_exceptions=True)
@@ -982,6 +982,70 @@ async def test_local_pause_resume_pause_keeps_current_provider_endpoint_authorit
         await asyncio.wait_for(requests.join(), 1)
         assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
         assert not sender.done()
+    finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)
+
+
+@pytest.mark.parametrize("endpoint", ["speech_stopped", "committed", "final"])
+@pytest.mark.parametrize("resume_before_start", [False, True])
+async def test_overlap_pause_survives_old_endpoint_until_new_provider_start(
+    monkeypatch, endpoint, resume_before_start
+):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+
+    async def on_send(_ws, payload):
+        if json.loads(payload)["type"] == "session.finish":
+            state.finish_received.set()
+
+    ws = _FakeWebSocket(on_send=on_send)
+    config = AsrSessionConfig(endpointing_mode="provider")
+    sender = asyncio.create_task(qwen._qwen_sender(ws, requests, responses, config, state))
+    receiver = asyncio.create_task(qwen._qwen_receiver(ws, responses, config, state))
+
+    async def activity(active):
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=active))
+        await asyncio.wait_for(requests.join(), 1)
+
+    try:
+        await activity(True)
+        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
+        await _next_event(responses, "utterance_started")
+        await activity(False)
+        await activity(True)
+        await activity(False)
+        assert state.fallback_key == (0, 0, 1)
+        assert state.pending_local_pause == (0, 0)
+        if endpoint == "final":
+            await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                                  "item_id": "old", "transcript": "old"})
+            await _next_event(responses, "final")
+        else:
+            await ws.server_send({"type": f"input_audio_buffer.{endpoint}", "item_id": "old"})
+        await _wait_until(lambda: state.fallback_key is None)
+        # Retaining an observational pause alone must not force a finish
+        # after a normal provider endpoint.
+        assert state.fallback_timer_task is None
+        assert not state.fallback_due.is_set()
+        if resume_before_start:
+            await activity(True)
+            assert state.pending_local_pause is None
+        else:
+            assert state.pending_local_pause == (0, 0)
+        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "new"})
+        await _next_event(responses, "utterance_started")
+        assert state.pending_local_pause is None
+        if resume_before_start:
+            assert state.fallback_key is None
+            assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
+        else:
+            assert state.fallback_key == (0, 0, 2)
+            state.fallback_due.set()
+            assert await asyncio.wait_for(sender, 1) == ("reconnect", None)
     finally:
         sender.cancel()
         receiver.cancel()
