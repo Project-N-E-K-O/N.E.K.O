@@ -247,27 +247,35 @@ async def list_models(req: ModelListRequest) -> dict:
 
     result: dict[str, Any] = _failure("unknown", "没有可用的端点")
     deadline = asyncio.get_running_loop().time() + _MODEL_LIST_TIMEOUT_SECONDS
-    for index, url in enumerate(target["urls"]):
-        remaining = max(0, deadline - asyncio.get_running_loop().time())
-        # Reserve a fair share of the total budget for each remaining fallback.
-        candidate_timeout = remaining / (len(target["urls"]) - index)
-        try:
-            result = await asyncio.wait_for(
-                _fetch_models(url, target["api_key"], target["provider_type"]),
-                timeout=candidate_timeout,
+    tasks = [asyncio.create_task(_fetch_models(url, target["api_key"], target["provider_type"]))
+             for url in target["urls"]]
+    pending = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except asyncio.TimeoutError:
-            result = _failure("timeout", "拉取模型列表超时")
-            continue
-        if result.get("success"):
-            logger.info(
-                "[ModelList] %s 拉取到 %d 个模型",
-                _identify_provider_label(url, False),
-                len(result["models"]),
-            )
-            return result
-        if result.get("error_code") == "auth_failed":
-            break
+            if not done:
+                result = _failure("timeout", "拉取模型列表超时")
+                break
+            # Prefer the configured order when several candidates complete together.
+            for task in tasks:
+                if task not in done:
+                    continue
+                result = task.result()
+                if result.get("success"):
+                    logger.info(
+                        "[ModelList] %s 拉取到 %d 个模型",
+                        _identify_provider_label(result.get("resolved_url", target["urls"][0]), False),
+                        len(result["models"]),
+                    )
+                    return result
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     logger.info(
         "[ModelList] %s 拉取失败: %s",
         _identify_provider_label(target["urls"][0], False),

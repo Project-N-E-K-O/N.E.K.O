@@ -65,7 +65,7 @@ def _run(model_catalog, **payload):
 
 
 @pytest.mark.unit
-def test_auth_failure_does_not_probe_more_candidates(config_manager, model_catalog, monkeypatch):
+def test_auth_failures_finish_without_waiting_for_timeout(config_manager, model_catalog, monkeypatch):
     calls = []
 
     async def fail(url, *_args):
@@ -78,7 +78,7 @@ def test_auth_failure_does_not_probe_more_candidates(config_manager, model_catal
     })
     monkeypatch.setattr(model_catalog, '_fetch_models', fail)
     assert _run(model_catalog, provider_key='qwen')['error_code'] == 'auth_failed'
-    assert calls == ['https://a.test/v1']
+    assert calls == ['https://a.test/v1', 'https://b.test/v1']
 
 
 @pytest.mark.unit
@@ -122,6 +122,25 @@ def test_slow_first_candidate_leaves_time_for_healthy_fallback(config_manager, m
     assert result['resolved_url'] == 'https://healthy.test/v1'
     assert calls == ['https://slow.test/v1', 'https://healthy.test/v1']
     assert cancelled == ['https://slow.test/v1']
+
+
+@pytest.mark.unit
+def test_slow_preferred_candidate_gets_full_budget(config_manager, model_catalog, monkeypatch):
+    async def fetch(url, *_args):
+        if url == 'https://preferred.test/v1':
+            await asyncio.sleep(0.07)
+            return {'success': True, 'models': [{'id': 'preferred-model'}], 'resolved_url': url}
+        return {'success': False, 'error_code': 'auth_failed'}
+
+    monkeypatch.setattr(model_catalog, '_MODEL_LIST_TIMEOUT_SECONDS', 0.15)
+    monkeypatch.setattr(model_catalog, '_resolve_provider_target', lambda *_args: {
+        'urls': ['https://preferred.test/v1', 'https://unavailable.test/v1', 'https://unavailable2.test/v1'],
+        'api_key': 'sk-test', 'provider_type': 'openai_compatible',
+    })
+    monkeypatch.setattr(model_catalog, '_fetch_models', fetch)
+    result = _run(model_catalog, provider_key='qwen_intl')
+    assert result['success'] is True
+    assert result['resolved_url'] == 'https://preferred.test/v1'
 
 
 def _status_error(error_cls, status_code: int):
