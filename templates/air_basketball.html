@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title data-i18n="airBasketball.title">空气投篮</title>
-  <link rel="stylesheet" href="/static/air-basketball/air-basketball.css?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="stylesheet" href="/static/air-basketball/avatar.css?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="stylesheet" href="/static/air-basketball/arcade.css?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-arcade-lane-v2.webp?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-hoop.png?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/game/games/air_basketball/air-basketball.css?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/game/games/air_basketball/avatar.css?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/game/games/air_basketball/arcade.css?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-arcade-lane-v2.webp?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-hoop.png?v={{ air_basketball_asset_version | default('0') }}">
   <script>
     (() => {
       const params = new URLSearchParams(window.location.search);
@@ -25,7 +25,7 @@
   </script>
   <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
 </head>
-<body style="--air-basketball-ball-image:url('/static/air-basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}')">
+<body style="--air-basketball-ball-image:url('/static/game/games/air_basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}')">
   <main class="game-shell">
     <header class="match-header">
       <div class="brand"><span class="brand-ball">●</span><span data-i18n="airBasketball.title">空气投篮</span></div>
@@ -174,8 +174,8 @@
   <script src="/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version | default('0') }}"></script>
   <script id="neko-minigame-host-launch" type="application/json">{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version | default('0') }}","registrations":{"air-basketball":{"mode":"registered","gameId":"air-basketball","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["runtime","logging","avatar-renderer","audio","speech-output"]}}}</script>
-  <script src="/static/air-basketball/air-basketball-neko-host-registration.js?v={{ air_basketball_asset_version | default('0') }}"></script>
+  <script src="/static/game/games/air_basketball/air-basketball-neko-host-registration.js?v={{ air_basketball_asset_version | default('0') }}"></script>
   <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version | default('0') }}"></script>
-  <script type="module" src="/static/air-basketball/game.js?v={{ air_basketball_asset_version | default('0') }}"></script>
+  <script type="module" src="/static/game/games/air_basketball/game.js?v={{ air_basketball_asset_version | default('0') }}"></script>
 </body>
 </html>

@@ -217,7 +217,7 @@ _react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
 # The whole directory counts: modules load siblings via import() and artwork
 # from JS, which the template scan cannot see.
 _AIR_BASKETBALL_ASSET_VERSION_PATHS = tuple(sorted(
-    path for path in (_PROJECT_ROOT / "static/air-basketball").rglob("*") if path.is_file()
+    path for path in (_PROJECT_ROOT / "static/game/games/air_basketball").rglob("*") if path.is_file()
 ))
 _AIR_BASKETBALL_ASSET_CACHE_TTL = 30.0
 _air_basketball_asset_version_cache: tuple[float, str] = (0.0, "0")

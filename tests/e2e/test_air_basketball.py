@@ -4,7 +4,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 
-WATCHED_SCRIPT_PATHS = ("/static/air-basketball/", "/static/game/sdk/", "/air_basketball")
+WATCHED_SCRIPT_PATHS = ("/static/game/games/air_basketball/", "/static/game/sdk/", "/air_basketball")
 
 
 def _stub_unavailable_air_basketball_avatar(page: Page):
@@ -671,7 +671,7 @@ def test_air_basketball_resize_preserves_active_ball_state(
           const version = new URL(
             document.querySelector('script[src*="/air-basketball/game.js"]').src
           ).search;
-          const { ShotLane } = await import(`/static/air-basketball/physics.js${version}`);
+          const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           const canvas = document.createElement('canvas');
           Object.assign(canvas.style, {
             position:'fixed', left:'0', top:'0', width:'480px', height:'720px'
@@ -930,7 +930,7 @@ def test_air_basketball_cross_boundary_state_is_frame_rate_independent(
           const version = new URL(
             document.querySelector('script[src*="/air-basketball/game.js"]').src
           ).search;
-          const { ShotLane } = await import(`/static/air-basketball/physics.js${version}`);
+          const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           return [60, 30, 20, 15].map(fps => {
             const canvas = document.createElement('canvas');
             Object.assign(canvas.style, {
@@ -994,7 +994,7 @@ def test_air_basketball_neko_auto_shot_has_stable_scoring_window(
           const version = new URL(
             document.querySelector('script[src*="/air-basketball/game.js"]').src
           ).search;
-          const { ShotLane } = await import(`/static/air-basketball/physics.js${version}`);
+          const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           const originalRandom = Math.random;
           const seededRandom = seed => {
             let value = seed >>> 0;

@@ -43,12 +43,12 @@ async def test_air_basketball_page_renders_game_shell(monkeypatch):
 def test_air_basketball_assets_use_their_own_cache_version():
     # Editing a game file or its artwork must not bump the site-wide version.
     html = ROOT.joinpath("templates", "air_basketball.html").read_text(encoding="utf-8")
-    game_lines = [line for line in html.splitlines() if "/static/air-basketball/" in line]
+    game_lines = [line for line in html.splitlines() if "/static/game/games/air_basketball/" in line]
     assert game_lines
     assert all("air_basketball_asset_version" in line for line in game_lines)
     assert not any("static_asset_version |" in line for line in game_lines)
     assert not any(
-        "air-basketball" in str(path) for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+        "air_basketball" in path.parts for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     )
     own = {path.name for path in pages_router._AIR_BASKETBALL_ASSET_VERSION_PATHS}
     assert {"game.js", "physics.js", "arcade.css", "neko-hoop.png"} <= own
@@ -57,19 +57,19 @@ def test_air_basketball_assets_use_their_own_cache_version():
 @pytest.mark.unit
 def test_air_basketball_mvp_interaction_contract():
     html = ROOT.joinpath("templates", "air_basketball.html").read_text(encoding="utf-8")
-    game = ROOT.joinpath("static", "air-basketball", "game.js").read_text(encoding="utf-8")
-    physics = ROOT.joinpath("static", "air-basketball", "physics.js").read_text(encoding="utf-8")
-    i18n = ROOT.joinpath("static", "air-basketball", "i18n.js").read_text(encoding="utf-8")
-    avatar = ROOT.joinpath("static", "air-basketball", "avatar.js").read_text(encoding="utf-8")
-    avatar_host = ROOT.joinpath("static", "air-basketball", "avatar-host.js").read_text(encoding="utf-8")
-    sdk_bootstrap = ROOT.joinpath("static", "air-basketball", "sdk-bootstrap.js").read_text(encoding="utf-8")
-    arcade_css = ROOT.joinpath("static", "air-basketball", "arcade.css").read_text(encoding="utf-8")
+    game = ROOT.joinpath("static", "game", "games", "air_basketball", "game.js").read_text(encoding="utf-8")
+    physics = ROOT.joinpath("static", "game", "games", "air_basketball", "physics.js").read_text(encoding="utf-8")
+    i18n = ROOT.joinpath("static", "game", "games", "air_basketball", "i18n.js").read_text(encoding="utf-8")
+    avatar = ROOT.joinpath("static", "game", "games", "air_basketball", "avatar.js").read_text(encoding="utf-8")
+    avatar_host = ROOT.joinpath("static", "game", "games", "air_basketball", "avatar-host.js").read_text(encoding="utf-8")
+    sdk_bootstrap = ROOT.joinpath("static", "game", "games", "air_basketball", "sdk-bootstrap.js").read_text(encoding="utf-8")
+    arcade_css = ROOT.joinpath("static", "game", "games", "air_basketball", "arcade.css").read_text(encoding="utf-8")
     main_server = ROOT.joinpath("app", "main_server", "__init__.py").read_text(encoding="utf-8")
     character_names = ROOT.joinpath("utils", "character_name.py").read_text(encoding="utf-8")
 
     assert 'canvas id="player-court"' in html
     assert 'canvas id="neko-court"' in html
-    assert '/static/air-basketball/game.js?v=' in html
+    assert '/static/game/games/air_basketball/game.js?v=' in html
     assert "playerLane.canvas.addEventListener('pointerdown'" in game
     assert "nekoLane.releaseAutoShot" in game
     assert "const STAGE_THRESHOLDS = [0, 12, 30, 54]" in game
@@ -148,7 +148,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "crossBall.addEventListener('pointerdown'" in game
     assert "crossBall.classList.contains('is-interactive')" in game
     assert "!b.allowOuterExit && b.x + b.r > this.width" in physics
-    avatar_css = ROOT.joinpath("static", "air-basketball", "avatar.css").read_text(encoding="utf-8")
+    avatar_css = ROOT.joinpath("static", "game", "games", "air_basketball", "avatar.css").read_text(encoding="utf-8")
     assert "pointer-events: none" in avatar_css
     assert ".neko-avatar.is-ready .avatar-hit-zone" in avatar_css
     assert "hitNeko(1, 'ball')" in game
@@ -241,7 +241,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "/static/game/sdk/neko-minigame-audio-host.js?v=" in html
     assert 'three/addons/loaders/GLTFLoader.js": "/static/libs/three/addons/loaders/GLTFLoader.js?v=' in html
     assert "user-scalable=no" not in html
-    assert html.count('<link rel="preload" as="image" href="/static/air-basketball/assets/') == 3
+    assert html.count('<link rel="preload" as="image" href="/static/game/games/air_basketball/assets/') == 3
     assert "window.NekoMiniGame.connect" in sdk_bootstrap
     assert "import(`./avatar-host.js${assetVersion}`)" in sdk_bootstrap
     assert "NekoMiniGame audio host is unavailable" in sdk_bootstrap
@@ -251,7 +251,7 @@ def test_air_basketball_mvp_interaction_contract():
     # live2d-interaction.js setupTouchZoom() needs NekoModelTouchGestures (#3124).
     touch_gestures = "/static/avatar/avatar-touch-gestures.js?v="
     assert html.index(touch_gestures) < html.index("/static/live2d/live2d-interaction.js?v=")
-    registration = '/static/air-basketball/air-basketball-neko-host-registration.js?v='
+    registration = '/static/game/games/air_basketball/air-basketball-neko-host-registration.js?v='
     assert html.index(registration) < html.index("/static/game/sdk/neko-minigame-same-origin-bootstrap.js")
     assert "window.createAirBasketballAvatarHost = createAirBasketballAvatarHost" in sdk_bootstrap
     assert "avatarHost," not in sdk_bootstrap
@@ -460,7 +460,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert 'id="neko-stage"' in html
     # The embedded /chat iframe ran a second, independent chat client for the
     # same character (proactive election, websocket, music owner claim).
-    assert not ROOT.joinpath("static", "air-basketball", "chat-dock.js").exists()
+    assert not ROOT.joinpath("static", "game", "games", "air_basketball", "chat-dock.js").exists()
     assert "game-chat" not in html
     assert "/chat?" not in html
     assert "game-chat" not in game
