@@ -1082,3 +1082,30 @@ def test_retention_sweep_waits_for_an_in_progress_header_rewrite(tmp_path):
     t.join(5)
     s.join(5)
     assert done.is_set() and body.exists()
+
+
+async def test_cancelled_mark_forget_still_deletes_a_settled_transcript(tmp_path, monkeypatch):
+    import threading
+
+    sp = await open_spool(tmp_path, vid(23))
+    await sp.close()
+    await sp.write_state(settled(state_for()))
+    gate = threading.Event()
+    real = VisitSpool._update_state_sync
+
+    def slow(self, mutate):
+        gate.wait(5)
+        return real(self, mutate)
+
+    monkeypatch.setattr(VisitSpool, "_update_state_sync", slow)
+    task = asyncio.create_task(sp.mark_forget())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    gate.set()
+    for _ in range(200):
+        if not sp.jsonl_path.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert not sp.jsonl_path.exists()

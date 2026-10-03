@@ -938,8 +938,13 @@ class VisitSpool:
             state["debrief_pending"] = None
             state["debrief_chip_pending"] = False
 
-        await asyncio.to_thread(self._update_state_sync, mutate)
-        return await self.delete_if_settled()
+        async def txn() -> bool:
+            await asyncio.to_thread(self._update_state_sync, mutate)
+            return await self.delete_if_settled()
+
+        # 记「不记」与删已结清转录是一个事务：调用方在写 state 途中被取消时照常做完，
+        # 否则 forget 已落盘、转录却没人再删（已结清的场次没有后续回调会重试）
+        return await asyncio.shield(txn())
 
     def _delete_peer_fields_sync(self) -> None:
         def clear_header(header: dict) -> bool:

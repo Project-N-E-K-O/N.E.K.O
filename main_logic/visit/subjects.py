@@ -57,6 +57,7 @@ import copy
 import hashlib
 import json
 import threading
+import weakref
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -207,17 +208,49 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
 
 # ── 名册 visit_peers.json ───────────────────────────────────────────────
 
-_PATH_LOCKS: dict[str, threading.Lock] = {}
+class PathLock:
+    """A weakly referenceable wrapper around one ``threading.Lock``."""
+
+    __slots__ = ("_lock", "__weakref__")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> "PathLock":
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.release()
+
+
+# 弱引用登记：持有或等待这把锁的调用方都引用着同一个实例，所以仍互斥；
+# 没人引用后条目自动消失，进程不会为每一场串门永久留下两把锁
+_PATH_LOCKS: "weakref.WeakValueDictionary[str, PathLock]" = weakref.WeakValueDictionary()
 _PATH_LOCKS_GUARD = threading.Lock()
 
 
-def path_lock(path: Path) -> threading.Lock:
-    """Return the process-wide thread lock guarding read-modify-write of ``path``."""
+def path_lock(path: Path) -> PathLock:
+    """Return the process-wide thread lock guarding read-modify-write of ``path``.
+
+    Callers keep the returned object for as long as they hold or wait on it
+    (``with path_lock(p):`` does); the registry holds it weakly, so an idle
+    path's lock is released once nobody references it.
+    """
     key = str(Path(path).resolve())
     with _PATH_LOCKS_GUARD:
         lock = _PATH_LOCKS.get(key)
         if lock is None:
-            lock = threading.Lock()
+            lock = PathLock()
             _PATH_LOCKS[key] = lock
         return lock
 

@@ -270,6 +270,15 @@ class _PeerLine:
 # 记住的 ln 上限（按最近使用淘汰）：只发首片、永不收口的新行能把它撑到整场无界。
 # 仍在收片的行每片都会刷新，正常场次远到不了这个量
 _SEEN_LNS_MAX = 4 * (VISIT_REORDER_BUFFER_MAX + 1)
+
+
+def _ln_counter(ln: str) -> Optional[tuple[str, int]]:
+    """Split a wire ``ln`` (``"<side>:<n>"``) into ``(side, n)``; ``None`` if malformed."""
+    side, sep, num = ln.partition(":")
+    if not sep or not num.isdigit():
+        return None
+    return side, int(num)
+
 _GOODBYE_ONLY_REASON = "quiet"   # 只收到告别行（没有 begin / propose）时的收尾原因
 
 
@@ -340,6 +349,9 @@ class VisitRoom:
         self.max_lp_seen = 0
         self._peer_max_new_lp = -1
         self._seen_lns: dict[str, int] = {}   # ln → 首次见到的 lp（一行一个 lp；LRU）
+        # 被挤出 _seen_lns 的最大行号（按发送方前缀）：行号逐行递增，号不大于它的
+        # 「新」ln 只能是被挤出的旧行重用，已无从比对首片 lp
+        self._evicted_ln_max: dict[str, int] = {}
 
         # 发言状态
         self.local_speaking: Optional[LineRef] = None
@@ -355,7 +367,7 @@ class VisitRoom:
         self._peer_meta: dict[str, _PeerLine] = {}
         self._peer_open: set[str] = set()
         self._peer_done: set[str] = set()
-        self._aborted: set[str] = set()
+        self._aborted: dict[str, None] = {}   # 有界（按插入先后淘汰），见 _remember_aborted
         self._latest_to_me: Optional[tuple[int, int]] = None
         # 已收口的对端行里排序最大的那条：同一发送方的 text 按收口先后发，
         # 先开口的行可能更晚收口（人类插话行常见），晚到的旧行不能盖掉新行的回复
@@ -439,6 +451,9 @@ class VisitRoom:
         known_line = ln is not None and ln in self._seen_lns
         if known_line and self._seen_lns[ln] != lp:
             return self._count_anomaly("lp_changed")
+        if not known_line and ln is not None and self._ln_evicted(ln):
+            # 被挤出表的旧 ln 又来了：可能换了 lp，按 lp_changed 拒绝
+            return self._count_anomaly("lp_changed")
         if not known_line and not is_retransmit:
             if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
                 return self._count_anomaly("lp_regress")
@@ -452,8 +467,25 @@ class VisitRoom:
             else:
                 self._seen_lns[ln] = lp
                 while len(self._seen_lns) > _SEEN_LNS_MAX:
-                    del self._seen_lns[next(iter(self._seen_lns))]
+                    old = next(iter(self._seen_lns))
+                    del self._seen_lns[old]
+                    counter = _ln_counter(old)
+                    if counter is not None:
+                        side, num = counter
+                        self._evicted_ln_max[side] = max(self._evicted_ln_max.get(side, -1), num)
         return None
+
+    def _ln_evicted(self, ln: str) -> bool:
+        counter = _ln_counter(ln)
+        return counter is not None and counter[1] <= self._evicted_ln_max.get(counter[0], -1)
+
+    def _remember_aborted(self, ln: str) -> None:
+        # 只发 line_abort 不发 text 的新行会让这张表整场增长：按插入先后淘汰。
+        # 它只用来判断待发回复是否针对已停嘴的行，待发回复总是针对最近的行
+        self._aborted.pop(ln, None)
+        self._aborted[ln] = None
+        while len(self._aborted) > _SEEN_LNS_MAX:
+            del self._aborted[next(iter(self._aborted))]
 
     # ------------------------------------------------------------------
     # 异常计数（§4.1 版本偏斜与异常计数）
@@ -727,7 +759,7 @@ class VisitRoom:
 
         silenced = _silences(ev.truncated, ev.trunc_reason)
         if silenced:
-            self._aborted.add(ln)
+            self._remember_aborted(ln)
             if (self.pending_reply is not None and not self.pending_reply.goodbye
                     and self.pending_reply.reply_to.line_id == ln):
                 self._cancel_pending(eff)
@@ -795,7 +827,7 @@ class VisitRoom:
         self._peer_open.discard(line_id)
         if not _silences(True, reason):
             return eff
-        self._aborted.add(line_id)
+        self._remember_aborted(line_id)
         if self.pending_reply is not None and self.pending_reply.reply_to.line_id == line_id \
                 and not self.pending_reply.goodbye:
             self._cancel_pending(eff)

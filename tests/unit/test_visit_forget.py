@@ -297,7 +297,9 @@ async def test_wipe_spool_step_clears_only_this_accounts_visits(tmp_path):
 
 async def test_mark_done_rejects_unknown_step(tmp_path):
     log = RevocationLog(tmp_path, own_uid=OWN_A)
-    rev_id = await log.open(PEER_X, CHAR_UID_A, [], [], own_char="A")
+    person = {"subject_kind": "participant",
+              "subject_id": f"neko_visit:{derive_person_id(OWN_A, PEER_X)}"}
+    rev_id = await log.open(PEER_X, CHAR_UID_A, [], [person], own_char="A")
     with pytest.raises(ValueError):
         await log.mark_done(rev_id, "forget:group_chat:nope")
 
@@ -586,3 +588,31 @@ async def test_replay_restores_a_participant_subject_dropped_from_the_log(tmp_pa
     # remove_char 仍在所有 forget 之后：每次 forget 时名册条目都还在
     assert all(server.entry_present_at_each_call)
     assert await roster.get_char_entry(PEER_X, "A") is None
+
+
+async def test_an_inconsistent_plan_is_refused_before_it_is_written(tmp_path):
+    # 写进去就读不出的日志不能落盘：既执行不了，又会让全局读取 fail closed
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    foreign = derive_pair_id(OWN_B, PEER_X)
+    pid = derive_person_id(OWN_A, PEER_X)
+    with pytest.raises(ValueError):
+        await log.open(PEER_X, CHAR_UID_A, [foreign], [
+            {"subject_kind": "group_chat", "subject_id": f"neko_visit:{foreign}"},
+            {"subject_kind": "participant", "subject_id": f"neko_visit:{pid}"},
+        ])
+    assert not log.path_for(revocation_id(OWN_A, PEER_X, CHAR_UID_A)).exists()
+    assert await log.list_open() == []
+
+
+async def test_an_inconsistent_merge_leaves_the_existing_log_untouched(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    before = log.path_for(rev_id).read_text(encoding="utf-8")
+    foreign = derive_pair_id(OWN_B, PEER_X)
+    with pytest.raises(ValueError):
+        await log.open(PEER_X, CHAR_UID_A, [foreign], [
+            {"subject_kind": "group_chat", "subject_id": f"neko_visit:{foreign}"},
+        ])
+    assert log.path_for(rev_id).read_text(encoding="utf-8") == before

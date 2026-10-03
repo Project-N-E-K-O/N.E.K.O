@@ -956,3 +956,26 @@ def test_remembered_line_ids_are_bounded_and_keep_active_lines():
     assert "g:keep" in room._seen_lns
     assert room.observe_lp(5, ln="g:keep") == "lp_changed"
     assert "g:0" not in room._seen_lns
+
+
+def test_an_evicted_line_id_reused_with_another_lp_is_rejected():
+    # 旧 ln 被挤出表后再以更大的 lp 出现：不能当成新行接受
+    from main_logic.visit.room import _SEEN_LNS_MAX
+
+    room = make_room("host")
+    for i in range(_SEEN_LNS_MAX + 8):
+        assert room.observe_lp(1 + i, ln=f"g:{i}") is None
+    assert "g:0" not in room._seen_lns
+    assert room.observe_lp(_SEEN_LNS_MAX + 100, ln="g:0") == "lp_changed"
+    # 行号更大的新行照常
+    assert room.observe_lp(_SEEN_LNS_MAX + 101, ln=f"g:{_SEEN_LNS_MAX + 50}") is None
+
+
+def test_remembered_aborted_line_ids_are_bounded():
+    from main_logic.visit.room import _SEEN_LNS_MAX
+
+    room = make_room("host")
+    for i in range(_SEEN_LNS_MAX * 3):
+        room.on_incoming_abort(f"g:{i}", 1.0, reason="human_interrupt")
+    assert len(room._aborted) <= _SEEN_LNS_MAX
+    assert f"g:{_SEEN_LNS_MAX * 3 - 1}" in room._aborted

@@ -329,6 +329,9 @@ class RevocationLog:
                 }
                 record["subjects"], _ = _union([], subjects, _subject_key)
                 record["steps"] = build_steps(record["subjects"])
+                # 写盘前按读取时的同一套规则校验：写进去就读不出的日志会卡住清除，
+                # 还会让 list_all_open 全局 fail closed、挡住之后所有串门
+                _validate_record(record, rev_id)
                 atomic_write_json(path, record)
                 return rev_id
             # 同 id 未完成日志：合并新展开的 pair / subject，done_steps 原样保留。
@@ -352,6 +355,7 @@ class RevocationLog:
             if own_char is not None:
                 record["own_char"] = own_char
             record["updated_at"] = now
+            _validate_record(record, rev_id)
             atomic_write_json(path, record)
             return rev_id
 

@@ -569,3 +569,19 @@ async def test_rename_char_refuses_malformed_nested_data(tmp_path, side, damage)
     with pytest.raises(RosterCorruptError):
         await roster.rename_char("A", "A2")
     assert roster.path.read_text(encoding="utf-8") == before
+
+
+def test_path_locks_are_shared_while_held_and_released_when_idle(tmp_path):
+    import gc
+
+    from main_logic.visit import subjects as subjects_mod
+    from main_logic.visit.subjects import path_lock
+
+    target = tmp_path / "x.json"
+    key = str(target.resolve())
+    with path_lock(target) as held:
+        assert path_lock(target) is held           # 持有期间拿到的是同一把
+        assert path_lock(target).locked()
+    del held
+    gc.collect()
+    assert key not in subjects_mod._PATH_LOCKS     # 闲置后登记自动释放
