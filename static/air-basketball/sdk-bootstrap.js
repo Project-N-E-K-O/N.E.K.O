@@ -114,6 +114,8 @@ async function bootstrap() {
 }
 
 export const airBasketballSdkReady = bootstrap();
+// game.js reports the failure on the start card; keep it out of unhandled rejections.
+airBasketballSdkReady.catch(() => undefined);
 
 export async function playGameTone(frequency, duration = .08, type = 'sine') {
   const { audio } = await airBasketballSdkReady;

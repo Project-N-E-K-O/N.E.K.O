@@ -57,6 +57,11 @@ _MODEL_MANAGER_JS_PATHS = tuple(sorted(
 _YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
 ))
+# Game modules load siblings via dynamic import() and artwork via JS, so the
+# template scan cannot see them; version the whole directory instead.
+_AIR_BASKETBALL_ASSET_PATHS = tuple(sorted(
+    path for path in (_PROJECT_ROOT / "static/air-basketball").rglob("*") if path.is_file()
+))
 _STATIC_ASSET_VERSION_TEMPLATE_PATTERN = re.compile(
     r"/static/([^\"'\s?]+)\?v=\{\{\s*static_asset_version\b"
 )
@@ -195,17 +200,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/vrm/motion/player.js",
-    _PROJECT_ROOT / "static/air-basketball/air-basketball.css",
-    _PROJECT_ROOT / "static/air-basketball/air-basketball-neko-host-registration.js",
-    _PROJECT_ROOT / "static/air-basketball/avatar.css",
-    _PROJECT_ROOT / "static/air-basketball/avatar-host.js",
-    _PROJECT_ROOT / "static/air-basketball/avatar.js",
-    _PROJECT_ROOT / "static/air-basketball/arcade.css",
-    _PROJECT_ROOT / "static/air-basketball/chat-dock.js",
-    _PROJECT_ROOT / "static/air-basketball/game.js",
-    _PROJECT_ROOT / "static/air-basketball/i18n.js",
-    _PROJECT_ROOT / "static/air-basketball/physics.js",
-    _PROJECT_ROOT / "static/air-basketball/sdk-bootstrap.js",
+    *_AIR_BASKETBALL_ASSET_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )

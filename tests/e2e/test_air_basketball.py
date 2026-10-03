@@ -25,7 +25,7 @@ def _stub_unavailable_air_basketball_avatar(page: Page):
 @pytest.mark.e2e
 def test_air_basketball_neko_ball_budget(page: Page, running_server: str):
     page.goto(
-        f"{running_server}/air_basketball",
+        f"{running_server}/air_basketball?test_mode=1",
         wait_until="domcontentloaded",
         timeout=60000,
     )
@@ -258,7 +258,7 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
         ),
     )
 
-    page.goto(f"{running_server}/air_basketball")
+    page.goto(f"{running_server}/air_basketball?test_mode=1")
     page.wait_for_load_state("networkidle")
     page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")
     page.wait_for_selector("#air-neko-avatar.is-ready", timeout=20000)
@@ -305,12 +305,6 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
     assert escaped_state["mouseStealEscapes"] == 1
     assert escaped_state["nekoAction"] == "idle"
     assert 14.5 <= escaped_state["nextMouseSteal"] <= 23
-
-    page.locator("#chat-toggle").click()
-    expect(page.locator("#game-chat")).to_be_visible()
-    expect(page.locator("#game-chat-frame")).to_have_attribute("src", re.compile(r"^/chat\?"))
-    page.locator("#chat-close").click()
-    expect(page.locator("#game-chat")).not_to_be_visible()
 
     page.evaluate("""
       () => {
@@ -643,7 +637,7 @@ def test_air_basketball_new_session_restores_character_identity(
 
     page.route("**/api/game/air-basketball/character*", fulfill_character)
     page.goto(
-        f"{running_server}/air_basketball?lanlan_name=Round%20Two%20Lolita",
+        f"{running_server}/air_basketball?lanlan_name=Round%20Two%20Lolita&test_mode=1",
         wait_until="domcontentloaded",
     )
     page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")

@@ -4,7 +4,6 @@
   gap: 8px;
 }
 
-.chat-button { color: #d66f9e; }
 .machine-screen canvas[id$="-court"] { cursor: grab; }
 .machine-screen canvas[id$="-court"].is-interfering { cursor: grabbing; }
 .player-machine .machine-screen canvas { cursor: grab; }
@@ -290,54 +289,6 @@
   45% { box-shadow: inset -18px 0 28px rgba(239,128,123,.27), inset 0 0 20px rgba(45,104,141,.09); }
 }
 
-.game-chat {
-  position: fixed;
-  z-index: 20;
-  right: clamp(12px,3vw,38px);
-  bottom: max(14px,env(safe-area-inset-bottom));
-  width: min(430px,calc(100vw - 24px));
-  height: min(310px,48vh);
-  overflow: hidden;
-  border: 1px solid rgba(255,255,255,.84);
-  border-radius: 22px;
-  background: rgba(245,252,255,.88);
-  box-shadow: 0 18px 46px rgba(47,91,120,.18), inset 0 1px rgba(255,255,255,.96);
-  backdrop-filter: blur(16px);
-}
-
-.game-chat.is-closed {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transform: translateY(12px) scale(.98);
-}
-
-.game-chat header {
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 10px 0 15px;
-  border-bottom: 1px solid rgba(81,150,190,.12);
-  color: #467b9b;
-  background: linear-gradient(90deg,rgba(208,239,251,.65),rgba(250,220,234,.55));
-  font-size: 11px;
-  letter-spacing: .06em;
-}
-
-.game-chat header button {
-  width: 28px;
-  height: 28px;
-  border: 1px solid rgba(255,255,255,.78);
-  border-radius: 50%;
-  color: #9a6380;
-  background: rgba(255,255,255,.58);
-  font-size: 18px;
-  cursor: pointer;
-}
-
-.game-chat iframe { display: block; width: 100%; height: calc(100% - 40px); border: 0; background: transparent; }
-
 @keyframes screen-jolt {
   0%,100% { transform: none; }
   30% { transform: translate(4px,-2px) rotate(.35deg); }
@@ -352,8 +303,6 @@
 @media (max-width: 720px) {
   .interference-hint { display: none; }
   .interference-meter { left: 7px; bottom: 7px; width: 60px; }
-  .game-chat { height: 42vh; }
-  .chat-button { display: block; }
   .stage-banner { top: 50px; right: 5px; }
   .fever-meter { top: 70px; left: 7px; width: 58px; }
   .aim-panel { bottom: 42px; width: 86%; padding: 5px 6px; }
@@ -1217,6 +1166,7 @@ body::after {
 .start-card::after { background: rgba(232,148,185,.14); }
 .start-card button { background: #61b7dd; box-shadow: 0 5px 0 #3d8fb3,0 13px 24px rgba(61,143,179,.2); }
 .start-card button:hover { transform: translateY(-1px); box-shadow: 0 4px 0 #3d8fb3,0 12px 22px rgba(61,143,179,.2); }
+.start-card button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 
 @media (max-height: 680px) {
   .overlay {

@@ -43,7 +43,6 @@ def test_air_basketball_mvp_interaction_contract():
     avatar_host = ROOT.joinpath("static", "air-basketball", "avatar-host.js").read_text(encoding="utf-8")
     sdk_bootstrap = ROOT.joinpath("static", "air-basketball", "sdk-bootstrap.js").read_text(encoding="utf-8")
     arcade_css = ROOT.joinpath("static", "air-basketball", "arcade.css").read_text(encoding="utf-8")
-    chat = ROOT.joinpath("static", "air-basketball", "chat-dock.js").read_text(encoding="utf-8")
     main_server = ROOT.joinpath("app", "main_server", "__init__.py").read_text(encoding="utf-8")
     character_names = ROOT.joinpath("utils", "character_name.py").read_text(encoding="utf-8")
 
@@ -315,7 +314,12 @@ def test_air_basketball_mvp_interaction_contract():
     assert "t('chaosBall', { name:opponentName })" in game
     assert "猫娘丢来一颗球" not in i18n
     assert "角色资源暂不可用" not in avatar
-    assert "/static/locales/${locale}.json" in i18n
+    # Locale loading, language detection and cache-bust belong to the shared bootstrap.
+    assert "/static/i18n-i18next.js?v=" in html
+    assert "fetch(" not in i18n
+    assert "/static/locales/" not in i18n
+    assert "window.i18n" in i18n
+    assert "returnObjects:true" in i18n
     assert "aspect-ratio: 8 / 11" in arcade_css
     assert "document.body.appendChild(crossBall)" in game
     assert "--cross-size" in game
@@ -345,7 +349,21 @@ def test_air_basketball_mvp_interaction_contract():
     assert "if (value !== null) node.textContent = value" in i18n
     assert "Math.min(.033, (now - lastFrame)" not in game
     assert "if (!nekoAiFrozen && state.nextNekoDecision <= 0)" in game
-    assert "pageParams.get('test_mode') === '1'" in game
+    # Automation hooks that bypass focus/cooldown rules exist only on test pages.
+    assert "if (pageParams.get('test_mode') === '1') window.AirBasketballMVP = Object.freeze({" in game
+    assert game.count("window.AirBasketballMVP =") == 1
+    # A failed SDK bootstrap must leave the page wired and report it on the start card.
+    assert "sdkContext = await airBasketballSdkReady;" in game
+    assert "function showSdkUnavailable()" in game
+    assert "t('sdkUnavailable')" in game
+    assert "airBasketballSdkReady.catch(() => undefined);" in sdk_bootstrap
+    # Physics sub-steps read layout through a per-frame cache; the overlay syncs once per frame.
+    assert "stepLayoutCache = new Map();" in game
+    update_body = game.split("function update(dt) {", 1)[1].split("\n}\n", 1)[0]
+    assert "settleTrackedGuestBall();" in update_body
+    assert "syncTrackedGuestBall();" not in update_body
+    assert "document.addEventListener('visibilitychange'" in game
+    assert "const releasesTrackedBall = trackedGuestBall === sourceLane.ball;" in game
     assert "prepareIsolatedCrossTest" in game
     assert "position: fixed" in arcade_css
     assert ".mode-picker input:focus-visible + span" in arcade_css
@@ -355,22 +373,22 @@ def test_air_basketball_mvp_interaction_contract():
     assert 'id="player-power-fill"' in html
     assert 'id="player-fever-fill"' in html
     assert 'id="neko-stage"' in html
-    assert "iframe id=\"game-chat-frame\"" in html
-    assert "`/chat?${params}`" in chat
-    assert "window.prepareAirBasketballChat = prepareChatBridge" in chat
-    assert "airBasketballAudioBridgeReady" not in chat
+    # The embedded /chat iframe ran a second, independent chat client for the
+    # same character (proactive election, websocket, music owner claim).
+    assert not ROOT.joinpath("static", "air-basketball", "chat-dock.js").exists()
+    assert "game-chat" not in html
+    assert "/chat?" not in html
+    assert "game-chat" not in game
     assert "AudioContext" not in game
     assert "AudioContext" not in sdk_bootstrap
     assert 'loading="lazy"' not in html
-    assert 'class="game-chat is-closed"' in html
-    assert "dock.classList.contains('is-closed')" in chat
     limited_pages = main_server.split("_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {", 1)[1].split("}", 1)[0]
-    assert '"/air_basketball"' not in limited_pages
+    assert '"/air_basketball"' in limited_pages
     reserved_routes = character_names.split("RESERVED_ROUTE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     assert '"air_basketball"' in reserved_routes
     expected_keys = {
         "title", "gestureHint", "chaosBall", "opponentReady", "voiceOpening",
-        "avatarUnavailable", "arenaLabel", "closeChat", "mouseStealCaught",
+        "avatarUnavailable", "arenaLabel", "sdkUnavailable", "mouseStealCaught",
         "mouseStealEscape", "voiceMouseSteal",
     }
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):

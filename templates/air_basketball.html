@@ -23,6 +23,7 @@
       window.mouseTrackingEnabled = false;
     })();
   </script>
+  <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
 </head>
 <body style="--air-basketball-ball-image:url('/static/air-basketball/assets/neko-basketball.png?v={{ static_asset_version | default('0') }}')">
   <main class="game-shell">
@@ -31,7 +32,6 @@
       <div class="round-clock"><span id="clock-label" data-i18n="airBasketball.timeLeft">剩余</span><strong id="match-clock">60</strong><span id="clock-unit" data-i18n="airBasketball.seconds">秒</span></div>
       <div class="header-actions">
         <button id="stop-match" class="stop-match" type="button" hidden data-i18n="airBasketball.stopMatch">结束本局</button>
-        <button id="chat-toggle" class="round-button chat-button" type="button" data-i18n-aria-label="airBasketball.chat" aria-label="边玩边聊">✦</button>
         <button id="sound-toggle" class="round-button" type="button" data-i18n-aria-label="airBasketball.soundOff" data-sound-on-fallback="开启音效" data-sound-off-fallback="关闭音效" aria-label="关闭音效">♪</button>
       </div>
     </header>
@@ -143,11 +143,6 @@
     </section>
   </div>
 
-  <aside id="game-chat" class="game-chat is-closed" aria-hidden="true">
-    <header><strong data-i18n="airBasketball.chat">边玩边聊</strong><button id="chat-close" type="button" data-i18n-aria-label="airBasketball.closeChat" aria-label="关闭聊天">×</button></header>
-    <iframe id="game-chat-frame" title="N.E.K.O Chat"></iframe>
-  </aside>
-
   <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/libs/live2d.min.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/libs/pixi.min.js?v={{ static_asset_version | default('0') }}"></script>
@@ -181,7 +176,6 @@
   <script id="neko-minigame-host-launch" type="application/json">{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version | default('0') }}","registrations":{"air-basketball":{"mode":"registered","gameId":"air-basketball","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["runtime","logging","avatar-renderer","audio","speech-output"]}}}</script>
   <script src="/static/air-basketball/air-basketball-neko-host-registration.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version | default('0') }}"></script>
-  <script type="module" src="/static/air-basketball/chat-dock.js?v={{ static_asset_version | default('0') }}"></script>
   <script type="module" src="/static/air-basketball/game.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 </html>

@@ -21,7 +21,16 @@ const {
   startGameRuntime,
   unlockGameAudio
 } = sdkModule;
-const { game:sdkGame, identity:sdkIdentity } = await airBasketballSdkReady;
+// A failed bootstrap (missing character, host or capability) must not stop the
+// rest of this module from wiring the page; the start card reports it instead.
+let sdkContext = null;
+try {
+  sdkContext = await airBasketballSdkReady;
+} catch (error) {
+  console.error('[air_basketball] SDK bootstrap failed', error);
+}
+const sdkGame = sdkContext?.game || null;
+const sdkIdentity = sdkContext?.identity || null;
 
 applyTranslations();
 
@@ -401,18 +410,19 @@ function trackGuestBall(ball, lane) {
   return true;
 }
 
-function syncTrackedGuestBall() {
+// Runs every physics step, so it must not read layout. Returns whether a ball
+// is left for the page overlay to follow.
+function settleTrackedGuestBall() {
   const ball = trackedGuestBall;
   const lane = trackedGuestLane;
   syncTrackedGuestInteraction();
-  if (trackedGuestSuspended) return;
+  if (trackedGuestSuspended) return false;
   // Native shots replace `playerLane.ball` when they score, miss or the court
   // resizes. Rebind immediately instead of leaving the page overlay attached
   // to the discarded object, which looked like the ball had disappeared.
   if (lane === playerLane && ball !== playerLane.ball) {
     trackGuestBall(playerLane.ball, playerLane);
-    syncTrackedGuestBall();
-    return;
+    return settleTrackedGuestBall();
   }
   if (ball?.expired) {
     if (lane === nekoLane && ball.owner === 'player' && !ball.scored) missed('player');
@@ -421,12 +431,20 @@ function syncTrackedGuestBall() {
       playerLane.resetBall();
       trackGuestBall(playerLane.ball, playerLane);
     }
-    return;
+    return false;
   }
   if (!ball || !lane) {
     clearTrackedGuestBall();
-    return;
+    return false;
   }
+  return true;
+}
+
+// Once per frame (and on resize): move the page overlay onto the tracked ball.
+function syncTrackedGuestBall() {
+  if (!settleTrackedGuestBall()) return;
+  const ball = trackedGuestBall;
+  const lane = trackedGuestLane;
   const rect = lane.canvas.getBoundingClientRect();
   const scaleX = rect.width / lane.width;
   const scaleY = rect.height / lane.height;
@@ -630,9 +648,25 @@ function transferBall(data, sourceLane, targetLane) {
       rememberProgress
     );
   } else {
+    // A native ball whose possession flipped leaves through the auxiliary clone.
+    // If the page overlay was following it, park the overlay until the source
+    // lane hands out its next ball; otherwise the ball is drawn twice.
+    const releasesTrackedBall = trackedGuestBall === sourceLane.ball;
+    if (releasesTrackedBall) {
+      trackedGuestSuspended = true;
+      crossBall.classList.remove('is-crossing');
+      syncTrackedGuestInteraction();
+    }
+    const arriveAuxiliary = () => {
+      const result = arrive();
+      if (releasesTrackedBall && trackedGuestSuspended && trackedGuestBall !== sourceLane.ball) {
+        trackGuestBall(sourceLane.ball, sourceLane);
+      }
+      return result;
+    };
     animateAuxiliaryCross(
       entersFromLeft ? 'right' : 'left', sourceLane, data.y, targetLane,
-      transit.y, transit.duration, radius, data.owner, arrive, data.stepRemainder || 0
+      transit.y, transit.duration, radius, data.owner, arriveAuxiliary, data.stepRemainder || 0
     );
   }
   return true;
@@ -905,8 +939,7 @@ function endMouseSteal(escaped = false) {
 }
 
 function beginMouseSteal() {
-  const chatOpen = !byId('game-chat')?.classList.contains('is-closed');
-  if (!state.running || mouseSteal.active || state.nekoCounterPending || chatOpen
+  if (!state.running || mouseSteal.active || state.nekoCounterPending
       || state.mouseStealCount >= ACTION_BALANCE.MOUSE_MAX_PER_ROUND
       || state.disruptionGrace > 0 || !hasFocus('neko', ACTION_BALANCE.MOUSE_COST)
       || state.neko.stagger > 0
@@ -1052,9 +1085,19 @@ function circleTouchesEllipse(x, y, radius, rect) {
   return ((x - centerX) / radiusX) ** 2 + ((y - centerY) / radiusY) ** 2 <= 1;
 }
 
+// Physics runs up to MAX_PHYSICS_STEPS_PER_FRAME steps per frame. Steps read
+// layout through this cache so each element is measured once per frame instead
+// of forcing a reflow between the style writes of every step.
+let stepLayoutCache = null;
+function stepLayout(key, read) {
+  if (!stepLayoutCache) return read();
+  if (!stepLayoutCache.has(key)) stepLayoutCache.set(key, read());
+  return stepLayoutCache.get(key);
+}
+
 function avatarCollisionZones() {
   return [...nekoAvatar.querySelectorAll('.avatar-hit-zone')]
-    .map(zone => zone.getBoundingClientRect());
+    .map(zone => stepLayout(zone, () => zone.getBoundingClientRect()));
 }
 
 function avatarIsReady() {
@@ -1064,7 +1107,7 @@ function avatarIsReady() {
 
 function containTrackedBallAtViewportEdge(ball, court, scaleX, radius) {
   if (!ball.allowOuterExit) return false;
-  const viewportRight = document.documentElement.clientWidth;
+  const viewportRight = stepLayout('viewportWidth', () => document.documentElement.clientWidth);
   const x = court.left + ball.x * scaleX;
   if (x + radius <= viewportRight) return false;
   ball.x = (viewportRight - radius - court.left) / scaleX;
@@ -1076,7 +1119,7 @@ function containTrackedBallAtViewportEdge(ball, court, scaleX, radius) {
 function checkPlayerBallNekoHit() {
   const ball = trackedGuestBall;
   if (!ball || trackedGuestLane !== nekoLane || ball.expired) return;
-  const court = nekoLane.canvas.getBoundingClientRect();
+  const court = stepLayout(nekoLane.canvas, () => nekoLane.canvas.getBoundingClientRect());
   const scaleX = court.width / nekoLane.width;
   const scaleY = court.height / nekoLane.height;
   const x = court.left + ball.x * scaleX;
@@ -1486,9 +1529,7 @@ function chooseNekoAction(forcedRoll = null) {
   if (state.nekoAction !== NEKO_ACTION.IDLE || state.nekoCounterPending
       || mouseSteal.active || state.neko.stagger > 0) return false;
 
-  const chatOpen = !byId('game-chat')?.classList.contains('is-closed');
-  const canMouse = !chatOpen
-    && state.mouseStealCount < ACTION_BALANCE.MOUSE_MAX_PER_ROUND
+  const canMouse = state.mouseStealCount < ACTION_BALANCE.MOUSE_MAX_PER_ROUND
     && state.nextMouseSteal <= 0
     && state.disruptionGrace <= 0
     && hasFocus('neko', ACTION_BALANCE.MOUSE_COST + NEKO_STRENGTH.SHOT_RESERVE);
@@ -1541,7 +1582,7 @@ function update(dt) {
   playerLane.update(dt, state.running);
   nekoLane.update(dt, state.running);
   checkPlayerBallNekoHit();
-  syncTrackedGuestBall();
+  settleTrackedGuestBall();
   if (!state.running) return;
   updateFever('player', dt);
   updateFever('neko', dt);
@@ -1611,12 +1652,25 @@ function frame(now) {
   const frameSeconds = lastFrame ? (now - lastFrame) / 1000 : 0;
   lastFrame = now;
   const plan = planPhysicsSteps(playablePhysicsSeconds(frameSeconds));
-  for (let step = 0; step < plan.steps; step += 1) update(plan.stepSeconds);
+  stepLayoutCache = new Map();
+  try {
+    for (let step = 0; step < plan.steps; step += 1) update(plan.stepSeconds);
+  } finally {
+    stepLayoutCache = null;
+  }
+  syncTrackedGuestBall();
   advanceMatchClock(frameSeconds);
   playerLane.draw();
   nekoLane.draw();
   requestAnimationFrame(frame);
 }
+
+// rAF stops while the page is hidden (background tab, minimized window). Drop
+// that gap instead of feeding it to the wall-time match clock, which would
+// otherwise settle a timed match the moment the page is shown again.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) lastFrame = 0;
+});
 
 function resize() {
   const trackingPlayerNative = trackedGuestBall === playerLane.ball;
@@ -1647,23 +1701,34 @@ function updateSoundToggleLabel() {
   soundToggle.setAttribute('aria-label', translated === key ? fallback : translated);
 }
 
+function showSdkUnavailable() {
+  startButton.disabled = true;
+  startCopy.textContent = t('sdkUnavailable');
+  startCopy.setAttribute('role', 'alert');
+  document.querySelectorAll('input[name="match-mode"]').forEach(input => { input.disabled = true; });
+}
+
 updateSoundToggleLabel();
 applyOpponentName(opponentName);
-prewarmNekoVoice(opponentName);
-void configureGameRuntime(
-  () => ({ currentState:runtimeSnapshot() }),
-  context => runtimeEndPayload(context?.type || 'page-exit')
-).then(() => {
-  window.addEventListener('pagehide', disposeGameSdk, { once:true });
-}).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
 window.addEventListener('pageshow', event => {
   if (event?.persisted) window.location.reload();
 });
-void initNekoAvatar(sdkGame, sdkIdentity, identity => {
-  applyOpponentName(identity?.name);
-  prewarmNekoVoice(identity?.name);
-  nekoLane.showAvatarPlaceholder = false;
-});
+if (sdkContext) {
+  prewarmNekoVoice(opponentName);
+  void configureGameRuntime(
+    () => ({ currentState:runtimeSnapshot() }),
+    context => runtimeEndPayload(context?.type || 'page-exit')
+  ).then(() => {
+    window.addEventListener('pagehide', disposeGameSdk, { once:true });
+  }).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
+  void initNekoAvatar(sdkGame, sdkIdentity, identity => {
+    applyOpponentName(identity?.name);
+    prewarmNekoVoice(identity?.name);
+    nekoLane.showAvatarPlaceholder = false;
+  });
+} else {
+  showSdkUnavailable();
+}
 
 function prepareIsolatedCrossTest() {
   resetMatch();
@@ -1686,20 +1751,9 @@ function setTrackedGuestForTest({ xRatio, yRatio, vx, vy, owner } = {}) {
   return true;
 }
 
-const testControls = pageParams.get('test_mode') === '1'
-  ? Object.freeze({
-      prepareIsolatedCrossTest,
-      setTrackedGuestForTest,
-      advanceMatchClock,
-      planPhysicsSteps,
-      playablePhysicsSeconds,
-      runtimeSnapshot,
-      planNekoIntent,
-      nekoAttentionContext
-    })
-  : null;
-
-window.AirBasketballMVP = Object.freeze({
+// Automation hooks drive Neko's AI and restart matches past the focus/cooldown
+// rules, so they exist only on test_mode=1 pages.
+if (pageParams.get('test_mode') === '1') window.AirBasketballMVP = Object.freeze({
   start:resetMatch,
   getState:() => ({
     ...JSON.parse(JSON.stringify(state)),
@@ -1740,7 +1794,16 @@ window.AirBasketballMVP = Object.freeze({
   prankNeko:beginNekoPrank,
   stealMouse:beginMouseSteal,
   releaseMouse:() => endMouseSteal(true),
-  ...(testControls ? { test:testControls } : {})
+  test:Object.freeze({
+    prepareIsolatedCrossTest,
+    setTrackedGuestForTest,
+    advanceMatchClock,
+    planPhysicsSteps,
+    playablePhysicsSeconds,
+    runtimeSnapshot,
+    planNekoIntent,
+    nekoAttentionContext
+  })
 });
 
 requestAnimationFrame(frame);
