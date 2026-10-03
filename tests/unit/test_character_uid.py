@@ -137,6 +137,20 @@ def test_existing_characters_get_an_id_once_and_keep_it_across_restarts(tmp_path
     assert _uid_on_disk(path, "Old") == uid
 
 
+def test_backfill_migrates_legacy_reserved_fields_before_writing(tmp_path):
+    """The backfill writes (and caches) the raw file: it must be migrated first.
+
+    Mutation: skipping migrate_catgirl_reserved in the backfill turns this red
+    -- the legacy top-level voice_id would be written back unmigrated.
+    """
+    cm, path = _backfilled_manager(tmp_path, {"Old": {"昵称": "Old", "voice_id": "legacy-voice"}})
+
+    stored = json.loads(path.read_text(encoding="utf-8"))["猫娘"]["Old"]
+    assert "voice_id" not in stored
+    assert stored["_reserved"]["voice_id"] == "legacy-voice"
+    assert is_valid_character_uid(stored["_reserved"]["character_uid"])
+
+
 def test_loading_characters_never_writes_the_id(tmp_path):
     """The backfill is an explicit startup step, never a side effect of a load.
 

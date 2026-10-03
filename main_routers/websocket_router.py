@@ -55,10 +55,9 @@ from .shared_state import (
 # registry; the hijack points below only talk to the registry.
 from . import game_router as _game_router  # noqa: F401
 from utils.external_route_registry import (
-    external_route_identity,
-    same_external_route_owner,
-    get_active_external_route,
+    StartSessionClaim,
     route_external_microphone_audio,
+    route_external_start_session,
     route_external_stream_message,
 )
 from utils.icebreaker_route_state import (
@@ -984,31 +983,38 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
-                    external_route = get_active_external_route(lanlan_name)
-                    claimed_route = external_route_identity(lanlan_name)
-                    if external_route is not None and external_route.on_start_session is not None:
-                        # The route decides this start itself; an unclaimed
-                        # start falls through to the ordinary session path.
-                        if await external_route.on_start_session(
-                            lanlan_name,
-                            {"input_type": input_type, "request_id": request_id},
-                        ):
-                            continue
-                        if session_id.get(lanlan_name) != this_session_id:
-                            # A newer window took the session while the route
-                            # decided; this socket must not start one. Its next
-                            # message hits the ownership check above and closes.
-                            logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
-                            continue
-                        if not same_external_route_owner(claimed_route, external_route_identity(lanlan_name)):
-                            # The route that declined is no longer the owner;
-                            # its decision does not cover the current one.
-                            logger.info("[%s] start_session dropped: external route changed during its claim", lanlan_name)
-                            continue
-                    elif external_route is not None:
-                        # Kinds without on_start_session (the game route) keep
-                        # the original branch: text is ack-only, audio starts
-                        # ordinary realtime as the route's STT provider.
+                    # The owning route decides this start (re-asked if it is
+                    # replaced while deciding); a decline, or no route, falls
+                    # through to the ordinary session path.
+                    claim, external_route = await route_external_start_session(
+                        lanlan_name,
+                        {"input_type": input_type, "request_id": request_id},
+                    )
+                    if claim is StartSessionClaim.CLAIMED:
+                        continue
+                    if session_id.get(lanlan_name) != this_session_id:
+                        # A newer window took the session while the route
+                        # decided; this socket must not start one. Its next
+                        # message hits the ownership check above and closes.
+                        logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
+                        continue
+                    if claim is StartSessionClaim.UNSETTLED:
+                        # The owner kept changing while deciding: give up and
+                        # tell the requester, so its preparing state resets.
+                        logger.info("[%s] start_session failed: external route kept changing during its claim", lanlan_name)
+                        if request_id:
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_failed(
+                                    'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
+                                    request_id=request_id,
+                                )
+                            )
+                        continue
+                    if external_route is not None:
+                        # Default start handling for a route without
+                        # on_start_session (see ExternalRouteKind): text is
+                        # ack-only, audio starts ordinary realtime as the
+                        # route's STT provider.
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] %s route active: acknowledging text entry without starting ordinary text session", lanlan_name, external_route.kind)
                             _fire_task(

@@ -38,6 +38,7 @@ owners register themselves when their module is imported.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Awaitable, Callable, Dict
 
 from utils.logger_config import get_module_logger
@@ -61,9 +62,16 @@ class ExternalRouteKind:
 
     Microphone PCM on the main socket is announced to the route as
     ``{"input_type": "audio", "stt_provider": "realtime"}``. When the route
-    returns True the PCM is dropped, unless the kind sets ``audio_passthrough``:
-    the game route uses the ordinary realtime session as its STT provider, so
-    its PCM keeps flowing there after the announcement.
+    returns True the PCM is dropped, unless the kind sets ``audio_passthrough``,
+    in which case it keeps flowing to the ordinary realtime session.
+
+    ``on_start_session`` lets a kind decide a frontend session start itself.
+    A kind that leaves it None gets the default start handling while active:
+    a text start is only acknowledged (no ordinary text session starts), and an
+    audio start announces ``stt_provider="realtime"`` to the route and starts
+    the ordinary realtime session as the route's speech-to-text provider. That
+    session is useless unless the microphone PCM reaches it, so such a kind
+    must set ``audio_passthrough`` (checked at registration).
     """
 
     kind: str
@@ -93,6 +101,11 @@ def register_external_route_kind(spec: ExternalRouteKind) -> None:
         raise ValueError("ExternalRouteKind.kind must be a non-empty string")
     if spec.current_instance is None:
         raise ValueError("ExternalRouteKind must provide current_instance")
+    if spec.on_start_session is None and not spec.audio_passthrough:
+        raise ValueError(
+            "ExternalRouteKind without on_start_session must set audio_passthrough: "
+            "the default audio start runs ordinary realtime as the route's STT"
+        )
     _kinds[spec.kind] = spec
 
 
@@ -202,69 +215,124 @@ def is_character_lifecycle_locked(lanlan_name: str) -> bool:
     return False
 
 
-# How many times a stream message follows an owner change before it is dropped.
+# How many times an offer follows an owner change before it is given up.
 _STREAM_MESSAGE_MAX_OWNER_CHANGES = 2
+
+# Result of ``_offer_to_current_owner`` when the owner kept changing.
+_UNSETTLED = object()
+
+
+async def _offer_to_current_owner(
+    lanlan_name: str,
+    offer: Callable[[ExternalRouteKind], Awaitable[tuple[Any, bool]]],
+    *,
+    what: str,
+) -> tuple[ExternalRouteKind | None, Any]:
+    """Run ``offer`` against the route that owns ``lanlan_name`` until it sticks.
+
+    ``offer(spec)`` returns ``(result, final)``. A final result stands as is.
+    Otherwise the handler may have suspended, and an answer from a route
+    instance that has since been replaced does not speak for the current
+    owner: the offer is repeated against whoever owns the character now.
+    Returns ``(spec, result)`` of the owner whose answer stands, ``(None, None)``
+    when no route owns the character, or ``(None, _UNSETTLED)`` when the owner
+    kept changing. Each owner read is reused as the next attempt's starting
+    point, so a steady owner costs one read before and one after.
+    """
+    identity = external_route_identity(lanlan_name)
+    for _ in range(_STREAM_MESSAGE_MAX_OWNER_CHANGES + 1):
+        if identity is None:
+            return None, None
+        spec = identity[0]
+        result, final = await offer(spec)
+        if final:
+            return spec, result
+        current = external_route_identity(lanlan_name)
+        if same_external_route_owner(identity, current):
+            return spec, result
+        logger.info(
+            "external route changed while handling %s: lanlan=%s kind=%s",
+            what,
+            lanlan_name,
+            spec.kind,
+        )
+        identity = current
+    return None, _UNSETTLED
 
 
 async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
     """Offer a main-socket ``stream_data`` message to the active route.
 
     Returns True when the route consumed it (the caller must then skip the
-    ordinary chat path). A handler may suspend; if the owning route instance
-    changed meanwhile, its "not consumed" no longer speaks for the character,
-    so the message is offered to the current owner instead (or, with no owner
-    left, goes to the ordinary path). An owner that keeps changing gets the
+    ordinary chat path). A "not consumed" from a route instance replaced while
+    it decided is re-offered to the current owner (or, with no owner left, the
+    message goes to the ordinary path). An owner that keeps changing gets the
     message dropped rather than leaked into ordinary chat.
     """
-    for _ in range(_STREAM_MESSAGE_MAX_OWNER_CHANGES + 1):
-        identity = external_route_identity(lanlan_name)
-        if identity is None:
-            return False
-        spec, _instance = identity
-        if await spec.route_stream_message(lanlan_name, message):
-            return True
-        if same_external_route_owner(identity, external_route_identity(lanlan_name)):
-            return False
-        logger.info(
-            "external route changed while handling stream_data: lanlan=%s kind=%s",
-            lanlan_name,
-            spec.kind,
-        )
-    return True
+    async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
+        consumed = bool(await spec.route_stream_message(lanlan_name, message))
+        return consumed, consumed
+
+    _spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="stream_data")
+    if consumed is _UNSETTLED:
+        return True
+    return bool(consumed)
 
 
 async def route_external_microphone_audio(lanlan_name: str) -> bool:
     """Announce microphone PCM to the active route.
 
     Returns True when the PCM must not reach the ordinary session: the route
-    consumed the announcement and does not declare ``audio_passthrough``.
+    consumed the announcement and does not declare ``audio_passthrough``. The
+    decision (and passthrough rule) of a route replaced while it decided does
+    not apply to the current owner, which is asked again.
     """
-    for _ in range(_STREAM_MESSAGE_MAX_OWNER_CHANGES + 1):
-        identity = external_route_identity(lanlan_name)
-        if identity is None:
-            return False
-        spec, _instance = identity
+    async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
         consumed = await spec.route_stream_message(
             lanlan_name, {"input_type": "audio", "stt_provider": "realtime"},
         )
-        # The handler may suspend: a decision (and passthrough rule) of an owner
-        # that has since been replaced does not apply to the current one.
-        if same_external_route_owner(identity, external_route_identity(lanlan_name)):
-            return bool(consumed) and not spec.audio_passthrough
-        logger.info(
-            "external route changed while announcing microphone audio: lanlan=%s kind=%s",
-            lanlan_name,
-            spec.kind,
-        )
-    return True
+        return bool(consumed), False
+
+    spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="microphone audio")
+    if consumed is _UNSETTLED:
+        return True
+    return spec is not None and bool(consumed) and not spec.audio_passthrough
 
 
-async def route_external_start_session(lanlan_name: str, message: dict) -> bool:
-    """Let the active route claim a session start; False when nobody claims it."""
-    spec = get_active_external_route(lanlan_name)
-    if spec is None or spec.on_start_session is None:
-        return False
-    return bool(await spec.on_start_session(lanlan_name, message))
+class StartSessionClaim(Enum):
+    """How the external routes answered a session start."""
+
+    CLAIMED = "claimed"  # a route took the start; the caller does nothing more
+    UNCLAIMED = "unclaimed"  # see route_external_start_session for the route
+    UNSETTLED = "unsettled"  # the owner kept changing; the caller gives up
+
+
+async def route_external_start_session(
+    lanlan_name: str,
+    message: dict,
+) -> tuple[StartSessionClaim, ExternalRouteKind | None]:
+    """Let the route owning ``lanlan_name`` decide a session start.
+
+    ``(UNCLAIMED, None)``: no route owns the character, or the owner declined;
+    the ordinary start runs. ``(UNCLAIMED, spec)``: the owner has no
+    ``on_start_session``, so the default start handling for ``spec`` applies
+    (see ``ExternalRouteKind``). A decline from a route replaced while it
+    decided is re-asked of the current owner, like stream messages.
+    """
+    async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
+        if spec.on_start_session is None:
+            return False, True
+        claimed = bool(await spec.on_start_session(lanlan_name, message))
+        return claimed, claimed
+
+    spec, claimed = await _offer_to_current_owner(lanlan_name, offer, what="start_session")
+    if claimed is _UNSETTLED:
+        return StartSessionClaim.UNSETTLED, None
+    if claimed:
+        return StartSessionClaim.CLAIMED, spec
+    if spec is not None and spec.on_start_session is None:
+        return StartSessionClaim.UNCLAIMED, spec
+    return StartSessionClaim.UNCLAIMED, None
 
 
 async def route_external_voice_transcript(

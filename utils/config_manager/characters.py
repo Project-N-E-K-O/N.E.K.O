@@ -198,7 +198,15 @@ class CharactersMixin:
             return False
         # Write back exactly what was parsed: a second read (load_characters)
         # could hit a transient lock / replacement and silently yield defaults.
-        if not ensure_character_uids(on_disk.get('猫娘')):
+        # The raw file may still hold legacy top-level reserved fields; migrate
+        # them as load_characters does, so the write below (which also seeds
+        # the cache) never stores an unmigrated profile.
+        catgirls = on_disk.get('猫娘')
+        if isinstance(catgirls, dict):
+            for catgirl_data in catgirls.values():
+                if isinstance(catgirl_data, dict):
+                    migrate_catgirl_reserved(catgirl_data)
+        if not ensure_character_uids(catgirls):
             return False
         self.save_characters(on_disk, character_json_path=character_json_path)
         logger.info("已为缺少稳定 id 的角色补发 character_uid。")

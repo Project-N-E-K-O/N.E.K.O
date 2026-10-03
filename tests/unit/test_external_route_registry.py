@@ -52,6 +52,7 @@ def _kind(
         is_locked=None if locked is None else (lambda _name: locked),
         has_background_tasks=None if background is None else (lambda _name: background),
         current_instance=lambda _name: "instance-1" if instance is None else instance,
+        audio_passthrough=on_start_session is None,
     )
 
 
@@ -138,16 +139,39 @@ def test_exclude_kind_skips_only_the_callers_own_kind(empty_registry):
 
 @pytest.mark.asyncio
 async def test_start_session_claims_need_an_active_route_with_a_handler(empty_registry):
-    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is False
+    start = registry.route_external_start_session
+    Claim = registry.StartSessionClaim
+    assert await start("Lan", {"input_type": "audio"}) == (Claim.UNCLAIMED, None)
 
-    registry.register_external_route_kind(_kind("game", active=True))
-    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is False
+    # No handler: default start handling for that route.
+    game = _kind("game", active=True)
+    registry.register_external_route_kind(game)
+    assert await start("Lan", {"input_type": "audio"}) == (Claim.UNCLAIMED, game)
 
     claim = AsyncMock(return_value=True)
-    registry.register_external_route_kind(_kind("visit", active=True, on_start_session=claim))
+    visit = _kind("visit", active=True, on_start_session=claim)
+    registry.register_external_route_kind(visit)
     registry.register_external_route_kind(_kind("game", active=False))
-    assert await registry.route_external_start_session("Lan", {"input_type": "audio"}) is True
+    assert await start("Lan", {"input_type": "audio"}) == (Claim.CLAIMED, visit)
     claim.assert_awaited_once_with("Lan", {"input_type": "audio"})
+
+    # A decline lets the ordinary start run.
+    claim.return_value = False
+    assert await start("Lan", {"input_type": "audio"}) == (Claim.UNCLAIMED, None)
+
+
+def test_a_kind_without_start_handler_must_pass_audio_through(empty_registry):
+    # Its default audio start runs ordinary realtime as STT, which gets no PCM
+    # without passthrough. Mutation: dropping the registration check turns this red.
+    with pytest.raises(ValueError, match="audio_passthrough"):
+        registry.register_external_route_kind(ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_unclaimed,
+            on_start_session=None,
+            finalize_for_character=_no_routes,
+            current_instance=lambda _name: "visit-1",
+        ))
 
 
 @pytest.mark.asyncio
@@ -424,7 +448,7 @@ async def test_microphone_audio_is_dropped_only_when_consumed_without_passthroug
         kind="visit",
         is_active=lambda _name: True,
         route_stream_message=announce,
-        on_start_session=None,
+        on_start_session=None if passthrough else AsyncMock(return_value=False),
         finalize_for_character=_no_routes,
         audio_passthrough=passthrough,
         current_instance=lambda _name: "visit-1",
@@ -476,6 +500,7 @@ async def test_stream_message_follows_an_owner_change_during_handling(empty_regi
             on_start_session=None,
             finalize_for_character=_no_routes,
             current_instance=lambda _name: None,
+            audio_passthrough=True,
         ))
         registry.register_external_route_kind(_kind(
             "other", active=True, route_stream_message=new_owner, instance="other-1",
@@ -519,6 +544,7 @@ async def test_microphone_audio_follows_an_owner_change_during_the_announcement(
         registry.register_external_route_kind(_kind("visit", active=False, instance="visit-1"))
         registry.register_external_route_kind(_kind(
             "other", active=True, route_stream_message=new_owner, instance="other-1",
+            on_start_session=AsyncMock(return_value=False),  # no passthrough
         ))
         return True
 

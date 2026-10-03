@@ -201,6 +201,7 @@ def _install_protocol_endpoint(
             on_start_session=None,
             finalize_for_character=_finalize_none,
             current_instance=lambda _name: "test-instance",
+            audio_passthrough=True,
         )
     )
     return session_ids, route_external_calls
@@ -2055,7 +2056,7 @@ async def test_route_consuming_microphone_audio_stops_pcm_unless_passthrough(
             kind="game",
             is_active=lambda _name: True,
             route_stream_message=_announce,
-            on_start_session=None,
+            on_start_session=None if passthrough else AsyncMock(return_value=False),
             finalize_for_character=_finalize_none,
             audio_passthrough=passthrough,
             current_instance=lambda _name: "test-instance",
@@ -2116,7 +2117,7 @@ async def test_superseded_recording_socket_honours_route_audio_consumption(
             kind="game",
             is_active=lambda _name: True,
             route_stream_message=_consume,
-            on_start_session=None,
+            on_start_session=None if passthrough else AsyncMock(return_value=False),
             finalize_for_character=_finalize_none,
             audio_passthrough=passthrough,
             current_instance=lambda _name: "test-instance",
@@ -2214,10 +2215,11 @@ async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
 
 
 @pytest.mark.asyncio
-async def test_start_session_is_dropped_when_a_new_instance_of_the_kind_took_over(
+async def test_start_session_asks_the_new_instance_when_the_kind_took_over(
     monkeypatch,
 ) -> None:
-    """Same registered kind, new route instance: the old instance's answer is stale.
+    """Same registered kind, new route instance: the old instance's decline is
+    stale, so the new instance decides (here it claims the start).
 
     Mutation: comparing only the kind object (not its instance) turns this red.
     """
@@ -2227,18 +2229,22 @@ async def test_start_session_is_dropped_when_a_new_instance_of_the_kind_took_ove
     )
     _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
     instance = {"id": "visit-1"}
+    asked = []
 
-    async def _decline_as_next_instance_starts(_name: str, _message: dict) -> bool:
-        await asyncio.sleep(0)
-        instance["id"] = "visit-2"
-        return False
+    async def _decide(_name: str, _message: dict) -> bool:
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return False
+        return True
 
     external_route_registry.register_external_route_kind(
         external_route_registry.ExternalRouteKind(
             kind="visit",
             is_active=lambda _name: True,
             route_stream_message=AsyncMock(return_value=False),
-            on_start_session=_decline_as_next_instance_starts,
+            on_start_session=_decide,
             finalize_for_character=_finalize_none,
             current_instance=lambda _name: instance["id"],
         )
@@ -2246,4 +2252,81 @@ async def test_start_session_is_dropped_when_a_new_instance_of_the_kind_took_ove
 
     await websocket_router.websocket_endpoint(websocket, "Lan")
 
+    assert asked == ["visit-1", "visit-2"]
     assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_falls_through_when_the_declining_route_ended(
+    monkeypatch,
+) -> None:
+    """A route that ended while declining leaves no owner: the ordinary start runs.
+
+    Mutation: treating any owner change as "drop" turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    active = {"value": True}
+
+    async def _decline_and_end(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        active["value"] = False
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: active["value"],
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_and_end,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1" if active["value"] else None,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changing(
+    monkeypatch,
+) -> None:
+    """An owner that never settles gets the start failed back with its request id.
+
+    Mutation: dropping the UNSETTLED start silently (no session_failed) turns
+    this red; so does starting the ordinary session instead.
+    """
+    manager = _ProtocolManager()
+    manager.send_session_failed = AsyncMock()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"n": 0}
+
+    async def _decline_and_hand_over(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        instance["n"] += 1
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_and_hand_over,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: f"visit-{instance['n']}",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
+    manager.send_session_failed.assert_awaited_once_with("audio", request_id="req-1")

@@ -1388,6 +1388,17 @@ class TurnMixin:
         if is_route_slot_taken(
             self.lanlan_name, kind="game", takeover_owner=self.takeover_owner(),
         ):
+            # The user did type the command: record it like a launched one, so
+            # the sync stream shows what the refusal answers.
+            await self.mirror_user_input(
+                data,
+                metadata={
+                    "source": "mini_game",
+                    "kind": "magic_command",
+                    "command": game_type,
+                },
+                request_id=request_id,
+            )
             await self.send_status(json.dumps({
                 "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
                 "details": {"game_type": game_type},

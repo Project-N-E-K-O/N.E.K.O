@@ -41,6 +41,7 @@ from utils.icebreaker_route_state import (
     _public_icebreaker_route_state,
     activate_icebreaker_route,
     finalize_icebreaker_route,
+    is_icebreaker_route_active,
     touch_icebreaker_route,
 )
 from utils.language_utils import is_supported_language_code, normalize_language_code
@@ -285,7 +286,13 @@ async def icebreaker_route_start(request: Request):
         # exit flow finishes). The icebreaker is not a registered kind itself,
         # so excluding it only matters once it is. A refused start must not
         # change the shared session language the owning route is using.
-        if is_external_route_locked(lanlan_name, exclude_kind="icebreaker"):
+        # A character already in an icebreaker route is replacing it (e.g. the
+        # tutorial restoring with a new session id): that is not a new claim on
+        # the slot, and refusing it would strand the tutorial mid-way.
+        if (
+            not is_icebreaker_route_active(lanlan_name)
+            and is_external_route_locked(lanlan_name, exclude_kind="icebreaker")
+        ):
             logger.info(
                 "icebreaker route/start refused: external route owns lanlan=%s",
                 lanlan_name,

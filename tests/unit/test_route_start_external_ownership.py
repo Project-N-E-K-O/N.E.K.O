@@ -57,6 +57,7 @@ def _register_visit(*, active: bool, locked: bool | None = None) -> None:
         finalize_for_character=_no_routes,
         is_locked=None if locked is None else (lambda name: locked and name == "Lan"),
         current_instance=lambda _name: "test-instance",
+        audio_passthrough=True,
     ))
 
 
@@ -204,6 +205,27 @@ async def test_icebreaker_route_start_refuses_a_character_owned_by_another_route
 
     assert result == {"ok": False, "reason": "route_owned_by_external"}
     assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is None
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_restore_replaces_its_own_route_while_another_route_is_active(
+    _icebreaker_clean,
+):
+    """The tutorial restores itself with a new session id over its own route.
+
+    That is not a new claim on the slot; refusing it would strand the tutorial.
+    Mutation: dropping the "already in an icebreaker route" exemption turns this red.
+    """
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1")
+    _register_visit(active=True)
+
+    result = await icebreaker_router.icebreaker_route_start(
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1-restored"})
+    )
+
+    assert result["ok"] is True
+    state = icebreaker_route_state._get_active_icebreaker_route_state("Lan")
+    assert state["session_id"] == "icebreaker-day1-restored"
 
 
 class _LanguageManager:

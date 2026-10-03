@@ -5004,6 +5004,7 @@ def _register_external_route_kind(kind, *, active, locked=None, on_start_session
         finalize_for_character=_external_route_no_routes,
         is_locked=None if locked is None else (lambda _name: locked),
         current_instance=lambda _name: "instance-1",
+        audio_passthrough=on_start_session is None,
     ))
 
 
@@ -5057,9 +5058,18 @@ async def test_mini_game_magic_command_is_not_launched_over_another_external_rou
         # interrupt (the first version) turns this red.
         mgr._clear_tts_pipeline.assert_not_awaited()
         assert mgr.user_activity == []
-        assert mgr.sync_message_queue.messages == [
-            {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"},
-        ]
+        # The typed command is still mirrored, like a launched one, ahead of
+        # the turn end. Mutation: dropping the mirror turns this red.
+        mirrored, turn_end = mgr.sync_message_queue.messages
+        assert mirrored["type"] == "user"
+        assert mirrored["data"]["data"] == "/一起看"
+        assert mirrored["data"]["request_id"] == "req-watch"
+        assert mirrored["data"]["metadata"] == {
+            "source": "mini_game",
+            "kind": "magic_command",
+            "command": "watch-together",
+        }
+        assert turn_end == {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"}
         assert "mini_game_invite_resolved" not in sent_types
         mgr.send_status.assert_awaited_once()
         status = json.loads(mgr.send_status.await_args.args[0])
@@ -5260,23 +5270,30 @@ async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_cla
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_audio_auto_start_is_dropped_when_a_new_instance_of_the_kind_took_over():
-    """Mutation: comparing only the kind object (not its instance) turns this red."""
+async def test_audio_auto_start_asks_the_new_instance_when_the_kind_took_over():
+    """The old instance's decline is stale: the new instance decides (and claims).
+
+    Mutation: comparing only the kind object (not its instance) turns this red.
+    """
     from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
 
     mgr = _make_auto_start_manager()
     instance = {"id": "visit-1"}
+    asked = []
 
-    async def _decline_as_next_instance_starts(_name, _message):
-        await asyncio.sleep(0)
-        instance["id"] = "visit-2"
-        return False
+    async def _decide(_name, _message):
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return False
+        return True
 
     register_external_route_kind(ExternalRouteKind(
         kind="visit",
         is_active=lambda _name: True,
         route_stream_message=_external_route_unclaimed,
-        on_start_session=_decline_as_next_instance_starts,
+        on_start_session=_decide,
         finalize_for_character=_external_route_no_routes,
         current_instance=lambda _name: instance["id"],
     ))
@@ -5285,4 +5302,5 @@ async def test_audio_auto_start_is_dropped_when_a_new_instance_of_the_kind_took_
         mgr, {"input_type": "audio", "data": [0, 1, 2]},
     )
 
+    assert asked == ["visit-1", "visit-2"]
     mgr.start_session.assert_not_awaited()
