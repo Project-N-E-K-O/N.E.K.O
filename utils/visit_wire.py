@@ -1815,7 +1815,11 @@ class LineDeltaAssembler:
     ``text`` may simply be waiting behind a ``seq`` gap while the lossy
     first piece of the next line overtook it (same rule as
     ``VisitRoom.on_incoming_start``). Pieces arriving after ``close`` for
-    their ``ln`` are ignored silently.
+    their ``ln`` are ignored silently. Retired lines beyond
+    ``VISIT_REORDER_BUFFER_MAX`` are evicted oldest first; an evicted ``ln``
+    is kept as a tombstone (like :meth:`drop`) and its ``lp`` raises an
+    eviction watermark, so a new ``ln`` whose ``lp`` is not above it is
+    dropped as an anomaly and an evicted subtitle never reappears.
     """
 
     def __init__(self, *, max_i: int = VISIT_LINE_DELTA_MAX_I, gap_mark: str = "…",
@@ -1824,6 +1828,9 @@ class LineDeltaAssembler:
         self._gap = gap_mark
         self._lru = int(closed_lru)
         self._lines: dict[str, dict[int, str]] = {}
+        self._lps: dict[str, Optional[int]] = {}
+        # 被容量淘汰的行里最大的 lp：墓碑有上限，水位兜住被挤出墓碑的更老的行
+        self._evicted_lp: Optional[int] = None
         self._open: Optional[str] = None
         self._open_lp: Optional[int] = None
         self._final: "OrderedDict[str, str]" = OrderedDict()
@@ -1849,6 +1856,13 @@ class LineDeltaAssembler:
                 return False
             # 新行 lp 更大：旧行只是 text 还在 seq 缺口后排队，退出「打开」但保留其分片
             self._open = None
+        if ln not in self._lines and self._evicted_lp is not None \
+                and not (_is_int(lp) and lp > self._evicted_lp):
+            # 不高于淘汰水位的「新」行：被淘汰旧行的晚到 / 重放分片，不能当新行装回去
+            self.anomalies += 1
+            return False
+        if ln not in self._lines:
+            self._lps[ln] = lp if _is_int(lp) else None
         clauses = self._lines.setdefault(ln, {})
         if i in clauses:
             self.anomalies += 1
@@ -1868,13 +1882,18 @@ class LineDeltaAssembler:
         # VISIT_REORDER_BUFFER_MAX 条，再多就是只发首片不收口的对端，丢最旧的
         while len(self._lines) > VISIT_REORDER_BUFFER_MAX + 1:
             oldest = next(k for k in self._lines if k != self._open)
-            del self._lines[oldest]
+            evicted_lp = self._lps.get(oldest)
+            # 墓碑与 drop 相同：晚到分片静默忽略，可靠 text 仍能收口
+            self.drop(oldest)
+            if evicted_lp is not None and (self._evicted_lp is None or evicted_lp > self._evicted_lp):
+                self._evicted_lp = evicted_lp
 
     def close(self, msg: Mapping[str, Any]) -> str:
         """Close a line with its ``text`` message; the full ``txt`` replaces the pieces."""
         ln = str(msg.get("ln"))
         txt = str(msg.get("txt", ""))
         self._lines.pop(ln, None)
+        self._lps.pop(ln, None)
         self._stalled.pop(ln, None)
         if self._open == ln:
             self._open = None
@@ -1893,6 +1912,7 @@ class LineDeltaAssembler:
         still close it through :meth:`close`.
         """
         self._lines.pop(ln, None)
+        self._lps.pop(ln, None)
         if self._open == ln:
             self._open = None
             self._open_lp = None

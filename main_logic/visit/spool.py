@@ -698,6 +698,11 @@ def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
             # 不能当作恢复出来的转录交给补录与上传
             if index == 0:
                 obj = validate_header(obj)
+                if obj["visit_id"] != visit_id:
+                    # 被改名 / 换过的文件：别的场次的头行与转录不能挂到这一场名下
+                    logger.error("visit spool %s: header belongs to another visit, ignoring the file",
+                                 visit_id)
+                    return SpoolContents(header=None, lines=[], dropped_lines=len(parts) + (1 if tail else 0))
             else:
                 encode_spool_line(obj)
         except (ValueError, RecursionError):
@@ -921,6 +926,9 @@ class VisitSpool:
         does not parse or fails the schema (:func:`validate_header` for the
         first line, :func:`encode_spool_line` for the others) are dropped,
         counted in ``dropped_lines`` and logged; every valid line is returned.
+        A file whose header names another ``visit_id`` (renamed or swapped)
+        is ignored as a whole: ``header`` is None, no line is returned and
+        every line counts as dropped.
         """
 
         def read() -> bytes | None:

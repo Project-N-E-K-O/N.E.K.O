@@ -186,9 +186,24 @@ async def plan_forget_person(
     )
 
 
+def _read_record(path: Path, rev_id: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except RecursionError as exc:
+            # 深层嵌套（"[[[[…"）让 json.load 抛 RecursionError：同样是读不出的日志，
+            # 归入 ValueError，走 fail closed（列表抛 RevocationLogUnreadable）
+            raise ValueError("revocation log is too deeply nested") from exc
+    return _validate_record(data, rev_id)
+
+
 def _validate_record(record: Any, rev_id: str) -> dict:
     if not isinstance(record, dict):
         raise ValueError("revocation log is not an object")
+    # 版本不对（缺失 / 别的版本 / true）的日志不能按当前步骤语义重放后删掉：
+    # 字段同名不代表契约相同
+    if type(record.get("v")) is not int or record["v"] != _LOG_VERSION:
+        raise ValueError("unsupported revocation log version")
     for name in ("own_uid", "peer_uid", "own_char_uid"):
         if not isinstance(record.get(name), str) or not record[name]:
             raise ValueError(f"revocation log {name} missing")
@@ -303,11 +318,9 @@ class RevocationLog:
     def _load_sync(self, rev_id: str) -> dict | None:
         path = self.path_for(rev_id)
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            return _read_record(path, rev_id)
         except FileNotFoundError:
             return None
-        return _validate_record(data, rev_id)
 
     def _open_sync(
         self,
@@ -418,8 +431,7 @@ class RevocationLog:
             if not REVOCATION_ID_RE.fullmatch(rev_id):
                 continue
             try:
-                with open(directory / name, "r", encoding="utf-8") as f:
-                    record = _validate_record(json.load(f), rev_id)
+                record = _read_record(directory / name, rev_id)
             except FileNotFoundError:
                 continue
             except (OSError, ValueError) as exc:

@@ -724,3 +724,35 @@ async def test_replay_after_a_rename_uses_the_current_name(tmp_path):
                                 void_pending=_no_void, own_char="B") is True
     assert await roster.get_char_entry(PEER_X, "B") is None
     assert await log.load(rev_id) is None
+
+
+@pytest.mark.parametrize("body", ["[" * 5000, None], ids=["deep", "version"])
+async def test_deep_or_wrong_version_logs_fail_closed(tmp_path, body):
+    # 深层嵌套 / 版本不对的日志：与其他读不出的日志一样抛 RevocationLogUnreadable，不重放
+    from main_logic.visit.forget import RevocationLogUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    path = log.path_for(rev_id)
+    if body is None:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        for v in (2, True, None):
+            if v is None:
+                doc.pop("v", None)
+            else:
+                doc["v"] = v
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            with pytest.raises(ValueError):
+                await log.load(rev_id)
+            with pytest.raises(RevocationLogUnreadable):
+                await log.list_open()
+        return
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError):
+        await log.load(rev_id)
+    with pytest.raises(RevocationLogUnreadable):
+        await log.list_open()
+    with pytest.raises(RevocationLogUnreadable):
+        await RevocationLog.list_all_open(tmp_path)

@@ -1504,3 +1504,25 @@ def test_deeply_nested_payloads_are_dropped_not_raised():
     assert ra.feed("g_peer", ("[" * 900).encode("utf-8"), 0.0) is None
     with pytest.raises(ValueError):
         vw.decode_msg(deep, cmd=2)
+
+
+def test_capacity_evicted_lines_cannot_come_back():
+    # 只发首片不收口的对端把旧行挤出容量后，晚到 / 重放的旧分片不能当新行装回去
+    asm = vw.LineDeltaAssembler()
+    last = VISIT_REORDER_BUFFER_MAX + 3
+    for n in range(1, last + 1):
+        assert asm.feed(_delta_msg("x", ln=f"g:{n}", lp=n))
+    assert asm.render("g:1") is None and asm.render("g:2") is None
+    asm.close(_text_msg("最后。", ln=f"g:{last}", lp=last))
+    # 墓碑：被淘汰行自己的晚到分片静默忽略（与 drop 一致，不计异常）
+    quiet = asm.anomalies
+    assert not asm.feed(_delta_msg("旧", i=1, ln="g:1", lp=1))
+    assert asm.render("g:1") is None and asm.anomalies == quiet
+    # 水位：换个 ln、lp 不高于被淘汰行的「新」行按异常丢弃
+    before = asm.anomalies
+    assert not asm.feed(_delta_msg("旧", ln="g:x", lp=2))
+    assert not asm.feed(_delta_msg("旧", ln="g:y", lp=None))      # 没有 lp 也越不过水位
+    assert asm.anomalies == before + 2
+    # 被淘汰行的可靠 text 仍能收口；更新的行照常
+    assert asm.close(_text_msg("一。", ln="g:1", lp=1)) == "一。"
+    assert asm.feed(_delta_msg("新", ln="g:new", lp=last + 1))

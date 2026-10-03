@@ -694,3 +694,13 @@ async def test_strict_reads_reject_pairs_of_another_peer(tmp_path, pairs):
         await _upsert(roster, PEER_X, "A")
     with pytest.raises(RosterCorruptError):
         await roster.rename_char("A", "A2")
+
+
+async def test_a_deeply_nested_roster_is_treated_as_corrupt(tmp_path):
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    roster.path.write_text("[" * 5000, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await _upsert(roster, PEER_X, "A")
+    with pytest.raises(RosterCorruptError):
+        await roster.get_char_entry(PEER_X, "A", strict=True)
+    assert await roster.get_char_entry(PEER_X, "A") is None     # 宽松读照旧按空表

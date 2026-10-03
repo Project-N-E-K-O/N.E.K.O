@@ -1360,3 +1360,14 @@ async def test_a_deeply_nested_state_file_is_treated_as_corrupt(tmp_path):
     os.utime(sp.state_path, (old, old))
     deleted = await VisitSpool.sweep(tmp_path, NOW)    # 不冲出 RecursionError
     assert sp.state_path in deleted
+
+
+async def test_read_back_rejects_a_spool_of_another_visit(tmp_path):
+    # 文件被改名 / 换过：头行写的是别的场次，不能把那一场的转录当成这一场的交出去
+    sp = await open_spool(tmp_path, vid(39))
+    await sp.append(line(1, "theirs"))
+    await sp.close()
+    other = VisitSpool(tmp_path, vid(40))
+    other.jsonl_path.write_bytes(sp.jsonl_path.read_bytes())
+    got = await other.read_back()
+    assert got.header is None and got.lines == [] and got.dropped_lines == 2

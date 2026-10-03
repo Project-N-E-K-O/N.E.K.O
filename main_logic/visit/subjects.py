@@ -383,9 +383,10 @@ class PeerRoster:
                 data = json.load(f)
         except FileNotFoundError:
             return {}
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
+            # RecursionError：深层嵌套的 JSON，与其他坏 JSON 走同一条边界
             if strict:
-                raise RosterCorruptError(f"cannot read {self.path.name}: {exc}") from exc
+                raise RosterCorruptError(f"cannot read {self.path.name}: {exc!r}") from exc
             logger.warning("visit roster unreadable, treating as empty: %s", exc)
             return {}
         if not isinstance(data, dict):
