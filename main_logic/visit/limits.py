@@ -142,33 +142,54 @@ _ALLOWED = RateDecision(allowed=True)
 
 @dataclass
 class TokenBucket:
-    """Classic token bucket with an injected time source (seconds)."""
+    """Classic token bucket with an injected time source (seconds).
+
+    The single token-bucket implementation of the visit package (receive
+    limits here, send limits in ``outbox``). ``cap_cost=True`` charges a cost
+    above the capacity as the capacity, so an item larger than the bucket can
+    still pass once the bucket is full (the outbox byte bucket, section 4.1).
+    """
 
     rate: float
     capacity: float
     tokens: float
     updated_at: float
+    cap_cost: bool = False
 
     @classmethod
-    def full(cls, rate: float, capacity: float, now: float) -> "TokenBucket":
+    def full(cls, rate: float, capacity: float, now: float, *,
+             cap_cost: bool = False) -> "TokenBucket":
         """Create a bucket that starts at capacity."""
-        return cls(rate=rate, capacity=capacity, tokens=capacity, updated_at=now)
+        return cls(rate=float(rate), capacity=float(capacity), tokens=float(capacity),
+                   updated_at=float(now), cap_cost=cap_cost)
 
-    def _refill(self, now: float) -> None:
+    def _cost(self, cost: float) -> float:
+        return min(float(cost), self.capacity) if self.cap_cost else float(cost)
+
+    def refill(self, now: float) -> None:
+        """Add the tokens earned since the last refill (capped at capacity)."""
         if now > self.updated_at:
             self.tokens = min(self.capacity, self.tokens + (now - self.updated_at) * self.rate)
             self.updated_at = now
 
+    def fits(self, cost: float) -> bool:
+        """Whether ``cost`` tokens are available now (no refill)."""
+        return self.tokens + 1e-9 >= self._cost(cost)
+
+    def charge(self, cost: float) -> None:
+        """Consume ``cost`` tokens unconditionally (after :meth:`fits`)."""
+        self.tokens -= self._cost(cost)
+
     def peek(self, cost: float, now: float) -> bool:
         """Refill and report whether ``cost`` tokens are available."""
-        self._refill(now)
-        return self.tokens >= cost
+        self.refill(now)
+        return self.fits(cost)
 
     def take(self, cost: float, now: float) -> bool:
         """Consume ``cost`` tokens if available; return whether it did."""
         if not self.peek(cost, now):
             return False
-        self.tokens -= cost
+        self.charge(cost)
         return True
 
 

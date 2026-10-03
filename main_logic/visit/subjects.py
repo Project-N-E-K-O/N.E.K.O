@@ -297,6 +297,10 @@ def _check_char_entry(entry: Any, where: str) -> dict:
     if any("last_seen" in info and not _is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
+    # upsert 总是同时写 pair 与对方猫娘：只剩其一说明条目坏了一半，按它展开的清除计划
+    # 会漏掉 group_chat / group_participant 主体（或撤销日志校验不过）
+    if bool(pairs) != bool(chars):
+        raise RosterCorruptError(f"{where}: pairs and chars must both be present")
     summary = entry.get("last_summary")
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")

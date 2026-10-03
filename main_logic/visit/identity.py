@@ -85,6 +85,7 @@ from config.visit_settings import (
     VISIT_TICKET_ISS,
     VISIT_TICKET_VERSION,
 )
+from main_logic.visit.limits import BlocklistUnavailable as _LimitsBlocklistUnavailable
 from utils.logger_config import get_module_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -205,8 +206,13 @@ class PeerBlocked(TicketRejected):
     finalize_reason = FINALIZE_PEER_BLOCKED
 
 
-class BlocklistUnavailable(TicketRejected):
-    """The local blocklist could not be read, so no peer can be admitted (fail closed)."""
+class BlocklistUnavailable(TicketRejected, _LimitsBlocklistUnavailable):
+    """The local blocklist could not be read, so no peer can be admitted (fail closed).
+
+    Also a :class:`main_logic.visit.limits.BlocklistUnavailable`, so a caller
+    catching either name catches it; :func:`verify_identity_ticket` turns the
+    limits error raised by ``Blocklist.is_blocked`` into this one.
+    """
 
     code = "blocklist_unavailable"
 
@@ -714,7 +720,12 @@ def verify_identity_ticket(
     # 7. 本机黑名单（只在验签通过后才读）。读不出来时一律拒：当空表会放进被拉黑的人。
     if not getattr(blocklist, "available", True):
         raise BlocklistUnavailable()
-    if blocklist.is_blocked(claims.sub):
+    try:
+        blocked = blocklist.is_blocked(claims.sub)
+    except _LimitsBlocklistUnavailable as exc:
+        # 黑名单类自己报不可用（例如没有 available 标志的实现）：同样是一次票据拒绝
+        raise BlocklistUnavailable() from exc
+    if blocked:
         raise PeerBlocked()
 
     # 8. jti：同房同 vid 才允许重放。

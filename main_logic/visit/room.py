@@ -38,8 +38,10 @@ Responsibilities kept here:
   goodbye piece or by ``wrap_up{ph:'speaking'}``), the 10 s abort of an old
   line and the 45 s hard cap.
 * Consecutive anomaly counting (20 in a row finalize; unknown message types
-  are diagnostics only), the receive-side ``text`` token bucket, the own
-  ``text`` 20 per 10 s hard limit and the 80 cat line protocol guard.
+  are diagnostics only), the own ``text`` 20 per 10 s hard limit and the 80
+  cat line protocol guard. The receive-side ``text`` limit belongs to
+  ``limits.PeerRateLimiter`` alone; the runtime feeds its streak-counting
+  drops into :meth:`VisitRoom.record_anomaly`.
 * Peer framing / visibility corrections carried by ``hb`` and ``state``.
 
 The receive pipeline is expected to call ``observe_lp`` (or
@@ -58,9 +60,6 @@ from config.visit_settings import (
     VISIT_ANOMALY_FINALIZE_COUNT,
     VISIT_CLAUSE_MAX_MS,
     VISIT_CROP_DEFAULT,
-    VISIT_INBOUND_TEXT_BURST,
-    VISIT_INBOUND_TEXT_MAX,
-    VISIT_INBOUND_TEXT_REFILL_PER_S,
     VISIT_LP_MAX,
     VISIT_LP_MAX_JUMP,
     VISIT_LP_REGRESS_MAX,
@@ -78,6 +77,7 @@ from config.visit_settings import (
     VISIT_WRAP_UP_PROPOSE_TIMEOUT_S,
     VISIT_WRAP_UP_STEP_S,
 )
+from utils.visit_wire import SILENCING_TRUNC_REASONS
 
 Side = Literal["host", "guest"]
 SpeakerKind = Literal["cat", "human"]
@@ -103,6 +103,8 @@ WRAP_REASON_QUIET = "quiet"
 WRAP_REASON_BUDGET = "budget"
 WRAP_REASON_RECALL = "recall"
 WRAP_REASON_TIME_UP = "time_up"
+_WRAP_REASONS = frozenset({WRAP_REASON_QUIET, WRAP_REASON_BUDGET, WRAP_REASON_RECALL,
+                           WRAP_REASON_TIME_UP})
 
 
 def _side_rank(side: str) -> int:
@@ -148,9 +150,9 @@ class IncomingLineStart:
 
 
 # 截断原因里只有这几种是「被故意掐断、不该接话」：人类插话（随后有人类行）、
-# 收尾掐旧行、整场结束。wire_size / tts_error / llm_error / stall 截断的行
-# 是对端这一轮已经说完——不回就两边都在等，一直拖到 idle_timeout。
-_SILENCING_TRUNC_REASONS = frozenset({"human_interrupt", "wrap_up", "visit_end"})
+# 收尾掐旧行、整场结束（集合与 fit_text_to_wire 共用）。wire_size / tts_error /
+# llm_error / stall 截断的行是对端这一轮已经说完——不回就两边都在等，一直拖到 idle_timeout。
+_SILENCING_TRUNC_REASONS = SILENCING_TRUNC_REASONS
 
 
 def _silences(truncated: bool, reason: Optional[str]) -> bool:
@@ -242,6 +244,7 @@ class WrapUpState:
     initiated_by: Optional[Side] = None
     began_at: float = 0.0
     reason: str = ""
+    reason_fallback: bool = False   # reason 是只见到告别行时的回退值，真实 reason 到达时纠正
     guest_goodbye_done: bool = False
     host_goodbye_done: bool = False
     proposed_at: float = 0.0
@@ -300,9 +303,6 @@ class VisitRoom:
         max_lines: int = VISIT_MAX_LINES,
         anomaly_finalize_count: int = VISIT_ANOMALY_FINALIZE_COUNT,
         own_text_per_10s: int = VISIT_OWN_TEXT_PER_10S,
-        inbound_text_burst: int = VISIT_INBOUND_TEXT_BURST,
-        inbound_text_refill_per_s: float = VISIT_INBOUND_TEXT_REFILL_PER_S,
-        inbound_text_max: int = VISIT_INBOUND_TEXT_MAX,
         peer_crop: str = VISIT_CROP_DEFAULT,
         rng: Optional[random.Random] = None,
     ) -> None:
@@ -326,9 +326,6 @@ class VisitRoom:
         self._max_lines = int(max_lines)
         self._anomaly_limit = int(anomaly_finalize_count)
         self._own_text_limit = int(own_text_per_10s)
-        self._in_burst = float(inbound_text_burst)
-        self._in_refill = float(inbound_text_refill_per_s)
-        self._in_max = int(inbound_text_max)
         self._rng = rng if rng is not None else random.Random()
 
         self._phase: Phase = "active"
@@ -385,9 +382,6 @@ class VisitRoom:
         # 已开口、还没发 text{final} 的本侧猫娘行：每行收口时必发一条 text，开口即占名额，
         # 免得说话途中插进来的人类行用掉最后一个名额、收口的 text 越过硬上限
         self._own_text_reserved: set[str] = set()
-        self._in_tokens = self._in_burst
-        self._in_last: Optional[float] = None
-        self.inbound_text_accepted = 0
 
         # 对端画面
         self.peer_crop = peer_crop if peer_crop in _VALID_CROPS else VISIT_CROP_DEFAULT
@@ -566,12 +560,14 @@ class VisitRoom:
     def _enter_wrap_up(self, eff: RoomEffects, now: float, *, initiated_by: Side,
                        reason: str) -> None:
         if self._phase != "active":
+            self._correct_fallback_reason(reason)
             return
         self._phase = "wrap_up"
         w = self._wrap
         w.initiated_by = initiated_by
         w.began_at = now
         w.reason = reason
+        w.reason_fallback = False
         eff.ui_state = "wrap_up"
         self._cancel_pending(eff)
         self._yield_once = False
@@ -579,6 +575,14 @@ class VisitRoom:
             # 15 s 步进表从 begin 真正发出时才开始（on_wrap_up_sent）：outbox
             # 暂停 / 拥塞时 begin 可能晚发，提前计时会让东家抢在客人之前送客
             w.step_awaiting_begin = True
+
+    def _correct_fallback_reason(self, reason: Optional[str]) -> None:
+        # 只见到告别行就进了收尾（reason 是回退值）：随后到达的 begin / propose / speaking
+        # 带着真实原因，用它纠正，免得告别提示词与回发的 wrap_up 一直带着错的原因
+        w = self._wrap
+        if w.reason_fallback and reason in _WRAP_REASONS:
+            w.reason = reason
+            w.reason_fallback = False
 
     def _start_wrap_up_locally(self, eff: RoomEffects, now: float, reason: str) -> None:
         """This side detected a wrap-up condition: host begins, guest proposes."""
@@ -696,13 +700,26 @@ class VisitRoom:
             eff.yield_once = True
         return eff
 
-    def _on_peer_goodbye_seen(self, eff: RoomEffects, now: float) -> None:
-        """A peer goodbye line started (first ``wu`` piece, ``speaking``, or its ``text``)."""
+    def _on_peer_goodbye_seen(self, eff: RoomEffects, now: float,
+                              reason: Optional[str] = None) -> None:
+        """A peer goodbye line started (first ``wu`` piece, ``speaking``, or its ``text``).
+
+        ``reason`` is the wire reason when the signal carried one
+        (``wrap_up{speaking}``); otherwise a valid fallback is used and
+        corrected once ``begin`` / ``propose`` arrives.
+        """
         if self._phase == "active":
-            # begin / propose 丢了、只见到告别行：reason 必须是协议合法值，
-            # 否则本侧随后的 wrap_up{speaking} 编码不出来
-            self._enter_wrap_up(eff, now, initiated_by=self.peer_side,
-                                reason=self._wrap.reason or _GOODBYE_ONLY_REASON)
+            # begin / propose 丢了或排在 seq 缺口后面、只见到告别行：reason 必须是协议
+            # 合法值，否则本侧随后的 wrap_up{speaking} 编码不出来；speaking 自带的
+            # reason 优先，回退值留待真实 reason 到达时纠正
+            if reason in _WRAP_REASONS:
+                self._enter_wrap_up(eff, now, initiated_by=self.peer_side, reason=reason)
+            else:
+                self._enter_wrap_up(eff, now, initiated_by=self.peer_side,
+                                    reason=self._wrap.reason or _GOODBYE_ONLY_REASON)
+                self._wrap.reason_fallback = True
+        else:
+            self._correct_fallback_reason(reason)
         self._peer_goodbye_started(now)
         if self.side == "guest":
             # begin 丢了也不卡死：guest 见到 host 的告别行就自己告别一句
@@ -861,7 +878,9 @@ class VisitRoom:
                 self._maybe_finalize_anomalies(eff)
                 return eff
             if not self._wrap.peer_goodbye_started:
-                self._on_peer_goodbye_seen(eff, now)
+                self._on_peer_goodbye_seen(eff, now, reason)
+            else:
+                self._correct_fallback_reason(reason)
             return eff
         if phase == "ack":
             return eff
@@ -871,13 +890,15 @@ class VisitRoom:
             if self._phase == "active":
                 self._enter_wrap_up(eff, now, initiated_by="guest", reason=reason)
                 eff.wrap_up = WrapUpDecision(action="begin", reason=reason)
+            else:
+                self._correct_fallback_reason(reason)
             return eff
         if phase == "begin":
             if self.side != "guest":
                 return self.record_anomaly("wrap_up_bad_direction")
             self._wrap.begin_received = True
-            if self._phase == "active":
-                self._enter_wrap_up(eff, now, initiated_by="host", reason=reason)
+            # 已在收尾中（只见到告别行进来的）时 _enter_wrap_up 只纠正回退的 reason
+            self._enter_wrap_up(eff, now, initiated_by="host", reason=reason)
             self._request_goodbye(eff)
             return eff
         if phase == "done":
@@ -935,28 +956,6 @@ class VisitRoom:
             self.peer_hidden = hidden
             eff.peer_hidden = hidden
 
-    def admit_incoming_text(self, now: float) -> tuple[bool, RoomEffects]:
-        """Receive-side limit on peer ``text`` (call once per new ``seq`` only).
-
-        Token bucket of ``VISIT_INBOUND_TEXT_BURST`` refilled at
-        ``VISIT_INBOUND_TEXT_REFILL_PER_S`` plus a per-visit hard cap of
-        ``VISIT_INBOUND_TEXT_MAX``. A rejected text is still acked by the
-        caller but dropped; it counts as an anomaly in the consecutive streak
-        (``inbound_text_rate`` / ``inbound_text_cap``).
-        """
-        if self._in_last is not None and now > self._in_last:
-            self._in_tokens = min(self._in_burst,
-                                  self._in_tokens + (now - self._in_last) * self._in_refill)
-        if self._in_last is None or now > self._in_last:
-            self._in_last = now
-        if self.inbound_text_accepted >= self._in_max:
-            return False, self.record_anomaly("inbound_text_cap")
-        if self._in_tokens < 1.0:
-            return False, self.record_anomaly("inbound_text_rate")
-        self._in_tokens -= 1.0
-        self.inbound_text_accepted += 1
-        return True, RoomEffects()
-
     # ------------------------------------------------------------------
     # 本地事件
 
@@ -1012,6 +1011,7 @@ class VisitRoom:
                 # 本侧未经 recall / time_up / 对端收尾就先开口告别：同样要合法 reason
                 self._enter_wrap_up(eff, now, initiated_by=self.side,
                                     reason=w.reason or _GOODBYE_ONLY_REASON)
+                w.reason_fallback = False   # 本侧主动收尾，原因就是 quiet
             w.own_goodbye_requested = True
             w.own_goodbye_started = True
             self._goodbye_line_id = ref.line_id

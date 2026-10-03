@@ -84,6 +84,7 @@ import concurrent.futures
 import copy
 import json
 import os
+import stat
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,7 +110,8 @@ from config.visit_settings import (
     VISIT_PIECES_MAX,
     VISIT_REORDER_BUFFER_MAX,
 )
-from main_logic.visit.spool import OUTBOX_SUFFIX
+from main_logic.visit.limits import TokenBucket
+from main_logic.visit.spool import OUTBOX_SUFFIX, _scan
 from utils.logger_config import get_module_logger
 from utils.visit_wire import (
     RELIABLE_TYPES,
@@ -160,31 +162,6 @@ _U32_MAX = 2 ** 32 - 1
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-class _TokenBucket:
-    """Classic token bucket; a cost above the capacity is charged as the capacity."""
-
-    def __init__(self, rate: float, burst: float, now: float) -> None:
-        self.rate = float(rate)
-        self.burst = float(burst)
-        self.tokens = float(burst)
-        self.last = float(now)
-
-    def refill(self, now: float) -> None:
-        if now > self.last:
-            self.tokens = min(self.burst, self.tokens + (now - self.last) * self.rate)
-            self.last = now
-
-    def cost(self, amount: float) -> float:
-        # 容量小于单条消息时按常规令牌桶它永远攒不够——按容量封顶扣（§4.1 字节桶说明）
-        return min(float(amount), self.burst)
-
-    def fits(self, amount: float) -> bool:
-        return self.tokens + 1e-9 >= self.cost(amount)
-
-    def take(self, amount: float) -> None:
-        self.tokens -= self.cost(amount)
 
 
 @dataclass(frozen=True)
@@ -300,8 +277,9 @@ class VisitOutbox:
         self._pending_max = int(pending_max_bytes)
 
         now = float(clock())
-        self._bytes = _TokenBucket(data_bps, data_burst_bytes, now)
-        self._msgs = _TokenBucket(msg_per_s, msg_burst, now)
+        # 容量小于单条消息时按常规令牌桶它永远攒不够——按容量封顶扣（§4.1 字节桶说明）
+        self._bytes = TokenBucket.full(data_bps, data_burst_bytes, now, cap_cost=True)
+        self._msgs = TokenBucket.full(msg_per_s, msg_burst, now, cap_cost=True)
 
         self._next_seq = 1
         self._queue: deque[_Item] = deque()            # 尚未首发的条目（FIFO）
@@ -736,8 +714,8 @@ class VisitOutbox:
         return self._bytes.fits(item.nbytes) and self._msgs.fits(item.pieces)
 
     def _charge(self, item: _Item) -> None:
-        self._bytes.take(item.nbytes)
-        self._msgs.take(item.pieces)
+        self._bytes.charge(item.nbytes)
+        self._msgs.charge(item.pieces)
 
     def _frame(self, item: _Item, *, retransmit: bool) -> OutboundFrame:
         return OutboundFrame(cmd=item.cmd, payload=copy.deepcopy(item.payload),
@@ -1015,20 +993,14 @@ async def purge_outbox_files(spool_dir: Union[str, Path]) -> list[Path]:
     base = Path(spool_dir)
 
     def run() -> list[Path]:
+        # 文件名识别与 spool 共用一套（_scan：visit id + 已知后缀），改后缀集合时不会漏删
         deleted: list[Path] = []
-        try:
-            entries = list(os.scandir(base))
-        except FileNotFoundError:
-            return deleted
-        for entry in entries:
-            name = entry.name
-            if not name.endswith(OUTBOX_SUFFIX) or not entry.is_file(follow_symlinks=False):
-                continue
-            if VISIT_ID_RE.fullmatch(name[: -len(OUTBOX_SUFFIX)]) is None:
+        for _visit_id, suffix, path, st in _scan(base):
+            if suffix != OUTBOX_SUFFIX or not stat.S_ISREG(st.st_mode):
                 continue
             try:
-                os.unlink(entry.path)
-                deleted.append(Path(entry.path))
+                os.unlink(path)
+                deleted.append(path)
             except FileNotFoundError:
                 continue
         return deleted

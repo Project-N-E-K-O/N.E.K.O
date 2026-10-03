@@ -1027,6 +1027,10 @@ def _text_pieces(payload: Mapping[str, Any], visit_id: str) -> int:
     return wire_size(encode_msg(body), visit_id=visit_id)[0]
 
 
+SILENCING_TRUNC_REASONS = frozenset({"human_interrupt", "wrap_up", "visit_end"})
+"""Truncation reasons meaning "cut off on purpose, do not answer this line"."""
+
+
 def fit_text_to_wire(
     payload: Mapping[str, Any],
     *,
@@ -1041,7 +1045,10 @@ def fit_text_to_wire(
     still missing). A fitting payload is returned unchanged (as a new dict).
     Otherwise ``txt`` is cut to the longest prefix that fits — on a codepoint
     boundary, also avoiding split emoji clusters — with ``truncated=True`` and
-    ``trunc_reason='wire_size'`` included in the measurement, and a
+    ``trunc_reason='wire_size'`` included in the measurement (an existing
+    reason from ``SILENCING_TRUNC_REASONS`` is kept instead, so the peer still
+    does not answer the line; the full text is kept when it fits once the
+    reason is set), and a
     diagnostic is emitted (``on_truncate`` callback with byte counts, plus a
     log warning).
 
@@ -1057,7 +1064,12 @@ def fit_text_to_wire(
     if pieces_before <= max_pieces:
         return base
     txt = str(base.get("txt", ""))
-    trial = dict(base, truncated=True, trunc_reason="wire_size")
+    # 已因「不该接话」的原因截断（人类插话 / 收尾 / 整场结束）时保留原因：改成 wire_size
+    # 会让对端把这句当成说完的一轮去接话
+    reason = base.get("trunc_reason")
+    if not (base.get("truncated") is True and reason in SILENCING_TRUNC_REASONS):
+        reason = "wire_size"
+    trial = dict(base, truncated=True, trunc_reason=reason)
 
     def fits(k: int) -> bool:
         trial["txt"] = txt[:k]
@@ -1066,14 +1078,16 @@ def fit_text_to_wire(
     if not fits(0):
         raise ValueError("text payload does not fit the wire even when empty")
     lo, hi = 0, len(txt)
+    if fits(hi):
+        lo = hi            # 只换了截断原因（更短）就放得下：整句保留
     while hi - lo > 1:
         mid = (lo + hi) // 2
         if fits(mid):
             lo = mid
         else:
             hi = mid
-    k = _safe_cut(txt, lo, floor=0)
-    result = dict(base, txt=txt[:k], truncated=True, trunc_reason="wire_size")
+    k = lo if lo == len(txt) else _safe_cut(txt, lo, floor=0)
+    result = dict(base, txt=txt[:k], truncated=True, trunc_reason=reason)
     diag = {
         "event": "visit_text_wire_size",
         "ln": base.get("ln"),

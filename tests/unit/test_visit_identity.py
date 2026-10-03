@@ -585,3 +585,20 @@ def test_an_encrypted_dev_keyfile_is_skipped_not_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(idm, "NEKO_VISIT_DEV_KEYFILE", str(path))
     pk = PubkeySet.from_runtime(now=NOW, fetched=None)
     assert VISIT_DEV_KID not in pk.keys
+
+
+def test_blocklist_unavailable_is_one_exception_family(priv):
+    # 两个模块的同名异常是继承关系：接哪个名字都接得住
+    from main_logic.visit import limits
+    from main_logic.visit.identity import BlocklistUnavailable
+
+    assert issubclass(BlocklistUnavailable, limits.BlocklistUnavailable)
+    assert issubclass(BlocklistUnavailable, TicketRejected)
+
+    class Raising:
+        def is_blocked(self, uid):
+            raise limits.BlocklistUnavailable("unreadable")
+
+    pk = PubkeySet.build(now=NOW, fetched=_fresh(), builtin=_builtin(priv))
+    with pytest.raises(BlocklistUnavailable):
+        _verify(mint_ticket(_claims(), priv), pubkeys=pk, blocklist=Raising())

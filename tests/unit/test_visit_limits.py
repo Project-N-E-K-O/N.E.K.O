@@ -346,3 +346,18 @@ async def test_cancelled_ablock_still_lands_in_memory_and_on_disk(tmp_path, monk
         await asyncio.sleep(0.01)
     assert bl.is_blocked(UID)
     assert Blocklist.load(tmp_path).is_blocked(UID)
+
+
+def test_token_bucket_caps_an_oversized_cost_only_when_asked():
+    # outbox 的字节桶容量可能小于单条大消息：按容量封顶扣，否则它永远攒不够
+    from main_logic.visit.limits import TokenBucket
+
+    capped = TokenBucket.full(10.0, 10.0, 0.0, cap_cost=True)
+    assert capped.fits(50)
+    capped.charge(50)
+    assert capped.tokens == 0.0
+    assert not capped.fits(1)
+    capped.refill(1.0)
+    assert capped.fits(50)
+    plain = TokenBucket.full(10.0, 10.0, 0.0)
+    assert not plain.fits(50) and not plain.take(50, 100.0)

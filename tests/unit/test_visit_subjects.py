@@ -654,3 +654,22 @@ async def test_set_last_summary_refuses_a_malformed_ended_at(tmp_path, bad):
         await roster.set_last_summary(PEER_X, "A", visit_id="V" * 22, ended_at=bad,
                                       text="t", pair_id=pair)
     assert roster.path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("damage", [{"pairs": []}, "drop_pairs", {"chars": {}}])
+async def test_a_half_damaged_entry_fails_forget_planning(tmp_path, damage):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await _upsert(roster, PEER_X, "A")
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    entry = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]
+    if damage == "drop_pairs":
+        del entry["pairs"]
+    else:
+        entry.update(damage)
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.expand_subjects(PEER_X, "A")

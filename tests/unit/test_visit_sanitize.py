@@ -438,3 +438,22 @@ def test_peer_ngram_search_streams_the_peer_lines_and_keeps_text_order():
 
     text = "一二三四五六七八九十百"
     assert find_peer_ngram(text, peer(), n=8) == tuple("一二三四五六七八")
+
+
+@pytest.mark.parametrize("names,text", [
+    (["지수"], "지숙이랑 놀았어"),
+    (["かか"], "かがみ"),
+    (["미"], "민수가 왔어"),
+])
+def test_names_only_match_on_whole_source_characters(names, text):
+    # NFKD 折叠后只匹配到某个源字符的一半：不能把整个源字符替换掉
+    from main_logic.visit.sanitize import redact_outbound
+
+    assert redact_outbound(text, family_names=names, replacement="X") == text
+
+
+def test_whole_kana_and_hangul_names_are_still_redacted():
+    from main_logic.visit.sanitize import redact_outbound
+
+    assert redact_outbound("지수랑 놀았어", family_names=["지수"], replacement="X") == "X랑 놀았어"
+    assert redact_outbound("かがみ", family_names=["かが"], replacement="X") == "Xみ"

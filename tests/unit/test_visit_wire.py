@@ -964,3 +964,26 @@ def test_stats_accepts_whole_valued_measurements():
     for bad in (True, -1, 10 ** 400, "30"):
         with pytest.raises(ValueError):
             vw.encode_msg(dict(msg, rx_fps=bad))
+
+
+def test_fit_text_keeps_a_silencing_truncation_reason():
+    # 被人类打断的句子超过 8 片：改成 wire_size 会让对端去接这句
+    qb = '"' + chr(92)                       # 两次转义后膨胀，4096 B 内就能超 8 片
+    big = _text_msg(qb * 2048, truncated=True, trunc_reason="human_interrupt")
+    assert vw._text_pieces(big, VID) > VISIT_PIECES_MAX
+    out = vw.fit_text_to_wire(big, visit_id=VID)
+    assert out["truncated"] is True and out["trunc_reason"] == "human_interrupt"
+    assert vw._text_pieces(out, VID) <= VISIT_PIECES_MAX
+    plain = vw.fit_text_to_wire(_text_msg(qb * 2048), visit_id=VID)
+    assert plain["trunc_reason"] == "wire_size"
+
+
+def test_fit_text_keeps_the_whole_line_when_only_the_reason_changed():
+    # 11 字符的 goodbye_cap（不属于静默原因）换成 9 字符的 wire_size 后全文就放得下：
+    # 二分必须先试全长，不能再砍掉字符
+    qb = '"' + chr(92)
+    msg = _text_msg(qb * 918, truncated=True, trunc_reason="goodbye_cap")
+    assert vw._text_pieces(msg, VID) > VISIT_PIECES_MAX
+    assert vw._text_pieces(dict(msg, trunc_reason="wire_size"), VID) <= VISIT_PIECES_MAX
+    out = vw.fit_text_to_wire(msg, visit_id=VID)
+    assert out["txt"] == msg["txt"] and out["trunc_reason"] == "wire_size"

@@ -675,34 +675,20 @@ def test_tail_ms_out_of_range_is_treated_as_zero():
     assert 13.0 <= eff.reply.not_before - t <= 14.5
 
 
-def test_inbound_text_bucket_and_hard_cap():
-    room = make_room("host", inbound_text_max=200)
-    ok = [room.admit_incoming_text(0.0)[0] for _ in range(VISIT_INBOUND_TEXT_BURST)]
-    assert all(ok)
-    admitted, eff = room.admit_incoming_text(0.0)
-    assert not admitted and eff.violation == "inbound_text_rate"
-    room.record_valid_message()
-    # refills 2 per second
-    assert room.admit_incoming_text(1.0)[0]
-    assert room.admit_incoming_text(1.0)[0]
-    assert not room.admit_incoming_text(1.0)[0]
-    room.record_valid_message()
-    # after a long quiet spell the burst is capped
-    assert room.inbound_text_accepted == VISIT_INBOUND_TEXT_BURST + 2
-    oks = sum(room.admit_incoming_text(10_000.0)[0] for _ in range(VISIT_INBOUND_TEXT_BURST + 5))
-    assert oks == VISIT_INBOUND_TEXT_BURST
-    room2 = make_room("host", inbound_text_max=3)
-    assert all(room2.admit_incoming_text(0.0)[0] for _ in range(3))
-    admitted, eff = room2.admit_incoming_text(100.0)
-    assert not admitted and eff.violation == "inbound_text_cap"
+def test_inbound_text_overflow_from_the_limiter_finalizes_the_room():
+    # 入站 text 限流只有 PeerRateLimiter 一处；它要求计入连续异常的丢弃由 runtime
+    # 转给 record_anomaly，房间不再自己另扣一个桶
+    from main_logic.visit.limits import PeerRateLimiter, RateChannel
 
-
-def test_sustained_inbound_flood_finalizes():
     room = make_room("host")
-    for _ in range(VISIT_INBOUND_TEXT_BURST):
-        room.admit_incoming_text(0.0)
-    effs = [room.admit_incoming_text(0.0)[1] for _ in range(VISIT_ANOMALY_FINALIZE_COUNT)]
-    assert effs[-1].finalize_reason == "peer_protocol_violation"
+    lim = PeerRateLimiter(clock=lambda: 0.0)
+    eff = None
+    for _ in range(VISIT_INBOUND_TEXT_BURST + VISIT_ANOMALY_FINALIZE_COUNT):
+        d = lim.admit("g_a", RateChannel.TEXT, now=0.0)
+        if not d.allowed and d.counts_toward_streak:
+            eff = room.record_anomaly(d.reason)
+    assert eff is not None and eff.finalize_reason == "peer_protocol_violation"
+    assert not hasattr(room, "admit_incoming_text")
 
 
 def test_own_text_hard_limit_twenty_per_ten_seconds():
@@ -995,3 +981,24 @@ def test_a_started_cat_line_reserves_its_text_slot():
     assert not room.can_accept_local_line(3.5)        # 已发 20 条
     assert room.can_accept_local_line(10.05)          # 只滑出一条：收口后预留已释放，19 < 20
     assert room.can_accept_local_line(10.25)          # 最早的几条滑出窗口
+
+
+def test_an_early_speaking_keeps_the_hosts_reason():
+    # speaking 经提前交付先到、begin 卡在缺口后：guest 记下的原因要是 host 的 time_up
+    room = make_room("guest")
+    room.on_incoming_wrap_up("speaking", "time_up", 5, 1.0, ln="h:3")
+    assert room.wrap_up.reason == "time_up"
+    room.on_incoming_wrap_up("begin", "time_up", 4, 1.1)
+    assert room.wrap_up.reason == "time_up"
+
+
+def test_a_fallback_reason_is_corrected_by_the_late_begin():
+    # 只见到 wu 首片就进了收尾（回退 quiet），随后到的 begin 带真实原因：纠正
+    room = make_room("guest")
+    peer = Peer(room)
+    peer.start(peer.new_ref(), 1.0, goodbye=True)
+    assert room.wrap_up.reason == "quiet"
+    room.on_incoming_wrap_up("begin", "recall", 4, 1.2)
+    assert room.wrap_up.reason == "recall"
+    room.on_incoming_wrap_up("begin", "budget", 4, 1.3)
+    assert room.wrap_up.reason == "recall"          # 真实原因只纠正一次，不被覆盖

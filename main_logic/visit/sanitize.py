@@ -56,6 +56,7 @@ from config.visit_settings import (
     VISIT_PEER_NGRAM_N,
     VISIT_TEXT_MAX_BYTES,
 )
+from config.prompts.prompts_visit import escape_visit_block_text
 from utils.tokenize import truncate_to_tokens
 
 _DISPLAY_NAME_MAX_CHARS = 64
@@ -98,8 +99,6 @@ def strip_control_chars(text: str) -> str:
 ENVELOPE_TAG = "visit_data"
 """Tag name of the nonce envelope wrapping peer-supplied text in prompts."""
 
-# ======X====== 成对分隔符（含全角 ＝）：3 个及以上折成 1 个，伪造不出分隔符。
-_DELIMITER_RUN_RE = re.compile("[=＝]{3,}")
 # 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data。
 _TAG_BRACKETS = "<＜‹"
 _ENVELOPE_NAME_RE = re.compile(re.escape(ENVELOPE_TAG), re.IGNORECASE)
@@ -138,15 +137,17 @@ def _strip_tag_openers(text: str) -> str:
 def escape_envelope(text: str) -> str:
     """Neutralise prompt-delimiter and envelope-tag forgeries.
 
-    Runs of three or more ``=`` (ASCII or full-width) fold to a single ``=``
-    so no ``======X======`` delimiter can be forged; every opening of the
+    Runs of three or more ``=`` (ASCII or full-width) fold to ``---``
+    (``escape_visit_block_text``, the same rule the prompt blocks use) so no
+    ``======X======`` delimiter can be forged; every opening of the
     envelope tag loses its whole run of angle brackets (a run such as
     ``<< /visit_data>`` would otherwise leave a valid tag behind). Linear in
     the text length. Idempotent.
     """
     if not text:
         return ""
-    text = _DELIMITER_RUN_RE.sub("=", text)
+    # 分隔符转义与提示词数据块共用 config 里那一份，避免两套规则各改各的
+    text = escape_visit_block_text(text)
     return _strip_tag_openers(text)
 
 
@@ -432,6 +433,10 @@ def redact_outbound_with_spans(
             if not folded.startswith(name, i):
                 continue
             j = i + len(name)
+            # 首尾必须落在源字符边界：假名 / 谚文按 NFKD 折叠成多个字符，只匹配到某个
+            # 源字符分解后的一半（「지숙」里的「지수」）会把整个源字符一起替换掉
+            if (i > 0 and src[i] == src[i - 1]) or (j < n and src[j] == src[j - 1]):
+                continue
             if _is_word_char(name[0]) and i > 0 and _is_word_char(folded[i - 1]):
                 continue
             if _is_word_char(name[-1]) and j < n and _is_word_char(folded[j]):
@@ -485,6 +490,8 @@ def _partial_name_tail(folded: str, src: list[int], names: Sequence[str],
                 continue
             if src[fi] < raw_pos:
                 break
+            if fi > 0 and src[fi] == src[fi - 1]:
+                continue                    # 起点落在某个源字符分解后的中间
             if _is_word_char(name[0]) and fi > 0 and _is_word_char(folded[fi - 1]):
                 continue
             if best is None or src[fi] < best:
