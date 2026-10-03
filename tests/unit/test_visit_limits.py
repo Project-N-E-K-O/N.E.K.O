@@ -405,25 +405,43 @@ async def test_concurrent_writes_from_two_instances_are_serialised(tmp_path, mon
     assert on_disk.is_blocked(UID) and on_disk.is_blocked(other)
 
 
-def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_path):
-    # 各线程各自的事件循环里并发拉黑：同一把按路径登记的线程锁串行化，整表不互相冲掉
+def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_path, monkeypatch):
+    # 各线程各自的事件循环里并发拉黑：同一把按路径登记的线程锁串行化，整表不互相冲掉。
+    # 事务内读完盘后在屏障处等齐，强制读改写区间交错：没有锁时 8 个线程会读到同一份
+    # 旧表、互相冲掉；有锁时同一时刻只有一个线程在里面，屏障等不齐超时打破后依次放行
     import asyncio
     import threading
 
+    from main_logic.visit import limits
+
     uids = [f"{i:024x}" for i in range(8)]
+    instances = [Blocklist.load(tmp_path) for _ in uids]
+    barrier = threading.Barrier(len(uids))
+    real_read = limits.read_json
+
+    def read_then_wait(path):
+        data = real_read(path)
+        try:
+            barrier.wait(timeout=0.3)
+        except threading.BrokenBarrierError:
+            pass
+        return data
+
+    monkeypatch.setattr(limits, "read_json", read_then_wait)
     errors: list[Exception] = []
 
-    def worker(uid):
+    def worker(bl, uid):
         try:
-            asyncio.run(Blocklist.load(tmp_path).ablock(uid, display_name_at_block="x"))
+            asyncio.run(bl.ablock(uid, display_name_at_block="x"))
         except Exception as exc:          # noqa: BLE001 - 收集后在主线程断言
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(u,)) for u in uids]
+    threads = [threading.Thread(target=worker, args=(bl, u)) for bl, u in zip(instances, uids)]
     for th in threads:
         th.start()
     for th in threads:
         th.join(10)
+    monkeypatch.undo()
     assert errors == []
     on_disk = Blocklist.load(tmp_path)
     assert all(on_disk.is_blocked(u) for u in uids)
