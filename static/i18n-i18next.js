@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合入最新 main（点击引导、记忆重激活等）并叠加空气投篮与喵宇宙社区来源文案键，
-    // 递增版本让 Electron、Docker 等长期缓存重新拉取完整语言包，避免把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-10-02-air-basketball-main-merge';
+    // 空气投篮移除聊天 dock 文案、新增启动失败提示，递增版本让 Electron、Docker 等
+    // 长期缓存重新拉取完整语言包，避免把新 key 当字面量显示。
+    const LOCALE_VERSION = '2026-10-03-air-basketball-review-fixes';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
