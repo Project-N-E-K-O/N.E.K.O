@@ -1299,7 +1299,12 @@ async def _finalize_game_route_state_inner(
         "_resume_independent_voice_input_after_game",
         None,
     )
-    if callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
+    if not handoff:
+        # A newer route holds the takeover now (e.g. a mini-game that started
+        # while this one was exiting): the voice lease is that route's too, so
+        # handing it back to core would pull its microphone input away.
+        realtime_restore["reason"] = "takeover_held_by_newer_route"
+    elif callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
         # realtime-STT 游戏租约从未离开 Core：跳过 resume，避免 core->core
         # 空转换清掉在途麦克风 PCM（见 ``_game_voice_lease_release_needed``）。
         realtime_restore["reason"] = "voice_lease_not_taken"

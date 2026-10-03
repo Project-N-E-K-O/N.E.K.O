@@ -2344,12 +2344,12 @@ async def test_start_session_falls_through_when_the_declining_route_ended(
 async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changing(
     monkeypatch, request_id,
 ) -> None:
-    """An owner that never settles gets the start failed back (with its request
-    id when it sent one; unaddressed otherwise, so the latest start resets).
+    """An owner that never settles gets the start failed back with its request
+    id. A start without one gets no failure: send_session_failed would adopt
+    the id of another start in flight and fail that one instead.
 
-    Mutation: dropping the UNSETTLED start silently (no session_failed), or
-    only answering requests that carry an id, turns this red; so does starting
-    the ordinary session instead.
+    Mutation: dropping the addressed failure, or sending an unaddressed one,
+    turns this red; so does starting the ordinary session instead.
     """
     manager = _ProtocolManager()
     manager.send_session_failed = AsyncMock()
@@ -2380,7 +2380,10 @@ async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changin
     await asyncio.gather(*list(websocket_router._ws_bg_tasks))
 
     assert "start_session" not in [name for name, _payload in manager.calls]
-    manager.send_session_failed.assert_awaited_once_with("audio", request_id=request_id)
+    if request_id:
+        manager.send_session_failed.assert_awaited_once_with("audio", request_id=request_id)
+    else:
+        manager.send_session_failed.assert_not_awaited()
 
 
 @pytest.mark.asyncio

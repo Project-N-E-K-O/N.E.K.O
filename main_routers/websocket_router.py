@@ -1001,15 +1001,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if claim is RouteClaim.UNSETTLED:
                         # The owner kept changing while deciding: give up and
                         # tell the requester, so its preparing state resets.
-                        # Without a request id the failure goes out unaddressed
-                        # and the frontend resets its latest start.
+                        # Only an addressed failure is sent: without a request
+                        # id, send_session_failed would adopt the id of whatever
+                        # start is in flight and fail that one instead.
                         logger.info("[%s] start_session failed: external route kept changing during its claim", lanlan_name)
-                        _fire_task(
-                            session_manager[lanlan_name].send_session_failed(
-                                'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
-                                request_id=request_id,
+                        if request_id:
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_failed(
+                                    'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
+                                    request_id=request_id,
+                                )
                             )
-                        )
                         continue
                     if external_route is not None:
                         # Default start handling for a route without

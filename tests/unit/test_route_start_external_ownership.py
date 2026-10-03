@@ -422,15 +422,21 @@ def _parked_cue():
 async def test_exit_hands_parked_cues_back_only_when_nobody_else_owns_the_takeover(
     monkeypatch, still_owner,
 ):
-    """A superseded route's parked cues must not land in the new owner's sink.
+    """A superseded route's parked cues must not land in the new owner's sink,
+    nor does it hand the newer route's voice lease back to core.
 
-    Mutation: handing the inbox back unconditionally turns the superseded case red.
+    Mutation: handing the inbox back, or resuming voice input, unconditionally
+    turns the superseded case red.
     """
     from unittest.mock import Mock
 
     from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
 
-    manager = TakeoverManagerDouble(submit_proactive_callback=Mock())
+    manager = TakeoverManagerDouble(
+        submit_proactive_callback=Mock(),
+        _resume_independent_voice_input_after_game=AsyncMock(),
+        _voice_lease_owner="game",
+    )
     gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
     gr_patch_all(monkeypatch, "_push_game_window_state_change", AsyncMock())
     gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
@@ -449,11 +455,15 @@ async def test_exit_hands_parked_cues_back_only_when_nobody_else_owns_the_takeov
     if still_owner:
         manager.submit_proactive_callback.assert_called_once()
         assert manager.takeover_owner() is None
+        manager._resume_independent_voice_input_after_game.assert_awaited_once()
+        assert state["realtime_restore"]["reason"] == "voice_input_resumed"
     else:
         manager.submit_proactive_callback.assert_not_called()
         new_sink.assert_not_called()
         assert cue[DELIVERY_ACK_FUTURE_KEY].result() is False
         assert manager.takeover_owner() == "game"
+        manager._resume_independent_voice_input_after_game.assert_not_awaited()
+        assert state["realtime_restore"]["reason"] == "takeover_held_by_newer_route"
 
 
 @pytest.mark.asyncio
