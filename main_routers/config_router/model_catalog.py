@@ -122,7 +122,8 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
         api_key = str(core_cfg.get("assistApiKeyMimoTokenPlan") or "").strip()
     elif req.key_source == "core":
         if core_cfg.get("coreApi") == provider_key:
-            api_key = str(core_cfg.get("coreApiKey") or "").strip()
+            api_key = (str(core_cfg.get("coreApiKey") or "").strip()
+                       or _get_save_provider_api_key(core_cfg, api_config, provider_key))
         else:
             # Unsaved provider switches may reuse only that provider's key-book
             # entry; the resolver never borrows the previous core provider's key.
