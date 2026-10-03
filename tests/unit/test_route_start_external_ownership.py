@@ -457,27 +457,39 @@ async def test_exit_hands_parked_cues_back_only_when_nobody_else_owns_the_takeov
 
 
 @pytest.mark.asyncio
-async def test_exit_releases_the_token_even_when_teardown_raises(_icebreaker_clean, monkeypatch):
-    """A teardown step that raises must not leave the slot locked forever.
+@pytest.mark.parametrize("failing_step", ["window_close", "context_snapshot"])
+async def test_exit_releases_the_token_even_when_teardown_raises(
+    _icebreaker_clean, monkeypatch, failing_step,
+):
+    """A teardown step that raises must not leave the slot locked forever --
+    including the postgame context snapshot, the first step of the exit flow.
 
-    Mutation: releasing outside a ``finally`` turns this red.
+    Mutation: releasing outside a ``finally``, or taking the snapshot before
+    the ``try``, turns this red.
     """
     manager = TakeoverManagerDouble()
     gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
     gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
 
-    async def _failing_window_close(*_args, action="", **_kwargs):
-        if action == "closed":
-            raise RuntimeError("window close failed")
+    if failing_step == "window_close":
+        async def _failing_window_close(*_args, action="", **_kwargs):
+            if action == "closed":
+                raise RuntimeError("teardown failed")
 
-    gr_patch_all(monkeypatch, "_push_game_window_state_change", _failing_window_close)
+        gr_patch_all(monkeypatch, "_push_game_window_state_change", _failing_window_close)
+    else:
+        def _failing_snapshot(_state):
+            raise RuntimeError("teardown failed")
+
+        gr_patch_all(monkeypatch, "_build_postgame_context_snapshot", _failing_snapshot)
     with reset_game_route_state():
         assert (await _start())["ok"] is True
         state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
-        with pytest.raises(RuntimeError, match="window close failed"):
+        with pytest.raises(RuntimeError, match="teardown failed"):
             await gr_runtime._finalize_game_route_state(state, reason="test_end")
 
+        assert state.get("game_route_active") is False
         assert _TAKEOVER_TOKEN_KEY not in state
         assert manager.takeover_owner() is None
         assert gr_runtime.is_game_route_locked("Lan") is False

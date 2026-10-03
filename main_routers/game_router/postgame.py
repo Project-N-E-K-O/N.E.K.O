@@ -1249,14 +1249,18 @@ async def _finalize_game_route_state_inner(
     state["_exit_flow_started"] = True
     state["exit_reason"] = reason
     state["exit_started_at"] = time.time()
-    # Capture postgame's prompt context BEFORE flipping the route inactive
-    # / before the archive resolution / before any peer ``/route/start``
-    # can replace this state in ``_game_route_states``.
-    postgame_context_snapshot = _build_postgame_context_snapshot(state)
-    _clear_route_activity_flags(state)
     lanlan_name = str(state.get("lanlan_name") or "")
-    mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    mgr = None
     try:
+        mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+        try:
+            # Capture postgame's prompt context BEFORE flipping the route
+            # inactive / before the archive resolution / before any peer
+            # ``/route/start`` can replace this state in ``_game_route_states``.
+            postgame_context_snapshot = _build_postgame_context_snapshot(state)
+        finally:
+            # The route ends even if the snapshot failed.
+            _clear_route_activity_flags(state)
         await _cancel_route_game_speech_preloads(state)
         await _cancel_route_game_speech(state, mgr)
         # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize

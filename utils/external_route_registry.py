@@ -227,7 +227,7 @@ async def _offer_to_current_owner(
     offer: Callable[[ExternalRouteKind], Awaitable[tuple[Any, bool]]],
     *,
     what: str,
-    claim_outlives_owner: bool = False,
+    stale_claim_unsettles: bool = False,
 ) -> tuple[ExternalRouteKind | None, Any]:
     """Run ``offer`` against the route that owns ``lanlan_name`` until it sticks.
 
@@ -235,10 +235,12 @@ async def _offer_to_current_owner(
     Otherwise the handler may have suspended, and an answer from a route
     instance that has since been replaced does not speak for the current
     owner: the offer is repeated against whoever owns the character now.
-    With ``claim_outlives_owner``, a truthy result (the route took the input)
-    also stands when no route owns the character afterwards: the route that
-    took it has simply ended (e.g. the input ended it), and there is nobody
-    else to offer it to; only a different owner gets it re-offered.
+    With ``stale_claim_unsettles``, a truthy result (the route took the input
+    and may already have acted on it) is never re-offered: it stands when no
+    route owns the character afterwards (the route that took it has ended),
+    and gives ``_UNSETTLED`` when a different instance owns it now -- asking
+    that one could have two instances act on the same input, and keeping the
+    stale claim could swallow it.
     Returns ``(spec, result)`` of the owner whose answer stands, ``(None, None)``
     when no route owns the character, or ``(None, _UNSETTLED)`` when the owner
     kept changing. Each owner read is reused as the next attempt's starting
@@ -255,8 +257,16 @@ async def _offer_to_current_owner(
         current = external_route_identity(lanlan_name)
         if same_external_route_owner(identity, current):
             return spec, result
-        if claim_outlives_owner and result and current is None:
-            return spec, result
+        if stale_claim_unsettles and result:
+            if current is None:
+                return spec, result
+            logger.info(
+                "external route changed after claiming %s: lanlan=%s kind=%s",
+                what,
+                lanlan_name,
+                spec.kind,
+            )
+            return None, _UNSETTLED
         logger.info(
             "external route changed while handling %s: lanlan=%s kind=%s",
             what,
@@ -314,7 +324,11 @@ async def route_external_microphone_audio(lanlan_name: str) -> bool:
 
     spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="microphone audio")
     if consumed is _UNSETTLED:
-        return True
+        # Nobody settled the announcement. The PCM still reaches the ordinary
+        # session unless the character's current owner (as last read) is a
+        # route that does not pass audio through.
+        current = get_active_external_route(lanlan_name)
+        return current is not None and not current.audio_passthrough
     return spec is not None and bool(consumed) and not spec.audio_passthrough
 
 
@@ -329,9 +343,12 @@ async def route_external_start_session(
     ``on_start_session``, so the default start handling for ``spec`` applies
     (see ``ExternalRouteKind``). Every awaited answer -- a claim as well as a
     decline -- only stands if the same route instance still owns the
-    character; otherwise the current owner is asked, so a claim made by an
-    instance that has since been replaced cannot swallow the start. A route
-    that claimed the start and then ended keeps it.
+    character. A decline from a replaced instance is re-asked of the current
+    owner. A claim may already have acted (e.g. started the route's own
+    session), so it is never re-asked: if the claiming route has ended it
+    keeps the start; if another instance owns the character now, the start is
+    UNSETTLED and the caller fails it so the frontend can retry -- neither two
+    instances handling it nor a defunct one swallowing it.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
         if spec.on_start_session is None:
@@ -339,7 +356,7 @@ async def route_external_start_session(
         return bool(await spec.on_start_session(lanlan_name, message)), False
 
     spec, claimed = await _offer_to_current_owner(
-        lanlan_name, offer, what="start_session", claim_outlives_owner=True,
+        lanlan_name, offer, what="start_session", stale_claim_unsettles=True,
     )
     if claimed is _UNSETTLED:
         return RouteClaim.UNSETTLED, None

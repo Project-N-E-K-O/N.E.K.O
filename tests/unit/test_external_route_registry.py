@@ -590,6 +590,37 @@ async def test_microphone_audio_follows_an_owner_change_during_the_announcement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("passthrough", [True, False])
+async def test_unsettled_microphone_audio_follows_the_current_owners_passthrough(
+    empty_registry, passthrough,
+):
+    """When the owner keeps changing, a passthrough owner still gets its PCM to
+    realtime; only a non-passthrough owner has the frame dropped.
+
+    Mutation: dropping every UNSETTLED frame turns the passthrough case red.
+    """
+    instance = {"n": 0}
+
+    async def _announce_and_hand_over(_name, _message):
+        await asyncio.sleep(0)
+        instance["n"] += 1
+        return True
+
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="game",
+        is_active=lambda _name: True,
+        route_stream_message=_announce_and_hand_over,
+        on_start_session=None if passthrough else AsyncMock(return_value=False),
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: f"game-{instance['n']}",
+        audio_passthrough=passthrough,
+    ))
+
+    assert await registry.route_external_microphone_audio("Lan") is (not passthrough)
+    assert instance["n"] == 3
+
+
+@pytest.mark.asyncio
 async def test_microphone_audio_goes_to_ordinary_session_when_the_owner_left(empty_registry):
     async def _consume_and_end(_name, _message):
         registry._reset_for_tests()
@@ -724,11 +755,13 @@ async def test_a_start_claimed_by_a_route_that_then_ended_stays_claimed(empty_re
 
 
 @pytest.mark.asyncio
-async def test_a_claim_from_an_instance_replaced_while_claiming_is_reasked(empty_registry):
-    """A claim only stands if the same instance still owns the character.
+async def test_a_claim_from_an_instance_replaced_while_claiming_unsettles_the_start(empty_registry):
+    """A claim may already have acted, so it is not re-asked of the new owner;
+    nor does the defunct instance's claim swallow the start: it is UNSETTLED
+    and the caller fails it back for a retry.
 
-    Mutation: treating a claim as final (no owner re-check) turns this red --
-    the defunct instance's claim would swallow the start.
+    Mutation: treating a claim as final (no owner re-check), or re-asking the
+    new owner, turns this red.
     """
     instance = {"id": "visit-1"}
     asked = []
@@ -752,8 +785,8 @@ async def test_a_claim_from_an_instance_replaced_while_claiming_is_reasked(empty
 
     result = await registry.route_external_start_session("Lan", {"input_type": "audio"})
 
-    assert asked == ["visit-1", "visit-2"]
-    assert result == (registry.RouteClaim.UNCLAIMED, None)
+    assert asked == ["visit-1"]
+    assert result == (registry.RouteClaim.UNSETTLED, None)
 
 
 @pytest.mark.parametrize("empty_instance", [None, "", 0])
