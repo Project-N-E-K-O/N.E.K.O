@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 Chave API Auxiliar",
-                "desc": "Insira aqui a chave API do provedor auxiliar selecionado. O Requesty exige uma chave própria; deixar o campo vazio não usa a chave da API principal."
+                "desc": "Insira aqui a chave API do provedor auxiliar selecionado. Se o campo estiver vazio, normalmente será usada a chave da API principal; provedores que exigem uma chave própria não permitem essa alternativa."
             },
             "step7": {
                 "title": "🔧 Configuração de API personalizada",

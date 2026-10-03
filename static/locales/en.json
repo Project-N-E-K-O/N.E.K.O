@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 Auxiliary API Key",
-                "desc": "Enter the API key for the selected auxiliary provider here. Requesty requires its own key; leaving it empty will not use the core API key."
+                "desc": "Enter the API key for the selected auxiliary provider here. An empty key normally falls back to the core API key; providers that require a dedicated key cannot use this fallback."
             },
             "step7": {
                 "title": "🔧 Custom API Configuration",

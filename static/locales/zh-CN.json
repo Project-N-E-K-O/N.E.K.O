@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 辅助 API Key",
-                "desc": "请在这里填写所选辅助 API 服务商的 Key。Requesty 必须填写自己的 Key；留空不会使用核心 API 的 Key。"
+                "desc": "请在这里填写所选辅助 API 服务商的 Key。留空时通常回退到核心 API 的 Key；要求专用 Key 的服务商不支持此回退，必须单独填写。"
             },
             "step7": {
                 "title": "🔧 自定义 API 配置",

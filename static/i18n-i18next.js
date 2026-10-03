@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh the auxiliary-key tutorial for Requesty's dedicated-key requirement.
-    const LOCALE_VERSION = '2026-10-03-requesty-key-tutorial';
+    // Clarify normal auxiliary-key fallback and dedicated-key exceptions.
+    const LOCALE_VERSION = '2026-10-03-assist-key-tutorial-clarified';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
