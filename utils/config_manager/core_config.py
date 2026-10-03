@@ -1412,13 +1412,18 @@ class CoreConfigMixin:
                     return assist_model_defaults.get(profile_key, '')
                 return ''
 
-            def _resolve_named_provider_model_id(prefix: str, provider: str) -> str:
+            def _resolve_named_provider_model_id(prefix: str, provider: str, slot_url: str) -> str:
                 """Tier default of a named provider slot, '' when the slot has no such default."""
                 profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
                 if not profile_key or not provider or provider == 'custom' or provider.startswith('follow_'):
                     return ''
                 named_profile = assist_api_profiles.get(provider)
                 if not isinstance(named_profile, dict):
+                    return ''
+                candidates = self._provider_url_candidates(
+                    named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+                if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
                     return ''
                 return str(named_profile.get(profile_key)
                            or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
@@ -1482,7 +1487,9 @@ class CoreConfigMixin:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
-                named_model = _resolve_named_provider_model_id(prefix, provider)
+                named_model = _resolve_named_provider_model_id(
+                    prefix, provider, str(config.get(url_key) or '').strip()
+                )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':

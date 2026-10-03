@@ -107,6 +107,7 @@ def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatc
         'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
         'enableCustomApi': True,
         'visionModelProvider': provider_mode, 'visionModelId': '',
+        'visionModelUrl': profiles['openai']['OPENROUTER_URL'],
     })
     assert config_manager.get_model_api_config('vision')['model'] == profiles['openai']['CONVERSATION_MODEL']
 
@@ -123,6 +124,7 @@ def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypa
         'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
         'enableCustomApi': True,
         'agentModelProvider': provider_mode, 'agentModelId': '',
+        'agentModelUrl': profiles['openai']['OPENROUTER_URL'],
     })
     assert config_manager.get_model_api_config('agent')['model'] == (
         vision_model or profiles['openai']['CONVERSATION_MODEL']
@@ -185,6 +187,24 @@ class TestFollowCoreBlankModel:
 
 
 class TestNamedProviderBlankModel:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('prefix,model_type,profile_key', _TEXT_TIERS)
+    @pytest.mark.parametrize('slot_url', ['', 'https://dashscope.aliyuncs.com/compatible-mode/v1'])
+    def test_unbound_named_slot_keeps_assist_default(
+        self, config_manager, prefix, model_type, profile_key, slot_url,
+    ):
+        qwen_profile = _profiles()['qwen']
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'coreApiKey': 'sk-qwen',
+            'enableCustomApi': True,
+            f'{prefix}ModelProvider': 'openai',
+            f'{prefix}ModelUrl': slot_url,
+            f'{prefix}ModelId': '',
+        })
+        resolved = config_manager.get_model_api_config(model_type)
+        assert resolved['model'] == qwen_profile[profile_key]
+        assert resolved['base_url'] == (slot_url or qwen_profile['OPENROUTER_URL'])
 
     @pytest.mark.unit
     @pytest.mark.parametrize('prefix,model_type,profile_key', _TEXT_TIERS)
