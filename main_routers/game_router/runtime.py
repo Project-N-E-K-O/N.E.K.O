@@ -151,6 +151,7 @@ from .route_lifecycle import (  # noqa: F401
     _TAKEOVER_TOKEN_KEY,
     _clear_route_activity_flags,
     _close_takeover_callback_inbox,
+    _release_route_takeover,
     _route_heartbeat_expired,
     _route_heartbeat_timeout_seconds,
     _route_liveness_at,
@@ -5147,21 +5148,18 @@ async def _drop_expired_route_states(now: float) -> None:
         state = _game_route_states.pop(key, None)
         if not state:
             continue
-        takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
-        if takeover_token is not None:
+        if state.get(_TAKEOVER_TOKEN_KEY) is not None:
             lanlan_name = str(state.get("lanlan_name") or "")
             mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
-            released = mgr.release_takeover(takeover_token) if mgr is not None else False
+            handoff = _release_route_takeover(state, mgr)
             logger.warning(
-                "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s released=%s",
+                "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s handoff=%s",
                 key,
-                released,
+                handoff,
             )
-            takeover_owner = getattr(mgr, "takeover_owner", None)
-            handoff = released or not callable(takeover_owner) or takeover_owner() is None
-            _close_takeover_callback_inbox(state, mgr, handoff=handoff)
+            # Same rule as the exit flow: a newer owner's voice lease stays.
             resume_voice = getattr(mgr, "_resume_independent_voice_input_after_game", None)
-            if released and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
+            if handoff and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
                 try:
                     await resume_voice()
                 except Exception as exc:

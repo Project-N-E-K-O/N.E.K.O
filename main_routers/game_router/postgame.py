@@ -55,9 +55,8 @@ from .route_lifecycle import (
     _cancel_game_context_organizer_before_disabled_archive,
     _push_game_speech_cancel,
     _push_game_window_state_change,
-    _TAKEOVER_TOKEN_KEY,
     _clear_route_activity_flags,
-    _close_takeover_callback_inbox,
+    _release_route_takeover,
     _settle_game_context_organizer_before_archive,
 )
 from .session_pool import (
@@ -1287,15 +1286,7 @@ async def _finalize_game_route_state_inner(
         # above raised or were cancelled: the token's presence on the state is
         # what keeps the game slot locked (``is_game_route_locked``), so it
         # must always leave, with or without a manager.
-        takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
-        released = mgr.release_takeover(takeover_token) if mgr is not None else False
-        takeover_owner = getattr(mgr, "takeover_owner", None)
-        # Hand parked cues back only when nobody else holds the takeover now;
-        # otherwise they would be resubmitted straight into that owner's sink.
-        # Declining them is intentional: they answer the route that just ended
-        # (e.g. comments on the previous video), not the one that took over.
-        handoff = released or not callable(takeover_owner) or takeover_owner() is None
-        _close_takeover_callback_inbox(state, mgr, handoff=handoff)
+        handoff = _release_route_takeover(state, mgr)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
     resume_voice = getattr(

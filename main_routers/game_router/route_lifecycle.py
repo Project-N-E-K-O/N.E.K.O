@@ -104,6 +104,26 @@ def _close_takeover_callback_inbox(state: dict, mgr=None, *, handoff: bool = Tru
         resolve_callback_delivery_ack(callback, False)
 
 
+def _release_route_takeover(state: dict, mgr=None) -> bool:
+    """Release this route's takeover and settle its parked callbacks.
+
+    The one release step shared by the exit flow and the stale-state sweep.
+    Only the route's own token releases the takeover, so one another owner
+    (or a newer route) holds by now stays in place. Parked cues are handed
+    back only when nobody holds the takeover afterwards; otherwise they are
+    declined, since they answer the route that ended, not the one that took
+    over. Returns that same "nobody else holds it" verdict (``handoff``):
+    when it is False the newer owner's side effects (e.g. its voice lease)
+    must be left alone too.
+    """
+    takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
+    released = mgr.release_takeover(takeover_token) if mgr is not None else False
+    takeover_owner = getattr(mgr, "takeover_owner", None)
+    handoff = released or not callable(takeover_owner) or takeover_owner() is None
+    _close_takeover_callback_inbox(state, mgr, handoff=handoff)
+    return handoff
+
+
 async def _push_game_window_state_change(
     mgr,
     *,
