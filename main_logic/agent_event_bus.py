@@ -955,6 +955,7 @@ async def publish_conversation_turn_observed_best_effort(
     source: str,
     message_count: int = 0,
     metadata: Optional[Dict[str, Any]] = None,
+    ts: Optional[float] = None,
 ) -> bool:
     """Copy one message of an already-handled turn onto the plugin bus.
 
@@ -986,6 +987,7 @@ async def publish_conversation_turn_observed_best_effort(
     Best effort in the same strong sense as the frame publisher: ``True`` means
     "handed to the socket", never "a plugin will see it".
     """
+    # ``ts`` = 消息自身发生时刻（epoch 秒），消费方靠它排序；缺省由接收方补。
     text = str(content or "")
     if not text.strip():
         return False
@@ -1001,6 +1003,11 @@ async def publish_conversation_turn_observed_best_effort(
     }
     if metadata:
         event["metadata"] = dict(metadata)
+    if ts is not None:
+        try:
+            event["ts"] = float(ts)
+        except (TypeError, ValueError):
+            pass
 
     sent = await publish_session_event_threadsafe(event)
     if not sent:
