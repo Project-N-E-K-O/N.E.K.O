@@ -143,6 +143,31 @@ function enqueueLifecycle(operation) {
   return lifecycleTail;
 }
 
+// `speech.speak()` settles once the audio has been sent, not played. Ending the
+// route cancels whatever is still playing, so wait for the playback bridge to
+// report idle; `maxMs` bounds a stalled or silent bridge.
+export async function waitForNekoSpeechIdle(maxMs) {
+  const { game } = await airBasketballSdkReady;
+  return new Promise(resolve => {
+    let settled = false;
+    let unsubscribe = null;
+    const timer = setTimeout(() => finish(), maxMs);
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe?.();
+      resolve();
+    }
+    const check = state => {
+      if (!state?.active && !state?.pendingAudioWork) finish();
+    };
+    unsubscribe = game.speech.onState(check);
+    if (settled) unsubscribe();
+    else check(game.speech.getState());
+  });
+}
+
 export async function configureGameRuntime(payload, pageExitPayload) {
   const { game } = await airBasketballSdkReady;
   game.runtime.configure({

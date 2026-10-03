@@ -392,7 +392,13 @@ def test_air_basketball_mvp_interaction_contract():
     assert "void airBasketballSdkReady.then(() => disposeGameSdk(), () => undefined);" in game
     # The backend route ends shortly after the result line, not after its 60 s timeout.
     assert "{ after:latestSpeechPromise }" not in game
-    assert "const RESULT_SPEECH_END_GRACE_MS = 1500;" in game
+    assert "const RESULT_SPEECH_END_MAX_WAIT_MS = 12000;" in game
+    # ...but it waits for actual playback: route finalize cancels speech still playing.
+    assert "latestSpeechPromise.then(() => waitForNekoSpeechIdle(RESULT_SPEECH_END_MAX_WAIT_MS))" in game
+    assert "export async function waitForNekoSpeechIdle(maxMs)" in sdk_bootstrap
+    assert "if (!state?.active && !state?.pendingAudioWork) finish();" in sdk_bootstrap
+    reset_body = game.split("function resetMatch() {", 1)[1].split("const currentMatch", 1)[0]
+    assert "skipResultSpeechWait?.();" in reset_body
     finish_body = game.split("function finishMatch() {", 1)[1].split("\n}\n", 1)[0]
     assert "cancelPlayerAction();" in finish_body
     release_body = game.split("function releasePlayerShot() {", 1)[1].split("\n}\n", 1)[0]

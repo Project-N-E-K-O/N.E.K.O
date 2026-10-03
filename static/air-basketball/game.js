@@ -19,7 +19,8 @@ const {
   preloadNekoSpeech,
   speakNekoSpeech,
   startGameRuntime,
-  unlockGameAudio
+  unlockGameAudio,
+  waitForNekoSpeechIdle
 } = sdkModule;
 // A failed bootstrap (missing character, host or capability) must not stop the
 // rest of this module from wiring the page; the start card reports it instead.
@@ -51,7 +52,7 @@ const sdkIdentity = sdkContext?.identity || null;
 applyTranslations();
 
 const ROUND_SECONDS = 60;
-const RESULT_SPEECH_END_GRACE_MS = 1500;
+const RESULT_SPEECH_END_MAX_WAIT_MS = 12000;
 const STAGE_THRESHOLDS = [0, 12, 30, 54];
 const FEVER_HITS = 5;
 const FEVER_SECONDS = 7;
@@ -157,6 +158,7 @@ let speechTimer = 0;
 let voiceSequence = 0;
 let voiceGuardUntil = 0;
 let latestSpeechPromise = Promise.resolve();
+let skipResultSpeechWait = null;
 let prewarmedVoiceName = '';
 let mouseStealTimer = 0;
 let mouseStealVisualTimer = 0;
@@ -1335,6 +1337,8 @@ function runtimeEndPayload(reason = 'match-ended') {
 }
 
 function resetMatch() {
+  // A new match interrupts the previous result line anyway; end its route now.
+  skipResultSpeechWait?.();
   const currentMatch = ++matchSequence;
   const mode = selectedMode();
   const initialClock = mode === 'timed' ? ROUND_SECONDS : formatElapsed(0);
@@ -1412,12 +1416,20 @@ function finishMatch() {
   sound(state.player.score >= state.neko.score ? 640 : 260, .25, 'triangle');
   const resultSpoken = state.player.score !== state.neko.score
     && speakNeko(state.neko.score > state.player.score ? 'voiceWin' : 'voiceLose', { kind:'match-result', interrupt:true });
-  // Give the result line a short head start, but never hold the backend route
-  // (and the queued replay) for the SDK's 60 s speech timeout.
-  const resultSpeechHeadStart = resultSpoken
-    ? Promise.race([latestSpeechPromise, new Promise(resolve => setTimeout(resolve, RESULT_SPEECH_END_GRACE_MS))])
-    : null;
-  void endGameRuntime(runtimeEndPayload(), { after:resultSpeechHeadStart }).catch(error => {
+  // Ending the route cancels speech that is still playing, so let the result
+  // line finish first. Bound the wait well below the SDK's 60 s speech timeout,
+  // and stop waiting as soon as the player starts another match.
+  let resultSpeechSettled = null;
+  if (resultSpoken) {
+    resultSpeechSettled = Promise.race([
+      latestSpeechPromise.then(() => waitForNekoSpeechIdle(RESULT_SPEECH_END_MAX_WAIT_MS)),
+      new Promise(resolve => {
+        skipResultSpeechWait = resolve;
+        setTimeout(resolve, RESULT_SPEECH_END_MAX_WAIT_MS);
+      })
+    ]).finally(() => { skipResultSpeechWait = null; });
+  }
+  void endGameRuntime(runtimeEndPayload(), { after:resultSpeechSettled }).catch(error => {
     console.warn('[air_basketball] SDK runtime end failed', error);
   });
 }
