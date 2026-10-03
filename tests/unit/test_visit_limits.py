@@ -411,12 +411,12 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
     import threading
 
     uids = [f"{i:024x}" for i in range(8)]
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def worker(uid):
         try:
             asyncio.run(Blocklist.load(tmp_path).ablock(uid, display_name_at_block="x"))
-        except BaseException as exc:      # noqa: BLE001 - 收集后在主线程断言
+        except Exception as exc:          # noqa: BLE001 - 收集后在主线程断言
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(u,)) for u in uids]
