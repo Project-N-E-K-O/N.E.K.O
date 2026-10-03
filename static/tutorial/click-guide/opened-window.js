@@ -97,6 +97,9 @@
                         link.href = new URL(file, root.location.href).href; doc.head.append(link); links.push(link);
                     }
                     layer = doc.createElement('div'); layer.className = 'click-guide-layer';
+                    for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
+                        layer.addEventListener(type, event => event.stopPropagation(), { passive: true });
+                    }
                     mask = api.createMask(layer); highlight = api.createHighlight(layer);
                     card = doc.createElement('section');
                     card.className = 'click-guide-card click-guide-window-return';
