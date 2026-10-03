@@ -313,6 +313,11 @@ async function phaseBlank(c) {
   } finally {
     await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
   }
+  // Explicit gate verdict (as for T1): runs.blank.status 'ok' only means the phase completed. Blank frames are
+  // recorded as a failing verdict rather than thrown away — their blankDiag is exactly the evidence wanted.
+  const reasons = r.runs.filter((b) => b.blankFrames > 0).map((b) => `${b.label}: ${b.blankFrames}/${b.framesChecked} blank`);
+  r.verdict = { pass: reasons.length === 0, reasons, gate: '§3.12: 300 consecutive frames without a blank, per run' };
+  log('blank verdict', JSON.stringify(r.verdict));
   results.blankCheck = r;
   if (results.runs.blank) delete results.runs.blank.partialData;
   save();
