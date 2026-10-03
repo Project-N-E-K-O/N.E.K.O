@@ -1104,7 +1104,8 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
-        config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '') or _fb('requesty')
+        # Requesty is assist-only; a realtime core key cannot authenticate its router.
+        config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1231,9 +1232,13 @@ class CoreConfigMixin:
                 config['AUDIO_API_KEY'] = derived_key
                 config['OPENROUTER_API_KEY'] = derived_key
 
-        if not config['AUDIO_API_KEY']:
+        if assist_api_value == 'requesty':
+            # Keep an absent dedicated key empty, including legacy default keys.
+            config['AUDIO_API_KEY'] = derived_key
+            config['OPENROUTER_API_KEY'] = derived_key
+        elif not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if not config['OPENROUTER_API_KEY']:
+        if not config['OPENROUTER_API_KEY'] and assist_api_value != 'requesty':
             config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key

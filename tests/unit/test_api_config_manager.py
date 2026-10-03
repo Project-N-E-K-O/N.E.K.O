@@ -40,6 +40,60 @@ def _write_core_config(cm, data: dict):
 # ---------------------------------------------------------------------------
 # 1. Keybook: save 12 keys, reload, all come back
 # ---------------------------------------------------------------------------
+class TestRequestyResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, requesty_key,
+    ):
+        """Resolve each Requesty task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'requesty',
+            'assistApiKeyRequesty': requesty_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['CORE_API_TYPE'] == core_provider
+        assert cfg['ASSIST_API_KEY_REQUESTY'] == requesty_key
+        assert cfg['OPENROUTER_API_KEY'] == requesty_key
+        assert cfg['AUDIO_API_KEY'] == requesty_key
+        assert cfg['AGENT_MODEL_API_KEY'] == requesty_key
+        for task, model in {
+            'conversation': 'google/gemini-2.5-flash',
+            'summary': 'google/gemini-2.5-flash',
+            'correction': 'google/gemini-2.5-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-2.5-flash',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == requesty_key, task
+            assert resolved['base_url'] == 'https://router.requesty.ai/v1', task
+            assert resolved['model'] == model, task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+    @pytest.mark.unit
+    def test_missing_key_does_not_use_legacy_assist_defaults(self, config_manager, monkeypatch):
+        """A selected Requesty profile must also clear unrelated legacy defaults."""
+        import config
+
+        monkeypatch.setattr(config, 'DEFAULT_AUDIO_API_KEY', 'sk-legacy-audio')
+        monkeypatch.setattr(config, 'DEFAULT_OPENROUTER_API_KEY', 'sk-legacy-router')
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-other-core',
+            'assistApi': 'requesty',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['AUDIO_API_KEY'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+
+
 class TestKeybookSaveLoad:
 
     ALL_KEY_FIELDS = {
@@ -60,6 +114,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
+        'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
     }
 
     @pytest.mark.unit

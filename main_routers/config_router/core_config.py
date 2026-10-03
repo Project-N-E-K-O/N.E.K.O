@@ -252,7 +252,7 @@ async def get_core_config_api():
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
-            "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', '') or _fb('requesty'),
+            "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
