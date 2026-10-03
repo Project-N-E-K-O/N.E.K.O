@@ -72,25 +72,39 @@ async def test_pending_preferred_timeout_is_not_masked_by_fallback_404():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize('error_code', ['auth_failed', 'key_required', 'core_key_required'])
-async def test_preferred_credential_error_returns_without_waiting_for_fallback(error_code):
-    fallback_started = asyncio.Event()
+@pytest.mark.parametrize('fallback_result', ['success', 'auth_failed', 'stalls'])
+async def test_regional_auth_failure_waits_for_remaining_candidates(fallback_result):
+    preferred_finished = asyncio.Event()
     fallback_closed = asyncio.Event()
 
     async def request(url):
         if url == 'preferred':
-            await fallback_started.wait()
-            return {'success': False, 'error_code': error_code}
-        fallback_started.set()
+            preferred_finished.set()
+            return {'success': False, 'error_code': 'auth_failed'}
+        await preferred_finished.wait()
         try:
-            await asyncio.Event().wait()
+            if fallback_result == 'stalls':
+                await asyncio.Event().wait()
+            await asyncio.sleep(0)
+            return {'success': fallback_result == 'success', 'error_code': 'auth_failed'}
         finally:
             fallback_closed.set()
 
-    result = await asyncio.wait_for(race_candidate_requests(
-        ['preferred', 'fallback'], request, timeout=10, prefer_configured_order=True,
-    ), timeout=0.5)
-    assert result['error_code'] == error_code
+    race = asyncio.create_task(race_candidate_requests(
+        ['preferred', 'fallback'], request,
+        timeout=0.05 if fallback_result == 'stalls' else 10,
+        prefer_configured_order=True,
+    ))
+    if fallback_result == 'stalls':
+        await preferred_finished.wait()
+        await asyncio.sleep(0.01)
+        assert not race.done()
+    result = await asyncio.wait_for(race, timeout=0.5)
+    if fallback_result == 'success':
+        assert result['success'] is True
+        assert result['resolved_url'] == 'fallback'
+    else:
+        assert result['error_code'] == 'auth_failed'
     assert fallback_closed.is_set()
 
 
