@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 輔助 API Key",
-                "desc": "如果妳選擇了阿里作為輔助 API，需要在這裡填寫阿里的 API Key。如果不填寫，系統會使用核心 API 的 Key。"
+                "desc": "請在這裡填寫所選輔助 API 服務商的 Key。Requesty 必須填寫自己的 Key；留空不會使用核心 API 的 Key。"
             },
             "step7": {
                 "title": "🔧 自定義 API 配置",

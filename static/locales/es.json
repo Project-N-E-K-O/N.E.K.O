@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 Clave API auxiliar",
-                "desc": "Si utiliza Alibaba como API auxiliar, ingrese aquí la clave API de Alibaba. Si está vacío, utiliza la clave API principal."
+                "desc": "Introduzca aquí la clave API del proveedor auxiliar seleccionado. Requesty requiere su propia clave; dejar el campo vacío no utiliza la clave de la API principal."
             },
             "step7": {
                 "title": "🔧 Configuración de API personalizada",

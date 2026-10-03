@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 Auxiliary API Key",
-                "desc": "If using Alibaba as auxiliary API, enter Alibaba's API Key here. If empty, uses core API key."
+                "desc": "Enter the API key for the selected auxiliary provider here. Requesty requires its own key; leaving it empty will not use the core API key."
             },
             "step7": {
                 "title": "🔧 Custom API Configuration",

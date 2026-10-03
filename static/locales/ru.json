@@ -3981,7 +3981,7 @@
             },
             "step6": {
                 "title": "🔑 Auxiliary API Key",
-                "desc": "If using Alibaba as auxiliary API, enter Alibaba's API Key here. If empty, uses core API key."
+                "desc": "Введите API-ключ выбранного поставщика вспомогательного API. Для Requesty нужен отдельный ключ; если поле пустое, ключ основного API не используется."
             },
             "step7": {
                 "title": "🔧 Custom API Configuration",
