@@ -28,7 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from utils.external_route_registry import external_route_identity
+from utils.external_route_registry import external_route_identity, same_external_route_owner
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -328,7 +328,7 @@ class StreamingMixin:
                         return
                     # A route that declined may have been replaced while it
                     # decided; its answer does not cover the new owner.
-                    if external_route_identity(self.lanlan_name) != claimed_by:
+                    if not same_external_route_owner(claimed_by, external_route_identity(self.lanlan_name)):
                         return
                     # The claim check may have suspended: another frame can
                     # have started a session meanwhile. Audio arriving during a

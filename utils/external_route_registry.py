@@ -126,6 +126,24 @@ def external_route_identity(lanlan_name: str) -> tuple[ExternalRouteKind, str | 
     return spec, instance
 
 
+def same_external_route_owner(
+    before: tuple[ExternalRouteKind, str | None] | None,
+    after: tuple[ExternalRouteKind, str | None] | None,
+) -> bool:
+    """True when two ``external_route_identity`` reads name the same owner.
+
+    No route on both sides counts as the same owner. An active route whose
+    instance id is empty or not a string cannot be pinned, so it never counts
+    as unchanged: callers fail closed instead of trusting a stale decision.
+    """
+    if before is None or after is None:
+        return before is None and after is None
+    instance = before[1]
+    if not isinstance(instance, str) or not instance:
+        return False
+    return before == after
+
+
 def is_external_route_active(lanlan_name: str) -> bool:
     """True iff some registered kind currently owns ``lanlan_name``'s input."""
     return get_active_external_route(lanlan_name) is not None
@@ -205,7 +223,7 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
         spec, _instance = identity
         if await spec.route_stream_message(lanlan_name, message):
             return True
-        if external_route_identity(lanlan_name) == identity:
+        if same_external_route_owner(identity, external_route_identity(lanlan_name)):
             return False
         logger.info(
             "external route changed while handling stream_data: lanlan=%s kind=%s",
@@ -231,7 +249,7 @@ async def route_external_microphone_audio(lanlan_name: str) -> bool:
         )
         # The handler may suspend: a decision (and passthrough rule) of an owner
         # that has since been replaced does not apply to the current one.
-        if external_route_identity(lanlan_name) == identity:
+        if same_external_route_owner(identity, external_route_identity(lanlan_name)):
             return bool(consumed) and not spec.audio_passthrough
         logger.info(
             "external route changed while announcing microphone audio: lanlan=%s kind=%s",

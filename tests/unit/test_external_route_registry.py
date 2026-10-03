@@ -560,3 +560,26 @@ def test_game_route_instance_tells_routes_apart(monkeypatch):
         second = game_router._game_route_instance("Lan")
 
     assert first and second and first != second
+
+
+@pytest.mark.parametrize("empty_instance", [None, "", 0])
+def test_an_unpinnable_instance_never_counts_as_the_same_owner(empty_registry, empty_instance):
+    # Mutation: plain tuple equality turns this red -- two instances that both
+    # report an empty id would look like one owner.
+    spec = _kind("visit", active=True, instance="visit-1")
+    assert registry.same_external_route_owner(None, None) is True
+    assert registry.same_external_route_owner((spec, "visit-1"), (spec, "visit-1")) is True
+    assert registry.same_external_route_owner((spec, "visit-1"), (spec, "visit-2")) is False
+    assert registry.same_external_route_owner((spec, "visit-1"), None) is False
+    assert registry.same_external_route_owner((spec, empty_instance), (spec, empty_instance)) is False
+
+
+@pytest.mark.asyncio
+async def test_stream_message_is_not_leaked_when_the_owner_reports_no_instance(empty_registry):
+    """An owner without a usable instance id cannot vouch for its own decline: fail closed."""
+    handler = AsyncMock(return_value=False)
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=handler, instance="",
+    ))
+
+    assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is True
