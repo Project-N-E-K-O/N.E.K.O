@@ -120,11 +120,12 @@ class _QwenConnectionState:
     pending_pause_from_item: int | None = None
     wire_audio_bytes: int = 0
     local_speech_cycle: int = 0
-    provider_speech_cycles: dict[int, int] = field(default_factory=dict)
+    provider_speech_cycles: dict[int, int | None] = field(default_factory=dict)
     last_provider_final_cycle: int = -1
     unclaimed_provider_final_audio_bytes: int | None = None
     local_speech_active: bool = False
     provider_endpoint_utterance_ids: set[int] = field(default_factory=set)
+    provider_endpoint_audio_bytes: dict[int, int] = field(default_factory=dict)
     reconnect_after_finish: bool = False
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -239,14 +240,16 @@ def _qwen_cancel_provider_fallback(
 
 
 def _qwen_retire_provider_key(state: _QwenConnectionState, key: _ItemKey) -> None:
-    cycle = state.provider_speech_cycles.pop(key[2], 0)
-    if cycle:
+    cycle = state.provider_speech_cycles.pop(key[2], None)
+    endpoint_bytes = state.provider_endpoint_audio_bytes.pop(key[2], None)
+    if cycle is not None:
         state.last_provider_final_cycle = max(state.last_provider_final_cycle, cycle)
     else:
         # An unconfirmed provider item must not consume a future local cycle.
-        # Remember the PCM boundary so a delayed hint with no new audio can
-        # still be suppressed, while fresh buffered speech retains recovery.
-        state.unclaimed_provider_final_audio_bytes = state.wire_audio_bytes
+        # Only provider speech_stopped timestamps describe the old item.
+        # The wire position at final arrival may already include newer speech.
+        # Without an authoritative boundary, preserve recovery conservatively.
+        state.unclaimed_provider_final_audio_bytes = endpoint_bytes
     state.provider_endpoint_utterance_ids.discard(key[2])
     if state.current_provider_utterance_id == key[2]:
         state.current_provider_utterance_id = None
@@ -628,7 +631,11 @@ async def _qwen_sender(
                                 # Provider VAD can detect the initial onset
                                 # before the local detector confirms it.
                                 current = state.current_provider_utterance_id
-                                if current is not None and state.provider_speech_cycles.get(current) == 0:
+                                if (
+                                    current is not None
+                                    and current not in state.provider_endpoint_utterance_ids
+                                    and state.provider_speech_cycles.get(current) is None
+                                ):
                                     state.provider_speech_cycles[current] = state.local_speech_cycle
                             state.local_speech_active = True
                             _qwen_cancel_provider_fallback(state)
@@ -637,9 +644,12 @@ async def _qwen_sender(
                             and (
                                 state.current_provider_utterance_id
                                 not in state.provider_endpoint_utterance_ids
-                                or state.provider_speech_cycles.get(
-                                    state.current_provider_utterance_id, 0
-                                ) >= state.local_speech_cycle
+                                or (
+                                    (provider_cycle := state.provider_speech_cycles.get(
+                                        state.current_provider_utterance_id
+                                    )) is not None
+                                    and provider_cycle >= state.local_speech_cycle
+                                )
                             )
                         ):
                             # Local resume need not create a provider turn.
@@ -652,6 +662,11 @@ async def _qwen_sender(
                                 state.current_provider_utterance_id,
                             )
                             if key[2] not in state.provider_endpoint_utterance_ids:
+                                if state.provider_speech_cycles.get(key[2]) is None:
+                                    # A physical pause can claim an unsealed
+                                    # provider item even when onset preceded
+                                    # local observation (including cycle zero).
+                                    state.provider_speech_cycles[key[2]] = state.local_speech_cycle
                                 _qwen_arm_provider_fallback(state, key)
                                 if state.provider_speech_cycles.get(key[2], 0) != state.local_speech_cycle:
                                     # The provider may group this resume into
@@ -913,7 +928,7 @@ async def _qwen_receiver(
                 state.provider_speech_cycles[key[2]] = (
                     state.local_speech_cycle
                     if state.local_speech_active or pending_pause == (key[0], key[1])
-                    else 0
+                    else None
                 )
                 if pending_pause == (key[0], key[1]) and not pending_fallback and not state.reconnect_after_finish:
                     _qwen_arm_provider_fallback(state, key)
@@ -934,6 +949,12 @@ async def _qwen_receiver(
                 key = state.item_keys.get(item_id)
                 if key is not None:
                     state.provider_endpoint_utterance_ids.add(key[2])
+                    audio_end_ms = event.get("audio_end_ms")
+                    if (
+                        isinstance(audio_end_ms, int) and not isinstance(audio_end_ms, bool)
+                        and 0 <= audio_end_ms * 32 <= state.wire_audio_bytes
+                    ):
+                        state.provider_endpoint_audio_bytes[key[2]] = audio_end_ms * 32
                     if state.fallback_key == key:
                         _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
                 # Server VAD sealed the turn; the transcription final is

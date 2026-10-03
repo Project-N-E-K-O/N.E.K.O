@@ -774,6 +774,8 @@ async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeyp
             await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": item})
             await _next_event(responses, "utterance_started")
             if final_before_hint:
+                await ws.server_send({"type": "input_audio_buffer.speech_stopped",
+                                      "item_id": item, "audio_end_ms": state.wire_audio_bytes // 32})
                 await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
                                       "item_id": item, "transcript": item})
                 await _next_event(responses, "final")
@@ -1184,6 +1186,56 @@ async def test_unconfirmed_provider_noise_does_not_retire_fresh_local_speech(mon
         assert state.fallback_key == (0, 0, 2)
         assert state.pending_local_pause == (0, 0)
     finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)
+
+@pytest.mark.parametrize("audio_end_ms", [100, None, True, 1_000_000])
+@pytest.mark.parametrize("start_hint", [False, True])
+async def test_old_unclaimed_final_cannot_cover_pcm_sent_before_new_pause(monkeypatch, audio_end_ms, start_hint):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
+    pause_waiting, release_pause = asyncio.Event(), asyncio.Event()
+
+    class PauseBarrierQueue(_AsrRequestQueue):
+        async def get(self):
+            request = await super().get()
+            if request.kind == "activity" and request.speech_active is False:
+                pause_waiting.set()
+                await release_pause.wait()
+            return request
+
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    requests, responses = PauseBarrierQueue(), asyncio.Queue()
+    ws = _FakeWebSocket()
+    config = AsrSessionConfig(endpointing_mode="provider")
+    sender = asyncio.create_task(qwen._qwen_sender(ws, requests, responses, config, state))
+    receiver = asyncio.create_task(qwen._qwen_receiver(ws, responses, config, state))
+    try:
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0" * 3200))
+        await requests.join()
+        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
+        await _next_event(responses, "utterance_started")
+        await ws.server_send({"type": "input_audio_buffer.speech_stopped", "item_id": "old",
+                              "audio_end_ms": audio_end_ms})
+        await _wait_until(lambda: 1 in state.provider_endpoint_utterance_ids)
+        if start_hint:
+            await requests.put(_AsrWorkerRequest("activity", 0, speech_active=True))
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\1" * 3200))
+        await requests.join()
+        await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
+        await pause_waiting.wait()
+        # The previous endpoint is old; its final arrives only after all new
+        # speech PCM was sent, while the new pause is waiting in the real FIFO.
+        await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                              "item_id": "old", "transcript": "old"})
+        await _next_event(responses, "final")
+        release_pause.set()
+        await requests.join()
+        assert state.pending_local_pause == (0, 0)
+        assert state.fallback_key == (0, 0, 2)
+    finally:
+        release_pause.set()
         sender.cancel()
         receiver.cancel()
         await asyncio.gather(sender, receiver, return_exceptions=True)
