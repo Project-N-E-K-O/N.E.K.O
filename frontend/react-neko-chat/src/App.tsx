@@ -4465,6 +4465,8 @@ function CompactChatApp({
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
+    // Native guide controls live in another window, so focus cannot identify them.
+    if (!options?.ignoreFocusedShell && document.querySelector('.click-guide-layer.click-guide-native')) return;
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
@@ -4473,7 +4475,7 @@ function CompactChatApp({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
+          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     ) {
@@ -4512,7 +4514,7 @@ function CompactChatApp({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
+          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     );
@@ -4527,11 +4529,16 @@ function CompactChatApp({
       scheduleForcedCompactInputCollapse();
     };
 
-    window.addEventListener('blur', scheduleForcedCompactInputCollapse);
+    const handleWindowBlur = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
+      scheduleForcedCompactInputCollapse();
+    };
+
+    window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      window.removeEventListener('blur', scheduleForcedCompactInputCollapse);
+      window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
@@ -4598,6 +4605,7 @@ function CompactChatApp({
     if (!isCompactSurface) return;
 
     const handleDesktopCompactPointerOutside = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
       if (
         compactInputToolWheelDragActiveRef.current
         || compactInputToolWheelPointerRef.current
