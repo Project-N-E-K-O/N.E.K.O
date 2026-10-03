@@ -1342,6 +1342,30 @@
         "assistApiSelectLabel": "Assist API Provider",
         "assistApiKeyLabel": "Assist API Key",
         "assistApiAutoFillHint": "Auto-fills from Key Book when empty; manually entered keys are saved independently",
+        "modelIdCurrentPlaceholder": "Currently using: {{model}}",
+        "modelIdFreePlaceholder": "The free version uses fixed models",
+        "modelPicker": {
+            "fetch": "Fetch models",
+            "fetchTooltip": "Fetch the list of available models from the provider",
+            "loading": "Fetching model list…",
+            "noMatch": "No matching models",
+            "more": "{{count}} more models; type a keyword to filter",
+            "unavailable": {
+                "noProvider": "Select a provider first",
+                "fixed": "This provider uses fixed models, so there is nothing to choose",
+                "follow": "In this mode the model follows the selected configuration, so there is nothing to choose",
+                "missingUrl": "Enter the API URL first"
+            },
+            "error": {
+                "urlHint": "Check whether the API URL is missing a path prefix such as /v1.",
+                "unsupported": "This endpoint does not provide a model list; enter the model ID manually",
+                "key_required": "A saved key only works with the address it was saved for; re-enter the API key",
+                "core_key_required": "The core provider has changed; re-enter the API key",
+                "rate_limited": "Too many requests; try again later",
+                "empty": "The provider returned no models",
+                "timeout": "Fetching timed out; check your network and try again"
+            }
+        },
         "disableTts": "Disable TTS",
         "disableTtsHint": "When enabled, no text-to-speech service will be called",
         "keyBookTitle": "API Key Book",

@@ -771,6 +771,7 @@ async def get_api_providers_config():
             get_config,
             get_core_api_providers_for_frontend,
             get_assist_api_providers_for_frontend,
+            get_assist_api_profiles,
         )
 
         full_config = get_config(force_reload=True)
@@ -800,6 +801,13 @@ async def get_api_providers_config():
             "assist_api_providers": assist_providers,
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
+            "assist_model_defaults": {
+                key: {field: profile.get(field, '') for field in (
+                    'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
+                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                )}
+                for key, profile in get_assist_api_profiles().items()
+            },
             "core_api_providers_full": full_config.get("core_api_providers", {}),
             "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,
