@@ -635,9 +635,13 @@ async def test_active_game_route_with_blank_session_id_keeps_its_microphone_audi
 
 
 @pytest.mark.asyncio
-async def test_a_stream_message_consumed_by_a_replaced_instance_is_reoffered(empty_registry):
-    """Mutation: treating "consumed" as final (no owner re-check) turns this
-    red -- the replacement owner would never see the message."""
+async def test_a_stream_message_consumed_by_a_replaced_instance_is_not_offered_again(empty_registry):
+    """Handlers act on a message (the game mirrors it) before they suspend, so
+    a consumption stands even if the instance was replaced meanwhile.
+
+    Mutation: re-checking the owner after a consumption turns this red -- the
+    replacement owner would receive (and mirror) the same input a second time.
+    """
     instance = {"id": "visit-1"}
     asked = []
 
@@ -660,8 +664,8 @@ async def test_a_stream_message_consumed_by_a_replaced_instance_is_reoffered(emp
 
     claim = await registry.route_external_stream_message("Lan", {"input_type": "text"})
 
-    assert asked == ["visit-1", "visit-2"]
-    assert claim is registry.RouteClaim.UNCLAIMED
+    assert asked == ["visit-1"]
+    assert claim is registry.RouteClaim.CLAIMED
 
 
 @pytest.mark.asyncio
@@ -689,6 +693,34 @@ async def test_a_stream_message_consumed_by_a_route_that_then_ended_stays_consum
     claim = await registry.route_external_stream_message("Lan", {"input_type": "text"})
 
     assert claim is registry.RouteClaim.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_a_start_claimed_by_a_route_that_then_ended_stays_claimed(empty_registry):
+    """A route that took the start and then ended keeps it: no ordinary start.
+
+    Mutation: re-offering when no route owns the character any more turns this red.
+    """
+    active = {"value": True}
+
+    async def _claim_and_end(_name, _message):
+        await asyncio.sleep(0)
+        active["value"] = False
+        return True
+
+    visit = ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: active["value"],
+        route_stream_message=_unclaimed,
+        on_start_session=_claim_and_end,
+        finalize_for_character=_no_routes,
+        current_instance=lambda _name: "visit-1" if active["value"] else None,
+    )
+    registry.register_external_route_kind(visit)
+
+    result = await registry.route_external_start_session("Lan", {"input_type": "audio"})
+
+    assert result == (registry.RouteClaim.CLAIMED, visit)
 
 
 @pytest.mark.asyncio

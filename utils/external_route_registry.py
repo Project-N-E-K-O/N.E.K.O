@@ -280,18 +280,19 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> Rout
     """Offer a main-socket ``stream_data`` message to the active route.
 
     CLAIMED: the route consumed it (the caller skips the ordinary chat path).
-    UNCLAIMED: no route took it; it goes to the ordinary path. An answer from
-    a route instance replaced while it decided -- consumed or not -- is
-    re-offered to the current owner; a route that consumed the message and
-    then ended keeps it. UNSETTLED: the owner kept changing; the message
-    reached nobody and must not leak into ordinary chat either.
+    A consumption is final even if the route was replaced meanwhile: handlers
+    act on the message (e.g. the game mirrors it) before they suspend, so
+    offering it again would deliver it twice. UNCLAIMED: no route took it; it
+    goes to the ordinary path. A "not consumed" from a route instance replaced
+    while it decided is re-offered to the current owner. UNSETTLED: the owner
+    kept changing; the message reached nobody and must not leak into ordinary
+    chat either.
     """
     async def offer(spec: ExternalRouteKind) -> tuple[bool, bool]:
-        return bool(await spec.route_stream_message(lanlan_name, message)), False
+        consumed = bool(await spec.route_stream_message(lanlan_name, message))
+        return consumed, consumed
 
-    _spec, consumed = await _offer_to_current_owner(
-        lanlan_name, offer, what="stream_data", claim_outlives_owner=True,
-    )
+    _spec, consumed = await _offer_to_current_owner(lanlan_name, offer, what="stream_data")
     if consumed is _UNSETTLED:
         return RouteClaim.UNSETTLED
     return RouteClaim.CLAIMED if consumed else RouteClaim.UNCLAIMED
