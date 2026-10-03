@@ -11,7 +11,9 @@ from main_logic.asr_client._infra import (
     AsrSessionConfig,
     _AsrRequestQueue,
     _AsrWorkerRequest,
+    _RealtimeAsrSessionImpl,
 )
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.asr_client.workers import qwen
 from tests.unit.test_asr_workers import (
     _FakeConnector,
@@ -412,3 +414,117 @@ async def test_sender_cancellation_releases_getter_and_grace_timer(monkeypatch):
     assert not requests._getters
     assert state.fallback_key is None
     assert timer.done()
+
+
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_external_sender_cancel_during_getter_join_propagates(cancel_count):
+    state = _state()
+    state.fallback_key = (0, 0, 2)
+    state.fallback_due.set()
+    task = None
+
+    class EndpointAtCancelQueue(_AsrRequestQueue):
+        async def get(self):
+            try:
+                return await super().get()
+            except asyncio.CancelledError:
+                state.provider_endpoint_utterance_ids.add(2)
+                qwen._qwen_cancel_provider_fallback(state)
+                # Cancel the owner before the real getter's completion wakes
+                # it. No extra suspension is added to asyncio.wait or join.
+                assert task is not None
+                for _ in range(cancel_count):
+                    asyncio.get_running_loop().call_soon(task.cancel)
+                raise
+
+    requests, responses = EndpointAtCancelQueue(), asyncio.Queue()
+    ws = _FakeWebSocket()
+    task = asyncio.create_task(qwen._qwen_sender(
+        ws, requests, responses, AsrSessionConfig(endpointing_mode="provider"), state
+    ))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=1)
+        assert task in done, "sender swallowed its owner's cancellation"
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        assert not requests._getters
+        assert state.fallback_key is None
+        assert ws.sent == []
+        assert responses.empty()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_provider_failure_at_fallback_due_releases_sender(monkeypatch):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
+    close_release = asyncio.Event()
+    errors = []
+    before = asyncio.all_tasks()
+
+    class ClosingWebSocket(_FakeWebSocket):
+        async def close(self):
+            await super().close()
+            # Model a suspended closing handshake, which can receive a second
+            # worker cancellation from the session's failure cleanup.
+            await close_release.wait()
+
+    async def on_send(ws, payload):
+        if json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    ws = ClosingWebSocket(on_send=on_send)
+    monkeypatch.setattr(qwen, "websockets", type(
+        "Connector", (), {"connect": staticmethod(_FakeConnector(ws))}
+    ))
+
+    class FailureAtDue(asyncio.Event):
+        def set(self):
+            super().set()
+            # Deliver ordinary provider frames after the fallback waiter is
+            # ready, through the unchanged receiver and session error path.
+            ws.incoming.put_nowait(json.dumps({
+                "type": "input_audio_buffer.speech_stopped", "item_id": "current"
+            }))
+            ws.incoming.put_nowait(json.dumps({
+                "type": "error", "error": {"code": "controlled_error"}
+            }))
+
+    original_state = qwen._QwenConnectionState
+
+    def connection_state(*args, **kwargs):
+        return original_state(*args, **kwargs, fallback_due=FailureAtDue())
+
+    monkeypatch.setattr(qwen, "_QwenConnectionState", connection_state)
+
+    async def on_final(_text):
+        pass
+
+    async def on_error(error):
+        errors.append(error)
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=qwen.qwen_asr_worker,
+        api_key="key",
+        config=AsrSessionConfig(endpointing_mode="provider"),
+        on_input_transcript=on_final,
+        on_connection_error=on_error,
+        provider_policy=resolve_provider_policy("qwen", "provider"),
+    )
+    try:
+        await session.connect()
+        await ws.server_send({
+            "type": "input_audio_buffer.speech_started", "item_id": "current"
+        })
+        await _wait_until(lambda: bool(session._active_utterance_keys))
+        await session.signal_local_activity(speech_active=False)
+        await asyncio.wait_for(asyncio.shield(session._response_task), 1)
+        assert len(errors) == 1
+        assert session._worker_task.done()
+        assert ws.closed
+        assert not session._request_queue._getters
+        assert not [task for task in asyncio.all_tasks() - before if not task.done()]
+    finally:
+        close_release.set()
+        await asyncio.wait_for(session.close(), 1)

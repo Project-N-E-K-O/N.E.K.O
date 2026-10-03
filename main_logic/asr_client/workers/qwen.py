@@ -472,6 +472,9 @@ async def _qwen_sender(
                 try:
                     request = await queue_task
                 except asyncio.CancelledError:
+                    # Only absorb getter cancellation, never owner cancellation.
+                    if asyncio.current_task().cancelling():
+                        raise
                     try:
                         request = request_queue.get_nowait()
                     except asyncio.QueueEmpty:
