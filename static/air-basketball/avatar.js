@@ -53,6 +53,14 @@ export async function initNekoAvatar(game, identity, onReady) {
   }
 }
 
+// Expressions are cosmetic. A busy queue, a disposed controller or a renderer
+// error must not surface as an unhandled rejection on every shot.
+function setAvatarEmotion(name) {
+  try {
+    void Promise.resolve(avatarController?.setEmotion(name)).catch(() => undefined);
+  } catch (_) { /* synchronous controller failure is equally cosmetic */ }
+}
+
 function reactionEmotion(type, enabled) {
   if (!enabled) return 'relaxed';
   if (type === 'score') return 'happy';
@@ -79,9 +87,9 @@ export function reactNeko(type, direction = 1) {
     container.style.setProperty('--hit-angle-settle', `${sign}deg`);
   }
   container.classList.add(className);
-  avatarController?.setEmotion(reactionEmotion(type, true));
+  setAvatarEmotion(reactionEmotion(type, true));
   reactionTimer = setTimeout(() => {
     container.classList.remove(className);
-    avatarController?.setEmotion(reactionEmotion(type, false));
+    setAvatarEmotion(reactionEmotion(type, false));
   }, type === 'aim' ? 420 : type === 'hit' ? 520 : type === 'steal' ? 760 : 680);
 }

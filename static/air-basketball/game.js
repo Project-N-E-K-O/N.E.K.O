@@ -23,11 +23,27 @@ const {
 } = sdkModule;
 // A failed bootstrap (missing character, host or capability) must not stop the
 // rest of this module from wiring the page; the start card reports it instead.
+// A bootstrap step that never settles (host, handshake, character lookup, audio)
+// is treated the same way, so the page never sits behind a dead start button.
+const SDK_BOOTSTRAP_TIMEOUT_MS = 20000;
 let sdkContext = null;
+let sdkBootstrapTimer = 0;
 try {
-  sdkContext = await airBasketballSdkReady;
+  sdkContext = await Promise.race([
+    airBasketballSdkReady,
+    new Promise((_, reject) => {
+      sdkBootstrapTimer = setTimeout(
+        () => reject(new Error(`SDK bootstrap timed out after ${SDK_BOOTSTRAP_TIMEOUT_MS} ms`)),
+        SDK_BOOTSTRAP_TIMEOUT_MS
+      );
+    })
+  ]);
 } catch (error) {
   console.error('[air_basketball] SDK bootstrap failed', error);
+  // A late connection would hold a runtime this page already gave up on.
+  void airBasketballSdkReady.then(() => disposeGameSdk(), () => undefined);
+} finally {
+  clearTimeout(sdkBootstrapTimer);
 }
 const sdkGame = sdkContext?.game || null;
 const sdkIdentity = sdkContext?.identity || null;
@@ -35,6 +51,7 @@ const sdkIdentity = sdkContext?.identity || null;
 applyTranslations();
 
 const ROUND_SECONDS = 60;
+const RESULT_SPEECH_END_GRACE_MS = 1500;
 const STAGE_THRESHOLDS = [0, 12, 30, 54];
 const FEVER_HITS = 5;
 const FEVER_SECONDS = 7;
@@ -238,8 +255,7 @@ function applyOpponentName(name) {
   });
   const loading = byId('neko-avatar-loading');
   if (loading && !loading.classList.contains('is-hidden')) loading.textContent = clean;
-  const status = byId('neko-status-text');
-  if (status && !state.nekoCounterPending) status.textContent = opponentStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
+  if (!state.nekoCounterPending) setNekoStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
 }
 
 function showNekoSpeech(line) {
@@ -319,6 +335,28 @@ function selectedMode() {
 
 function opponentStatus(kind) {
   return t(kind, { name:opponentName });
+}
+
+// These elements are rewritten at runtime, so they carry no data-i18n (a
+// language switch would reset them to their static text). Remember what each
+// one shows and re-render it here instead.
+let nekoStatusKey = 'opponentReady';
+function setNekoStatus(key) {
+  nekoStatusKey = key;
+  byId('neko-status-text').textContent = opponentStatus(key);
+}
+
+function renderClockLabels(mode) {
+  clockLabel.textContent = t(mode === 'timed' ? 'timeLeft' : 'elapsed');
+  clockUnit.textContent = mode === 'timed' ? t('seconds') : '';
+}
+
+function renderLocalizedState() {
+  setNekoStatus(nekoStatusKey);
+  renderClockLabels(state.mode);
+  startButton.textContent = t(resultBoard.hidden ? 'start' : 'again');
+  if (!sdkContext) startCopy.textContent = t('sdkUnavailable');
+  else startCopy.textContent = selectedMode() === 'endless' ? t('endlessIntro') : t('intro');
 }
 
 function callout(side, text) {
@@ -857,6 +895,10 @@ function shootPlayer(vx, vy) {
 }
 
 function releasePlayerShot() {
+  if (!state.running) {
+    cancelPlayerAction();
+    return;
+  }
   let shot = false;
   if (hasFocus('player', ACTION_BALANCE.SHOT_COST)) shot = playerLane.releaseAim();
   else playerLane.aim = null;
@@ -932,7 +974,7 @@ function endMouseSteal(escaped = false) {
   }, 420);
   setTimeout(() => {
     if (state.running && !state.nekoCounterPending && !mouseSteal.active) {
-      byId('neko-status-text').textContent = opponentStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
+      setNekoStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
     }
   }, 520);
   return true;
@@ -965,7 +1007,7 @@ function beginMouseSteal() {
   state.mouseStealDurationMs = Math.round(mouseSteal.duration);
   state.mouseStealCount += 1;
   mouseStealTitle.textContent = t('mouseStealCaught', { name:opponentName });
-  byId('neko-status-text').textContent = t('mouseStealStatus', { name:opponentName });
+  setNekoStatus('mouseStealStatus');
   mouseStealLayer.classList.remove('is-escaped');
   mouseStealLayer.classList.add('is-active');
   mouseStealLayer.setAttribute('aria-hidden', 'false');
@@ -1068,11 +1110,11 @@ function hitNeko(direction = 1, source = 'pointer') {
   }
   reactNeko('hit', direction);
   callout('neko', t('nekoHit'));
-  byId('neko-status-text').textContent = t('nekoHit');
+  setNekoStatus('nekoHit');
   speakNeko('voiceHit', { kind:'avatar-hit', interrupt:true });
   sound(ballImpact ? 76 : 105, ballImpact ? .13 : .08, 'square');
   setTimeout(() => {
-    if (state.running) byId('neko-status-text').textContent = opponentStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
+    if (state.running) setNekoStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
   }, 520);
   return true;
 }
@@ -1238,7 +1280,7 @@ function beginNekoPrank() {
   const playerScreen = playerLane.canvas.closest('.machine-screen');
   clearTimeout(counterTimer);
   state.nekoCounterPending = true;
-  byId('neko-status-text').textContent = t('nekoCountering', { name:opponentName });
+  setNekoStatus('nekoCountering');
   playerScreen.classList.add('incoming-warning');
   reactNeko('aim');
   sound(420, .05, 'triangle');
@@ -1253,7 +1295,7 @@ function beginNekoPrank() {
       refundFocus('neko', ACTION_BALANCE.PRANK_COST);
       endNekoAction(NEKO_ACTION.PLAYER);
       state.nextNekoInterference = NEKO_SHOT_DELAY.RETURN_RETRY;
-      byId('neko-status-text').textContent = opponentStatus('opponentReady');
+      setNekoStatus('opponentReady');
       return;
     }
     throwChaosBall(playerLane, 'neko', 'right');
@@ -1266,7 +1308,7 @@ function beginNekoPrank() {
     speakNeko('voiceChaos', { kind:'chaos-ball' });
     reactNeko('score');
     sound(115, .07, 'square');
-    byId('neko-status-text').textContent = t('nekoCountering', { name:opponentName });
+    setNekoStatus('nekoCountering');
   }, 540);
   return true;
 }
@@ -1319,10 +1361,9 @@ function resetMatch() {
   clearCombo('player');
   clearCombo('neko');
   matchClock.textContent = initialClock;
-  clockLabel.textContent = t(mode === 'timed' ? 'timeLeft' : 'elapsed');
-  clockUnit.textContent = mode === 'timed' ? t('seconds') : '';
+  renderClockLabels(mode);
   stopMatchButton.hidden = mode !== 'endless';
-  byId('neko-status-text').textContent = opponentStatus('opponentReady');
+  setNekoStatus('opponentReady');
   resultBoard.hidden = true;
   overlay.classList.add('hidden');
   overlay.hidden = true;
@@ -1348,6 +1389,9 @@ function resetMatch() {
 
 function finishMatch() {
   state.running = false;
+  // Drop any held aim, drag or avatar pointer: a release after this point must
+  // not shoot into the final score or leave interference locked for next match.
+  cancelPlayerAction();
   endMouseSteal(false);
   clearTimeout(counterTimer);
   clearTransits();
@@ -1366,10 +1410,14 @@ function finishMatch() {
   overlay.style.display = 'grid';
   overlay.classList.remove('hidden');
   sound(state.player.score >= state.neko.score ? 640 : 260, .25, 'triangle');
-  if (state.player.score !== state.neko.score) {
-    speakNeko(state.neko.score > state.player.score ? 'voiceWin' : 'voiceLose', { kind:'match-result', interrupt:true });
-  }
-  void endGameRuntime(runtimeEndPayload(), { after:latestSpeechPromise }).catch(error => {
+  const resultSpoken = state.player.score !== state.neko.score
+    && speakNeko(state.neko.score > state.player.score ? 'voiceWin' : 'voiceLose', { kind:'match-result', interrupt:true });
+  // Give the result line a short head start, but never hold the backend route
+  // (and the queued replay) for the SDK's 60 s speech timeout.
+  const resultSpeechHeadStart = resultSpoken
+    ? Promise.race([latestSpeechPromise, new Promise(resolve => setTimeout(resolve, RESULT_SPEECH_END_GRACE_MS))])
+    : null;
+  void endGameRuntime(runtimeEndPayload(), { after:resultSpeechHeadStart }).catch(error => {
     console.warn('[air_basketball] SDK runtime end failed', error);
   });
 }
@@ -1515,7 +1563,7 @@ function performNekoIntent(action) {
   if (action === NEKO_ACTION.MOUSE) return beginMouseSteal();
   if (action === NEKO_ACTION.PLAYER) return beginNekoPrank();
   if (action !== NEKO_ACTION.HOOP) return false;
-  byId('neko-status-text').textContent = opponentStatus('opponentAiming');
+  setNekoStatus('opponentAiming');
   reactNeko('aim');
   const acted = shootNekoAtHoop(nekoShotAccuracy());
   if (acted) {
@@ -1570,7 +1618,7 @@ function chooseNekoAction(forcedRoll = null) {
     if (state.nekoAction === NEKO_ACTION.IDLE) {
       setTimeout(() => {
         if (state.running && !state.nekoCounterPending && !mouseSteal.active) {
-          byId('neko-status-text').textContent = opponentStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
+          setNekoStatus(state.neko.fever > 0 ? 'opponentFever' : 'opponentReady');
         }
       }, 450);
     }
@@ -1710,6 +1758,11 @@ function showSdkUnavailable() {
 
 updateSoundToggleLabel();
 applyOpponentName(opponentName);
+renderLocalizedState();
+window.addEventListener('localechange', () => {
+  renderLocalizedState();
+  updateSoundToggleLabel();
+});
 window.addEventListener('pageshow', event => {
   if (event?.persisted) window.location.reload();
 });

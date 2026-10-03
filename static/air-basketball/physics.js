@@ -212,23 +212,6 @@ export class ShotLane {
     return true;
   }
 
-  autoShoot(difficulty = .72) {
-    if (this.ball.flying) return false;
-    const hoop = this.getHoopPose();
-    const dx = hoop.x - this.ball.x;
-    const dy = hoop.rimY - this.ball.y;
-    // Cross the rim on the descending half of the arc. The old 0.74s lower
-    // bound put the rim near the apex, so visually good Neko shots often never
-    // satisfied the downward-through-the-rim scoring rule.
-    const flight = .98 + Math.random() * .06;
-    const gravity = 720;
-    const stagePenalty = (this.stage - 1) * 7;
-    const error = (Math.random() - .5) * ((1 - difficulty) * 360 + stagePenalty);
-    const vx = (dx + error) / flight;
-    const vy = (dy - .5 * gravity * flight * flight) / flight;
-    return this.shoot(vx, vy);
-  }
-
   releaseAutoShot(difficulty = .72) {
     const flight = .98 + Math.random() * .06;
     const hoop = this.getHoopPoseAt(this.stageClock + flight);

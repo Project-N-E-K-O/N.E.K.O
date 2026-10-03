@@ -500,6 +500,39 @@ async function characterBinding() {
     assert.equal(e.timers.size, 0);
   }
 
+  // retainAvatars: a replay re-validates the same character while its Avatar stays mounted.
+  {
+    let known = new Set(['Neko']);
+    const e = await environment(() => ({
+      async mount() { return {dispose() {}}; },
+      getCharacter: name => known.has(name) ? {...descriptor, name} : null,
+      dispose() {},
+    }));
+    const h = e.host(); const client = await e.game(h);
+    const config = {slot:'opponent', characterName:'Neko', model:descriptor.model,
+      viewport:{mode:'fixed',width:200,height:300}, resize:{mode:'fixed'}};
+    try {
+      await assert.rejects(client.runtime.bindCharacter('Neko', {retainAvatars:true}), {code:'invalid_request'},
+        'retainAvatars must not bind a character this client never bound');
+      assert.equal((await client.runtime.bindCharacter('Neko')).name, 'Neko');
+      await client.avatar.mount(config);
+      client.runtime.reset({newSession:true});
+      assert.equal(h.routeLanlanName, '');
+      await assert.rejects(client.runtime.bindCharacter('Neko'), {code:'invalid_state'},
+        'without the opt-in, rebinding still requires disposed Avatars');
+      await assert.rejects(client.runtime.bindCharacter('Other', {retainAvatars:true}), {code:'invalid_request'});
+      await assert.rejects(client.runtime.bindCharacter(undefined, {retainAvatars:true}), {code:'invalid_request'});
+      assert.equal((await client.runtime.bindCharacter('Neko', {retainAvatars:true})).name, 'Neko');
+      assert.equal(h.routeLanlanName, 'Neko');
+      client.runtime.reset({newSession:true});
+      known = new Set();
+      assert.equal(await client.runtime.bindCharacter('Neko', {retainAvatars:true}), null,
+        'a removed or renamed character must not be re-bound from the cached name');
+      assert.equal(h.routeLanlanName, '');
+    } finally { client.dispose(); }
+    assert.equal(e.timers.size, 0);
+  }
+
   const capacityEnv = await environment(() => ({getCharacter: () => ({...descriptor,name:'Other'}), mount() {}, dispose() {}}));
   const capacityHost = capacityEnv.host();
   const held = [];

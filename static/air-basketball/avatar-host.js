@@ -53,32 +53,6 @@ function waitForVrmModules(signal, timeoutMs = 15000) {
   });
 }
 
-function fitThreeModel(manager, object, viewport, padding = 1.24) {
-  if (!window.THREE || !manager?.camera || !object) return;
-  const THREE = window.THREE;
-  object.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(object);
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  object.position.x -= center.x;
-  object.position.z -= center.z;
-  object.position.y -= box.min.y;
-  object.updateMatrixWorld(true);
-  const fittedBox = new THREE.Box3().setFromObject(object);
-  const height = Math.max(.1, fittedBox.max.y - fittedBox.min.y);
-  const camera = manager.camera;
-  const lookY = height * .5;
-  const fov = camera.fov * Math.PI / 180;
-  const distance = height * padding / (2 * Math.tan(fov / 2));
-  camera.aspect = Math.max(.2, viewport.width / Math.max(1, viewport.height));
-  camera.near = Math.max(.001, distance / 100);
-  camera.far = Math.max(100, distance * 20);
-  camera.position.set(0, lookY, distance);
-  camera.lookAt(0, lookY, 0);
-  camera.updateProjectionMatrix();
-  manager.renderer?.setSize?.(viewport.width, viewport.height, false);
-}
-
 function createRawController({ signal, fitLive2DModel }) {
   let manager = null;
   let modelType = '';
@@ -106,7 +80,7 @@ function createRawController({ signal, fitLive2DModel }) {
     throwIfAborted(signal);
     await next.loadModel(path);
     await waitForLive2DModel(next, signal);
-    next.setEmotion?.('neutral');
+    void Promise.resolve(next.setEmotion?.('neutral')).catch(() => undefined);
   }
 
   async function loadVRM(path) {
@@ -164,8 +138,11 @@ function createRawController({ signal, fitLive2DModel }) {
       if (modelType === 'live2d' && manager?.currentModel) {
         manager.pixi_app?.renderer?.resize?.(viewport.width, viewport.height);
         fitLive2DModel(manager.currentModel, viewport, fit);
-      } else if (modelType === 'vrm' && manager?.currentModel?.scene) {
-        fitThreeModel(manager, manager.currentModel.scene, viewport);
+      } else if (modelType === 'vrm' && manager?.currentModel?.scene && window.THREE) {
+        manager.renderer?.setSize?.(viewport.width, viewport.height, false);
+        window.NekoMiniGameAvatarHost.fitPerspectiveModel(
+          window.THREE, manager.currentModel.scene, manager.camera, viewport, fit
+        );
       }
     },
     async dispose() {

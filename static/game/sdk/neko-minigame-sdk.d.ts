@@ -202,8 +202,15 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
-    /** Resolve and bind locally before pregame requests. Omit name for current character. */
-    bindCharacter(name?: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
+    /**
+     * Resolve and bind locally before pregame requests. Omit name for current character.
+     * `retainAvatars` re-validates the character this client already bound (for a replay
+     * after reset) without disposing its mounted Avatars; any other name is rejected.
+     */
+    bindCharacter(
+      name?: string,
+      options?: RequestOptions & { retainAvatars?: boolean },
+    ): Promise<AvatarCharacterDescriptor | null>;
     /**
      * Accepts object interfaces without index signatures. Static checking only
      * excludes primitives; runtime requires a bounded plain JSON object and rejects

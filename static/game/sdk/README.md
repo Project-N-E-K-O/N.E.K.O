@@ -997,6 +997,21 @@ deadlines. Custom transports may optionally implement synchronous
 `bindRuntimeCharacter(name)` and update `getRuntimeState()` atomically; absent
 support reports `transport_unavailable`. Existing legacy adapters remain compatible.
 
+`reset()` clears the host's selection. A game that replays with the same mounted
+Avatar re-binds without disposing it by opting in with `retainAvatars`:
+
+```js
+game.runtime.reset({ newSession: true });
+const character = await game.runtime.bindCharacter(previous.name, { retainAvatars: true });
+if (!character) throw new Error('The character was renamed or removed');
+```
+
+The name must equal the character this client last bound; any other name (or an
+omitted name) fails with `invalid_request`, because a different character must not
+inherit the mounted Avatar. The character is still looked up again, so a renamed
+or deleted character returns `null` without binding. Every other precondition
+(`idle`, no character-scoped requests, no pending mounts) is unchanged.
+
 The public game mounts an Avatar through `game.avatar`:
 
 ```js

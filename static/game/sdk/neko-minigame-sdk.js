@@ -2203,6 +2203,8 @@
     let avatarQueryGeneration = {};
     let characterBindingPending = false;
     let characterBindingLocked = false;
+    // Last character this client bound; `retainAvatars` may only re-bind this one.
+    let lastBoundCharacterName = '';
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
@@ -3940,10 +3942,17 @@
         const operation = 'runtime.bindCharacter';
         requireCapability('runtime', operation);
         const requested = name === undefined ? '' : avatarCharacterName(name);
+        // Opt-in: re-validate the character this client already bound (e.g. after
+        // reset({ newSession: true }) for a replay) while its Avatars stay mounted.
+        // Choosing any other character still requires disposing the Avatars first.
+        const retainAvatars = options.retainAvatars === true;
+        if (retainAvatars && (!requested || requested !== lastBoundCharacterName)) {
+          fail('invalid_request', 'retainAvatars only re-binds the character this client already bound');
+        }
         if (characterBindingPending) fail('busy', 'Character binding is pending');
         const canBind = () => runtimePhase === 'idle' && !runtimeRouteEstablished
           && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked
-          && avatarRenderers.size === 0 && avatarMountsPending === 0;
+          && (retainAvatars || avatarRenderers.size === 0) && avatarMountsPending === 0;
         if (!canBind()) fail('invalid_state', 'Bind before pregame requests or avatar mounting; dispose avatars and end/reset before changing character');
         if (typeof transport.bindRuntimeCharacter !== 'function') fail('transport_unavailable', 'Character binding unavailable');
         const generation = avatarQueryGeneration;
@@ -3958,6 +3967,7 @@
           // No await between the final lifecycle check and the local host commit.
           transport.bindRuntimeCharacter(value.name);
           if (runtimeSession().characterName !== value.name) fail('invalid_response', 'Host did not bind the selected character');
+          lastBoundCharacterName = value.name;
           return value;
         } finally { characterBindingPending = false; }
       },

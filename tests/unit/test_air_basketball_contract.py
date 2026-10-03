@@ -28,9 +28,30 @@ async def test_air_basketball_page_renders_game_shell(monkeypatch):
         "_static_assets_ctx",
         lambda: {"static_asset_version": "test-version"},
     )
+    monkeypatch.setattr(
+        pages_router,
+        "_air_basketball_assets_ctx",
+        lambda: {"air_basketball_asset_version": "air-version"},
+    )
     result = await pages_router.air_basketball(_FakeRequest())
     assert result["template_name"] == "templates/air_basketball.html"
     assert result["context"]["static_asset_version"] == "test-version"
+    assert result["context"]["air_basketball_asset_version"] == "air-version"
+
+
+@pytest.mark.unit
+def test_air_basketball_assets_use_their_own_cache_version():
+    # Editing a game file or its artwork must not bump the site-wide version.
+    html = ROOT.joinpath("templates", "air_basketball.html").read_text(encoding="utf-8")
+    game_lines = [line for line in html.splitlines() if "/static/air-basketball/" in line]
+    assert game_lines
+    assert all("air_basketball_asset_version" in line for line in game_lines)
+    assert not any("static_asset_version |" in line for line in game_lines)
+    assert not any(
+        "air-basketball" in str(path) for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    )
+    own = {path.name for path in pages_router._AIR_BASKETBALL_ASSET_VERSION_PATHS}
+    assert {"game.js", "physics.js", "arcade.css", "neko-hoop.png"} <= own
 
 
 @pytest.mark.unit
@@ -236,7 +257,9 @@ def test_air_basketball_mvp_interaction_contract():
     assert "avatarHost," not in sdk_bootstrap
     assert "getCharacter(" not in sdk_bootstrap
     assert "game.runtime.bindCharacter(requestedName || undefined)" in sdk_bootstrap
-    assert "transport.bindRuntimeCharacter(identity.name)" in sdk_bootstrap
+    # A replay re-validates the same character through the public SDK API.
+    assert "bindRuntimeCharacter" not in sdk_bootstrap
+    assert "game.runtime.bindCharacter(identity.name, { retainAvatars:true })" in sdk_bootstrap
     assert "requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']" in sdk_bootstrap
     assert "game.audio.mount" in sdk_bootstrap
     assert "audio.playSfx" in sdk_bootstrap
@@ -353,7 +376,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "if (pageParams.get('test_mode') === '1') window.AirBasketballMVP = Object.freeze({" in game
     assert game.count("window.AirBasketballMVP =") == 1
     # A failed SDK bootstrap must leave the page wired and report it on the start card.
-    assert "sdkContext = await airBasketballSdkReady;" in game
+    assert "sdkContext = await Promise.race([\n    airBasketballSdkReady," in game
     assert "function showSdkUnavailable()" in game
     assert "t('sdkUnavailable')" in game
     assert "airBasketballSdkReady.catch(() => undefined);" in sdk_bootstrap
@@ -364,6 +387,28 @@ def test_air_basketball_mvp_interaction_contract():
     assert "syncTrackedGuestBall();" not in update_body
     assert "document.addEventListener('visibilitychange'" in game
     assert "const releasesTrackedBall = trackedGuestBall === sourceLane.ball;" in game
+    # A stalled bootstrap is bounded like a failed one.
+    assert "const SDK_BOOTSTRAP_TIMEOUT_MS = 20000;" in game
+    assert "void airBasketballSdkReady.then(() => disposeGameSdk(), () => undefined);" in game
+    # The backend route ends shortly after the result line, not after its 60 s timeout.
+    assert "{ after:latestSpeechPromise }" not in game
+    assert "const RESULT_SPEECH_END_GRACE_MS = 1500;" in game
+    finish_body = game.split("function finishMatch() {", 1)[1].split("\n}\n", 1)[0]
+    assert "cancelPlayerAction();" in finish_body
+    release_body = game.split("function releasePlayerShot() {", 1)[1].split("\n}\n", 1)[0]
+    assert "if (!state.running) {" in release_body
+    # Runtime-written elements are re-rendered from state, not by data-i18n.
+    for element_id in ("neko-status-text", "clock-label", "clock-unit", "start-copy", "start-button"):
+        tag = html.split(f'id="{element_id}"', 1)[1].split(">", 1)[0]
+        assert "data-i18n" not in tag, element_id
+    assert "function renderLocalizedState()" in game
+    assert "byId('neko-status-text').textContent = opponentStatus(key);" in game
+    assert game.count("byId('neko-status-text')") == 1
+    # Avatar expressions are cosmetic; VRM uses the shared perspective fit.
+    assert "avatarController?.setEmotion(name)).catch(() => undefined)" in avatar
+    assert "fitThreeModel" not in avatar_host
+    assert "window.NekoMiniGameAvatarHost.fitPerspectiveModel(" in avatar_host
+    assert "autoShoot(" not in physics
     assert "prepareIsolatedCrossTest" in game
     assert "position: fixed" in arcade_css
     assert ".mode-picker input:focus-visible + span" in arcade_css
@@ -396,6 +441,7 @@ def test_air_basketball_mvp_interaction_contract():
             ROOT.joinpath("static", "locales", f"{locale}.json").read_text(encoding="utf-8")
         )
         assert expected_keys <= payload["airBasketball"].keys()
+        assert not {"nekoReady", "nekoAiming", "nekoFever", "lose", "disrupted"} & payload["airBasketball"].keys()
         assert payload["airBasketball"]["feverOn"].endswith("+1")
 
 

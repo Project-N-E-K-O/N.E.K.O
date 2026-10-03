@@ -109,7 +109,7 @@ async function bootstrap() {
     settings:{ maxConcurrent:12, maxPreloadEntries:32 }
   });
   Object.keys(sfx).forEach(key => audio.preloadSfx(key));
-  sdkContext = Object.freeze({ game, identity, audio, transport });
+  sdkContext = Object.freeze({ game, identity, audio });
   return sdkContext;
 }
 
@@ -154,13 +154,13 @@ export async function configureGameRuntime(payload, pageExitPayload) {
 }
 
 export function startGameRuntime(payload) {
-  return enqueueLifecycle(async ({ game, identity, transport }) => {
+  return enqueueLifecycle(async ({ game, identity }) => {
     if (['ended', 'inactive'].includes(game.runtime.state)) {
       game.runtime.reset({ newSession:true });
-      // reset() clears the host's bound character. Public bindCharacter() would
-      // require unmounting the Avatar first, so the trusted adapter restores the
-      // already-validated identity on its private transport instead.
-      transport.bindRuntimeCharacter(identity.name);
+      // reset() clears the bound character. Re-validate the same one with the
+      // opponent Avatar still mounted; a renamed or deleted character is refused.
+      const character = await game.runtime.bindCharacter(identity.name, { retainAvatars:true });
+      if (!character) throw new Error(`Character ${identity.name} is no longer available`);
     }
     const result = await game.runtime.start(payload);
     await game.logger.enableAfterRuntimeStart();
