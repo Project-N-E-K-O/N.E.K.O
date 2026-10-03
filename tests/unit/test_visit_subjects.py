@@ -558,8 +558,10 @@ async def test_rename_char_refuses_a_malformed_target_entry(tmp_path):
     ("A2", {"chars": {"c_" + "1" * 24: 3}}),
     ("A", {"last_summary": "damaged"}),
     ("A2", {"last_summary": ["damaged"]}),
-    ("A", {"chars": {"c_" + "1" * 24: {"last_seen": "9"}}}),
-    ("A2", {"chars": {"c_" + "1" * 24: {"last_seen": float("nan")}}}),
+    # 键与 char_tag 合法、只有 last_seen 坏：否则会先被「键推不出」拦下，last_seen 校验测不到
+    ("A", {"chars": {derive_peer_char_id("peer_x", "f" * 32): {"char_tag": "f" * 32, "last_seen": "9"}}}),
+    ("A2", {"chars": {derive_peer_char_id("peer_x", "f" * 32):
+                      {"char_tag": "f" * 32, "last_seen": float("nan")}}}),
     ("A", {"last_summary": {"visit_id": "v", "ended_at": "10", "text": "t"}}),
     ("A2", {"last_summary": {"visit_id": "v", "ended_at": True, "text": "t"}}),
 ])

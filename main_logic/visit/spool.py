@@ -1497,6 +1497,11 @@ class VisitSpool:
     async def sweep(cls, config_dir: str | Path, now: float) -> list[Path]:
         """Reclaim spool directory space; return the deleted paths.
 
+        ``now`` must be wall-clock epoch seconds (``time.time()``): file ages
+        are ``now - st_mtime``. Unlike :meth:`fsync_due` / :meth:`fsync`
+        (any clock, used consistently), a monotonic clock here makes every
+        file look fresh, so nothing would ever expire.
+
         1. Every file older than ``VISIT_SPOOL_RETENTION_DAYS`` (by mtime) is
            deleted, pending uploads included (their seven-day limit), except
            the ``state.json`` of a visit whose diary commit is in flight or
