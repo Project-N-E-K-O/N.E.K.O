@@ -116,6 +116,7 @@ from .postgame import (  # noqa: F401
     _deliver_postgame_to_realtime,
     _finalize_game_route_state,
     _finalize_game_route_state_inner,
+    _game_voice_lease_release_needed,
     _is_gemini_realtime_session,
     _normalize_postgame_options,
     _postgame_context_request_id,
@@ -5119,16 +5120,21 @@ async def cleanup_expired_sessions():
             if await _close_and_remove_session(game_type, session_id, lanlan_name):
                 logger.info("🎮 清理过期游戏 session: %s", key)
 
-        _drop_expired_route_states(now)
+        await _drop_expired_route_states(now)
 
 
-def _drop_expired_route_states(now: float) -> None:
+async def _drop_expired_route_states(now: float) -> None:
     """Forget inactive route states whose exit started too long ago.
 
     An exit flow stuck past the timeout may still hold its takeover token.
     Dropping it with the state would leave the manager taken over with nobody
     able to release it, so the token is released first -- by its own value,
-    which leaves a takeover a newer route holds untouched.
+    which leaves a takeover a newer route holds untouched -- followed by the
+    rest of what the exit flow does after its release: the parked callbacks
+    are handed back (or declined if another owner holds the takeover), and
+    the voice input is resumed when this release returned it to core. If the
+    stuck flow ever continues, its own release finds no token and its voice
+    resume finds the lease already back with core.
     """
     expired_routes = [
         k for k, v in list(_game_route_states.items())
@@ -5151,4 +5157,13 @@ def _drop_expired_route_states(now: float) -> None:
                 key,
                 released,
             )
+            takeover_owner = getattr(mgr, "takeover_owner", None)
+            handoff = released or not callable(takeover_owner) or takeover_owner() is None
+            _close_takeover_callback_inbox(state, mgr, handoff=handoff)
+            resume_voice = getattr(mgr, "_resume_independent_voice_input_after_game", None)
+            if released and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
+                try:
+                    await resume_voice()
+                except Exception as exc:
+                    logger.warning("🎮 清理过期游戏路由时恢复语音输入失败: key=%s err=%s", key, exc)
         logger.info("🎮 清理过期游戏路由状态: %s", key)
