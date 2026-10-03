@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "振りほどいた！",
         "mouseStealReleased": "{name}が離した",
         "mouseStealStatus": "{name}がカーソルを横取り中",
-        "voiceOpening": [
-            "準備はいい？手加減しないよ。"
-        ],
-        "voiceChaos": [
-            "これも受けて！"
-        ],
-        "voiceScore": [
-            "入ったよ。"
-        ],
-        "voiceHit": [
-            "こら、人を叩かないの！"
-        ],
-        "voiceMouseSteal": [
-            "そのカーソル、ちょっと借りるね！"
-        ],
-        "voiceWin": [
-            "この勝負は私の勝ち。"
-        ],
-        "voiceLose": [
-            "今回はあなたの勝ちね。"
-        ],
+        "voiceOpening": ["準備はいい？手加減しないよ。"],
+        "voiceChaos": ["これも受けて！"],
+        "voiceScore": ["入ったよ。"],
+        "voiceHit": ["こら、人を叩かないの！"],
+        "voiceMouseSteal": ["そのカーソル、ちょっと借りるね！"],
+        "voiceWin": ["この勝負は私の勝ち。"],
+        "voiceLose": ["今回はあなたの勝ちね。"],
         "arenaLabel": "2人用バスケットコート",
         "playerArcadeLabel": "プレイヤー側バスケットマシン",
         "opponentArcadeLabel": "対戦相手側バスケットマシン",

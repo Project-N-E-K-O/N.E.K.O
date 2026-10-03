@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "Broke free!",
         "mouseStealReleased": "{name} let go",
         "mouseStealStatus": "{name} is stealing the cursor",
-        "voiceOpening": [
-            "Ready? I won't go easy on you."
-        ],
-        "voiceChaos": [
-            "Catch this!"
-        ],
-        "voiceScore": [
-            "That one was easy."
-        ],
-        "voiceHit": [
-            "Hey! You're supposed to hit the ball!"
-        ],
-        "voiceMouseSteal": [
-            "Let me borrow that cursor!"
-        ],
-        "voiceWin": [
-            "This round is mine."
-        ],
-        "voiceLose": [
-            "All right, you win this one."
-        ],
+        "voiceOpening": ["Ready? I won't go easy on you."],
+        "voiceChaos": ["Catch this!"],
+        "voiceScore": ["That one was easy."],
+        "voiceHit": ["Hey! You're supposed to hit the ball!"],
+        "voiceMouseSteal": ["Let me borrow that cursor!"],
+        "voiceWin": ["This round is mine."],
+        "voiceLose": ["All right, you win this one."],
         "arenaLabel": "Two-player basketball arcade",
         "playerArcadeLabel": "Player basketball machine",
         "opponentArcadeLabel": "Opponent basketball machine",

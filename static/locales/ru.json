@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "Получилось вырваться!",
         "mouseStealReleased": "{name} отпустила",
         "mouseStealStatus": "{name} уводит курсор",
-        "voiceOpening": [
-            "Готов? Я не буду поддаваться."
-        ],
-        "voiceChaos": [
-            "Лови ещё!"
-        ],
-        "voiceScore": [
-            "Легко."
-        ],
-        "voiceHit": [
-            "Эй, бей по мячу!"
-        ],
-        "voiceMouseSteal": [
-            "Одолжи мне курсор!"
-        ],
-        "voiceWin": [
-            "Этот раунд мой."
-        ],
-        "voiceLose": [
-            "Ладно, в этот раз ты победил."
-        ],
+        "voiceOpening": ["Готов? Я не буду поддаваться."],
+        "voiceChaos": ["Лови ещё!"],
+        "voiceScore": ["Легко."],
+        "voiceHit": ["Эй, бей по мячу!"],
+        "voiceMouseSteal": ["Одолжи мне курсор!"],
+        "voiceWin": ["Этот раунд мой."],
+        "voiceLose": ["Ладно, в этот раз ты победил."],
         "arenaLabel": "Баскетбольная площадка для двоих",
         "playerArcadeLabel": "Баскетбольный автомат игрока",
         "opponentArcadeLabel": "Баскетбольный автомат соперника",

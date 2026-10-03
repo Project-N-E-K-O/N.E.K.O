@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "掙脫成功！",
         "mouseStealReleased": "{name} 玩夠了",
         "mouseStealStatus": "{name} 正在搶滑鼠",
-        "voiceOpening": [
-            "來吧，看看誰先投順手。"
-        ],
-        "voiceChaos": [
-            "接住這個！"
-        ],
-        "voiceScore": [
-            "這球很輕鬆。"
-        ],
-        "voiceHit": [
-            "喂，不許打人！"
-        ],
-        "voiceMouseSteal": [
-            "滑鼠借我玩一下！"
-        ],
-        "voiceWin": [
-            "這局是我贏啦。"
-        ],
-        "voiceLose": [
-            "好吧，這局算你厲害。"
-        ],
+        "voiceOpening": ["來吧，看看誰先投順手。"],
+        "voiceChaos": ["接住這個！"],
+        "voiceScore": ["這球很輕鬆。"],
+        "voiceHit": ["喂，不許打人！"],
+        "voiceMouseSteal": ["滑鼠借我玩一下！"],
+        "voiceWin": ["這局是我贏啦。"],
+        "voiceLose": ["好吧，這局算你厲害。"],
         "arenaLabel": "雙人投籃賽場",
         "playerArcadeLabel": "玩家投籃機",
         "opponentArcadeLabel": "對手投籃機",

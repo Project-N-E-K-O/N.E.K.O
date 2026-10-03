@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "¡Te soltaste!",
         "mouseStealReleased": "{name} lo soltó",
         "mouseStealStatus": "{name} está robando el cursor",
-        "voiceOpening": [
-            "¿Lista? No voy a contenerme."
-        ],
-        "voiceChaos": [
-            "¡Atrapa esta!"
-        ],
-        "voiceScore": [
-            "Qué fácil."
-        ],
-        "voiceHit": [
-            "¡Oye, golpea el balón!"
-        ],
-        "voiceMouseSteal": [
-            "¡Préstame ese cursor!"
-        ],
-        "voiceWin": [
-            "Esta ronda es mía."
-        ],
-        "voiceLose": [
-            "Vale, esta vez ganaste."
-        ],
+        "voiceOpening": ["¿Lista? No voy a contenerme."],
+        "voiceChaos": ["¡Atrapa esta!"],
+        "voiceScore": ["Qué fácil."],
+        "voiceHit": ["¡Oye, golpea el balón!"],
+        "voiceMouseSteal": ["¡Préstame ese cursor!"],
+        "voiceWin": ["Esta ronda es mía."],
+        "voiceLose": ["Vale, esta vez ganaste."],
         "arenaLabel": "Cancha de baloncesto para dos",
         "playerArcadeLabel": "Máquina de baloncesto del jugador",
         "opponentArcadeLabel": "Máquina de baloncesto del rival",

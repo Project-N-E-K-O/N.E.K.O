@@ -5551,34 +5551,13 @@
         "mouseStealEscaped": "挣脱成功！",
         "mouseStealReleased": "{name} 玩够了",
         "mouseStealStatus": "{name} 正在抢鼠标",
-        "voiceOpening": [
-            "来吧，看看谁先投顺手。",
-            "准备好了吗？我可不会放水。"
-        ],
-        "voiceChaos": [
-            "接住这个！",
-            "这颗球也借你玩玩。"
-        ],
-        "voiceScore": [
-            "这球很轻松。",
-            "看见了吗？进了。"
-        ],
-        "voiceHit": [
-            "喂，不许打人！",
-            "呀！这是篮球，不是打猫。"
-        ],
-        "voiceMouseSteal": [
-            "鼠标借我玩一下！",
-            "抓到了，现在归我。"
-        ],
-        "voiceWin": [
-            "这局是我赢啦。",
-            "承让，下局继续。"
-        ],
-        "voiceLose": [
-            "好吧，这局算你厉害。",
-            "你赢了，下局我会认真一点。"
-        ],
+        "voiceOpening": ["来吧，看看谁先投顺手。", "准备好了吗？我可不会放水。"],
+        "voiceChaos": ["接住这个！", "这颗球也借你玩玩。"],
+        "voiceScore": ["这球很轻松。", "看见了吗？进了。"],
+        "voiceHit": ["喂，不许打人！", "呀！这是篮球，不是打猫。"],
+        "voiceMouseSteal": ["鼠标借我玩一下！", "抓到了，现在归我。"],
+        "voiceWin": ["这局是我赢啦。", "承让，下局继续。"],
+        "voiceLose": ["好吧，这局算你厉害。", "你赢了，下局我会认真一点。"],
         "arenaLabel": "双人投篮赛场",
         "playerArcadeLabel": "玩家投篮机",
         "opponentArcadeLabel": "对手投篮机",

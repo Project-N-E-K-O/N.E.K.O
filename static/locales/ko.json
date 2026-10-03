@@ -5551,27 +5551,13 @@
         "mouseStealEscaped": "탈출 성공!",
         "mouseStealReleased": "{name}이(가) 놓아줬다",
         "mouseStealStatus": "{name}이(가) 커서를 훔치는 중",
-        "voiceOpening": [
-            "준비됐어? 봐주지 않을 거야."
-        ],
-        "voiceChaos": [
-            "이것도 받아!"
-        ],
-        "voiceScore": [
-            "가볍게 들어갔네."
-        ],
-        "voiceHit": [
-            "잠깐, 공을 쳐야지!"
-        ],
-        "voiceMouseSteal": [
-            "커서 좀 빌릴게!"
-        ],
-        "voiceWin": [
-            "이번 판은 내 승리야."
-        ],
-        "voiceLose": [
-            "좋아, 이번에는 네가 이겼어."
-        ],
+        "voiceOpening": ["준비됐어? 봐주지 않을 거야."],
+        "voiceChaos": ["이것도 받아!"],
+        "voiceScore": ["가볍게 들어갔네."],
+        "voiceHit": ["잠깐, 공을 쳐야지!"],
+        "voiceMouseSteal": ["커서 좀 빌릴게!"],
+        "voiceWin": ["이번 판은 내 승리야."],
+        "voiceLose": ["좋아, 이번에는 네가 이겼어."],
         "arenaLabel": "2인용 농구 코트",
         "playerArcadeLabel": "플레이어 농구 머신",
         "opponentArcadeLabel": "상대 농구 머신",
