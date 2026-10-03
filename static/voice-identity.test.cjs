@@ -148,6 +148,7 @@ function createHarness({
     nativeConfirm = true,
     webCryptoAvailable = true,
     initialEffectiveReason = null,
+    routeRecoveryReadyAfter = null,
     audioContextSampleRate = 48000,
     resumeGate,
     initialStatusError = false,
@@ -180,8 +181,17 @@ function createHarness({
         'voice-identity-delete',
         'voice-identity-filter',
         'voice-identity-retry',
+        'voice-identity-eyebrow',
+        'voice-identity-rule-note',
+        'voice-identity-actions',
+        'voice-identity-result',
+        'voice-identity-result-title',
+        'voice-identity-match-percent',
+        'voice-identity-score-help',
+        'voice-identity-result-status',
     ];
     const elements = new Map(elementIds.map(id => [id, createElement()]));
+    const progressSteps = Array.from({ length: 4 }, () => createElement());
     const documentListeners = new Map();
     const windowListeners = new Map();
     const fetchCalls = [];
@@ -213,10 +223,14 @@ function createHarness({
 
     const statusPayload = () => ({
         requested_enabled: serverRequested,
-        effective_enabled: serverProfile && serverRequested,
-        effective_reason: initialEffectiveReason || (serverProfile
+        effective_enabled: serverProfile && serverRequested
+            && (routeRecoveryReadyAfter === null
+                || statusRequestCount >= routeRecoveryReadyAfter),
+        effective_reason: (routeRecoveryReadyAfter !== null
+            && statusRequestCount >= routeRecoveryReadyAfter)
+            ? 'ready' : (initialEffectiveReason || (serverProfile
             ? (serverRequested ? 'ready' : 'disabled')
-            : (enrollmentId ? 'enrollment_active' : 'no_profile')),
+            : (enrollmentId ? 'enrollment_active' : 'no_profile'))),
         has_profile: serverProfile,
         enrollment: enrollmentId
             ? { enrollment_id: enrollmentId, expires_at: 123.5, remaining_seconds: remainingSeconds, next_segment_index: serverNextSegment }
@@ -316,6 +330,10 @@ function createHarness({
                 serverProfileGeneration = call.options.headers.get(PROFILE_HEADER);
                 serverRequested = initialProfile ? serverRequested : true;
                 if (profileTransportErrorAfterCommit) throw new Error('profile_response_lost');
+                return jsonResponse({
+                    ...statusPayload(),
+                    verification: { passed: true, match_percent: 86 },
+                });
             } else {
                 serverNextSegment = Number(segment) + 1;
             }
@@ -358,7 +376,7 @@ function createHarness({
     const document = {
         activeElement: null,
         querySelectorAll(selector) {
-            return selector === '#voice-identity-progress span' ? [createElement(), createElement(), createElement()] : [];
+            return selector === '#voice-identity-progress span' ? progressSteps : [];
         },
         getElementById(id) {
             return elements.get(id);
@@ -488,6 +506,9 @@ function createHarness({
                 'voiceIdentity.errorSecureStorageUnavailable': 'Secure storage unavailable.',
                 'voiceIdentity.deleteConfirm': 'Delete the profile?',
                 'voiceIdentity.delete': 'Delete voice profile',
+                'voiceIdentity.verificationResultTitle': 'Voice verification passed',
+                'voiceIdentity.verificationScoreLabel': 'Lowest voice similarity',
+                'voiceIdentity.verificationSavedStatus': 'Owner voice profile is saved and voice filtering is enabled.',
             };
             return translations[key] || key;
         },
@@ -532,6 +553,8 @@ function createHarness({
                 }
             } else if (delay === 400) {
                 // Successful flush acknowledgement clears this watchdog.
+            } else if (delay === 600) {
+                Promise.resolve().then(callback);
             } else if (delay === 1000 || delay === 5000) {
                 // Both status and prompt-paint watchdogs are driven explicitly.
                 statusTimeouts.set(timerId, callback);
@@ -621,6 +644,7 @@ function createHarness({
 
     return {
         elements,
+        progressSteps,
         fetchCalls,
         mediaStreams,
         workletModules,
@@ -761,6 +785,17 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     assert.equal(harness.elements.get('voice-identity-enrollment').hidden, false);
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-result').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-result-title').textContent, 'Voice verification passed');
+    assert.equal(harness.elements.get('voice-identity-match-percent').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-match-percent').textContent, '86%');
+    assert.equal(harness.elements.get('voice-identity-eyebrow').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-step-title').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-step-body').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-rule-note').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-actions').hidden, true);
+    assert.equal(harness.progressSteps.length, 4);
+    assert.equal(harness.progressSteps.every(step => step.classList.contains('completed')), true);
 });
 
 test('the first prompt is visible before recording starts', async () => {
@@ -1500,6 +1535,8 @@ test('failed fourth verification stays in the session and retries the holdout', 
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
     assert.equal(harness.elements.get('voice-identity-capture-status').hidden, true);
     assert.match(harness.elements.get('voice-identity-message').textContent, /31/);
+    assert.equal(harness.elements.get('voice-identity-result').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-match-percent').hidden, true);
     await harness.emit('voice-identity-next');
     await enrolling;
     assert.equal(
@@ -1916,6 +1953,8 @@ test('re-enrollment recovers a lost response and preserves disabled preference',
         harness.elements.get('voice-identity-message').textContent,
         'Owner voice profile is saved; filtering is off',
     );
+    assert.equal(harness.elements.get('voice-identity-result').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-match-percent').hidden, true);
 });
 
 test('delete confirms, removes the profile, and returns to one-click enrollment', async () => {
@@ -1978,13 +2017,14 @@ test('cancellation aborts a pending segment upload and clears its PCM', async ()
     assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`));
 });
 
-test('manual finish rejects a capture shorter than the backend contract', async () => {
+test('manual finish stays available and explains the minimum duration', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
     const enrolling = harness.emit('voice-identity-start');
     await flush();
     assert.equal(harness.elements.get('voice-identity-finish').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-finish').disabled, false);
 
     harness.emitAudio(new Int16Array(700).fill(1024));
     await harness.emit('voice-identity-finish');
@@ -2190,6 +2230,20 @@ test('BFCache restore invalidates the pending enrollment workflow', async () => 
 
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 0);
     assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`));
+});
+
+test('route recovery polling clears a transient unsupported status', async () => {
+    const harness = createHarness({
+        initialProfile: true,
+        initialRequested: true,
+        initialEffectiveReason: 'unsupported_asr_route',
+        routeRecoveryReadyAfter: 2,
+    });
+    await harness.initialize();
+    await flush(8);
+
+    assert.ok(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`).length >= 2);
+    assert.equal(harness.elements.get('voice-identity-status-dot').className, 'status-dot ready');
 });
 
 test('the one-click page keeps complete dark-theme overrides', () => {

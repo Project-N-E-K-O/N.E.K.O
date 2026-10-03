@@ -3763,6 +3763,13 @@
                         }
                     } catch (_) { }
 
+                    if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
+                        'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
+                        if (_thisSocket !== S.socket) return;
+                        window.appAudioCapture?.handleAutomaticRecoveryStatus(statusCode, statusDetails);
+                        return;
+                    }
+
                     if (statusCode === 'ASR_INPUT_CONNECTING'
                         || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
                         || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
@@ -3782,6 +3789,11 @@
                     }
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        if (statusDetails?.recovery_id != null
+                            && (_thisSocket !== S.socket
+                                || !window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails)
+                                || (statusDetails.state === 'blocked'
+                                    && S.asrAutomaticRecovery?.state !== 'failed'))) return;
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',

@@ -1,7 +1,7 @@
 """The provider's own failure code and warm-up state reach the client.
 
 A provider session reports failures as ``"<ASR_CODE>: <message>"``. The runtime
-keeps routing on its generic codes but forwards the provider code as an opaque
+classifies and reports the provider code and also forwards it as an opaque
 ``reason`` so the client can explain e.g. a local model that failed to load.
 A provider that is still preparing when it connects is announced as
 ``ASR_INDEPENDENT_PREPARING``.
@@ -97,7 +97,7 @@ async def test_provider_failure_code_is_forwarded_as_reason(monkeypatch) -> None
     assert runtime._asr_route_mode == "blocked"
     failures = [
         status for status in _sent_statuses(runtime)
-        if status.get("code") == "ASR_INDEPENDENT_FAILED"
+        if status.get("code") == "ASR_LOCAL_MODEL_LOAD_FAILED"
     ]
     assert failures
     assert all(
@@ -118,7 +118,7 @@ async def test_generic_worker_failure_carries_no_reason(monkeypatch) -> None:
 
     failures = [
         status for status in _sent_statuses(runtime)
-        if status.get("code") == "ASR_INDEPENDENT_FAILED"
+        if status.get("code") == "ASR_WORKER_FAILED"
     ]
     assert failures
     assert all("reason" not in status["details"] for status in failures)

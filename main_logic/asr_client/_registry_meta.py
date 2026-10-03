@@ -95,6 +95,7 @@ class AsrProviderMeta:
     # Qwen provider VAD remains authoritative; local activity only arms its
     # bounded session.finish recovery path.
     observes_local_activity: bool = False
+    supports_result_preserving_finish: bool = False
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -205,6 +206,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
         observes_local_activity=True,
+        supports_result_preserving_finish=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",

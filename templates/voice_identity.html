@@ -7,12 +7,12 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-pr3149-recent-voice-prs-20260929">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-short-capture-v1" defer></script>
+    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-pr3149-recent-voice-prs-20260929" defer></script>
 </head>
 <body class="voice-identity-page">
     <main class="voice-identity-shell container">
@@ -104,12 +104,31 @@
                         </div>
                         <p class="step-count" id="voice-identity-step-count" aria-live="polite"
                             aria-atomic="true"></p>
-                        <p class="eyebrow" data-i18n="voiceIdentity.localOnly">发送到此页面使用的 N.E.K.O. 服务处理</p>
+                        <p class="eyebrow" id="voice-identity-eyebrow"
+                            data-i18n="voiceIdentity.localOnly">发送到此页面使用的 N.E.K.O. 服务处理</p>
                         <h2 id="voice-identity-step-title" tabindex="-1"
                             data-i18n="voiceIdentity.privacyTitle">录入 3 段声纹和 1 段验证语音</h2>
                         <p id="voice-identity-step-body" class="enrollment-help" data-i18n="voiceIdentity.privacyBody">
                             使用同一麦克风和正常音量完成三段参考录音，再完成一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务进行处理，验证成功后才会加密保存声纹。
                         </p>
+                        <div id="voice-identity-result" class="verification-result" hidden
+                            role="status" aria-live="polite" aria-atomic="true"
+                            aria-labelledby="voice-identity-result-title">
+                            <div class="verification-success-icon" aria-hidden="true">✓</div>
+                            <h2 id="voice-identity-result-title"
+                                data-i18n="voiceIdentity.verificationResultTitle">声纹验证通过</h2>
+                            <p class="verification-score-label"
+                                data-i18n="voiceIdentity.verificationScoreLabel">最低声纹相似度</p>
+                            <strong id="voice-identity-match-percent" class="verification-score">—</strong>
+                            <p id="voice-identity-score-help" class="verification-score-help"
+                                data-i18n="voiceIdentity.verificationScoreHelp">
+                                结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。
+                            </p>
+                            <p id="voice-identity-result-status" class="verification-result-status"
+                                data-i18n="voiceIdentity.verificationSavedStatus">
+                                Owner 声纹已保存，声纹激活已开启。
+                            </p>
+                        </div>
                         <blockquote id="voice-identity-prompt" class="voice-prompt" hidden
                             role="status" aria-live="polite" aria-atomic="true"></blockquote>
                     </div>
@@ -121,10 +140,10 @@
                             data-i18n="voiceIdentity.voiceWaiting">等待说话</span>
                             <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
                     </div>
-                    <p class="enrollment-rule-note" data-i18n="voiceIdentity.recordingRule">
+                    <p class="enrollment-rule-note" id="voice-identity-rule-note" data-i18n="voiceIdentity.recordingRule">
                         每段自然说满约 1.5 秒即可保存；系统会自动补齐分析所需时长（前 3 段补齐到 3 秒，第 4 段补齐到 5 秒）。
                     </p>
-                    <div class="enrollment-actions">
+                    <div class="enrollment-actions" id="voice-identity-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"
                             data-i18n="voiceIdentity.enrollAndEnable">开始录入</button>
                         <button type="button" class="primary-button" id="voice-identity-finish" hidden

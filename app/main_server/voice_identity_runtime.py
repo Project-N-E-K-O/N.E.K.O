@@ -665,6 +665,13 @@ class OwnerVoiceRuntimeRegistry:
 
     @staticmethod
     def _manager_activation_result(manager) -> VoiceIdentityActivationResult:
+        # Session startup publishes ``is_active`` before the microphone route
+        # has finished resolving.  During that bounded window Core keeps the
+        # route fail-closed as ``blocked`` while ASR is connecting.  Treat that
+        # state as a runtime transition so the control plane can retry and the
+        # UI does not report a permanently unsupported route.
+        if OwnerVoiceRuntimeRegistry._manager_route_is_starting(manager):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         if OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager):
             return VoiceIdentityActivationResult.READY
         if bool(getattr(manager, "_voice_session_activation_degraded", False)):
@@ -682,6 +689,24 @@ class OwnerVoiceRuntimeRegistry:
         if route_mode is not None and route_mode not in {"native", "independent"}:
             return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
         return VoiceIdentityActivationResult.READY
+
+    @staticmethod
+    def _manager_route_is_starting(manager) -> bool:
+        """Return whether a blocked active route is still resolving.
+
+        ``LLMSessionManager`` exposes ``is_starting`` as the public state.  The
+        counter fallback keeps this gate correct for managers that are between
+        lifecycle phases and have not yet published the property transition.
+        A starting route remains fail-closed; this helper only changes the
+        reported reason from unsupported to retryable runtime degradation.
+        """
+
+        if getattr(manager, "_asr_route_mode", None) != "blocked":
+            return False
+        if bool(getattr(manager, "is_starting", False)):
+            return True
+        starting_count = getattr(manager, "_starting_session_count", 0)
+        return type(starting_count) is int and starting_count > 0
 
     @staticmethod
     async def _set_manager_activation_factory(

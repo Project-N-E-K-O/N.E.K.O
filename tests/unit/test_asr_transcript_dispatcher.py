@@ -289,3 +289,43 @@ async def test_invalidate_all_still_cancels_a_worker_from_outside() -> None:
     dispatcher.invalidate_all()
 
     await asyncio.wait_for(finished.wait(), 1.0)
+
+
+async def test_idle_wait_includes_accepted_reservation_but_excludes_live_slot() -> None:
+    started, release, idle_callback = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def dispatch(_event):
+        started.set()
+        await release.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    accepted, live = _envelope(1), _envelope(2)
+    assert dispatcher.try_reserve(accepted.final_key)
+    assert dispatcher.try_reserve(live.final_key)
+    dispatcher.mark_accepted(accepted.final_key, accepted.turn_token)
+    dispatcher.when_idle(idle_callback.set)
+    idle_waiter = asyncio.create_task(dispatcher.wait_idle())
+    await asyncio.sleep(0)
+    assert not idle_waiter.done()
+    assert not idle_callback.is_set()
+    dispatcher.submit(accepted)
+    await started.wait()
+    assert not idle_waiter.done()
+    release.set()
+    await asyncio.wait_for(idle_waiter, 1)
+    assert idle_callback.is_set()
+    assert dispatcher.try_reserve(live.final_key)
+    dispatcher.release(live.final_key)
+
+
+async def test_purging_accepted_reservation_releases_idle_wait() -> None:
+    dispatcher = TranscriptDispatcher(AsyncMock())
+    accepted = _envelope(1)
+    assert dispatcher.try_reserve(accepted.final_key)
+    dispatcher.mark_accepted(accepted.final_key, accepted.turn_token)
+    waiter = asyncio.create_task(dispatcher.wait_idle())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    dispatcher.invalidate_all()
+    await asyncio.wait_for(waiter, 1)
+    assert dispatcher.pending_turn_tokens() == frozenset()

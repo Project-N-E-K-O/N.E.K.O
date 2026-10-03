@@ -63,7 +63,8 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 - 生产 ASR 跟随 `core_type` 路由；一个 Session 只使用一个 worker，不跨供应商 fallback。
 - 公共断句语义只有 `manual` 与 `provider`。`manual` 下 `signal_user_activity_end()` 发送 `commit`；`provider` 下不发送 `commit`，只刷新本地 48 kHz 流式重采样器尾部，最终断句由供应商决定。`server_vad`、`endpointing` 等厂商字段只存在于 worker 内部。
-- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`openai`、`step`、`grok` 使用 `provider`；`glm`、`gemini` 使用 `manual` 并由 Smart Turn 切分。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。这些流式 Provider 以服务端 endpoint/final 为权威，完全不加载 Smart Turn。
+- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`glm`、`gemini` 使用 `manual` 并由本地 Smart Turn 判停；`openai`、`step`、`grok` 使用 `provider`。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。仅 provider 模式以服务端端点为权威、不加载 Smart Turn；Qwen 默认本地判停后显式提交，仍由云端返回最终转写。明确指定 Qwen `provider` 模式的调用继续受支持。
+- 本地判停所需模型不可用时沿用既有阻断与错误提示，不自动回退云端判停。源码运行需先执行 `uv run python scripts/prepare_voice_turn_assets.py` 准备模型；正式发布构建已有模型准备与打包检查。默认模式变更不等于完成真人语音或 Electron 质量验收，验收边界见 [SmartTurn 验证说明](smart-turn-v3-human-electron-validation.md)。
 - `endpointing_mode` 在 Session 创建时冻结，不能通过 `update_session()` 动态切换。
 - 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 16 kHz；一个 Session 首包锁定输入采样率。
 - 空音频块是 no-op；非空音频必须为偶数字节，单块最多一秒。
@@ -79,4 +80,4 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 
-Phase 3 已接入独立 ASR 云服务，以及用于 GLM/Gemini 分段 ASR 的 Smart Turn；Silero/RNNoise 检测能力只负责无人说话时的本地节流和智能启停，不取得流式 ASR 的逻辑断句权。声纹和跨会话全局节流仍不在本阶段，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。
+Phase 3 已接入独立 ASR 云服务，以及用于 manual 模式判停的 Smart Turn（包括 Qwen 默认流式路由和 GLM/Gemini 分段路由）；Silero/RNNoise 提供本地语音活动与节流信号，本身不取得逻辑断句权。provider 模式仍保留云端判停。声纹和跨会话全局节流仍不在本阶段，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。

@@ -367,6 +367,7 @@ async def test_restart_default_attempts_follow_soniox_policy_ladder(
     ]
     assert any(status["code"] == "ASR_INDEPENDENT_FAILED" for status in statuses)
     assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
+    assert statuses[-1]["details"]["lease_generation"] == runtime._voice_lease_generation
 
 
 async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> None:
