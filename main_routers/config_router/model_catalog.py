@@ -121,9 +121,14 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
     elif use_token_plan:
         api_key = str(core_cfg.get("assistApiKeyMimoTokenPlan") or "").strip()
     elif req.key_source == "core":
-        if core_cfg.get("coreApi") != provider_key:
-            return _failure("key_required", "核心服务商已改变，请重新填写 API Key")
-        api_key = str(core_cfg.get("coreApiKey") or "").strip()
+        if core_cfg.get("coreApi") == provider_key:
+            api_key = str(core_cfg.get("coreApiKey") or "").strip()
+        else:
+            # Unsaved provider switches may reuse only that provider's key-book
+            # entry; the resolver never borrows the previous core provider's key.
+            api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
+            if not api_key:
+                return _failure("key_required", "核心服务商已改变，请重新填写 API Key")
     else:
         api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
 

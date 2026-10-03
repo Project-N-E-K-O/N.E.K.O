@@ -184,6 +184,18 @@ class TestBuiltinProvider:
         assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'key_required'
 
     @pytest.mark.unit
+    def test_unsaved_core_switch_uses_only_selected_provider_key_book(self, model_catalog):
+        config = {
+            'assist_api_providers': {'openai': {'openrouter_url': 'https://api.openai.com/v1'}},
+            'api_key_registry': {'openai': {'config_field': 'assistApiKeyOpenAI'}},
+        }
+        stored = {'coreApi': 'qwen', 'coreApiKey': 'old-qwen-key', 'assistApiKeyOpenAI': 'openai-book-key'}
+        req = model_catalog.ModelListRequest(provider_key='openai', key_source='core', api_key=_SENTINEL)
+        assert model_catalog._resolve_provider_target(req, stored, config)['api_key'] == 'openai-book-key'
+        stored['assistApiKeyOpenAI'] = ''
+        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'key_required'
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('flag', ['fixed_model', 'is_free_version'])
     @pytest.mark.parametrize('value,blocked', [('false', False), ('0', False), ('true', True), ('1', True)])
     def test_string_provider_flags_match_runtime(self, model_catalog, flag, value, blocked):
