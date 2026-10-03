@@ -1557,3 +1557,57 @@ async def test_clear_keeps_new_epoch_tail_before_shutdown():
     assert requests.get_nowait() is shutdown
     requests.task_done()
     await asyncio.wait_for(requests.join(), 1)
+
+@pytest.mark.parametrize("preceding", [None, "audio", "activity"])
+async def test_clear_without_tail_uses_fresh_setup_budget(monkeypatch, preceding):
+    finish = asyncio.Event()
+
+    async def on_send(ws, payload):
+        if json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif json.loads(payload)["type"] == "session.finish":
+            finish.set()
+
+    first, second = _FakeWebSocket(on_send=on_send), _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    original_close = qwen._qwen_close_transport
+    original_open = qwen._qwen_open_connection
+    budgets = []
+
+    async def close(ws, state):
+        await original_close(ws, state)
+        if ws is first:
+            # Model an exhausted old recovery budget before the new epoch.
+            requests.transport_recovery_deadline = time.monotonic() - 1
+
+    async def open_connection(*args, **kwargs):
+        budgets.append(kwargs["recovery_deadline"])
+        return await original_open(*args, **kwargs)
+
+    monkeypatch.setattr(qwen, "_qwen_close_transport", close)
+    monkeypatch.setattr(qwen, "_qwen_open_connection", open_connection)
+    worker = asyncio.create_task(qwen.qwen_asr_worker(
+        requests, responses, "key", AsrSessionConfig(endpointing_mode="provider"),
+    ))
+    try:
+        await _next_event(responses, "ready")
+        await first.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
+        await _next_event(responses, "utterance_started")
+        requests.put_nowait(_AsrWorkerRequest("activity", 0, speech_active=False))
+        await asyncio.wait_for(finish.wait(), 1)
+        if preceding is not None:
+            requests.put_nowait(_AsrWorkerRequest(preceding, 0, audio=b"old", speech_active=True))
+            await _wait_until(lambda: requests.qsize() == 0)
+        requests.put_nowait(_AsrWorkerRequest("clear", 0, buffer_epoch=1, utterance_id=4))
+        await first.server_send({"type": "session.finished"})
+        await asyncio.wait_for(requests.join(), 1)
+        await _wait_until(lambda: len(second.sent) == 1)
+        assert budgets == [0, 0]
+        assert not worker.done()
+        assert requests.waiting_audio_items == 0
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)

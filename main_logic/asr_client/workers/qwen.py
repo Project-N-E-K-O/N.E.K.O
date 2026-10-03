@@ -1408,6 +1408,13 @@ async def qwen_asr_worker(
                 first_connection = False
                 continue
             if outcome == "clear" and outcome_request is not None:
+                if (
+                    isinstance(request_queue, _AsrRequestQueue)
+                    and request_queue.waiting_audio_items == 0
+                ):
+                    # clear discarded the recovery tail. A fresh empty epoch
+                    # uses the normal setup budget, not the retired deadline.
+                    request_queue.transport_recovery_deadline = 0.0
                 generation = outcome_request.generation
                 buffer_epoch = outcome_request.buffer_epoch
                 next_utterance_id = outcome_request.utterance_id or 1
