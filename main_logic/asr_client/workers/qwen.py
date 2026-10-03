@@ -122,6 +122,7 @@ class _QwenConnectionState:
     local_speech_cycle: int = 0
     provider_speech_cycles: dict[int, int] = field(default_factory=dict)
     last_provider_final_cycle: int = -1
+    unclaimed_provider_final_audio_bytes: int | None = None
     local_speech_active: bool = False
     provider_endpoint_utterance_ids: set[int] = field(default_factory=set)
     reconnect_after_finish: bool = False
@@ -238,9 +239,14 @@ def _qwen_cancel_provider_fallback(
 
 
 def _qwen_retire_provider_key(state: _QwenConnectionState, key: _ItemKey) -> None:
-    state.last_provider_final_cycle = max(
-        state.last_provider_final_cycle, state.provider_speech_cycles.pop(key[2], 0)
-    )
+    cycle = state.provider_speech_cycles.pop(key[2], 0)
+    if cycle:
+        state.last_provider_final_cycle = max(state.last_provider_final_cycle, cycle)
+    else:
+        # An unconfirmed provider item must not consume a future local cycle.
+        # Remember the PCM boundary so a delayed hint with no new audio can
+        # still be suppressed, while fresh buffered speech retains recovery.
+        state.unclaimed_provider_final_audio_bytes = state.wire_audio_bytes
     state.provider_endpoint_utterance_ids.discard(key[2])
     if state.current_provider_utterance_id == key[2]:
         state.current_provider_utterance_id = None
@@ -396,6 +402,23 @@ async def _qwen_finish_and_reconnect(
     # outstanding item.  Keep the upstream lifecycle bounded in that case.
     await _qwen_emit_empty_finals_for_pending_items(response_queue, state)
     await _qwen_close_transport(ws, state)
+    if deferred_shutdown is None and any(
+        request.kind == "shutdown"
+        for request in (*deferred_requests, *getattr(request_queue, "_queue", ()))
+    ):
+        # Requests after finish are successor audio. Once shutdown is queued,
+        # discard that unsent tail instead of opening a transport just to close
+        # it. The old connection's final was allowed to flush above.
+        holds = audio_holds if audio_holds is not None else {}
+        while True:
+            arrived = _qwen_get_request_nowait(request_queue, deferred_requests, holds)
+            if arrived.kind == "shutdown":
+                deferred_shutdown = arrived
+                break
+            hold = holds.pop(id(arrived), None)
+            if hold is not None:
+                hold.release()
+            request_queue.task_done()
     if deferred_shutdown is not None:
         state.shutdown_request = deferred_shutdown
         await _qwen_emit_closed(response_queue, state, deferred_shutdown)
@@ -643,6 +666,10 @@ async def _qwen_sender(
                                     state.pending_pause_audio_bytes = state.wire_audio_bytes
                         elif (
                             state.local_speech_cycle > state.last_provider_final_cycle
+                            and (
+                                state.unclaimed_provider_final_audio_bytes is None
+                                or state.wire_audio_bytes > state.unclaimed_provider_final_audio_bytes
+                            )
                         ):
                             # A pending pause owns a fresh local speech cycle,
                             # not the arrival time of another turn's final.
@@ -881,14 +908,12 @@ async def _qwen_receiver(
                 state.pending_pause_audio_bytes = 0
                 state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
-                # Every provider-first turn needs the same unclaimed sentinel,
-                # not the number of the already completed local speech cycle.
+                state.unclaimed_provider_final_audio_bytes = None
+                # Only a confirmed local observation can own a local cycle.
                 state.provider_speech_cycles[key[2]] = (
                     state.local_speech_cycle
                     if state.local_speech_active or pending_pause == (key[0], key[1])
-                    # Reserve the upcoming confirmation cycle even if the
-                    # provider also finalizes before that hint is processed.
-                    else state.local_speech_cycle + 1
+                    else 0
                 )
                 if pending_pause == (key[0], key[1]) and not pending_fallback and not state.reconnect_after_finish:
                     _qwen_arm_provider_fallback(state, key)
@@ -1179,7 +1204,10 @@ async def qwen_asr_worker(
             try:
                 ws, receiver_task = await _qwen_open_connection(
                     url, api_key, session_update, response_queue, config, state,
-                    recovery_deadline=getattr(request_queue, "transport_recovery_deadline", 0.0),
+                    recovery_deadline=(
+                        request_queue.transport_recovery_deadline
+                        if isinstance(request_queue, _AsrRequestQueue) else 0.0
+                    ),
                 )
                 if isinstance(request_queue, _AsrRequestQueue):
                     request_queue.transport_recovery_deadline = 0.0

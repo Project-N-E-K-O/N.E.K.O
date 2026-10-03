@@ -6,7 +6,7 @@ import json
 import pytest
 
 import main_logic.asr_client.runtime as runtime_module
-from main_logic.asr_client._infra import AsrSessionConfig, _RealtimeAsrSessionImpl
+from main_logic.asr_client._infra import AsrSessionConfig, _AsrWorkerRequest, _RealtimeAsrSessionImpl
 from main_logic.asr_client.lifecycle import (
     VoiceInputLifecycleController,
     VoiceLifecycleState,
@@ -110,7 +110,8 @@ async def test_same_frame_activity_preserves_final_observed_state(monkeypatch, q
     original_nowait = session.signal_local_activity_nowait
 
     def observe_nowait(*, speech_active):
-        hints.append((speech_active, session.provider_wire_audio_ms))
+        if speech_active:
+            hints.append((speech_active, session.provider_wire_audio_ms))
         original_nowait(speech_active=speech_active)
 
     monkeypatch.setattr(session, "signal_local_activity_nowait", observe_nowait)
@@ -352,7 +353,7 @@ async def test_old_qwen_pause_cannot_retire_successor_onset(
 
     pause_task = asyncio.create_task(pause())
     await asyncio.wait_for(entered.wait(), 1)
-    assert not pause_task.done()
+    assert pause_task.done() is (not hold_lock)
 
     def candidate_factory(*_args, **callbacks):
         assert pause_task.done() is (transition == "start")
@@ -612,4 +613,68 @@ async def test_submit_resume_does_not_wait_for_stream_operation_lock(qwen_sessio
         session._operation_lock.release()
         await component._asr_audio_dispatcher.wait_idle()
         await component._asr_audio_dispatcher.close()
+        await session.close()
+
+async def test_idle_pause_waits_for_preceding_stream_lock(monkeypatch, qwen_sessions):
+    make_session, _, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    order = []
+    original_put = session._request_queue.put_nowait
+
+    def record_request(request):
+        order.append(request.kind)
+        original_put(request)
+
+    monkeypatch.setattr(session._request_queue, "put_nowait", record_request)
+    await session._operation_lock.acquire()
+    try:
+        assert component._asr_audio_dispatcher.active_turn is None
+        assert await component._asr_audio_dispatcher.signal_pause_after_audio(
+            session, wait_for_delivery=False
+        )
+        await asyncio.sleep(0)
+        assert session._request_queue.empty()
+        session._request_queue.put_nowait(
+            _AsrWorkerRequest(
+                "audio", 0, audio=b"\0" * 3200, utterance_id=1
+            )
+        )
+    finally:
+        session._operation_lock.release()
+        await asyncio.gather(*tuple(component._asr_audio_dispatcher._pause_hint_tasks))
+        await session._request_queue.join()
+        assert order == ["audio", "activity"]
+        await component._asr_audio_dispatcher.close()
+        await session.close()
+
+async def test_pause_publication_cannot_overtake_same_tick_resume(monkeypatch, qwen_sessions):
+    make_session, sockets, _ = qwen_sessions
+    session = make_session()
+    await session.connect()
+    order = []
+    original_put = session._request_queue.put_nowait
+
+    def record(request):
+        if request.kind == "activity":
+            order.append(request.speech_active)
+        original_put(request)
+
+    monkeypatch.setattr(session._request_queue, "put_nowait", record)
+    pause = asyncio.create_task(session.signal_local_activity(speech_active=False))
+
+    def resume():
+        pause.cancel()
+        session.signal_local_activity_nowait(speech_active=True)
+
+    asyncio.get_running_loop().call_soon(resume)
+    try:
+        await asyncio.gather(pause, return_exceptions=True)
+        await session._request_queue.join()
+        assert order[-1] is True
+        assert not any(json.loads(payload)["type"] == "session.finish" for payload in sockets[0].sent)
+    finally:
         await session.close()

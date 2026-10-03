@@ -363,7 +363,8 @@ async def test_audio_arriving_after_finish_stays_bounded_and_reaches_new_connect
         await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_shutdown_during_finish_closes_old_session_without_reconnect(monkeypatch):
+@pytest.mark.parametrize("preceding", [None, "audio", "activity"])
+async def test_shutdown_during_finish_closes_old_session_without_reconnect(monkeypatch, preceding):
     finish_sent = asyncio.Event()
 
     async def on_send(ws, payload):
@@ -387,6 +388,11 @@ async def test_shutdown_during_finish_closes_old_session_without_reconnect(monke
         await _next_event(responses, "utterance_started")
         await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
         await asyncio.wait_for(finish_sent.wait(), 1)
+        if preceding is not None:
+            await requests.put(_AsrWorkerRequest(
+                preceding, 0, utterance_id=2, audio=b"\0" * 3200, speech_active=True,
+            ))
+            await _wait_until(lambda: requests.qsize() == 0)
         await requests.put(_AsrWorkerRequest("shutdown", 0, utterance_id=2))
         await asyncio.sleep(0)
         assert not task.done()
@@ -401,6 +407,7 @@ async def test_shutdown_during_finish_closes_old_session_without_reconnect(monke
         await asyncio.wait_for(task, 1)
         await asyncio.wait_for(requests.join(), 1)
         assert len(connector.calls) == 1
+        assert requests.waiting_audio_bytes == 0
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -702,6 +709,17 @@ async def test_audio_capacity_wait_survives_bounded_transport_recovery(monkeypat
             await session._wait_for_audio_queue_capacity(
                 _AsrWorkerRequest("audio", 0, audio=b"\0\0")
             )
+        session._request_queue.transport_recovery_deadline = time.monotonic() + 1
+        capacity_task = asyncio.create_task(session._wait_for_audio_queue_capacity(
+            _AsrWorkerRequest("audio", 0, audio=b"\0\0")
+        ))
+        await asyncio.sleep(0.04)
+        assert not capacity_task.done()
+        session._request_queue.transport_recovery_deadline = 0
+        # Retiring recovery restores the original capacity timeout instead of
+        # retaining the previous extension in the local deadline variable.
+        with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+            await asyncio.wait_for(capacity_task, 0.2)
     finally:
         release.set()
         if capacity_task is not None:
@@ -768,7 +786,7 @@ async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeyp
                 await _next_event(responses, "final")
             await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
             await asyncio.wait_for(requests.join(), 1)
-            assert state.last_provider_final_cycle == cycle
+            assert state.last_provider_final_cycle == (-1 if final_before_hint else cycle)
             assert state.fallback_key is None
             assert state.pending_local_pause is None
         assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
@@ -1136,3 +1154,36 @@ async def test_successor_setup_uses_remaining_total_recovery_budget(monkeypatch)
         finish_setup.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+async def test_unconfirmed_provider_noise_does_not_retire_fresh_local_speech(monkeypatch):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    ws = _FakeWebSocket()
+    config = AsrSessionConfig(endpointing_mode="provider")
+    sender = asyncio.create_task(qwen._qwen_sender(ws, requests, responses, config, state))
+    receiver = asyncio.create_task(qwen._qwen_receiver(ws, responses, config, state))
+    try:
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0" * 3200))
+        await requests.join()
+        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "noise"})
+        await _next_event(responses, "utterance_started")
+        await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                              "item_id": "noise", "transcript": ""})
+        await _next_event(responses, "final")
+        assert state.last_provider_final_cycle == -1
+        for request in (
+            _AsrWorkerRequest("activity", 0, speech_active=True),
+            _AsrWorkerRequest("audio", 0, audio=b"\1" * 3200),
+            _AsrWorkerRequest("activity", 0, speech_active=False),
+        ):
+            await requests.put(request)
+        await requests.join()
+        assert state.local_speech_cycle == 1
+        assert state.fallback_key == (0, 0, 2)
+        assert state.pending_local_pause == (0, 0)
+    finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)

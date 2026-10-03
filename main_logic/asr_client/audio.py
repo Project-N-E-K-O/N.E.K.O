@@ -135,7 +135,10 @@ class AsrAudioDispatcher:
         self._validator = validator
         self._on_wire_audio = on_wire_audio
         self._on_failure = on_failure
-        self._queue: asyncio.Queue[_Command] = asyncio.Queue(maxsize=max_commands)
+        self._max_commands = max_commands
+        # One separately budgeted observation may accompany a full PCM queue;
+        # it must never consume the last slot available to normal commands.
+        self._queue: asyncio.Queue[_Command] = asyncio.Queue(maxsize=max_commands + 1)
         self._worker: asyncio.Task[None] | None = None
         self._failure_tasks: set[asyncio.Task[None]] = set()
         self._generation = 0
@@ -274,9 +277,17 @@ class AsrAudioDispatcher:
             if wait_for_delivery:
                 await session_ref.signal_local_activity(speech_active=False)
             else:
-                session_ref.signal_local_activity_nowait(speech_active=False)
+                task = asyncio.create_task(session_ref.signal_local_activity(speech_active=False))
+                self._pause_hint_tasks.add(task)
+
+                def finish_hint(finished):
+                    self._pause_hint_tasks.discard(finished)
+                    if not finished.cancelled():
+                        finished.exception()
+
+                task.add_done_callback(finish_hint)
             return True
-        if self._queue.full():
+        if any(isinstance(command, AsrPauseHintCommand) for command in self._queue._queue):
             # Optional observation cannot evict or abort queued PCM.
             raise RuntimeError("ASR_ACTIVITY_HINT_BACKPRESSURE")
         completed = asyncio.get_running_loop().create_future()
@@ -295,6 +306,13 @@ class AsrAudioDispatcher:
 
     def cancel_pending_pause_hints(self) -> None:
         self._pause_hint_revision += 1
+        for command in tuple(self._queue._queue):
+            if isinstance(command, AsrPauseHintCommand):
+                self._queue._queue.remove(command)
+                self._enqueued_at.pop(id(command), None)
+                if not command.completed.done():
+                    command.completed.set_result(False)
+                self._queue.task_done()
         for task in tuple(self._pause_hint_tasks):
             task.cancel()
 
@@ -312,6 +330,13 @@ class AsrAudioDispatcher:
     def _put(self, command: _Command) -> bool:
         self._ensure_worker()
         try:
+            if (
+                not isinstance(command, AsrPauseHintCommand)
+                and self._queue.qsize() >= self._max_commands
+                and sum(not isinstance(queued, AsrPauseHintCommand)
+                        for queued in self._queue._queue) >= self._max_commands
+            ):
+                raise asyncio.QueueFull
             self._queue.put_nowait(command)
         except asyncio.QueueFull:
             self.abort(command.turn_token)

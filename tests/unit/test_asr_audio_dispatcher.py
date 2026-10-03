@@ -244,3 +244,37 @@ async def test_backpressure_failure_task_is_retained_until_completion() -> None:
 
     assert not dispatcher._failure_tasks
     await dispatcher.close()
+
+async def test_optional_pause_has_separate_capacity_from_pcm_commands() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes = []
+    session = type("Session", (), {})()
+
+    async def stream(audio, **_kwargs):
+        writes.append(audio)
+        if audio == b"aa":
+            entered.set()
+            await release.wait()
+
+    session.stream_audio = stream
+    session.signal_local_activity = AsyncMock()
+    on_failure = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda *_: True, on_wire_audio=AsyncMock(),
+        on_failure=on_failure, max_commands=2,
+    )
+    turn = _turn()
+    try:
+        assert dispatcher.activate(turn, session, b"aa")
+        await entered.wait()
+        assert dispatcher.enqueue_audio(turn, session, b"bb", sample_rate_hz=16000, sequence_no=1)
+        assert await dispatcher.signal_pause_after_audio(session, wait_for_delivery=False)
+        assert dispatcher.enqueue_audio(turn, session, b"cc", sample_rate_hz=16000, sequence_no=2)
+        release.set()
+        await dispatcher.wait_idle()
+        assert writes == [b"aa", b"bb", b"cc"]
+        session.signal_local_activity.assert_awaited_once_with(speech_active=False)
+        on_failure.assert_not_awaited()
+    finally:
+        release.set()
+        await dispatcher.close()

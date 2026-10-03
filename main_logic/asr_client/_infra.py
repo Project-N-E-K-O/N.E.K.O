@@ -698,16 +698,10 @@ class _RealtimeAsrSessionImpl:
         if self._provider_policy is None or not self._provider_policy.observes_local_activity:
             return
         async with self._operation_lock:
-            if self._state is not _SessionState.READY:
-                return
-            await self._enqueue_request(
-                _AsrWorkerRequest(
-                    kind="activity",
-                    generation=self._generation,
-                    buffer_epoch=self._buffer_epoch,
-                    speech_active=speech_active,
-                )
-            )
+            # Lock acquisition orders pauses behind preceding PCM. Once held,
+            # publish atomically: a child put Task could otherwise run after
+            # cancellation and overtake a newer synchronous resume.
+            self.signal_local_activity_nowait(speech_active=speech_active)
 
     def signal_local_activity_nowait(self, *, speech_active: bool) -> None:
         """Submit an observation without waiting behind PCM backpressure.
@@ -1673,12 +1667,12 @@ class _RealtimeAsrSessionImpl:
             if self._closing_event.is_set() or self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
             remaining = deadline - loop.time()
-            recovery_deadline = getattr(
-                self._request_queue, "transport_recovery_deadline", 0.0
+            recovery_deadline = (
+                self._request_queue.transport_recovery_deadline
+                if isinstance(self._request_queue, _AsrRequestQueue) else 0.0
             )
             if recovery_deadline > loop.time():
-                deadline = max(deadline, recovery_deadline)
-                remaining = deadline - loop.time()
+                remaining = max(deadline, recovery_deadline) - loop.time()
             if remaining <= 0:
                 raise RuntimeError(
                     "ASR_STREAM_BACKPRESSURE: active audio queue exceeded "
