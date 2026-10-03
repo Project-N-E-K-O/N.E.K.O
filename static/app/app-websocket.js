@@ -3836,6 +3836,10 @@
                         if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.controlResult(statusDetails, _thisSocket);
                         return;
                     }
+                    if (statusCode === 'VOICE_INPUT_PREVIEW_BUSY') {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t('voiceIdentity.inputPreviewBusy'), 5000);
+                        return;
+                    }
                     if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
                         if (window.nekoVoiceCaptureReadiness && !window.nekoVoiceCaptureReadiness.activationStatus(statusDetails, _thisSocket)) return;
                         var activationState = (statusDetails && statusDetails.state) || '';
@@ -5145,6 +5149,13 @@
                             console.warn('[App] request_screenshot capture failed:', e2);
                         }
                     })();
+
+                // -------- system turn abandoned --------
+                // The reply to this request was interrupted: release only what was
+                // held for that request (rollback draft, last-submitted marker).
+                // Never seal a bubble here; the interrupting turn owns the current one.
+                } else if (response.type === 'system' && response.data === 'turn abandoned') {
+                    clearPendingRollbackForRequest(response.request_id);
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {

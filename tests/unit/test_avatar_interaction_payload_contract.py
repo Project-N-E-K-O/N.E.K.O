@@ -142,7 +142,7 @@ def test_rps_payload_normalizer_accepts_the_nine_canonical_rounds(
 async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_fields(
     monkeypatch,
 ):
-    from main_logic.core import greeting, turn
+    from main_logic.core import greeting, notify, turn
 
     class FakeOfflineClient:
         _is_responding = False
@@ -154,6 +154,9 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             return True
 
     class RuntimeHarness(greeting.GreetingMixin, turn.TurnMixin):
+        # TurnMixin's turn-end senders check the socket through NotifyMixin.
+        _has_connected_websocket = notify.NotifyMixin._has_connected_websocket
+
         def __init__(self):
             self.is_active = True
             self.session = FakeOfflineClient()
@@ -755,7 +758,7 @@ def test_payload_normalizer_requires_touch_zone_only_for_declared_tools():
 
 def _builtin_runtime(monkeypatch, *, cooldown_ms=600, clock=None):
     """A runtime harness driving the built-in (definition v1) interaction path."""
-    from main_logic.core import greeting, turn
+    from main_logic.core import greeting, notify, turn
 
     class FakeOfflineClient:
         _is_responding = False
@@ -767,6 +770,9 @@ def _builtin_runtime(monkeypatch, *, cooldown_ms=600, clock=None):
             return True
 
     class RuntimeHarness(greeting.GreetingMixin, turn.TurnMixin):
+        # TurnMixin's turn-end senders check the socket through NotifyMixin.
+        _has_connected_websocket = notify.NotifyMixin._has_connected_websocket
+
         def __init__(self):
             self.is_active = True
             self.session = FakeOfflineClient()
@@ -936,3 +942,25 @@ async def test_a_stalled_cooldown_ack_does_not_hold_the_interaction_gate(monkeyp
 
     release.set()
     await asyncio.gather(stalled, follower)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delivered_reply_whose_completion_was_skipped_drops_its_meta(monkeypatch):
+    """prompt_ephemeral reports a fully delivered reply as True even when its
+    completion callback was skipped (superseded during cleanup). Nothing then
+    consumed the turn meta, so the avatar path drops it itself; left behind,
+    it would ride the next, unrelated turn end."""
+    runtime = _builtin_runtime(monkeypatch)
+    seen = []
+
+    async def delivered_without_completion(*_args, **_kwargs):
+        seen.append(runtime._pending_turn_meta)
+        return True
+
+    runtime.session.prompt_ephemeral = delivered_without_completion
+    result = await runtime.handle_avatar_interaction(_fist_payload("fist-skip"))
+
+    assert result["accepted"] is True
+    assert seen and seen[0]["kind"] == "avatar_interaction"
+    assert runtime._pending_turn_meta is None

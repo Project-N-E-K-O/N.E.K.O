@@ -235,9 +235,9 @@ def test_download_does_not_enable_wake_words_and_corrupt_preference_is_not_overw
     root, _installed = _install(tmp_path, monkeypatch)
     assert voice_wake_word.wake_word_preference(root)["enabled"] is False
     (root / "preference.json").write_bytes(b"broken")
-    with pytest.raises(ValueError, match="wake_preference_unavailable"):
-        voice_wake_word.save_wake_word_preference(True, root)
+    assert voice_wake_word.wake_word_preference(root)["reason"] == "wake_preference_unavailable"
     assert (root / "preference.json").read_bytes() == b"broken"
+    assert voice_wake_word.save_wake_word_preference(True, root)["enabled"] is True
 
 
 def test_deployment_configuration_has_precedence_and_is_read_only(tmp_path, monkeypatch):
@@ -265,6 +265,33 @@ def _hung_worker(connection, kind, nr_enabled, wake_path, pcm16):
     Path(wake_path).write_text(str(multiprocessing.current_process().pid))
     while True:
         time.sleep(.1)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_failure_preserves_cancellation(monkeypatch):
+    entered = threading.Event()
+    def fail_start(process):
+        entered.set()
+        time.sleep(.1)
+        raise OSError("controlled start failure")
+    monkeypatch.setattr(multiprocessing.process.BaseProcess, "start", fail_start)
+    task = asyncio.create_task(resource_manager._run_worker("prepare", False))
+    while not entered.is_set():
+        await asyncio.sleep(.005)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize("kind", ["audio", "prepare"])
+def test_primary_worker_unexpected_failure_has_resource_reason(monkeypatch, kind):
+    async def failed(*args):
+        raise RuntimeError("internal primary failure")
+    monkeypatch.setattr(resource_manager, "_check_audio", failed)
+    monkeypatch.setattr(resource_manager, "_prepare_resources", failed)
+    reply = _WorkerReply()
+    resource_manager._resource_worker(reply, kind, False, None, b"")
+    assert reply.message == {"ok": False, "reason": "resource_worker_failed"}
 
 
 @pytest.mark.asyncio
@@ -587,16 +614,33 @@ async def test_preference_worker_preserves_managed_and_corrupt_preference_errors
         monkeypatch.delenv("NEKO_WAKE_WORD_ENABLED")
         monkeypatch.delenv("NEKO_WAKE_WORD_MODEL_DIR", raising=False)
         (tmp_path / "preference.json").write_bytes(b"corrupt")
-        with pytest.raises(resource_manager.VoiceResourceError, match="wake_preference_unavailable"):
-            await manager.save_preference(True)
+        assert voice_wake_word.wake_word_preference(tmp_path)["reason"] == "wake_preference_unavailable"
         assert (tmp_path / "preference.json").read_bytes() == b"corrupt"
+        assert (await manager.save_preference(True))["enabled"]
+        assert voice_wake_word.wake_word_preference(tmp_path)["reason"] is None
     finally:
         await manager.close()
 
 
 @pytest.mark.asyncio
-async def test_frozen_storage_gate_uses_isolated_cache_and_restores_deployment(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("redirected", [False, True])
+async def test_frozen_storage_gate_uses_isolated_cache_and_restores_deployment(monkeypatch, capsys, tmp_path, redirected):
     from main_logic.voice_identity_service.wake_word_release_smoke import check_preference_worker
+    if redirected:
+        from main_logic.voice_identity_service import wake_word_release_smoke as smoke
+        actual = tmp_path / "actual-temp"
+        actual.mkdir()
+        alias = tmp_path / "redirected-temp"
+        _directory_link(alias, actual)
+        original_directory = smoke.tempfile.TemporaryDirectory
+        class RedirectedDirectory:
+            def __init__(self, **kwargs):
+                self.owned = original_directory(dir=actual, **kwargs)
+            def __enter__(self):
+                return str(alias / Path(self.owned.__enter__()).name)
+            def __exit__(self, *args):
+                return self.owned.__exit__(*args)
+        monkeypatch.setattr(smoke.tempfile, "TemporaryDirectory", RedirectedDirectory)
     monkeypatch.setenv("NEKO_WAKE_WORD_MODEL_DIR", "managed-model")
     monkeypatch.setenv("NEKO_WAKE_WORD_ENABLED", "1")
     source = tmp_path / "fixed-model"

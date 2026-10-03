@@ -1,5 +1,7 @@
 import asyncio
+import builtins
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,8 +22,565 @@ from utils.storage_migration import (
     run_pending_storage_migration,
     save_storage_migration,
 )
-from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
+from utils.storage_policy import (
+    compute_anchor_root,
+    get_storage_policy_path,
+    load_storage_policy,
+    normalize_runtime_root,
+    save_storage_policy,
+)
+from utils import file_utils as file_utils_module
 from utils.file_utils import atomic_write_json
+
+
+@pytest.mark.unit
+def test_rollback_does_not_compare_recovery_overlay_as_disk_state(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    before = manager.load_root_state()
+    before["mode"] = "deferred_init"
+    manager.save_root_state(before)
+    snapshot = storage_location_router_module._snapshot_storage_mutation_state(
+        manager, anchor_root=manager.anchor_root,
+    )
+    manager.save_root_state({**before, "mode": "normal", "current_root": "changed"})
+    monkeypatch.setattr(manager, "load_root_state", lambda: dict(before))
+    monkeypatch.setattr(manager, "_has_selected_root_unavailable_recovery_override", lambda: True)
+
+    storage_location_router_module._restore_storage_mutation_state(
+        manager, snapshot, anchor_root=manager.anchor_root,
+    )
+
+    assert json.loads(manager.root_state_path.read_text(encoding="utf-8")) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("persist_recovery", [False, True])
+async def test_recovery_overlay_unchanged_disk_skips_unwritable_root_restore(tmp_path, monkeypatch, persist_recovery):
+    manager = _make_real_config_manager(tmp_path)
+    monkeypatch.setattr(manager, "_has_selected_root_unavailable_recovery_override", lambda: True)
+    before = manager.load_root_state()
+    manager.save_root_state(before if persist_recovery else manager.load_raw_root_state())
+    root_bytes = manager.root_state_path.read_bytes()
+    restores = []
+    def deny_root_write(*args, **kwargs):
+        restores.append(1)
+        raise PermissionError("state directory unwritable")
+    def deny_policy_write():
+        raise PermissionError("state directory unwritable")
+    monkeypatch.setattr(manager, "save_root_state", deny_root_write)
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=deny_policy_write,
+    )
+    assert error["error_code"] == "storage_policy_write_failed"
+    assert restores == []
+    assert manager.root_state_path.read_bytes() == root_bytes
+
+
+@pytest.mark.unit
+async def test_root_state_snapshot_read_error_is_classified_without_writes(tmp_path, monkeypatch):
+    manager = _DummyConfigManager(tmp_path)
+    def deny_read():
+        raise PermissionError("private-path")
+    monkeypatch.setattr(manager, "load_root_state_with_raw", deny_read)
+    writes = []
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: writes.append(1),
+    )
+    assert error["error_code"] == "storage_state_unreadable"
+    assert "private-path" not in error["error"]
+    assert writes == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_cancelled_failed_worker_is_not_rolled_back_twice(tmp_path, monkeypatch, cancel):
+    manager = _DummyConfigManager(tmp_path)
+    restores = []
+    async def failed_write(*args, snapshot_out, **kwargs):
+        snapshot_out.update({"root_state": manager.load_root_state(), "_write_outcome": "rolled_back"})
+        if cancel:
+            raise asyncio.CancelledError
+        raise OSError("write failed")
+    monkeypatch.setattr(storage_location_router_module, "_apply_storage_mutation_writes", failed_write)
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", lambda *a, **k: restores.append(1))
+    call = storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: None,
+    )
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await call
+    else:
+        _, error = await call
+        assert error["error_code"] == "storage_policy_write_failed"
+    assert restores == []
+
+
+@pytest.mark.unit
+async def test_unknown_write_outcome_does_not_claim_recovery(tmp_path, monkeypatch):
+    manager = _DummyConfigManager(tmp_path)
+    async def unknown_write(*args, snapshot_out, **kwargs):
+        snapshot_out["root_state"] = manager.load_root_state()
+        raise OSError("unknown outcome")
+    monkeypatch.setattr(storage_location_router_module, "_apply_storage_mutation_writes", unknown_write)
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: None,
+    )
+    assert error["error_code"] == "storage_policy_rollback_failed"
+
+
+@pytest.mark.unit
+async def test_snapshot_busy_read_retries_in_worker(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_bytes(b'{invalid json retained verbatim')
+    reads = []
+    original_read = Path.read_bytes
+    def busy_once(state_path):
+        reads.append(1)
+        if len(reads) == 1:
+            error = PermissionError("sharing violation")
+            error.winerror = 32
+            raise error
+        return original_read(state_path)
+    monkeypatch.setattr(Path, "read_bytes", busy_once)
+    preimage = await asyncio.to_thread(storage_location_router_module._read_state_file_preimage, path)
+    assert preimage == {"existed": True, "bytes": b'{invalid json retained verbatim'}
+    assert reads == [1, 1]
+
+
+@pytest.mark.unit
+async def test_executor_failure_is_not_diagnosed_as_unwritable_directory(tmp_path, monkeypatch):
+    manager = _DummyConfigManager(tmp_path)
+    async def reject_job(job):
+        raise RuntimeError("cannot schedule new futures after shutdown")
+    monkeypatch.setattr(storage_location_router_module, "_run_locked_storage_job", reject_job)
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: None,
+    )
+    assert error["error_code"] == "storage_operation_failed"
+    assert "可写" not in error["error"]
+    assert "已恢复" not in error["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("restore_fails", [False, True])
+async def test_barrier_rollback_cancellation_is_propagated(tmp_path, monkeypatch, restore_fails):
+    manager = _DummyConfigManager(tmp_path)
+    started = threading.Event()
+    finish = threading.Event()
+    finished = threading.Event()
+    async def fail_release(**kwargs):
+        raise RuntimeError("barrier release failed")
+    def restore(*args, **kwargs):
+        started.set()
+        try:
+            assert finish.wait(3)
+            if restore_fails:
+                raise RuntimeError("rollback failed")
+        finally:
+            finished.set()
+    monkeypatch.setattr(storage_location_router_module, "_release_storage_startup_barrier_if_needed", fail_release)
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", restore)
+    task = asyncio.create_task(storage_location_router_module._release_storage_startup_barrier_result(
+        manager, snapshot={"root_state": manager.load_root_state()}, anchor_root=manager.anchor_root, reason="test",
+    ))
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        task.cancel()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
+
+
+@pytest.mark.unit
+def test_corrupt_root_state_remains_logged(tmp_path, caplog):
+    manager = _make_real_config_manager(tmp_path)
+    manager.root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.root_state_path.write_text("{truncated", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        manager.load_root_state()
+    assert "加载 JSON 文件失败" in caplog.text
+    assert "root_state.json" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error_type", [AttributeError, KeyError])
+async def test_root_snapshot_programming_error_is_not_reported_as_unreadable(tmp_path, monkeypatch, error_type):
+    manager = _DummyConfigManager(tmp_path)
+    def broken_loader():
+        raise error_type("private-programming-error")
+    monkeypatch.setattr(manager, "load_root_state_with_raw", broken_loader)
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: None,
+    )
+    assert error["error_code"] == "storage_operation_failed"
+    assert "private-" not in error["error"]
+
+
+@pytest.mark.unit
+def test_unavailable_root_recovery_ignores_untouched_unreadable_migration(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    unavailable = tmp_path / "offline" / "N.E.K.O"
+    save_storage_policy(manager, selected_root=unavailable, selection_source="custom")
+    manager = _make_real_config_manager(tmp_path)
+    path = get_storage_migration_path(manager, anchor_root=_route_anchor_root(manager))
+    path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(storage_location_bootstrap_module, "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION", False)
+    with _build_client(manager) as client:
+        response = client.post("/api/storage/location/select", json={
+            "selected_root": str(manager.app_docs_dir), "selection_source": "current",
+        })
+    assert response.status_code == 200
+    assert response.json()["result"] == "continue_current_session"
+    assert path.is_dir()
+
+
+@pytest.mark.unit
+def test_restart_restore_unchanged_root_skips_write(tmp_path, monkeypatch):
+    manager = _DummyConfigManager(tmp_path)
+    writes = []
+    def deny_write(*args):
+        writes.append(1)
+        raise PermissionError("directory unwritable")
+    before = manager.load_root_state()
+    monkeypatch.setattr(manager, "save_root_state", deny_write)
+    storage_location_router_module._restore_storage_mutation_state(
+        manager, {"include_policy": False, "root_state": before, "migration_preimage": {"existed": False, "bytes": None}},
+        anchor_root=manager.anchor_root,
+    )
+    assert writes == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_restart_reports_partial_rollback_failure(tmp_path, monkeypatch, unexpected):
+    manager = _DummyConfigManager(tmp_path)
+    def shutdown():
+        raise RuntimeError("shutdown failed")
+    def deny_restore(*args, **kwargs):
+        if unexpected:
+            raise RuntimeError("private-worker-error")
+        raise storage_location_router_module._StorageRollbackPartialError([
+            ("root_state", manager.anchor_root / "state" / "root_state.json", PermissionError("private-path")),
+        ])
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", deny_restore)
+    with _build_client(manager, request_app_shutdown=shutdown) as client:
+        response = client.post("/api/storage/location/restart", json={
+            "selected_root": str(tmp_path / "new-storage" / "N.E.K.O"), "selection_source": "custom",
+        })
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "restart_rollback_failed"
+    assert "private-path" not in response.json()["error"]
+    assert response.json()["restart_mode"] == "migrate_after_shutdown"
+    assert "private-worker-error" not in response.json()["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw", [b"null", b"[]", b"{truncated"])
+async def test_invalid_root_state_aborts_before_writes(tmp_path, monkeypatch, raw):
+    manager = _make_real_config_manager(tmp_path)
+    manager.root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.root_state_path.write_bytes(raw)
+    writes = []
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=lambda: writes.append(1),
+    )
+    assert error["error_code"] == "storage_state_invalid"
+    assert writes == []
+    assert manager.root_state_path.read_bytes() == raw
+
+
+@pytest.mark.unit
+async def test_unchanged_preimage_busy_read_skips_unwritable_restore(tmp_path, monkeypatch):
+    path = tmp_path / "policy.json"
+    path.write_bytes(b"unchanged")
+    original_read = Path.read_bytes
+    reads = []
+    writes = []
+    def busy_once(state_path):
+        reads.append(1)
+        if len(reads) == 1:
+            error = PermissionError("busy")
+            error.winerror = 32
+            raise error
+        return original_read(state_path)
+    monkeypatch.setattr(Path, "read_bytes", busy_once)
+    monkeypatch.setattr(file_utils_module, "atomic_write_bytes", lambda *a, **k: writes.append(1))
+    await asyncio.to_thread(storage_location_router_module._restore_state_file_from_preimage,
+                            path, {"existed": True, "bytes": b"unchanged"})
+    assert reads == [1, 1]
+    assert writes == []
+
+
+@pytest.mark.unit
+def test_root_snapshot_derives_recovery_from_one_raw_read(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    raw = manager.load_raw_root_state()
+    reads = []
+    def read_once(default_value=None, *, tolerate_replace=False):
+        reads.append(1)
+        return dict(raw)
+    monkeypatch.setattr(manager, "load_raw_root_state", read_once)
+    monkeypatch.setattr(manager, "_has_selected_root_unavailable_recovery_override", lambda: True)
+    snapshot = storage_location_router_module._snapshot_storage_mutation_state(
+        manager, anchor_root=manager.anchor_root,
+    )
+    assert reads == [1]
+    assert snapshot["root_state_raw"] == raw
+    assert snapshot["root_state"] == manager._build_selected_root_unavailable_recovery_state(raw)
+
+
+@pytest.mark.unit
+def test_barrier_release_reports_failed_rollback(tmp_path, monkeypatch):
+    manager = _DummyConfigManager(tmp_path)
+    def release(reason=None):
+        raise RuntimeError("private-barrier-error")
+    def deny_restore(*args, **kwargs):
+        raise RuntimeError("private-rollback-error")
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", deny_restore)
+    with _build_client(manager, release_storage_startup_barrier=release) as client:
+        response = client.post("/api/storage/location/select", json={
+            "selected_root": str(manager.app_docs_dir), "selection_source": "current",
+        })
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "startup_release_rollback_failed"
+    assert "private-" not in response.json()["error"]
+    assert response.json()["phase"] == "startup_release"
+
+
+@pytest.mark.unit
+async def test_root_snapshot_and_rollback_tolerate_busy_reads(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    manager.save_root_state(manager.load_raw_root_state())
+    original_read = file_utils_module.read_json
+    reads = []
+    writes = []
+    def busy_read(path, **kwargs):
+        if Path(path) == manager.root_state_path:
+            reads.append(1)
+            if len(reads) in (1, 3):
+                exc = PermissionError("sharing violation")
+                exc.winerror = 32
+                raise exc
+        return original_read(path, **kwargs)
+    def deny_root_write(*args, **kwargs):
+        writes.append(1)
+        raise PermissionError("directory not writable")
+    def deny_mutation():
+        raise PermissionError("initial write denied")
+    monkeypatch.setattr(file_utils_module, "read_json", busy_read)
+    monkeypatch.setattr(manager, "save_root_state", deny_root_write)
+    _, error = await storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+        manager, anchor_root=manager.anchor_root, snapshot_out={}, write=deny_mutation,
+    )
+    assert error["error_code"] == "storage_policy_write_failed"
+    assert reads == [1, 1, 1, 1]
+    assert writes == []
+
+
+@pytest.mark.unit
+async def test_plain_root_read_does_not_retry_access_denied(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    before = manager.load_raw_root_state()
+    manager.save_root_state(before)
+    original_open = builtins.open
+    reads = []
+    def denied_once(path, *args, **kwargs):
+        if path in (manager.root_state_path, str(manager.root_state_path)):
+            reads.append(1)
+            if len(reads) == 1:
+                error = PermissionError("access denied")
+                error.winerror = 5
+                raise error
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", denied_once)
+    with pytest.raises(storage_location_router_module.LocalStateDirectoryError):
+        manager.load_root_state()
+    assert reads == [1]
+    reads.clear()
+    semantic, raw = await asyncio.to_thread(manager.load_root_state_with_raw)
+    assert reads == [1, 1]
+    assert semantic == raw == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("retry", [False, True])
+def test_json_loader_default_and_missing_contract_is_shared(tmp_path, retry):
+    manager = _make_real_config_manager(tmp_path)
+    reader = file_utils_module.read_json_tolerating_replace if retry else None
+    missing = tmp_path / "missing-state.json"
+    with pytest.raises(FileNotFoundError):
+        manager._load_json_file(missing, reader=reader)
+    default = {"nested": {"value": 1}}
+    restored = manager._load_json_file(missing, default, reader=reader)
+    restored["nested"]["value"] = 2
+    assert default["nested"]["value"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("override", [False, True])
+def test_raw_root_snapshot_is_not_aliased_to_semantic_state(tmp_path, monkeypatch, override):
+    manager = _make_real_config_manager(tmp_path)
+    manager.save_root_state({**manager.load_raw_root_state(), "nested": {"value": 1}})
+    monkeypatch.setattr(manager, "_has_selected_root_unavailable_recovery_override", lambda: override)
+    semantic, raw = manager.load_root_state_with_raw()
+    semantic["nested"]["value"] = 2
+    assert raw["nested"]["value"] == 1
+
+
+@pytest.mark.unit
+async def test_absent_preimage_restore_retries_busy_unlink(tmp_path, monkeypatch):
+    path = tmp_path / "new-checkpoint.json"
+    path.write_bytes(b"new state")
+    original_unlink = Path.unlink
+    attempts = []
+    def busy_once(state_path, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            exc = PermissionError("sharing violation")
+            exc.winerror = 32
+            raise exc
+        return original_unlink(state_path, **kwargs)
+    monkeypatch.setattr(Path, "unlink", busy_once)
+    await asyncio.to_thread(storage_location_router_module._restore_state_file_from_preimage,
+                            path, {"existed": False, "bytes": None})
+    assert attempts == [1, 1]
+    assert not path.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_plain_selection_restores_root_modified_by_barrier_release(tmp_path, cancel):
+    manager = _DummyConfigManager(tmp_path)
+    before = manager.load_root_state()
+    migration_path = get_storage_migration_path(manager, anchor_root=_route_anchor_root(manager))
+    migration_path.mkdir(parents=True, exist_ok=True)
+    async def release(reason=None):
+        manager.save_root_state({**before, "last_successful_boot_at": "new-boot-marker"})
+        if cancel:
+            raise asyncio.CancelledError
+        raise RuntimeError("initialization failed after marking startup successful")
+    with _build_client(manager, release_storage_startup_barrier=release):
+        call = storage_location_router_module._post_storage_location_select_locked(
+            storage_location_router_module.StorageLocationSelectionRequest(
+                selected_root=str(manager.app_docs_dir), selection_source="current",
+            ), Response(),
+        )
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await call
+        else:
+            result = await call
+            assert result["error_code"] == "startup_release_failed"
+    assert manager.load_root_state() == before
+    assert migration_path.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_restart_migration_write_failure_rolls_back_in_original_job(tmp_path, monkeypatch, rollback_fails):
+    manager = _DummyConfigManager(tmp_path)
+    before = manager.load_root_state()
+    jobs = []
+    real_run_job = storage_location_router_module._run_locked_storage_job
+    async def spy_job(job):
+        jobs.append(job)
+        return await real_run_job(job)
+    def deny_mode(*args, **kwargs):
+        raise PermissionError("mode write denied after checkpoint creation")
+    monkeypatch.setattr(storage_location_router_module, "_run_locked_storage_job", spy_job)
+    monkeypatch.setattr(storage_location_router_module, "set_root_mode", deny_mode)
+    if rollback_fails:
+        def deny_restore(*args, **kwargs):
+            raise PermissionError("private-restore-path")
+        monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", deny_restore)
+    with _build_client(manager, request_app_shutdown=lambda: None) as client:
+        response = client.post("/api/storage/location/restart", json={
+            "selected_root": str(tmp_path / "new-storage" / "N.E.K.O"), "selection_source": "custom",
+        })
+    assert response.status_code == 500
+    assert response.json()["error_code"] == (
+        "restart_rollback_failed" if rollback_fails else "storage_policy_write_failed"
+    )
+    assert response.json()["restart_mode"] == "migrate_after_shutdown"
+    assert "private-" not in response.json()["error"]
+    # 另一个 job 是路由的 bootstrap reconcile；没有单独的回滚 job。
+    assert sum(getattr(job, "__name__", "") == "_job" for job in jobs) == 1
+    assert not any(getattr(job, "func", None) in (
+        storage_location_router_module._restore_storage_mutation_state,
+    ) for job in jobs)
+    if rollback_fails:
+        return
+    assert not get_storage_migration_path(manager, anchor_root=_route_anchor_root(manager)).exists()
+    assert manager.load_root_state() == before
+
+
+@pytest.mark.unit
+async def test_restart_rebind_cancelled_write_restores_only_once(tmp_path, monkeypatch):
+    manager = _make_real_config_manager(tmp_path)
+    selected = tmp_path / "offline" / "N.E.K.O"
+    save_storage_policy(manager, selected_root=selected, selection_source="custom")
+    manager = _make_real_config_manager(tmp_path)
+    selected.mkdir(parents=True, exist_ok=True)
+    restores = []
+    real_restore = storage_location_router_module._restore_storage_mutation_state
+    def restore(*args, **kwargs):
+        restores.append(1)
+        return real_restore(*args, **kwargs)
+    async def cancelled_write(config_manager, *, anchor_root, snapshot_out, write, include_policy=True, include_migration=True):
+        snapshot_out.update(storage_location_router_module._snapshot_storage_mutation_state(
+            config_manager, anchor_root=anchor_root,
+        ))
+        write()
+        snapshot_out["_write_outcome"] = "success"
+        raise asyncio.CancelledError
+    monkeypatch.setattr(storage_location_router_module, "_apply_storage_mutation_writes", cancelled_write)
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", restore)
+    with _build_client(manager, request_app_shutdown=lambda: None):
+        with pytest.raises(asyncio.CancelledError):
+            await storage_location_router_module._post_storage_location_restart_locked(
+                storage_location_router_module.StorageLocationSelectionRequest(
+                    selected_root=str(selected), selection_source="current",
+                ), Response(),
+            )
+    assert restores == [1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_restart_preserves_raw_checkpoint_on_snapshot_or_shutdown_failure(tmp_path, monkeypatch, unreadable):
+    manager = _DummyConfigManager(tmp_path)
+    path = get_storage_migration_path(manager)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = b'{ "status": "completed", "custom": 7 }\n'
+    path.write_bytes(original)
+    original_read = Path.read_bytes
+    def read_bytes(state_path):
+        if unreadable and state_path == path:
+            raise PermissionError("private-checkpoint-path")
+        return original_read(state_path)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    shutdown_calls = []
+    def shutdown():
+        shutdown_calls.append(1)
+        raise RuntimeError("private-shutdown-path")
+    before = manager.load_root_state()
+    with _build_client(manager, request_app_shutdown=shutdown) as client:
+        response = client.post("/api/storage/location/restart", json={
+            "selected_root": str(tmp_path / "new-storage" / "N.E.K.O"),
+            "selection_source": "custom",
+        })
+    assert response.status_code == 500
+    assert response.json()["error_code"] == ("storage_state_unreadable" if unreadable else "restart_schedule_failed")
+    assert "private-" not in response.json()["error"]
+    if unreadable:
+        assert "状态文件当前无法读取" in response.json()["error"]
+    else:
+        assert response.json()["error"] == "受控关闭启动失败，请稍后重试。"
+    assert original_read(path) == original
+    assert manager.load_root_state() == before
+    assert len(shutdown_calls) == (0 if unreadable else 1)
 
 
 class _DummyConfigManager:
@@ -69,6 +628,13 @@ class _DummyConfigManager:
 
     def load_root_state(self):
         return dict(self._root_state)
+
+    def load_raw_root_state(self, *, tolerate_replace=False):
+        return dict(self._root_state)
+
+    def load_root_state_with_raw(self):
+        raw = self.load_raw_root_state()
+        return dict(raw), raw
 
     def save_root_state(self, data):
         self._root_state = dict(data)
@@ -1299,7 +1865,7 @@ def test_restart_rollback_never_deletes_existing_checkpoint_after_restore_failur
 
     with patch.object(
         storage_location_router_module,
-        "save_storage_migration",
+        "_restore_state_file_from_preimage",
         side_effect=OSError("restore failed"),
     ), patch.object(
         storage_location_router_module,
@@ -1308,14 +1874,16 @@ def test_restart_rollback_never_deletes_existing_checkpoint_after_restore_failur
         storage_location_router_module.logger,
         "exception",
     ) as log_exception:
-        storage_location_router_module._restore_restart_schedule_state(
-            config_manager,
-            {"migration": previous_migration, "root_state": None},
-            anchor_root=config_manager.anchor_root,
-        )
+        with pytest.raises(storage_location_router_module._StorageRollbackPartialError):
+            storage_location_router_module._restore_storage_mutation_state(
+                config_manager,
+                {"include_policy": False, "migration_preimage": {"existed": True, "bytes": json.dumps(previous_migration).encode()}, "root_state": {"mode": "deferred_init"}},
+                anchor_root=config_manager.anchor_root,
+            )
 
     delete_migration.assert_not_called()
     log_exception.assert_called_once()
+    assert config_manager.load_root_state() == {"mode": "deferred_init"}
 
 
 @pytest.mark.unit
@@ -1474,6 +2042,747 @@ def test_storage_location_select_current_root_recovers_failed_migration_checkpoi
 
 
 @pytest.mark.unit
+def test_storage_location_select_current_root_rolls_back_when_recovery_write_fails(tmp_path, monkeypatch):
+    """A failed write while recovering a failed migration checkpoint must roll back and return the new error code.
+
+    Regression: `_recover_from_failed_migration` is a three-part write (delete
+    checkpoint -> write policy -> switch root mode) with no try/except before
+    this change. Any failing part -- most typically an unwritable local state
+    directory, the standard symptom under a sandbox or anti-ransomware shield --
+    left the checkpoint deleted while policy and root mode still said
+    deferred_init, and the caller got a bare 500 with no error_code at all.
+    """
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-not-empty" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    save_storage_migration(
+        config_manager,
+        {
+            "status": "failed",
+            "source_root": str(config_manager.app_docs_dir),
+            "target_root": str(target_root),
+            "selection_source": "custom",
+            "error_code": "target_not_empty",
+            "error_message": "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
+        },
+    )
+    config_manager.save_root_state({
+        "mode": "deferred_init",
+        "current_root": str(config_manager.app_docs_dir),
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "failed:target_not_empty",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    # pre-image：回滚后这三份状态必须逐一还原
+    previous_migration = load_storage_migration(config_manager)
+    previous_policy = load_storage_policy(config_manager, anchor_root=config_manager.anchor_root)
+    previous_root_state = config_manager.load_root_state()
+
+    # 让三段写里的第二段（save_storage_policy）失败 —— 此时检查点已经被删掉了。
+    # 打桩只影响路由模块自己的名字：bootstrap 阶段不调用 save_storage_policy，
+    # 而回滚走的是 _restore_storage_mutation_state（直接 atomic_write_json 与
+    # save_storage_migration），不会被这个桩误伤。
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_policy_write_failed"
+
+    # 回滚把被删掉的检查点、没写成的策略、没切的 root mode 全部还原
+    assert load_storage_migration(config_manager) == previous_migration
+    assert load_storage_policy(config_manager, anchor_root=config_manager.anchor_root) == previous_policy
+    assert config_manager.load_root_state() == previous_root_state
+
+
+@pytest.mark.unit
+def test_storage_location_select_unavailable_selected_root_rolls_back_when_recovery_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    """A failed write while recovering an unavailable previous root must roll back and return the new error code.
+
+    Regression: `_recover_from_unavailable_selected_root` is a two-part write
+    (write policy -> switch root mode) that was called bare, with no try/except,
+    before this change. Any write failure -- again typically an unwritable local
+    state directory -- handed the caller a bare 500 with no error_code, leaving
+    the frontend on its fallback "failed to submit the storage location
+    selection, please retry later" string.
+    """
+    config_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        config_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    # pre-image：回滚后策略与 root mode 必须逐一还原
+    previous_policy = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
+    previous_root_state = reloaded_manager.load_root_state()
+
+    # 打桩只影响路由模块自己的名字：bootstrap 阶段不调用 save_storage_policy，而回滚走的是
+    # _restore_storage_mutation_state（直接 atomic_write_json 与 save_storage_migration），
+    # 不会被这个桩误伤。
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(reloaded_manager.anchor_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_policy_write_failed"
+
+    assert load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root) == previous_policy
+    assert reloaded_manager.load_root_state() == previous_root_state
+
+
+@pytest.mark.unit
+def test_storage_location_select_current_root_rolls_back_when_persist_write_fails(tmp_path, monkeypatch):
+    """A failed write in the plain-persistence branch must roll back and return the new error code.
+
+    Regression: `_persist_current_root_selection` was called bare before this
+    change, so a write failure escaped straight out of the route -- the caller
+    could not even get a 500 body -- and the frontend showed only its fallback
+    string. With the shared helper it must return a 500 carrying an error_code
+    and leave no half-written policy file behind.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+    previous_policy = load_storage_policy(config_manager)
+    previous_root_state = config_manager.load_root_state()
+
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_policy_write_failed"
+    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    assert "[Errno 13]" not in payload["error"]
+
+    # 写入一行都没落地，回滚后策略文件仍应不存在，root_state 保持原样
+    assert not get_storage_policy_path(config_manager).exists()
+    assert load_storage_policy(config_manager) == previous_policy
+    assert config_manager.load_root_state() == previous_root_state
+
+
+def _route_anchor_root(config_manager):
+    """Compute anchor_root the way the route does, so assertions target the path the endpoint really uses."""
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    return compute_anchor_root(config_manager, current_root=current_root)
+
+
+@pytest.mark.unit
+def test_storage_location_select_keeps_corrupt_policy_bytes_after_rollback(tmp_path, monkeypatch):
+    """A corrupt-but-present policy file must be replayed byte-for-byte by the rollback, never deleted.
+
+    Regression: ``load_storage_policy`` folds both "read failed" and "file does
+    not exist" into None, so ``_restore_storage_mutation_state`` unlinked the
+    corrupt file and still reported "restored the previous state" -- the user
+    lost a state file a human could have salvaged. With a byte pre-image the
+    rollback only copies the bytes back.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager, anchor_root=_route_anchor_root(config_manager))
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = b'{"selected_root": "D:\\\\half-writ'  # 写到一半被截断的 JSON
+    policy_path.write_bytes(corrupt_bytes)
+
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["error_code"] == "storage_policy_write_failed"
+    # 盘上必须还是那份损坏内容：旧实现会把它 unlink 掉
+    assert policy_path.read_bytes() == corrupt_bytes
+
+
+@pytest.mark.unit
+def test_storage_location_select_keeps_corrupt_migration_bytes_after_rollback(tmp_path, monkeypatch):
+    """A corrupt migration checkpoint must likewise be replayed byte-for-byte, not deleted by the rollback."""
+    config_manager = _DummyConfigManager(tmp_path)
+    migration_path = get_storage_migration_path(config_manager, anchor_root=_route_anchor_root(config_manager))
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = b'{"status": "copying"'  # 截断的检查点
+    migration_path.write_bytes(corrupt_bytes)
+
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "storage_policy_write_failed"
+    assert migration_path.read_bytes() == corrupt_bytes
+
+
+@pytest.mark.unit
+def test_storage_location_select_reports_unreadable_policy_state(tmp_path, monkeypatch):
+    """A state file that exists but cannot be read must switch error codes and write nothing at all.
+
+    The read failure is real, not monkeypatched: the path is actually a
+    directory (Windows raises PermissionError, POSIX raises IsADirectoryError,
+    both OSError).
+
+    Regression: the old implementation read this as None (i.e. "file does not
+    exist") and the rollback unlinked the file. With a byte pre-image the run
+    stops during the snapshot phase: write() never runs a line, and nothing
+    touches the file.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager, anchor_root=_route_anchor_root(config_manager))
+    policy_path.mkdir(parents=True, exist_ok=True)
+
+    write_calls = []
+
+    def _record_policy_write(*args, **kwargs):
+        write_calls.append(args)
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _record_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_state_unreadable"
+    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    assert "[Errno" not in payload["error"]
+    # 快照阶段就失败：写入闭包一行都没跑，那个路径（目录）也还留在原地
+    assert write_calls == []
+    assert policy_path.is_dir()
+
+
+@pytest.mark.unit
+def test_storage_location_select_policy_only_ignores_unreadable_migration_state(tmp_path, monkeypatch):
+    """A policy-only write must not snapshot or restore an untouched checkpoint."""
+    config_manager = _DummyConfigManager(tmp_path)
+    migration_path = get_storage_migration_path(config_manager, anchor_root=_route_anchor_root(config_manager))
+    migration_path.mkdir(parents=True, exist_ok=True)
+
+    write_calls = []
+    real_save_policy = storage_location_router_module.save_storage_policy
+
+    def _record_policy_write(*args, **kwargs):
+        write_calls.append(args)
+        return real_save_policy(*args, **kwargs)
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _record_policy_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert len(write_calls) == 1
+    assert migration_path.is_dir()
+
+
+@pytest.mark.unit
+def test_storage_location_select_reports_recovered_when_rollback_has_nothing_to_write(tmp_path, monkeypatch):
+    """When not a single write succeeded, the rollback must not write and must not claim "could not restore".
+
+    Regression: the old implementation could only choose between "rollback
+    raised" and "rollback succeeded". When the very first write was denied the
+    disk still held the pre-image -- nothing needed writing -- yet the rollback
+    rewrote the snapshot and was rejected by the same unwritable directory, so
+    it wrongly reported "could not restore the previous state" and sent the user
+    to fix a directory that was never broken. With "skip the write when the disk
+    already equals the pre-image", a rollback that does not write cannot fail
+    and truthfully reports a restore.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = _route_anchor_root(config_manager)
+    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    original_policy = b'{"version": 1, "selected_root": "D:/N.E.K.O"}'
+    policy_path.write_bytes(original_policy)
+
+    byte_write_calls: list = []
+
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    def _record_byte_write(path, *args, **kwargs):
+        # 回滚一旦真的去写就会被记下来；跳过的实现下这里应该一次都不被调用
+        byte_write_calls.append(path)
+        raise PermissionError(13, "Permission denied")
+
+    # 前向写策略被拒（写入的第一步就失败）；回滚若真去写，同一个不可写目录也会拒绝
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+    monkeypatch.setattr(file_utils_module, "atomic_write_bytes", _record_byte_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    # 盘上一字未改，回滚确实成功了，文案必须如实说「已恢复」，而不是「未能恢复」
+    assert payload["error_code"] == "storage_policy_write_failed"
+    assert "已恢复原有状态" in payload["error"]
+    # 跳过生效：回滚没有尝试任何写入
+    assert byte_write_calls == []
+    # 盘上还是那份 pre-image
+    assert policy_path.read_bytes() == original_policy
+
+
+@pytest.mark.unit
+def test_storage_location_select_reports_rollback_failure_when_rollback_write_also_fails(tmp_path, monkeypatch):
+    """A failed forward write followed by a failed rollback must return an error code that does not claim a restore.
+
+    Regression: the rollback has to write back into the same unwritable
+    directory. The failed-migration branch is the ready-made example -- the
+    checkpoint was deleted by ``delete_storage_migration``, the rollback must
+    write it back, and that is denied too. Before this change only a log line
+    was emitted while the response still said
+    ``storage_policy_write_failed`` / "restored the previous state", so the user
+    would simply retry while the disk actually sat in a half-state. A failed
+    rollback therefore needs its own error code that promises no restore.
+    """
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-not-empty" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    save_storage_migration(
+        config_manager,
+        {
+            "status": "failed",
+            "source_root": str(config_manager.app_docs_dir),
+            "target_root": str(target_root),
+            "selection_source": "custom",
+            "error_code": "target_not_empty",
+            "error_message": "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
+        },
+    )
+    config_manager.save_root_state({
+        "mode": "deferred_init",
+        "current_root": str(config_manager.app_docs_dir),
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "failed:target_not_empty",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    previous_migration = load_storage_migration(config_manager)
+
+    def _deny_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    # 双重失败：前向写策略被拒；回滚改成按 pre-image 原始字节还原之后，要构造"回滚也
+    # 写不进去"就得拦那条真实落盘路径（atomic_write_bytes），拦 save_storage_migration
+    # 已经拦不住它了（回滚不再经过 save_* 这两个 helper）。
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_write)
+    monkeypatch.setattr(file_utils_module, "atomic_write_bytes", _deny_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    # 回滚失败时不能沿用那个声称「已恢复原有状态」的错误码
+    assert payload["error_code"] == "storage_policy_rollback_failed"
+    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    assert "[Errno 13]" not in payload["error"]
+
+    # 回滚确实没成功：检查点没被写回去，盘上并没有回到 pre-image
+    assert previous_migration
+    assert not load_storage_migration(config_manager)
+
+
+@pytest.mark.unit
+def test_storage_location_select_reports_snapshot_failure_without_claiming_restore(tmp_path, monkeypatch):
+    """A snapshot that was never taken must return an error code that does not claim a restore, and must never run the rollback.
+
+    Regression: when ``_snapshot_storage_mutation_state`` fails to read
+    root_state before the writes, ``snapshot_out`` stays empty and the write
+    closure never runs at all (snapshot and writes share one job, snapshot
+    first). Before this change that path fell into
+    ``storage_policy_write_failed`` / "restored the previous state" -- there was
+    no restore action and the disk contents were never confirmed; reaching here
+    means root_state could not be read, whereas the successful-rollback path has
+    positive evidence (the pre-image was written back). It needs its own stable
+    message.
+
+    An empty snapshot must also never trigger the rollback:
+    ``_restore_storage_mutation_state`` would read "no migration / policy key"
+    as "those two files never existed", delete the checkpoint and unlink the
+    policy file, destroying files that were perfectly fine.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def _deny_snapshot(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    rollback_calls = []
+
+    def _record_rollback(*args, **kwargs):
+        rollback_calls.append(args)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_snapshot_storage_mutation_state",
+        _deny_snapshot,
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_restore_storage_mutation_state",
+        _record_rollback,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_operation_failed"
+    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    assert "[Errno 13]" not in payload["error"]
+    # 快照都没取成，绝不能跑回滚
+    assert rollback_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_select_rollback_is_best_effort(tmp_path, monkeypatch):
+    """When one rollback step fails, the remaining steps must still be attempted -- no fail-fast.
+
+    Regression: the old implementation went migration -> policy -> root_state and
+    raised on the first failure, so the other two files were never even
+    attempted. Best-effort runs all three, collects the failures and raises an
+    aggregate at the end; even when the migration restore fails, policy and
+    root_state must still be pushed back to their pre-images.
+
+    Uses the ``recovered`` branch: ``write()`` first calls
+    ``delete_storage_migration``, then writes policy and root_state before failing, so the
+    rollback has to write the migration checkpoint back -- this test denies that
+    byte write to make step one fail, and checks policy and root_state are still
+    restored.
+    """
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-not-empty" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    save_storage_migration(
+        config_manager,
+        {
+            "status": "failed",
+            "source_root": str(config_manager.app_docs_dir),
+            "target_root": str(target_root),
+            "selection_source": "custom",
+            "error_code": "target_not_empty",
+            "error_message": "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
+        },
+    )
+    config_manager.save_root_state({
+        "mode": "deferred_init",
+        "current_root": str(config_manager.app_docs_dir),
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "failed:target_not_empty",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    anchor_root = _route_anchor_root(config_manager)
+    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
+    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    original_policy = policy_path.read_bytes() if policy_path.exists() else None
+
+    # policy 和 root_state 必须真的改变，再让最后一步失败。
+    real_set_root_mode = storage_location_router_module.set_root_mode
+
+    def _set_root_mode_then_fail(*args, **kwargs):
+        real_set_root_mode(*args, **kwargs)
+        raise PermissionError(13, "Permission denied")
+
+    # 回滚时：migration 的字节写被拒（第一步失败），policy 路径放行
+    def _selective_byte_write(path, data, *args, **kwargs):
+        if Path(path).name == "storage_migration.json":
+            raise PermissionError(13, "Permission denied")
+        Path(path).write_bytes(data)
+
+    monkeypatch.setattr(storage_location_router_module, "set_root_mode", _set_root_mode_then_fail)
+    monkeypatch.setattr(file_utils_module, "atomic_write_bytes", _selective_byte_write)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    # migration 还原失败 → 回滚部分失败 → 不能声称「已恢复」
+    assert payload["error_code"] == "storage_policy_rollback_failed"
+    # migration 没被还原（前向写入删了它，回滚写不回去），文件应不存在
+    assert not migration_path.exists()
+    # policy 已被还原回 pre-image（best-effort 第二步成功）
+    if original_policy is not None:
+        assert policy_path.read_bytes() == original_policy
+    else:
+        assert not policy_path.exists()
+    # root_state 也被还原回 pre-image（best-effort 第三步成功）
+    assert config_manager.load_root_state().get("mode") == "deferred_init"
+
+
+@pytest.mark.unit
+def test_storage_location_select_rollback_runs_inside_same_transaction(tmp_path, monkeypatch):
+    """A failing write() must be rolled back inside the same root_state_transaction().
+
+    Regression: the old implementation submitted the rollback as a second job
+    that re-acquired the lock; the window between the two transactions let a
+    third party write a new root_state that the old snapshot then overwrote in
+    full. Verified by ``_run_locked_storage_job`` being called exactly once (the
+    forward job) with no second rollback job.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+
+    # 前向写入失败
+    def _deny_policy_write(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
+
+    # 记录 _run_locked_storage_job 被调用的次数
+    job_calls = []
+    original_run_locked = storage_location_router_module._run_locked_storage_job
+
+    async def _counting_run_locked(job):
+        job_calls.append(job)
+        return await original_run_locked(job)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_run_locked_storage_job",
+        _counting_run_locked,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    # 正向写入阶段只调用一次 _run_locked_storage_job（快照 + 写入 + 同事务回滚），
+    # 没有第二次回滚 job。bootstrap 也会调一次，所以这里只统计写入阶段的 _job。
+    write_jobs = [j for j in job_calls if "_apply_storage_mutation_writes" in getattr(j, "__qualname__", "")]
+    assert len(write_jobs) == 1
+    # 没有任何 _restore_storage_mutation_state 的单独 job 调用
+    rollback_jobs = [
+        j for j in job_calls
+        if getattr(j, "func", None) is storage_location_router_module._restore_storage_mutation_state
+    ]
+    assert rollback_jobs == []
+
+
+@pytest.mark.unit
+def test_storage_location_select_rolls_back_when_cancelled_after_writes_landed(tmp_path, monkeypatch):
+    """A cancellation that lands after the writes succeeded must still roll all three files back.
+
+    Regression: the cancellation branch used to skip the rollback whenever
+    ``_write_outcome`` was "success", on the theory that a landed write should
+    not be undone. But cancelling means the startup barrier is never released
+    (the route never reaches ``_release_storage_startup_barrier_or_rollback``),
+    so keeping the write leaves the disk saying "location chosen" while the
+    session is still locked behind the barrier. The frontend overlay stops
+    appearing and a page reload cannot recover -- only an app restart can. The
+    write and the barrier release are one operation, so a half-done operation
+    must go back to its pre-image.
+    """
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = _route_anchor_root(config_manager)
+
+    # 三个状态文件在盘上都先有一份「改动前」的内容，这样回滚是「改回去」而不是「删掉」
+    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    original_policy = b'{"version": 1, "selected_root": "D:/N.E.K.O"}'
+    policy_path.write_bytes(original_policy)
+    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
+    original_migration = b'{"version": 1, "status": "completed"}'
+    migration_path.write_bytes(original_migration)
+    original_root_state = config_manager.load_root_state()
+
+    # 模拟 _run_locked_storage_job 的既定行为：先等 worker 跑到终态（三步已落盘），
+    # 再把取消送达。只在正向 job 之后抛一次，回滚 job 仍要能正常跑完。
+    cancel_delivered = {"done": False}
+    original_run_locked = storage_location_router_module._run_locked_storage_job
+
+    async def _cancel_after_forward_job(job):
+        result = await original_run_locked(job)
+        if not cancel_delivered["done"]:
+            cancel_delivered["done"] = True
+            raise asyncio.CancelledError()
+        return result
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_run_locked_storage_job",
+        _cancel_after_forward_job,
+    )
+
+    def _write():
+        # 三步写入全部成功，这正是「写已落盘、屏障却没解除」的前提
+        save_storage_policy(
+            config_manager,
+            selected_root=config_manager.app_docs_dir,
+            selection_source="current",
+            anchor_root=anchor_root,
+        )
+        storage_location_router_module.set_root_mode(
+            config_manager,
+            storage_location_router_module.ROOT_MODE_NORMAL,
+            current_root=str(config_manager.app_docs_dir),
+            last_known_good_root=str(config_manager.app_docs_dir),
+        )
+        return load_storage_policy(config_manager, anchor_root=anchor_root)
+
+    state_snapshot: dict = {}
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            storage_location_router_module._apply_storage_mutation_writes_or_rollback(
+                config_manager,
+                anchor_root=anchor_root,
+                snapshot_out=state_snapshot,
+                write=_write,
+            )
+        )
+
+    # 前置条件：写入确实完整落盘过，否则这个用例证明不了「取消了也要回滚」
+    assert state_snapshot["_write_outcome"] == "success"
+    # 取消路径必须把三个文件都退回 pre-image，不能留着「盘上已选好、屏障却还锁着」
+    assert policy_path.read_bytes() == original_policy
+    assert migration_path.read_bytes() == original_migration
+    assert config_manager.load_root_state() == original_root_state
+
+
+@pytest.mark.unit
 def test_storage_location_restart_rebinds_original_root_without_creating_migration_checkpoint(tmp_path, monkeypatch):
     config_manager = _make_real_config_manager(tmp_path)
     unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
@@ -1528,7 +2837,8 @@ def test_storage_location_restart_rebinds_original_root_without_creating_migrati
 
 
 @pytest.mark.unit
-def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_stage", ["shutdown", "write", "snapshot", "rollback", "write_rollback"])
+def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tmp_path, monkeypatch, failure_stage):
     config_manager = _make_real_config_manager(tmp_path)
     unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
     from utils.storage_policy import save_storage_policy
@@ -1542,6 +2852,22 @@ def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tm
     unavailable_selected_root.mkdir(parents=True, exist_ok=True)
     previous_policy = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
     previous_root_state = reloaded_manager.load_root_state()
+    restores = []
+    real_restore = storage_location_router_module._restore_storage_mutation_state
+    def restore(*args, **kwargs):
+        restores.append(1)
+        if failure_stage in {"rollback", "write_rollback"}:
+            raise RuntimeError("private-restore-worker-error")
+        return real_restore(*args, **kwargs)
+    monkeypatch.setattr(storage_location_router_module, "_restore_storage_mutation_state", restore)
+    if failure_stage in {"write", "write_rollback"}:
+        def deny_write(*args, **kwargs):
+            raise PermissionError("private-write-path")
+        monkeypatch.setattr(storage_location_router_module, "save_storage_policy", deny_write)
+    elif failure_stage == "snapshot":
+        def deny_snapshot(path):
+            raise storage_location_router_module._StorageStateUnreadable(path, PermissionError("private-read-path"))
+        monkeypatch.setattr(storage_location_router_module, "_read_state_file_preimage", deny_snapshot)
     monkeypatch.setattr(
         storage_location_bootstrap_module,
         "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
@@ -1562,7 +2888,16 @@ def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tm
 
     assert response.status_code == 500
     payload = response.json()
-    assert payload["error_code"] == "restart_schedule_failed"
+    assert payload["error_code"] == {
+        "shutdown": "restart_schedule_failed", "write": "storage_policy_write_failed",
+        "snapshot": "storage_state_unreadable",
+        "rollback": "restart_rollback_failed",
+        "write_rollback": "restart_rollback_failed",
+    }[failure_stage]
+    assert "private-" not in payload["error"]
+    assert len(restores) == (0 if failure_stage == "snapshot" else 1)
+    if failure_stage in {"rollback", "write_rollback"}:
+        return
     assert payload["restart_mode"] == "rebind_only"
     assert load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root) == previous_policy
     assert reloaded_manager.load_root_state() == previous_root_state

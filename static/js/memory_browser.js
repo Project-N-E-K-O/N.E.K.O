@@ -2153,12 +2153,10 @@
         if (!payload || typeof payload !== 'object') {
             return fallback;
         }
-        return String(
-            payload.error
-            || payload.blocking_error_message
-            || payload.error_code
-            || fallback
-        );
+        if (window.appStorageLocation && typeof window.appStorageLocation.formatError === 'function') {
+            return window.appStorageLocation.formatError(payload, fallback);
+        }
+        return fallback;
     }
 
     function getStorageBlockingReason(bootstrapPayload) {

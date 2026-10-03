@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Callable
 import uuid
+from utils.asyncio_retirement import await_retirement
 
 from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS, wake_word_model_dir, wake_word_preference
 from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError, resolve_verified_assets
@@ -145,7 +146,8 @@ def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_p
         connection.send({"ok": True, "result": result})
     except Exception as exc:
         reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError)) else
-                  "resource_storage_unavailable" if isinstance(exc, OSError) else safe_wake_word_reason(exc))
+                  "resource_storage_unavailable" if isinstance(exc, OSError) else
+                  "resource_worker_failed" if kind in {"audio", "prepare"} else safe_wake_word_reason(exc))
         connection.send({"ok": False, "reason": reason})
     finally:
         pcm16 = b""
@@ -172,19 +174,12 @@ async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None,
     started = False
     try:
         try:
-            launch = asyncio.create_task(asyncio.to_thread(process.start))
-            cancelled = None
-            while not launch.done():
-                try:
-                    await asyncio.shield(launch)
-                except asyncio.CancelledError as exc:
-                    # A start thread cannot be killed. Wait for its process
-                    # handle before cleanup, so cancellation never leaks it.
-                    cancelled = exc
-            launch.result()
+            try:
+                await await_retirement(asyncio.to_thread(process.start))
+            except asyncio.CancelledError:
+                started = process.pid is not None
+                raise
             started = True
-            if cancelled is not None:
-                raise cancelled
         except Exception as exc:
             raise VoiceResourceError("resource_worker_start_failed") from exc
         child.close()

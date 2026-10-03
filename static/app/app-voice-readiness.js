@@ -58,7 +58,7 @@
             if (activation.reason && activation.state === 'unavailable') label.textContent += ' — ' + t('voiceIdentity.activationReason_' + activation.reason, t('voiceIdentity.activationRepair', 'Check resources and retry voice activation.'));
             if (restartRequired) label.textContent = t('voiceIdentity.activationRestartRequired', 'Close and reopen the microphone to start a new voice session.');
             retry.hidden = restartRequired || activation.state !== 'unavailable';
-            restart.hidden = !restartRequired;
+            restart.hidden = true;
             retry.textContent = t('voiceIdentity.activationRetry', 'Retry activation');
             restart.textContent = t('voiceIdentity.activationRestart', 'Restart voice session');
         }
@@ -84,13 +84,6 @@
                 finally { if (retryOperation === ownedRetry) { retryOperation = null; retry.disabled = false; } }
             });
             restart = document.createElement('button'); restart.type = 'button'; restart.hidden = true;
-            restart.addEventListener('click', async () => {
-                if (!restartRequired || isolation) return;
-                restart.disabled = true;
-                try { await root.stopMicCapture(); await root.startMicCapture(); }
-                catch (_) { label.textContent = t('voiceIdentity.activationRetryFailed', 'Retry failed. Check the connection and resources.'); }
-                finally { restart.disabled = false; }
-            });
             panel.append(label, retry, restart);
             document.body.appendChild(panel);
         }

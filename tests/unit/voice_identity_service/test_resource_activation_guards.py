@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import asyncio
 
 from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
@@ -12,6 +13,37 @@ from main_logic.voice_identity_service.audio_contract import desktop_audio_contr
 from tests.support.voice_identity_fakes import _embedding, _pcm, _service
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+@pytest.mark.parametrize("ready", [True, False])
+async def test_cancelled_resource_refresh_publishes_actual_activation_state(tmp_path, monkeypatch, ready):
+    service, *_ = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(enrollment.enrollment_id, "owner", _pcm())
+    entered, finish = asyncio.Event(), asyncio.Event()
+    async def activate(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+        return ready
+    service._activation_callback = activate
+    async def prepared(*args, **kwargs):
+        return {}
+    monkeypatch.setattr(resource_manager, "_run_worker", prepared)
+    operation = service.start_resource_operation("prepare")
+    await entered.wait()
+    cancellation = asyncio.create_task(service.cancel_resource_operation(operation["operation_id"]))
+    await asyncio.sleep(0)
+    assert not cancellation.done()
+    finish.set()
+    try:
+        assert (await cancellation)["state"] == "cancelled"
+        state = service.status().state
+        assert state.effective_enabled is ready
+        assert state.effective_reason == ("ready" if ready else "runtime_degraded")
+    finally:
+        finish.set()
+        await service.close()
 
 
 @pytest.mark.parametrize(

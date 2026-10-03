@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from utils.asyncio_retirement import await_retirement
 
 from main_logic.voice_input.activation import ActivationDecision, ActivationState
 from main_logic.voice_input.preview import (
     VoicePreviewIsolationError, preview_isolation_registry,
 )
+
+
+async def _bounded_close(awaitable):
+    # Preserve the original cleanup budget, while caller cancellation must not
+    # interrupt physical retirement before that budget has run.
+    async with asyncio.timeout(5.0):
+        await awaitable
 
 
 class VoiceReadinessControl:
@@ -61,7 +69,7 @@ class VoiceReadinessControl:
         )
         # Retire the producer synchronously. Removing the temporary reservation
         # on timeout/cancel must never restore its previous input authority.
-        manager._voice_lease_owner = None
+        manager._voice_lease_owner = "none"
         manager._voice_lease_synchronized = False
         operation = manager._begin_asr_route_operation()
         try:
@@ -70,15 +78,15 @@ class VoiceReadinessControl:
             # utterances and runtime without reopening or replaying old input.
             async with asyncio.timeout(5.0):
                 old_runtime = manager._voice_session_activation_runtime
-                await manager._close_independent_asr(next_route_mode="blocked",
-                                                     operation_generation=operation)
+                await await_retirement(_bounded_close(manager._close_independent_asr(next_route_mode="blocked",
+                                                     operation_generation=operation)))
                 preview_isolation_registry.validate(ticket, require_ready=False)
                 generation = manager._capture_voice_session_activation_generation()
                 prior_current = ticket.current
                 ticket.current = lambda: (prior_current()
                     and manager._capture_voice_session_activation_generation() == generation)
                 if old_runtime is not None:
-                    await old_runtime.close()
+                    await await_retirement(_bounded_close(old_runtime.close()))
                 # This is an actual producer stop, without ending a display
                 # window's unrelated text session or revoking its connection.
                 preview_isolation_registry.validate(ticket, require_ready=False)
@@ -130,7 +138,7 @@ class VoiceReadinessControl:
         try:
             async with asyncio.timeout(5.0):
                 if old is not None:
-                    await old.close()
+                    await await_retirement(_bounded_close(old.close()))
                 if not current():
                     raise VoicePreviewIsolationError("activation_session_changed")
                 async with manager._voice_session_activation_lock:

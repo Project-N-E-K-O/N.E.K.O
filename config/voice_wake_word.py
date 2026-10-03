@@ -73,9 +73,11 @@ def save_wake_word_preference(enabled: bool, cache_root: Path | None = None) -> 
     before = wake_word_preference(root)
     if before["managed"]:
         raise ValueError("wake_preference_managed")
-    if before["reason"]:
+    if before["reason"] and before["reason"] != "wake_preference_unavailable":
         raise ValueError(before["reason"])
     root = canonical_resource_root(root)
+    if (root / "preference.json").is_symlink():
+        raise ValueError("resource_cache_unsafe")
     root.mkdir(parents=True, exist_ok=True)
     pending = root / "preference.pending"
     try:

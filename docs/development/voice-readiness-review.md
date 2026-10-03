@@ -158,3 +158,22 @@ ASR 路由、全 voice_input、声纹服务／API、真实 WebSocket 与缓存�
 [继续录入携带 null 契约](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4173688555) 成立。恢复服务端既有录入时不要求新试录证明，也不发送 null 契约，沿用该录入已有合同；开始新录入仍需要有效试录，包括旧录入已被预检取消后的替代开始。按钮和请求同步修复，前端回归验证从服务端第三段继续和新录入不能绕过试录。
 
 本轮最终联合回归含模型交付共 1,576 项通过、7 项跳过；Node 162 项通过。Ruff、Core、分层与异步检查通过。上述结果对应源代码回归，最新 head 的 CI 和冻结包验收须分别核验。
+
+## 10 月 4 日审查和 CI 修复
+
+本轮重新合并最新 main，保留双方八语内容并更新缓存版本。每分钟评论与最新 head CI 监听已创建。
+
+- [继续录入输入失效](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4173731228)、[共享设置混入不同输入](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174073568)：设置变化持久标记当前录入不可继续，按钮与开始、设备准备后的检查一致要求用户取消后重新试录；当前采集不被 storage 事件隐式取消。标记只能由新的成功试录清除，页面重载不会绕过。输入未变化的原录入仍可继续。
+- [Node 启动超时](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174072907)：Windows CI 失败发生在启动请求尚未到达，测试启动和普通退出 watchdog 调整为 20 秒。丢失确认仍要求测试工具在自身六秒预算内失败，外部八秒验证不变。
+- [冻结 smoke 路径比较](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174073221)：实际失败的 Unit pytest 与该意见一致，临时缓存根在入口规范化。普通与真实重定向临时目录均通过启用、禁用和发布验收 helper；不把源代码 helper 执行称为冻结包已通过。
+- [隔离检查改变代次](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174073943)：音频隔离检查提前，报告独立于 ASR provider 的 `VOICE_INPUT_PREVIEW_BUSY`，不增代次、不关闭当前试录；文本仍走既有撤权出口。真实 Core 票据 current 回调验证启动重入不作废票据，八语提示明确完成或取消试录。
+- [启动取消被失败覆盖](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174074259)、[关闭中的取消](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174074629)：共享退休 helper 等待物理操作后传播取消，并在同时失败时保留取消。Core 关闭保留自身五秒预算，调用方取消不能提前切断；WebSocket 先退休控制任务，记录其间的外部取消，完成连接清理后再传播。已提交资源的结果语义保持原合同。
+- [无效的一键重启](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174432918)：隐藏不能重建后端路由的麦克风快捷重启，八语引导用户关闭后用主麦克风按钮走完整语音会话启动，不再调用只有 lease_sync 的 startMicCapture。
+- [刷新取消后仍报告 READY](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174433322)：资源激活刷新采用既有 cancellation-safe 机制，先完成真实结果应用再传播取消。回归分别验证最终激活成功与失败，不发布与实际授权相反的状态。
+- [旧身份拒绝 owner 释放](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174433615)：释放保留 token 与 owner 校验，移除只适用于 begin/claim 的 current 校验；降噪或身份变化后仍能释放自己的票据，释放不恢复输入权威。
+- [损坏偏好无法修复](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174433912)：读取仍失败阻断且不隐式写入，用户明确保存开关时可原子修复损坏偏好；管理配置和符号链接仍拒绝，锁与写入错误仍返回失败。
+- [无 owner 类型](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174434189)：生产者退休使用 Core 的标准字符串 `none`。
+- [主资源错误误归唤醒词](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174434460)：audio/prepare 意外异常使用现有通用资源 worker 原因，wake 操作保留专用原因。
+- [采集归属拒绝误报 Worklet](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174434729)：注册失败单独释放本次私有采集图并返回 false，不设置 Worklet 故障标志或弹出错误的 Worklet 提示。
+
+相关 ASR、声纹、隔离、API、WebSocket、麦克风启动和缓存回归共 1,613 项通过、7 项跳过；重定向临时目录 smoke 另有 2 项通过；Node 164 项通过。Ruff、Core 契约、分层和异步阻塞检查通过。最新提交的 CI 与冻结程序结果继续由监听核验。

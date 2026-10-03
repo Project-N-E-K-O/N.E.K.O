@@ -21,6 +21,8 @@
         const t = hooks.translate;
         let epoch = 0;
         let accepted = null;
+        let inputChangedDuringEnrollment = false;
+        try { inputChangedDuringEnrollment = localStorage.getItem('neko_voice_enrollment_input_changed') === '1'; } catch (_) {}
         let resources = null;
         let resourceSequence = 0;
         let deviceSequence = 0;
@@ -218,6 +220,8 @@
                 if (at !== epoch || inputSnapshot !== snapshot()) return;
                 if (payload.accepted === true) {
                     accepted = { inputSnapshot, audioContract: payload.audio_contract };
+                    inputChangedDuringEnrollment = false;
+                    try { localStorage.removeItem('neko_voice_enrollment_input_changed'); } catch (_) {}
                     message('voiceIdentity.inputPassed', 'Input test passed. You can start enrollment.', false);
                 } else {
                     const diagnostics = payload.diagnostics;
@@ -338,6 +342,14 @@
         el.gain.addEventListener('change', () => { gainDb = root.nekoMicrophoneInput.gain(el.gain.value); try { localStorage.setItem('neko_mic_gain_db', String(gainDb)); } catch (_) {} invalidate('voiceIdentity.inputChanged'); });
         root.addEventListener('storage', event => {
             if (!['neko_selected_microphone', 'neko_mic_gain_db', 'neko_noise_reduction'].includes(event.key)) return;
+            if (hooks.enrolling()) {
+                inputChangedDuringEnrollment = true;
+                try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
+                accepted = null;
+                message('voiceIdentity.inputChanged', 'Input settings changed. Cancel enrollment and repeat the input test.');
+                render();
+                return;
+            }
             try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
             el.gain.value = String(gainDb);
             if (hooks.enrolling()) { accepted = null; message('voiceIdentity.inputChanged'); render(); }
@@ -384,6 +396,7 @@
         return {
             refreshResources, receivedStream, controls: () => render(false), isPending: () => pending,
             canStart: () => !pending && !!accepted && accepted.inputSnapshot === snapshot() && !!resources && resources.can_enroll === true,
+            canResume: () => !inputChangedDuringEnrollment,
             requireTest: () => message('voiceIdentity.inputTestRequired', 'Complete the input test before enrollment.', true),
             contractChanged: () => { accepted = null; message('voiceIdentity.inputChanged', 'Input settings changed. Repeat the input test.', true); render(); },
             updateMeter: rms => { el.meter.value = Math.min(1, rms * 8); },

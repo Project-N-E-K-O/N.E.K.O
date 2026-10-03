@@ -22,7 +22,7 @@ async def check_preference_worker(model_dir: Path | None = None) -> None:
     previous = {name: os.environ.pop(name, None) for name in names}
     try:
         with tempfile.TemporaryDirectory(prefix="neko-wake-preference-") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             manager = VoiceResourceManager(lambda: False, cache_root=root)
             try:
                 for enabled in (True, False):

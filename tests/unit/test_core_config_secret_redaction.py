@@ -15,6 +15,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 _MODEL_TYPES = (
@@ -150,6 +151,33 @@ def test_get_redacts_every_core_config_secret(
     serialized_response = json.dumps(response)
     for field in _CONFIG_SECRET_FIELDS:
         assert stored[field] not in serialized_response
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+@pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+def test_requesty_readback_uses_only_its_dedicated_key(
+    config_manager, core_config_router, core_provider, requesty_key,
+):
+    """An unrelated core credential must not appear as a configured Requesty key."""
+    core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+    _write_core_config(config_manager, {
+        'coreApi': core_provider,
+        'coreApiKey': core_key,
+        'assistApi': 'requesty',
+        'assistApiKeyRequesty': requesty_key,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response['assistApi'] == 'requesty'
+    assert response['assistApiKeyRequesty'] == (
+        core_config_router.CORE_CONFIG_SECRET_SENTINEL if requesty_key else ''
+    )
+    assert response['assist_api_key_display'] == (
+        core_config_router.mask_core_config_secret_for_display(requesty_key)
+    )
+    assert 'sk-other-core' not in json.dumps(response)
+    assert 'sk-requesty-dedicated' not in json.dumps(response)
 
 
 @pytest.mark.unit

@@ -1455,10 +1455,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
         _ws_disconnect_reason = "normal_break"
     finally:
+        control_cancellation = None
         for task in tuple(voice_control_tasks):
             task.cancel()
         if voice_control_tasks:
-            await asyncio.gather(*tuple(voice_control_tasks), return_exceptions=True)
+            from utils.asyncio_retirement import await_retirement
+            try:
+                await await_retirement(asyncio.gather(*tuple(voice_control_tasks), return_exceptions=True))
+            except asyncio.CancelledError as exc:
+                control_cancellation = exc
         if lanlan_name in session_manager:
             from main_logic.voice_input.preview import preview_isolation_registry
             preview_isolation_registry.release_connection(session_manager[lanlan_name], str(this_session_id))
@@ -1603,3 +1608,5 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
             else:
                 await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
+        if control_cancellation is not None:
+            raise control_cancellation

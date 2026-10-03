@@ -308,11 +308,13 @@ test('an unconfirmed retry timeout fences audio and late control/status until an
     // Preparation notifications advance the object while the same retry is pending.
     h.controller.activationStatus({...identity,permission_revision:2,revision:2,state:'preparing'},h.S.socket);
     [...h.timers.values()].find(timer=>timer.delay===45000).fn();await pending;
-    assert.equal(h.controller.blocked(),true);assert.equal(retry.hidden,true);assert.equal(restart.hidden,false);assert.deepEqual(actions,[]);
+    assert.equal(h.controller.blocked(),true);assert.equal(retry.hidden,true);assert.equal(restart.hidden,true);assert.deepEqual(actions,[]);
     await retry.emit('click');assert.equal(h.sent.length,1);
     h.ack(h.sent[0]);assert.equal(h.controller.blocked(),true);
     assert.equal(h.controller.activationStatus({...identity,permission_revision:2,revision:99,state:'active'},h.S.socket),false);
-    await restart.emit('click');assert.deepEqual(actions,['stop','start']);assert.equal(h.controller.blocked(),false);
+    await restart.emit('click');assert.deepEqual(actions,[]);assert.equal(h.controller.blocked(),true);
+    // Only the main microphone flow can establish a new backend route.
+    h.controller.reset();
     assert.equal(h.controller.activationStatus({...identity,session_id:'new-session',revision:1,state:'waiting'},h.S.socket),true);
 });
 
@@ -488,6 +490,9 @@ test('storage changes invalidate the trial proof without cancelling ongoing enro
     assert.equal(cancelled, 0);
     assert.equal(h.stopped(), before);
     assert.equal(h.controller.canStart(), false);
+    assert.equal(h.controller.canResume(), false);
+    const restored = h.root.createVoiceIdentityReadiness(h.hooks);
+    assert.equal(restored.canResume(), false);
 });
 
 test('a download still running after 120 seconds is allowed to finish within the backend budget', async () => {

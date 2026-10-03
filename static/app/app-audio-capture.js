@@ -1787,7 +1787,8 @@
 
             if (window.nekoVoiceCaptureReadiness) {
                 if (window.nekoVoiceCaptureReadiness.blocked()) { discardOwnPipeline(); return false; }
-                await window.nekoVoiceCaptureReadiness.register(true);
+                try { await window.nekoVoiceCaptureReadiness.register(true); }
+                catch (_) { discardOwnPipeline(); return false; }
             }
             // Last gate before the commit. Everything above only awaited; this
             // is where the microphone actually becomes live and where

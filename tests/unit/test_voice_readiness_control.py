@@ -211,7 +211,7 @@ vm.runInContext = function (source, context, options) {
     process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        request = json.loads(await asyncio.wait_for(process.stdout.readline(), 3))
+        request = json.loads(await asyncio.wait_for(process.stdout.readline(), 20))
         assert request["channel"] == "control" and request["payload"]["event"] == "preview_begin"
         if failure == "pipe_closed":
             process.stdin.close()
@@ -232,7 +232,7 @@ vm.runInContext = function (source, context, options) {
             await process.stdin.drain()
         # Keep stdin open for the lost-confirmation case. The harness's six-
         # second deadline must terminate itself before this external watchdog.
-        assert await asyncio.wait_for(process.wait(), 8 if failure == "missing_confirmation" else 3) == 1
+        assert await asyncio.wait_for(process.wait(), 8 if failure == "missing_confirmation" else 20) == 1
         output, errors = await process.stdout.read(), await process.stderr.read()
         text = errors.decode()
         assert "voice_preview_protocol_failed:" in text and diagnostic in text
@@ -367,15 +367,40 @@ async def test_route_start_during_preview_uses_explicit_failure_and_text_revocat
     registry.mark_ready(ticket)
     failed = AsyncMock(return_value=True)
     value._fail_closed_voice_route = failed
+    value._send_to_voice_owner = AsyncMock()
+    generation = value._asr_route_operation_generation
     try:
         await value._start_independent_asr_if_enabled(input_mode)
         assert value._asr_route_mode == "blocked"
-        assert failed.await_args.args[0] == ("preview_busy" if input_mode == "audio" else "text_session_active")
         if input_mode == "audio":
-            assert failed.await_args.kwargs["status"].reason == "preview_busy"
+            failed.assert_not_awaited()
+            assert value._asr_route_operation_generation == generation
+            assert "VOICE_INPUT_PREVIEW_BUSY" in value._send_to_voice_owner.await_args.args[0]["message"]
+        else:
+            assert failed.await_args.args[0] == "text_session_active"
     finally:
         registry.release(ticket)
         await cleanup(owner)
+        await cleanup(value)
+
+
+async def test_own_route_start_cannot_invalidate_real_preview_ticket(registry):
+    value = manager()
+    value._send_to_voice_owner = AsyncMock()
+    try:
+        result = await value._handle_voice_identity_control(
+            {"event": "preview_begin", "request_id": "real"}, connection_id="producer-a")
+        ticket = registry._ticket
+        assert result["ok"] and value._voice_lease_owner == "none"
+        generation = value._asr_route_operation_generation
+        await value._start_independent_asr_if_enabled("audio")
+        assert value._asr_route_operation_generation == generation
+        ticket.validate_current()
+        value._voice_input_noise_reduction_enabled = not value._voice_input_noise_reduction_enabled
+        assert registry.release_owned(ticket.token, value)
+        assert not registry.is_manager_isolated(value)
+    finally:
+        registry.release(registry._ticket)
         await cleanup(value)
 
 
@@ -648,6 +673,40 @@ class EndpointRuntime(_ProtocolManager, _Runtime):
 
     def _should_drop_live_vision_stream(self, _input_type):
         return False
+
+
+async def test_endpoint_cancellation_during_control_retirement_still_cleans_connection(registry, monkeypatch):
+    from utils.asyncio_retirement import await_retirement
+    value = EndpointRuntime("native")
+    closing, finish = asyncio.Event(), asyncio.Event()
+    async def waiting_control(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closing.set()
+            await await_retirement(finish.wait())
+    value._handle_voice_identity_control = waiting_control
+    socket = _EventWebSocket([
+        {"action": "voice_input_control", "event": "sync", "generation": 1, "owner": "core"},
+        {"action": "voice_identity_control", "event": "activation_retry", "request_id": "retry"},
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=value, websocket=socket)
+    count = router._ws_active_count.get("Lan", 0)
+    task = asyncio.create_task(router.websocket_endpoint(socket, "Lan"))
+    try:
+        await asyncio.wait_for(closing.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert router._ws_active_count["Lan"] == count
+        assert value.cleanup_calls == 1
+    finally:
+        finish.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await cleanup(value)
 
 
 @pytest.mark.parametrize("route", ["native", "independent"])

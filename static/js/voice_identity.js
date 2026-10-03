@@ -547,7 +547,7 @@
             || (!readiness && state.effectiveReason === 'model_unavailable');
         elements.start.hidden = state.busy || state.cancelPending
             || (state.profileAvailable && !state.enrollmentId);
-        elements.start.disabled = pending || enrollmentUnavailable || Boolean(readiness && !state.enrollmentId && !readiness.canStart());
+        elements.start.disabled = pending || enrollmentUnavailable || Boolean(readiness && (state.enrollmentId ? readiness.canResume && !readiness.canResume() : !readiness.canStart()));
         elements.start.textContent = state.enrollmentId
             ? translate('voiceIdentity.continueEnrollment', '继续录入')
             : translate('voiceIdentity.startEnrollment', '开始录入');
@@ -1158,6 +1158,7 @@
 
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
+        if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) { readiness.contractChanged(); return; }
         if (readiness && !state.enrollmentId && !readiness.canStart()) { readiness.requireTest(); return; }
         state.statusEpoch += 1;
         const operationEpoch = state.statusEpoch;
@@ -1199,6 +1200,7 @@
             ownedMediaStream = state.mediaStream;
             ownedAudioContext = state.audioContext;
             if (isStale()) return;
+            if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) throw new Error('audio_contract_changed');
             if (readiness && !state.enrollmentId && !readiness.canStart()) throw new Error('input_test_required');
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;

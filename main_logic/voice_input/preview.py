@@ -181,7 +181,6 @@ class VoicePreviewIsolationRegistry:
         ticket = self._live_ticket()
         if ticket is None or ticket.owner is None or ticket.owner() is not manager:
             raise VoicePreviewIsolationError("preview_invalid")
-        ticket.validate_current()
         if not self.release(token):
             raise VoicePreviewIsolationError("preview_invalid")
         return True

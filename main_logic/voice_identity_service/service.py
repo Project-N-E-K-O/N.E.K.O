@@ -2388,6 +2388,16 @@ class VoiceIdentityService:
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
     async def refresh_resources_activation(self) -> VoiceIdentityActivationResult:
+        cancellations: list[asyncio.CancelledError] = []
+        result = await _await_cancellation_safe(
+            self._refresh_resources_activation(), name="voice-resource-activation-refresh",
+            cancellations=cancellations,
+        )
+        if cancellations:
+            raise cancellations[0]
+        return result
+
+    async def _refresh_resources_activation(self) -> VoiceIdentityActivationResult:
         """Refresh installed resources under the caller's operation lock.
 
         Preserve profile and user preference. The application adapter revokes

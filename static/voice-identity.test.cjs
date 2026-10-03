@@ -1524,6 +1524,20 @@ test('a fresh enrollment still requires a passed trial when readiness is enabled
     assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start`), false);
 });
 
+test('changed input prevents continuing an existing enrollment without cancelling it implicitly', async () => {
+    let changed = 0;
+    const readinessController = {
+        isPending: () => false, canStart: () => false, canResume: () => false,
+        async refreshResources() {}, controls() {}, contractChanged() { changed++; }
+    };
+    const harness = createHarness({ initialEnrollmentNextSegment: 3, readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    await harness.emit('voice-identity-start');
+    assert.equal(changed, 1);
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start` || call.url === `${API_ROOT}/enrollment/cancel`), false);
+});
+
 test('failed fourth verification stays in the session and retries the holdout', async () => {
     const harness = createHarness({ verificationFailures: 1, autoAdvance: true });
     await harness.initialize();
