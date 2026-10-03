@@ -18,6 +18,8 @@ from main_logic.voice_turn.contracts import SpeechActivityEvent
 from tests.support.asr_fakes import _Runtime, _selection
 from tests.support.core_asr_harness import _ReadyDetector
 from tests.unit.test_asr_workers import _FakeConnector, _FakeWebSocket
+from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult
+from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
 
@@ -81,6 +83,72 @@ def _observe_hint_entry(monkeypatch, session, *, reject_after_return=False):
     return entered
 
 
+@pytest.mark.parametrize("cancel_source", ["owner", "resume", "abort"])
+async def test_cancel_inflight_fifo_pause_does_not_deliver_late_hint(
+    monkeypatch, qwen_sessions, cancel_source
+):
+    make_session, _, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    await component._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch
+    )
+    token = component._capture_turn_token(component._asr_lifecycle)
+    assert component._asr_audio_dispatcher.activate(token, session, b"")
+    await component._asr_audio_dispatcher.wait_idle()
+    entered = asyncio.Event()
+    delivered = []
+    original = session.signal_local_activity
+
+    async def observe(*, speech_active):
+        if not speech_active:
+            entered.set()
+        await original(speech_active=speech_active)
+        delivered.append(speech_active)
+
+    monkeypatch.setattr(session, "signal_local_activity", observe)
+    await session._operation_lock.acquire()
+    locked = True
+    pause = asyncio.create_task(component._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE, component._asr_session_epoch
+    ))
+    resume = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        if cancel_source == "owner":
+            pause.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pause
+        elif cancel_source == "abort":
+            component._asr_audio_dispatcher.abort(token)
+        else:
+            resume = asyncio.create_task(component._handle_independent_asr_activity(
+                SpeechActivityEvent.SPEECH_RESUMED, component._asr_session_epoch
+            ))
+            await asyncio.sleep(0)
+        session._operation_lock.release()
+        locked = False
+        if resume is not None:
+            await asyncio.wait_for(resume, 1)
+            await asyncio.wait_for(pause, 1)
+        elif cancel_source == "abort":
+            await asyncio.wait_for(pause, 1)
+        await component._asr_audio_dispatcher.wait_idle()
+        assert delivered == ([True] if cancel_source == "resume" else [])
+        assert not component._asr_audio_dispatcher._pause_hint_tasks
+    finally:
+        if locked:
+            session._operation_lock.release()
+        for task in (pause, resume):
+            if task is not None and not task.done():
+                task.cancel()
+        await component._asr_audio_dispatcher.close()
+        await session.close()
+
+
 @pytest.mark.parametrize("source", ["synthetic", "stale", "real"])
 async def test_only_current_physical_resume_reaches_qwen_hint(qwen_sessions, source):
     make_session, sockets, policy = qwen_sessions
@@ -110,6 +178,85 @@ async def test_only_current_physical_resume_reaches_qwen_hint(qwen_sessions, sou
         )
         assert hints == ([True] if source == "real" else [])
     finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("source", ["dispatcher_backlog", "same_frame"])
+@pytest.mark.parametrize("resume_while_pending", [False, True])
+async def test_pause_hint_follows_pending_pcm_before_capturing_position(
+    monkeypatch, qwen_sessions, source, resume_while_pending
+):
+    make_session, sockets, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_stream = session.stream_audio
+    original_hint = session.signal_local_activity
+    hints = []
+
+    async def delayed_stream(audio, **kwargs):
+        entered.set()
+        await release.wait()
+        await original_stream(audio, **kwargs)
+
+    async def observe_hint(*, speech_active):
+        hints.append((speech_active, session.provider_wire_audio_ms))
+        await original_hint(speech_active=speech_active)
+
+    task = None
+    try:
+        await component._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch
+        )
+        monkeypatch.setattr(session, "stream_audio", delayed_stream)
+        monkeypatch.setattr(session, "signal_local_activity", observe_hint)
+        pcm = b"\0" * 3200
+        if source == "dispatcher_backlog":
+            token = component._capture_turn_token(component._asr_lifecycle)
+            assert component._asr_audio_dispatcher.activate(token, session, b"")
+            assert component._asr_audio_dispatcher.enqueue_audio(
+                token, session, pcm, sample_rate_hz=16000, sequence_no=1
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            task = asyncio.create_task(component._handle_independent_asr_activity(
+                SpeechActivityEvent.CANDIDATE_PAUSE, component._asr_session_epoch
+            ))
+        else:
+            component._asr_detector._feed_result = DetectorFeedResult(
+                (SpeechActivityEvent.CANDIDATE_PAUSE,), True
+            )
+            task = asyncio.create_task(component.submit(
+                ProcessedVoiceFrame(pcm16=pcm, sample_rate_hz=16000, speech_probability=None),
+                ingress_token=component._asr_current_ingress_token,
+            ))
+            await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.sleep(0)
+        assert hints == []
+        assert not task.done()
+        if resume_while_pending:
+            await component._handle_independent_asr_activity(
+                SpeechActivityEvent.SPEECH_RESUMED, component._asr_session_epoch
+            )
+            assert hints == [(True, 0)]
+        token = component._capture_turn_token(component._asr_lifecycle)
+        assert component._asr_audio_dispatcher.enqueue_audio(
+            token, session, b"\0" * 6400, sample_rate_hz=16000, sequence_no=2
+        )
+        release.set()
+        await asyncio.wait_for(task, 1)
+        await component._asr_audio_dispatcher.wait_idle()
+        await asyncio.wait_for(session._request_queue.join(), 1)
+        assert hints == ([(True, 0)] if resume_while_pending else [(False, 100)])
+        assert len([p for p in sockets[0].sent if json.loads(p)["type"] == "input_audio_buffer.append"]) == 2
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await component._asr_audio_dispatcher.close()
         await session.close()
 
 

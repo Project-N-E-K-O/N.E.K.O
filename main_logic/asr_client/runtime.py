@@ -2876,6 +2876,8 @@ class IndependentAsrRuntime:
         speech_probability = frame.speech_probability
         rnnoise_available = frame.rnnoise_available
         rnnoise_evidence = frame.rnnoise_evidence
+        deferred_pause_hint = False
+        submit_cancelled = False
 
         try:
             lifecycle = identity.lifecycle
@@ -3044,10 +3046,16 @@ class IndependentAsrRuntime:
                         lifecycle.enable_independent_asr_fail_open()
                     else:
                         for event in detector_result.events:
+                            defer_hint = (
+                                event is SpeechActivityEvent.CANDIDATE_PAUSE
+                                and lifecycle.provider_policy.observes_local_activity
+                            )
                             await self._handle_independent_asr_activity(
                                 event,
                                 identity.session_epoch,
+                                forward_local_hint=not defer_hint,
                             )
+                            deferred_pause_hint |= defer_hint
                             if not ingress_is_current():
                                 return AsrSubmitResult(AsrSubmitStatus.STALE)
                     if (
@@ -3209,6 +3217,7 @@ class IndependentAsrRuntime:
                 sample_rate_hz=sample_rate_hz,
             )
         except asyncio.CancelledError:
+            submit_cancelled = True
             raise
         except Exception as exc:
             if not self._runtime_identity_matches(identity):
@@ -3231,6 +3240,16 @@ class IndependentAsrRuntime:
                 expected_identity=identity,
             )
             return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+        finally:
+            if (
+                deferred_pause_hint and not submit_cancelled
+                and self._ingress_token_matches(ingress_token)
+                and self._asr_lifecycle is identity.lifecycle
+                and self._asr_session_epoch == identity.session_epoch
+            ):
+                await self._forward_provider_local_activity(
+                    SpeechActivityEvent.CANDIDATE_PAUSE, identity.session_epoch
+                )
 
         return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
 
@@ -4056,12 +4075,44 @@ class IndependentAsrRuntime:
                 fallback_audio_bytes * 1_000 // (16_000 * 2)
             )
 
+    async def _forward_provider_local_activity(
+        self, event: SpeechActivityEvent, epoch: int,
+    ) -> bool:
+        lifecycle = self._asr_lifecycle
+        session = self._asr_session
+        ingress = self._asr_current_ingress_token
+        if (
+            epoch != self._asr_session_epoch or lifecycle is None
+            or not lifecycle.provider_policy.observes_local_activity
+            or session is None or not getattr(session, "is_ready", False)
+            or ingress is None or not self._ingress_token_matches(ingress)
+        ):
+            return False
+        identity = self._capture_runtime_identity(ingress_token=ingress)
+        try:
+            if event is SpeechActivityEvent.CANDIDATE_PAUSE:
+                # Place pause inside the audio FIFO: earlier PCM determines
+                # its position, while later PCM cannot move that boundary.
+                if not await self._asr_audio_dispatcher.signal_pause_after_audio(session):
+                    return False
+            else:
+                self._asr_audio_dispatcher.cancel_pending_pause_hints()
+                await session.signal_local_activity(speech_active=event in {
+                    SpeechActivityEvent.SPEECH_STARTED, SpeechActivityEvent.SPEECH_RESUMED,
+                })
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("[%s] local ASR activity hint failed", self.display_name)
+        return self._runtime_identity_matches(identity)
+
     async def _handle_independent_asr_activity(
         self,
         event: SpeechActivityEvent,
         epoch: int,
         *,
         synthetic: bool = False,
+        forward_local_hint: bool = True,
     ) -> None:
         # 同上：onset 是收到这个语音活动事件的时刻。
         detected_at = time.monotonic()
@@ -4074,32 +4125,15 @@ class IndependentAsrRuntime:
             return
         if (
             not synthetic
+            and forward_local_hint
             and ingress_token is not None
             and lifecycle is not None
             and lifecycle.provider_policy.observes_local_activity
+            and self._asr_session is not None
+            and getattr(self._asr_session, "is_ready", False)
         ):
-            asr_session = self._asr_session
-            if asr_session is not None and getattr(asr_session, "is_ready", False):
-                hint_identity = self._capture_runtime_identity(
-                    ingress_token=self._asr_current_ingress_token,
-                )
-                try:
-                    await asr_session.signal_local_activity(
-                        speech_active=event
-                        in {
-                            SpeechActivityEvent.SPEECH_STARTED,
-                            SpeechActivityEvent.SPEECH_RESUMED,
-                        }
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning(
-                        "[%s] local ASR activity hint failed",
-                        self.display_name,
-                    )
-                if not self._runtime_identity_matches(hint_identity):
-                    return
+            if not await self._forward_provider_local_activity(event, epoch):
+                return
         if (
             lifecycle is not None
             and lifecycle.snapshot.state is VoiceLifecycleState.DRAINING

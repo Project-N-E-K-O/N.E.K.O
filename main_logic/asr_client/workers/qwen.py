@@ -866,7 +866,13 @@ async def _qwen_receiver(
                 state.pending_pause_audio_bytes = 0
                 state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
-                state.provider_speech_cycles[key[2]] = state.local_speech_cycle
+                # Every provider-first turn needs the same unclaimed sentinel,
+                # not the number of the already completed local speech cycle.
+                state.provider_speech_cycles[key[2]] = (
+                    state.local_speech_cycle
+                    if state.local_speech_active or pending_pause == (key[0], key[1])
+                    else 0
+                )
                 if pending_pause == (key[0], key[1]) and not pending_fallback and not state.reconnect_after_finish:
                     _qwen_arm_provider_fallback(state, key)
                 await response_queue.put(

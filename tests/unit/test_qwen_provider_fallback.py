@@ -732,6 +732,38 @@ async def test_stale_pause_cannot_finish_next_provider_turn(monkeypatch):
         await asyncio.gather(sender, receiver, return_exceptions=True)
 
 
+async def test_provider_first_onsets_claim_local_cycles_after_first_turn(monkeypatch):
+    monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
+    state = qwen._QwenConnectionState(0, 0, 1, False)
+    state.configured.set()
+    requests, responses = _AsrRequestQueue(), asyncio.Queue()
+    ws = _FakeWebSocket()
+    config = AsrSessionConfig(endpointing_mode="provider")
+    sender = asyncio.create_task(qwen._qwen_sender(ws, requests, responses, config, state))
+    receiver = asyncio.create_task(qwen._qwen_receiver(ws, responses, config, state))
+    try:
+        for cycle in range(1, 4):
+            item = f"item-{cycle}"
+            await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": item})
+            await _next_event(responses, "utterance_started")
+            await requests.put(_AsrWorkerRequest("activity", 0, speech_active=True))
+            await asyncio.wait_for(requests.join(), 1)
+            assert state.provider_speech_cycles[cycle] == cycle
+            await ws.server_send({"type": "conversation.item.input_audio_transcription.completed",
+                                  "item_id": item, "transcript": item})
+            await _next_event(responses, "final")
+            await requests.put(_AsrWorkerRequest("activity", 0, speech_active=False))
+            await asyncio.wait_for(requests.join(), 1)
+            assert state.last_provider_final_cycle == cycle
+            assert state.fallback_key is None
+            assert state.pending_local_pause is None
+        assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
+    finally:
+        sender.cancel()
+        receiver.cancel()
+        await asyncio.gather(sender, receiver, return_exceptions=True)
+
+
 async def test_fallback_waiter_is_reused_across_audio_frames():
     class CountWaits(asyncio.Event):
         calls = 0
