@@ -144,7 +144,12 @@ __all__ = [
 # ── 本模块私有常量（visit_settings 里没有的协议细节）──────────────────────
 
 _ENVELOPE_VERSION = 1          # 信封 v
-_PAYLOAD_VERSION = 1           # payload v（与信封 v 独立）
+# payload v（与信封 v 独立）按线协议主版本登记、由它推出：升 payload v（= 已知字段换了语义）
+# 必须同时升 VISIT_WIRE_PROTO 并在这里新增一项。只升 v 不升 proto 的话，新旧两端的 hello
+# 会被对方当 _invalid 吞掉、握手干等超时，走不到 proto_mismatch 的「请双方更新」提示。
+# 已有的项不改（测试钉住），加字段不升版（未知字段本就忽略）
+_PAYLOAD_VERSION_BY_PROTO = {1: 1}
+_PAYLOAD_VERSION = _PAYLOAD_VERSION_BY_PROTO[VISIT_WIRE_PROTO]
 _U32_MAX = 2 ** 32 - 1
 _LN_MAX_DIGITS = 10            # ln = 'h:' + ≤10 位数字 → ≤12 字符
 _WIDEST_LN = "h:" + "9" * _LN_MAX_DIGITS

@@ -1534,3 +1534,15 @@ def test_known_payloads_must_carry_payload_version_one(v):
     bad = vw.decode_msg(json.dumps(_text_msg("x", v=v)), cmd=2)
     assert bad["t"] == "_invalid" and bad["seq"] == 17
     assert vw.decode_msg(json.dumps(_text_msg("x", v=1)), cmd=2)["t"] == "text"
+
+
+def test_payload_version_is_bound_to_the_wire_protocol_version():
+    # 只升 payload v 不升 caps.proto：混合版本握手会静默挂起而不是 proto_mismatch。
+    # payload v 由协议主版本查表推出；已登记的项不能改，新版本只能加新的协议主版本
+    from config.visit_settings import VISIT_WIRE_PROTO
+
+    table = vw._PAYLOAD_VERSION_BY_PROTO
+    assert table[1] == 1
+    assert vw._PAYLOAD_VERSION == table[VISIT_WIRE_PROTO]
+    versions = [table[p] for p in sorted(table)]
+    assert versions == sorted(set(versions))      # 每个协议主版本一个不同的 payload v，只增不减
