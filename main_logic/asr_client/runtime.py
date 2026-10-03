@@ -4070,6 +4070,9 @@ class IndependentAsrRuntime:
         if lifecycle is not None and lifecycle.provider_policy.observes_local_activity:
             asr_session = self._asr_session
             if asr_session is not None and getattr(asr_session, "is_ready", False):
+                hint_identity = self._capture_runtime_identity(
+                    ingress_token=self._asr_current_ingress_token,
+                )
                 try:
                     await asr_session.signal_local_activity(
                         speech_active=event
@@ -4085,6 +4088,8 @@ class IndependentAsrRuntime:
                         "[%s] local ASR activity hint failed",
                         self.display_name,
                     )
+                if not self._runtime_identity_matches(hint_identity):
+                    return
         if (
             lifecycle is not None
             and lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
