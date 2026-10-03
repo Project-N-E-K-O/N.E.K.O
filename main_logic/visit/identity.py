@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -505,7 +505,9 @@ class PubkeySet:
         if NEKO_VISIT_DEV_KEYFILE:
             try:
                 dev_key = load_dev_public_key(NEKO_VISIT_DEV_KEYFILE)
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
+                # 加密的 PKCS#8 PEM 在 password=None 时抛 TypeError：同样按「不可用」跳过，
+                # 不能让身份初始化整个失败
                 logger.warning("visit pubkeys: dev keyfile unusable: %s", type(exc).__name__)
         return cls.build(now=now, fetched=fetched, dev_public_key=dev_key)
 

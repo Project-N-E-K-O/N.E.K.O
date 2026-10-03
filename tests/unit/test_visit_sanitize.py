@@ -427,3 +427,14 @@ def test_random_bracket_slash_mixes_never_leave_an_envelope_tag():
         out = escape_envelope(raw)
         assert not _ENVELOPE_TAG_RE.search(out), (raw, out)
         assert escape_envelope(out) == out, (raw, out)
+
+
+def test_peer_ngram_search_streams_the_peer_lines_and_keeps_text_order():
+    # 对端转录逐行流过（生成器只能遍历一次）；命中按待查文本里的先后返回
+    def peer():
+        yield "无关的一句话"
+        yield "四五六七八九十百"        # 命中 text 靠后的位置
+        yield "一二三四五六七八"        # 命中 text 开头
+
+    text = "一二三四五六七八九十百"
+    assert find_peer_ngram(text, peer(), n=8) == tuple("一二三四五六七八")

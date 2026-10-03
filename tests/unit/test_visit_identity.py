@@ -572,3 +572,16 @@ def test_duplicate_fetched_kid_is_revoked(priv, second_same):
     pk = PubkeySet.build(now=NOW, fetched=fetched, builtin={})
     with pytest.raises(TicketRejected):
         _verify(mint_ticket(_claims(kid="k2"), priv), pubkeys=pk, blocklist=SpyBlocklist())
+
+
+def test_an_encrypted_dev_keyfile_is_skipped_not_fatal(tmp_path, monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(b"secret"),
+    )
+    path = tmp_path / "dev.pem"
+    path.write_bytes(pem)
+    monkeypatch.setattr(idm, "NEKO_VISIT_DEV_KEYFILE", str(path))
+    pk = PubkeySet.from_runtime(now=NOW, fetched=None)
+    assert VISIT_DEV_KID not in pk.keys

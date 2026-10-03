@@ -529,8 +529,8 @@ async def run_revocation(
     *,
     roster: PeerRoster,
     forget_subject: ForgetSubject,
+    void_pending: VoidPending,
     own_char: str | None = None,
-    void_pending: VoidPending | None = None,
 ) -> bool:
     """Execute (or resume) one revocation log step by step.
 
@@ -542,7 +542,10 @@ async def run_revocation(
     ``/scoped_forget`` call, injected, e.g. ``ScopedMemoryClient.post_forget``)
     and must return ``True`` once the erase is confirmed; any other return
     value raises :class:`ForgetStepFailed` before the step is recorded, so a
-    failed erase is never marked done. ``own_char`` is the character's
+    failed erase is never marked done. ``void_pending`` (required) drops
+    the staged pending work of this person (diary facts, previews, ...); a
+    caller with nothing staged passes a no-op explicitly, so that step is
+    never recorded as done without the cleanup having run. ``own_char`` is the character's
     current name (resolved from ``own_char_uid`` by the caller); it defaults
     to the name stored in the log. When every step is done the log is
     closed and ``True`` is returned; ``False`` means the log was already gone.
@@ -596,8 +599,8 @@ async def run_revocation(
             for visit_id in visit_ids:
                 await VisitSpool(log.config_dir, visit_id).delete_peer_fields()
         elif step == STEP_VOID_PENDING:
-            if void_pending is not None:
-                await void_pending(copy.deepcopy(record))
+            # 必填：缺省时静默记完成会让暂存的日记事实 / 预览在清除后照样被提交
+            await void_pending(copy.deepcopy(record))
         else:
             raise ValueError(f"unknown revocation step {step!r}")
         await log.mark_done(rev_id, step)

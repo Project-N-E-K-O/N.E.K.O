@@ -56,6 +56,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import math
 import threading
 import weakref
 from collections.abc import Mapping
@@ -275,9 +276,10 @@ def _check_char_entry(entry: Any, where: str) -> dict:
     """Validate one ``by_char`` entry the way strict roster reads do.
 
     The entry must be an object; ``pairs`` (when present) a list of non-empty
-    ids; ``chars`` (when present) an object mapping non-empty ids to objects;
-    ``last_summary`` (when present) an object or null. Raises
-    :class:`RosterCorruptError`.
+    ids; ``chars`` (when present) an object mapping non-empty ids to objects
+    whose ``last_seen`` (when present) is a finite number; ``last_summary``
+    (when present) an object or null whose ``ended_at`` (when present) is a
+    finite number. Raises :class:`RosterCorruptError`.
     """
     if not isinstance(entry, dict):
         raise RosterCorruptError(f"{where}: by_char entry is not an object")
@@ -290,10 +292,22 @@ def _check_char_entry(entry: Any, where: str) -> dict:
     ):
         # 值也要是 object：改名合并遇到同一 id 时会静默丢掉坏的一边
         raise RosterCorruptError(f"{where}: chars is not an object of id -> object")
+    # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
+    # 把较新的记录覆盖掉
+    if any("last_seen" in info and not _is_finite_number(info["last_seen"])
+           for info in chars.values()):
+        raise RosterCorruptError(f"{where}: chars last_seen is not a number")
     summary = entry.get("last_summary")
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
+    if summary is not None and "ended_at" in summary and not _is_finite_number(summary["ended_at"]):
+        raise RosterCorruptError(f"{where}: last_summary ended_at is not a number")
     return entry
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
 
 def _merge_char_entries(target: dict, source: dict) -> dict:

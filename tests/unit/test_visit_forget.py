@@ -56,6 +56,10 @@ CHAR_UID_A = "charuid_a"
 CHAR_UID_B = "charuid_b"
 
 
+async def _no_void(record: dict) -> None:
+    """Nothing staged for this person in these tests."""
+
+
 class Upstream502(RuntimeError):
     pass
 
@@ -139,7 +143,7 @@ async def test_two_cats_forgotten_and_remove_char_waits_for_all_forgets(tmp_path
     server = FakeMemoryServer(roster, PEER_X, "A", fail_on_call=3)
 
     with pytest.raises(Upstream502):
-        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget)
+        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     # 第 3 个 forget 502：by_char['A'] 仍在、日志保留，上次摘要已在第一步删掉。
     entry = await roster.get_char_entry(PEER_X, "A")
     assert entry is not None and "last_summary" not in entry
@@ -151,7 +155,7 @@ async def test_two_cats_forgotten_and_remove_char_waits_for_all_forgets(tmp_path
     ]
 
     # 重放补完后才删。
-    assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget)
+    assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     assert await roster.get_char_entry(PEER_X, "A") is None
     assert await log.load(rev_id) is None
     unique = {(s["subject_kind"], s["subject_id"]) for s in server.calls}
@@ -171,7 +175,7 @@ async def test_forget_under_one_character_keeps_the_other(tmp_path):
     plan_a = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
     rev_a = await log.open_plan(plan_a)
     server = FakeMemoryServer()
-    await run_revocation(log, rev_a, roster=roster, forget_subject=server.forget)
+    await run_revocation(log, rev_a, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     peer = await roster.get_peer(PEER_X)
     assert peer is not None and set(peer["by_char"]) == {"B"}
     c_b = derive_peer_char_id(PEER_X, TAG_Y)
@@ -181,7 +185,7 @@ async def test_forget_under_one_character_keeps_the_other(tmp_path):
     assert any(c_b in s["subject_id"] for s in plan_b.subjects)
     rev_b = await log.open_plan(plan_b)
     assert rev_b != rev_a
-    await run_revocation(log, rev_b, roster=roster, forget_subject=server.forget)
+    await run_revocation(log, rev_b, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     assert await roster.get_peer(PEER_X) is None
 
 
@@ -206,7 +210,7 @@ async def test_reopen_merges_new_subjects_and_keeps_done_steps(tmp_path):
     rev_id = await log.open_plan(plan1)
     server = FakeMemoryServer(fail_on_call=2)
     with pytest.raises(Upstream502):
-        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget)
+        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     done_before = (await log.load(rev_id))["done_steps"]
     assert forget_step_id(plan1.subjects[0]) in done_before
 
@@ -223,7 +227,7 @@ async def test_reopen_merges_new_subjects_and_keeps_done_steps(tmp_path):
     forgets = [i for i, s in enumerate(record["steps"]) if s.startswith("forget:")]
     assert record["steps"].index(STEP_REMOVE_CHAR) > max(forgets)
 
-    await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget)
+    await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void)
     assert await roster.get_char_entry(PEER_X, "A") is None
     assert await log.load(rev_id) is None
 
@@ -264,8 +268,8 @@ async def test_logs_are_partitioned_by_own_account(tmp_path):
     assert [r["id"] for r in await log_a.list_open()] == [rev_a]
     assert {r["id"] for r in await RevocationLog.list_all_open(tmp_path)} == {rev_a, rev_b}
     with pytest.raises(ValueError):
-        await run_revocation(log_a, rev_a, roster=roster_b, forget_subject=FakeMemoryServer().forget)
-    await run_revocation(log_a, rev_a, roster=roster_a, forget_subject=FakeMemoryServer().forget)
+        await run_revocation(log_a, rev_a, roster=roster_b, forget_subject=FakeMemoryServer().forget, void_pending=_no_void)
+    await run_revocation(log_a, rev_a, roster=roster_a, forget_subject=FakeMemoryServer().forget, void_pending=_no_void)
     assert await roster_a.get_peer(PEER_X) is None
     assert await roster_b.get_peer(PEER_X) is not None
 
@@ -331,7 +335,7 @@ async def test_unconfirmed_forget_is_not_recorded_and_log_is_kept(tmp_path):
         return False
 
     with pytest.raises(ForgetStepFailed):
-        await run_revocation(log, rev_id, roster=roster, forget_subject=failing)
+        await run_revocation(log, rev_id, roster=roster, forget_subject=failing, void_pending=_no_void)
     record = await log.load(rev_id)
     assert record is not None
     assert not any(step.startswith("forget:") for step in record["done_steps"])
@@ -409,7 +413,7 @@ async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path
     rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
     with pytest.raises(SpoolStateUnreadable):
         await run_revocation(log, rev_id, roster=roster,
-                             forget_subject=FakeMemoryServer().forget)
+                             forget_subject=FakeMemoryServer().forget, void_pending=_no_void)
     record = await log.load(rev_id)
     assert record is not None and "wipe_spool" not in record["done_steps"]
 
@@ -583,7 +587,7 @@ async def test_replay_restores_a_participant_subject_dropped_from_the_log(tmp_pa
     assert await log.load(rev_id) is not None          # 单看日志是自洽的
 
     server = FakeMemoryServer(roster, PEER_X, "A")
-    assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget) is True
+    assert await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget, void_pending=_no_void) is True
     assert dropped in server.calls
     # remove_char 仍在所有 forget 之后：每次 forget 时名册条目都还在
     assert all(server.entry_present_at_each_call)
@@ -636,3 +640,15 @@ async def test_noncanonical_subjects_are_refused_before_persistence(tmp_path, ma
     with pytest.raises(ValueError):
         await log.open(PEER_X, CHAR_UID_A, plan.pair_ids, list(plan.subjects) + [bogus])
     assert not log.path_for(plan.revocation_id).exists()
+
+
+async def test_void_pending_is_a_required_step_callback(tmp_path):
+    # 缺省回调不能让 void_pending 静默记完成、日志被删
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    with pytest.raises(TypeError):
+        await run_revocation(log, rev_id, roster=roster,
+                             forget_subject=FakeMemoryServer().forget)  # type: ignore[call-arg]
+    assert await log.load(rev_id) is not None

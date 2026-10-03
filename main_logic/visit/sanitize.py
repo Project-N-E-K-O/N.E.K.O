@@ -628,22 +628,31 @@ def ngram_units(text: str) -> list[str]:
 def find_peer_ngram(
     text: str, peer_lines: Iterable[str], n: int = VISIT_PEER_NGRAM_N,
 ) -> tuple[str, ...] | None:
-    """Return the first ``n``-unit sequence of ``text`` found in any peer line."""
+    """Return the first ``n``-unit sequence of ``text`` found in any peer line.
+
+    Only ``text`` (a short summary / fact / persona) is indexed; ``peer_lines``
+    is streamed one line at a time, so a whole visit transcript is never held
+    as an n-gram set.
+    """
     if n <= 0:
         raise ValueError("n must be positive")
-    grams: set[tuple[str, ...]] = set()
-    for line in peer_lines:
-        units = ngram_units(line or "")
-        for k in range(len(units) - n + 1):
-            grams.add(tuple(units[k:k + n]))
-    if not grams:
-        return None
+    # 待查文本很短，只为它建索引；整场对端转录逐行流过，不在内存里展开成 n-gram 集合
     units = ngram_units(text or "")
+    first_at: dict[tuple[str, ...], int] = {}
     for k in range(len(units) - n + 1):
-        gram = tuple(units[k:k + n])
-        if gram in grams:
-            return gram
-    return None
+        first_at.setdefault(tuple(units[k:k + n]), k)
+    if not first_at:
+        return None
+    best: int | None = None
+    for line in peer_lines:
+        peer_units = ngram_units(line or "")
+        for k in range(len(peer_units) - n + 1):
+            at = first_at.get(tuple(peer_units[k:k + n]))
+            if at is not None and (best is None or at < best):
+                best = at
+        if best == 0:
+            break
+    return None if best is None else tuple(units[best:best + n])
 
 
 def assert_no_peer_ngram(text: str, peer_lines: Iterable[str], n: int = VISIT_PEER_NGRAM_N) -> None:
