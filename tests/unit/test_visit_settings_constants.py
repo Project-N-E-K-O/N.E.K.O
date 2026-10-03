@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from config import visit_settings as vs
+import config
 from utils.conversation_settings_constants import ALLOWED_CONVERSATION_SETTINGS
+
+vs = config.visit_settings   # config 包导入时已加载该子模块
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VISIT_KEYS = {"visitEnabled", "visitMemoryEnabled", "visitVoiceEnabled"}
@@ -127,8 +129,6 @@ def test_debrief_commit_backoff_caps_at_one_hour():
 
 def test_every_visit_constant_is_re_exported_from_config():
     # 后续 PR 按惯例 from config import VISIT_*：漏了再导出就是 ImportError
-    import config
-
     names = {n for n in dir(vs) if n.startswith("VISIT_")}
     assert names <= set(config.__all__)
     assert all(getattr(config, n) == getattr(vs, n) for n in names)
