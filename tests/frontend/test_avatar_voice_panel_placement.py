@@ -313,6 +313,11 @@ def test_open_voice_panel_tracks_scale_and_late_content_without_a_layout_loop(pa
     _open_action(page)
     page.evaluate("__setModelBounds(1029,1);__toolbarTick()")
     page.wait_for_function("document.querySelector('.neko-mic-subwindow').dataset.nekoUiScale === '1'")
+    # Scaling moves the action rows under a stationary mouse. Keep the pointer
+    # inside the screen panel so a device-row mouseenter cannot replace the
+    # panel whose late content this test is measuring.
+    _open_action(page)
+    page.locator('.neko-mic-subwindow').hover(position={"x": 20, "y": 20})
     page.locator('[data-neko-sidepanel-content]').evaluate("""body=>{
         const content=document.createElement('div');content.style.cssText='height:700px;flex-shrink:0';
         content.textContent='late sources';body.appendChild(content);
@@ -491,3 +496,82 @@ def test_popup_layout_subscription_cancels_queued_work_and_is_idempotent(page: P
         return {callbacks,reads};
     }""")
     assert result == {"callbacks": 0, "reads": 0}
+
+
+@pytest.mark.frontend
+def test_other_toolbar_content_does_not_rescan_buttons(page: Page):
+    _install_toolbar(page)
+    _open_action(page)
+    page.wait_for_timeout(300)
+    result = page.evaluate("""async()=>{
+        const toolbar=document.getElementById('live2d-floating-buttons');
+        const popup=document.getElementById('live2d-popup-mic');
+        const other=document.createElement('div');toolbar.appendChild(other);
+        const query=toolbar.querySelectorAll.bind(toolbar),read=popup.getBoundingClientRect.bind(popup);
+        let scans=0,reads=0;
+        toolbar.querySelectorAll=(selector)=>{scans++;return query(selector)};
+        popup.getBoundingClientRect=()=>{reads++;return read()};
+        for(let i=0;i<30;i++){other.textContent='status '+i;await new Promise(requestAnimationFrame)}
+        await new Promise(requestAnimationFrame);
+        const unrelated={scans,reads};
+        const button=document.createElement('button');button.id='live2d-btn-new';
+        other.appendChild(button);
+        await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+        const addedScans=scans;scans=0;
+        button.remove();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+        delete toolbar.querySelectorAll;delete popup.getBoundingClientRect;
+        return {unrelated,addedScans,removedScans:scans};
+    }""")
+    assert result == {"unrelated": {"scans": 0, "reads": 0}, "addedScans": 1, "removedScans": 1}
+
+
+@pytest.mark.frontend
+def test_compact_search_measures_each_width_once(page: Page):
+    page.set_viewport_size({"width": 320, "height": 400})
+    page.set_content('''<div id="live2d-popup-mic" data-opens-left="false"
+      style="position:fixed;left:8px;top:8px;width:220px;height:350px"></div>
+      <div id="panel" style="position:fixed;width:360px;height:500px;padding:8px;
+      box-sizing:border-box;max-height:420px">content</div>''')
+    page.add_script_tag(path=str(ROOT / 'static/avatar/avatar-popup-common.js'))
+    result = page.evaluate("""()=>{
+        for(let i=0;i<10;i++){
+            const b=document.createElement('button');b.id='live2d-btn-'+i;
+            b.style.cssText=`position:fixed;left:${240+i%3*15}px;top:${8+i*36}px;width:48px;height:28px`;
+            document.body.appendChild(b);
+        }
+        const panel=document.getElementById('panel');panel._popupElement=document.getElementById('live2d-popup-mic');
+        const read=panel.getBoundingClientRect.bind(panel),widths=[];
+        panel.getBoundingClientRect=()=>{widths.push(panel.style.maxWidth);return read()};
+        AvatarPopupUI.positionSidePanel(panel,panel._popupElement,{adaptivePlacement:true},false);
+        return {placement:panel.dataset.placement,reads:widths.length,unique:new Set(widths).size};
+    }""")
+    assert result["placement"] == "compact"
+    assert result["reads"] == result["unique"]
+
+
+@pytest.mark.frontend
+def test_preserved_popup_direction_uses_normal_right_margin(page: Page):
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content('''<div style="position:fixed;left:610px;top:20px;width:48px">
+      <button id="live2d-btn-mic" style="width:48px;height:48px"></button>
+      <div id="live2d-popup-mic" data-opens-left="false" style="position:absolute;
+        left:100%;margin-left:8px;width:220px;height:120px"></div></div>''')
+    page.add_script_tag(path=str(ROOT / 'static/avatar/avatar-popup-common.js'))
+    result = page.evaluate("""()=>{
+        const popup=document.getElementById('live2d-popup-mic');
+        const preserved=AvatarPopupUI.positionPopup(popup,{buttonId:'mic',preserveDirection:true});
+        const fresh=AvatarPopupUI.positionPopup(popup,{buttonId:'mic'});
+        return {preserved:preserved.opensLeft,fresh:fresh.opensLeft};
+    }""")
+    assert result == {"preserved": True, "fresh": True}
+
+
+@pytest.mark.frontend
+def test_adaptive_exit_motion_tracks_placement(page: Page):
+    _install_toolbar(page)
+    result = page.evaluate("""()=>['above','below','compact','side'].map(placement=>{
+        const panel=document.createElement('div');
+        Object.assign(panel.dataset,{placement,goDown:String(placement==='below'),goLeft:'true'});
+        return getAvatarSidePanelExitMotion(panel);
+    })""")
+    assert result == ['translateY(6px)', 'translateY(-6px)', 'none', 'translateX(6px)']

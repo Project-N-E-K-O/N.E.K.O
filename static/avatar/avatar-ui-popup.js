@@ -94,6 +94,8 @@ function applyAvatarSidePanelTransform(panel, motion = 'none') {
 }
 
 function getAvatarSidePanelExitMotion(panel) {
+    if (panel && panel.dataset && panel.dataset.placement === 'above') return 'translateY(6px)';
+    if (panel && panel.dataset && panel.dataset.placement === 'compact') return 'none';
     if (panel && panel.dataset && panel.dataset.goDown === 'true') return 'translateY(-6px)';
     return panel && panel.dataset && panel.dataset.goLeft === 'true'
         ? 'translateX(6px)'
@@ -414,10 +416,8 @@ function createPopup(manager, prefix, buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
-        popup.style.minWidth = '220px';
-        popup.style.width = '220px';
-        popup.style.maxWidth = '220px';
-        popup.style.boxSizing = 'border-box';
+        // The audio renderer owns the voice menu's width, including callers
+        // that create the popup without this shared factory.
         popup.style.maxHeight = '420px';
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';

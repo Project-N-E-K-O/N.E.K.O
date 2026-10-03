@@ -4216,7 +4216,6 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             function stopMicHoverPointerTracking() {
                 if (!micHoverPointerTracking) return;
                 document.removeEventListener('pointermove', rememberMicHoverPointer, true);
-                document.removeEventListener('mousemove', rememberMicHoverPointer, true);
                 micHoverPointerTracking = false;
             }
 
@@ -4293,7 +4292,6 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (event) rememberMicHoverPointer(event);
                 micHoverPointerTracking = true;
                 document.addEventListener('pointermove', rememberMicHoverPointer, true);
-                document.addEventListener('mousemove', rememberMicHoverPointer, true);
                 var bridgeStartedAt = Date.now();
                 function attemptCollapse() {
                     micActionHoverCollapseTimer = null;

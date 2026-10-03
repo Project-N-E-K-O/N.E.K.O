@@ -315,6 +315,7 @@
         let buttonNodes = [];
         let frame = null;
         let stopped = false;
+        let buttonsDirty = false;
         let lastSignature = '';
         const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(queue) : null;
 
@@ -335,6 +336,10 @@
         function sync() {
             frame = null;
             if (stopped || !popup.isConnected || popup.style.display === 'none' || popup.style.opacity === '0') return;
+            if (buttonsDirty) {
+                refreshButtons();
+                buttonsDirty = false;
+            }
             if (signature() === lastSignature) return;
             onLayout();
             if (!stopped) lastSignature = signature();
@@ -351,8 +356,12 @@
         }
 
         function onToolbarMutation(records) {
-            if (records.some(record => record.type === 'childList' && !popup.contains(record.target))) {
-                refreshButtons();
+            const selector = '[id*="-btn-"], [class$="-trigger-btn"]';
+            const containsButton = node => node.nodeType === 1
+                && (node.matches(selector) || node.querySelector(selector));
+            if (records.some(record => !popup.contains(record.target)
+                && [...record.addedNodes, ...record.removedNodes].some(containsButton))) {
+                buttonsDirty = true;
                 queue();
             }
         }
@@ -489,7 +498,9 @@
         const viewport = niriViewport ? { left: 0, top: 0, right: screenWidth, bottom: screenHeight }
             : (buttonId === 'mic' ? getOverlayViewport()
                 : { left: 0, top: 0, right: screenWidth, bottom: screenHeight });
-        if (preserveDirection && (popupRect.left < viewport.left + topMargin || popupRect.right > viewport.right - topMargin)) {
+        const reservedWidth = effectiveSidePanelWidth > 0 ? gap + effectiveSidePanelWidth : 0;
+        if (preserveDirection && (popupRect.left - (popup.dataset.opensLeft === 'true' ? reservedWidth : 0) < viewport.left + topMargin
+            || popupRect.right + (popup.dataset.opensLeft === 'true' ? 0 : reservedWidth) > viewport.right - rightMargin)) {
             preserveDirection = false;
             resetPopupPosition(popup);
             popupRect = getPopupPlacementRect(popup, placementApi);
@@ -499,9 +510,7 @@
         const effectiveRight = effectiveSidePanelWidth > 0
             ? popupRect.right + gap + effectiveSidePanelWidth
             : popupRect.right;
-        const keepHorizontalPosition = preserveDirection && popupRect.left >= viewport.left + topMargin
-            && popupRect.right <= viewport.right - topMargin;
-        if (keepHorizontalPosition) {
+        if (preserveDirection) {
             opensLeft = popup.dataset.opensLeft === 'true';
         } else if (effectiveRight > viewport.right - rightMargin) {
             const button = document.getElementById(`${buttonPrefix}${buttonId}`);
@@ -679,14 +688,18 @@
         }
 
         function measure(width, height) {
-            const key = `${width}:${height}`;
-            if (!measurements.has(key)) {
-                applySizeLimits(width, height);
+            if (!measurements.has(width)) {
+                // Wrapping and the minimum usable height depend on width, not
+                // on the free region's height. Measure once, then fit in memory.
+                setWidth(width);
+                container.style.maxHeight = container._originalMaxHeight;
                 const rect = container.getBoundingClientRect();
-                measurements.set(key, { width: rect.width * scale, height: rect.height * scale,
+                measurements.set(width, { width: rect.width * scale, height: rect.height * scale,
                     minHeight: getSidePanelMinimumHeight(container, insets, scale, naturalHeight) });
             }
-            return measurements.get(key);
+            const size = measurements.get(width);
+            const minimumBoxHeight = (insets.borderBox ? 1 : insets.height + 1) * scale;
+            return { ...size, height: Math.min(size.height, Math.max(minimumBoxHeight, height)) };
         }
 
         function sideCandidate(left) {
@@ -781,7 +794,7 @@
         container.style.top = `${chosen.y}px`;
         container.style.overflowY = 'auto';
         container.dataset.goLeft = String(chosen.left);
-        container.dataset.goDown = String(chosen.placement !== 'side');
+        container.dataset.goDown = String(chosen.placement === 'below');
         container.dataset.placement = chosen.placement;
         applySidePanelTransform(container, 'none');
     }
@@ -811,6 +824,7 @@
             positionAdaptiveSidePanel(container, anchor, options);
             return;
         }
+        delete container.dataset.placement;
         const gap = Number.isFinite(options.gap) ? options.gap : 12;
         const edgeMargin = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
         const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
