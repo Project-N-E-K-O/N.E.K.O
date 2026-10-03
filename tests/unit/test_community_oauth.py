@@ -217,14 +217,36 @@ def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
     }
     assert "+8613800000000" not in json.dumps(profile)
 
+    spaced = {"username": "User", "email": None, "phone": "+86 138-0000-0000"}
+    assert "phone" not in O._public_user_profile(spaced, USER_ID)
+    spaced_profile = O._persisted_user_profile(spaced, USER_ID)
+    assert spaced_profile["phone"] == "+86138****0000"
+    dumped = json.dumps(spaced_profile)
+    assert "+86 138-0000-0000" not in dumped
+    assert "8613800000000" not in dumped
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("raw", "masked"),
-    [("13800000000", "138****0000"), ("1234567", "****67")],
+    [
+        ("13800000000", "138****0000"),
+        ("1234567", "****67"),
+        ("+86 138 0000 0000", "+86138****0000"),
+        ("138-0000-0000", "138****0000"),
+        ("+86-138-0000-0000", "+86138****0000"),
+    ],
 )
 def test_mask_phone_hides_the_middle_digits(raw, masked):
     assert O._mask_phone(raw) == masked
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["---", "", "   ", "+--"])
+def test_phone_without_digits_is_treated_as_missing(bad):
+    assert O._mask_phone(bad) is None
+    profile = O._persisted_user_profile({"username": "User", "phone": bad}, USER_ID)
+    assert "phone" not in profile
 
 
 @pytest.mark.unit

@@ -8,6 +8,7 @@ Subcommands (all coordinates are physical pixels, the process is per-monitor DPI
   topgrid X Y W H                -> distinct windows on an 8x8 grid over the saved shot range (rect + margin)
   topat X Y                      -> {hwnd, title, process} of the top-level window under (X, Y)
   findwin TITLE                  -> {hwnd, rect} of a visible top-level window with that title, or null
+  pixel X Y                      -> [r, g, b] of one screen pixel
   cursor                         -> current cursor position
   setcursor X Y                  -> move the cursor
   compare BG.png FG.png BG2.png W H      -> diff stats of the probe region inside region shots
@@ -168,6 +169,13 @@ def move_to(x, y):
     user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
 
 
+def pixel(x, y):
+    """RGB of one screen pixel (used to prove the visitor pattern is really drawn at a hit-test point)."""
+    from PIL import ImageGrab
+
+    return list(ImageGrab.grab(bbox=(x, y, x + 1, y + 1), all_screens=True).getpixel((0, 0)))[:3]
+
+
 def cursor():
     p = wt.POINT()
     user32.GetCursorPos(ctypes.byref(p))
@@ -290,6 +298,8 @@ def main(argv):
         r = top_at(int(argv[2]), int(argv[3]))
     elif cmd == "findwin":
         r = find_window(argv[2])
+    elif cmd == "pixel":
+        r = pixel(int(argv[2]), int(argv[3]))
     elif cmd == "cursor":
         r = cursor()
     elif cmd == "setcursor":

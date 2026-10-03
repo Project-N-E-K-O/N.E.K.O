@@ -43,7 +43,7 @@ const SHOT_DIR = path.join(outDir, 'shots', RUN_ID.replace(/[:.]/g, '-'));
 const rel = (p) => path.relative(outDir, p).split(path.sep).join('/');
 // Sections loaded from a results.json written before run stamps existed: attribute them explicitly instead of
 // leaving them unattributed next to a freshly stamped rerun phase.
-const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace' };
+const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace', blank: 'blankCheck' };
 for (const [ph, key] of Object.entries(SECTION_OF)) {
   if (results[key] !== undefined && !results.runs[ph]) {
     results.runs[ph] = { runId: 'unstamped-legacy', status: 'ok', dataFromRunId: 'unstamped-legacy', note: 'written before run stamps; see git history of this file' };
@@ -284,7 +284,43 @@ async function blankRun(c, label, frames, hookOpts) {
     if (st.verified >= frames || Date.now() - t0 > 30000) break;
   }
   const hook = await c.eval(`window.__visitProbe.unhook(); return Object.assign({}, window.__visitProbe.stat);`);
-  return { label, framesChecked: st.verified, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), hook };
+  // complete=false: the 30 s timeout hit before `frames` verified frames (hidden Pet, stalled rendering) —
+  // such a run does not satisfy the "N consecutive frames without a blank" gate and must not count as clean
+  return { label, framesChecked: st.verified, complete: st.verified >= frames, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), blankDiag: hook.blankDiag || [], hook };
+}
+
+// Blank-frame check only (300 frames per mode, sync), with per-blank diagnostics.
+async function phaseBlank(c) {
+  const r = { runs: [] };
+  // checkpoint the in-progress result under this run's own record: each save() below keeps the completed runs
+  // (and their blankDiag) if the phase is interrupted, without overwriting a previous successful blankCheck
+  // that runs.blank.dataFromRunId still points to. Promoted to results.blankCheck only on success.
+  if (results.runs.blank) results.runs.blank.partialData = r;
+  await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE);
+    window.__visitProbe.fp('guest').configure({ crop: [320, 448], packer: '2d', verifyEvery: 0 });
+    return window.__visitProbe.computeCrop(320, 448);`).then((v) => { r.crop = v; });
+  try {
+    for (const m of [{ kind: 'timer', fps: 30 }, { kind: 'raf', fps: 0 }, { kind: 'timer', fps: 60 }, { kind: 'timer', fps: 60 }, { kind: 'timer', fps: 60 }]) {
+      await c.eval(`return window.__visitProbe.setMode(${JSON.stringify(m)});`);
+      await sleep(800);
+      const b = await blankRun(c, `${m.kind}${m.fps || 'vsync'}-sync`, 300);
+      r.runs.push(b);
+      log('blank', b.label, b.blankFrames + '/' + b.framesChecked, JSON.stringify(b.blankDiag.slice(0, 3)));
+      save();
+      // fail the phase (data stays only in runs.blank.partialData) instead of promoting an incomplete run
+      if (!b.complete) throw new Error(`${b.label}: only ${b.framesChecked}/300 frames verified before timeout; not a valid blank check`);
+    }
+  } finally {
+    await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
+  }
+  // Explicit gate verdict (as for T1): runs.blank.status 'ok' only means the phase completed. Blank frames are
+  // recorded as a failing verdict rather than thrown away — their blankDiag is exactly the evidence wanted.
+  const reasons = r.runs.filter((b) => b.blankFrames > 0).map((b) => `${b.label}: ${b.blankFrames}/${b.framesChecked} blank`);
+  r.verdict = { pass: reasons.length === 0, reasons, gate: '§3.12: 300 consecutive frames without a blank, per run' };
+  log('blank verdict', JSON.stringify(r.verdict));
+  results.blankCheck = r;
+  if (results.runs.blank) delete results.runs.blank.partialData;
+  save();
 }
 
 async function phaseT2(c) {
@@ -519,7 +555,11 @@ async function phaseT3(c) {
         samples.push({ clickThrough: at.clickThrough, wsExTransparent: at.wsExTransparent });
       }
       const el = await c.eval(`return window.__visitProbe.elementAt(${tcx}, ${tcy});`);
-      r.hit.push({ variant: v.name, elementFromPoint: el, clickThroughSamples: samples });
+      // for the opaque-point variants, record the actual screen colour at the sampled pixel (backdrop-guarded):
+      // proves the visitor pattern is really drawn there, otherwise "click-through" would be vacuous
+      let screenRgb = null;
+      if (v.opaque) { if (backdropGuard) backdropGuard(); screenRgb = os('pixel', tx, ty); }
+      r.hit.push({ variant: v.name, elementFromPoint: el, clickThroughSamples: samples, screenRgb });
       log('t3 hit', v.name, JSON.stringify(el), JSON.stringify(samples));
     }
   } finally {
@@ -603,6 +643,7 @@ async function phaseT4(c) {
       await sleep(4000);
       await inject(cdp);
     } else if (ph === 't2') await phaseT2(cdp);
+    else if (ph === 'blank') await phaseBlank(cdp);
     else if (ph === 't5') await phaseT5(cdp);
     else if (ph === 't3') await phaseT3(cdp);
     else if (ph === 't4') await phaseT4(cdp);

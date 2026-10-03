@@ -272,10 +272,11 @@
       if (packer === 'webgl') packWebGL(src, sx, sy, sw, sh);
       else pack2D(src, sx, sy, sw, sh);
       stat.onFrame++;
+      let blankNow = false;
       if (verifyEvery > 0 && stat.onFrame % verifyEvery === 0) {
         const s = bottomAlphaSum(packer);
         stat.verified++;
-        if (s === 0) stat.blank++;
+        if (s === 0) { stat.blank++; blankNow = true; }
         stat.minAlphaSum = Math.min(stat.minAlphaSum, s);
         stat.maxAlphaSum = Math.max(stat.maxAlphaSum, s);
       }
@@ -284,6 +285,8 @@
       const dt = performance.now() - t0;
       stat.packMsSum += dt;
       stat.packMsMax = Math.max(stat.packMsMax, dt);
+      // tells the parent (same task) that this frame packed to all-transparent, so it can inspect its own state
+      return { blank: blankNow };
     },
     suspend() {},
     setAuthToken() {},
