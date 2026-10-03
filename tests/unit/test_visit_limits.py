@@ -225,10 +225,10 @@ async def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
 
     bl = Blocklist.load(tmp_path)
 
-    async def boom(*a, **k):
+    def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(limits, "atomic_write_json_async", boom)
+    monkeypatch.setattr(limits, "atomic_write_json", boom)
     with pytest.raises(OSError):
         await bl.ablock(UID, display_name_at_block="Mimi")
     assert not bl.is_blocked(UID)
@@ -327,13 +327,13 @@ async def test_cancelled_ablock_still_lands_in_memory_and_on_disk(tmp_path, monk
 
     bl = Blocklist.load(tmp_path)
     gate = threading.Event()
-    real = limits.atomic_write_json_async
+    real = limits.atomic_write_json
 
-    async def slow_write(path, payload):
-        await asyncio.to_thread(gate.wait, 5)
-        await real(path, payload)
+    def slow_write(path, payload):
+        gate.wait(5)
+        real(path, payload)
 
-    monkeypatch.setattr(limits, "atomic_write_json_async", slow_write)
+    monkeypatch.setattr(limits, "atomic_write_json", slow_write)
     task = asyncio.create_task(bl.ablock(UID, display_name_at_block="Mimi"))
     await asyncio.sleep(0.05)
     task.cancel()
@@ -389,15 +389,41 @@ async def test_concurrent_writes_from_two_instances_are_serialised(tmp_path, mon
 
     a = Blocklist.load(tmp_path)
     b = Blocklist.load(tmp_path)
-    real = limits.atomic_write_json_async
+    import time as _time
 
-    async def slow(path, payload):
-        await asyncio.sleep(0.05)
-        await real(path, payload)
+    real = limits.atomic_write_json
 
-    monkeypatch.setattr(limits, "atomic_write_json_async", slow)
+    def slow(path, payload):
+        _time.sleep(0.05)
+        real(path, payload)
+
+    monkeypatch.setattr(limits, "atomic_write_json", slow)
     other = "e" * 24
     await asyncio.gather(a.ablock(UID, display_name_at_block="A", now=1.0),
                          b.ablock(other, display_name_at_block="B", now=2.0))
     on_disk = Blocklist.load(tmp_path)
     assert on_disk.is_blocked(UID) and on_disk.is_blocked(other)
+
+
+def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_path):
+    # 各线程各自的事件循环里并发拉黑：同一把按路径登记的线程锁串行化，整表不互相冲掉
+    import asyncio
+    import threading
+
+    uids = [f"{i:024x}" for i in range(8)]
+    errors: list[BaseException] = []
+
+    def worker(uid):
+        try:
+            asyncio.run(Blocklist.load(tmp_path).ablock(uid, display_name_at_block="x"))
+        except BaseException as exc:      # noqa: BLE001 - 收集后在主线程断言
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(u,)) for u in uids]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(10)
+    assert errors == []
+    on_disk = Blocklist.load(tmp_path)
+    assert all(on_disk.is_blocked(u) for u in uids)

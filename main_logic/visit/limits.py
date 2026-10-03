@@ -50,7 +50,6 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -66,8 +65,9 @@ from config.visit_settings import (
     VISIT_PEER_RECV_BPS,
     VISIT_PEER_RECV_MSGS_PER_S,
 )
+from main_logic.visit.subjects import path_lock
 from utils.file_utils import (
-    atomic_write_json_async,
+    atomic_write_json,
     read_json,
     read_json_async,
 )
@@ -387,20 +387,6 @@ class BlocklistUnavailable(RuntimeError):
     """The blocklist file exists but could not be read; it must not be treated as empty."""
 
 
-# 同一个黑名单文件的所有实例共用一把写锁（弱引用登记，没有实例引用后自动释放）：
-# 各自一把锁时，两个实例的 ablock 互不串行，后写的整表会冲掉先写的那条
-_BLOCKLIST_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
-
-
-def _blocklist_lock(path: Path) -> asyncio.Lock:
-    key = os.path.normcase(str(path.resolve()))
-    lock = _BLOCKLIST_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _BLOCKLIST_LOCKS[key] = lock
-    return lock
-
-
 class Blocklist:
     """In-memory view of ``config_dir/visit_blocklist.json`` with atomic writes.
 
@@ -412,8 +398,10 @@ class Blocklist:
     verification rejects every peer. Treating it as empty would let a
     blocked peer back in. Mutations write the new list first and only then
     swap it in, so a failed write leaves memory and disk consistent. Every
-    instance on the same file shares one write lock, and each mutation
-    re-reads the file under it before applying its change, so two instances
+    mutation runs as one read-modify-write transaction in a worker thread
+    under the process-wide per-path lock (``subjects.path_lock``, the same
+    registry the roster and spool use): it re-reads the file, applies its
+    change and writes atomically, so instances on any thread or event loop
     never overwrite each other's rows.
     """
 
@@ -421,7 +409,6 @@ class Blocklist:
                  *, available: bool = True) -> None:
         self._path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
         self._entries: dict[str, BlockEntry] = {e.visit_uid: e for e in entries}
-        self._lock = _blocklist_lock(self._path)
         self.available = available
 
     @property
@@ -532,11 +519,11 @@ class Blocklist:
     ) -> bool:
         """Block ``visit_uid`` and persist; return False if it was already blocked.
 
-        The only mutation path (with :meth:`aunblock`): every change is
-        serialised by one asyncio lock shared by all instances on this file
-        and re-reads the file under it, so concurrent blocks / unblocks (even
-        from different instances) never rebuild the list from a stale view and
-        drop each other's update.
+        The only mutation path (with :meth:`aunblock`): every change is one
+        transaction under the per-path thread lock that re-reads the file
+        first, so concurrent blocks / unblocks (from any instance, thread or
+        event loop) never rebuild the list from a stale view and drop each
+        other's update.
         Cancellation-safe: the write-then-swap transaction runs shielded, so a
         cancelled caller never leaves the file and the in-memory list apart.
         """
@@ -544,13 +531,17 @@ class Blocklist:
             lambda: self._with_block(visit_uid, display_name_at_block, reason, now)))
 
     async def _locked_txn(self, build) -> bool:
-        # 写盘与切内存是一个事务：若调用方在写盘途中被取消，事务照常做完（shield），
-        # 锁也一直持有到内存与磁盘一致，免得已拉黑的人在内存里还没生效、或被后续写入冲掉
-        async with self._lock:
+        # 写盘与切内存是一个事务，整段在工作线程里、在按路径登记的线程锁下跑：
+        # asyncio.Lock 绑定事件循环，跨循环 / 跨线程的实例共用不了；线程锁不受这个限制，
+        # 登记本身也有保护（同一路径永远拿到同一把）。调用方被取消时事务照常做完（shield）
+        return await asyncio.to_thread(self._txn_sync, build)
+
+    def _txn_sync(self, build) -> bool:
+        with path_lock(self._path):
             self._require_available()
             # 锁内先读盘上最新的整表：别的实例可能刚写过，用自己手里的旧视图重建会冲掉它
             try:
-                payload = await read_json_async(self._path)
+                payload = read_json(self._path)
             except FileNotFoundError:
                 self._entries = {}
             except (OSError, ValueError) as exc:
@@ -564,7 +555,7 @@ class Blocklist:
             entries = build()
             if entries is None:
                 return False
-            await atomic_write_json_async(self._path, self._payload(entries))
+            atomic_write_json(self._path, self._payload(entries))
             self._entries = entries
             return True
 
