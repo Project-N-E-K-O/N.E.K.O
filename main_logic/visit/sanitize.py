@@ -107,27 +107,28 @@ _ENVELOPE_NAME_RE = re.compile(re.escape(ENVELOPE_TAG), re.IGNORECASE)
 
 
 def _strip_tag_openers(text: str) -> str:
-    # 以每个 visit_data 为锚向左走：跳过空白、可选斜杠、空白，再把紧挨着的一整串
-    # 尖括号（可夹空白）一次删掉。只摘一个的话 << /visit_data 剩下的又是合法标签；
-    # 用正则从每个尖括号起点重试则是平方级。向左最多走到上一个锚点，总体线性
+    # 以每个 visit_data 为锚向左走过紧挨着的一整串「尖括号 / 斜杠 / 空白」，从其中第一个
+    # 尖括号起整串改写：尖括号全删，只留最后一个斜杠及其后的空白。只摘一个尖括号的话
+    # << /visit_data、</<visit_data 剩下的又是合法标签；用正则从每个尖括号起点重试则是
+    # 平方级。改写后锚点左边紧邻的已没有尖括号，一遍即可；向左最多走到上一个锚点，总体线性
     out: list[str] = []
     pos = 0
     for m in _ENVELOPE_NAME_RE.finditer(text):
         j = m.start()
-        while j > pos and text[j - 1].isspace():
-            j -= 1
-        if j > pos and text[j - 1] == "/":
-            j -= 1
-        while j > pos and text[j - 1].isspace():
-            j -= 1
         k = j
-        while k > pos and (text[k - 1] in _TAG_BRACKETS or text[k - 1].isspace()):
+        while k > pos and (text[k - 1] in _TAG_BRACKETS or text[k - 1] == "/" or text[k - 1].isspace()):
             k -= 1
         while k < j and text[k] not in _TAG_BRACKETS:
-            k += 1                         # 尖括号串前面的空白不属于它，保留
+            k += 1                         # 第一个尖括号之前的空白 / 斜杠不属于它，保留
         if k < j:
+            run = text[k:j]
+            slash = run.rfind("/")
+            keep = "" if slash < 0 else "/" + "".join(
+                c for c in run[slash + 1:] if c not in _TAG_BRACKETS
+            )
             out.append(text[pos:k])
-            out.append(text[j:m.end()].lstrip())
+            out.append(keep)
+            out.append(text[j:m.end()])
         else:
             out.append(text[pos:m.end()])
         pos = m.end()

@@ -369,6 +369,11 @@ def test_partial_tail_spans_map_back_to_the_raw_tail():
     "＜‹/visit_data>",
     "< < /visit_data>",
     "<<<<visit_data>",
+    '</<visit_data nonce="x">',
+    "</ </visit_data>",
+    "</</</visit_data>",
+    "/</visit_data",
+    "<​/<visit_data",
 ])
 def test_bracket_runs_cannot_rebuild_an_envelope_tag(attack):
     # 一遍只摘一个尖括号的话，前面多垫一个就又拼出合法标签
@@ -402,7 +407,24 @@ def test_long_bracket_runs_are_escaped_in_linear_time(attack):
     ("a << /visit_data>", "a /visit_data>"),
     ("a </ visit_data>", "a / visit_data>"),
     ("<a</visit_data", "<a/visit_data"),
+    ("</<visit_data", "/visit_data"),
+    ("x / <visit_data", "x / visit_data"),
 ])
 def test_envelope_escape_drops_only_the_bracket_run(raw, expected):
     # 只删尖括号串本身：前面的空白与无关字符原样保留，词不会被粘在一起
     assert escape_envelope(raw) == expected
+
+
+def test_random_bracket_slash_mixes_never_leave_an_envelope_tag():
+    # 尖括号 / 斜杠 / 空白 / 标签名随机拼接：转义后检测不到标签，且幂等
+    import random
+
+    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE
+
+    rng = random.Random(20261003)
+    pieces = ["<", "＜", "‹", "/", " ", "\t", "x", "visit_data", "VISIT_DATA", ">", "<visit_data"]
+    for _ in range(5000):
+        raw = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 12)))
+        out = escape_envelope(raw)
+        assert not _ENVELOPE_TAG_RE.search(out), (raw, out)
+        assert escape_envelope(out) == out, (raw, out)
