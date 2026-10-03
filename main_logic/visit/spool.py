@@ -391,6 +391,14 @@ def validate_state(state: Any) -> dict:
         raise SpoolStateError(f"{choice} requires a persisted debrief_pending")
     if choice == "generating:diary" and pending is not None:
         raise SpoolStateError("generating:diary requires an empty debrief_pending")
+    writes_raw = state["debrief_writes"]
+    if choice == "diary" and not (
+        isinstance(writes_raw, Mapping) and writes_raw.get("facts") is True
+        and writes_raw.get("cache") is True
+    ):
+        # 「记成日记」是两步提交，两步都成才进入 diary；半截的 diary 会被当成已结清删掉转录，
+        # 启动补录也不会再补缺的那一步
+        raise SpoolStateError("diary requires both debrief writes to be done")
     writes = state["debrief_writes"]
     if (
         not isinstance(writes, Mapping)
@@ -404,9 +412,13 @@ def validate_state(state: Any) -> dict:
     runs = state["digest_writes"]
     if not isinstance(runs, Mapping):
         raise SpoolStateError("digest_writes must be an object")
+    # 轮次按 0..N-1 登记；一轮全部批次成功后才 digest_runs += 1，所以最后一轮可以还在跑。
+    # 缺了某一轮（{"1": ...}）的状态会让结清判定只看剩下的轮次，在缺的那轮从未完成时删转录
+    if set(runs) != {str(i) for i in range(len(runs))}:
+        raise SpoolStateError("digest_writes keys must be the run numbers 0..N-1")
+    if state["digest_runs"] not in (len(runs), len(runs) - 1):
+        raise SpoolStateError("digest_runs does not match the registered digest_writes runs")
     for run, record in runs.items():
-        if not (isinstance(run, str) and run.isdigit()):
-            raise SpoolStateError("digest_writes keys must be run numbers")
         if not isinstance(record, Mapping) or set(record) != {
             "requested_at", "through_lp", "group", "segments",
         }:
@@ -456,7 +468,11 @@ def debrief_settled(state: Mapping[str, Any]) -> bool:
     """Whether the debrief reached a final outcome (or never applies: memory off)."""
     if not is_digestable(state):
         return True
-    return state.get("debrief_choice") in ("diary", "forget")
+    choice = state.get("debrief_choice")
+    if choice == "diary":
+        writes = state.get("debrief_writes") or {}
+        return writes.get("facts") is True and writes.get("cache") is True
+    return choice == "forget"
 
 
 def visit_settled(state: Mapping[str, Any]) -> bool:
@@ -628,6 +644,18 @@ def _rewrite_header_locked(path: Path, mutate, strict: bool) -> bool:
         return False
     atomic_write_bytes(path, _encode_line(header) + data[idx + 1:])
     return True
+
+
+def _unlink_unless_open(path: Path) -> bool:
+    """Unlink a spool ``.jsonl`` unless some writer in this process holds it open.
+
+    The registry lock is held through the unlink, the same exclusion the
+    header rewrite uses, so a writer cannot register in between.
+    """
+    with _OPEN_SPOOLS_LOCK:
+        if _spool_key(path) in _OPEN_SPOOLS:
+            return False
+        return _unlink(path)
 
 
 def _unlink(path: Path) -> bool:
@@ -909,7 +937,9 @@ class VisitSpool:
             state = _read_state_file(self.state_path)
             if state is None or not visit_settled(state):
                 return False
-            return _unlink(self.jsonl_path)
+            # 另一个实例可能还持有这场的写入 fd（关闭排在队列里）：删掉后它的追加
+            # 会写进已删除的 inode、关闭时一起消失
+            return _unlink_unless_open(self.jsonl_path)
 
     async def delete_if_settled(self) -> bool:
         """Delete ``.jsonl`` once the region is settled and the debrief is final.
@@ -1233,10 +1263,15 @@ class VisitSpool:
                 state = _try_read_state(state_path)
                 if state is None or not visit_settled(state):
                     continue
-                for path, st in files:
-                    if _unlink(path):
-                        deleted.append(path)
-                        total -= st.st_size
+                # 这场还被某个实例开着写（关闭排在队列里）：整场跳过，不能只删 state.json
+                # 留下转录，下一轮就再也判不出它已结清
+                with _OPEN_SPOOLS_LOCK:
+                    if _spool_key(jsonl) in _OPEN_SPOOLS:
+                        continue
+                    for path, st in files:
+                        if _unlink(path):
+                            deleted.append(path)
+                            total -= st.st_size
         return deleted
 
     @classmethod

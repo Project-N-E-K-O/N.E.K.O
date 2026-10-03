@@ -265,7 +265,10 @@ async def test_state_extra_field_rejected(tmp_path):
 
 @pytest.mark.parametrize("choice", [None, "ask_later", "diary", "forget"])
 async def test_state_allowed_choices(tmp_path, choice):
-    await VisitSpool(tmp_path, vid(1)).write_state(dict(state_for(), debrief_choice=choice))
+    state = dict(state_for(), debrief_choice=choice)
+    if choice == "diary":
+        state["debrief_writes"] = {"facts": True, "cache": True}
+    await VisitSpool(tmp_path, vid(1)).write_state(state)
 
 
 @pytest.mark.parametrize("choice", ["preview", "maybe", "committing", ""])
@@ -508,7 +511,8 @@ async def test_sweep_over_cap_keeps_unsettled_and_pending_uploads(tmp_path):
     upload_lines.write_bytes(b"l" * 1024)
     # 一场已结清的旧场次。
     done = VisitSpool(tmp_path, vid(3))
-    await done.write_state(dict(settled(state_for()), debrief_choice="diary"))
+    await done.write_state(dict(settled(state_for()), debrief_choice="diary",
+                                debrief_writes={"facts": True, "cache": True}))
     _age(done.state_path, 2)
 
     deleted = await VisitSpool.sweep(tmp_path, NOW)
@@ -1125,3 +1129,49 @@ def test_digest_batch_maps_must_be_contiguous_from_zero(batches):
         damaged["digest_writes"] = {"0": record}
         with pytest.raises(SpoolStateError):
             validate_state(damaged)
+
+
+@pytest.mark.parametrize("runs,count", [
+    ({"1": None}, 1), ({"00": None}, 1), ({"0": None, "2": None}, 2), ({"0": None}, 3),
+])
+def test_digest_run_keys_must_be_contiguous_and_match_the_count(runs, count):
+    from main_logic.visit.spool import validate_state
+
+    good = settled(state_for())
+    record = good["digest_writes"]["0"]
+    damaged = dict(good, digest_writes={k: record for k in runs}, digest_runs=count)
+    with pytest.raises(SpoolStateError):
+        validate_state(damaged)
+    # 最后一轮还在跑（已登记、未计入 digest_runs）是合法的
+    validate_state(dict(good, digest_runs=0))
+
+
+@pytest.mark.parametrize("writes", [{"facts": True, "cache": False}, {"facts": False, "cache": True}])
+def test_a_half_written_diary_is_neither_valid_nor_settled(writes):
+    from main_logic.visit.spool import validate_state, visit_settled
+
+    state = dict(settled(state_for()), debrief_choice="diary", debrief_writes=writes)
+    assert not visit_settled(state)
+    with pytest.raises(SpoolStateError):
+        validate_state(state)
+
+
+async def test_settled_deletion_skips_a_spool_another_instance_still_writes(tmp_path):
+    # 新实例的 _fd 为空，但原实例还开着这场：删掉会让后续追加写进已删除的 inode
+    live = await open_spool(tmp_path, vid(24))
+    await live.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    assert await VisitSpool(tmp_path, vid(24)).delete_if_settled() is False
+    assert live.jsonl_path.exists()
+    await live.close()
+    assert await VisitSpool(tmp_path, vid(24)).delete_if_settled() is True
+
+
+async def test_cap_sweep_skips_a_settled_spool_still_open_for_appends(tmp_path, monkeypatch):
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    live = await open_spool(tmp_path, vid(25))
+    await live.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert live.jsonl_path.exists() and live.state_path.exists()   # 整场跳过
+    await live.close()
+    await VisitSpool.sweep(tmp_path, NOW)
+    assert not live.jsonl_path.exists()
