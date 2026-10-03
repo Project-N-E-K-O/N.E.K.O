@@ -673,3 +673,24 @@ async def test_a_half_damaged_entry_fails_forget_planning(tmp_path, damage):
     roster.path.write_text(_json.dumps(data), encoding="utf-8")
     with pytest.raises(RosterCorruptError):
         await roster.expand_subjects(PEER_X, "A")
+
+
+@pytest.mark.parametrize("pairs", [["q" * 24], "dup"])
+async def test_strict_reads_reject_pairs_of_another_peer(tmp_path, pairs):
+    # 混进别人的 pair（或重复）时，展开出的清除计划过不了撤销日志校验：严格读直接报损坏
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair, _ = await _upsert(roster, PEER_X, "A")
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    entry = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]
+    entry["pairs"] = [pair, pair] if pairs == "dup" else [pair] + pairs
+    roster.path.write_text(_json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.expand_subjects(PEER_X, "A")
+    with pytest.raises(RosterCorruptError):
+        await _upsert(roster, PEER_X, "A")
+    with pytest.raises(RosterCorruptError):
+        await roster.rename_char("A", "A2")

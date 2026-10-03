@@ -272,20 +272,25 @@ def _dict_at(parent: dict, key: str) -> dict:
     return value
 
 
-def _check_char_entry(entry: Any, where: str) -> dict:
+def _check_char_entry(entry: Any, where: str, *, pair: str | None = None) -> dict:
     """Validate one ``by_char`` entry the way strict roster reads do.
 
     The entry must be an object; ``pairs`` (when present) a list of non-empty
     ids; ``chars`` (when present) an object mapping non-empty ids to objects
     whose ``last_seen`` (when present) is a finite number; ``last_summary``
     (when present) an object or null whose ``ended_at`` (when present) is a
-    finite number. Raises :class:`RosterCorruptError`.
+    finite number. With ``pair`` (the id derived from the enclosing account
+    and peer), every stored pair must equal it and appear once. Raises
+    :class:`RosterCorruptError`.
     """
     if not isinstance(entry, dict):
         raise RosterCorruptError(f"{where}: by_char entry is not an object")
     pairs = entry.get("pairs", [])
     if not isinstance(pairs, list) or not all(isinstance(p, str) and p for p in pairs):
         raise RosterCorruptError(f"{where}: pairs is not a list of ids")
+    # 别的 peer 的 pair 混进来：展开出的清除计划会被撤销日志的身份绑定拒掉，这个人就清不掉
+    if pair is not None and (any(p != pair for p in pairs) or len(set(pairs)) != len(pairs)):
+        raise RosterCorruptError(f"{where}: pairs do not belong to this account and peer")
     chars = entry.get("chars", {})
     if not isinstance(chars, dict) or not all(
         isinstance(c, str) and c and isinstance(info, dict) for c, info in chars.items()
@@ -312,6 +317,14 @@ def _check_char_entry(entry: Any, where: str) -> dict:
 def _is_finite_number(value: Any) -> bool:
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value))
+
+
+def _pair_of(own_uid: Any, peer_uid: Any) -> str:
+    """``derive_pair_id`` for roster keys; a malformed key is roster damage."""
+    try:
+        return derive_pair_id(own_uid, peer_uid)
+    except ValueError as exc:
+        raise RosterCorruptError("roster account / peer key is not a valid uid") from exc
 
 
 def _merge_char_entries(target: dict, source: dict) -> dict:
@@ -422,7 +435,7 @@ class PeerRoster:
             node = node[key]
             if not isinstance(node, dict):
                 raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
-        return _check_char_entry(node, self.path.name)
+        return _check_char_entry(node, self.path.name, pair=_pair_of(self.own_uid, peer_uid))
 
     def _mutate(self, fn) -> Any:
         with path_lock(self.path):
@@ -491,7 +504,7 @@ class PeerRoster:
             entry = _dict_at(by_char, own_char)
             # 已有条目按严格读同一套规则校验：坏掉的 pairs 重建成 []、坏掉的 chars
             # 记录被直接覆盖，都会在下一次原子写里永久丢掉可恢复的数据
-            _check_char_entry(entry, self.path.name)
+            _check_char_entry(entry, self.path.name, pair=pair_id)
             pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
                 pairs.append(pair_id)
@@ -676,7 +689,7 @@ class PeerRoster:
             accounts = data["accounts"]
             if not isinstance(accounts, dict):
                 raise RosterCorruptError(f"{self.path.name}: accounts is not an object")
-            for account in accounts.values():
+            for account_uid, account in accounts.items():
                 if not isinstance(account, dict):
                     raise RosterCorruptError(f"{self.path.name}: account entry is not an object")
                 if "peers" not in account:
@@ -684,18 +697,19 @@ class PeerRoster:
                 peers = account["peers"]
                 if not isinstance(peers, dict):
                     raise RosterCorruptError(f"{self.path.name}: peers is not an object")
-                for peer in peers.values():
+                for peer_uid, peer in peers.items():
                     if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
                         raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
                     by_char = peer["by_char"]
                     if old not in by_char:
                         continue
+                    pair = _pair_of(account_uid, peer_uid)
                     # 源或目标条目（含嵌套的 pairs / chars）坏了：覆盖或合并都会丢掉
                     # 可恢复的数据（字符串 pairs 会被拆成单个字符），改名事务保留标记
-                    entry = _check_char_entry(by_char[old], self.path.name)
+                    entry = _check_char_entry(by_char[old], self.path.name, pair=pair)
                     target = by_char.get(new)
                     if new in by_char:
-                        _check_char_entry(target, self.path.name)
+                        _check_char_entry(target, self.path.name, pair=pair)
                     del by_char[old]
                     by_char[new] = _merge_char_entries(target, entry) if new in by_char else entry
                     moved += 1

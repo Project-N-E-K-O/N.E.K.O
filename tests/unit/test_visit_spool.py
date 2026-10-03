@@ -1292,3 +1292,35 @@ def test_digest_run_watermarks_must_increase():
     runs["1"] = dict(record, through_lp=record["through_lp"] + 5)
     validate_state(dict(good, digest_writes=runs, digest_runs=2,
                         digested_through_lp=record["through_lp"] + 5))
+
+
+async def test_replay_drops_schema_damaged_rows(tmp_path):
+    # 能解析但 schema 坏了的行：计入丢弃，不当作恢复出来的转录
+    sp = await open_spool(tmp_path, vid(34))
+    await sp.append(line(1, "ok"))
+    await sp.close()
+    bad_rows = [
+        {"lp": 2, "side": "host", "ts": NOW, "from": "own_cat"},                    # 缺 text
+        {"lp": 3, "side": "host", "ts": NOW, "from": "narrator", "text": "x"},      # 说话人非法
+        {"lp": "4", "side": "host", "ts": NOW, "from": "own_cat", "text": "x"},     # lp 类型坏
+    ]
+    with open(sp.jsonl_path, "ab") as f:
+        for row in bad_rows:
+            f.write((json.dumps(row) + chr(10)).encode("utf-8"))
+        f.write((json.dumps(line(5, "tail")) + chr(10)).encode("utf-8"))
+    got = await VisitSpool(tmp_path, vid(34)).read_back()
+    assert [ln["text"] for ln in got.lines] == ["ok", "tail"]
+    assert got.dropped_lines == len(bad_rows)
+    assert got.header is not None
+
+
+async def test_replay_drops_a_schema_damaged_header(tmp_path):
+    spool_dir = tmp_path / "visit_spool"
+    spool_dir.mkdir()
+    damaged = dict(header(vid(35)))
+    del damaged["own_uid"]
+    (spool_dir / f"{vid(35)}.jsonl").write_text(
+        json.dumps(damaged) + chr(10) + json.dumps(line(1)) + chr(10), encoding="utf-8")
+    got = await VisitSpool(tmp_path, vid(35)).read_back()
+    assert got.header is None and got.dropped_lines == 1
+    assert [ln["lp"] for ln in got.lines] == [1]

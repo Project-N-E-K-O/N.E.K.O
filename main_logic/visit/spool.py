@@ -701,6 +701,12 @@ def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
             obj = json.loads(raw)
             if not isinstance(obj, dict):
                 raise ValueError("not an object")
+            # 能解析的对象也要过写入时同一套 schema：缺字段 / 说话人非法 / lp 越界的行
+            # 不能当作恢复出来的转录交给补录与上传
+            if index == 0:
+                obj = validate_header(obj)
+            else:
+                encode_spool_line(obj)
         except ValueError:
             dropped += 1
             logger.warning("visit spool %s: dropped an unreadable line #%d", visit_id, index)
@@ -919,8 +925,9 @@ class VisitSpool:
         """Replay the spool from disk.
 
         A partial trailing line left by a crash (no newline) and any line that
-        does not parse are dropped and logged as diagnostics; every complete
-        line before them is returned.
+        does not parse or fails the schema (:func:`validate_header` for the
+        first line, :func:`encode_spool_line` for the others) are dropped,
+        counted in ``dropped_lines`` and logged; every valid line is returned.
         """
 
         def read() -> bytes | None:

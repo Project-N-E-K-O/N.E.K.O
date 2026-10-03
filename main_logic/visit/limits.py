@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -387,6 +389,31 @@ class BlocklistUnavailable(RuntimeError):
     """The blocklist file exists but could not be read; it must not be treated as empty."""
 
 
+class _Snapshot:
+    """The in-memory rows of one blocklist file, shared by every live instance on it."""
+
+    __slots__ = ("entries", "__weakref__")
+
+    def __init__(self) -> None:
+        self.entries: dict[str, BlockEntry] = {}
+
+
+# 同一文件的所有实例共用一份快照（弱引用登记，没有实例引用后自动释放）：某个实例
+# 拉黑后，身份核验手里那个实例立刻看得到，不会继续按旧表放人
+_SNAPSHOTS: "weakref.WeakValueDictionary[str, _Snapshot]" = weakref.WeakValueDictionary()
+_SNAPSHOTS_GUARD = threading.Lock()
+
+
+def _snapshot_for(path: Path) -> _Snapshot:
+    key = os.path.normcase(str(path.resolve()))
+    with _SNAPSHOTS_GUARD:
+        snap = _SNAPSHOTS.get(key)
+        if snap is None:
+            snap = _Snapshot()
+            _SNAPSHOTS[key] = snap
+        return snap
+
+
 class Blocklist:
     """In-memory view of ``config_dir/visit_blocklist.json`` with atomic writes.
 
@@ -397,7 +424,10 @@ class Blocklist:
     and every mutation raise :class:`BlocklistUnavailable`, and identity
     verification rejects every peer. Treating it as empty would let a
     blocked peer back in. Mutations write the new list first and only then
-    swap it in, so a failed write leaves memory and disk consistent. Every
+    swap it in, so a failed write leaves memory and disk consistent. All live
+    instances on the same file share one in-memory snapshot, so a block made
+    through any of them is seen by all (identity verification never keeps
+    consulting a stale list). Every
     mutation runs as one read-modify-write transaction in a worker thread
     under the process-wide per-path lock (``subjects.path_lock``, the same
     registry the roster and spool use): it re-reads the file, applies its
@@ -405,11 +435,24 @@ class Blocklist:
     never overwrite each other's rows.
     """
 
-    def __init__(self, config_dir: str | os.PathLike[str], entries: Iterable[BlockEntry] = (),
+    def __init__(self, config_dir: str | os.PathLike[str],
+                 entries: Iterable[BlockEntry] | None = None,
                  *, available: bool = True) -> None:
         self._path = Path(config_dir) / VISIT_BLOCKLIST_FILENAME
-        self._entries: dict[str, BlockEntry] = {e.visit_uid: e for e in entries}
+        self._snap = _snapshot_for(self._path)
+        if entries is not None:
+            # 只有真的读过盘（或调用方显式给出）才刷新共享快照；不带 entries 构造的实例
+            # 不能把别的实例看到的拉黑记录清空
+            self._snap.entries = {e.visit_uid: e for e in entries}
         self.available = available
+
+    @property
+    def _entries(self) -> dict[str, BlockEntry]:
+        return self._snap.entries
+
+    @_entries.setter
+    def _entries(self, value: dict[str, BlockEntry]) -> None:
+        self._snap.entries = value
 
     @property
     def path(self) -> Path:
@@ -431,7 +474,7 @@ class Blocklist:
         try:
             return cls._from_payload(config_dir, read_json(path))
         except FileNotFoundError:
-            return cls(config_dir)
+            return cls(config_dir, ())
         except (OSError, ValueError) as exc:
             return cls._unavailable(config_dir, exc)
 
@@ -443,7 +486,7 @@ class Blocklist:
             payload = await read_json_async(path)
             return cls._from_payload(config_dir, payload)
         except FileNotFoundError:
-            return cls(config_dir)
+            return cls(config_dir, ())
         except (OSError, ValueError) as exc:
             return cls._unavailable(config_dir, exc)
 

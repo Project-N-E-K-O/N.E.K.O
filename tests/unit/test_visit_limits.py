@@ -469,3 +469,18 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
     assert not entered, "a second transaction read the file while the first held the lock"
     on_disk = Blocklist.load(tmp_path)
     assert on_disk.is_blocked(uid_a) and on_disk.is_blocked(uid_b)
+
+
+async def test_a_block_through_one_instance_is_seen_by_every_live_instance(tmp_path):
+    # 身份核验手里的实例（启动时加载）要立刻看到别处刚拉黑的人
+    verifier = Blocklist.load(tmp_path)
+    panel = Blocklist.load(tmp_path)
+    assert not verifier.is_blocked(UID)
+    assert await panel.ablock(UID, display_name_at_block="Mimi")
+    assert verifier.is_blocked(UID)
+    assert await panel.aunblock(UID)
+    assert not verifier.is_blocked(UID)
+    # 不带 entries 直接构造的实例不能清空别人看到的表
+    await panel.ablock(UID, display_name_at_block="Mimi")
+    Blocklist(tmp_path)
+    assert verifier.is_blocked(UID)
