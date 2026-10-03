@@ -530,7 +530,8 @@ class Reassembler:
             return None
         try:
             env = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # 深层嵌套（"[[[[…"）让 json.loads 抛 RecursionError：同样是一片坏数据，丢弃计数
             return None
         if not isinstance(env, dict):
             return None
@@ -578,7 +579,8 @@ class Reassembler:
     def _finish(self, joined: str) -> Optional[dict]:
         try:
             obj = json.loads(joined)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # 分片拼出的深层嵌套 payload 同样按坏消息丢弃计数，不能冲出接收处理
             self.dropped += 1
             return None
         if not isinstance(obj, dict):
@@ -886,7 +888,7 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
     if isinstance(text, str):
         try:
             raw = json.loads(text)
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise ValueError("payload is not JSON") from exc
     elif isinstance(text, Mapping):
         raw = dict(text)

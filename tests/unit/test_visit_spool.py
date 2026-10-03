@@ -1324,3 +1324,13 @@ async def test_replay_drops_a_schema_damaged_header(tmp_path):
     got = await VisitSpool(tmp_path, vid(35)).read_back()
     assert got.header is None and got.dropped_lines == 1
     assert [ln["lp"] for ln in got.lines] == [1]
+
+
+async def test_a_deeply_nested_spool_line_is_dropped(tmp_path):
+    sp = await open_spool(tmp_path, vid(36))
+    await sp.append(line(1, "ok"))
+    await sp.close()
+    with open(sp.jsonl_path, "ab") as f:
+        f.write(("[" * 5000 + chr(10)).encode("utf-8"))
+    got = await VisitSpool(tmp_path, vid(36)).read_back()
+    assert [ln["text"] for ln in got.lines] == ["ok"] and got.dropped_lines == 1

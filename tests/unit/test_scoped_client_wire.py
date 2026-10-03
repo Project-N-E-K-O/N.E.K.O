@@ -621,3 +621,25 @@ async def test_empty_batch_is_rejected_without_a_request():
         with pytest.raises(ValueError):
             await client.post_history_batch("Lanlan", segments=[])
     assert recorder.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [1, 1.0, 0])
+async def test_numeric_trust_persisted_is_not_a_confirmation(persisted):
+    # 1 / 1.0 == True：只有 JSON 的 true / null 才算确认
+    def single(request):
+        return httpx.Response(200, json={"status": "processed", "trust": {"persisted": persisted}})
+
+    client, http = _client(_Recorder(single))
+    async with http:
+        assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES) is False
+
+    def batch(request):
+        return httpx.Response(200, json={"status": "processed", "segments": [
+            {"status": "ok", "trust": {"persisted": persisted}}]})
+
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    client, http = _client(_Recorder(batch))
+    async with http:
+        result = await client.post_history_batch("Lanlan", segments=[segment])
+    assert result.segments_ok == (False,)

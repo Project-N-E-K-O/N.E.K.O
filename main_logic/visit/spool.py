@@ -605,7 +605,10 @@ def _read_header_strict(path: Path, *, validate: bool = True) -> dict | None:
         return None
     if not first.endswith(b"\n"):
         raise ValueError(f"spool header of {path.name} is truncated")
-    header = json.loads(first)
+    try:
+        header = json.loads(first)
+    except RecursionError as exc:
+        raise ValueError(f"spool header of {path.name} is too deeply nested") from exc
     if not isinstance(header, dict):
         raise ValueError(f"spool header of {path.name} is not an object")
     # 完整 schema 校验（peer 字段允许被「清除这个人」置空）：{} 之类缺字段的头行
@@ -637,7 +640,7 @@ def _rewrite_header_locked(path: Path, mutate, strict: bool) -> bool:
     if idx >= 0:
         try:
             header = json.loads(data[:idx])
-        except ValueError:
+        except (ValueError, RecursionError):
             header = None
     if not isinstance(header, dict):
         if strict:
@@ -692,7 +695,7 @@ def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
                 obj = validate_header(obj)
             else:
                 encode_spool_line(obj)
-        except ValueError:
+        except (ValueError, RecursionError):
             dropped += 1
             logger.warning("visit spool %s: dropped an unreadable line #%d", visit_id, index)
             continue

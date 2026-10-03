@@ -493,7 +493,10 @@ def _trust_settled(result: Any) -> bool:
     """
     trust = result.get("trust") if isinstance(result, dict) else None
     # 缺块 / 非对象 / 缺 persisted：没有确认就不能丢，按未落盘处理
-    return isinstance(trust, dict) and "persisted" in trust and trust["persisted"] in (True, None)
+    # 按身份比：1 / 1.0 与 True 相等，元组成员判断会把它们当成「已落盘」
+    return isinstance(trust, dict) and "persisted" in trust and (
+        trust["persisted"] is True or trust["persisted"] is None
+    )
 
 
 def _put_retry_identity(

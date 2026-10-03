@@ -1489,3 +1489,18 @@ def test_clause_text_is_sliced_on_redacted_offsets(repl, step, segmented):
     assert [(c.text, c.raw) for c in out] == [
         (repl + "。", "小明。"), ("后来我们去玩了。", "后来我们去玩了。"), ("真好", "真好"),
     ]
+
+
+def test_deeply_nested_payloads_are_dropped_not_raised():
+    # json.loads 对深层嵌套抛 RecursionError：一条坏消息只能计入丢弃，不能冲出接收处理
+    deep = "[" * 5000
+    ra = vw.Reassembler(visit_id=VID)
+    before = ra.dropped
+    out = None
+    for piece in vw.fragment(deep, visit_id=VID, msg_id=1):
+        out = ra.feed("g_peer", piece, 0.0)
+    assert out is None and ra.dropped == before + 1
+    # 单片信封本身是深层嵌套
+    assert ra.feed("g_peer", ("[" * 900).encode("utf-8"), 0.0) is None
+    with pytest.raises(ValueError):
+        vw.decode_msg(deep, cmd=2)
