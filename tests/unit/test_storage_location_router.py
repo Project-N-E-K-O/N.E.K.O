@@ -1,6 +1,7 @@
 import asyncio
 import builtins
 import json
+import shutil
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -3050,6 +3051,224 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
     root_state = reloaded_manager.load_root_state()
     assert root_state["legacy_cleanup_pending"] is False
     assert root_state["last_migration_backup"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rejects_changed_copy_evidence(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "config" / "characters.json").write_text("changed!", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 500
+    assert cleanup_response.json()["error_code"] == "retained_source_cleanup_failed"
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "changed!"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_unproved_runtime_entries(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "unproved.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json() == {
+        "ok": False,
+        "error_code": "retained_source_cleanup_incomplete",
+        "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
+        "retained_root": str(source_root.resolve()),
+        "remaining_entries": ["memory"],
+    }
+    assert (source_root / "memory" / "unproved.json").is_file()
+    migration_payload = load_storage_migration(reloaded_manager)
+    assert migration_payload["retained_source_mode"] == "manual_retention"
+    assert migration_payload["retained_source_root"] == str(source_root.resolve())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("v1_checkpoint", (False, True))
+def test_storage_location_cleanup_finishes_after_the_user_removes_the_rest(
+    tmp_path, v1_checkpoint
+):
+    """A reported leftover removed by hand must not turn the retry into a 500."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    if v1_checkpoint:
+        _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "unproved.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        first = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+        assert first.status_code == 409
+        assert first.json()["remaining_entries"] == ["memory"]
+        assert not (source_root / "config").exists()
+
+        shutil.rmtree(source_root / "memory")
+        second = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert second.status_code == 200, second.json()
+    assert not source_root.exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+def _downgrade_to_v1_checkpoint(config_manager) -> None:
+    """Rewrite a completed checkpoint as one a pre-evidence (v1) build wrote."""
+    migration_payload = dict(load_storage_migration(config_manager))
+    migration_payload["version"] = 1
+    migration_payload.pop("copied_entries", None)
+    migration_payload.pop("legacy_v1_checkpoint", None)
+    save_storage_migration(config_manager, migration_payload)
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_accepts_a_v1_checkpoint_without_copy_evidence(tmp_path):
+    """Migrations completed before copy evidence existed must still be cleanable."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        status_payload = client.get("/api/storage/location/status").json()
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert status_payload["completion_notice"]["cleanup_available"] is True
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not source_root.exists()
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_the_target_does_not_have(tmp_path):
+    """Without evidence, only entries that also exist in the target may go."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "only-here.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "only-here.json").is_file()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_whose_target_content_differs(tmp_path):
+    """A same-named target entry is not evidence; its content must match."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "recent.json").write_text("[1, 2, 3]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    # The target's copy is only a leftover: the same name, none of the data.
+    (target_root / "memory" / "recent.json").unlink()
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "[1, 2, 3]"
+    assert not (source_root / "config").exists()
 
 
 @pytest.mark.unit

@@ -77,6 +77,20 @@ from .session_records import start_phase
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
 
+    def _rotate_public_knowledge_session(self) -> None:
+        from main_logic.knowledge_context import (
+            invalidate_public_knowledge_session,
+        )
+
+        previous = str(
+            getattr(self, "_public_knowledge_session_key", "") or ""
+        )
+        invalidate_public_knowledge_session(previous)
+        clear_tool_evidence = getattr(self, "_clear_tool_turn_evidence", None)
+        if callable(clear_tool_evidence):
+            clear_tool_evidence()
+        self._public_knowledge_session_key = uuid4().hex
+
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
         return bool(getattr(self, "goodbye_silent", False))
@@ -938,6 +952,9 @@ class LifecycleMixin:
                         by_server=True,
                         expected_session=session_snapshot,
                         reset_starting_count=False,
+                        # The next message starts a fresh dialog, so its
+                        # knowledge cards must not inherit this one's cooldown.
+                        rotate_knowledge_session=True,
                     )
                 except Exception as e:
                     logger.warning("[%s] idle_session_reset: end_session 失败: %s", self.lanlan_name, e)
@@ -4471,6 +4488,7 @@ class LifecycleMixin:
         self, by_server=False, *, expected_session=None, reset_starting_count=True,
         after_memory_settlement=None, memory_settlement_timeout=15.0,
         preserve_pending_input=False,
+        rotate_knowledge_session=None,
     ):
         """Wait for safe handoff with bounded cleanup grace; retain slow resources."""
         task = self.request_end_session(
@@ -4479,6 +4497,7 @@ class LifecycleMixin:
             after_memory_settlement=after_memory_settlement,
             memory_settlement_timeout=memory_settlement_timeout,
             preserve_pending_input=preserve_pending_input,
+            rotate_knowledge_session=rotate_knowledge_session,
         )
         await self._wait_session_end(task)
 

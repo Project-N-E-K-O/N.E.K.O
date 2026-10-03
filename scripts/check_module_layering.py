@@ -91,7 +91,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
-    (2, {"memory", "main_logic"}),
+    (2, {"knowledge", "memory", "main_logic"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
     (5, {"brain"}),

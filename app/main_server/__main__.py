@@ -18,6 +18,7 @@
 import asyncio
 import logging
 import os
+import threading
 
 from config import MAIN_SERVER_PORT
 
@@ -30,6 +31,35 @@ from . import (
     logger,
     set_start_config,
 )
+
+
+STANDALONE_SHUTDOWN_WATCHDOG_SECONDS = 30.0
+_standalone_watchdog_lock = threading.Lock()
+_standalone_watchdog_started = False
+
+
+def _arm_standalone_shutdown_watchdog() -> None:
+    """Force a direct-run process out if a native worker survives shutdown."""
+    global _standalone_watchdog_started
+
+    with _standalone_watchdog_lock:
+        if _standalone_watchdog_started:
+            return
+        _standalone_watchdog_started = True
+
+    def _force_exit_after_grace() -> None:
+        threading.Event().wait(STANDALONE_SHUTDOWN_WATCHDOG_SECONDS)
+        logger.error(
+            "Main Server graceful shutdown exceeded %.0fs; forcing process exit",
+            STANDALONE_SHUTDOWN_WATCHDOG_SECONDS,
+        )
+        os._exit(1)
+
+    threading.Thread(
+        target=_force_exit_after_grace,
+        name="main-server-shutdown-watchdog",
+        daemon=True,
+    ).start()
 
 if __name__ == "__main__":
     import uvicorn
@@ -144,6 +174,11 @@ if __name__ == "__main__":
         set_start_config(start_config)
 
     print(f"启动配置: {get_start_config()}")
+    # Only this direct-run entry point installs the process-level fallback.
+    # Launcher-managed modes retain their existing terminate/kill watchdogs.
+    start_config["arm_standalone_shutdown_watchdog"] = (
+        _arm_standalone_shutdown_watchdog
+    )
 
     # 2) 信号处理：Ctrl+C 时快速关闭
     #    uvicorn 的 install_signal_handlers() 会用 signal.signal(sig, self.handle_exit)

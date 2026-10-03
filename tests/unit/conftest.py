@@ -269,6 +269,26 @@ def _reset_pending_retirements():
         if isinstance(pending, set):
             pending.clear()
 
+
+@pytest.fixture(autouse=True)
+def _reopen_knowledge_writer_admission():
+    """Stop a main-server shutdown test from closing knowledge writes for the rest.
+
+    ``on_shutdown`` closes the process-wide knowledge writer admission, and only
+    a startup reopens it. A test that drives the real shutdown without patching
+    the indexer stop therefore leaves every later knowledge write in the same
+    worker failing with ``knowledge_mutation_stopping`` -- measured:
+    ``test_cloudsave_lifecycle_flow.py`` followed by
+    ``test_knowledge_pack_jobs.py`` in one process turns 29 unrelated tests red.
+
+    Read through ``sys.modules`` so tests that never import the module pay nothing.
+    """
+    yield
+    module = sys.modules.get("knowledge.mutation_runtime")
+    reopen = getattr(module, "open_knowledge_writer_admission", None)
+    if callable(reopen):
+        reopen()
+
     # Same hazard, worse consequence: the rename write fence is process-wide
     # and has no expiry, so a test that leaves one up makes every later test
     # for that name write nothing at all. The product releases it in a

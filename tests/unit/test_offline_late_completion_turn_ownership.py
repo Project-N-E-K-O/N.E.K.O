@@ -394,6 +394,20 @@ async def test_a_turn_starting_while_the_tts_done_waits_is_left_alone():
     mgr._finalize_turn_after_emit.assert_not_awaited()
 
 
+async def test_a_standing_down_reply_releases_only_its_own_route_owner():
+    """A retired reply never reaches a turn end, so its route owner entry
+    would otherwise stay behind for good; the newer turn's entry is not its."""
+    mgr = _core_manager()
+    reply_turn = _retired_reply(mgr)
+    mgr._text_route_owners = {"req-A": "public_knowledge", "req-B": "public_knowledge"}
+    mgr.current_speech_id = "speech-B"  # a newer turn owns the host
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert mgr._text_route_owners == {"req-B": "public_knowledge"}
+    assert _ws(mgr, "turn end") == [] and _sync(mgr, "turn end") == []
+
+
 async def test_a_truncation_recovery_keeps_its_reply_the_owner():
     """A recovery re-speaks the reply under a fresh speech id. That rotation
     starts no turn, so a reply whose client was retired meanwhile (a hot-swap

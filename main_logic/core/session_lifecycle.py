@@ -419,8 +419,17 @@ class SessionOwnershipMixin:
         self, by_server=False, *, expected_session=None, reset_starting_count=True,
         after_memory_settlement=None, memory_settlement_timeout=15.0,
         preserve_pending_input=False,
+        rotate_knowledge_session=None,
     ):
-        """Accept and bind an end request without a scheduling or lock gap."""
+        """Accept and bind an end request without a scheduling or lock gap.
+
+        ``rotate_knowledge_session`` follows the conversation, not the startup
+        guard. By default it matches ``reset_starting_count`` as resolved below
+        (user end, server recovery); the idle reset keeps the guard yet starts
+        a fresh dialog, so it asks explicitly. Internal handoffs that carry the
+        conversation over (voice -> text) and a delayed predecessor end keep
+        the key.
+        """
         self._init_session_lifecycle_state()
         session = getattr(self, "session", None)
         operation = getattr(self, "_start_operation", None)
@@ -440,6 +449,14 @@ class SessionOwnershipMixin:
             # A server callback without a live target cannot retire the new
             # start's TTS handler, pending input or producer children either.
             return self._own_cleanup_task(asyncio.sleep(0))
+        if rotate_knowledge_session is None:
+            rotate_knowledge_session = reset_starting_count
+        if rotate_knowledge_session:
+            # Synchronous, before any await: a retrieval still running for the
+            # ended conversation must not deliver into the next one.
+            rotate = getattr(self, "_rotate_public_knowledge_session", None)
+            if callable(rotate):
+                rotate()
         # Accept user intent even when teardown of these resources is already
         # owned by another end request. Starts waiting for that handoff must stop.
         if not by_server and reset_starting_count:

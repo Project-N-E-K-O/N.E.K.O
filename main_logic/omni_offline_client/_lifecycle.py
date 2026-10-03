@@ -816,14 +816,20 @@ class _LifecycleMixin:
                 _ephemeral_msg = HumanMessage(content=instruction)
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
-        messages_to_send = self._conversation_history + [_ephemeral_msg]
+        # A text turn streaming concurrently may have its own turn-local
+        # instruction (e.g. a knowledge card) in the shared history; it was
+        # written for that turn, not this one.
+        _visible_history = self._history_without_inflight_turn_instructions()
+        messages_to_send = _visible_history + [_ephemeral_msg]
         # This turn's place in history: the instruction itself is never saved,
         # so a cancelled reply is anchored to the last message it was shown.
         # Not a tool-round dict: a round still running may leave history with
         # its turn, and stepping over rounds is what _cancelled_turn_end does
         # anyway. A cancelled reply is dropped once the list was replaced.
+        # Another turn's instruction is not one it was shown, and it leaves
+        # history when that turn ends.
         _history_anchor = next(
-            (m for m in reversed(self._conversation_history) if not isinstance(m, dict)),
+            (m for m in reversed(_visible_history) if not isinstance(m, dict)),
             None,
         )
         _turn_history = self._conversation_history

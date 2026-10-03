@@ -158,6 +158,7 @@ def _make_manager():
     mgr._tts_done_pending_until_ready = False
     mgr.state = _FakeState()
     mgr._active_text_request_id = None
+    mgr._text_route_owners = {}
     mgr._magic_command_image_drop_request_ids = set()
     mgr._magic_command_image_drop_request_order = deque()
     mgr._pending_turn_meta = None
@@ -2785,12 +2786,14 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
     mgr._active_text_request_id = "req-B"
     mgr.websocket = _FakeConnectedWebSocket()
     _spy_discard_tts_clear(mgr)
+    mgr._clear_tool_turn_evidence = Mock()
 
     await discard_callback("guard", 1, 3, False, None)
 
     assert mgr.websocket.sent == []
     assert mgr._active_text_request_id == "req-B"
     _assert_discard_left_tts_alone(mgr)
+    mgr._clear_tool_turn_evidence.assert_not_called()
     assert {
         "type": "system",
         "data": "response_discarded_clear",
@@ -4474,18 +4477,168 @@ async def test_takeover_dispatcher_falls_back_when_unhandled(dispatcher_outcome)
 async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     mgr = _make_manager()
     mgr._active_text_request_id = "req-old"
+    mgr._text_route_owners["req-old"] = "ordinary-owner"
     mgr._pending_turn_meta = {"source": "ordinary"}
     mgr._current_ai_turn_text = "ordinary text before takeover"
+    mgr.current_speech_id = "sid-old"
     mgr.tts_pending_chunks = [("sid-old", "queued text")]
     mgr._takeover_active = True
 
     await core_module.LLMSessionManager.handle_response_complete(mgr)
 
     assert mgr._active_text_request_id is None
+    assert "req-old" not in mgr._text_route_owners
     assert mgr._pending_turn_meta is None
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_takeover_cleanup_does_not_clear_request_started_during_tts_await(
+    monkeypatch,
+):
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-old"
+    mgr._text_route_owners["req-old"] = "ordinary-owner"
+    mgr._pending_turn_meta = {"request_id": "req-old"}
+    mgr._current_ai_turn_text = "old text"
+    mgr.current_speech_id = "sid-old"
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_pending_chunks = [("sid-old", "old pending")]
+    mgr._takeover_active = True
+
+    async def start_new_request_during_interrupt(_seconds):
+        assert mgr._active_text_request_id is None
+        assert "req-old" not in mgr._text_route_owners
+        mgr._active_text_request_id = "req-new"
+        mgr._text_route_owners["req-new"] = "new-owner"
+        mgr._pending_turn_meta = {"request_id": "req-new"}
+        mgr._current_ai_turn_text = "new text"
+        mgr.current_speech_id = "sid-new"
+        mgr.tts_pending_chunks.append(("sid-new", "new pending"))
+        mgr._tts_done_queued_for_turn = True
+        mgr._tts_done_pending_until_ready = True
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        start_new_request_during_interrupt,
+    )
+
+    await core_module.LLMSessionManager.handle_response_complete(mgr)
+
+    assert mgr._active_text_request_id == "req-new"
+    assert mgr._text_route_owners == {"req-new": "new-owner"}
+    assert mgr._pending_turn_meta == {"request_id": "req-new"}
+    assert mgr._current_ai_turn_text == "new text"
+    assert mgr.tts_pending_chunks == [("sid-new", "new pending")]
+    assert mgr._tts_done_queued_for_turn is True
+    assert mgr._tts_done_pending_until_ready is True
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_drops_chunks_from_sid_rotated_without_clear(
+    monkeypatch,
+):
+    """A sid rotated outside this function must not survive the interrupt.
+
+    ``prepare_proactive_delivery`` / ``handle_avatar_interaction`` assign a fresh
+    ``current_speech_id`` without calling ``_clear_tts_pipeline``.  While the TTS
+    worker is not ready the superseded sid's text stays in ``tts_pending_chunks``,
+    so a later interrupt sees three sids at once.  Dropping only the expected one
+    would leave the orphan behind for ``_flush_tts_pending_chunks`` to speak.
+    """
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-superseded"
+    mgr.tts_pending_chunks = [("sid-orphan", "orphaned text")]
+
+    async def rotate_to_new_turn_during_interrupt(_seconds):
+        mgr.current_speech_id = "sid-new"
+        mgr.tts_pending_chunks.append(("sid-new", "new pending"))
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        rotate_to_new_turn_during_interrupt,
+    )
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(
+        mgr,
+        expected_speech_id="sid-superseded",
+    )
+
+    # Only the turn that now owns the pipeline survives.
+    assert mgr.tts_pending_chunks == [("sid-new", "new pending")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_full_tts_clear_drains_leaked_audio_even_if_the_sid_rotates(
+    monkeypatch,
+):
+    """The full clear is what text input relies on across a sid rotation.
+
+    Bytes the old synthesizer leaks after ``__interrupt__`` carry no sid; left
+    in the response queue they would play under the next turn's sid.
+    """
+    import queue
+
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-old"
+    mgr.tts_response_queue = queue.Queue()
+    mgr.tts_request_queue = queue.Queue()
+
+    async def leak_and_rotate(_seconds):
+        mgr.tts_response_queue.put(b"leaked-after-interrupt")
+        mgr.current_speech_id = "sid-proactive"
+
+    monkeypatch.setattr(tts_runtime_module.asyncio, "sleep", leak_and_rotate)
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
+
+    assert mgr.tts_response_queue.empty()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_clears_deferred_done_when_nothing_stays_pending(
+    monkeypatch,
+):
+    """The deferred-done flag is paired with the chunks that were just dropped.
+
+    Dual of ``test_takeover_cleanup_does_not_clear_request_started_during_tts_await``:
+    there the replacement turn has pending text, so the flag must stay True.  Here
+    the replacement turn queued nothing, so leaving it True would make
+    ``_flush_tts_pending_chunks`` emit a done sentinel for the dead turn.
+    """
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-old"
+    mgr.tts_pending_chunks = [("sid-old", "old pending")]
+    mgr._tts_done_pending_until_ready = True
+
+    async def preempt_without_queueing_text(_seconds):
+        mgr.current_speech_id = "sid-new"
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        preempt_without_queueing_text,
+    )
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(
+        mgr,
+        expected_speech_id="sid-old",
+    )
+
+    assert mgr.tts_pending_chunks == []
+    assert mgr._tts_done_pending_until_ready is False
 
 
 @pytest.mark.unit
@@ -4895,6 +5048,34 @@ async def test_an_interrupted_agent_callback_reply_closes_as_agent_callback(monk
 
 
 @pytest.mark.unit
+def test_closing_an_interrupted_reply_carries_its_own_route_owner():
+    """The cut reply's request ends here, so its route owner goes with its
+    turn end; the tool evidence may already be the interrupter's and stays."""
+    from main_logic.core._shared import _ReplyTurn
+    from main_logic.omni_offline_client._lifecycle import InterruptedReply
+
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._current_ai_turn_text = "说到一半"
+    mgr._text_route_owners = {"req-old": "public_knowledge", "req-new": "public_knowledge"}
+    mgr._tool_turn_evidence = {"request_id": "req-new"}
+
+    turn_end = core_module.LLMSessionManager._close_interrupted_offline_turn(
+        mgr,
+        InterruptedReply(
+            "response",
+            owner=_ReplyTurn(speech_id=mgr.current_speech_id, request_id="req-old"),
+        ),
+    )
+
+    assert turn_end["route_owner"] == "public_knowledge"
+    assert turn_end["request_id"] == "req-old"
+    assert mgr._text_route_owners == {"req-new": "public_knowledge"}
+    assert mgr._tool_turn_evidence == {"request_id": "req-new"}
+
+
+@pytest.mark.unit
 def test_closing_an_agent_callback_turn_leaves_the_text_request_alone():
     """A callback reply owns no text request: its close must not retire the
     id of a text request that is still in flight."""
@@ -4935,6 +5116,106 @@ async def test_interrupted_avatar_reply_keeps_its_isolation_meta(monkeypatch):
                  if isinstance(m, dict) and m.get("data") == "turn end"]
     assert turn_ends == [{"type": "system", "data": "turn end", "meta": meta}]
     assert mgr._pending_turn_meta is None
+
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_turn_retrieves_knowledge_while_it_interrupts_the_old_stream(
+    monkeypatch,
+):
+    """Retrieval overlaps turn setup instead of adding its budget to it.
+
+    The interrupt below waits for retrieval to start; a serial implementation
+    only starts retrieval after the interrupt has returned.
+    """
+    import main_logic.knowledge_context as knowledge_context
+
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    retrieval_started = asyncio.Event()
+    seen_kwargs = {}
+
+    async def _build(_text, *, session_key=""):
+        retrieval_started.set()
+        return knowledge_context.PublicKnowledgeTurnResult(context="card")
+
+    overlapped = {}
+
+    async def _handle_interruption():
+        try:
+            await asyncio.wait_for(retrieval_started.wait(), timeout=0.5)
+        except asyncio.TimeoutError:
+            pass
+        overlapped["during_interrupt"] = retrieval_started.is_set()
+
+    async def _stream_text(_text, **kwargs):
+        seen_kwargs.update(kwargs)
+
+    monkeypatch.setattr(
+        knowledge_context, "build_public_knowledge_turn_context", _build
+    )
+    session.handle_interruption = AsyncMock(side_effect=_handle_interruption)
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "聊聊永动机"},
+    )
+
+    assert overlapped == {"during_interrupt": True}
+    assert seen_kwargs.get("ephemeral_response_instruction") == "card"
+
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_knowledge_card_goes_on_cooldown_only_when_its_turn_commits(
+    monkeypatch,
+):
+    import main_logic.knowledge_context as knowledge_context
+
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    result = knowledge_context.PublicKnowledgeTurnResult(context="card")
+    delivered = []
+
+    async def _build(_text, *, session_key=""):
+        return result
+
+    commit = {"now": False}
+
+    async def _stream_text(_text, **kwargs):
+        if commit["now"]:
+            kwargs["on_turn_committed"]()
+        raise RuntimeError("provider dropped")
+
+    monkeypatch.setattr(
+        knowledge_context, "build_public_knowledge_turn_context", _build
+    )
+    monkeypatch.setattr(
+        knowledge_context, "record_public_knowledge_delivery", delivered.append
+    )
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "聊聊永动机"},
+    )
+    assert delivered == [], "a turn that never reached history delivered nothing"
+
+    commit["now"] = True
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "聊聊永动机"},
+    )
+    assert delivered == [result]
 
 
 @pytest.mark.unit

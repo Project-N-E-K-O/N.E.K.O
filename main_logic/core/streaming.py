@@ -99,7 +99,7 @@ class StreamingMixin:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
         return True
-    
+
     async def _flush_pending_input_data(self):
         """Send the cached input data to the session"""
         # A realtime -> offline attachment handoff must stage the attachment
@@ -654,6 +654,32 @@ class StreamingMixin:
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
 
+                    # Knowledge retrieval only needs the user's text, and the
+                    # card has to be in the request, so it is started here and
+                    # awaited right before stream_text: the interrupt, TTS
+                    # clear, sid rotation and callback staging below overlap it
+                    # instead of adding its budget to every turn's first token.
+                    # If setup fails before the await, the task is left to run
+                    # out its own budget and its result is dropped; that has no
+                    # lasting effect, since the card only goes on cooldown once
+                    # its turn reaches history.
+                    #
+                    # An explicit openclaw magic command never builds a reply;
+                    # retrieval for it falls back to the serial path below if
+                    # the command turns out not to be dispatched.
+                    _knowledge_task = None
+                    if not self._normalize_explicit_openclaw_magic_command(data):
+                        from main_logic.knowledge_context import (
+                            start_public_knowledge_turn_context,
+                        )
+
+                        _knowledge_task = start_public_knowledge_turn_context(
+                            record_data,
+                            session_key=str(
+                                getattr(self, "_public_knowledge_session_key", "") or ""
+                            ),
+                        )
+
                     # 先打断当前正在播放的语音（旧speech_id），避免误打断新回复
                     async with self.lock:
                         interrupted_speech_id = self.current_speech_id
@@ -685,6 +711,11 @@ class StreamingMixin:
                     # 会话空闲后再付。
 
                     self.audio_resampler.clear()
+                    # Full clear, not the expected_speech_id form: the await on
+                    # handle_interruption() above lets a proactive delivery rotate
+                    # the sid, and the selective form would then keep that turn's
+                    # pending chunks. This path rotates to a new user sid right
+                    # below, so everything still queued belongs to a dead turn.
                     await self._clear_tts_pipeline()
                     await self.send_user_activity(interrupted_speech_id)
 
@@ -857,6 +888,32 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
+                        self._begin_tool_evidence_turn(
+                            record_data,
+                            request_id=text_request_id,
+                        )
+                        if _knowledge_task is None:
+                            from main_logic.knowledge_context import (
+                                start_public_knowledge_turn_context,
+                            )
+
+                            _knowledge_task = start_public_knowledge_turn_context(
+                                record_data,
+                                session_key=str(
+                                    getattr(self, "_public_knowledge_session_key", "")
+                                    or ""
+                                ),
+                            )
+                        _knowledge_turn_result = await _knowledge_task
+                        _knowledge_turn_context = _knowledge_turn_result.context
+                        _route_request_id = str(text_request_id or "")
+                        if _route_request_id:
+                            if _knowledge_turn_result.route_owner:
+                                self._text_route_owners[_route_request_id] = (
+                                    _knowledge_turn_result.route_owner
+                                )
+                            else:
+                                self._text_route_owners.pop(_route_request_id, None)
                         # Path A (inline) Focus 凝神：score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -913,23 +970,47 @@ class StreamingMixin:
 
                         stream_text_kwargs = {
                             "system_prefix": _agent_cb_ctx or None,
+                            "ephemeral_response_instruction": _knowledge_turn_context or None,
                             "thinking_on": _focus_thinking,
                             "response_discarded_callback": response_discarded_callback,
                             "response_done_callback": response_done_callback,
                             "reply_owner": reply_turn,
                         }
-                        def _mark_cb_turn_committed() -> None:
+                        def _on_turn_committed() -> None:
+                            # One callback for everything that waits on this
+                            # turn reaching history, so neither piece of
+                            # bookkeeping can replace the other.
                             nonlocal _cb_turn_committed
                             _cb_turn_committed = True
+                            if not _knowledge_turn_context:
+                                return
+                            # The card goes on cooldown only once this turn is
+                            # in history, so a failed or cancelled turn can
+                            # still deliver it next time.
+                            from main_logic.knowledge_context import (
+                                record_public_knowledge_delivery,
+                            )
+
+                            try:
+                                record_public_knowledge_delivery(
+                                    _knowledge_turn_result
+                                )
+                            except Exception as _cooldown_error:
+                                logger.warning(
+                                    "[%s] knowledge card cooldown not recorded: %s",
+                                    self.lanlan_name,
+                                    type(_cooldown_error).__name__,
+                                )
 
                         if _agent_cb_images:
                             stream_text_kwargs["system_prefix_images"] = _agent_cb_images
-                        if _agent_cb_drained:
+                        if _agent_cb_drained or _knowledge_turn_context:
                             # Use this request's commit notification for both
-                            # text-only and image callbacks. Another request's
-                            # history growth cannot establish this one's delivery.
+                            # text-only and image callbacks, and for the knowledge
+                            # card's cooldown. Another request's history growth
+                            # cannot establish this one's delivery.
                             stream_text_kwargs["on_turn_committed"] = (
-                                _mark_cb_turn_committed
+                                _on_turn_committed
                             )
                         if input_transcript_callback:
                             stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
