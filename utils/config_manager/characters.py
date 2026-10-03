@@ -184,6 +184,18 @@ class CharactersMixin:
         character_json_path = str(self.get_runtime_config_path('characters.json'))
         if not os.path.isfile(character_json_path):
             return False
+        # load_characters falls back to the default profiles when the file is
+        # unreadable or not an object; saving those back would overwrite every
+        # user-created profile. Only a file that parses as an object is touched.
+        try:
+            with open(character_json_path, 'r', encoding='utf-8') as f:
+                on_disk = json.load(f)
+        except (OSError, ValueError) as read_err:
+            logger.warning("角色配置文件无法解析，跳过 character_uid 补发: %s", read_err)
+            return False
+        if not isinstance(on_disk, dict):
+            logger.warning("角色配置文件结构异常（非 dict），跳过 character_uid 补发。")
+            return False
         character_data = self.load_characters(character_json_path=character_json_path)
         if not isinstance(character_data, dict):
             return False

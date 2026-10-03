@@ -416,3 +416,27 @@ async def test_deleting_a_character_leaves_no_id_behind(tmp_path):
     assert body.get("success") is True, body
     assert gone_uid not in path.read_text(encoding="utf-8")
     assert get_character_uid(cm.load_characters()["猫娘"]["Current"]) == kept_uid
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ['{"猫娘": {"Mine": {"昵称": "Mine"', '["not", "an", "object"]'],
+    ids=["truncated-json", "non-object"],
+)
+def test_backfill_never_overwrites_an_unreadable_characters_file(tmp_path, broken):
+    """A broken file must survive: load_characters would fall back to defaults.
+
+    Mutation: backfilling from load_characters without checking the file
+    first turns this red -- the defaults (with fresh ids) overwrite the
+    user's profiles.
+    """
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(broken, encoding="utf-8")
+    before = path.read_bytes()
+
+    assert cm.backfill_character_uids() is False
+
+    assert path.read_bytes() == before
