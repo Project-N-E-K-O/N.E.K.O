@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
+import random
 import re
+import unicodedata
 
 import pytest
 
@@ -27,6 +29,9 @@ from config.visit_settings import (
     VISIT_PEER_LABEL_MAX_TOKENS,
 )
 from main_logic.visit.sanitize import (
+    _KEEP_FORMAT,
+    _LINE_BREAK_RE,
+    _LINE_BREAKS,
     PeerNgramHit,
     RedactSpan,
     assert_no_peer_ngram,
@@ -39,6 +44,7 @@ from main_logic.visit.sanitize import (
     map_redacted_offset,
     neutralize_display_name,
     redact_outbound,
+    redact_outbound_boundary,
     redact_outbound_with_spans,
     sanitize_relay_text,
     strip_control_chars,
@@ -457,3 +463,88 @@ def test_whole_kana_and_hangul_names_are_still_redacted():
 
     assert redact_outbound("지수랑 놀았어", family_names=["지수"], replacement="X") == "X랑 놀았어"
     assert redact_outbound("かがみ", family_names=["かが"], replacement="X") == "Xみ"
+
+
+# ── 流式脱敏的分段重启点 / strip_control_chars 快路径 ──
+
+_SPLIT_NAMES = ["小明", "Ann", "Alice", "が子", "지수", "O'Brien", "ﬁx", "Łukasz"]
+_SPLIT_POOL = (
+    list("小明阿好今天が子かし지수숙AnliceOBrukaszŁx ,.。、!？「」'")
+    + ["ﬁ", "ｘ", "Ａ", "ａ", "ﾞ", "e" + chr(0x301), chr(0x301), chr(0x200B), chr(0x200D),
+       chr(0x3000), "\n", "Alice", "Ann", "小明", "が子", "지수", "O'Brien", "ﬁx", "Łukasz"]
+)
+
+
+def _concat_redactions(a: str, b: str) -> tuple[str, list[tuple[int, int, int, int]]]:
+    red_a, spans_a = redact_outbound_with_spans(a, family_names=_SPLIT_NAMES, replacement=TERM)
+    red_b, spans_b = redact_outbound_with_spans(b, family_names=_SPLIT_NAMES, replacement=TERM)
+    shifted = [(s.raw_start + len(a), s.raw_end + len(a), s.out_start + len(red_a),
+                s.out_end + len(red_a)) for s in spans_b]
+    return red_a + red_b, [tuple(s) for s in spans_a] + shifted
+
+
+def test_redaction_restarts_after_boundary_characters():
+    """redact_outbound_with_spans(a + b) is redact(a) followed by redact(b) (spans
+    shifted) whenever ``a`` ends with a character redact_outbound_boundary accepts;
+    the streaming wire helpers rely on it to redact only the open tail.
+    Mutations: dropping the word-character, name-character or empty-fold
+    condition each produce a counterexample here."""
+    boundary = redact_outbound_boundary(_SPLIT_NAMES)
+    rng = random.Random(77)
+    checked = 0
+    for _ in range(1500):
+        s = "".join(rng.choice(_SPLIT_POOL) for _ in range(rng.randint(2, 24)))
+        whole = redact_outbound_with_spans(s, family_names=_SPLIT_NAMES, replacement=TERM)
+        whole = (whole[0], [tuple(x) for x in whole[1]])
+        for p in range(1, len(s)):
+            if boundary(s[p - 1]):
+                assert _concat_redactions(s[:p], s[p:]) == whole, (s, p)
+                checked += 1
+    assert checked > 3000
+    for ch in ("好", " ", "。", "、", "!", chr(0x3000), "\n"):
+        assert boundary(ch), ch
+    # 字母（拼音文字）、名字里出现的字符、折叠后为空的格式字符都不能作重启点
+    for ch in ("x", "A", "Ł", "小", "明", "'", "ﬁ", chr(0x200B), chr(0x301)):
+        assert not boundary(ch), ch
+    # 三个条件各自必要：跨过它们重启会改变结果
+    assert _concat_redactions("x", "Ann")[0] != redact_outbound("xAnn", family_names=_SPLIT_NAMES,
+                                                                replacement=TERM)
+    assert _concat_redactions("小", "明")[0] != redact_outbound("小明", family_names=_SPLIT_NAMES,
+                                                              replacement=TERM)
+    zw = "小" + chr(0x200B)
+    assert _concat_redactions(zw, "明")[0] != redact_outbound(zw + "明", family_names=_SPLIT_NAMES,
+                                                             replacement=TERM)
+
+
+def _strip_control_chars_full_scan(text: str) -> str:
+    # 加快路径之前的实现，留作参照
+    if not text:
+        return ""
+    text = _LINE_BREAK_RE.sub(lambda m: _LINE_BREAKS[m.group(0)], text)
+    out = []
+    for ch in text:
+        if ch in ("\n", "\t"):
+            out.append(ch)
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cs"):
+            continue
+        if cat == "Cf" and ch not in _KEEP_FORMAT:
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def test_strip_control_chars_printable_fast_path_matches_the_full_scan():
+    # 快路径的前提：isprintable 为真的字符里没有 Cc / Cs / Cf / Zl / Zp（全码位穷举）
+    removable = ("Cc", "Cs", "Cf", "Zl", "Zp")
+    assert not [cp for cp in range(0x110000)
+                if chr(cp).isprintable() and unicodedata.category(chr(cp)) in removable]
+    rng = random.Random(9)
+    pool = [chr(c) for c in range(0x250)] + [chr(c) for c in (
+        0x85, 0xA0, 0xAD, 0x378, 0x61C, 0x180E, 0x200B, 0x200C, 0x200D, 0x200E, 0x2028, 0x2029,
+        0x202E, 0x2060, 0x2066, 0x3000, 0xD800, 0xDFFF, 0xE000, 0xFEFF, 0xFFF9, 0x1F600,
+        0xE0001, 0xE0041, 0x10FFFF)] + ["好", "。", "\r\n", "👨" + chr(0x200D) + "👩"]
+    for _ in range(4000):
+        s = "".join(rng.choice(pool) for _ in range(rng.randint(0, 12)))
+        assert strip_control_chars(s) == _strip_control_chars_full_scan(s), repr(s)
