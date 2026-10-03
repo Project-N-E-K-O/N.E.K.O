@@ -77,8 +77,6 @@ On success the response is `{"success": true, "models": [{"id": "...", "name": "
 
 The POST body follows the field names returned to the first-party setup UI (for example `coreApi`, `coreApiKey`, `assistApi`, and provider-specific fields). This is a flexible JSON object rather than a fixed Pydantic schema.
 
-`assistModelIds` maps an assist provider to the model ID chosen for it, for example `{"openrouter": "google/gemini-2.5-flash"}`. Only the entry of the selected assist provider applies, and it covers every assist tier; fixed-model providers ignore it. POST merges the submitted entries into the stored map, and an empty value removes that provider's entry.
-
 ### GPT-SoVITS
 
 | Method and path | Purpose |

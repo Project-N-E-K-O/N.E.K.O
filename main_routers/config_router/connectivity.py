@@ -681,12 +681,6 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 return
             urls = _normalize_provider_url_candidates(profile, "openrouter_url")
             model = profile.get("conversation_model", "")
-            from utils.config_manager import _as_bool
-            overrides = core_cfg.get("assistModelIds")
-            override = overrides.get(provider_key) if isinstance(overrides, dict) else None
-            if (provider_key == core_cfg.get("assistApi") and isinstance(override, str)
-                    and not (_as_bool(profile.get("fixed_model")) or _as_bool(profile.get("is_free_version")))):
-                model = override.strip() or model
             provider_type = _normalize_provider_type(profile, urls[0] if urls else profile.get("openrouter_url", ""))
 
         # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
@@ -896,9 +890,6 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
-            from utils.config_manager import _as_bool
-            if not (_as_bool(profile.get("fixed_model")) or _as_bool(profile.get("is_free_version"))):
-                model = (req.model or "").strip() or model
             provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)

@@ -25,32 +25,6 @@ def _goto_and_wait(mock_page: Page, running_server: str):
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
 
 
-@pytest.mark.frontend
-def test_assist_model_draft_changes_probe_and_light_cache(mock_page: Page, running_server: str):
-    """Assist probes test the draft model, and model edits invalidate green status."""
-    requests = []
-
-    def respond(route):
-        requests.append(route.request.post_data_json)
-        route.fulfill(json={'success': False, 'error_code': 'model_not_found', 'error': 'bad model'})
-
-    mock_page.route('**/api/config/test_connectivity', respond)
-    _goto_and_wait(mock_page, running_server)
-    mock_page.wait_for_selector('#assistApiSelect option[value="qwen"]', state='attached')
-    mock_page.select_option('#assistApiSelect', 'qwen')
-    mock_page.fill('#assistApiKeyInput', 'sk-draft-test')
-    mock_page.fill('#assistModelIdInput', 'qwen-typo-model')
-    resolved = mock_page.evaluate("() => ConnectivityManager.resolveEffectiveKey({type: 'assist'})")
-    assert resolved['model'] == 'qwen-typo-model'
-    with mock_page.expect_request('**/api/config/test_connectivity') as pending:
-        mock_page.evaluate("""() => document.getElementById('assistApiKeyInput')
-            .parentElement.querySelector('.connectivity-mini-test-btn').click()""")
-    assert pending.value.post_data_json['model'] == 'qwen-typo-model'
-    mock_page.fill('#assistModelIdInput', 'qwen-correct-model')
-    changed = mock_page.evaluate("() => ConnectivityManager.resolveEffectiveKey({type: 'assist'})")
-    assert changed['cacheId'] != resolved['cacheId']
-
-
 def _install_connectivity_route(mock_page: Page, *, success: bool = True,
                                  error: str = "", error_code: str = ""):
     """Install a route handler that intercepts connectivity test requests."""

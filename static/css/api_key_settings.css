@@ -25,7 +25,6 @@
 --text-blue: #40C5F1;      /* 正文蓝色（与原设计一致） */
 --text-blue-sub: #1A8BA8;  /* 说明性文字蓝色（比正文深，更易阅读） */
 --accent-blue: #40C5F1;    /* 装饰性蓝色（边框/背景/按钮等） */
---hint-text-color: #888;   /* 字段下方的灰色说明文字 */
 }
 
 html,
@@ -689,13 +688,6 @@ pointer-events: none;
     margin-left: 8px;
     font-size: 0.85em;
     opacity: 0.7;
-}
-
-.model-id-hint {
-    font-weight: normal;
-    font-size: 0.85em;
-    color: var(--hint-text-color);
-    overflow-wrap: anywhere;
 }
 
 .api-key-info h3 {

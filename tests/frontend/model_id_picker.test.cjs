@@ -115,8 +115,6 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     add('api-key-form');
     add('useMimoTokenPlan');
     add('assistApiSelect');
-    add('assistModelIdInput', { 'data-i18n-placeholder': 'api.assistModelIdPlaceholder', placeholder: '留空则各功能使用服务商默认模型' });
-    add('assistModelIdHint');
     add('imageModelProvider');
     add('imageModelUrl');
     add('imageModelApiKey');
@@ -129,7 +127,6 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     });
 
     const state = {
-        assistKey: '',
         customKey: '',
         bookKeys: {},
         tokenPlan: false,
@@ -180,7 +177,6 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         _coreApiProviders: CORE_PROVIDERS,
         _keyBookApiProviders: {},
         _imageProviders: IMAGE_PROVIDERS,
-        _assistModelIds: {},
         getProviderInfo: key => ASSIST_PROVIDERS[key] || CORE_PROVIDERS[key] || {},
         isProviderFlagEnabled: value => value === true || value === 1 || value === 'true' || value === '1',
         isFixedModelProvider: key => !!(ASSIST_PROVIDERS[key] && ASSIST_PROVIDERS[key].fixed_model),
@@ -190,24 +186,21 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         getEffectiveAssistKey: key => state.bookKeys[key] || '',
         getTtsProviderMeta: key => state.ttsMeta[key] || null,
         ConnectivityManager: {
-            resolveEffectiveKey: context => ({ key: context.type === 'assist' ? state.assistKey : state.customKey }),
+            resolveEffectiveKey: () => ({ key: state.customKey }),
         },
         closeProviderSelectDropdown: () => {},
         closeAllProviderSelectDropdowns: () => {},
         bindProviderDropdownGlobalHandlers: () => {},
     });
     const exported = [
-        'translateModelPickerText', 'normalizeAssistModelIds', 'loadAssistModelIds', 'syncAssistModelIdInput',
-        'collectAssistModelIdsForSave', 'getAssistTierModelId', 'resolveSlotModelState', 'applyModelIdPlaceholder',
-        'buildAssistModelDefaultsText', 'refreshAssistModelIdField', 'refreshModelIdHints',
-        'resolveAssistModelPickerRequest', 'resolveSlotModelPickerRequest', 'resolveImageModelPickerRequest',
+        'translateModelPickerText', 'getAssistTierModelId', 'resolveSlotModelState', 'applyModelIdPlaceholder',
+        'refreshModelIdHints', 'resolveSlotModelPickerRequest', 'resolveImageModelPickerRequest',
         'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers',
     ];
     vm.runInContext([
         sourceBetween('function getProviderDefaultModelId(', 'function setModelIdFieldHidden('),
         sourceBetween('// ==================== 模型 ID 选择器 ====================', '// ==================== 加载API服务商选项 ===================='),
         ...exported.map(name => `globalThis.${name} = ${name};`),
-        'globalThis.readAssistModelIds = () => _assistModelIds;',
         'globalThis.invalidateModelLists = invalidateModelLists;',
         'globalThis.focusModelIdPickerOption = focusModelIdPickerOption;',
     ].join('\n'), context, { filename: SOURCE_PATH });
@@ -242,55 +235,15 @@ function plain(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-test('saved assist model IDs are normalized and loaded for the saved provider', () => {
-    const { context, el } = createPickerContext();
-    assert.deepEqual(
-        plain(context.normalizeAssistModelIds({ openrouter: ' google/gemini-3-flash ', qwen: '', kimi: 3, glm: null })),
-        { openrouter: 'google/gemini-3-flash' }
-    );
-    assert.deepEqual(plain(context.normalizeAssistModelIds(['a'])), {});
-
-    context.loadAssistModelIds({ assistApi: 'openrouter', assistModelIds: { openrouter: 'x/model', qwen: 'qwen-max' } });
-    assert.equal(el('assistModelIdInput').value, 'x/model');
-    assert.equal(el('assistModelIdInput').dataset.providerKey, 'openrouter');
-});
-
-test('switching the assist provider keeps each provider model ID separately', () => {
-    const { context, el, select } = createPickerContext();
-    context.loadAssistModelIds({ assistApi: 'openrouter', assistModelIds: { openrouter: 'x/model', qwen: 'qwen-max' } });
-
-    el('assistModelIdInput').value = 'y/edited';
-    select('assistApiSelect', 'qwen');
-    context.syncAssistModelIdInput();
-    assert.equal(el('assistModelIdInput').value, 'qwen-max');
-
-    el('assistModelIdInput').value = '';
-    assert.deepEqual(plain(context.collectAssistModelIdsForSave()), { openrouter: 'y/edited', qwen: '' });
-});
-
-test('fixed-model assist providers never carry a model ID into the save payload', () => {
-    const { context, el, select } = createPickerContext();
-    context.loadAssistModelIds({ assistApi: 'kimi_code', assistModelIds: { kimi_code: 'stale', openrouter: 'x/model' } });
-    assert.equal(el('assistModelIdInput').value, '');
-
-    el('assistModelIdInput').value = 'typed-anyway';
-    assert.deepEqual(plain(context.collectAssistModelIdsForSave()), { kimi_code: 'stale', openrouter: 'x/model' });
-
-    select('assistApiSelect', 'free');
-    context.refreshAssistModelIdField();
-    assert.equal(el('assistModelIdInput').disabled, true);
-    assert.equal(el('assistModelIdInput').placeholder, '免费版使用固定模型');
-});
-
-test('follow_assist text slots use the assist override, then the tier default', () => {
-    const { context, el } = createPickerContext();
-    context.loadAssistModelIds({ assistApi: 'openrouter', assistModelIds: {} });
-
+test('follow_assist text slots use the tier default of the selected assist provider', () => {
+    const { context, select } = createPickerContext();
     assert.deepEqual(plain(context.resolveSlotModelState('summary')), {
         defaultModelId: 'deepseek/deepseek-v4-flash', acceptsTypedModelId: true, fixedModelProvider: '',
     });
-    el('assistModelIdInput').value = 'x/override';
-    assert.equal(context.resolveSlotModelState('emotion').defaultModelId, 'x/override');
+    assert.equal(context.resolveSlotModelState('emotion').defaultModelId, 'qwen/qwen3.5-9b');
+
+    select('assistApiSelect', 'qwen');
+    assert.equal(context.resolveSlotModelState('emotion').defaultModelId, 'qwen3.7-flash');
 });
 
 test('agent tier falls back to the vision model when the provider has no agent model', () => {
@@ -299,15 +252,13 @@ test('agent tier falls back to the vision model when the provider has no agent m
     assert.equal(context.getAssistTierModelId('agent'), 'kimi-k2.6');
 });
 
-test('follow_core text slots use the core provider default, not the assist override', () => {
-    const { context, el, setSlot, select } = createPickerContext();
-    context.loadAssistModelIds({ assistApi: 'openrouter', assistModelIds: { openrouter: 'x/override' } });
+test('follow_core text slots stay on the core provider chain and never borrow assist models', () => {
+    const { context, setSlot, select } = createPickerContext();
     setSlot('vision', 'follow_core');
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime-preview');
-    assert.equal(el('assistModelIdInput').value, 'x/override');
 });
 
 test('free and fixed-model sources do not accept a typed model ID', () => {
@@ -395,28 +346,6 @@ test('placeholders show the model in use and fall back to the original example',
     assert.equal(el('gameMainModelId').placeholder, 'e.g., gpt-3.5-turbo');
 });
 
-test('assist hint groups tiers that share a model and collapses a single model', () => {
-    const { context } = createPickerContext({
-        translations: {
-            'api.assistModelIdDefaultsHint': 'Currently using: {{models}}',
-            'api.assistModelIdDefaultsEntry': '{{tiers}}: {{model}}',
-            'api.assistModelIdListSeparator': ', ',
-            'api.assistModelTiers.conversation': 'Chat',
-            'api.assistModelTiers.vision': 'Vision',
-            'api.assistModelTiers.summary': 'Summary',
-            'api.assistModelTiers.correction': 'Correction',
-            'api.assistModelTiers.emotion': 'Emotion',
-            'api.assistModelTiers.agent': 'Agent',
-        },
-    });
-    assert.equal(
-        context.buildAssistModelDefaultsText('openrouter'),
-        'Currently using: Chat, Vision: google/gemini-2.5-flash · Summary, Correction: deepseek/deepseek-v4-flash'
-            + ' · Emotion: qwen/qwen3.5-9b · Agent: google/gemini-3-flash-preview'
-    );
-    assert.equal(context.buildAssistModelDefaultsText('kimi'), 'Currently using: kimi-k2.6');
-});
-
 test('translation helper interpolates its fallback when i18n is unavailable', () => {
     const { context } = createPickerContext();
     assert.equal(context.translateModelPickerText('api.missing', '还有 {{count}} 个', { count: 3 }), '还有 3 个');
@@ -424,14 +353,14 @@ test('translation helper interpolates its fallback when i18n is unavailable', ()
 
 test('provider requests come from the provider table and switch MiMo to its token plan node', () => {
     const { context, select, state, setSlot } = createPickerContext();
-    state.assistKey = 'sk-typed';
-    assert.deepEqual(plain(context.resolveAssistModelPickerRequest()), {
+    state.customKey = 'sk-typed';
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), {
         body: { provider_key: 'openrouter', api_key: 'sk-typed' },
     });
 
     select('assistApiSelect', 'mimo');
     state.tokenPlan = true;
-    assert.deepEqual(plain(context.resolveAssistModelPickerRequest()), {
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), {
         body: { provider_key: 'mimo', api_key: 'sk-typed', url: 'https://token-plan-cn.xiaomimimo.com/v1' },
     });
 
@@ -442,7 +371,7 @@ test('provider requests come from the provider table and switch MiMo to its toke
     });
 
     select('assistApiSelect', 'kimi_code');
-    assert.deepEqual(plain(context.resolveAssistModelPickerRequest()), { reason: 'fixed' });
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), { reason: 'fixed' });
 });
 
 test('custom slots send the masked sentinel only together with their own endpoint', () => {
@@ -532,17 +461,16 @@ test('model list failures are mapped to error codes and not cached', async () =>
     assert.equal(state.fetchCalls.length, 4);
 });
 
-test('same-provider slots inherit the assist override and merged defaults', () => {
+test('named and follow_core slots read the merged defaults whichever assist provider is selected', () => {
     const { context, select, setSlot } = createPickerContext();
-    select('assistApiSelect', 'qwen');
-    context.loadAssistModelIds({ assistApi: 'qwen', assistModelIds: { qwen: 'qwen-picked' } });
-    for (const mode of ['follow_core', 'qwen']) {
-        setSlot('vision', mode);
-        assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen-picked');
-    }
-    select('assistApiSelect', 'openrouter');
     context._assistModelDefaults.qwen = { VISION_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'merged-qwen');
+    for (const assistProvider of ['qwen', 'openrouter']) {
+        select('assistApiSelect', assistProvider);
+        for (const mode of ['follow_core', 'qwen']) {
+            setSlot('vision', mode);
+            assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'merged-qwen');
+        }
+    }
 });
 
 test('follow_core picker uses the core input and marks stored credential origin', () => {

@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "Провайдер вспомогательного API",
         "assistApiKeyLabel": "Ключ вспомогательного API",
         "assistApiAutoFillHint": "При пустом поле используется ключ из справочника; введённый вручную сохраняется отдельно",
-        "assistModelIdLabel": "ID модели вспомогательного API",
-        "assistModelIdPlaceholder": "Оставьте пустым, чтобы каждая функция использовала модель провайдера по умолчанию",
-        "assistModelIdOverrideHint": "Эту модель используют чат, зрение, сводка, коррекция, эмоции и Агент; модель, заданная для отдельной функции в пользовательском API, имеет приоритет",
-        "assistModelIdDefaultsHint": "Сейчас используется: {{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
-        "assistModelIdListSeparator": ", ",
-        "assistModelTiers": {
-            "conversation": "Чат",
-            "vision": "Зрение",
-            "summary": "Сводка",
-            "correction": "Коррекция",
-            "emotion": "Эмоции",
-            "agent": "Агент"
-        },
         "modelIdCurrentPlaceholder": "Сейчас используется: {{model}}",
         "modelIdFreePlaceholder": "Бесплатная версия использует фиксированные модели",
         "modelPicker": {

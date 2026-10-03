@@ -24,8 +24,6 @@ let _ttsProviders = {};
 let _imageProviders = {};
 // 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
 let _resolvedProviderUrls = {};
-// 辅助 API 的模型 ID 按服务商分开记，切换服务商时互不串用
-let _assistModelIds = {};
 // 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
@@ -1737,7 +1735,6 @@ function removeKeyBookLink(input) {
 
 // ==================== 模型 ID 选择器 ====================
 
-const ASSIST_MODEL_TIERS = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'agent'];
 const MODEL_TIER_BY_TYPE = {
     conversation: 'conversation',
     summary: 'summary',
@@ -1747,14 +1744,6 @@ const MODEL_TIER_BY_TYPE = {
     emotion: 'emotion',
     vision: 'vision',
     agent: 'agent',
-};
-const ASSIST_MODEL_TIER_FALLBACK_LABELS = {
-    conversation: '对话',
-    vision: '视觉',
-    summary: '摘要',
-    correction: '纠错',
-    emotion: '情感',
-    agent: 'Agent',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -1831,63 +1820,15 @@ function getAssistDefaultTierModelId(providerKey, tier) {
         || (tier === 'agent' ? getAssistProfileTierModelId(providerKey, 'vision') : '');
 }
 
-function normalizeAssistModelIds(value) {
-    const ids = {};
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return ids;
-    Object.keys(value).forEach(providerKey => {
-        const modelId = value[providerKey];
-        if (typeof modelId === 'string' && modelId.trim()) {
-            ids[providerKey] = modelId.trim();
-        }
-    });
-    return ids;
-}
-
-function loadAssistModelIds(data) {
-    _assistModelIds = normalizeAssistModelIds(data && data.assistModelIds);
-    const input = document.getElementById('assistModelIdInput');
-    if (!input) return;
-    const providerKey = (data && data.assistApi) || '';
-    input.value = providerKey && !usesFixedModels(providerKey) ? (_assistModelIds[providerKey] || '') : '';
-    input.dataset.providerKey = providerKey;
-    scheduleModelIdHintsRefresh();
-}
-
-// 输入框里的值属于 dataset.providerKey 那一家；辅助服务商变了先把它收回映射，再换上新服务商的值
-function syncAssistModelIdInput() {
-    const input = document.getElementById('assistModelIdInput');
-    if (!input) return;
-    const providerKey = getSelectedAssistProviderKey();
-    const previousKey = input.dataset.providerKey || '';
-    if (previousKey === providerKey) return;
-    if (previousKey && !usesFixedModels(previousKey)) {
-        _assistModelIds[previousKey] = input.value.trim();
-    }
-    input.value = providerKey && !usesFixedModels(providerKey) ? (_assistModelIds[providerKey] || '') : '';
-    input.dataset.providerKey = providerKey;
-}
-
-function collectAssistModelIdsForSave() {
-    syncAssistModelIdInput();
-    const ids = { ..._assistModelIds };
-    const input = document.getElementById('assistModelIdInput');
-    const providerKey = input ? (input.dataset.providerKey || '') : '';
-    if (providerKey && !usesFixedModels(providerKey)) {
-        ids[providerKey] = input.value.trim();
-    }
-    return ids;
-}
-
-function getAssistModelOverride() {
-    const providerKey = getSelectedAssistProviderKey();
-    if (!providerKey || usesFixedModels(providerKey)) return '';
-    const input = document.getElementById('assistModelIdInput');
-    if (input && input.dataset.providerKey === providerKey) return input.value.trim();
-    return _assistModelIds[providerKey] || '';
-}
-
 function getAssistTierModelId(tier) {
-    return getAssistModelOverride() || getAssistDefaultTierModelId(getSelectedAssistProviderKey(), tier);
+    return getAssistDefaultTierModelId(getSelectedAssistProviderKey(), tier);
+}
+
+// 与后端 _resolve_follow_model_id 同一条回退链，缺档位时也不借辅助 API 的模型
+function getFollowCoreTierModelId(coreProviderKey, tier) {
+    return getAssistProfileTierModelId(coreProviderKey, tier)
+        || getAssistProfileTierModelId(coreProviderKey, 'conversation')
+        || String((_coreApiProviders[coreProviderKey] || {}).core_model || '').trim();
 }
 
 function getSlotTypedModelId(modelType, state) {
@@ -1949,10 +1890,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         if (!isGameSlot) {
             return {
                 defaultModelId: provider === 'follow_core'
-                    ? ((sourceKey === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
-                        || getAssistProfileTierModelId(sourceKey, tier)
-                        || getAssistProfileTierModelId(sourceKey, 'conversation')
-                        || String((_coreApiProviders[sourceKey] || {}).core_model || '').trim())
+                    ? getFollowCoreTierModelId(sourceKey, tier)
                     : getAssistTierModelId(tier),
                 acceptsTypedModelId: true,
                 fixedModelProvider: '',
@@ -1967,11 +1905,11 @@ function resolveSlotModelState(modelType, visited = new Set()) {
                 fixedModelProvider: '',
             };
         }
-        const coreTierModel = (sourceKey === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
-            || getAssistProfileTierModelId(sourceKey, tier)
-            || getAssistProfileTierModelId(sourceKey, 'conversation')
-            || String((_coreApiProviders[sourceKey] || {}).core_model || '').trim();
-        return { defaultModelId: coreTierModel, acceptsTypedModelId: false, fixedModelProvider: '' };
+        return {
+            defaultModelId: getFollowCoreTierModelId(sourceKey, tier),
+            acceptsTypedModelId: false,
+            fixedModelProvider: '',
+        };
     }
 
     if (provider && provider !== 'custom') {
@@ -1980,8 +1918,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
             return { defaultModelId: namedModel, acceptsTypedModelId: false, fixedModelProvider: provider };
         }
         return {
-            defaultModelId: (provider === getSelectedAssistProviderKey() ? getAssistModelOverride() : '')
-                || namedModel || getAssistProfileTierModelId(provider, 'conversation'),
+            defaultModelId: namedModel || getAssistProfileTierModelId(provider, 'conversation'),
             acceptsTypedModelId: true,
             fixedModelProvider: '',
         };
@@ -2014,60 +1951,6 @@ function applyModelIdPlaceholder(input, state) {
     }
 }
 
-function buildAssistModelDefaultsText(providerKey) {
-    const tiersByModel = new Map();
-    ASSIST_MODEL_TIERS.forEach(tier => {
-        const model = getAssistDefaultTierModelId(providerKey, tier);
-        if (!model) return;
-        if (!tiersByModel.has(model)) tiersByModel.set(model, []);
-        tiersByModel.get(model).push(
-            translateModelPickerText(`api.assistModelTiers.${tier}`, ASSIST_MODEL_TIER_FALLBACK_LABELS[tier])
-        );
-    });
-    if (tiersByModel.size === 0) return '';
-
-    let models = Array.from(tiersByModel.keys())[0];
-    if (tiersByModel.size > 1) {
-        const separator = translateModelPickerText('api.assistModelIdListSeparator', '、');
-        models = Array.from(tiersByModel, ([model, tiers]) => translateModelPickerText(
-            'api.assistModelIdDefaultsEntry',
-            '{{tiers}}：{{model}}',
-            { tiers: tiers.join(separator), model }
-        )).join(' · ');
-    }
-    return translateModelPickerText('api.assistModelIdDefaultsHint', '当前使用：{{models}}', { models });
-}
-
-function refreshAssistModelIdField() {
-    const input = document.getElementById('assistModelIdInput');
-    if (!input) return;
-    const hint = document.getElementById('assistModelIdHint');
-    const providerKey = getSelectedAssistProviderKey();
-    const fixed = usesFixedModels(providerKey);
-    input.disabled = !providerKey || fixed;
-
-    let hintText = '';
-    const fixedModel = fixed ? getAssistDefaultTierModelId(providerKey, 'conversation') : '';
-    if (fixed && isFreeModelProvider(providerKey)) {
-        input.placeholder = translateModelPickerText('api.modelIdFreePlaceholder', '免费版使用固定模型');
-    } else if (fixedModel) {
-        input.placeholder = translateModelPickerText('api.modelIdCurrentPlaceholder', '当前使用：{{model}}', {
-            model: fixedModel,
-        });
-    } else {
-        input.placeholder = getDefaultModelIdPlaceholder(input);
-        if (providerKey && !fixed) {
-            hintText = input.value.trim()
-                ? translateModelPickerText(
-                    'api.assistModelIdOverrideHint',
-                    '对话、视觉、摘要、纠错、情感和 Agent 都会使用此模型；自定义API中为单个功能填写的模型优先'
-                )
-                : buildAssistModelDefaultsText(providerKey);
-        }
-    }
-    if (hint) hint.textContent = hintText;
-}
-
 function refreshImageModelIdPlaceholder() {
     const select = document.getElementById('imageModelProvider');
     const provider = select ? select.value : '';
@@ -2095,11 +1978,6 @@ function buildCustomModelListRequest(url, apiKey, modelType) {
     if (!url) return { reason: 'missingUrl' };
     if (!/^https?:\/\//i.test(url)) return { reason: 'unsupported' };
     return { body: { url, api_key: apiKey || '', model_type: modelType, provider_type: 'openai_compatible' } };
-}
-
-function resolveAssistModelPickerRequest() {
-    const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
-    return buildProviderModelListRequest(getSelectedAssistProviderKey(), resolved.key, { useTokenPlan: true });
 }
 
 function resolveSlotModelPickerRequest(modelType) {
@@ -2350,17 +2228,12 @@ function refreshModelIdPickerButton(picker) {
 }
 
 function refreshModelIdHints(types = null) {
-    if (!types || types.has('assist')) {
-        syncAssistModelIdInput();
-        refreshAssistModelIdField();
-    }
     MODEL_TYPES.filter(modelType => !types || types.has(modelType)).forEach(modelType => {
         applyModelIdPlaceholder(document.getElementById(`${modelType}ModelId`), resolveSlotModelState(modelType));
     });
     if (!types || types.has('image')) refreshImageModelIdPlaceholder();
     _modelIdPickers.forEach(picker => {
-        if (!types || Array.from(types).some(type => picker.input.id === `${type}ModelId`
-            || (type === 'assist' && picker.input.id === 'assistModelIdInput'))) {
+        if (!types || Array.from(types).some(type => picker.input.id === `${type}ModelId`)) {
             refreshModelIdPickerButton(picker);
         }
     });
@@ -2461,7 +2334,6 @@ function initModelIdPickers() {
     _modelIdPickersInitialized = true;
     bindProviderDropdownGlobalHandlers();
 
-    initModelIdPicker(document.getElementById('assistModelIdInput'), resolveAssistModelPickerRequest);
     MODEL_TYPES.forEach(modelType => {
         initModelIdPicker(
             document.getElementById(`${modelType}ModelId`),
@@ -2470,12 +2342,8 @@ function initModelIdPickers() {
     });
     initModelIdPicker(document.getElementById('imageModelId'), resolveImageModelPickerRequest);
 
-    ['assistModelIdInput', 'imageModelUrl'].forEach(id => {
-        const input = document.getElementById(id);
-        if (input) input.addEventListener('input', () => scheduleModelIdHintsRefresh(
-            id === 'assistModelIdInput' ? ['assist', ...MODEL_TYPES] : ['image']
-        ));
-    });
+    const imageUrlInput = document.getElementById('imageModelUrl');
+    if (imageUrlInput) imageUrlInput.addEventListener('input', () => scheduleModelIdHintsRefresh(['image']));
     MODEL_TYPES.forEach(modelType => {
         ['ModelId', 'ModelUrl'].forEach(suffix => {
             const input = document.getElementById(`${modelType}${suffix}`);
@@ -2818,8 +2686,6 @@ async function loadCurrentApiKey() {
                     }
                 }
             }
-
-            loadAssistModelIds(data);
 
             // 加载用户自定义API配置
             setInputValue('conversationModelUrl', data.conversationModelUrl);
@@ -3495,7 +3361,6 @@ async function save_button_down(e) {
     const useMimoTokenPlan = isMimoTokenPlanActive();
     const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
     const mimoTokenPlanKey = mimoTokenPlanKeyInput ? getRealKey(mimoTokenPlanKeyInput) : '';
-    const assistModelIds = collectAssistModelIdsForSave();
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -3625,7 +3490,7 @@ async function save_button_down(e) {
     const bookPayload = buildKeyBookSecretPayload(allBookKeys, _apiKeyRegistry);
 
     const payload = {
-        apiKey: apiKeyForSave, coreApi, assistApi, assistModelIds,
+        apiKey: apiKeyForSave, coreApi, assistApi,
         ...bookPayload,
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
@@ -4719,9 +4584,7 @@ const ConnectivityManager = {
             }
             omitMaskedSecretFromConnectivity(result);
             const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
-            result.model = getAssistModelOverride();
-            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url)
-                + (result.model ? `|model:${result.model}` : '');
+            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
             return result;
         }
 
@@ -5000,7 +4863,6 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
-                    if (provider_scope === 'assist') body.model = model || '';
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5140,8 +5002,7 @@ const ConnectivityManager = {
         if (!assistResult.secretMasked && assistCacheId && !keyConfigs[assistCacheId]) {
             keyConfigs[assistCacheId] = {
                 provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
-                url: assistResult.url, api_key: assistResult.key || '', model: assistResult.model || '',
-                provider_type: assistResult.providerType, is_free: assistIsFree
+                url: assistResult.url, api_key: assistResult.key || '', provider_type: assistResult.providerType, is_free: assistIsFree
             };
         }
 
@@ -5802,8 +5663,6 @@ function initConnectivityLights() {
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
-        const assistModelInput = document.getElementById('assistModelIdInput');
-        if (assistModelInput) assistModelInput.addEventListener('input', handleAssistKeyChange);
         assistApiKeyInput.addEventListener('change', handleAssistKeyChange);
         const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
         if (mimoTokenPlanKeyInput) {

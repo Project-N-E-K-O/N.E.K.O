@@ -77,8 +77,6 @@
 
 POST 请求体使用第一方设置页返回的字段名，例如 `coreApi`、`coreApiKey`、`assistApi` 及各 provider 专属字段；它是可扩展 JSON 对象，不是固定 Pydantic schema。
 
-`assistModelIds` 记录为各辅助 provider 选定的模型 ID，例如 `{"openrouter": "google/gemini-2.5-flash"}`。只有当前辅助 provider 的那一条生效，并覆盖辅助 API 的全部档位；固定模型的 provider 会忽略它。POST 会把提交的条目合并进已保存的映射，空值表示删除该 provider 的条目。
-
 ### GPT-SoVITS
 
 | 方法和路径 | 用途 |

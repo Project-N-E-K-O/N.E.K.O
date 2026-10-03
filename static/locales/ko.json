@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "보조 API 제공업체",
         "assistApiKeyLabel": "보조 API 키",
         "assistApiAutoFillHint": "비어 있으면 관리 대장의 키를 자동 사용, 직접 입력하면 독립적으로 저장됩니다",
-        "assistModelIdLabel": "보조 API 모델 ID",
-        "assistModelIdPlaceholder": "비워 두면 기능별로 제공업체의 기본 모델을 사용합니다",
-        "assistModelIdOverrideHint": "대화, 비전, 요약, 교정, 감정, 에이전트 모두 이 모델을 사용합니다. 사용자 정의 API에서 기능별로 입력한 모델이 우선합니다",
-        "assistModelIdDefaultsHint": "현재 사용 중: {{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
-        "assistModelIdListSeparator": ", ",
-        "assistModelTiers": {
-            "conversation": "대화",
-            "vision": "비전",
-            "summary": "요약",
-            "correction": "교정",
-            "emotion": "감정",
-            "agent": "에이전트"
-        },
         "modelIdCurrentPlaceholder": "현재 사용 중: {{model}}",
         "modelIdFreePlaceholder": "무료 버전은 고정 모델을 사용합니다",
         "modelPicker": {

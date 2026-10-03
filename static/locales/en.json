@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "Assist API Provider",
         "assistApiKeyLabel": "Assist API Key",
         "assistApiAutoFillHint": "Auto-fills from Key Book when empty; manually entered keys are saved independently",
-        "assistModelIdLabel": "Assist API Model ID",
-        "assistModelIdPlaceholder": "Leave blank to use the provider's default model for each feature",
-        "assistModelIdOverrideHint": "Chat, vision, summary, correction, emotion and Agent all use this model; a model set for a single feature in Custom API takes precedence",
-        "assistModelIdDefaultsHint": "Currently using: {{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
-        "assistModelIdListSeparator": ", ",
-        "assistModelTiers": {
-            "conversation": "Chat",
-            "vision": "Vision",
-            "summary": "Summary",
-            "correction": "Correction",
-            "emotion": "Emotion",
-            "agent": "Agent"
-        },
         "modelIdCurrentPlaceholder": "Currently using: {{model}}",
         "modelIdFreePlaceholder": "The free version uses fixed models",
         "modelPicker": {

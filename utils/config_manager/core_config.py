@@ -1240,17 +1240,6 @@ class CoreConfigMixin:
                 'OPENROUTER_URLS',
             )
             config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
-        # 辅助 API 的模型 ID 按服务商分开存，只认当前辅助服务商那一条：切换服务商时不会把
-        # 上一家的模型名带过去。命中时覆盖辅助 API 的全部档位，follow_assist 槽随之继承。
-        assist_model_ids = core_cfg.get('assistModelIds')
-        assist_model_override = ''
-        if isinstance(assist_model_ids, dict) and not _uses_fixed_models(assist_api_value):
-            raw_assist_model = assist_model_ids.get(assist_api_value)
-            if isinstance(raw_assist_model, str):
-                assist_model_override = raw_assist_model.strip()
-        if assist_model_override:
-            for tier_model_key in dict.fromkeys(self._SLOT_PROFILE_MODEL_KEYS.values()):
-                config[tier_model_key] = assist_model_override
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
@@ -1407,8 +1396,6 @@ class CoreConfigMixin:
                     # URL 和 Key 已换成核心服务商的，模型也必须取核心服务商的；沿用快照里
                     # 的值（辅助 API 的模型）会把 A 家的模型名发到 B 家的端点。
                     follow_core_profile = assist_api_profiles.get(core_api_value)
-                    if core_api_value == assist_api_value and assist_model_override:
-                        return assist_model_override
                     if isinstance(follow_core_profile, dict):
                         return (follow_core_profile.get(profile_key, '')
                                 or follow_core_profile.get('CONVERSATION_MODEL', '')
@@ -1426,8 +1413,6 @@ class CoreConfigMixin:
                 named_profile = assist_api_profiles.get(provider)
                 if not isinstance(named_profile, dict):
                     return ''
-                if provider == assist_api_value and assist_model_override:
-                    return assist_model_override
                 return str(named_profile.get(profile_key) or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [

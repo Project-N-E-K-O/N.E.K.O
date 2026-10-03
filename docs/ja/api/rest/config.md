@@ -77,8 +77,6 @@
 
 POST body は `coreApi`、`coreApiKey`、`assistApi` など同梱設定 UI の field と provider 固有 field を使う拡張可能 JSON です。
 
-`assistModelIds` は assist provider ごとに選んだ model ID の map です（例：`{"openrouter": "google/gemini-2.5-flash"}`）。選択中の assist provider の entry だけが適用され、assist の全 tier を上書きします。固定モデルの provider では無視されます。POST は送信された entry を保存済み map に merge し、空値はその provider の entry を削除します。
-
 ### GPT-SoVITS
 
 | メソッドとパス | 用途 |

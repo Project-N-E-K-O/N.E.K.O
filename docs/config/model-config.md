@@ -29,10 +29,6 @@ A saved resolved provider URL is reused only while it remains in the current pro
 
 When a role's model ID is left blank in the custom API section, the role uses the same-tier default of the provider it actually points at: *follow assist* uses the assist provider's default, *follow core* uses the core provider's default, and a named provider uses its own default. The free tier and fixed-model providers (such as Kimi Code) always use their own models and ignore saved model IDs. A *custom* endpoint has no provider default; a blank model ID there keeps the assist API's current model name, so fill it in explicitly.
 
-## Assist model ID
-
-The assist API section can set one model ID for the selected assist provider (stored per provider in `assistModelIds`). It overrides every assist role; a model ID set on an individual role in the custom API section still wins, and the free tier and fixed-model providers ignore it.
-
 ## Model ID pickers
 
 Every model ID field in the Web UI has a *Fetch models* button that lists the models the upstream endpoint offers (`POST /api/config/list_models`), filtered by what you type. A blank field shows the model currently in use as its grey placeholder. The button stays disabled where a typed model ID would not be used: free and fixed-model providers, mirrored mini-game slots, and follow modes of the realtime, TTS and mini-game slots.

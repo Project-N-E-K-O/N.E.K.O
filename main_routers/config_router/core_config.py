@@ -147,52 +147,6 @@ def apply_core_config_secret_update(target: dict, source: dict, field: str) -> b
     return True
 
 
-ASSIST_MODEL_ID_MAX_LENGTH = 256
-
-
-def normalize_assist_model_ids(value) -> dict:
-    """Return the stored provider -> assist model ID map without malformed entries."""
-    if not isinstance(value, dict):
-        return {}
-    normalized = {}
-    for provider, model_id in value.items():
-        if not isinstance(provider, str) or not isinstance(model_id, str):
-            continue
-        provider, model_id = provider.strip(), model_id.strip()
-        if provider and model_id:
-            normalized[provider] = model_id
-    return normalized
-
-
-def merge_assist_model_ids(stored, submitted, known_providers) -> tuple[dict, str | None]:
-    """Merge a submitted assist model ID map into the stored one.
-
-    Only submitted providers are touched, so a client that knows a single
-    provider cannot wipe the others; an empty value clears that provider.
-    Returns ``(merged, error)``.
-    """
-    if not isinstance(submitted, dict):
-        return {}, "assistModelIds must be an object"
-    merged = normalize_assist_model_ids(stored)
-    for provider, model_id in submitted.items():
-        if not isinstance(provider, str):
-            return {}, "assistModelIds keys must be strings"
-        if model_id is not None and not isinstance(model_id, str):
-            return {}, "assistModelIds values must be strings"
-        provider = provider.strip()
-        model_id = (model_id or '').strip()
-        if len(model_id) > ASSIST_MODEL_ID_MAX_LENGTH:
-            return {}, "assistModelIds value is too long"
-        # 不认识的服务商直接忽略：新版前端带上旧后端没有的服务商时不应拒绝整次保存。
-        if provider not in known_providers:
-            continue
-        if model_id:
-            merged[provider] = model_id
-        else:
-            merged.pop(provider, None)
-    return merged, None
-
-
 def get_core_config_provider_api_key_field(provider, api_key_registry):
     """Resolve a provider's config field through the allowlisted registry."""
     if not isinstance(provider, str) or not isinstance(api_key_registry, dict):
@@ -285,7 +239,6 @@ async def get_core_config_api():
             # builds do not ship it, so the settings UI hides the option.
             "localAsrAvailable": _local_asr_available,
             "assistApi": _assist_api_provider,
-            "assistModelIds": normalize_assist_model_ids(core_cfg.get('assistModelIds')),
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
             "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or _fb('openai'),
@@ -558,24 +511,6 @@ async def update_core_config(request: Request):
             core_cfg['coreApi'] = incoming_core_api
         if incoming_assist_api:
             core_cfg['assistApi'] = incoming_assist_api
-        if 'assistModelIds' in data:
-            from utils.api_config_loader import get_config
-
-            provider_config = await asyncio.to_thread(get_config)
-            known_assist_providers = (
-                provider_config.get('assist_api_providers', {})
-                if isinstance(provider_config, dict)
-                else {}
-            )
-            merged_assist_model_ids, assist_model_ids_error = merge_assist_model_ids(
-                core_cfg.get('assistModelIds'),
-                data['assistModelIds'],
-                known_assist_providers,
-            )
-            if assist_model_ids_error:
-                return {"success": False, "error": assist_model_ids_error}
-            if merged_assist_model_ids or 'assistModelIds' in core_cfg:
-                core_cfg['assistModelIds'] = merged_assist_model_ids
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
             if not isinstance(resolved_urls, dict):

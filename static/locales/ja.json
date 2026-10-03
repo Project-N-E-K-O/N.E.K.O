@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
-        "assistModelIdLabel": "アシストAPIモデルID",
-        "assistModelIdPlaceholder": "空欄の場合、各機能でプロバイダーの既定モデルを使用します",
-        "assistModelIdOverrideHint": "会話・視覚・要約・修正・感情・Agent のすべてでこのモデルを使用します。カスタムAPIで機能ごとに入力したモデルが優先されます",
-        "assistModelIdDefaultsHint": "現在使用中：{{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}：{{model}}",
-        "assistModelIdListSeparator": "・",
-        "assistModelTiers": {
-            "conversation": "会話",
-            "vision": "視覚",
-            "summary": "要約",
-            "correction": "修正",
-            "emotion": "感情",
-            "agent": "Agent"
-        },
         "modelIdCurrentPlaceholder": "現在使用中：{{model}}",
         "modelIdFreePlaceholder": "無料版は固定モデルを使用します",
         "modelPicker": {

@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "Ayudar al proveedor de API",
         "assistApiKeyLabel": "Clave API de asistencia",
         "assistApiAutoFillHint": "Se completa automáticamente desde el Libro de claves cuando está vacío; Las claves ingresadas manualmente se guardan de forma independiente.",
-        "assistModelIdLabel": "ID del modelo de la API de asistencia",
-        "assistModelIdPlaceholder": "Déjalo en blanco para que cada función use el modelo predeterminado del proveedor",
-        "assistModelIdOverrideHint": "Chat, visión, resumen, corrección, emociones y Agente usarán este modelo; el modelo indicado para una función concreta en la API personalizada tiene prioridad",
-        "assistModelIdDefaultsHint": "En uso: {{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}: {{model}}",
-        "assistModelIdListSeparator": ", ",
-        "assistModelTiers": {
-            "conversation": "Chat",
-            "vision": "Visión",
-            "summary": "Resumen",
-            "correction": "Corrección",
-            "emotion": "Emociones",
-            "agent": "Agente"
-        },
         "modelIdCurrentPlaceholder": "En uso: {{model}}",
         "modelIdFreePlaceholder": "La versión gratuita usa modelos fijos",
         "modelPicker": {

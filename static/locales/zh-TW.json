@@ -1341,20 +1341,6 @@
         "assistApiSelectLabel": "輔助API服務商",
         "assistApiKeyLabel": "輔助API Key",
         "assistApiAutoFillHint": "留空時自動使用管理簿中的Key，手動輸入則獨立保存",
-        "assistModelIdLabel": "輔助API模型ID",
-        "assistModelIdPlaceholder": "留空則各功能使用服務商預設模型",
-        "assistModelIdOverrideHint": "對話、視覺、摘要、糾錯、情感和 Agent 都會使用此模型；自定義API中為單個功能填寫的模型優先",
-        "assistModelIdDefaultsHint": "目前使用：{{models}}",
-        "assistModelIdDefaultsEntry": "{{tiers}}：{{model}}",
-        "assistModelIdListSeparator": "、",
-        "assistModelTiers": {
-            "conversation": "對話",
-            "vision": "視覺",
-            "summary": "摘要",
-            "correction": "糾錯",
-            "emotion": "情感",
-            "agent": "Agent"
-        },
         "modelIdCurrentPlaceholder": "目前使用：{{model}}",
         "modelIdFreePlaceholder": "免費版使用固定模型",
         "modelPicker": {

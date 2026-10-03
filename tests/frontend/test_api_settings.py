@@ -2001,11 +2001,18 @@ def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, r
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
     mock_page.select_option("#assistApiSelect", "qwen")
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
 
-    menu = mock_page.locator("#assistModelIdInput-model-menu")
-    mock_page.locator("#assistModelIdInput ~ button").click()
+    menu = mock_page.locator("#conversationModelId-model-menu")
+    mock_page.locator("#conversationModelId ~ button").click()
     expect(menu.locator(".api-provider-dropdown-empty")).to_be_visible()
-    mock_page.fill("#assistModelIdInput", "qwen3.8")
+    mock_page.fill("#conversationModelId", "qwen3.8")
     assert len(pending) == 1
     assert pending[0].request.post_data_json["provider_key"] == "qwen"
 
@@ -2023,7 +2030,7 @@ def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, r
 @pytest.mark.frontend
 def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: Page, running_server: str):
     """Clicking another picker input closes the previous menu."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.route('**/api/config/list_models', lambda route: route.fulfill(
         json={'success': True, 'models': [{'id': 'qwen-test'}]},
     ))
@@ -2031,9 +2038,16 @@ def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: 
     expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector('#assistApiSelect option[value="qwen"]', state='attached')
     mock_page.select_option('#assistApiSelect', 'qwen')
-    mock_page.locator('#assistModelIdInput ~ button').click()
-    menu = mock_page.locator('#assistModelIdInput-model-menu')
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.locator('#conversationModelId ~ button').click()
+    menu = mock_page.locator('#conversationModelId-model-menu')
     expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
-    mock_page.evaluate("""() => document.getElementById('conversationModelId')
+    mock_page.evaluate("""() => document.getElementById('visionModelId')
         .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
     expect(menu).to_be_hidden()
