@@ -4060,6 +4060,8 @@ class IndependentAsrRuntime:
         self,
         event: SpeechActivityEvent,
         epoch: int,
+        *,
+        synthetic: bool = False,
     ) -> None:
         # 同上：onset 是收到这个语音活动事件的时刻。
         detected_at = time.monotonic()
@@ -4067,7 +4069,15 @@ class IndependentAsrRuntime:
             return
         provider = self._asr_provider or "unknown"
         lifecycle = self._asr_lifecycle
-        if lifecycle is not None and lifecycle.provider_policy.observes_local_activity:
+        ingress_token = self._asr_current_ingress_token
+        if ingress_token is not None and not self._ingress_token_matches(ingress_token):
+            return
+        if (
+            not synthetic
+            and ingress_token is not None
+            and lifecycle is not None
+            and lifecycle.provider_policy.observes_local_activity
+        ):
             asr_session = self._asr_session
             if asr_session is not None and getattr(asr_session, "is_ready", False):
                 hint_identity = self._capture_runtime_identity(
@@ -4373,6 +4383,7 @@ class IndependentAsrRuntime:
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
+                synthetic=True,
             )
             if (
                 epoch != self._asr_session_epoch
@@ -4987,6 +4998,7 @@ class IndependentAsrRuntime:
         await self._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_RESUMED,
             epoch,
+            synthetic=True,
         )
         if (
             epoch != self._asr_session_epoch

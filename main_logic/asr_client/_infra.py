@@ -193,6 +193,9 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
         super().__init__()
         self._held_audio_bytes = 0
         self._held_audio_items = 0
+        # A worker may temporarily retire its transport while keeping queued
+        # audio. Recovery gets a bounded deadline, never a larger audio budget.
+        self.transport_recovery_deadline = 0.0
 
     def hold_dequeued_audio(
         self,
@@ -1646,6 +1649,12 @@ class _RealtimeAsrSessionImpl:
             if self._closing_event.is_set() or self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
             remaining = deadline - loop.time()
+            recovery_deadline = getattr(
+                self._request_queue, "transport_recovery_deadline", 0.0
+            )
+            if recovery_deadline > loop.time():
+                deadline = max(deadline, recovery_deadline)
+                remaining = deadline - loop.time()
             if remaining <= 0:
                 raise RuntimeError(
                     "ASR_STREAM_BACKPRESSURE: active audio queue exceeded "

@@ -81,6 +81,38 @@ def _observe_hint_entry(monkeypatch, session, *, reject_after_return=False):
     return entered
 
 
+@pytest.mark.parametrize("source", ["synthetic", "stale", "real"])
+async def test_only_current_physical_resume_reaches_qwen_hint(qwen_sessions, source):
+    make_session, sockets, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    hints = []
+    original = session.signal_local_activity
+
+    async def observe(*, speech_active):
+        hints.append(speech_active)
+        await original(speech_active=speech_active)
+
+    session.signal_local_activity = observe
+    try:
+        await component._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch
+        )
+        hints.clear()
+        if source == "stale":
+            component._asr_audio_generation += 1
+        await component._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_RESUMED, component._asr_session_epoch,
+            synthetic=source == "synthetic",
+        )
+        assert hints == ([True] if source == "real" else [])
+    finally:
+        await session.close()
+
+
 @pytest.mark.parametrize(
     "transition,hold_lock,reject_hint",
     [
