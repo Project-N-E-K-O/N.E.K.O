@@ -29,7 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Preserve the latest main locales and clarified auxiliary-key tutorial.
+    // 合并主分支语言包和辅助 Key 教程时递增版本，避免网页、Electron、Docker
+    // 长期缓存旧语言包，导致新增 key 显示为字面量或继续使用过时提示。
     const LOCALE_VERSION = '2026-10-03-requesty-air-basketball-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
