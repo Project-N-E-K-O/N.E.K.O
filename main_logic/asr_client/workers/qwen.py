@@ -116,6 +116,9 @@ class _QwenConnectionState:
     fallback_key: _ItemKey | None = None
     fallback_timer_task: asyncio.Task[None] | None = None
     pending_local_pause: tuple[int, int] | None = None
+    pending_pause_audio_bytes: int = 0
+    pending_pause_from_item: int | None = None
+    wire_audio_bytes: int = 0
     local_speech_cycle: int = 0
     provider_speech_cycles: dict[int, int] = field(default_factory=dict)
     last_provider_final_cycle: int = -1
@@ -225,6 +228,8 @@ def _qwen_cancel_provider_fallback(
     state.fallback_key = None
     if clear_pending_pause:
         state.pending_local_pause = None
+        state.pending_pause_from_item = None
+        state.pending_pause_audio_bytes = 0
     state.fallback_due.clear()
     timer = state.fallback_timer_task
     state.fallback_timer_task = None
@@ -570,6 +575,7 @@ async def _qwen_sender(
                         delivery, len(request.audio), generation=request.generation,
                         buffer_epoch=request.buffer_epoch, provider="qwen",
                     )
+                    state.wire_audio_bytes += len(request.audio)
                     continue
 
                 if request.kind == "activity":
@@ -614,6 +620,8 @@ async def _qwen_sender(
                                     state.pending_local_pause = (
                                         request.generation, request.buffer_epoch
                                     )
+                                    state.pending_pause_from_item = key[2]
+                                    state.pending_pause_audio_bytes = state.wire_audio_bytes
                         elif (
                             state.local_speech_cycle > state.last_provider_final_cycle
                         ):
@@ -629,6 +637,7 @@ async def _qwen_sender(
                                 request.generation,
                                 request.buffer_epoch,
                             )
+                            state.pending_pause_audio_bytes = state.wire_audio_bytes
                             state.local_speech_active = False
                         else:
                             state.local_speech_active = False
@@ -831,6 +840,20 @@ async def _qwen_receiver(
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
                 pending_pause = state.pending_local_pause
+                audio_start_ms = event.get("audio_start_ms")
+                if isinstance(audio_start_ms, int) and not isinstance(audio_start_ms, bool):
+                    # Qwen timestamps share the session PCM timeline. A start
+                    # beyond the observed pause belongs to fresh audio, even
+                    # when the corresponding local resume hint arrives later.
+                    pause_matches_audio = (
+                        0 <= audio_start_ms * 32 < state.pending_pause_audio_bytes
+                    )
+                else:
+                    # Without stream position, a pause attached to an earlier
+                    # provider item cannot safely migrate to its successor.
+                    pause_matches_audio = state.pending_pause_from_item is None
+                if not pause_matches_audio:
+                    pending_pause = None
                 # Adopt the already-running grace; a delayed start must not
                 # discard the pause or extend its recovery deadline.
                 pending_fallback = (
@@ -839,6 +862,8 @@ async def _qwen_receiver(
                 if not pending_fallback:
                     _qwen_cancel_provider_fallback(state, clear_pending_pause=False)
                 state.pending_local_pause = None
+                state.pending_pause_from_item = None
+                state.pending_pause_audio_bytes = 0
                 state.current_provider_utterance_id = key[2]
                 state.item_keys[item_id] = key
                 state.provider_speech_cycles[key[2]] = state.local_speech_cycle

@@ -990,8 +990,9 @@ async def test_local_pause_resume_pause_keeps_current_provider_endpoint_authorit
 
 @pytest.mark.parametrize("endpoint", ["speech_stopped", "committed", "final"])
 @pytest.mark.parametrize("resume_before_start", [False, True])
+@pytest.mark.parametrize("next_start_ms", [220, 400, None])
 async def test_overlap_pause_survives_old_endpoint_until_new_provider_start(
-    monkeypatch, endpoint, resume_before_start
+    monkeypatch, endpoint, resume_before_start, next_start_ms
 ):
     monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 100)
     state = qwen._QwenConnectionState(0, 0, 1, False)
@@ -1015,8 +1016,12 @@ async def test_overlap_pause_survives_old_endpoint_until_new_provider_start(
         await activity(True)
         await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
         await _next_event(responses, "utterance_started")
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0" * 6400))
+        await asyncio.wait_for(requests.join(), 1)
         await activity(False)
         await activity(True)
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0" * 3200))
+        await asyncio.wait_for(requests.join(), 1)
         await activity(False)
         assert state.fallback_key == (0, 0, 1)
         assert state.pending_local_pause == (0, 0)
@@ -1036,10 +1041,15 @@ async def test_overlap_pause_survives_old_endpoint_until_new_provider_start(
             assert state.pending_local_pause is None
         else:
             assert state.pending_local_pause == (0, 0)
-        await ws.server_send({"type": "input_audio_buffer.speech_started", "item_id": "new"})
+        await requests.put(_AsrWorkerRequest("audio", 0, audio=b"\0" * 6400))
+        await asyncio.wait_for(requests.join(), 1)
+        start = {"type": "input_audio_buffer.speech_started", "item_id": "new"}
+        if next_start_ms is not None:
+            start["audio_start_ms"] = next_start_ms
+        await ws.server_send(start)
         await _next_event(responses, "utterance_started")
         assert state.pending_local_pause is None
-        if resume_before_start:
+        if resume_before_start or next_start_ms != 220:
             assert state.fallback_key is None
             assert not any(json.loads(p)["type"] == "session.finish" for p in ws.sent)
         else:
