@@ -814,3 +814,16 @@ async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
         assert not tx.path.exists()
     finally:
         VisitOutbox._append_sync = real_write
+
+
+def test_encoded_size_is_an_upper_bound_for_text(tmp_path):
+    # i_done 由 send / 首发改写：估算按最大宽度，缺字段也不报错
+    import utils.visit_wire as vw
+
+    tx = make_outbox(tmp_path)
+    msg = text(1, "z" * 763)
+    without = {k: v for k, v in msg.items() if k != "i_done"}
+    est = tx.encoded_size(without)
+    actual = vw.wire_size(vw.encode_msg(dict(msg, seq=2 ** 32 - 1, i_done=255)), visit_id=tx.visit_id)
+    assert est == actual
+    assert tx.encoded_size(dict(msg, i_done=0)) == actual

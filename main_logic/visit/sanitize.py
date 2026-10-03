@@ -274,14 +274,16 @@ def _precut(text: str) -> str:
 def sanitize_relay_text(text: str, *, max_tokens: int = VISIT_LINE_MAX_TOKENS) -> str:
     """The OD-23 cleaning chain for relayed visit text.
 
-    Order: :func:`strip_control_chars` -> :func:`escape_envelope` ->
-    :func:`defang_markdown_media` -> ``truncate_to_tokens(max_tokens)`` ->
-    :func:`clamp_text_utf8` (4096 B). Leading / trailing whitespace is kept so
+    Order: :func:`strip_control_chars` -> :func:`defang_markdown_media` ->
+    :func:`escape_envelope` -> ``truncate_to_tokens(max_tokens)`` ->
+    :func:`clamp_text_utf8` (4096 B). Escaping runs after defang: unwrapping a
+    Markdown link can rebuild a tag (``<[visit_data](x)``) that an earlier
+    escape could not see. Leading / trailing whitespace is kept so
     sanitised fragments concatenate to the sanitised line. Human lines pass
     ``max_tokens=VISIT_HUMAN_LINE_MAX_TOKENS``.
     """
-    text = _precut(escape_envelope(strip_control_chars(text or "")))
-    text = defang_markdown_media(text)
+    text = _precut(strip_control_chars(text or ""))
+    text = escape_envelope(defang_markdown_media(text))
     text = _truncate_tokens(text, max_tokens)
     return clamp_text_utf8(text, VISIT_TEXT_MAX_BYTES)
 
@@ -293,7 +295,7 @@ def clean_relay_text(text: str) -> str:
     result differs from this one exactly when a cap cut something (the wire
     budget passes it as ``WireBudget(clean=...)``).
     """
-    return defang_markdown_media(escape_envelope(strip_control_chars(text or "")))
+    return escape_envelope(defang_markdown_media(strip_control_chars(text or "")))
 
 
 def clamp_peer_line(text: str, *, max_tokens: int = VISIT_LINE_MAX_TOKENS) -> str:

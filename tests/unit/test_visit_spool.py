@@ -369,7 +369,8 @@ async def test_forget_keeps_spool_until_region_digest_done(tmp_path):
     )
     assert await sp.delete_if_settled() is False
     assert sp.jsonl_path.exists()
-    await sp.update_state(last_summary_done=True)
+    assert await sp.delete_if_settled() is False      # 这一轮还没计入 digest_runs
+    await sp.update_state(last_summary_done=True, digest_runs=1)
     assert await sp.delete_if_settled() is True
     assert not sp.jsonl_path.exists()
 
@@ -1175,3 +1176,90 @@ async def test_cap_sweep_skips_a_settled_spool_still_open_for_appends(tmp_path, 
     await live.close()
     await VisitSpool.sweep(tmp_path, NOW)
     assert not live.jsonl_path.exists()
+
+
+@pytest.mark.parametrize("part", ["group", "segments"])
+async def test_an_unregistered_batch_map_is_not_settled(tmp_path, part):
+    # 先登记 run、批次还没拆：{} 不是「全部完成」，mark_forget 不能删转录
+    from main_logic.visit.spool import region_settled
+
+    sp = await open_spool(tmp_path, vid(26))
+    await sp.append(line(1))
+    await sp.close()
+    state = settled(state_for())
+    state["digest_writes"]["0"] = dict(state["digest_writes"]["0"], **{part: {}})
+    assert not region_settled(state)
+    await sp.write_state(state)
+    assert await sp.mark_forget() is False
+    assert sp.jsonl_path.exists()
+
+
+def test_a_run_still_in_progress_is_not_settled():
+    from main_logic.visit.spool import region_settled
+
+    assert region_settled(settled(state_for()))
+    assert not region_settled(dict(settled(state_for()), digest_runs=0))
+
+
+async def test_open_requires_the_callers_clock(tmp_path):
+    # 不传 now 时用墙钟 started_at 做起点，单调时钟驱动会整场不 fsync
+    import time as _time
+
+    sp = VisitSpool(tmp_path, vid(27))
+    with pytest.raises(TypeError):
+        await sp.open(header(vid(27)))                          # type: ignore[call-arg]
+    mono = _time.monotonic()
+    await sp.open(header(vid(27)), now=mono)
+    await sp.append(line(1))
+    assert sp.fsync_due(mono + visit_settings.VISIT_SPOOL_FSYNC_S)
+    await sp.close()
+
+
+async def test_retire_char_skips_an_open_spool_and_reports_busy(tmp_path):
+    from main_logic.visit.spool import SpoolBusy
+
+    live = await open_spool(tmp_path, vid(28), own_char_uid="uid_b", own_char="B")
+    await live.write_state(state_for(own_char_uid="uid_b", own_char="B"))
+    done = VisitSpool(tmp_path, vid(29))
+    await done.write_state(state_for(own_char_uid="uid_b", own_char="B"))
+    with pytest.raises(SpoolBusy):
+        await VisitSpool.retire_char(tmp_path, "uid_b")
+    assert live.jsonl_path.exists() and live.state_path.exists()
+    assert not done.state_path.exists()              # 其余场次照常退役
+    await live.close()
+    assert await VisitSpool.retire_char(tmp_path, "uid_b") == [vid(28)]
+
+
+async def test_retire_char_keeps_going_when_a_delete_fails(tmp_path, monkeypatch):
+    # Windows 上被占用的文件删不掉（PermissionError）：并入读不出，不中断其余场次
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    locked = VisitSpool(tmp_path, vid(30))
+    await locked.write_state(state_for(own_char_uid="uid_b", own_char="B"))
+    other = VisitSpool(tmp_path, vid(31))
+    await other.write_state(state_for(own_char_uid="uid_b", own_char="B"))
+    real = spool_mod._unlink
+
+    def flaky(path):
+        if path.name.startswith(vid(30)):
+            raise PermissionError("in use")
+        return real(path)
+
+    monkeypatch.setattr(spool_mod, "_unlink", flaky)
+    with pytest.raises(SpoolStateUnreadable) as ei:
+        await VisitSpool.retire_char(tmp_path, "uid_b")
+    assert ei.value.visit_ids == [vid(30)]
+    assert not other.state_path.exists()
+
+
+async def test_rename_skips_an_open_spool_and_reports_busy(tmp_path):
+    from main_logic.visit.spool import SpoolBusy
+
+    live = await open_spool(tmp_path, vid(32), own_char="old")
+    await live.write_state(state_for(own_char="old"))
+    idle = VisitSpool(tmp_path, vid(33))
+    await idle.write_state(state_for(own_char="old"))
+    with pytest.raises(SpoolBusy):
+        await VisitSpool.rename_own_char(tmp_path, "old", "new")
+    assert (await idle.read_state())["own_char"] == "new"   # 其余场次照常改名
+    await live.close()
