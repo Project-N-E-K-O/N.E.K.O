@@ -427,16 +427,21 @@ from utils.external_route_registry import (  # noqa: E402
 
 
 def _game_route_instance(lanlan_name: str) -> str | None:
-    """Opaque id of the active game route: game type, session and SDK generation.
+    """Opaque id of the active game route activation.
 
     Read from the same state ``is_game_route_active`` sees, so an active route
     always has an id -- even with a blank session id, which the voice identity
     helpers skip. Without one the registry would treat every dispatch as an
-    owner change and drop the whole game's microphone audio.
+    owner change and drop the whole game's microphone audio. Each activation
+    gets its own id, so restarting the same game and session is a new owner.
+    States built without one fall back to game type, session and SDK id.
     """
     state = _get_active_game_route_state(lanlan_name)
     if state is None:
         return None
+    activation_id = state.get("_route_activation_id")
+    if isinstance(activation_id, str) and activation_id:
+        return f"game:{activation_id}"
     return "\x1f".join((
         "game",
         str(state.get("game_type") or ""),

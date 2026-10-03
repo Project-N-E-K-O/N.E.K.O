@@ -646,6 +646,23 @@ def test_game_route_instance_tells_routes_apart(monkeypatch):
     assert first and second and first != second
 
 
+def test_restarting_the_same_game_session_is_a_new_route_instance(monkeypatch):
+    """Legacy routes without an SDK instance id restart with the same game type
+    and session id; each activation must still be its own instance.
+
+    Mutation: building the instance from game type / session / SDK id alone
+    turns this red.
+    """
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        gr_runtime._activate_game_route("soccer", "default", "Lan")
+        first = game_router._game_route_instance("Lan")
+        gr_runtime._activate_game_route("soccer", "default", "Lan")
+        second = game_router._game_route_instance("Lan")
+
+    assert first and second and first != second
+
+
 @pytest.mark.asyncio
 async def test_active_game_route_with_blank_session_id_keeps_its_microphone_audio(monkeypatch):
     """An active game always has an instance id, even with a blank session id.
@@ -810,6 +827,22 @@ async def test_stream_message_is_not_leaked_when_the_owner_reports_no_instance(e
     ))
 
     assert await registry.route_external_stream_message("Lan", {"input_type": "text"}) is registry.RouteClaim.UNSETTLED
+    # Asked once: an unpinnable owner is not retried as if it had changed.
+    handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_unpinnable_owner_hears_a_microphone_announcement_only_once(empty_registry):
+    """Mutation: retrying an unpinnable owner as if it had changed turns this
+    red -- a consumed announcement would repeat its side effects three times."""
+    announce = AsyncMock(return_value=True)
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=announce, instance="",
+        on_start_session=AsyncMock(return_value=False),  # no passthrough
+    ))
+
+    assert await registry.route_external_microphone_audio("Lan") is True
+    announce.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,7 @@ from .memory_policy import (
 import asyncio
 import re
 import time
+import uuid
 from typing import Any
 from ..shared_state import get_session_manager
 from utils.game_route_state import _game_route_states, _route_state_key
@@ -298,6 +299,9 @@ def _build_route_state(
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan_name,
+        # Unique per activation: a restart with the same game type and session
+        # id (e.g. the default session) is still a different route instance.
+        "_route_activation_id": uuid.uuid4().hex,
         "before_game_external_mode": before_mode,
         "before_game_external_active": before_active,
         "game_route_active": True,
