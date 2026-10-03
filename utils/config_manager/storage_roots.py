@@ -938,7 +938,7 @@ class StorageRootsMixin:
         except OSError as e:
             self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
-    def _load_local_state_json_file(self, path, default_value, operation):
+    def _load_local_state_json_file(self, path, default_value, operation, *, tolerate_replace=False):
         path = Path(path)
         if path.exists() and not path.is_file():
             self._raise_local_state_file_error(
@@ -947,6 +947,9 @@ class StorageRootsMixin:
                 "state file target exists but is not a file",
             )
         try:
+            if tolerate_replace:
+                from utils.file_utils import read_json_tolerating_replace
+                return self._load_json_file(path, default_value, reader=read_json_tolerating_replace)
             return self._load_json_file(path, default_value)
         except OSError as e:
             self._raise_local_state_file_error(operation, path, str(e), cause=e)
@@ -984,9 +987,11 @@ class StorageRootsMixin:
             "tombstones": [],
         }
 
-    def _load_json_file(self, path, default_value=None):
+    def _load_json_file(self, path, default_value=None, *, reader=None):
         """Load an arbitrary JSON file; returns a copy of the default when the file is missing."""
         try:
+            if reader is not None:
+                return reader(path)
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except FileNotFoundError:
@@ -1003,16 +1008,28 @@ class StorageRootsMixin:
 
     def load_root_state(self, default_value=None):
         """Load root_state; returns the default state when missing."""
-        if default_value is None:
-            default_value = self.build_default_root_state()
-        state = self._load_local_state_json_file(
-            self.root_state_path,
-            default_value,
-            "loading root_state",
-        )
+        return self._apply_root_state_recovery_override(self.load_raw_root_state(default_value))
+
+    def _apply_root_state_recovery_override(self, state):
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state
+
+    def load_root_state_with_raw(self, default_value=None):
+        """Return semantic and raw root state derived from the same disk read."""
+        state = self.load_raw_root_state(default_value, tolerate_replace=True)
+        return self._apply_root_state_recovery_override(state), deepcopy(state)
+
+    def load_raw_root_state(self, default_value=None, *, tolerate_replace=False):
+        """Load persisted root_state without applying the runtime recovery override."""
+        if default_value is None:
+            default_value = self.build_default_root_state()
+        return self._load_local_state_json_file(
+            self.root_state_path,
+            default_value,
+            "loading root_state",
+            tolerate_replace=tolerate_replace,
+        )
 
     def save_root_state(self, data):
         """Save root_state."""

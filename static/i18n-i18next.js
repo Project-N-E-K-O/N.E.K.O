@@ -29,10 +29,10 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 外部路由注册表（新增小游戏占槽提示）与 main 上空气投篮、模型选择器、Requesty
+    // 外部路由注册表（新增小游戏占槽提示）与 main 上存储错误、Requesty、模型选择器
     // 文案两边的 key 变化合并后递增版本，让网页、Electron、Docker 等长期缓存重新拉取
     // 完整语言包，避免把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-10-04-external-route-registry-main-merge-round3';
+    const LOCALE_VERSION = '2026-10-04-external-route-registry-main-merge-round4';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

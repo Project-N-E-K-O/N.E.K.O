@@ -143,6 +143,7 @@ jobs:
           node --test tests/frontend/voice_preparing_toast.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
+          node tests/frontend/test_storage_error_messages_runtime.js
           node --test tests/frontend/vrm_guided_facing.test.cjs
           node --test tests/frontend/vrm_guided_lifecycle.test.cjs
           node --test tests/frontend/vrm_animation_translation.test.cjs

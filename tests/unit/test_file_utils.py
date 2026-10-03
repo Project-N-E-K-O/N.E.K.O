@@ -204,6 +204,63 @@ def test_missing_temp_file_during_cleanup_is_tolerated(tmp_path, monkeypatch):
         atomic_write_json(target, {"v": 1})
 
 
+# ── 临时文件创建：失败要快，重试要有界 ──────────────────────────────────
+
+
+def test_temp_create_permission_denied_fails_fast(tmp_path, monkeypatch):
+    """A directory that denies temp-file creation must raise on the first try, never retry.
+
+    Regression: on Windows, ``tempfile.mkstemp`` retries under a fresh random
+    name whenever creation raises PermissionError as long as the directory
+    "looks writable" (os.access reads static permission bits), and its bound is
+    TMP_MAX == 2147483647, i.e. no bound at all. Sandboxes and anti-ransomware
+    shields reliably produce "static permissions say writable, creation is
+    denied", so the caller hangs permanently -- the root cause of the storage
+    location endpoint freezing.
+
+    The replacement retries only on file-name collisions and raises permission
+    errors immediately, so os.open must have been called exactly once here.
+    """
+    target = tmp_path / "state.json"
+    attempts: list[str] = []
+
+    def denied(path, flags, mode=0o777):
+        attempts.append(str(path))
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "open", denied)
+
+    with pytest.raises(PermissionError):
+        atomic_write_text(target, "v1")
+
+    assert len(attempts) == 1, "权限错误必须立刻抛出，不得换名重试"
+    assert _tmp_siblings(target) == [], "失败的创建不应留下临时文件"
+
+
+def test_temp_name_collision_exhaustion_is_bounded(tmp_path, monkeypatch):
+    """Repeated random-name collisions must be bounded by a fixed retry limit.
+
+    This is the core guarantee of the change: even if every generated random
+    name hits an existing file, only ``_TMP_CREATE_MAX_TRIES`` attempts are
+    allowed before FileExistsError is raised -- never an endless loop.
+    """
+    target = tmp_path / "state.json"
+    attempts: list[str] = []
+
+    def always_exists(path, flags, mode=0o777):
+        attempts.append(str(path))
+        raise FileExistsError(17, "File exists")
+
+    monkeypatch.setattr(os, "open", always_exists)
+
+    with pytest.raises(FileExistsError):
+        atomic_write_text(target, "v1")
+
+    assert len(attempts) == file_utils._TMP_CREATE_MAX_TRIES, (
+        "撞车重试必须收敛到固定上界，不能无限重试"
+    )
+
+
 # ── Windows: the target is momentarily busy ─────────────────────────────
 
 
@@ -511,18 +568,23 @@ def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
 
 
 def test_the_temp_files_this_module_creates_carry_the_owner_tag(tmp_path, monkeypatch):
-    # 所有权标记只有在**创建**时也带上才有意义：只改清扫器的正则、不改 mkstemp 的
+    # 所有权标记只有在**创建**时也带上才有意义：只改清扫器的正则、不改创建端的
     # 前缀，就会变成「以后再也扫不到任何东西」的静默失效。
+    #
+    # 观察点从 tempfile.mkstemp 换到 _create_exclusive_temp_file：本模块刻意不再走
+    # mkstemp（它在 Windows 上遇到 PermissionError 会换名无限重试，见该函数 docstring），
+    # 给 mkstemp 打桩就再也看不到任何名字了。契约本身没变 —— 仍然钉「创建出来的名字
+    # 必须被清扫器的所有权正则认领」。
     target = tmp_path / "state.json"
     seen = {}
-    real_mkstemp = tempfile.mkstemp
+    real_create = file_utils._create_exclusive_temp_file
 
-    def spy(*args, **kwargs):
-        fd, path = real_mkstemp(*args, **kwargs)
+    def spy(target_dir):
+        fd, path = real_create(target_dir)
         seen["name"] = Path(path).name
         return fd, path
 
-    monkeypatch.setattr(tempfile, "mkstemp", spy)
+    monkeypatch.setattr(file_utils, "_create_exclusive_temp_file", spy)
     atomic_write_json(target, {"v": 1})
 
     assert file_utils._STALE_TMP_RE.match(seen["name"]), (
@@ -639,15 +701,17 @@ def test_temp_name_is_a_short_constant_shape(tmp_path, monkeypatch):
     # （eCryptfs 这类只给 143 字节的文件系统也够），以及它比改动前的
     # `.<basename>.<8>.tmp` 严格更短 —— 否则原本能写的长名字目标会因为 ENAMETOOLONG
     # 写不动。顺便：不嵌 basename 不影响诊断，os.replace 失败的回显自带目标路径。
+    # 观察点同 test_the_temp_files_this_module_creates_carry_the_owner_tag：本模块
+    # 不再调用 tempfile.mkstemp，改成包住真正的创建函数来取名字。
     seen = []
-    real_mkstemp = tempfile.mkstemp
+    real_create = file_utils._create_exclusive_temp_file
 
-    def spy(*args, **kwargs):
-        fd, path = real_mkstemp(*args, **kwargs)
+    def spy(target_dir):
+        fd, path = real_create(target_dir)
         seen.append(Path(path).name)
         return fd, path
 
-    monkeypatch.setattr(tempfile, "mkstemp", spy)
+    monkeypatch.setattr(file_utils, "_create_exclusive_temp_file", spy)
     for basename in ("s.json", "妮" * 60 + ".json"):
         atomic_write_json(tmp_path / basename, {"v": 1})
 
@@ -870,9 +934,48 @@ def test_sweeper_is_thread_safe_for_the_same_target(tmp_path):
 # ── read side ───────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory collision semantics")
+def test_windows_permission_collision_retries_but_directory_denial_does_not(tmp_path, monkeypatch, caplog):
+    caplog.set_level("DEBUG", logger=file_utils.logger.name)
+    real_open = file_utils.os.open
+    attempts = []
+
+    def collide_once(path, flags, mode):
+        attempts.append(path)
+        if len(attempts) == 1:
+            Path(path).mkdir()
+            raise PermissionError(13, "directory collision")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(file_utils.os, "open", collide_once)
+    fd, path = file_utils._create_exclusive_temp_file(tmp_path)
+    os.close(fd)
+    Path(path).unlink()
+    assert len(attempts) == 2
+
+    def deny_creation(*args):
+        attempts.append(1)
+        raise PermissionError(13, "directory denied")
+
+    monkeypatch.setattr(file_utils.os, "open", deny_creation)
+    with pytest.raises(PermissionError):
+        file_utils._create_exclusive_temp_file(tmp_path)
+    assert len(attempts) == 3
+    assert "临时文件创建失败" in caplog.text
+
+
 def test_read_json_raises_on_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         read_json(tmp_path / "absent.json")
+
+
+def test_exclusive_temp_file_returns_absolute_path_for_relative_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fd, path = file_utils._create_exclusive_temp_file(Path("."))
+    os.close(fd)
+    assert Path(path).is_absolute()
+    monkeypatch.chdir(tmp_path.parent)
+    Path(path).unlink()
 
 
 async def test_async_read_raises_on_missing_file(tmp_path):
