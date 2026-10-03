@@ -1546,3 +1546,14 @@ def test_payload_version_is_bound_to_the_wire_protocol_version():
     assert vw._PAYLOAD_VERSION == table[VISIT_WIRE_PROTO]
     versions = [table[p] for p in sorted(table)]
     assert versions == sorted(set(versions))      # 每个协议主版本一个不同的 payload v，只增不减
+
+
+def test_later_subtitle_pieces_must_keep_the_openers_lamport_value():
+    asm = vw.LineDeltaAssembler()
+    assert asm.feed(_delta_msg("一", ln="g:7", lp=3))
+    before = asm.anomalies
+    assert not asm.feed(_delta_msg("二", i=1, ln="g:7", lp=9))
+    assert not asm.feed(_delta_msg("二", i=1, ln="g:7", lp=None))
+    assert asm.anomalies == before + 2 and asm.render("g:7") == "一"
+    assert asm.feed(_delta_msg("二", i=1, ln="g:7", lp=3))
+    assert asm.render("g:7") == "一二"

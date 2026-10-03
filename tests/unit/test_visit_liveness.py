@@ -272,3 +272,14 @@ def test_late_hello_ack_after_ready_does_not_rearm_the_wait():
     assert lv.ready_deadline is None
     feed(lv, 6.0, 200.0)
     assert lv.tick(200.0) is None
+
+
+def test_rejoin_after_a_timeout_disconnect_restarts_the_heartbeat_clock():
+    # 超时类断开（没有暂定离开）后对端重进：心跳时钟从重进起算，不在下一次 tick 立刻判死
+    lv = verified("host", 0.0)
+    feed(lv, 0.0, 20.0)
+    lv.on_peer_vendor_timeout(21.0)
+    lv.on_peer_vendor_rejoined(49.0)
+    assert lv.tick(51.0) is None
+    assert lv.tick(79.0) is None
+    assert lv.tick(80.0) == "peer_lost"

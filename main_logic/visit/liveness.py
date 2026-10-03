@@ -245,11 +245,16 @@ class VisitLiveness:
             self.peer_departed_at = now
 
     def on_peer_vendor_rejoined(self, now: float) -> None:
-        """The same peer ``vid`` reappeared: clear the grace, restart the heartbeat clock."""
-        if self.peer_departed_at is None:
-            return
+        """The same peer ``vid`` reappeared: clear any grace, restart the heartbeat clock.
+
+        Applies to every rejoin, also after a timeout-class disconnect or a
+        missed explicit leave (no grace running): the vendor just confirmed
+        the peer is present, so a heartbeat that was about to expire must
+        not report ``peer_lost`` right after.
+        """
         self.peer_departed_at = None
-        self.peer_last_seen = now
+        if self.peer_last_seen is None or now > self.peer_last_seen:
+            self.peer_last_seen = now
 
     def on_peer_vendor_timeout(self, now: float) -> None:
         """Vendor timeout-class leave (TRTC reason 1, LiveKit disconnect without bye).

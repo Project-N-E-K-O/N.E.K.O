@@ -1815,7 +1815,8 @@ class LineDeltaAssembler:
     nothing is requested again (the reliable ``text`` closes the line). Each
     of the following is dropped and counted in ``anomalies``: ``i`` not an
     integer in ``0..VISIT_LINE_DELTA_MAX_I`` (checked before indexing), an
-    ``i`` already seen for that ``ln``, missing ``ln`` / ``txt``, and a new
+    ``i`` already seen for that ``ln``, a later piece whose ``lp`` differs
+    from the one its line opened with, missing ``ln`` / ``txt``, and a new
     ``ln`` whose ``lp`` is not above the still-open line's (overlap). A new
     line with a larger ``lp`` retires the open one (its pieces stay
     renderable until its ``text`` closes it): the old line's reliable
@@ -1856,6 +1857,11 @@ class LineDeltaAssembler:
         if ln in self._final or ln in self._stalled:
             return False
         lp = msg.get("lp")
+        if ln in self._lines and (lp if _is_int(lp) else None) != self._lps.get(ln):
+            # 一行只有一个 lp（与 VisitRoom.observe_lp 同一不变量）：后续分片换了 lp，
+            # 拼出来的字幕就混进了声称不同排序位置的片段
+            self.anomalies += 1
+            return False
         retired = ln in self._lines and ln != self._open
         if self._open is not None and ln != self._open and not retired:
             if not (_is_int(lp) and self._open_lp is not None and lp > self._open_lp):

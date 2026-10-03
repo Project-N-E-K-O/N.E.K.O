@@ -1462,8 +1462,14 @@ class VisitSpool:
                 if suffix == STATE_SUFFIX and _retention_exempt(state_path, now - st.st_mtime):
                     remaining.append((visit_id, suffix, path, st))
                     continue
-                if not _sweep_unlink(path):
-                    if path.exists():
+                # 还开着写的场次（墙钟往前跳过 7 天也会显得过期）整场不动：逐路径锁挡不住
+                # append，删掉后追加写进已删除的 inode、关闭时连同恢复数据一起消失。
+                # 判定与删除在同一把登记锁里，open 不能夹在中间登记
+                with _OPEN_SPOOLS_LOCK:
+                    busy = _spool_key(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)) in _OPEN_SPOOLS
+                    unlinked = False if busy else _sweep_unlink(path)
+                if not unlinked:
+                    if busy or path.exists():
                         remaining.append((visit_id, suffix, path, st))
                 else:
                     deleted.append(path)

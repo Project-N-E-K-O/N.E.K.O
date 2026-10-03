@@ -735,3 +735,12 @@ async def test_upsert_rejects_a_char_id_that_does_not_derive_from_the_tag(tmp_pa
         await roster.upsert("peer_x", "A", pair_id=derive_pair_id("own_a", "peer_x"),
                             peer_char_id="c_" + "1" * 24, char_tag="f" * 32, now=1.0)
     assert not roster.path.exists()
+
+
+def test_recall_subjects_reject_a_char_id_that_disagrees_with_the_tag():
+    # 坏掉的头行带着别的 peer_char_id：不能把召回 / digest 写进另一只猫的主体
+    base = {"own_uid": OWN_A, "peer_uid": PEER_X, "peer_char_tag": "f" * 32}
+    good = resolve_visit_recall_subjects(dict(base, peer_char_id=derive_peer_char_id(PEER_X, "f" * 32)))
+    assert len(good) == 3
+    assert resolve_visit_recall_subjects(base) == good
+    assert resolve_visit_recall_subjects(dict(base, peer_char_id="c_" + "9" * 24)) == []

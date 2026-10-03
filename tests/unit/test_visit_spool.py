@@ -1667,3 +1667,18 @@ async def test_one_unstattable_entry_does_not_abort_the_sweep(tmp_path, monkeypa
     deleted = await VisitSpool.sweep(tmp_path, NOW)
     assert deleted == [old.state_path] and os.path.exists(bad.state_path)   # Path.exists 走被替换的 stat
     assert vid(58) in VisitSpool._visit_ids(tmp_path / "visit_spool", {spool_mod.STATE_SUFFIX})
+
+
+async def test_retention_sweep_skips_a_visit_still_open_for_appends(tmp_path):
+    # 墙钟往前跳过 7 天：开着写的场次也显得过期，删掉它的 .jsonl 会让后续追加丢失
+    live = await open_spool(tmp_path, vid(60))
+    await live.append(line(1))
+    await live.write_state(state_for())
+    later = NOW + 30 * 86400
+    assert await VisitSpool.sweep(tmp_path, later) == []
+    assert live.jsonl_path.exists() and live.state_path.exists()
+    await live.append(line(2))
+    await live.close()
+    assert [ln["lp"] for ln in (await live.read_back()).lines] == [1, 2]
+    deleted = await VisitSpool.sweep(tmp_path, later)          # 关闭后照常过期
+    assert set(deleted) == {live.jsonl_path, live.state_path}
