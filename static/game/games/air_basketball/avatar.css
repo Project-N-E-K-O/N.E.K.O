@@ -1,0 +1,205 @@
+.neko-avatar {
+  position: absolute;
+  z-index: 6;
+  right: -29%;
+  bottom: 1%;
+  width: 48%;
+  height: 72%;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: 50% 100%;
+  transition: opacity 240ms ease;
+  filter: drop-shadow(0 10px 12px rgba(94, 75, 105, .16));
+  cursor: grab;
+  touch-action: none;
+}
+
+.neko-avatar.is-ready {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.neko-avatar .avatar-renderer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.neko-avatar .avatar-renderer[hidden],
+.neko-avatar .avatar-fallback[hidden] {
+  display: none !important;
+}
+
+.neko-avatar canvas {
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none;
+  cursor: inherit;
+}
+
+.avatar-hit-zone {
+  position: absolute;
+  z-index: 3;
+  display: block;
+  pointer-events: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.neko-avatar.is-ready .avatar-hit-zone {
+  pointer-events: auto;
+}
+
+.avatar-hit-zone-head {
+  left: 46%;
+  top: 2%;
+  width: 30%;
+  height: 25%;
+  border-radius: 50%;
+}
+
+.avatar-hit-zone-torso {
+  left: 40%;
+  top: 18%;
+  width: 40%;
+  height: 45%;
+  border-radius: 46%;
+}
+
+.avatar-hit-zone-lower {
+  left: 34%;
+  top: 45%;
+  width: 48%;
+  height: 51%;
+  border-radius: 48% 48% 40% 40%;
+}
+.avatar-fallback {
+  position: absolute;
+  inset: 14% 8% 8%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 42% 42% 32% 32% / 32% 32% 22% 22%;
+  color: #8b657c;
+  background: linear-gradient(160deg,rgba(255,250,252,.88),rgba(247,226,237,.72));
+  box-shadow: 0 12px 30px rgba(115,74,96,.12);
+  text-align: center;
+  pointer-events: none;
+}
+
+.avatar-fallback > span {
+  font-size: clamp(34px,5vw,58px);
+  color: #dd8db2;
+}
+
+.avatar-fallback strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: clamp(14px,2vw,20px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar-fallback small {
+  font-size: 9px;
+  letter-spacing: .08em;
+  opacity: .7;
+}
+
+.neko-avatar.is-aiming {
+  transform: rotate(-2deg) translateY(1%);
+}
+
+.neko-avatar.is-shooting {
+  animation: neko-shoot 520ms cubic-bezier(.2,.75,.2,1);
+}
+
+.neko-avatar.is-celebrating {
+  animation: neko-celebrate 650ms ease-out;
+}
+
+.neko-avatar.is-hit {
+  cursor: grabbing;
+  animation: neko-hit 430ms cubic-bezier(.2,.78,.25,1);
+}
+
+.neko-avatar.is-stealing {
+  animation: neko-steal 760ms cubic-bezier(.18,.78,.2,1);
+}
+
+.neko-hit-spark {
+  position: absolute;
+  top: 28%;
+  left: 52%;
+  opacity: 0;
+  color: #fff3a8;
+  font-size: clamp(30px,4vw,54px);
+  font-weight: 900;
+  text-shadow: 0 0 10px #f18479, 0 0 22px #ef9fc3;
+  pointer-events: none;
+}
+
+.neko-avatar.is-hit .neko-hit-spark { animation: neko-hit-spark 430ms ease-out; }
+
+.neko-avatar-loading {
+  position: absolute;
+  z-index: 5;
+  right: -13%;
+  bottom: 24%;
+  padding: 5px 9px;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 999px;
+  color: rgba(120,82,106,.62);
+  background: rgba(255,246,250,.52);
+  box-shadow: 0 5px 13px rgba(115,74,96,.08);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .18em;
+  transition: opacity 180ms ease;
+}
+
+.neko-avatar-loading.is-hidden {
+  opacity: 0;
+}
+
+@keyframes neko-shoot {
+  0% { transform: rotate(-3deg) translate(-2%,2%); }
+  42% { transform: rotate(5deg) translate(8%,-8%) scale(1.03); }
+  100% { transform: none; }
+}
+
+@keyframes neko-celebrate {
+  0%,100% { transform: none; }
+  35% { transform: translateY(-7%) rotate(-3deg); }
+  65% { transform: translateY(-3%) rotate(3deg); }
+}
+
+@keyframes neko-hit {
+  0% { transform: translateX(0) rotate(0); }
+  24% { transform: translateX(var(--hit-shift,13%)) rotate(var(--hit-angle,6deg)) scale(.96); }
+  48% { transform: translateX(var(--hit-return,-5%)) rotate(var(--hit-angle-back,-3deg)); }
+  72% { transform: translateX(var(--hit-settle,2%)) rotate(var(--hit-angle-settle,1deg)); }
+  100% { transform: none; }
+}
+
+@keyframes neko-hit-spark {
+  0% { opacity: 0; transform: scale(.2) rotate(0); }
+  34% { opacity: 1; transform: scale(1.45) rotate(22deg); }
+  100% { opacity: 0; transform: scale(.82) rotate(48deg) translateY(-18px); }
+}
+
+@keyframes neko-steal {
+  0%,100% { transform: none; }
+  24% { transform: translate(-12%,-3%) rotate(-5deg) scale(1.03); }
+  58% { transform: translate(-7%,1%) rotate(2deg); }
+}
+
+@media (max-width: 720px) {
+  .neko-avatar { right: -5%; bottom: 3%; width: 52%; height: 58%; }
+  .neko-avatar-loading { right: 1%; bottom: 19%; font-size: 8px; }
+}

@@ -679,8 +679,17 @@ def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None 
     return profile
 
 
-def _mask_phone(phone: str) -> str:
-    """Keep only enough of a phone number to recognise the account (138****0000)."""
+def _mask_phone(phone: str) -> str | None:
+    """Keep only enough of a phone number to recognise the account (138****0000).
+
+    Spaces and dashes are stripped first, and a leading plus is kept, so
+    ``+86 138 0000 0000`` masks as ``+86138****0000`` instead of hiding only
+    the last formatted group. Returns None when there are no digits at all.
+    """
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if not digits:
+        return None
+    phone = ("+" if phone.startswith("+") else "") + digits
     if len(phone) >= 8:
         return f"{phone[:-8]}****{phone[-4:]}"
     return f"****{phone[-2:]}"
@@ -695,8 +704,10 @@ def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | No
     profile = _public_user_profile(user, local_user_id)
     source = user if isinstance(user, dict) else {}
     phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
-    if isinstance(phone, str) and phone.strip():
-        profile["phone"] = _mask_phone(phone.strip())
+    # 无数字的号码按缺失处理：这里在远端 bind 之后执行，抛错会让本地凭证落不了盘。
+    masked = _mask_phone(phone.strip()) if isinstance(phone, str) else None
+    if masked:
+        profile["phone"] = masked
     return profile
 
 

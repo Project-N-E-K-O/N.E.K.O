@@ -145,6 +145,7 @@
             enabled,
             hitTest: event => interaction._hitTestModel(event.clientX, event.clientY),
             begin(points) {
+                interaction._cancelGuidedMovement?.({ invalidateInteraction: true });
                 const model = getModel();
                 pinch = null;
                 if (points.length === 1) {

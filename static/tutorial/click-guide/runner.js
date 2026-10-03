@@ -27,6 +27,10 @@
         const previousFocus = document.activeElement;
         const layer = document.createElement('div');
         layer.className = 'click-guide-layer';
+        // Guide controls and mask panes are not outside actions on the business UI.
+        for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
+            layer.addEventListener(type, event => event.stopPropagation(), { passive: true });
+        }
         const mask = api.createMask(layer);
         const highlight = api.createHighlight(layer);
         const secondaryHighlight = api.createHighlight(layer);

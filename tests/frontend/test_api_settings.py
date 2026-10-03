@@ -1989,3 +1989,154 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     assert 'sk-stale-claude' not in (state['omniKey'] or ''), (
         f"残留凭证应被覆盖，实际 omniKey={state['omniKey']!r}"
     )
+
+
+@pytest.mark.frontend
+def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#conversationModelProvider option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    model = mock_page.locator('#conversationModelId')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    model.fill('gpt-user-choice')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'deepseek')
+    expect(model).to_have_value('')
+    expect(model).not_to_have_attribute('placeholder', 'gpt-user-choice')
+    model.fill('deepseek-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('')
+    mock_page.select_option('#conversationModelProvider', 'kimi_code')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('')
+
+    mock_page.select_option('#conversationModelProvider', 'follow_assist')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    expect(model).to_have_value('')
+    for follow_mode in ['follow_core', 'follow_assist']:
+        model.fill('gpt-user-choice')
+        mock_page.select_option('#conversationModelProvider', follow_mode)
+        expect(model).to_have_value('')
+        mock_page.select_option('#conversationModelProvider', 'openai')
+    mock_page.evaluate("""() => {
+        for (const type of ['tts']) {
+            const select = document.getElementById(`${type}ModelProvider`);
+            const target = Array.from(select.options).find(option =>
+                option.value === 'minimax');
+            select.dataset.currentProvider = 'follow_core';
+            select.value = target.value;
+            document.getElementById(`${type}ModelId`).value = 'user-runtime-model';
+            onCustomModelProviderChange(type, true);
+        }
+    }""")
+    expect(mock_page.locator('#ttsModelId')).to_have_value('user-runtime-model')
+    model.fill('deepseek-user-choice')
+    mock_page.evaluate("""() => {
+        _isLoadingSavedConfig = true;
+        const select = document.getElementById('conversationModelProvider');
+        select.dataset.currentProvider = 'openai';
+        select.value = 'deepseek';
+        onCustomModelProviderChange('conversation', true);
+        _isLoadingSavedConfig = false;
+    }""")
+    expect(model).to_have_value('deepseek-user-choice')
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('api_select,follow_mode', [
+    ('assistApiSelect', 'follow_assist'), ('coreApiSelect', 'follow_core'),
+])
+def test_model_id_picker_api_switch_clears_followed_models(mock_page: Page, running_server: str, api_select, follow_mode):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(f'#{api_select} option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    mock_page.select_option('#conversationModelProvider', follow_mode)
+    model = mock_page.locator('#conversationModelId')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'qwen-user-model'")
+    mock_page.select_option(f'#{api_select}', 'openai')
+    expect(model).to_have_value('')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'gpt-user-model'")
+    mock_page.dispatch_event(f'#{api_select}', 'change')
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    expect(model).to_have_value('')
+
+
+@pytest.mark.frontend
+def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, running_server: str):
+    """Keywords typed before the upstream model list arrives still filter it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    pending = []
+    mock_page.route("**/api/config/list_models", lambda route: pending.append(route))
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.select_option("#assistApiSelect", "qwen")
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+
+    menu = mock_page.locator("#conversationModelId-model-menu")
+    mock_page.locator("#conversationModelId ~ button").click()
+    expect(menu.locator(".api-provider-dropdown-empty")).to_be_visible()
+    mock_page.fill("#conversationModelId", "qwen3.8")
+    assert len(pending) == 1
+    assert pending[0].request.post_data_json["provider_key"] == "qwen"
+
+    pending[0].fulfill(json={"success": True, "models": [
+        {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+        {"id": "qwen3.8-flash", "name": "Qwen3.8 Flash"},
+        {"id": "qwen3.8-plus", "name": "Qwen3.8 Plus"},
+    ]})
+    options = menu.locator(".api-provider-dropdown-option")
+    expect(options).to_have_count(2)
+    expect(options.nth(0)).to_have_attribute("data-value", "qwen3.8-flash")
+    expect(options.nth(1)).to_have_attribute("data-value", "qwen3.8-plus")
+
+
+@pytest.mark.frontend
+def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: Page, running_server: str):
+    """Clicking another picker input closes the previous menu."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.route('**/api/config/list_models', lambda route: route.fulfill(
+        json={'success': True, 'models': [{'id': 'qwen-test'}]},
+    ))
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="qwen"]', state='attached')
+    mock_page.select_option('#assistApiSelect', 'qwen')
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.locator('#conversationModelId ~ button').click()
+    menu = mock_page.locator('#conversationModelId-model-menu')
+    expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
+    mock_page.evaluate("""() => document.getElementById('visionModelId')
+        .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
+    expect(menu).to_be_hidden()

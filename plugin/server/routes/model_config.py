@@ -12,12 +12,17 @@ from plugin.server.application.model_config_service import ModelConfigService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 from plugin.server.model_gateway.errors import ModelGatewayError
 from plugin.server.model_gateway.execution import ResolvedModelCall
 from plugin.server.model_gateway.observation import normalize_usage
 from plugin.server.routes.model_gateway import _get_executor
 
 router = APIRouter(prefix="/api/model-config", tags=["plugin-models"])
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-models"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.model_config")
 service = ModelConfigService()
 PROBE_IDENTITY = "@host:model_probe"  # Invalid as a plugin ID; never a registry entry.
@@ -50,7 +55,7 @@ async def list_slots(_: str = require_admin):
     return await _call(service.list_slots)
 
 
-@router.post("/slots", status_code=201)
+@mutation_router.post("/slots", status_code=201)
 async def create_slot(payload: object = Body(...), _: str = require_admin):
     return await _call(service.create_slot, _object_payload(payload))
 
@@ -79,7 +84,7 @@ async def _probe_disconnect(request: Request, stopped: asyncio.Event) -> None:
             pass
 
 
-@router.post("/slots/{slot_id}/test")
+@mutation_router.post("/slots/{slot_id}/test")
 async def test_slot(slot_id: str, request: Request, _: str = require_admin):
     # Use only the saved snapshot. The test cannot supply a different URL/key,
     # inherit a plugin binding or report a fallback's success for this slot.
@@ -120,12 +125,12 @@ async def test_slot(slot_id: str, request: Request, _: str = require_admin):
             await asyncio.gather(task, watcher, return_exceptions=True)
 
 
-@router.patch("/slots/{slot_id}")
+@mutation_router.patch("/slots/{slot_id}")
 async def update_slot(slot_id: str, payload: object = Body(...), _: str = require_admin):
     return await _call(service.update_slot, slot_id, _object_payload(payload))
 
 
-@router.delete("/slots/{slot_id}")
+@mutation_router.delete("/slots/{slot_id}")
 async def delete_slot(slot_id: str, _: str = require_admin):
     return await _call(service.delete_slot, slot_id)
 
@@ -135,7 +140,7 @@ async def get_bindings(plugin_id: str, _: str = require_admin):
     return await _call(service.get_bindings, plugin_id)
 
 
-@router.put("/plugins/{plugin_id}/bindings/{usage_id}")
+@mutation_router.put("/plugins/{plugin_id}/bindings/{usage_id}")
 async def set_binding(plugin_id: str, usage_id: str, payload: object = Body(...), _: str = require_admin):
     payload = _object_payload(payload)
     if set(payload) != {"slot_id", "expected_version"} or not isinstance(payload.get("slot_id"), str):
@@ -143,14 +148,17 @@ async def set_binding(plugin_id: str, usage_id: str, payload: object = Body(...)
     return await _call(service.set_binding, plugin_id, usage_id, payload["slot_id"], payload["expected_version"])
 
 
-@router.delete("/plugins/{plugin_id}/bindings/{usage_id}")
+@mutation_router.delete("/plugins/{plugin_id}/bindings/{usage_id}")
 async def delete_binding(plugin_id: str, usage_id: str, expected_version: int = Query(..., ge=0), _: str = require_admin):
     return await _call(service.delete_binding, plugin_id, usage_id, expected_version)
 
 
-@router.post("/plugins/{plugin_id}/bindings/{usage_id}/confirm")
+@mutation_router.post("/plugins/{plugin_id}/bindings/{usage_id}/confirm")
 async def confirm_binding(plugin_id: str, usage_id: str, payload: object = Body(...), _: str = require_admin):
     payload = _object_payload(payload)
     if set(payload) != {"expected_version"}:
         raise HTTPException(422, "Expected expected_version")
     return await _call(service.confirm_binding, plugin_id, usage_id, payload["expected_version"])
+
+
+router.include_router(mutation_router)

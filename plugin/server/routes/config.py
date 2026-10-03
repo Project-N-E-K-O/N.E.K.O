@@ -20,6 +20,7 @@ from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.server.infrastructure.config_access import ConfigAccessSnapshot, bind_config_access
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.infrastructure.development_access import require_development_access
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 from plugin.server.application.plugins.development import registration_for_plugin_sync
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
@@ -27,6 +28,10 @@ from plugin.server.application.plugins.operation_lock import (
 )
 
 router = APIRouter()
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
@@ -142,7 +147,7 @@ async def get_plugin_config_toml_endpoint(plugin_id: str, request: Request, _: s
         raise_http_from_domain(error, logger=logger)
 
 
-@router.put("/plugin/{plugin_id}/config")
+@mutation_router.put("/plugin/{plugin_id}/config")
 async def update_plugin_config_endpoint(
     plugin_id: str,
     payload: ConfigUpdateRequest,
@@ -190,7 +195,7 @@ async def render_config_to_toml_endpoint(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.put("/plugin/{plugin_id}/config/toml")
+@mutation_router.put("/plugin/{plugin_id}/config/toml")
 async def update_plugin_config_toml_endpoint(
     plugin_id: str,
     payload: ConfigTomlUpdateRequest,
@@ -251,7 +256,7 @@ async def get_plugin_profile_config_endpoint(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.put("/plugin/{plugin_id}/config/profiles/{profile_name}")
+@mutation_router.put("/plugin/{plugin_id}/config/profiles/{profile_name}")
 async def upsert_plugin_profile_config_endpoint(
     plugin_id: str,
     profile_name: str,
@@ -270,7 +275,7 @@ async def upsert_plugin_profile_config_endpoint(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.delete("/plugin/{plugin_id}/config/profiles/{profile_name}")
+@mutation_router.delete("/plugin/{plugin_id}/config/profiles/{profile_name}")
 async def delete_plugin_profile_config_endpoint(
     plugin_id: str,
     profile_name: str,
@@ -286,7 +291,7 @@ async def delete_plugin_profile_config_endpoint(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin/{plugin_id}/config/profiles/{profile_name}/activate")
+@mutation_router.post("/plugin/{plugin_id}/config/profiles/{profile_name}/activate")
 async def set_plugin_active_profile_endpoint(
     plugin_id: str,
     profile_name: str,
@@ -302,7 +307,7 @@ async def set_plugin_active_profile_endpoint(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin/{plugin_id}/config/hot-update")
+@mutation_router.post("/plugin/{plugin_id}/config/hot-update")
 async def hot_update_plugin_config_endpoint(
     plugin_id: str,
     payload: HotUpdateConfigRequest,
@@ -318,3 +323,8 @@ async def hot_update_plugin_config_endpoint(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+# Keep read-only configuration queries on the ordinary router while ensuring
+# mutating handlers are guarded before FastAPI parses their request bodies.
+router.include_router(mutation_router)

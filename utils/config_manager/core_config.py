@@ -129,6 +129,19 @@ class CoreConfigMixin:
     _REGION_HOSTS_RAW = ('lanlan.tech',)
     _REGION_HOSTS_ADJUSTED = ('lanlan.tech', 'lanlan.app')
 
+    # 文本类槽位 → 服务商 profile 里对应档位的模型字段。omni/tts 不在表里：它们的模型
+    # 不是 chat 档位，由核心 API / TTS 链路各自决定。
+    _SLOT_PROFILE_MODEL_KEYS = {
+        'conversation': 'CONVERSATION_MODEL',
+        'summary': 'SUMMARY_MODEL',
+        'gameMain': 'CONVERSATION_MODEL',
+        'gameSummary': 'SUMMARY_MODEL',
+        'correction': 'CORRECTION_MODEL',
+        'emotion': 'EMOTION_MODEL',
+        'vision': 'VISION_MODEL',
+        'agent': 'AGENT_MODEL',
+    }
+
     @staticmethod
     def _migrated_openclaw_url(raw_url: object) -> str:
         """Return the 8088 equivalent of a legacy 8089 openclawUrl, or '' if not applicable.
@@ -1138,9 +1151,23 @@ class CoreConfigMixin:
         # CORE_API_KEY」——后者不该压过用户存在槽位里的 Key。
         try:
             from utils.api_config_loader import get_config as _get_api_config
-            _api_key_registry = _get_api_config().get('api_key_registry', {}) or {}
+            _raw_api_config = _get_api_config()
+            _api_key_registry = _raw_api_config.get('api_key_registry', {}) or {}
+            _raw_assist_providers = _raw_api_config.get('assist_api_providers', {}) or {}
         except Exception:
             _api_key_registry = {}
+            _raw_assist_providers = {}
+
+        def _uses_fixed_models(provider_key: str) -> bool:
+            # 免费版与 fixed_model 服务商（如 Kimi Code）只认自家模型，用户存的模型 ID 不能下发。
+            if provider_key == 'free':
+                return True
+            raw_profile = _raw_assist_providers.get(provider_key)
+            return isinstance(raw_profile, dict) and (
+                _as_bool(raw_profile.get('fixed_model', False))
+                or _as_bool(raw_profile.get('is_free_version', False))
+            )
+
         assist_api_key_raw_fields = {
             _pk: _entry.get('config_field', '')
             for _pk, _entry in _api_key_registry.items()
@@ -1317,6 +1344,12 @@ class CoreConfigMixin:
 
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            assist_model_defaults = {
+                key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
+            }
+            assist_model_defaults['SUMMARY_MODEL'] = (
+                assist_profile.get('SUMMARY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
+            )
             # URL / Model ID 字段：空值回退到已有配置。
             # API Key 字段：根据用户选择的 provider 决定是否覆盖：
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
@@ -1359,21 +1392,42 @@ class CoreConfigMixin:
                     return resolved_url or core_profile.get('CORE_URL', '')
                 return ''
 
-            def _resolve_game_follow_model_id(prefix: str, provider: str) -> str:
-                if prefix not in ('gameMain', 'gameSummary'):
+            def _resolve_follow_model_id(prefix: str, provider: str) -> str:
+                """Default model of the provider a follow_* slot points at, '' to keep the current value."""
+                profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
+                if not profile_key:
                     return ''
+                is_game_slot = prefix in ('gameMain', 'gameSummary')
                 if provider == 'follow_core':
+                    # URL 和 Key 已换成核心服务商的，模型也必须取核心服务商的；沿用快照里
+                    # 的值（辅助 API 的模型）会把 A 家的模型名发到 B 家的端点。
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
-                        if prefix == 'gameSummary':
-                            return follow_core_profile.get('SUMMARY_MODEL', '') or config.get('SUMMARY_MODEL', '')
-                        return follow_core_profile.get('CONVERSATION_MODEL', '') or config.get('CONVERSATION_MODEL', '')
+                        return (follow_core_profile.get(profile_key, '')
+                                or (follow_core_profile.get('VISION_MODEL', '') if prefix == 'agent' else '')
+                                or follow_core_profile.get('CONVERSATION_MODEL', '')
+                                or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
-                if provider != 'follow_assist':
+                if provider == 'follow_assist' and is_game_slot:
+                    return assist_model_defaults.get(profile_key, '')
+                return ''
+
+            def _resolve_named_provider_model_id(prefix: str, provider: str, slot_url: str) -> str:
+                """Tier default of a named provider slot, '' when the slot has no such default."""
+                profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
+                if not profile_key or not provider or provider == 'custom' or provider.startswith('follow_'):
                     return ''
-                if prefix == 'gameSummary':
-                    return config.get('SUMMARY_MODEL', '')
-                return config.get('CONVERSATION_MODEL', '')
+                named_profile = assist_api_profiles.get(provider)
+                if not isinstance(named_profile, dict):
+                    return ''
+                candidates = self._provider_url_candidates(
+                    named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+                if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
+                    return ''
+                return str(named_profile.get(profile_key)
+                           or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
+                           or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)
@@ -1433,14 +1487,17 @@ class CoreConfigMixin:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
+                named_model = _resolve_named_provider_model_id(
+                    prefix, provider, str(config.get(url_key) or '').strip()
+                )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
-                    uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
+                    followed_provider = core_api_value if provider == 'follow_core' else assist_api_value
                     if (
-                        not uses_fixed_free_assist_model
+                        not _uses_fixed_models(followed_provider)
                         and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
                         and isinstance(cfg_model, str)
@@ -1448,9 +1505,16 @@ class CoreConfigMixin:
                     ):
                         config[model_key] = cfg_model.strip()
                     else:
-                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        followed_model = _resolve_follow_model_id(prefix, provider)
                         if followed_model:
                             config[model_key] = followed_model
+                elif named_model and (
+                    _uses_fixed_models(provider)
+                    or not (isinstance(cfg_model, str) and cfg_model.strip())
+                ):
+                    # 具名服务商槽留空时取该服务商自己的档位默认；custom / 老配置的 '' 没有
+                    # 默认可取，仍走下面的原有回退。
+                    config[model_key] = named_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 

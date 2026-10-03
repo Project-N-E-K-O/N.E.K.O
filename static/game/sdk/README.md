@@ -332,6 +332,18 @@ Reset is accepted only while the runtime is `idle`, `ended`, or `inactive`;
 games must await `runtime.end()` before resetting an active, starting, degraded,
 or ending route so the host session cannot be abandoned by local-only cleanup.
 
+Reset clears the bound character. A replay that keeps its mounted Avatar passes
+`reset({ newSession: true, keepCharacter: true })`: the current character is
+re-applied inside the same synchronous call, so nothing (speech, commands) can
+run unbound in between and no `bindCharacter()` is needed. Every Avatar that is
+mounted (or still mounting) must have been mounted with that same `characterName`;
+otherwise reset fails with `invalid_state` before changing anything, because a
+kept Avatar must not show another character. If the host still refuses the name,
+the reset completes (idle, unbound) and then throws. The name is not looked up again; a
+game that must confirm the character still exists can call the read-only
+`game.avatar.getCharacter(name)` before `runtime.start()`. Without an existing
+binding, `keepCharacter` is a no-op.
+
 When `pageExit` is enabled, the SDK emits `page-exit` once so the game can
 synchronously release game-owned resources, submits the configured end payload
 with beacon fallback, and disposes the client while preserving the in-flight

@@ -300,7 +300,8 @@ async def test_predecessor_server_end_does_not_revoke_replacement_start(monkeypa
             await asyncio.gather(cleaning, return_exceptions=True)
 
 
-async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
+@pytest.mark.parametrize("llm_release_delay", [0, 0.3])
+async def test_late_tts_ready_survives_slow_llm_start(monkeypatch, llm_release_delay):
     manager, created, clients = await make_full_manager(monkeypatch)
     manager._config_manager.core["DISABLE_TTS"] = False
     monkeypatch.setattr(manager, "_resolve_session_use_tts", lambda *args: True)
@@ -309,6 +310,7 @@ async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
     spoken_chunks = asyncio.Queue()
     original_start_tts = manager._start_session_start_tts_if_needed
     original_flush = manager._flush_tts_pending_chunks
+    tts_start_task = None
 
     def worker(requests, responses, *_):
         # The test supplies the external readiness message only after the
@@ -321,9 +323,18 @@ async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
                 loop.call_soon_threadsafe(spoken_chunks.put_nowait, text)
 
     monkeypatch.setattr(lifecycle._core_facade, "get_tts_worker", lambda **kwargs: (worker, "key", "qwen"))
-    monkeypatch.setattr(manager, "_current_start_deadline", lambda: asyncio.get_running_loop().time() + 0.2)
+    def start_deadline():
+        # Only the TTS waiter must exhaust a short budget. LLM connection is
+        # released by the events below, so Windows scheduling cannot expire it
+        # while the test is waiting for the late readiness message.
+        budget = 0.2 if asyncio.current_task() is tts_start_task else 10
+        return loop.time() + budget
+
+    monkeypatch.setattr(manager, "_current_start_deadline", start_deadline)
 
     async def observe_tts_start():
+        nonlocal tts_start_task
+        tts_start_task = asyncio.current_task()
         try:
             return await original_start_tts()
         except TimeoutError:
@@ -343,6 +354,9 @@ async def test_late_tts_ready_survives_slow_llm_start(monkeypatch):
         await asyncio.wait_for(timed_out.wait(), 2)
         manager.tts_response_queue.put(("__ready__", True))
         await asyncio.wait_for(ready_seen.wait(), 2)
+        assert manager.tts_ready and not starting.done()
+        # Exercise a release later than the old shared 0.2-second budget.
+        await asyncio.sleep(llm_release_delay)
         assert manager.tts_ready and not starting.done()
         client.allow_connect.set()
         await asyncio.wait_for(starting, 2)

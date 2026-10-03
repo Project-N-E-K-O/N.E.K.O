@@ -838,7 +838,8 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "button.addEventListener('mouseenter'" in action_button
     assert "interactionOptions.openOnHover !== false" in action_button
     assert "button.addEventListener('click'" in action_button
-    assert "scheduleMicActionHoverCollapse()" in action_button
+    assert "button.addEventListener('mouseleave', function (event)" in action_button
+    assert "scheduleMicActionHoverCollapse(event)" in action_button
     assert "createMainActionButton(" in source
     assert "'screen'" in source
     assert "openScreenSourceSubwindow" in source
