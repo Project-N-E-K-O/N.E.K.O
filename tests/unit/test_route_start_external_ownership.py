@@ -251,6 +251,38 @@ async def test_icebreaker_restore_leaves_the_language_of_the_route_holding_the_s
     assert manager.render_updates == []
 
 
+@pytest.mark.parametrize("current_owner_token", [True, False], ids=["own-token", "superseded-token"])
+def test_dropping_an_expired_route_state_releases_its_takeover_token(
+    _icebreaker_clean, monkeypatch, current_owner_token,
+):
+    """An exit flow stuck past the timeout still holds its token; the sweep
+    must release it (by value, so a newer owner's takeover survives) before
+    forgetting the state.
+
+    Mutation: popping the state without releasing the token turns the
+    own-token case red; force-releasing turns the superseded case red.
+    """
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    token = manager.acquire_takeover("game", AsyncMock())
+    if not current_owner_token:
+        manager.acquire_takeover("game", AsyncMock())  # a newer route took over
+    with reset_game_route_state():
+        state = {
+            "lanlan_name": "Lan",
+            "game_type": "drawing_guess",
+            "game_route_active": False,
+            "exit_started_at": 0.0,
+            _TAKEOVER_TOKEN_KEY: token,
+        }
+        gr_runtime._game_route_states[("Lan", "drawing_guess")] = state
+
+        gr_runtime._drop_expired_route_states(now=10**9)
+
+        assert ("Lan", "drawing_guess") not in gr_runtime._game_route_states
+    assert manager.takeover_owner() == (None if current_owner_token else "game")
+
+
 class _LanguageManager:
     def __init__(self):
         self.user_language = "zh-CN"
@@ -482,13 +514,15 @@ async def test_exit_releases_the_token_even_when_teardown_raises(
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
     gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
 
-    if failing_step == "window_close":
-        async def _failing_window_close(*_args, action="", **_kwargs):
-            if action == "closed":
-                raise RuntimeError("teardown failed")
+    window_actions = []
 
-        gr_patch_all(monkeypatch, "_push_game_window_state_change", _failing_window_close)
-    else:
+    async def _window(*_args, action="", **_kwargs):
+        window_actions.append(action)
+        if action == "closed" and failing_step == "window_close":
+            raise RuntimeError("teardown failed")
+
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", _window)
+    if failing_step == "context_snapshot":
         def _failing_snapshot(_state):
             raise RuntimeError("teardown failed")
 
@@ -496,8 +530,15 @@ async def test_exit_releases_the_token_even_when_teardown_raises(
     with reset_game_route_state():
         assert (await _start())["ok"] is True
         state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
-        with pytest.raises(RuntimeError, match="teardown failed"):
+        if failing_step == "window_close":
+            with pytest.raises(RuntimeError, match="teardown failed"):
+                await gr_runtime._finalize_game_route_state(state, reason="test_end")
+        else:
+            # A failed snapshot only loses the postgame context; the rest of
+            # the exit flow (window close included) still runs. Mutation:
+            # letting the snapshot error escape turns this red.
             await gr_runtime._finalize_game_route_state(state, reason="test_end")
+            assert "closed" in window_actions
 
         assert state.get("game_route_active") is False
         assert _TAKEOVER_TOKEN_KEY not in state

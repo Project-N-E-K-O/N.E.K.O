@@ -1134,8 +1134,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         # The owner kept changing: the input reached no route
                         # and must not leak into ordinary chat, but its request
                         # still needs a turn end or its bubble stays pending.
+                        # Only an addressed one: an unaddressed turn end (e.g.
+                        # for a screen frame) would seal an unrelated reply.
                         logger.info("[%s] stream_data dropped: external route kept changing while handling it", lanlan_name)
-                        await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
+                        if message.get("request_id"):
+                            await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
                         continue
                     if claim is RouteClaim.CLAIMED:
                         continue

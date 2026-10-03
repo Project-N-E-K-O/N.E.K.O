@@ -2387,19 +2387,23 @@ async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("request_id", ["req-text", None])
 async def test_stream_data_gets_a_turn_end_when_the_owner_keeps_changing(
-    monkeypatch,
+    monkeypatch, request_id,
 ) -> None:
-    """Text that reached no route still settles its request on the frontend.
+    """Input that reached no route still settles its request on the frontend;
+    without a request id (e.g. a screen frame) no turn end goes out, since an
+    unaddressed one would seal an unrelated reply.
 
-    Mutation: dropping the UNSETTLED message without a turn end turns this
-    red; so does handing it to the ordinary chat path.
+    Mutation: dropping the addressed turn end, or sending an unaddressed one,
+    turns this red; so does handing the message to the ordinary chat path.
     """
     manager = _ProtocolManager()
     manager._emit_agent_callback_turn_end = AsyncMock()
-    websocket = _EventWebSocket([
-        {"action": "stream_data", "input_type": "text", "data": "hi", "request_id": "req-text"},
-    ])
+    message = {"action": "stream_data", "input_type": "text", "data": "hi"}
+    if request_id:
+        message["request_id"] = request_id
+    websocket = _EventWebSocket([message])
     _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
     instance = {"n": 0}
 
@@ -2423,4 +2427,7 @@ async def test_stream_data_gets_a_turn_end_when_the_owner_keeps_changing(
     await asyncio.gather(*list(websocket_router._ws_bg_tasks))
 
     assert "stream_data" not in [name for name, _payload in manager.calls]
-    manager._emit_agent_callback_turn_end.assert_awaited_once_with("req-text")
+    if request_id:
+        manager._emit_agent_callback_turn_end.assert_awaited_once_with(request_id)
+    else:
+        manager._emit_agent_callback_turn_end.assert_not_awaited()

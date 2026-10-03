@@ -5119,14 +5119,36 @@ async def cleanup_expired_sessions():
             if await _close_and_remove_session(game_type, session_id, lanlan_name):
                 logger.info("🎮 清理过期游戏 session: %s", key)
 
-        expired_routes = [
-            k for k, v in list(_game_route_states.items())
-            if (
-                not v.get("game_route_active")
-                and now - float(v.get("exit_started_at", v.get("last_activity", 0)) or 0) > _SESSION_TIMEOUT_SECONDS
+        _drop_expired_route_states(now)
+
+
+def _drop_expired_route_states(now: float) -> None:
+    """Forget inactive route states whose exit started too long ago.
+
+    An exit flow stuck past the timeout may still hold its takeover token.
+    Dropping it with the state would leave the manager taken over with nobody
+    able to release it, so the token is released first -- by its own value,
+    which leaves a takeover a newer route holds untouched.
+    """
+    expired_routes = [
+        k for k, v in list(_game_route_states.items())
+        if (
+            not v.get("game_route_active")
+            and now - float(v.get("exit_started_at", v.get("last_activity", 0)) or 0) > _SESSION_TIMEOUT_SECONDS
+        )
+    ]
+    for key in expired_routes:
+        state = _game_route_states.pop(key, None)
+        if not state:
+            continue
+        takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
+        if takeover_token is not None:
+            lanlan_name = str(state.get("lanlan_name") or "")
+            mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+            released = mgr.release_takeover(takeover_token) if mgr is not None else False
+            logger.warning(
+                "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s released=%s",
+                key,
+                released,
             )
-        ]
-        for key in expired_routes:
-            state = _game_route_states.pop(key, None)
-            if state:
-                logger.info("🎮 清理过期游戏路由状态: %s", key)
+        logger.info("🎮 清理过期游戏路由状态: %s", key)

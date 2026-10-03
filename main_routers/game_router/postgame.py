@@ -1253,14 +1253,18 @@ async def _finalize_game_route_state_inner(
     mgr = None
     try:
         mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+        # Capture postgame's prompt context BEFORE flipping the route inactive
+        # / before the archive resolution / before any peer ``/route/start``
+        # can replace this state in ``_game_route_states``. A failed snapshot
+        # only loses that context: the exit flow below (speech cancel, window
+        # close) must still run, since nothing retries it once the route is
+        # inactive.
         try:
-            # Capture postgame's prompt context BEFORE flipping the route
-            # inactive / before the archive resolution / before any peer
-            # ``/route/start`` can replace this state in ``_game_route_states``.
             postgame_context_snapshot = _build_postgame_context_snapshot(state)
-        finally:
-            # The route ends even if the snapshot failed.
-            _clear_route_activity_flags(state)
+        except Exception as exc:
+            logger.warning("⚠️ 游戏路由退出时构造 postgame 上下文快照失败: %s", exc, exc_info=True)
+            postgame_context_snapshot = {"pre_game_context": None, "game_context": None, "mode": None}
+        _clear_route_activity_flags(state)
         await _cancel_route_game_speech_preloads(state)
         await _cancel_route_game_speech(state, mgr)
         # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
