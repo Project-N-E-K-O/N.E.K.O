@@ -123,3 +123,12 @@ def test_invariant_checker_rejects_a_broken_relation(monkeypatch):
 def test_debrief_commit_backoff_caps_at_one_hour():
     # 暂时性写入失败的退避：30 s / 2 min / 10 min / 1 h，之后一直取最后一项（owner 2026-10-02）
     assert vs.VISIT_DEBRIEF_COMMIT_BACKOFF_S == (30, 120, 600, 3600)
+
+
+def test_every_visit_constant_is_re_exported_from_config():
+    # 后续 PR 按惯例 from config import VISIT_*：漏了再导出就是 ImportError
+    import config
+
+    names = {n for n in dir(vs) if n.startswith("VISIT_")}
+    assert names <= set(config.__all__)
+    assert all(getattr(config, n) == getattr(vs, n) for n in names)

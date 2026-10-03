@@ -1165,11 +1165,11 @@ def test_digest_run_keys_must_be_contiguous_and_match_the_count(runs, count):
 
 @pytest.mark.parametrize("writes", [{"facts": True, "cache": False}, {"facts": False, "cache": True}])
 def test_a_half_written_diary_is_neither_valid_nor_settled(writes):
-    from main_logic.visit.spool import validate_state, visit_settled
+    from main_logic.visit.spool import validate_state, transcript_releasable
 
     state = dict(settled(state_for()), debrief_choice="diary",
                  debrief_writes=dict(new_debrief_writes(), **writes))
-    assert not visit_settled(state)
+    assert not transcript_releasable(state)
     with pytest.raises(SpoolStateError):
         validate_state(state)
 
@@ -1582,3 +1582,19 @@ async def test_abandon_before_the_digest_settles_survives_a_restart(tmp_path):
     await reopened.write_state(settled(state))
     assert await reopened.delete_if_settled() is True
     assert (await reopened.read_state())["debrief_choice"] == "abandoned"
+
+
+@pytest.mark.parametrize("choice,final,releases", [
+    ("committing:diary", False, True),
+    ("commit_failed:diary", False, True),
+    ("abandoned", True, True),
+    ("forget", True, True),
+    ("preview:diary", False, False),
+])
+def test_final_and_transcript_release_are_separate_predicates(choice, final, releases):
+    # 「这场有了结果」与「转录可回收」不是一回事：提交中 / 永久失败可回收转录，但不是终态
+    from main_logic.visit.spool import debrief_final, debrief_releases_transcript
+
+    state = dict(failed_state(), debrief_choice=choice)
+    assert debrief_final(state) is final
+    assert debrief_releases_transcript(state) is releases

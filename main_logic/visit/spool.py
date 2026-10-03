@@ -558,13 +558,12 @@ def region_settled(state: Mapping[str, Any]) -> bool:
     return True
 
 
-def debrief_settled(state: Mapping[str, Any]) -> bool:
-    """Whether the debrief no longer needs the transcript (or never applies: memory off).
+def debrief_final(state: Mapping[str, Any]) -> bool:
+    """Whether the debrief reached a final outcome (or never applies: memory off).
 
-    True for a final outcome (``diary`` with both writes, ``forget``,
-    ``abandoned``) and also for ``committing:diary`` / ``commit_failed:diary``:
-    from then on retries only use ``state.json.debrief_pending``. Those two
-    still pin ``state.json`` itself (see :func:`debrief_pins_state`).
+    Final means ``diary`` with both writes done, ``forget`` or ``abandoned``.
+    ``committing:diary`` / ``commit_failed:diary`` are *not* final: a retry is
+    pending or the user still has to choose.
     """
     if not is_digestable(state):
         return True
@@ -572,7 +571,18 @@ def debrief_settled(state: Mapping[str, Any]) -> bool:
     if choice == "diary":
         writes = state.get("debrief_writes") or {}
         return writes.get("facts") is True and writes.get("cache") is True
-    return choice in ("forget", "abandoned") + _COMMIT_PINNED_CHOICES
+    return choice in ("forget", "abandoned")
+
+
+def debrief_releases_transcript(state: Mapping[str, Any]) -> bool:
+    """Whether the debrief no longer needs the ``.jsonl``.
+
+    True once :func:`debrief_final`, and also in ``committing:diary`` /
+    ``commit_failed:diary``: from then on retries only use
+    ``state.json.debrief_pending``, which stays pinned (see
+    :func:`debrief_pins_state`).
+    """
+    return debrief_final(state) or debrief_pins_state(state)
 
 
 def debrief_pins_state(state: Mapping[str, Any] | None) -> bool:
@@ -580,9 +590,14 @@ def debrief_pins_state(state: Mapping[str, Any] | None) -> bool:
     return bool(state) and state.get("debrief_choice") in _COMMIT_PINNED_CHOICES
 
 
-def visit_settled(state: Mapping[str, Any]) -> bool:
-    """Region settled and debrief final: the visit's spool may be reclaimed."""
-    return region_settled(state) and debrief_settled(state)
+def transcript_releasable(state: Mapping[str, Any]) -> bool:
+    """Region settled and the debrief done with the transcript: the ``.jsonl`` may be reclaimed.
+
+    Not "the visit is over": a visit still committing (or failed) its diary
+    is releasable while :func:`debrief_final` is False and
+    :func:`debrief_pins_state` keeps its ``state.json``.
+    """
+    return region_settled(state) and debrief_releases_transcript(state)
 
 
 @dataclass
@@ -1099,14 +1114,14 @@ class VisitSpool:
         # 这里删掉，它随后的原子替换会把刚判定可删的转录复活
         with path_lock(self.jsonl_path), path_lock(self.state_path):
             state = _read_state_file(self.state_path)
-            if state is None or not visit_settled(state):
+            if state is None or not transcript_releasable(state):
                 return False
             # 另一个实例可能还持有这场的写入 fd（关闭排在队列里）：删掉后它的追加
             # 会写进已删除的 inode、关闭时一起消失
             return _unlink_unless_open(self.jsonl_path)
 
     async def delete_if_settled(self) -> bool:
-        """Delete ``.jsonl`` once the region is settled and the debrief is final.
+        """Delete ``.jsonl`` once :func:`transcript_releasable` holds.
 
         Called by ``mark_forget`` and, later, by whichever of the digest commit
         and the last-summary commit finishes last. Returns whether it deleted.
@@ -1116,9 +1131,11 @@ class VisitSpool:
         return await asyncio.to_thread(self._delete_if_settled_sync)
 
     async def mark_forget(self, *, final_choice: str = "forget") -> bool:
-        """Record the debrief choice ``forget`` (no private memory is written).
+        """Record a final debrief choice that writes nothing more: ``forget`` or ``abandoned``.
 
-        ``final_choice='abandoned'`` records the user abandoning a permanently
+        ``final_choice='forget'`` (default) records "do not record" (no
+        private memory is written). ``final_choice='abandoned'`` records the
+        user abandoning a permanently
         failed diary commit instead: allowed only from ``commit_failed:diary``
         (or again from ``abandoned``); the step already written is not undone
         and the spool is deleted by the same rule, the final choice staying
@@ -1398,8 +1415,6 @@ class VisitSpool:
         deleted: list[Path] = []
         remaining = []
         scanned = _scan(spool_dir)
-        # 豁免宽限按 state.json 自己的年龄算：同场较旧的 .jsonl 可能先被扫到
-        state_age = {v: now - st.st_mtime for v, sfx, _p, st in scanned if sfx == STATE_SUFFIX}
         for visit_id, suffix, path, st in scanned:
             if now - st.st_mtime <= _RETENTION_S:
                 remaining.append((visit_id, suffix, path, st))
@@ -1422,9 +1437,8 @@ class VisitSpool:
                 # 不设期限：state.json 里的 debrief_writes / debrief_pending 是补写的唯一依据，
                 # 删了就永远半截。只豁免 state.json：.jsonl 照常到期，否则几场被忽略的
                 # 永久失败就能把转录一直堆着
-                if suffix == STATE_SUFFIX and _retention_exempt(
-                    state_path, state_age.get(visit_id, now - st.st_mtime),
-                ):
+                # 只对 state.json 本身判豁免，宽限就按它自己的年龄算
+                if suffix == STATE_SUFFIX and _retention_exempt(state_path, now - st.st_mtime):
                     remaining.append((visit_id, suffix, path, st))
                     continue
                 if not _sweep_unlink(path):
@@ -1447,7 +1461,7 @@ class VisitSpool:
         candidates = []
         for visit_id, files in by_visit.items():
             state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
-            if state is None or not visit_settled(state):
+            if state is None or not transcript_releasable(state):
                 continue
             reclaimable = [(p, st) for suffix, p, st in files if suffix not in _UPLOAD_SUFFIXES]
             if reclaimable:
@@ -1463,7 +1477,7 @@ class VisitSpool:
             # 改写方读完转录、还没原子替换时删掉，它随后的替换会把文件复活
             with path_lock(jsonl), path_lock(state_path):
                 state = _try_read_state(state_path)
-                if state is None or not visit_settled(state):
+                if state is None or not transcript_releasable(state):
                     continue
                 # 提交中 / 永久性失败的场次（锁内重判）：转录可以回收，state.json 必须留着
                 if debrief_pins_state(state):
