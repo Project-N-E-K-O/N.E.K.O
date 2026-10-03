@@ -952,3 +952,15 @@ def test_wire_budget_stops_where_a_capping_sanitizer_starts_cutting():
             break
     assert budget.exhausted
     assert budget.outbound_text() == clean_relay_text(budget.accepted_text)
+
+
+def test_stats_accepts_whole_valued_measurements():
+    # 浏览器 JSON.stringify 把整值写成 30 / 0：干净网络下的 stats 不能被当成畸形
+    # （pydantic 严格模式的 float 本就收整数、拒 bool 与溢出的大整数；这里钉住这个行为）
+    msg = {"t": "stats", "rx_fps": 30, "rx_kbps": 540, "rtt_ms": 80, "loss_pct": 0,
+           "rx_w": 640, "rx_h": 480}
+    out = vw.decode_msg(json.dumps(msg), cmd=3)
+    assert out["t"] == "stats" and out["rx_fps"] == 30.0 and out["loss_pct"] == 0.0
+    for bad in (True, -1, 10 ** 400, "30"):
+        with pytest.raises(ValueError):
+            vw.encode_msg(dict(msg, rx_fps=bad))

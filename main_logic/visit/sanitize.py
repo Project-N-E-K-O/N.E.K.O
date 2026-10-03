@@ -100,9 +100,8 @@ ENVELOPE_TAG = "visit_data"
 
 # ======X====== 成对分隔符（含全角 ＝）：3 个及以上折成 1 个，伪造不出分隔符。
 _DELIMITER_RUN_RE = re.compile("[=＝]{3,}")
-# 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data（用于检测）。
+# 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data。
 _TAG_BRACKETS = "<＜‹"
-_ENVELOPE_TAG_RE = re.compile(r"[<＜‹]\s*/?\s*" + ENVELOPE_TAG, re.IGNORECASE)
 _ENVELOPE_NAME_RE = re.compile(re.escape(ENVELOPE_TAG), re.IGNORECASE)
 
 

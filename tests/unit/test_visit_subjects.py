@@ -585,3 +585,26 @@ def test_path_locks_are_shared_while_held_and_released_when_idle(tmp_path):
     del held
     gc.collect()
     assert key not in subjects_mod._PATH_LOCKS     # 闲置后登记自动释放
+
+
+@pytest.mark.parametrize("damage", [
+    {"chars": {"c_" + "1" * 24: "damaged"}},
+    {"chars": {"c_" + "1" * 24: 3}},
+    {"pairs": ["p" * 24, 7]},
+])
+async def test_upsert_refuses_malformed_existing_character_records(tmp_path, damage):
+    import json as _json
+
+    from main_logic.visit.subjects import RosterCorruptError
+
+    roster = PeerRoster(tmp_path, own_uid="own_a")
+    await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                        char_tag="f" * 32, char_display_name="cat", now=1.0)
+    data = _json.loads(roster.path.read_text(encoding="utf-8"))
+    data["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"].update(damage)
+    before = _json.dumps(data)
+    roster.path.write_text(before, encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await roster.upsert("peer_x", "A", pair_id="p" * 24, peer_char_id="c_" + "1" * 24,
+                            char_tag="f" * 32, char_display_name="cat", now=2.0)
+    assert roster.path.read_text(encoding="utf-8") == before

@@ -62,6 +62,7 @@ from main_logic.visit.subjects import (
     derive_pair_id,
     derive_person_id,
     group_chat_subject,
+    group_participant_subject,
     participant_subject,
     path_lock,
 )
@@ -223,12 +224,23 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     # 会被转发给 /scoped_forget，按平台前缀删掉别处的记忆
     if any(s["subject_id"].split(":", 1)[0] != VISIT_MEMORY_PLATFORM for s in subjects):
         raise ValueError("revocation log subjects must belong to the visit platform")
+    # 每个 subject 都必须是 MemorySubject 会产出的规范形态：未知 kind、空分量
+    # （neko_visit::）之类在 memory_server 那边每次重放都 422，清除就永远关不掉
     subject_pairs = set()
     for subject in subjects:
-        if subject["subject_kind"] in ("group_chat", "group_participant"):
-            parts = subject["subject_id"].split(":")
-            if len(parts) < 2:
-                raise ValueError("revocation log pair subject has no pair id")
+        kind = subject["subject_kind"]
+        parts = subject["subject_id"].split(":")
+        if kind == "group_chat" and len(parts) == 2:
+            canonical = group_chat_subject(parts[1])
+        elif kind == "group_participant" and len(parts) == 3:
+            canonical = group_participant_subject(parts[1], parts[2])
+        elif kind == "participant":
+            canonical = subject            # 下面另外要求等于这个人的人级主体
+        else:
+            raise ValueError(f"revocation log subject {kind!r} is not a visit subject")
+        if subject != canonical:
+            raise ValueError("revocation log subject is not in canonical form")
+        if kind != "participant":
             subject_pairs.add(parts[1])
     # 双向相等：多出的无关 pair 会让 wipe_spool 去抹别人的场次
     if set(pair_ids) != subject_pairs or len(pair_ids) != len(set(pair_ids)):

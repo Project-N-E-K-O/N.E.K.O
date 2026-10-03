@@ -616,3 +616,23 @@ async def test_an_inconsistent_merge_leaves_the_existing_log_untouched(tmp_path)
             {"subject_kind": "group_chat", "subject_id": f"neko_visit:{foreign}"},
         ])
     assert log.path_for(rev_id).read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("make_bogus", [
+    lambda pair: {"subject_kind": "bogus", "subject_id": "neko_visit:x"},
+    lambda pair: {"subject_kind": "bogus", "subject_id": f"neko_visit:{pair}"},
+    lambda pair: {"subject_kind": "group_participant", "subject_id": "neko_visit::"},
+    lambda pair: {"subject_kind": "group_participant", "subject_id": f"neko_visit:{pair}: "},
+    lambda pair: {"subject_kind": "group_participant", "subject_id": f"neko_visit:{pair}:%"},
+    lambda pair: {"subject_kind": "group_chat", "subject_id": "neko_visit::"},
+], ids=["kind", "kind-own-pair", "empty", "blank-speaker", "unescaped", "chat-empty"])
+async def test_noncanonical_subjects_are_refused_before_persistence(tmp_path, make_bogus):
+    # memory_server 对未知 kind / 空分量 / 非规范转义每次都 422：这样的日志落盘就永远关不掉
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    pair, _ = await seed(roster, PEER_X, "A", TAG_X)
+    plan = await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
+    bogus = make_bogus(pair)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    with pytest.raises(ValueError):
+        await log.open(PEER_X, CHAR_UID_A, plan.pair_ids, list(plan.subjects) + [bogus])
+    assert not log.path_for(plan.revocation_id).exists()

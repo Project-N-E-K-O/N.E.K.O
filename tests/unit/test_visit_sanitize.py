@@ -46,6 +46,9 @@ from main_logic.visit.sanitize import (
 )
 from utils.tokenize import count_tokens
 
+# 伪造信封标签的检测式：尖括号 + 可选空白 / 斜杠 + 标签名
+_ENVELOPE_TAG_RE = re.compile(r"[<＜‹]\s*/?\s*visit_data", re.IGNORECASE)
+
 TERM = "家里人"
 
 # Markdown 媒体语法：行内图片 / 链接、自动链接、引用式定义。
@@ -377,7 +380,7 @@ def test_partial_tail_spans_map_back_to_the_raw_tail():
 ])
 def test_bracket_runs_cannot_rebuild_an_envelope_tag(attack):
     # 一遍只摘一个尖括号的话，前面多垫一个就又拼出合法标签
-    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE, clamp_peer_line, sanitize_relay_text
+    from main_logic.visit.sanitize import clamp_peer_line, sanitize_relay_text
 
     for out in (escape_envelope(attack), clamp_peer_line(attack), sanitize_relay_text(attack)):
         assert not _ENVELOPE_TAG_RE.search(out)
@@ -393,8 +396,6 @@ def test_bracket_runs_cannot_rebuild_an_envelope_tag(attack):
 def test_long_bracket_runs_are_escaped_in_linear_time(attack):
     # 逐个尖括号重扫全文、或正则从每个尖括号起点重试，都是平方级
     import time
-
-    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE
 
     start = time.perf_counter()
     out = escape_envelope(attack)
@@ -418,8 +419,6 @@ def test_envelope_escape_drops_only_the_bracket_run(raw, expected):
 def test_random_bracket_slash_mixes_never_leave_an_envelope_tag():
     # 尖括号 / 斜杠 / 空白 / 标签名随机拼接：转义后检测不到标签，且幂等
     import random
-
-    from main_logic.visit.sanitize import _ENVELOPE_TAG_RE
 
     rng = random.Random(20261003)
     pieces = ["<", "＜", "‹", "/", " ", "\t", "x", "visit_data", "VISIT_DATA", ">", "<visit_data"]

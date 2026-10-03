@@ -467,9 +467,9 @@ class PeerRoster:
             peer["last_seen"] = max(now, peer.get("last_seen") or 0)
             by_char = _dict_at(peer, "by_char")
             entry = _dict_at(by_char, own_char)
-            if "pairs" in entry and not isinstance(entry["pairs"], list):
-                # 坏掉的 pairs 不能重建成 []：历史 pair 一丢，清除就再也展开不到它们
-                raise RosterCorruptError(f"{self.path.name}: pairs is not a list")
+            # 已有条目按严格读同一套规则校验：坏掉的 pairs 重建成 []、坏掉的 chars
+            # 记录被直接覆盖，都会在下一次原子写里永久丢掉可恢复的数据
+            _check_char_entry(entry, self.path.name)
             pairs = entry.setdefault("pairs", [])
             if pair_id not in pairs:
                 pairs.append(pair_id)
