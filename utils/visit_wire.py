@@ -622,7 +622,9 @@ _NonNegInt = Annotated[int, Field(ge=0)]
 class _Msg(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
-    v: Annotated[int, Field(ge=1)] = _PAYLOAD_VERSION
+    # 只认本版 payload：v 升版意味着已知字段换了语义（加字段不必升版，未知字段本就忽略），
+    # 按 v1 解释会把未来版本的语义套错；必达消息走 _invalid 空操作推进 seq
+    v: Annotated[int, Field(ge=_PAYLOAD_VERSION, le=_PAYLOAD_VERSION)] = _PAYLOAD_VERSION
 
 
 class _HelloCaps(BaseModel):

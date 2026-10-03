@@ -1526,3 +1526,11 @@ def test_capacity_evicted_lines_cannot_come_back():
     # 被淘汰行的可靠 text 仍能收口；更新的行照常
     assert asm.close(_text_msg("一。", ln="g:1", lp=1)) == "一。"
     assert asm.feed(_delta_msg("新", ln="g:new", lp=last + 1))
+
+
+@pytest.mark.parametrize("v", [2, 0, True], ids=["future", "zero", "bool"])
+def test_known_payloads_must_carry_payload_version_one(v):
+    # 已知 t 的 payload 只认 v=1：别的版本按 v1 解释会把语义套错；必达消息作 _invalid 空操作推进 seq
+    bad = vw.decode_msg(json.dumps(_text_msg("x", v=v)), cmd=2)
+    assert bad["t"] == "_invalid" and bad["seq"] == 17
+    assert vw.decode_msg(json.dumps(_text_msg("x", v=1)), cmd=2)["t"] == "text"

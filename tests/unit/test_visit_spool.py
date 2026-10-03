@@ -1566,3 +1566,19 @@ async def test_abandon_is_only_allowed_from_a_permanent_failure(tmp_path):
     await sp.mark_forget(final_choice="abandoned")          # 幂等
     with pytest.raises(ValueError):
         await sp.mark_forget(final_choice="diary")
+
+
+async def test_abandon_before_the_digest_settles_survives_a_restart(tmp_path):
+    # 放弃时 digest 还没完成：转录留着等 digest，终态仍是 abandoned（重新读盘后也是）
+    sp = await open_spool(tmp_path, vid(55))
+    await sp.append(line(1))
+    await sp.close()
+    await sp.write_state(failed_state())
+    assert await sp.mark_forget(final_choice="abandoned") is False
+    assert sp.jsonl_path.exists()
+    reopened = VisitSpool(tmp_path, vid(55))
+    state = await reopened.read_state()
+    assert state["debrief_choice"] == "abandoned" and state["debrief_pending"] is None
+    await reopened.write_state(settled(state))
+    assert await reopened.delete_if_settled() is True
+    assert (await reopened.read_state())["debrief_choice"] == "abandoned"
