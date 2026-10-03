@@ -294,7 +294,7 @@ class ScopedMemoryClient:
                 f"scoped_subjects failed: HTTP {response.status_code}"
             )
         try:
-            payload = response.json()
+            payload = _response_json(response)
         except ValueError as exc:
             raise ScopedMemoryError("scoped_subjects returned invalid JSON") from exc
         subjects = payload.get("subjects") if isinstance(payload, dict) else None
@@ -328,7 +328,7 @@ class ScopedMemoryClient:
         if response is None:
             return False
         try:
-            payload = response.json()
+            payload = _response_json(response)
         except ValueError:
             payload = None
         if not isinstance(payload, dict) or payload.get("status") not in ("recorded", "skipped"):
@@ -350,7 +350,7 @@ class ScopedMemoryClient:
         if response is None:
             return False
         try:
-            payload = response.json()
+            payload = _response_json(response)
         except ValueError:
             payload = None
         if not isinstance(payload, dict) or payload.get("status") != "forgotten":
@@ -406,7 +406,7 @@ class ScopedMemoryClient:
         if response is None:
             return False
         try:
-            payload = response.json()
+            payload = _response_json(response)
         except ValueError:
             # 截断 / HTML 之类的 2xx 不能证明抽取与信赖写入已完成：按失败，调用方重试
             logger.warning("scoped_history returned a non-JSON body; keep and retry")
@@ -457,7 +457,7 @@ class ScopedMemoryClient:
         if response is None:
             return none_ok
         try:
-            payload = response.json()
+            payload = _response_json(response)
         except ValueError:
             logger.warning("scoped_history segments returned invalid JSON")
             return none_ok
@@ -479,6 +479,16 @@ class ScopedMemoryClient:
                 list(outcome.failed_positions),
             )
         return outcome
+
+
+def _response_json(response: httpx.Response) -> Any:
+    """``response.json()`` with a deep-nesting ``RecursionError`` raised as ``ValueError``."""
+    try:
+        return response.json()
+    except RecursionError as exc:
+        # 深层嵌套的 2xx 响应体（"[[[[…"）与其他坏 JSON 一样按畸形处理：各调用点只认 ValueError，
+        # 漏出 RecursionError 会打断启动 / 撤销 / 补录，而不是按失败保留重试
+        raise ValueError("response JSON is too deeply nested") from exc
 
 
 def _trust_settled(result: Any) -> bool:

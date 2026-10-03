@@ -643,3 +643,21 @@ async def test_numeric_trust_persisted_is_not_a_confirmation(persisted):
     async with http:
         result = await client.post_history_batch("Lanlan", segments=[segment])
     assert result.segments_ok == (False,)
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_response_bodies_are_treated_as_malformed():
+    # json 解析深层嵌套抛 RecursionError：各响应边界都要按畸形处理（抛 ScopedMemoryError / 返回失败）
+    def deep(request):
+        return httpx.Response(200, content=b"[" * 5000, headers={"content-type": "application/json"})
+
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    client, http = _client(_Recorder(deep))
+    async with http:
+        with pytest.raises(ScopedMemoryError):
+            await client.list_scoped_subjects("Lanlan", platform="neko_visit")
+        assert await client.post_mentions("Lanlan", subjects=[_SUBJECT], response_text="hi") is False
+        assert await client.post_forget("Lanlan", subject=_SUBJECT) is False
+        assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES) is False
+        result = await client.post_history_batch("Lanlan", segments=[segment])
+    assert result.segments_ok == (False,)
