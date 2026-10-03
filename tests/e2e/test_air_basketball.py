@@ -270,7 +270,7 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
     module_urls = page.evaluate(
         """performance.getEntriesByType('resource')
         .map(entry => entry.name)
-        .filter(url => /air-basketball[/](i18n|physics|avatar|sdk-bootstrap|avatar-host)[.]js/.test(url))"""
+        .filter(url => /air_basketball[/](i18n|physics|avatar|sdk-bootstrap|avatar-host)[.]js/.test(url))"""
     )
     assert len(module_urls) == 5
     assert all("?v=" in url for url in module_urls)
@@ -669,7 +669,7 @@ def test_air_basketball_resize_preserves_active_ball_state(
         """
         async () => {
           const version = new URL(
-            document.querySelector('script[src*="/air-basketball/game.js"]').src
+            document.querySelector('script[src*="/air_basketball/game.js"]').src
           ).search;
           const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           const canvas = document.createElement('canvas');
@@ -928,7 +928,7 @@ def test_air_basketball_cross_boundary_state_is_frame_rate_independent(
         """
         async () => {
           const version = new URL(
-            document.querySelector('script[src*="/air-basketball/game.js"]').src
+            document.querySelector('script[src*="/air_basketball/game.js"]').src
           ).search;
           const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           return [60, 30, 20, 15].map(fps => {
@@ -992,7 +992,7 @@ def test_air_basketball_neko_auto_shot_has_stable_scoring_window(
         """
         async () => {
           const version = new URL(
-            document.querySelector('script[src*="/air-basketball/game.js"]').src
+            document.querySelector('script[src*="/air_basketball/game.js"]').src
           ).search;
           const { ShotLane } = await import(`/static/game/games/air_basketball/physics.js${version}`);
           const originalRandom = Math.random;

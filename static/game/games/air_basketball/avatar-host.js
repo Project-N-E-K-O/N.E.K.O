@@ -100,9 +100,13 @@ function createRawController({ signal, fitLive2DModel }) {
     const loader = new GLTFLoader();
     loader.register(parser => new vrmModule.VRMLoaderPlugin(parser));
     const gltf = await new Promise((resolve, reject) => loader.load(path, resolve, undefined, reject));
-    throwIfAborted(signal);
     const vrm = gltf.userData?.vrm;
-    if (!vrm?.scene) throw new Error('Current character VRM is invalid');
+    if (signal?.aborted || !vrm?.scene) {
+      // Not added to the scene yet, so disposing the manager would not free it.
+      vrmModule.VRMUtils?.deepDispose?.(gltf.scene);
+      throwIfAborted(signal);
+      throw new Error('Current character VRM is invalid');
+    }
     next.scene.add(vrm.scene);
     next.currentModel = { vrm, gltf, scene:vrm.scene, url:path };
     vrm.scene.visible = true;

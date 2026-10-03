@@ -500,46 +500,30 @@ async function characterBinding() {
     assert.equal(e.timers.size, 0);
   }
 
-  // retainAvatars: a replay re-validates the same character while its Avatar stays mounted.
+  // keepCharacter: a replay keeps the binding (and its mounted Avatar) across reset
+  // synchronously, with no unbound window and no bindCharacter() call.
   {
-    let known = new Set(['Neko']);
     const e = await environment(() => ({
       async mount() { return {dispose() {}}; },
-      getCharacter: name => known.has(name) ? {...descriptor, name} : null,
+      getCharacter: name => (name === 'Neko' ? descriptor : null),
       dispose() {},
     }));
     const h = e.host(); const client = await e.game(h);
     const config = {slot:'opponent', characterName:'Neko', model:descriptor.model,
       viewport:{mode:'fixed',width:200,height:300}, resize:{mode:'fixed'}};
     try {
-      await assert.rejects(client.runtime.bindCharacter('Neko', {retainAvatars:true}), {code:'invalid_request'},
-        'retainAvatars must not bind a character this client never bound');
       assert.equal((await client.runtime.bindCharacter('Neko')).name, 'Neko');
       await client.avatar.mount(config);
-      client.runtime.reset({newSession:true});
-      assert.equal(h.routeLanlanName, '');
-      await assert.rejects(client.runtime.bindCharacter('Neko'), {code:'invalid_state'},
-        'without the opt-in, rebinding still requires disposed Avatars');
-      await assert.rejects(client.runtime.bindCharacter('Other', {retainAvatars:true}), {code:'invalid_request'});
-      await assert.rejects(client.runtime.bindCharacter(undefined, {retainAvatars:true}), {code:'invalid_request'});
-      assert.equal((await client.runtime.bindCharacter('Neko', {retainAvatars:true})).name, 'Neko');
+      const firstSession = client.runtime.session.id;
+      const kept = client.runtime.reset({newSession:true, keepCharacter:true});
+      assert.equal(kept.characterName, 'Neko', 'reset() must report the kept character');
       assert.equal(h.routeLanlanName, 'Neko');
-      // A renderer that does not declare this character must not be carried over.
-      for (const characterName of ['Other', undefined]) {
-        client.runtime.reset({newSession:true});
-        const foreign = await client.avatar.mount({...config, slot:'guest',
-          ...(characterName ? {characterName} : {characterName:undefined})});
-        await assert.rejects(client.runtime.bindCharacter('Neko', {retainAvatars:true}), {code:'invalid_state'},
-          `retainAvatars accepted an Avatar mounted for ${characterName || 'no character'}`);
-        assert.equal(h.routeLanlanName, '');
-        foreign.dispose();
-        assert.equal((await client.runtime.bindCharacter('Neko', {retainAvatars:true})).name, 'Neko');
-      }
+      assert.equal(client.runtime.session.characterName, 'Neko');
+      assert.notEqual(client.runtime.session.id, firstSession, 'newSession must still mint a session');
       client.runtime.reset({newSession:true});
-      known = new Set();
-      assert.equal(await client.runtime.bindCharacter('Neko', {retainAvatars:true}), null,
-        'a removed or renamed character must not be re-bound from the cached name');
-      assert.equal(h.routeLanlanName, '');
+      assert.equal(h.routeLanlanName, '', 'without the opt-in reset still clears the binding');
+      assert.equal(client.runtime.reset({keepCharacter:true}).characterName, '',
+        'keepCharacter with nothing bound is a no-op');
     } finally { client.dispose(); }
     assert.equal(e.timers.size, 0);
   }

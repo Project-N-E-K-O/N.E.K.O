@@ -57,8 +57,9 @@ export class ShotLane {
       rimY: this.height * .39,
       baseRimW: clamp(this.width * .23, 70, 108)
     };
-    if (previousWidth && previousHeight
-        && (previousWidth !== this.width || previousHeight !== this.height)) {
+    const sizeChanged = !previousWidth || !previousHeight
+      || previousWidth !== this.width || previousHeight !== this.height;
+    if (previousWidth && previousHeight && sizeChanged) {
       const scaleX = this.width / previousWidth;
       const scaleY = this.height / previousHeight;
       const scaleBall = ball => {
@@ -85,7 +86,13 @@ export class ShotLane {
       this.hoopOffset *= scaleX;
       this.hoopVelocity *= scaleX;
     }
-    if (!this.ball?.flying && !this.ball?.inTransit) this.resetBall();
+    // Re-seat the resting ball only when the court actually changed size, and keep
+    // a held (already rescaled) aim: a resize mid-drag must not drop the shot.
+    if (sizeChanged && !this.ball?.flying && !this.ball?.inTransit) {
+      const aim = this.aim;
+      this.resetBall();
+      this.aim = aim;
+    }
   }
 
   setStage(stage) {

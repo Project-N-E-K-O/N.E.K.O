@@ -2203,8 +2203,6 @@
     let avatarQueryGeneration = {};
     let characterBindingPending = false;
     let characterBindingLocked = false;
-    // Last character this client bound; `retainAvatars` may only re-bind this one.
-    let lastBoundCharacterName = '';
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
@@ -3893,6 +3891,15 @@
             state: runtimePhase,
           });
         }
+        // Opt-in: carry the bound character across the reset (a replay that keeps
+        // its mounted Avatar). It is re-applied synchronously inside reset, so no
+        // speech or command can run unbound in between. Checked before any side effect.
+        const keptCharacterName = resetOptions.keepCharacter === true
+          ? runtimeSession().characterName
+          : '';
+        if (keptCharacterName && typeof transport.bindRuntimeCharacter !== 'function') {
+          fail('transport_unavailable', 'Character binding unavailable');
+        }
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
@@ -3919,6 +3926,7 @@
         // If a new route-loss path is ever added, retire the generation THERE.
         const state = transport.resetRuntime({ newSession: resetOptions.newSession === true });
         characterBindingLocked = false;
+        if (keptCharacterName) transport.bindRuntimeCharacter(keptCharacterName);
         memoryConsentEnabled = false;
         memoryConsentLocked = false;
         memoryConsentConfigured = false;
@@ -3929,7 +3937,9 @@
         }));
         setRuntimePhase('idle', resetOptions.newSession ? 'new-session' : 'reset');
         startPageExitLifecycle();
-        const normalized = state && typeof state === 'object' ? state : transport.getRuntimeState();
+        const normalized = !keptCharacterName && state && typeof state === 'object'
+          ? state
+          : transport.getRuntimeState();
         return Object.freeze({
           id: String(normalized?.sessionId || normalized?.session_id || ''),
           characterName: String(
@@ -3942,23 +3952,10 @@
         const operation = 'runtime.bindCharacter';
         requireCapability('runtime', operation);
         const requested = name === undefined ? '' : avatarCharacterName(name);
-        // Opt-in: re-validate the character this client already bound (e.g. after
-        // reset({ newSession: true }) for a replay) while its Avatars stay mounted.
-        // Choosing any other character still requires disposing the Avatars first.
-        const retainAvatars = options.retainAvatars === true;
-        if (retainAvatars && (!requested || requested !== lastBoundCharacterName)) {
-          fail('invalid_request', 'retainAvatars only re-binds the character this client already bound');
-        }
         if (characterBindingPending) fail('busy', 'Character binding is pending');
-        // A retained Avatar must declare that it shows this very character; an
-        // undeclared or foreign renderer would otherwise carry over to the new session.
-        const avatarsBelongToRequested = () => [...avatarRenderers].every(
-          (state) => state.config.characterName === requested,
-        );
         const canBind = () => runtimePhase === 'idle' && !runtimeRouteEstablished
           && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked
-          && (retainAvatars ? avatarsBelongToRequested() : avatarRenderers.size === 0)
-          && avatarMountsPending === 0;
+          && avatarRenderers.size === 0 && avatarMountsPending === 0;
         if (!canBind()) fail('invalid_state', 'Bind before pregame requests or avatar mounting; dispose avatars and end/reset before changing character');
         if (typeof transport.bindRuntimeCharacter !== 'function') fail('transport_unavailable', 'Character binding unavailable');
         const generation = avatarQueryGeneration;
@@ -3973,7 +3970,6 @@
           // No await between the final lifecycle check and the local host commit.
           transport.bindRuntimeCharacter(value.name);
           if (runtimeSession().characterName !== value.name) fail('invalid_response', 'Host did not bind the selected character');
-          lastBoundCharacterName = value.name;
           return value;
         } finally { characterBindingPending = false; }
       },

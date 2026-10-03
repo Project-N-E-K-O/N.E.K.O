@@ -184,6 +184,8 @@ export async function waitForNekoSpeechPlayback(requestId, maxMs) {
       const playing = Boolean(state?.active || state?.pendingAudioWork);
       if (!started) {
         if (ours && playing) started = true;
+        // A short line may already have finished by the time speak() settled.
+        else if (ours) finish();
         return;
       }
       if (!ours || !playing) finish();
@@ -204,18 +206,24 @@ export async function configureGameRuntime(payload, pageExitPayload) {
   });
 }
 
-export function startGameRuntime(payload, options = {}) {
+export function startGameRuntime(payload) {
   return enqueueLifecycle(async ({ game, identity }) => {
-    // Binding is refused while an Avatar mount is still pending.
-    await Promise.resolve(options.after).catch(() => undefined);
-    if (['ended', 'inactive'].includes(game.runtime.state)) game.runtime.reset({ newSession:true });
-    if (game.runtime.session.characterName !== identity.name) {
-      // reset() (or an earlier failed attempt) cleared the bound character.
-      // Re-validate the same one with the opponent Avatar still mounted; a
-      // renamed or deleted character is refused.
-      const character = await game.runtime.bindCharacter(identity.name, { retainAvatars:true });
-      if (!character) throw new Error(`Character ${identity.name} is no longer available`);
+    // A failed end() leaves the previous route `degraded` and still sending
+    // heartbeats; start() would refuse every new match. Retry that end first.
+    if (game.runtime.state === 'degraded') {
+      await game.runtime.end(lastEndPayload || {}).catch(() => undefined);
     }
+    if (['ended', 'inactive'].includes(game.runtime.state)) {
+      // keepCharacter re-applies the binding inside reset itself, so speech sent
+      // while this replay starts never runs unbound or locks a later re-bind.
+      game.runtime.reset({ newSession:true, keepCharacter:true });
+    }
+    if (game.runtime.session.characterName !== identity.name) {
+      throw new Error(`Character binding for ${identity.name} was lost`);
+    }
+    // The kept name is not re-resolved; refuse a renamed or deleted character.
+    const character = await game.avatar.getCharacter(identity.name);
+    if (!character) throw new Error(`Character ${identity.name} is no longer available`);
     const result = await game.runtime.start(payload);
     // A rejected (`degraded`) or route-less (`inactive`) start settles without
     // throwing; only `running` means the backend route exists. Throw so the
@@ -228,7 +236,10 @@ export function startGameRuntime(payload, options = {}) {
   });
 }
 
+let lastEndPayload = null;
+
 export function endGameRuntime(payload, options = {}) {
+  lastEndPayload = payload;
   return enqueueLifecycle(async ({ game }) => {
     await Promise.resolve(options.after).catch(() => undefined);
     if (!['running', 'degraded', 'starting'].includes(game.runtime.state)) return undefined;

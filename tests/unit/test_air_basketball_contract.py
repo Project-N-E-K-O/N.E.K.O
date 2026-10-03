@@ -255,11 +255,19 @@ def test_air_basketball_mvp_interaction_contract():
     assert html.index(registration) < html.index("/static/game/sdk/neko-minigame-same-origin-bootstrap.js")
     assert "window.createAirBasketballAvatarHost = createAirBasketballAvatarHost" in sdk_bootstrap
     assert "avatarHost," not in sdk_bootstrap
-    assert "getCharacter(" not in sdk_bootstrap
+    assert "transport.getCharacter(" not in sdk_bootstrap
     assert "game.runtime.bindCharacter(requestedName || undefined)" in sdk_bootstrap
     # A replay re-validates the same character through the public SDK API.
     assert "bindRuntimeCharacter" not in sdk_bootstrap
-    assert "game.runtime.bindCharacter(identity.name, { retainAvatars:true })" in sdk_bootstrap
+    # The binding survives the replay reset synchronously (no unbound window), and
+    # the kept name is checked with read-only discovery before the route starts.
+    assert "game.runtime.reset({ newSession:true, keepCharacter:true });" in sdk_bootstrap
+    assert "retainAvatars" not in sdk_bootstrap
+    assert "const character = await game.avatar.getCharacter(identity.name);" in sdk_bootstrap
+    # A previous route left `degraded` by a failed end() is ended before a new start.
+    assert "if (game.runtime.state === 'degraded') {" in sdk_bootstrap
+    assert "await game.runtime.end(lastEndPayload || {}).catch(() => undefined);" in sdk_bootstrap
+    assert "  lastEndPayload = payload;" in sdk_bootstrap
     assert "requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']" in sdk_bootstrap
     assert "game.audio.mount" in sdk_bootstrap
     assert "audio.playSfx" in sdk_bootstrap
@@ -271,6 +279,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "game.logger.enableAfterRuntimeStart" in sdk_bootstrap
     assert "game.dispose()" in sdk_bootstrap
     assert "window.addEventListener('pagehide', disposeGameSdk" in game
+    # Registered whether or not runtime configuration succeeds.
+    assert ").then(() => {\n    window.addEventListener('pagehide'" not in game
     assert "window.addEventListener('pageshow'" in game
     assert "event?.persisted" in game
     assert "/api/" not in game
@@ -411,9 +421,15 @@ def test_air_basketball_mvp_interaction_contract():
     stop_body = game.split("function stopMatchPlay() {", 1)[1].split("\n}\n", 1)[0]
     assert "cancelPlayerAction();" in stop_body
     # A replay waits for a pending Avatar mount, and a match never runs without its route.
-    assert "}, { after:avatarMountSettled() }).then(() => {" in game
+    assert "avatarMountSettled" not in game + avatar
     assert "abortMatchWithoutRuntime(currentMatch);" in game
-    assert "await Promise.resolve(options.after).catch(() => undefined);" in sdk_bootstrap
+    # A short result line that already finished does not stall the route end.
+    assert "else if (ours) finish();" in sdk_bootstrap
+    # A held aim survives a resize; the resting ball is re-seated only on a real size change.
+    assert "if (sizeChanged && !this.ball?.flying && !this.ball?.inTransit) {" in physics
+    assert "this.aim = aim;" in physics
+    # A VRM loaded after cancellation is disposed before it is dropped.
+    assert "vrmModule.VRMUtils?.deepDispose?.(gltf.scene);" in avatar_host
     assert "if (game.runtime.session.characterName !== identity.name) {" in sdk_bootstrap
     # runtime.start() settles without throwing on a rejected/inactive route.
     assert "if (game.runtime.state !== 'running') {" in sdk_bootstrap

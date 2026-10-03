@@ -6,7 +6,6 @@ const fallbackType = document.getElementById('air-neko-avatar-fallback-type');
 
 let reactionTimer = 0;
 let avatarController = null;
-let avatarMountPromise = Promise.resolve();
 // The fallback line is `<MODEL> · <label>`; keep both parts so a language switch
 // re-renders it instead of prefixing the already-composed text again.
 let fallbackModelLabel = '';
@@ -45,11 +44,6 @@ export function setAvatarUnavailableLabel(label) {
   renderFallbackType();
 }
 
-// Settles (never rejects) once the opponent Avatar mount has finished either way.
-export function avatarMountSettled() {
-  return avatarMountPromise.then(() => undefined, () => undefined);
-}
-
 export async function initNekoAvatar(game, identity, onReady) {
   if (!container) return false;
   onReady?.(identity);
@@ -58,7 +52,7 @@ export async function initNekoAvatar(game, identity, onReady) {
     return false;
   }
   try {
-    avatarMountPromise = game.avatar.mount({
+    avatarController = await game.avatar.mount({
       slot:'opponent',
       characterName:identity.name,
       model:identity.model,
@@ -66,7 +60,6 @@ export async function initNekoAvatar(game, identity, onReady) {
       fit:{ mode:'contain', align:'bottom-center', padding:4, scaleMultiplier:1 },
       resize:{ mode:'container' }
     });
-    avatarController = await avatarMountPromise;
     markReady();
     return true;
   } catch (error) {

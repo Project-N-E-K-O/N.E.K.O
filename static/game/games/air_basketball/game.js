@@ -9,7 +9,7 @@ const [i18nModule, physicsModule, avatarModule, sdkModule] = await Promise.all([
 ]);
 const { applyTranslations, t, voiceLine, voiceLines } = i18nModule;
 const { ShotLane, clamp } = physicsModule;
-const { avatarMountSettled, initNekoAvatar, reactNeko, setAvatarUnavailableLabel } = avatarModule;
+const { initNekoAvatar, reactNeko, setAvatarUnavailableLabel } = avatarModule;
 const {
   airBasketballSdkReady,
   configureGameRuntime,
@@ -1401,7 +1401,7 @@ function resetMatch() {
     game_started:true,
     gameStartedElapsedMs:0,
     currentState:runtimeSnapshot()
-  }, { after:avatarMountSettled() }).then(() => {
+  }).then(() => {
     if (!state.running || currentMatch !== matchSequence) return;
     if (opponentName !== 'N.E.K.O') speakNeko('voiceOpening', { kind:'opening-line' });
   }).catch(error => {
@@ -1823,12 +1823,12 @@ window.addEventListener('pageshow', event => {
 });
 if (sdkContext) {
   prewarmNekoVoice(opponentName);
+  // Release the SDK on exit even if runtime configuration fails.
+  window.addEventListener('pagehide', disposeGameSdk, { once:true });
   void configureGameRuntime(
     () => ({ currentState:runtimeSnapshot() }),
     context => runtimeEndPayload(context?.type || 'page-exit')
-  ).then(() => {
-    window.addEventListener('pagehide', disposeGameSdk, { once:true });
-  }).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
+  ).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
   void initNekoAvatar(sdkGame, sdkIdentity, identity => {
     applyOpponentName(identity?.name);
     prewarmNekoVoice(identity?.name);

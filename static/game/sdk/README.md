@@ -332,6 +332,14 @@ Reset is accepted only while the runtime is `idle`, `ended`, or `inactive`;
 games must await `runtime.end()` before resetting an active, starting, degraded,
 or ending route so the host session cannot be abandoned by local-only cleanup.
 
+Reset clears the bound character. A replay that keeps its mounted Avatar passes
+`reset({ newSession: true, keepCharacter: true })`: the current character is
+re-applied inside the same synchronous call, so nothing (speech, commands) can
+run unbound in between and no `bindCharacter()` is needed. The name is not looked
+up again; a game that must confirm the character still exists can call the
+read-only `game.avatar.getCharacter(name)` before `runtime.start()`. Without an
+existing binding, `keepCharacter` is a no-op.
+
 When `pageExit` is enabled, the SDK emits `page-exit` once so the game can
 synchronously release game-owned resources, submits the configured end payload
 with beacon fallback, and disposes the client while preserving the in-flight
@@ -996,23 +1004,6 @@ late selection results. Binding uses the same bounded discovery request slots an
 deadlines. Custom transports may optionally implement synchronous
 `bindRuntimeCharacter(name)` and update `getRuntimeState()` atomically; absent
 support reports `transport_unavailable`. Existing legacy adapters remain compatible.
-
-`reset()` clears the host's selection. A game that replays with the same mounted
-Avatar re-binds without disposing it by opting in with `retainAvatars`:
-
-```js
-game.runtime.reset({ newSession: true });
-const character = await game.runtime.bindCharacter(previous.name, { retainAvatars: true });
-if (!character) throw new Error('The character was renamed or removed');
-```
-
-The name must equal the character this client last bound; any other name (or an
-omitted name) fails with `invalid_request`, because a different character must not
-inherit the mounted Avatar. Every mounted Avatar must also have been mounted with
-that same `characterName`; an Avatar mounted without one, or for another character,
-fails with `invalid_state`. The character is still looked up again, so a renamed
-or deleted character returns `null` without binding. Every other precondition
-(`idle`, no character-scoped requests, no pending mounts) is unchanged.
 
 The public game mounts an Avatar through `game.avatar`:
 
