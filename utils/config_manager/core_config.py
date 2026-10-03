@@ -1347,6 +1347,9 @@ class CoreConfigMixin:
             assist_model_defaults = {
                 key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
             }
+            assist_model_defaults['SUMMARY_MODEL'] = (
+                assist_profile.get('SUMMARY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
+            )
             # URL / Model ID 字段：空值回退到已有配置。
             # API Key 字段：根据用户选择的 provider 决定是否覆盖：
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值

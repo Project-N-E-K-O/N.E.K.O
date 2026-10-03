@@ -1909,7 +1909,8 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         }
         // 小游戏槽跟随 API 时不采用输入值，直接取对应 API 的档位默认。
         if (provider === 'follow_assist') return {
-            defaultModelId: getAssistTierModelId(tier),
+            defaultModelId: getAssistTierModelId(tier)
+                || (tier === 'summary' ? getAssistTierModelId('conversation') : ''),
             acceptsTypedModelId: false,
             fixedModelProvider: '',
         };

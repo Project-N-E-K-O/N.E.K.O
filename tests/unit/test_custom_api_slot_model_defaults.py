@@ -76,6 +76,28 @@ def test_game_follow_assist_keeps_assist_default_after_text_override(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('provider', ['openrouter', 'extra_provider'])
+@pytest.mark.parametrize('missing_summary', [False, True])
+def test_game_summary_empty_assist_tier_uses_same_provider_conversation(
+    config_manager, monkeypatch, provider, missing_summary,
+):
+    profiles = _profiles()
+    profile = dict(profiles['openrouter'], CONVERSATION_MODEL='provider-chat-model', SUMMARY_MODEL='')
+    if missing_summary:
+        profile.pop('SUMMARY_MODEL')
+    profiles[provider] = profile
+    monkeypatch.setattr('utils.config_manager.get_assist_api_profiles', lambda: profiles)
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen', 'assistApi': provider, 'coreApiKey': 'core-key',
+        'enableCustomApi': True, 'summaryModelProvider': 'follow_core',
+        'gameSummaryModelProvider': 'follow_assist',
+    })
+    resolved = config_manager.get_model_api_config('game_summary')
+    assert resolved['model'] == 'provider-chat-model'
+    assert resolved['base_url'] == profile['OPENROUTER_URL']
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
 def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatch, provider_mode):
     profiles = _profiles()

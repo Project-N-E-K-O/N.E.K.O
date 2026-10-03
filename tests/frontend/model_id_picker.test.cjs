@@ -323,6 +323,19 @@ test('game slots keep the fixed-model marker of the text slot they mirror', () =
     assert.equal(context.resolveSlotModelState('gameMain').fixedModelProvider, 'free');
 });
 
+test('game summary follows the same assist conversation model when its summary tier is empty or missing', () => {
+    for (const summary of ['', undefined]) {
+        const { context, setSlot, select } = createPickerContext();
+        context._assistModelDefaults.extra_provider = {
+            CONVERSATION_MODEL: 'provider-chat-model', SUMMARY_MODEL: summary,
+        };
+        select('assistApiSelect', 'extra_provider');
+        setSlot('summary', 'follow_core', 'core-summary');
+        setSlot('gameSummary', 'follow_assist');
+        assert.equal(context.resolveSlotModelState('gameSummary').defaultModelId, 'provider-chat-model');
+    }
+});
+
 test('realtime and TTS slots only honor typed model IDs outside follow modes', () => {
     const { context, setSlot, select } = createPickerContext();
     assert.deepEqual(plain(context.resolveSlotModelState('omni')), {
