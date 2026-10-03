@@ -947,10 +947,21 @@ class VisitSpool:
     def _close_sync(self) -> None:
         fd, self._fd = self._fd, None
         if fd is not None:
+            # 撤登记放在最外层 finally：fsync / close 任一报错（网络盘、U 盘 EIO）都不能
+            # 跳过它——_fd 已清空、执行器随后丢弃，这个实例没有第二次机会，这场会在进程
+            # 存活期间一直 SpoolBusy。fsync 已失败时 close 的报错只记日志，抛原来的异常
             try:
-                os.fsync(fd)
-            finally:
+                try:
+                    os.fsync(fd)
+                except BaseException:
+                    try:
+                        os.close(fd)
+                    except OSError as exc:
+                        logger.warning("visit spool %s: close after a failed fsync failed: %s",
+                                       self.visit_id, exc)
+                    raise
                 os.close(fd)
+            finally:
                 with _OPEN_SPOOLS_LOCK:
                     _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 

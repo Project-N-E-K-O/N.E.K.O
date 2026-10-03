@@ -1724,3 +1724,34 @@ async def test_a_failed_close_after_a_failed_header_write_still_cleans_up(tmp_pa
     assert not sp.jsonl_path.exists() and not is_spool_open(sp.jsonl_path)
     await sp.open(header(vid(62)), now=NOW)                  # 重试不被 SpoolBusy 卡住
     await sp.close()
+
+
+@pytest.mark.parametrize("fsync_fails", [False, True], ids=["close-eio", "fsync-and-close"])
+async def test_close_errors_still_unregister_the_spool(tmp_path, monkeypatch, fsync_fails):
+    # close（或 fsync 加 close）报 EIO 后仍要撤登记：否则这场之后的清除 / 改名 / 清扫一直 SpoolBusy
+    from main_logic.visit.spool import is_spool_open
+
+    sp = await open_spool(tmp_path, vid(63))
+    await sp.append(line(1))
+    real_close, real_fsync = os.close, os.fsync
+    armed = {"close": True, "fsync": fsync_fails}
+
+    def failing_close(fd):
+        real_close(fd)
+        if armed["close"]:
+            armed["close"] = False
+            raise OSError(5, "I/O error on close")
+
+    def failing_fsync(fd):
+        if armed["fsync"]:
+            armed["fsync"] = False
+            raise OSError(28, "No space left on device")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(spool_mod.os, "close", failing_close)
+    monkeypatch.setattr(spool_mod.os, "fsync", failing_fsync)
+    with pytest.raises(OSError) as ei:
+        await sp.close()
+    assert ei.value.errno == (28 if fsync_fails else 5)      # fsync 先失败时抛的是它
+    assert not is_spool_open(sp.jsonl_path)
+    await VisitSpool(tmp_path, vid(63)).delete_peer_fields()  # 不再 SpoolBusy
