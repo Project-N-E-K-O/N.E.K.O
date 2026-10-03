@@ -116,8 +116,11 @@ def _release_route_takeover(state: dict, mgr=None) -> bool:
     when it is False the newer owner's side effects (e.g. its voice lease)
     must be left alone too.
     """
-    takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
+    takeover_token = state.get(_TAKEOVER_TOKEN_KEY)
     released = mgr.release_takeover(takeover_token) if mgr is not None else False
+    # Only drop the token once the release went through: if it raised, the
+    # token stays on the state so a later sweep can still release it.
+    state.pop(_TAKEOVER_TOKEN_KEY, None)
     takeover_owner = getattr(mgr, "takeover_owner", None)
     handoff = released or not callable(takeover_owner) or takeover_owner() is None
     _close_takeover_callback_inbox(state, mgr, handoff=handoff)
