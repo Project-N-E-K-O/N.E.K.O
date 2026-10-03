@@ -832,6 +832,35 @@ async def test_stream_message_is_not_leaked_when_the_owner_reports_no_instance(e
 
 
 @pytest.mark.asyncio
+async def test_an_unpinnable_owner_replaced_by_another_kind_still_lets_the_new_owner_decide(
+    empty_registry,
+):
+    """Failing closed is for the same unpinnable owner; a different kind that
+    took over meanwhile is a real owner change and is asked.
+
+    Mutation: failing closed on any change away from an unpinnable owner
+    turns this red.
+    """
+    new_owner = AsyncMock(return_value=True)
+
+    async def _decline_and_hand_over(_name, _message):
+        registry.register_external_route_kind(_kind("visit", active=False, instance=""))
+        registry.register_external_route_kind(_kind(
+            "other", active=True, route_stream_message=new_owner, instance="other-1",
+        ))
+        return False
+
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_stream_message=_decline_and_hand_over, instance="",
+    ))
+
+    claim = await registry.route_external_stream_message("Lan", {"input_type": "text"})
+
+    assert claim is registry.RouteClaim.CLAIMED
+    new_owner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_an_unpinnable_owner_hears_a_microphone_announcement_only_once(empty_registry):
     """Mutation: retrying an unpinnable owner as if it had changed turns this
     red -- a consumed announcement would repeat its side effects three times."""

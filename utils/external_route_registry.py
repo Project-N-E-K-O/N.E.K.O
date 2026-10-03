@@ -242,8 +242,10 @@ async def _offer_to_current_owner(
     that one could have two instances act on the same input, and keeping the
     stale claim could swallow it.
     An owner whose instance cannot be pinned (no usable id) never compares as
-    unchanged; rather than offering it the same input again as if it had been
-    replaced, the offer fails closed after the first attempt.
+    unchanged; while that same kind still owns the character, rather than
+    offering it the same input again as if it had been replaced, the offer
+    fails closed after the first attempt. A different kind taking over is a
+    real owner change and is asked as usual.
     Returns ``(spec, result)`` of the owner whose answer stands, ``(None, None)``
     when no route owns the character, or ``(None, _UNSETTLED)`` when the owner
     kept changing. Each owner read is reused as the next attempt's starting
@@ -260,7 +262,11 @@ async def _offer_to_current_owner(
         current = external_route_identity(lanlan_name)
         if same_external_route_owner(identity, current):
             return spec, result
-        if current is not None and not same_external_route_owner(identity, identity):
+        if (
+            current is not None
+            and current[0] is spec
+            and not same_external_route_owner(identity, identity)
+        ):
             logger.info(
                 "external route without a usable instance id while handling %s: lanlan=%s kind=%s",
                 what,

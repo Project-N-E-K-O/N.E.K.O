@@ -433,8 +433,9 @@ def _game_route_instance(lanlan_name: str) -> str | None:
     always has an id -- even with a blank session id, which the voice identity
     helpers skip. Without one the registry would treat every dispatch as an
     owner change and drop the whole game's microphone audio. Each activation
-    gets its own id, so restarting the same game and session is a new owner.
-    States built without one fall back to game type, session and SDK id.
+    gets its own id (``_build_route_state``), so restarting the same game and
+    session is a new owner. The fallback below only serves states built by
+    hand (tests); production states always carry the activation id.
     """
     state = _get_active_game_route_state(lanlan_name)
     if state is None:
