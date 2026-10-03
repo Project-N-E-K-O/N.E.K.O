@@ -1323,6 +1323,11 @@
         settingsMicVolumeWatchdog = null;
     }
 
+    // watchdog 还在才表示设置页这轮试麦还在。
+    function isSettingsMicSessionActive() {
+        return settingsMicVolumeWatchdog != null;
+    }
+
     // 只由设置页发起的 start 布置；让位后重建 probe 不续期，保证总时长有上限。
     function armSettingsMicVolumeWatchdog() {
         clearSettingsMicVolumeWatchdog();
@@ -1334,15 +1339,10 @@
 
     // 正式录音开始占用麦克风时，临时 probe 立即让位，避免两路流同时占着麦克风。
     function yieldSettingsMicVolumeProbeToLive() {
-        if (!settingsMicVolumeTest) return;
-        if (settingsMicVolumeTest.mode === 'failed') {
-            // failed 是终态，不能改成 live（会让录音结束时无 watchdog 地重开麦克风）。
-            // 但 failed 状态下 probe 可能在 getUserMedia 成功、后续步骤失败时还持着 stream，
-            // 正式录音开始时需要释放，否则两路流同时占麦。
-            releaseSettingsMicVolumeProbe();
-            return;
-        }
-        if (settingsMicVolumeTest.mode !== 'probe') return;
+        // 只让位还在跑的 probe。failed 是终态：重建失败后设置页已经收尾，
+        // 再改成 live 会让录音结束时把麦克风重新打开，而且没有 watchdog 收场。
+        // failed 标记本身不持有流（重建失败时流已就地释放），不需要 release。
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
         releaseSettingsMicVolumeProbe();
         settingsMicVolumeTest = { mode: 'live' };
     }
@@ -2597,11 +2597,7 @@
             // 如实告诉它会话已不存在，而不是让它对着 0 音量等满一轮。
             // 判定看 watchdog 而不是 probe：重开 probe（切换设备 / 录音结束后恢复）期间
             // probe 暂时为空，但 watchdog 一直有效，不能误报。
-            // mode === 'live' 表示探针已让位给正式录音，watchdog 仍在倒计时；
-            // 此时 watchdog 到点不意味着会话不存在，不能上报 noSession。
-            // 用 == null 同时捕获 null 和 undefined，防止 clearTimeout 返回 undefined 导致守卫失效。
-            if (!liveOnly && settingsMicVolumeWatchdog == null
-                    && (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live')) {
+            if (!liveOnly && !isSettingsMicSessionActive()) {
                 return { recording: false, percent: 0, tone: 'idle', noSession: true };
             }
             return { recording: false, percent: 0, tone: 'idle' };
@@ -2957,14 +2953,8 @@
 
     // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
     // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
-    // watchdog == null（null 或 undefined）表示会话已结束，不要再开设备。
-    // 用宽松相等同时捕获 null 和 clearTimeout() 返回的 undefined。
-    function isSettingsMicSessionActive() {
-        return settingsMicVolumeWatchdog != null;
-    }
-
     function resumeSettingsMicVolumeProbeAfterLive() {
-        // watchdog 还在才表示设置页这轮试麦还在。会话已经结束就不要再开设备。
+        // 会话已经结束就不要再开设备。
         if (!isSettingsMicSessionActive()) return;
         if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
         if (isLiveMicCaptureActiveOrPending()) return;

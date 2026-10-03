@@ -243,10 +243,10 @@ def test_mask_phone_hides_the_middle_digits(raw, masked):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("bad", ["---", "", "   ", "+--"])
-def test_mask_phone_raises_on_no_digits(bad):
-    """Inputs that normalise to zero digits must raise rather than silently store '****'."""
-    with pytest.raises(ValueError, match="empty string"):
-        O._mask_phone(bad)
+def test_phone_without_digits_is_treated_as_missing(bad):
+    assert O._mask_phone(bad) is None
+    profile = O._persisted_user_profile({"username": "User", "phone": bad}, USER_ID)
+    assert "phone" not in profile
 
 
 @pytest.mark.unit

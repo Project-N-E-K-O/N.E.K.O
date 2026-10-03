@@ -613,11 +613,8 @@ async function failedReopenDoesNotReviveProbeCase() {
   await settle(10);
   assert(env.getUserMediaCalls.length === callsAfterFailure + 1,
          'real recording opens its own stream and does not rebuild a probe afterwards');
-  // 正式录音的流（env.streams[最后一条]）由 stopRecording 关闭，时序取决于 harness；
-  // 这里只断言 probe 相关的流（录音开始前的所有流）没有残留，不断言录音流本身。
-  const streamsBeforeRecording = env.streams.slice(0, callsAfterFailure);
-  assert(streamsBeforeRecording.every((stream) => !isLive(stream)),
-         'no probe or session microphone stays open after the failed session');
+  assert(env.streams.every((stream) => !isLive(stream)),
+         'no microphone stays open after the failed session');
   assert(env.mod.sampleMicVolumeLevel().failed === true,
          'the failed marker survives the real recording');
 }
