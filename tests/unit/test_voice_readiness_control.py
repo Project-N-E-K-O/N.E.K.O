@@ -230,9 +230,9 @@ vm.runInContext = function (source, context, options) {
                 reply = json.dumps({"id": request["id"], "error": diagnostic}) + "\n"
             process.stdin.write(reply.encode())
             await process.stdin.drain()
-        # Keep stdin open for the lost-confirmation case. The harness's six-
+        # Keep stdin open for the lost-confirmation case. The harness's twelve-
         # second deadline must terminate itself before this external watchdog.
-        assert await asyncio.wait_for(process.wait(), 8 if failure == "missing_confirmation" else 20) == 1
+        assert await asyncio.wait_for(process.wait(), 14 if failure == "missing_confirmation" else 20) == 1
         output, errors = await process.stdout.read(), await process.stderr.read()
         text = errors.decode()
         assert "voice_preview_protocol_failed:" in text and diagnostic in text

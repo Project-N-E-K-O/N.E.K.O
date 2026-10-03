@@ -106,6 +106,10 @@
             if (info.fallback) {
                 fallbackShown = true;
                 fallbackRequired = true;
+                if (hooks.enrolling()) {
+                    inputChangedDuringEnrollment = true;
+                    try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
+                }
                 selectedId = info.deviceId || '';
                 try { localStorage.setItem('neko_selected_microphone', selectedId); } catch (_) {}
                 el['input-notice'].textContent = t('voiceIdentity.inputFallback', 'Selected microphone unavailable. Using the displayed device; repeat the input test.');
@@ -157,8 +161,8 @@
             }
             try { await new Promise((resolve, reject) => {
                 let timedOut = false;
-                const retire = root.setTimeout(() => root.removeEventListener('message', receive), 70000);
-                const timer = root.setTimeout(() => { timedOut = true; reject(new Error('capture_owner_unavailable')); }, 10000);
+                const retire = root.setTimeout(() => root.removeEventListener('message', receive), 75000);
+                const timer = root.setTimeout(() => { timedOut = true; reject(new Error('capture_owner_unavailable')); }, 15000);
                 function receive(event) {
                     if (event.origin !== root.location.origin || event.source !== root.opener || !event.data || event.data.type !== 'neko-voice-enrollment-stopped' || event.data.operationId !== id) return;
                     root.clearTimeout(timer); root.clearTimeout(retire); root.removeEventListener('message', receive);

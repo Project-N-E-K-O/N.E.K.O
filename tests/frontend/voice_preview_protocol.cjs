@@ -35,14 +35,14 @@ function rpc(channel, payload) {
     return new Promise((resolve, reject) => {
         if (closed) { reject(new Error('protocol_closed')); return; }
         const id = ++sequence;
-        // Core begin has a five-second cleanup budget. Fail this transport
-        // before the owner's eight-second wait and the Python outer watchdog.
+        // Core begin may finish a shielded close after its outer budget,
+        // taking up to ten seconds. Fail before the owner's thirteen seconds.
         const timer = setTimer(() => {
             requests.delete(id);
             const error = new Error('protocol_rpc_timeout: ' + channel + ' ' + (payload.event || '') + ' id=' + id);
             reject(error);
             failProtocol(error);
-        }, 6000);
+        }, 12000);
         requests.set(id, { resolve, reject, timer });
         process.stdout.write(JSON.stringify({ id, channel, payload }) + '\n');
     });

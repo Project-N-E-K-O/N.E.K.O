@@ -159,7 +159,7 @@ ASR 路由、全 voice_input、声纹服务／API、真实 WebSocket 与缓存�
 
 本轮最终联合回归含模型交付共 1,576 项通过、7 项跳过；Node 162 项通过。Ruff、Core、分层与异步检查通过。上述结果对应源代码回归，最新 head 的 CI 和冻结包验收须分别核验。
 
-## 10 月 4 日审查和 CI 修复
+## 10 月 4 日（北京时间，UTC+8）审查和 CI 修复
 
 本轮重新合并最新 main，保留双方八语内容并更新缓存版本。每分钟评论与最新 head CI 监听已创建。
 
@@ -177,3 +177,5 @@ ASR 路由、全 voice_input、声纹服务／API、真实 WebSocket 与缓存�
 - [采集归属拒绝误报 Worklet](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3282#discussion_r4174434729)：注册失败单独释放本次私有采集图并返回 false，不设置 Worklet 故障标志或弹出错误的 Worklet 提示。
 
 相关 ASR、声纹、隔离、API、WebSocket、麦克风启动和缓存回归共 1,613 项通过、7 项跳过；重定向临时目录 smoke 另有 2 项通过；Node 164 项通过。Ruff、Core 契约、分层和异步阻塞检查通过。最新提交的 CI 与冻结程序结果继续由监听核验。
+
+后续 CodeRabbit 补查确认：shielded close 在外层五秒预算到期后仍可能执行另一段五秒退休，begin 最坏为十秒。前端 owner 等待改为十三秒，浏览器 opener 确认十五秒，丢失确认的最大兜底同步为七十三／七十五秒；测试 RPC 使用十二秒内部确认预算、十四秒外部丢失确认 watchdog。既有录入获得回退设备时也持久设置输入变化标记，设备准备后的继续检查据此拒绝。日期依据本地 UTC+8，源码测试使用 uv 是用户明确项目规范；这两项没有改成计划工作或无 uv 执行。

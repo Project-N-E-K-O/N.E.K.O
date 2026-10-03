@@ -104,7 +104,9 @@
             if (!ownerSocket || ownerSocket.readyState !== 1) return Promise.reject(new Error('capture_owner_unavailable'));
             const id = requestId || makeId();
             return new Promise((resolve, reject) => {
-                const timeoutMs = event === 'activation_retry' ? 45000 : 8000;
+                // Begin can consume the outer 5s budget and finish one
+                // shielded 5s close before reporting its terminal result.
+                const timeoutMs = event === 'activation_retry' ? 45000 : event === 'preview_begin' ? 13000 : 8000;
                 const timeout = root.setTimeout(() => { waiting.delete(id); reject(new Error('voice_control_timeout')); }, timeoutMs);
                 waiting.set(id, { socket: ownerSocket, event, resolve, reject, timeout });
                 try { ownerSocket.send(JSON.stringify({ action: 'voice_identity_control', event, request_id: id, ...(extra || {}) })); }
@@ -145,7 +147,7 @@
             // A lost begin/release acknowledgement must never leave the client
             // permanently fenced. This includes the begin response budget and
             // the maximum server ticket lifetime; expiry never restarts input.
-            boundIsolation(owned, 68000);
+            boundIsolation(owned, 73000);
             // Stop fences pending microphone setup and tears down the graph before
             // asking the server to seal and drain its common PCM input route.
             let beginSent = false;

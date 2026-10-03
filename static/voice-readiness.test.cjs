@@ -119,7 +119,7 @@ test('a timed-out opener acknowledgement cannot replace the server-proven inacti
     h.root.setTimeout=(fn,delay)=>{const id=++next;timers.set(id,{fn,delay});return id;};h.root.clearTimeout=id=>timers.delete(id);
     h.root.opener={closed:false,postMessage(message){messages.push(message);}};
     const pending=h.elements.get('voice-identity-test').emit('click');
-    [...timers.values()].find(timer=>timer.delay===10000).fn();
+    [...timers.values()].find(timer=>timer.delay===15000).fn();
     while(!h.hooks.stream())await new Promise(resolve=>setImmediate(resolve));
     h.events.get('message')({origin:h.root.location.origin,source:h.root.opener,data:{type:'neko-voice-enrollment-stopped',operationId:messages[0].operationId,stopped:true,token:'expired-opener-ticket'}});
     capture.resolve();await pending;
@@ -419,7 +419,7 @@ test('a confirmed server failure permits an explicit new microphone attempt', as
 
 test('a lost begin acknowledgement is bounded and its late token is compensated', async () => {
     const h=isolationHarness(); const pending=h.receive({operationId:'late'});
-    await new Promise(resolve => setImmediate(resolve)); const timeout=[...h.timers.values()].find(timer=>timer.delay===8000);
+    await new Promise(resolve => setImmediate(resolve)); const timeout=[...h.timers.values()].find(timer=>timer.delay===13000);
     timeout.fn(); const result = await pending; assert.equal(result.stopped,false); assert.equal(result.physicalStopped,true); assert.equal(result.reason,'voice_control_timeout');
     assert.equal(h.controller.blocked(),true);
     h.ack(h.sent[0]); assert.equal(h.sent[1].event,'preview_end');
@@ -493,6 +493,18 @@ test('storage changes invalidate the trial proof without cancelling ongoing enro
     assert.equal(h.controller.canResume(), false);
     const restored = h.root.createVoiceIdentityReadiness(h.hooks);
     assert.equal(restored.canResume(), false);
+});
+
+test('device fallback during existing enrollment persistently blocks continuation', () => {
+    let ongoing = true;
+    const h = harness({ enrolling: () => ongoing });
+    h.controller.receivedStream({ deviceId: 'fallback-device', label: 'Default microphone', fallback: true });
+    assert.equal(h.controller.canResume(), false);
+    assert.equal(h.root.createVoiceIdentityReadiness(h.hooks).canResume(), false);
+    ongoing = false;
+    const fresh = harness();
+    fresh.controller.receivedStream({ deviceId: 'fallback-device', fallback: true });
+    assert.equal(fresh.controller.canResume(), true);
 });
 
 test('a download still running after 120 seconds is allowed to finish within the backend budget', async () => {
