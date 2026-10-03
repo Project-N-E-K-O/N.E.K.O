@@ -1230,15 +1230,15 @@ class CoreConfigMixin:
             derived_key = config.get(key_field, '')
             if derived_key:
                 config['AUDIO_API_KEY'] = derived_key
-                config['OPENROUTER_API_KEY'] = derived_key
 
-        if assist_api_value == 'requesty':
-            # Keep an absent dedicated key empty, including legacy default keys.
-            config['AUDIO_API_KEY'] = derived_key
-            config['OPENROUTER_API_KEY'] = derived_key
-        elif not config['AUDIO_API_KEY']:
+        # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
+        # its legacy fallback independently of the text router credential.
+        if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if not config['OPENROUTER_API_KEY'] and assist_api_value != 'requesty':
+        if derived_key or assist_api_value == 'requesty':
+            # Requesty's missing dedicated key must stay empty for text/Agent.
+            config['OPENROUTER_API_KEY'] = derived_key
+        elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key
