@@ -894,7 +894,10 @@ function bindProviderDropdownGlobalHandlers() {
         }
     });
 
-    window.addEventListener('resize', () => closeAllProviderSelectDropdowns());
+    window.addEventListener('resize', () => {
+        const focusedPicker = document.activeElement?.closest('.model-id-picker');
+        closeAllProviderSelectDropdowns(focusedPicker);
+    });
 
     providerDropdownHandlersBound = true;
 }
@@ -1826,7 +1829,7 @@ function getAssistTierModelId(tier) {
 
 // 与后端 _resolve_follow_model_id 同一条回退链，缺档位时也不借辅助 API 的模型
 function getFollowCoreTierModelId(coreProviderKey, tier) {
-    return getAssistProfileTierModelId(coreProviderKey, tier)
+    return getAssistDefaultTierModelId(coreProviderKey, tier)
         || getAssistProfileTierModelId(coreProviderKey, 'conversation')
         || String((_coreApiProviders[coreProviderKey] || {}).core_model || '').trim();
 }
@@ -1913,7 +1916,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     }
 
     if (provider && provider !== 'custom') {
-        const namedModel = getAssistProfileTierModelId(provider, tier);
+        const namedModel = getAssistDefaultTierModelId(provider, tier);
         if (usesFixedModels(provider)) {
             return { defaultModelId: namedModel, acceptsTypedModelId: false, fixedModelProvider: provider };
         }
@@ -2358,7 +2361,7 @@ function initModelIdPickers() {
         });
     });
     // 凭证和端点模式变化时，包括掩码密钥对应的服务端值，都使旧列表失效。
-    document.getElementById('api-key-form').addEventListener('change', event => {
+    document.addEventListener('change', event => {
         if (/key/i.test(event.target.id)) invalidateModelLists();
     });
     const tokenPlan = document.getElementById('useMimoTokenPlan');

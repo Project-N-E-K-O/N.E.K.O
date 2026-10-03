@@ -1398,6 +1398,7 @@ class CoreConfigMixin:
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
                         return (follow_core_profile.get(profile_key, '')
+                                or (follow_core_profile.get('VISION_MODEL', '') if prefix == 'agent' else '')
                                 or follow_core_profile.get('CONVERSATION_MODEL', '')
                                 or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
@@ -1413,7 +1414,9 @@ class CoreConfigMixin:
                 named_profile = assist_api_profiles.get(provider)
                 if not isinstance(named_profile, dict):
                     return ''
-                return str(named_profile.get(profile_key) or named_profile.get('CONVERSATION_MODEL') or '').strip()
+                return str(named_profile.get(profile_key)
+                           or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
+                           or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)

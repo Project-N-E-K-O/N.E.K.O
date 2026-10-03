@@ -181,7 +181,7 @@ class TestBuiltinProvider:
         stored = {'coreApi': 'openai', 'coreApiKey': 'core-key', 'assistApiKeyOpenAI': 'book-key'}
         assert model_catalog._resolve_provider_target(req, stored, config)['api_key'] == 'core-key'
         stored['coreApi'] = 'qwen'
-        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'key_required'
+        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'core_key_required'
 
     @pytest.mark.unit
     def test_unsaved_core_switch_uses_only_selected_provider_key_book(self, model_catalog):
@@ -193,7 +193,7 @@ class TestBuiltinProvider:
         req = model_catalog.ModelListRequest(provider_key='openai', key_source='core', api_key=_SENTINEL)
         assert model_catalog._resolve_provider_target(req, stored, config)['api_key'] == 'openai-book-key'
         stored['assistApiKeyOpenAI'] = ''
-        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'key_required'
+        assert model_catalog._resolve_provider_target(req, stored, config)['error_code'] == 'core_key_required'
 
     @pytest.mark.unit
     def test_empty_core_key_falls_back_to_same_provider_key_book(self, model_catalog):

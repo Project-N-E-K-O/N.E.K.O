@@ -1359,6 +1359,7 @@
                 "urlHint": "Comprueba si falta un prefijo de ruta, como /v1, en la URL de la API.",
                 "unsupported": "Este endpoint no ofrece una lista de modelos; introduce el ID del modelo manualmente",
                 "key_required": "Una clave guardada solo funciona con la dirección para la que se guardó; vuelve a introducir la clave API",
+                "core_key_required": "El proveedor principal ha cambiado; vuelve a introducir la clave de API",
                 "rate_limited": "Demasiadas solicitudes; inténtalo de nuevo más tarde",
                 "empty": "El proveedor no devolvió ningún modelo",
                 "timeout": "Se agotó el tiempo de espera; revisa tu red e inténtalo de nuevo"

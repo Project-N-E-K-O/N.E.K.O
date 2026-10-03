@@ -1359,6 +1359,7 @@
                 "urlHint": "請檢查 API URL 是否缺少 /v1 等路徑前綴。",
                 "unsupported": "該端點不提供模型列表，請手動填寫模型ID",
                 "key_required": "已儲存的 Key 只能用於儲存時的位址，請重新填寫 API Key",
+                "core_key_required": "核心服務商已變更，請重新填寫 API Key",
                 "rate_limited": "請求過於頻繁，請稍後再試",
                 "empty": "服務商沒有回傳任何模型",
                 "timeout": "拉取逾時，請檢查網路後重試"

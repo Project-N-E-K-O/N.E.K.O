@@ -68,6 +68,24 @@ def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatc
     assert config_manager.get_model_api_config('vision')['model'] == profiles['openai']['CONVERSATION_MODEL']
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
+@pytest.mark.parametrize('vision_model', ['vision-capable-model', ''])
+def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypatch, provider_mode, vision_model):
+    profiles = _profiles()
+    profiles['openai']['AGENT_MODEL'] = ''
+    profiles['openai']['VISION_MODEL'] = vision_model
+    monkeypatch.setattr('utils.config_manager.get_assist_api_profiles', lambda: profiles)
+    _write_core_config(config_manager, {
+        'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
+        'enableCustomApi': True,
+        'agentModelProvider': provider_mode, 'agentModelId': '',
+    })
+    assert config_manager.get_model_api_config('agent')['model'] == (
+        vision_model or profiles['openai']['CONVERSATION_MODEL']
+    )
+
+
 class TestFollowCoreBlankModel:
 
     @pytest.mark.unit

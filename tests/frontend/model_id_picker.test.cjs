@@ -152,6 +152,10 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         queueMicrotask,
         window: translations ? { t: (key, options) => translate(translations, key, options) } : {},
         document: {
+            listeners: {},
+            addEventListener(type, callback) {
+                (this.listeners[type] ||= []).push(callback);
+            },
             getElementById: id => elements.get(id) || null,
             activeElement: null,
         },
@@ -520,9 +524,12 @@ test('credential and Token Plan changes discard cached and pending model lists',
     await pending;
     await context.fetchModelList(body);
     assert.equal(calls, 2);
-    el('api-key-form').dispatchEvent({ type: 'change', target: { id: 'assistApiKeyInput' } });
-    await context.fetchModelList(body);
-    assert.equal(calls, 3);
+    for (const id of ['apiKeyInput', 'assistApiKeyInput', 'mimoTokenPlanKeyInput',
+        'assistApiKeyOpenAI', 'conversationModelApiKey', 'imageModelApiKey']) {
+        context.document.listeners.change.forEach(handler => handler({ target: { id } }));
+        await context.fetchModelList(body);
+    }
+    assert.equal(calls, 8);
 });
 
 test('typing a slot refreshes only that slot and its game mirror', async () => {
@@ -546,14 +553,44 @@ test('arrow navigation scrolls the menu without scrolling the page', () => {
     assert.equal(menuScroll.scrollTop, 70);
 });
 
+test('agent defaults prefer vision before conversation for both core and named slots', () => {
+    const { context, setSlot, select } = createPickerContext();
+    context._assistModelDefaults.openai = { AGENT_MODEL: '', VISION_MODEL: 'vision-only', CONVERSATION_MODEL: 'text-only' };
+    select('coreApiSelect', 'openai');
+    for (const mode of ['follow_core', 'openai']) {
+        setSlot('agent', mode);
+        assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'vision-only');
+    }
+});
+
+test('resize keeps the focused model picker open and closes unrelated dropdowns', () => {
+    const handlers = {};
+    const kept = [];
+    const picker = {};
+    const context = vm.createContext({
+        providerDropdownHandlersBound: false,
+        document: { addEventListener() {}, activeElement: { closest: () => picker } },
+        window: { addEventListener: (type, handler) => { handlers[type] = handler; } },
+        closeAllProviderSelectDropdowns: except => kept.push(except),
+    });
+    vm.runInContext(sourceBetween('function bindProviderDropdownGlobalHandlers()', '// ====================') + '\nbindProviderDropdownGlobalHandlers();', context);
+    handlers.resize();
+    assert.equal(kept[0], picker);
+    context.document.activeElement = null;
+    handlers.resize();
+    assert.equal(kept[1], undefined);
+});
+
 test('error messages prefer picker texts, then connectivity texts, then the backend message', () => {
     const { context } = createPickerContext({
         translations: {
             'api.modelPicker.error.unsupported': 'No model list here',
+            'api.modelPicker.error.core_key_required': 'Core provider changed; enter its key',
             'connectivity.error.auth_failed': 'Invalid key',
         },
     });
     assert.equal(context.getModelPickerErrorMessage({ error_code: 'unsupported' }), 'No model list here');
     assert.equal(context.getModelPickerErrorMessage({ error_code: 'auth_failed' }), 'Invalid key');
+    assert.equal(context.getModelPickerErrorMessage({ error_code: 'core_key_required' }), 'Core provider changed; enter its key');
     assert.equal(context.getModelPickerErrorMessage({ error_code: 'weird', error: 'raw detail' }), 'raw detail');
 });

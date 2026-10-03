@@ -129,7 +129,7 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
             # entry; the resolver never borrows the previous core provider's key.
             api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
             if not api_key:
-                return _failure("key_required", "核心服务商已改变，请重新填写 API Key")
+                return _failure("core_key_required", "核心服务商已改变，请重新填写 API Key")
     else:
         api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
 
