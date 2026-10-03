@@ -1013,6 +1013,9 @@ async def purge_outbox_files(spool_dir: Union[str, Path]) -> list[Path]:
                 deleted.append(path)
             except FileNotFoundError:
                 continue
+            except OSError as exc:
+                # 删不掉的一个留到下次启动，其余照常清
+                logger.warning("visit outbox: could not delete %s (%s)", path.name, exc)
         return deleted
 
     return await asyncio.to_thread(run)

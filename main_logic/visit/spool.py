@@ -624,22 +624,34 @@ def _split_name(name: str) -> tuple[str, str] | None:
     return visit_id, suffix
 
 
-def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
-    out = []
+def _list_names(spool_dir: Path) -> list[tuple[str, str, Path]]:
+    """``(visit_id, suffix, path)`` of every spool-shaped name, without touching the files."""
     try:
         names = os.listdir(spool_dir)
     except FileNotFoundError:
-        return out
+        return []
+    out = []
     for name in names:
         parsed = _split_name(name)
-        if parsed is None:
-            continue
-        path = spool_dir / name
+        if parsed is not None:
+            out.append((parsed[0], parsed[1], spool_dir / name))
+    return out
+
+
+def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
+    """:func:`_list_names` plus ``stat``; an entry whose ``stat`` fails is logged and skipped."""
+    out = []
+    for visit_id, suffix, path in _list_names(spool_dir):
         try:
             st = path.stat()
         except FileNotFoundError:
             continue
-        out.append((parsed[0], parsed[1], path, st))
+        except OSError as exc:
+            # 符号链接环 / 无权限之类的坏项只跳过它自己：整轮清扫、outbox 清理不能被一个
+            # 长期坏掉的条目卡住
+            logger.warning("visit spool: cannot stat %s (%s); skipping it this pass", path.name, exc)
+            continue
+        out.append((visit_id, suffix, path, st))
     return out
 
 
@@ -891,6 +903,13 @@ class VisitSpool:
         except BaseException:
             os.close(fd)
             with _OPEN_SPOOLS_LOCK:
+                # 登记还在时删掉刚建的文件：留着（可能只有半截头行）的话，同一场重试的
+                # O_EXCL 打开永远 FileExistsError，一次暂时性磁盘错误就让这场再也开不了
+                try:
+                    os.unlink(self.jsonl_path)
+                except OSError as exc:
+                    logger.warning("visit spool %s: could not remove the failed new spool: %s",
+                                   self.visit_id, exc)
                 _OPEN_SPOOLS.discard(key)
             raise
         return fd
@@ -1232,7 +1251,9 @@ class VisitSpool:
     @classmethod
     def _visit_ids(cls, spool_dir: Path, suffixes: Iterable[str]) -> list[str]:
         wanted = set(suffixes)
-        return sorted({vid for vid, suffix, _p, _s in _scan(spool_dir) if suffix in wanted})
+        # 只看名字、不 stat：stat 不了的场次也要列出来，清除 / 退役 / 改名在逐场处理时
+        # 各自 fail closed，不能因为扫描跳过它而漏掉
+        return sorted({vid for vid, suffix, _p in _list_names(spool_dir) if suffix in wanted})
 
     @classmethod
     def _retire_char_sync(

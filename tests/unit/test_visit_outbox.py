@@ -845,3 +845,32 @@ def test_encoded_size_of_a_leave_does_not_raise(tmp_path):
     tx = make_outbox(tmp_path)
     pieces, size = tx.encoded_size({"t": "leave", "reason": "home"})
     assert pieces >= 1 and size > 0
+
+
+async def test_purge_outbox_skips_entries_it_cannot_stat_or_delete(tmp_path, monkeypatch):
+    # 一个坏条目（stat / 删除失败）不能让启动清理中断，其余 outbox 照常删
+    import os
+    import pathlib
+
+    from main_logic.visit import outbox as outbox_mod
+    from main_logic.visit.outbox import purge_outbox_files
+
+    names = [f"visit{'0' * 15}{n:02d}{outbox_mod.OUTBOX_SUFFIX}" for n in (1, 2, 3)]
+    for name in names:
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    real_stat, real_unlink = pathlib.Path.stat, os.unlink
+
+    def stat(self, *a, **k):
+        if self.name == names[0]:
+            raise PermissionError("denied")
+        return real_stat(self, *a, **k)
+
+    def unlink(path, *a, **k):
+        if os.path.basename(path) == names[1]:
+            raise PermissionError("in use")
+        return real_unlink(path, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    monkeypatch.setattr(outbox_mod.os, "unlink", unlink)
+    deleted = await purge_outbox_files(tmp_path)
+    assert [p.name for p in deleted] == [names[2]]

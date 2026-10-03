@@ -1620,3 +1620,50 @@ async def test_cap_sweep_keeps_the_state_when_the_transcript_cannot_be_deleted(t
     monkeypatch.setattr(spool_mod, "_unlink", real)
     deleted = await VisitSpool.sweep(tmp_path, NOW)             # 锁解开后下一轮整场回收
     assert set(deleted) == {sp.jsonl_path, sp.state_path}
+
+
+async def test_a_failed_header_write_removes_the_new_spool(tmp_path, monkeypatch):
+    # 头行写失败（磁盘满之类的暂时性错误）后删掉刚建的文件：否则同一场重试的 O_EXCL 永远失败
+    from main_logic.visit.spool import is_spool_open
+
+    calls = {"n": 0}
+    real = VisitSpool._write_all
+
+    def flaky(fd, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(28, "No space left on device")
+        return real(fd, data)
+
+    monkeypatch.setattr(VisitSpool, "_write_all", staticmethod(flaky))
+    sp = VisitSpool(tmp_path, vid(57))
+    with pytest.raises(OSError):
+        await sp.open(header(vid(57)), now=NOW)
+    assert not sp.jsonl_path.exists() and not is_spool_open(sp.jsonl_path)
+    await sp.open(header(vid(57)), now=NOW)                  # 重试成功
+    await sp.append(line(1))
+    await sp.close()
+    assert [ln["lp"] for ln in (await sp.read_back()).lines] == [1]
+
+
+async def test_one_unstattable_entry_does_not_abort_the_sweep(tmp_path, monkeypatch):
+    # 一个 stat 不了的条目只跳过它自己；按名字列场次仍要列出它（清除 / 退役不能漏）
+    import pathlib
+
+    bad = VisitSpool(tmp_path, vid(58))
+    await bad.write_state(state_for())
+    old = VisitSpool(tmp_path, vid(59))
+    await old.write_state(state_for())
+    _age(bad.state_path, 8)
+    _age(old.state_path, 8)
+    real_stat = pathlib.Path.stat
+
+    def stat(self, *a, **k):
+        if self.name == bad.state_path.name:
+            raise PermissionError("denied")
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    deleted = await VisitSpool.sweep(tmp_path, NOW)
+    assert deleted == [old.state_path] and os.path.exists(bad.state_path)   # Path.exists 走被替换的 stat
+    assert vid(58) in VisitSpool._visit_ids(tmp_path / "visit_spool", {spool_mod.STATE_SUFFIX})
