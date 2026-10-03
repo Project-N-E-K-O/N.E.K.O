@@ -376,7 +376,11 @@ async def _qwen_finish_and_reconnect(
             queue_task is not None and not queue_task.cancelled()
             and queue_task.exception() is None
         ):
-            deferred_requests.append(queue_task.result())
+            late = queue_task.result()
+            if late.kind == "shutdown":
+                deferred_shutdown = late
+            else:
+                deferred_requests.append(late)
 
     # A provider may acknowledge the session without returning a final for an
     # outstanding item.  Keep the upstream lifecycle bounded in that case.

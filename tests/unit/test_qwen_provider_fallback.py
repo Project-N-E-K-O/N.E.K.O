@@ -835,12 +835,13 @@ async def test_response_backpressure_does_not_convert_finish_to_shutdown(monkeyp
             await asyncio.gather(consumer, return_exceptions=True)
 
 
-async def test_finish_getter_completion_after_wait_snapshot_is_preserved(monkeypatch):
+@pytest.mark.parametrize("command", ["audio", "shutdown"])
+async def test_finish_getter_completion_after_wait_snapshot_is_preserved(monkeypatch, command):
     state = _state()
     requests, responses = _AsrRequestQueue(), asyncio.Queue()
     deferred, holds = deque(), {}
     original_wait = asyncio.wait
-    arrived = _AsrWorkerRequest("audio", 0, audio=b"\1\2")
+    arrived = _AsrWorkerRequest(command, 0, audio=b"\1\2" if command == "audio" else b"")
 
     async def on_send(_ws, _payload):
         state.finish_received.set()
@@ -853,13 +854,20 @@ async def test_finish_getter_completion_after_wait_snapshot_is_preserved(monkeyp
         return done, pending
 
     monkeypatch.setattr(qwen.asyncio, "wait", wait_then_complete_getter)
-    assert await qwen._qwen_finish_and_reconnect(
+    outcome = await qwen._qwen_finish_and_reconnect(
         _FakeWebSocket(on_send=on_send), requests, responses, state, deferred, holds
-    ) == ("reconnect", None)
-    assert list(deferred) == [arrived]
-    assert requests.waiting_audio_bytes == len(arrived.audio)
-    holds.pop(id(arrived)).release()
-    requests.task_done()
+    )
+    if command == "audio":
+        assert outcome == ("reconnect", None)
+        assert list(deferred) == [arrived]
+        assert requests.waiting_audio_bytes == len(arrived.audio)
+        holds.pop(id(arrived)).release()
+        requests.task_done()
+    else:
+        assert outcome == ("shutdown", arrived)
+        assert not deferred
+        assert state.closed_sent.is_set()
+        assert (await _next_event(responses, "closed")).generation == arrived.generation
     await requests.join()
 
 
