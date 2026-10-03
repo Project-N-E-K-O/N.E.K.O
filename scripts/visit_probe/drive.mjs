@@ -290,9 +290,10 @@ async function blankRun(c, label, frames, hookOpts) {
 // Blank-frame check only (300 frames per mode, sync), with per-blank diagnostics.
 async function phaseBlank(c) {
   const r = { runs: [] };
-  // attach before the first run: each save() below then checkpoints the completed runs (and their blankDiag),
-  // so an interrupted phase never loses the evidence it exists to collect
-  results.blankCheck = r;
+  // checkpoint the in-progress result under this run's own record: each save() below keeps the completed runs
+  // (and their blankDiag) if the phase is interrupted, without overwriting a previous successful blankCheck
+  // that runs.blank.dataFromRunId still points to. Promoted to results.blankCheck only on success.
+  if (results.runs.blank) results.runs.blank.partialData = r;
   await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE);
     window.__visitProbe.fp('guest').configure({ crop: [320, 448], packer: '2d', verifyEvery: 0 });
     return window.__visitProbe.computeCrop(320, 448);`).then((v) => { r.crop = v; });
@@ -309,6 +310,7 @@ async function phaseBlank(c) {
     await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
   }
   results.blankCheck = r;
+  if (results.runs.blank) delete results.runs.blank.partialData;
   save();
 }
 
