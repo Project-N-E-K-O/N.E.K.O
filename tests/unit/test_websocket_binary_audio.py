@@ -2125,3 +2125,40 @@ async def test_superseded_recording_socket_honours_route_audio_consumption(
 
     stream_payloads = [payload for name, payload in manager.calls if name == "stream_data"]
     assert (superseded_pcm in stream_payloads) is forwarded
+
+
+@pytest.mark.asyncio
+async def test_superseded_socket_does_not_start_a_session_after_a_route_declines(
+    monkeypatch,
+) -> None:
+    """The route's start decision may suspend; a newer window can take over meanwhile.
+
+    Mutation: falling through to the ordinary start without re-checking the
+    session owner turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    session_ids, _route_external_calls = _install_protocol_endpoint(
+        monkeypatch, manager=manager, websocket=websocket,
+    )
+
+    async def _decline_after_takeover(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        session_ids["Lan"] = "newer-window"
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_after_takeover,
+            finalize_for_character=_finalize_none,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
