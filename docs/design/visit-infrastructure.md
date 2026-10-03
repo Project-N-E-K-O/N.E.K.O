@@ -1051,7 +1051,7 @@ finalize（leave → release_takeover → 仪式句 之后）
 
 ### 3.12 实测清单 T1~T15（每项 ≤30 min；PR-10 前完成；T1~T4 任一失败（或 T5 的 2D `destination-in` 与 WebGL 打包 shader 都不成立）即退设计 1——preload 异 host 直通补丁 + 能力旗 + 老壳 fail-closed，只损失前端 PR-10/11；后端 PR 完全通用）
 
-> 2026-10-02：T1~T5 已在真实 Pet 窗实测，Windows（直通 / 兼容两种合成模式）上全部通过，继续 iframe 方案；**T3/T4 的 macOS 部分仍待测，PR-10/11 合并前补齐**（兼容模式下访客不透明像素的命中已于 2026-10-03 补测通过）。数据、证据与对 3.3.5 / 3.4.5 的修正见 [T1~T5 实测记录](./visit-infrastructure-t1-t5)。
+> 2026-10-02：T1~T5 已在真实 Pet 窗实测，Windows（直通 / 兼容两种合成模式）上全部通过，继续 iframe 方案；**T3/T4 的 macOS 部分仍待测，T2 兼容模式一轮偶发黑帧（17/312，加诊断后未复现）原因待查，均须在 PR-10/11 合并前补齐**（兼容模式下访客不透明像素的命中已于 2026-10-03 补测通过）。数据、证据与对 3.3.5 / 3.4.5 的修正见 [T1~T5 实测记录](./visit-infrastructure-t1-t5)。
 
 - **T1** 同源 iframe 内 `window.WebSocket === 原生`（`iframe.contentWindow.WebSocket.name`），父页 `_activeWs` 不变（Chat 窗不收 CONNECTING）。
 - **T2** 同任务取帧：父页 `postrender` 内同步调 iframe `drawImage(#live2d-canvas, 裁剪)`，连续 300 帧无黑帧；定时器驱动与 rAF 驱动两种模式各测；分数累加器在 60 / 75 / 144 Hz 与定时器 60 fps 下用 `RTCRtpSender.getStats()` 的 `framesPerSecond / framesEncoded` 验收恰好 30。

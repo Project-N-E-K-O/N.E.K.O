@@ -43,7 +43,7 @@ const SHOT_DIR = path.join(outDir, 'shots', RUN_ID.replace(/[:.]/g, '-'));
 const rel = (p) => path.relative(outDir, p).split(path.sep).join('/');
 // Sections loaded from a results.json written before run stamps existed: attribute them explicitly instead of
 // leaving them unattributed next to a freshly stamped rerun phase.
-const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace' };
+const SECTION_OF = { env: 'env', t1: 't1', t2: 't2', t5: 't5', t3: 't3', t4: 't4', trace: 'modeTrace', blank: 'blankCheck' };
 for (const [ph, key] of Object.entries(SECTION_OF)) {
   if (results[key] !== undefined && !results.runs[ph]) {
     results.runs[ph] = { runId: 'unstamped-legacy', status: 'ok', dataFromRunId: 'unstamped-legacy', note: 'written before run stamps; see git history of this file' };
@@ -284,7 +284,29 @@ async function blankRun(c, label, frames, hookOpts) {
     if (st.verified >= frames || Date.now() - t0 > 30000) break;
   }
   const hook = await c.eval(`window.__visitProbe.unhook(); return Object.assign({}, window.__visitProbe.stat);`);
-  return { label, framesChecked: st.verified, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), hook };
+  return { label, framesChecked: st.verified, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), blankDiag: hook.blankDiag || [], hook };
+}
+
+// Blank-frame check only (300 frames per mode, sync), with per-blank diagnostics.
+async function phaseBlank(c) {
+  const r = { runs: [] };
+  await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE);
+    window.__visitProbe.fp('guest').configure({ crop: [320, 448], packer: '2d', verifyEvery: 0 });
+    return window.__visitProbe.computeCrop(320, 448);`).then((v) => { r.crop = v; });
+  try {
+    for (const m of [{ kind: 'timer', fps: 30 }, { kind: 'raf', fps: 0 }, { kind: 'timer', fps: 60 }, { kind: 'timer', fps: 60 }, { kind: 'timer', fps: 60 }]) {
+      await c.eval(`return window.__visitProbe.setMode(${JSON.stringify(m)});`);
+      await sleep(800);
+      const b = await blankRun(c, `${m.kind}${m.fps || 'vsync'}-sync`, 300);
+      r.runs.push(b);
+      log('blank', b.label, b.blankFrames + '/' + b.framesChecked, JSON.stringify(b.blankDiag.slice(0, 3)));
+      save();
+    }
+  } finally {
+    await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
+  }
+  results.blankCheck = r;
+  save();
 }
 
 async function phaseT2(c) {
@@ -607,6 +629,7 @@ async function phaseT4(c) {
       await sleep(4000);
       await inject(cdp);
     } else if (ph === 't2') await phaseT2(cdp);
+    else if (ph === 'blank') await phaseBlank(cdp);
     else if (ph === 't5') await phaseT5(cdp);
     else if (ph === 't3') await phaseT3(cdp);
     else if (ph === 't4') await phaseT4(cdp);

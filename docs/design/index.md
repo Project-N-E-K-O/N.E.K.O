@@ -49,6 +49,6 @@ These documents preserve design intent and implementation context. They are grou
 ## Approved proposals (not yet implemented)
 
 - [Catgirl visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
-  - [T1~T5 on-device measurements](./visit-infrastructure-t1-t5) — Chinese-only. Implemented record (2026-10-02): same-origin iframe checks in the real Electron Pet window; all passed on Windows (both compositing modes); macOS T3/T4 is still pending.
+  - [T1~T5 on-device measurements](./visit-infrastructure-t1-t5) — Chinese-only. Implemented record (2026-10-02): same-origin iframe checks in the real Electron Pet window; passed on Windows (both compositing modes), except one unreproduced T2 blank-frame run in compatibility mode that is still under investigation; macOS T3/T4 is still pending.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.

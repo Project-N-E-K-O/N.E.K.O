@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 15) return;
-  const P = (window.__visitProbe = { version: 15 });
+  if (window.__visitProbe && window.__visitProbe.version === 16) return;
+  const P = (window.__visitProbe = { version: 16 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -170,7 +170,30 @@
         } else {
           stat.captures++;
           if (stat.captureTimes.length < 400) stat.captureTimes.push(Math.round(now - stat.startedAt));
-          sink.onFrame(app.view, P.rectPx, now);
+          const res = sink.onFrame(app.view, P.rectPx, now);
+          if (res && res.blank) {
+            // Blank pack: was the model really not drawn this frame (app-side), or did the cross-realm
+            // drawImage read an empty buffer (probe/iframe-side)? Read the WebGL drawing buffer directly,
+            // in the same task, over the same rect, and record the model's scene-graph state.
+            const diag = { t: Math.round(now - stat.startedAt), captureIndex: stat.captures };
+            try {
+              const gl = r.gl;
+              const [sx, sy, sw, sh] = P.rectPx;
+              const x0 = Math.max(0, sx), y0 = Math.max(0, sy);
+              const w = Math.max(0, Math.min(gl.drawingBufferWidth, sx + sw) - x0), h = Math.max(0, Math.min(gl.drawingBufferHeight, sy + sh) - y0);
+              const buf = new Uint8Array(w * h * 4);
+              gl.readPixels(x0, gl.drawingBufferHeight - y0 - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+              let a = 0;
+              for (let i = 3; i < buf.length; i += 16) a += buf[i];
+              diag.glReadAlphaSum = a;
+              const m = lm.currentModel;
+              diag.model = m ? { parentIsStage: m.parent === app.stage, visible: m.visible, renderable: m.renderable, worldAlpha: m.worldAlpha, destroyed: !!m.destroyed } : null;
+              diag.stageChildren = app.stage.children.length;
+              diag.canvasVisibility = getComputedStyle(app.view).visibility;
+            } catch (e) { diag.err = String(e); }
+            stat.blankDiag = stat.blankDiag || [];
+            if (stat.blankDiag.length < 50) stat.blankDiag.push(diag);
+          }
         }
       }
       stat.accMax = Math.max(stat.accMax, acc);
