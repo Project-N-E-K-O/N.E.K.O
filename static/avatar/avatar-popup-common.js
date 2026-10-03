@@ -309,10 +309,12 @@
     function observePopupLayout(popup, onLayout, { anchors = [] } = {}) {
         const toolbar = popup.closest('[id$="-floating-buttons"]');
         const viewport = window.visualViewport;
+        const buttonSelector = '[id*="-btn-"], [class$="-trigger-btn"]';
         let panel = null;
         let panelHeader = null;
         let panelContent = null;
         let buttonNodes = [];
+        let buttonsDirty = false;
         let frame = null;
         let stopped = false;
         let lastSignature = '';
@@ -335,6 +337,7 @@
         function sync() {
             frame = null;
             if (stopped || !popup.isConnected || popup.style.display === 'none' || popup.style.opacity === '0') return;
+            if (buttonsDirty) refreshButtons();
             if (signature() === lastSignature) return;
             onLayout();
             if (!stopped) lastSignature = signature();
@@ -345,14 +348,24 @@
         }
 
         function refreshButtons() {
+            buttonsDirty = false;
             if (resizeObserver) buttonNodes.forEach(node => resizeObserver.unobserve(node));
-            buttonNodes = toolbar ? Array.from(toolbar.querySelectorAll('[id*="-btn-"], [class$="-trigger-btn"]')) : [];
+            buttonNodes = toolbar ? Array.from(toolbar.querySelectorAll(buttonSelector)) : [];
             if (resizeObserver) buttonNodes.forEach(node => resizeObserver.observe(node));
         }
 
+        function isButtonNode(node) {
+            return node.nodeType === 1 && (node.matches(buttonSelector) || !!node.querySelector(buttonSelector));
+        }
+
+        // Other popups in the toolbar rewrite their contents often. Only an
+        // added or removed button changes the collision set, and the rescan
+        // waits for the next visible frame instead of running per mutation.
         function onToolbarMutation(records) {
-            if (records.some(record => record.type === 'childList' && !popup.contains(record.target))) {
-                refreshButtons();
+            if (records.some(record => record.type === 'childList' && !popup.contains(record.target)
+                && (Array.from(record.addedNodes).some(isButtonNode)
+                    || Array.from(record.removedNodes).some(isButtonNode)))) {
+                buttonsDirty = true;
                 queue();
             }
         }
@@ -670,6 +683,7 @@
         const heightLimit = Math.max(1, bottomEdge - topEdge);
         const minWidth = Math.min(naturalWidth, 240 * scale);
         const originalHeight = toNumber(window.getComputedStyle(container).maxHeight, Infinity);
+        const regionHeightLimit = Math.max(1, viewport.bottom - edge - topEdge);
         const measurements = new Map();
 
         function applySizeLimits(width, height) {
@@ -687,6 +701,14 @@
                     minHeight: getSidePanelMinimumHeight(container, insets, scale, naturalHeight) });
             }
             return measurements.get(key);
+        }
+
+        // A height limit only clamps max-height; wrapping and the minimum
+        // control height depend on width. Measure each width once and derive
+        // the clamped height so the compact search does not reflow per region.
+        function fit(width, height) {
+            const size = measure(width, regionHeightLimit);
+            return { ...size, height: Math.min(size.height, height) };
         }
 
         function sideCandidate(left) {
@@ -753,7 +775,7 @@
                     spaces.push([start, regionBottom]);
                     for (const [top, bottom] of spaces) {
                         if (bottom <= top) continue;
-                        const size = measure(width, bottom - top);
+                        const size = fit(width, bottom - top);
                         if (size.height < size.minHeight - 0.5) continue;
                         const y = clamp(anchorTop, top, bottom - size.height);
                         const distance = Math.abs(x - owner.left) + Math.abs(y - anchorTop);

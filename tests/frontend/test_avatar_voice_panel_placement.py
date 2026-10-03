@@ -477,6 +477,37 @@ def test_meter_and_hover_paint_updates_do_not_scan_layout(page: Page):
 
 
 @pytest.mark.frontend
+def test_unrelated_toolbar_content_changes_do_not_rescan_buttons(page: Page):
+    _install_toolbar(page)
+    _open_action(page)
+    page.wait_for_timeout(300)
+    result = page.evaluate("""async()=>{
+        const toolbar=document.getElementById('live2d-floating-buttons');
+        const popup=document.getElementById('live2d-popup-mic');
+        const other=document.createElement('div');toolbar.appendChild(other);
+        await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+        const query=toolbar.querySelectorAll.bind(toolbar);
+        let scans=0;toolbar.querySelectorAll=selector=>{scans++;return query(selector)};
+        const read=popup.getBoundingClientRect.bind(popup);
+        let reads=0;popup.getBoundingClientRect=()=>{reads++;return read()};
+        for(let i=0;i<30;i++){
+            other.textContent='status '+i;other.appendChild(document.createElement('span'));
+            await new Promise(requestAnimationFrame);
+        }
+        await new Promise(requestAnimationFrame);
+        const unrelated={scans,reads};
+        // A new toolbar button still joins the collision set.
+        const button=document.createElement('button');button.id='live2d-btn-late';
+        toolbar.appendChild(button);
+        await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+        delete toolbar.querySelectorAll;delete popup.getBoundingClientRect;
+        return {unrelated,buttonScans:scans};
+    }""")
+    assert result["unrelated"] == {"scans": 0, "reads": 0}
+    assert result["buttonScans"] == 1
+
+
+@pytest.mark.frontend
 def test_popup_layout_subscription_cancels_queued_work_and_is_idempotent(page: Page):
     page.set_content('<div id="popup" style="display:flex;opacity:1;width:220px;height:100px"></div>')
     page.add_script_tag(path=str(ROOT / 'static/avatar/avatar-popup-common.js'))
