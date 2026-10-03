@@ -62,6 +62,7 @@ from ..shared_state import (
 )
 from utils.config_manager import (
     assign_new_character_uid,
+    delete_reserved,
     get_character_uid,
     get_reserved,
     set_reserved,
@@ -85,9 +86,7 @@ def _strip_local_character_identity(character_payload: dict) -> dict:
     a card imported elsewhere gets its own id, so exports never carry it.
     Mutates and returns ``character_payload`` (callers pass their own copy).
     """
-    reserved = character_payload.get('_reserved')
-    if isinstance(reserved, dict):
-        reserved.pop('character_uid', None)
+    delete_reserved(character_payload, 'character_uid')
     return character_payload
 
 

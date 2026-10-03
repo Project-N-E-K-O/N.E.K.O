@@ -196,12 +196,11 @@ class CharactersMixin:
         if not isinstance(on_disk, dict):
             logger.warning("角色配置文件结构异常（非 dict），跳过 character_uid 补发。")
             return False
-        character_data = self.load_characters(character_json_path=character_json_path)
-        if not isinstance(character_data, dict):
+        # Write back exactly what was parsed: a second read (load_characters)
+        # could hit a transient lock / replacement and silently yield defaults.
+        if not ensure_character_uids(on_disk.get('猫娘')):
             return False
-        if not ensure_character_uids(character_data.get('猫娘')):
-            return False
-        self.save_characters(character_data, character_json_path=character_json_path)
+        self.save_characters(on_disk, character_json_path=character_json_path)
         logger.info("已为缺少稳定 id 的角色补发 character_uid。")
         return True
 

@@ -406,3 +406,38 @@ def test_independent_asr_availability_matches_what_prepare_accepts(
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
     assert consumer.is_available() is available
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("consumed", "passthrough", "drop"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+async def test_microphone_audio_is_dropped_only_when_consumed_without_passthrough(
+    empty_registry, consumed, passthrough, drop,
+):
+    assert await registry.route_external_microphone_audio("Lan") is False
+
+    announce = AsyncMock(return_value=consumed)
+    registry.register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=announce,
+        on_start_session=None,
+        finalize_for_character=_no_routes,
+        audio_passthrough=passthrough,
+    ))
+
+    assert await registry.route_external_microphone_audio("Lan") is drop
+    announce.assert_awaited_once_with("Lan", {"input_type": "audio", "stt_provider": "realtime"})
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_ignores_a_route_reporting_an_empty_instance(empty_registry):
+    registry.register_external_route_kind(_kind(
+        "visit", active=True, route_voice_transcript=AsyncMock(return_value=True), instance="",
+    ))
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert consumer.is_available() is False
+    assert await consumer.prepare_turn(_voice_token(turn_id=9)) is False

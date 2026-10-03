@@ -20,6 +20,24 @@ from utils.game_route_state import (
 )
 
 
+def _pinnable_external_route(lanlan_name: str):
+    """The active non-game route that can receive this character's voice turns.
+
+    It must take voice transcripts and report an instance id to pin the turn
+    to; anything else is None.
+    """
+    route = get_active_external_route(lanlan_name)
+    if (
+        route is None
+        or route.kind == "game"
+        or route.route_voice_transcript is None
+        or route.current_instance is None
+        or not route.current_instance(lanlan_name)
+    ):
+        return None
+    return route
+
+
 @dataclass(slots=True)
 class GameVoiceInputConsumer:
     """Deliver identified non-empty finals to the active external route.
@@ -51,13 +69,7 @@ class GameVoiceInputConsumer:
             return False
         if get_active_game_route_identity(lanlan_name) is not None:
             return True
-        route = get_active_external_route(lanlan_name)
-        return (
-            route is not None
-            and route.kind != "game"
-            and route.route_voice_transcript is not None
-            and route.current_instance is not None
-        )
+        return _pinnable_external_route(lanlan_name) is not None
 
     async def prepare_turn(self, token: VoiceTurnToken) -> bool:
         if token in self._prepared_routes or token in self._prepared_external_kinds:
@@ -69,18 +81,12 @@ class GameVoiceInputConsumer:
                 identity = (identity[0], identity[1], "")
             self._prepared_routes[token] = identity
             return True
-        route = get_active_external_route(lanlan_name)
-        if (
-            route is None
-            or route.kind == "game"
-            or route.route_voice_transcript is None
-            or route.current_instance is None
-        ):
+        route = _pinnable_external_route(lanlan_name)
+        if route is None:
             return False
-        instance = route.current_instance(lanlan_name)
-        if not instance:
-            return False
-        self._prepared_external_kinds[token] = (route.kind, str(instance))
+        self._prepared_external_kinds[token] = (
+            route.kind, str(route.current_instance(lanlan_name)),
+        )
         return True
 
     async def on_partial(self, event: VoicePartialEvent) -> None:
@@ -93,12 +99,11 @@ class GameVoiceInputConsumer:
         if external_route is not None:
             external_kind, external_instance = external_route
             lanlan_name = self.lanlan_name()
-            route = get_active_external_route(lanlan_name)
+            route = _pinnable_external_route(lanlan_name)
             if (
                 route is None
                 or route.kind != external_kind
-                or route.current_instance is None
-                or str(route.current_instance(lanlan_name) or "") != external_instance
+                or str(route.current_instance(lanlan_name)) != external_instance
             ):
                 raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
             routed = await route_external_voice_transcript(

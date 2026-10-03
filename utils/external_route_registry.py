@@ -180,6 +180,21 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
     return bool(await spec.route_stream_message(lanlan_name, message))
 
 
+async def route_external_microphone_audio(lanlan_name: str) -> bool:
+    """Announce microphone PCM to the active route.
+
+    Returns True when the PCM must not reach the ordinary session: the route
+    consumed the announcement and does not declare ``audio_passthrough``.
+    """
+    spec = get_active_external_route(lanlan_name)
+    if spec is None:
+        return False
+    consumed = await spec.route_stream_message(
+        lanlan_name, {"input_type": "audio", "stt_provider": "realtime"},
+    )
+    return bool(consumed) and not spec.audio_passthrough
+
+
 async def route_external_start_session(lanlan_name: str, message: dict) -> bool:
     """Let the active route claim a session start; False when nobody claims it."""
     spec = get_active_external_route(lanlan_name)

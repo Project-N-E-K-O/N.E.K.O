@@ -319,10 +319,19 @@ class StreamingMixin:
                 mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                 # 外部路由可以认领语音自动建会话（不经 websocket_router 的
                 # start_session 分支的那条语音入口）；没有路由认领时原样建会话。
-                if mode == 'audio' and await _core_facade.route_external_start_session(
-                    self.lanlan_name, {'input_type': 'audio'},
-                ):
-                    return
+                if mode == 'audio':
+                    if await _core_facade.route_external_start_session(
+                        self.lanlan_name, {'input_type': 'audio'},
+                    ):
+                        return
+                    # The claim check may have suspended: another frame can
+                    # have started a session meanwhile. Audio arriving during a
+                    # start is dropped, as above; a session that came up is used.
+                    if self._starting_session_count > 0:
+                        return
+                    if self.session_ready or (self.session and self.is_active):
+                        await self._process_stream_data_internal(message)
+                        return
                 try:
                     await self.start_session(self.websocket, new=False, input_mode=mode)
                 except asyncio.CancelledError as exc:

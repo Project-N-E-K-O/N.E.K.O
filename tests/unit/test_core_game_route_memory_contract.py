@@ -5189,3 +5189,37 @@ async def test_mini_game_command_is_refused_while_another_owner_holds_the_takeov
     assert "mini_game_invite_resolved" not in sent_types
     mgr._clear_tts_pipeline.assert_not_awaited()
     mgr.send_status.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meanwhile", ["another-start-began", "session-came-up"])
+async def test_audio_auto_start_rechecks_after_an_awaited_route_claim(meanwhile):
+    """An on_start_session that suspends must not let two frames both start a session.
+
+    Mutation: calling start_session right after the claim (no re-check)
+    turns both cases red.
+    """
+    mgr = _make_auto_start_manager()
+
+    async def _slow_decline(_name, _message):
+        await asyncio.sleep(0)
+        if meanwhile == "another-start-began":
+            mgr._starting_session_count = 1
+        else:
+            mgr.session = object()
+            mgr.is_active = True
+            mgr.session_ready = True
+        return False
+
+    _register_external_route_kind("visit", active=True, on_start_session=_slow_decline)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    if meanwhile == "session-came-up":
+        mgr._process_stream_data_internal.assert_awaited_once()
+    else:
+        mgr._process_stream_data_internal.assert_not_awaited()

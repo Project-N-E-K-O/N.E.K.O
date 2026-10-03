@@ -54,7 +54,11 @@ from .shared_state import (
 # Importing game_router registers the ``game`` kind in the external-route
 # registry; the hijack points below only talk to the registry.
 from . import game_router as _game_router  # noqa: F401
-from utils.external_route_registry import get_active_external_route
+from utils.external_route_registry import (
+    get_active_external_route,
+    route_external_microphone_audio,
+    route_external_stream_message,
+)
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -766,14 +770,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 except Exception:
                     pass
             return
-        external_route = get_active_external_route(lanlan_name)
-        if external_route is not None:
-            audio_consumed = await external_route.route_stream_message(
-                lanlan_name,
-                {"input_type": "audio", "stt_provider": "realtime"},
-            )
-            if audio_consumed and not external_route.audio_passthrough:
-                return
+        if await route_external_microphone_audio(lanlan_name):
+            return
         await voice_mgr.stream_data(message)
 
     if mgr.pending_agent_callbacks:
@@ -1101,16 +1099,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     message,
                     lanlan_name=lanlan_name,
                 )
-                external_route = get_active_external_route(lanlan_name)
-                if external_route is not None:
-                    if input_type == "audio":
-                        audio_consumed = await external_route.route_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
-                        if audio_consumed and not external_route.audio_passthrough:
-                            continue
-                    else:
-                        handled_by_route = await external_route.route_stream_message(lanlan_name, message)
-                        if handled_by_route:
-                            continue
+                if input_type == "audio":
+                    if await route_external_microphone_audio(lanlan_name):
+                        continue
+                elif await route_external_stream_message(lanlan_name, message):
+                    continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")

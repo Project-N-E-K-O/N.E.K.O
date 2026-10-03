@@ -1284,6 +1284,8 @@ async def _finalize_game_route_state_inner(
         takeover_owner = getattr(mgr, "takeover_owner", None)
         # Hand parked cues back only when nobody else holds the takeover now;
         # otherwise they would be resubmitted straight into that owner's sink.
+        # Declining them is intentional: they answer the route that just ended
+        # (e.g. comments on the previous video), not the one that took over.
         handoff = released or not callable(takeover_owner) or takeover_owner() is None
         _close_takeover_callback_inbox(state, mgr, handoff=handoff)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}

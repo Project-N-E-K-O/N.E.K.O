@@ -440,3 +440,20 @@ def test_backfill_never_overwrites_an_unreadable_characters_file(tmp_path, broke
     assert cm.backfill_character_uids() is False
 
     assert path.read_bytes() == before
+
+
+def test_backfill_writes_back_what_it_parsed_not_a_second_read(tmp_path, monkeypatch):
+    """A second read that silently fell back to defaults must not be saved.
+
+    Mutation: backfilling from load_characters() again turns this red.
+    """
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = _write_characters(cm, {"Mine": {"昵称": "Mine"}})
+    monkeypatch.setattr(cm, "load_characters", lambda *a, **k: cm.get_default_characters())
+
+    assert cm.backfill_character_uids() is True
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert set(on_disk["猫娘"]) == {"Mine"}
+    assert is_valid_character_uid(get_character_uid(on_disk["猫娘"]["Mine"]))
