@@ -447,19 +447,25 @@ def is_digestable(state: Mapping[str, Any]) -> bool:
 def region_settled(state: Mapping[str, Any]) -> bool:
     """Whether the visit-region digest and the last-visit summary are both done.
 
-    With memory on, at least one digest run must be registered and every
-    group / segments batch of every run must be complete.
+    With memory on, at least one digest run must be registered, every
+    registered run must be counted in ``digest_runs`` (a run still in
+    progress is not settled), and every run must have at least one group and
+    one segments batch, all complete. An empty batch map means the batches
+    are not registered yet, not that they are done.
     """
     if state.get("last_summary_done") is not True:
         return False
     if not is_digestable(state):
         return True
     runs = state.get("digest_writes") or {}
-    if not runs:
+    if not runs or len(runs) != state.get("digest_runs"):
         return False
     for record in runs.values():
         for part in ("group", "segments"):
-            if not all((record.get(part) or {}).values()):
+            batches = record.get(part) or {}
+            # 空表 = 批次还没登记，不是「全部完成」：先登记 run 再拆批次的写入顺序下，
+            # 两步之间点「不记」不能把还没抽取的转录删掉
+            if not batches or not all(batches.values()):
                 return False
     return True
 
@@ -794,12 +800,14 @@ class VisitSpool:
         with _OPEN_SPOOLS_LOCK:
             _OPEN_SPOOLS.discard(_spool_key(self.jsonl_path))
 
-    async def open(self, header: Mapping[str, Any], *, now: float | None = None) -> None:
+    async def open(self, header: Mapping[str, Any], *, now: float) -> None:
         """Create ``<visit_id>.jsonl`` (``O_EXCL``, ``0o600``) and write the header line.
 
         ``header`` must carry exactly ``HEADER_FIELDS`` with ``v == 1`` and this
-        spool's ``visit_id``. ``now`` seeds the fsync cadence (defaults to
-        ``started_at``).
+        spool's ``visit_id``. ``now`` (required) seeds the fsync cadence and
+        must come from the same clock later passed to :meth:`fsync_due` /
+        :meth:`fsync` (any clock, used consistently; the header's
+        ``started_at`` is wall time and is not used for this).
         """
         if self._executor is not None:
             raise RuntimeError("visit spool already open")
@@ -823,7 +831,9 @@ class VisitSpool:
             executor.shutdown(wait=False)
             raise
         self._executor = executor
-        self._last_fsync = clean["started_at"] if now is None else now
+        # 计时只用调用方的时钟：started_at 是墙钟，runtime 若用单调时钟驱动，
+        # 拿它做起点会让 fsync_due 整场返回 False
+        self._last_fsync = float(now)
         self._dirty = False
 
     async def append(self, line: Mapping[str, Any]) -> None:
@@ -835,7 +845,10 @@ class VisitSpool:
         await asyncio.shield(fut)
 
     def fsync_due(self, now: float) -> bool:
-        """Whether unsynced lines exist and ``VISIT_SPOOL_FSYNC_S`` passed since the last fsync."""
+        """Whether unsynced lines exist and ``VISIT_SPOOL_FSYNC_S`` passed since the last fsync.
+
+        ``now`` must come from the same clock as the ``now`` given to :meth:`open`.
+        """
         return (
             self._fd is not None
             and self._dirty
@@ -1047,6 +1060,7 @@ class VisitSpool:
         spool_dir = _spool_dir(config_dir)
         retired = []
         unreadable: list[str] = []
+        busy: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
             try:
                 owner_uid, owner_name = cls._owner_of(spool_dir, visit_id)
@@ -1065,12 +1079,24 @@ class VisitSpool:
             # 与 state / 头行写者同一套逐路径锁（先 jsonl 后 state）：正在读改写
             # state.json 的更新要么先做完再被删掉，要么之后读到「不存在」而报错，
             # 不会在退役之后把文件重新写回来
-            with path_lock(jsonl), path_lock(state_path):
-                _unlink(jsonl)
-                _unlink(state_path)
+            with path_lock(jsonl), path_lock(state_path), _OPEN_SPOOLS_LOCK:
+                # 与改名 / 清除同一语义：仍在写的场次跳过，最后报 SpoolBusy 让事务保留
+                # 标记、等这场结束后重放；删除本身失败（Windows 上被占用的 PermissionError）
+                # 并入读不出，不能冲出循环卡住其余场次
+                if _spool_key(jsonl) in _OPEN_SPOOLS:
+                    busy.append(visit_id)
+                    continue
+                try:
+                    _unlink(jsonl)
+                    _unlink(state_path)
+                except OSError:
+                    unreadable.append(visit_id)
+                    continue
             retired.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
+        if busy:
+            raise SpoolBusy(f"spools still being written: {', '.join(busy)}")
         return retired
 
     @classmethod
@@ -1088,8 +1114,10 @@ class VisitSpool:
         legacy_name``; the caller passes ``legacy_name`` only while no new
         character of the same name exists. ``.upload.json(l)`` and
         ``visit_reports/`` are never touched. Returns the retired visit ids.
-        Raises :class:`SpoolStateUnreadable` (after handling every readable
-        visit) when some visit's ownership cannot be read.
+        After handling every other visit, raises :class:`SpoolStateUnreadable`
+        when some visit's ownership cannot be read or its files cannot be
+        deleted, else :class:`SpoolBusy` when some owned visit is still open
+        for appends (retry after it closes).
         """
         return await asyncio.to_thread(
             cls._retire_char_sync, Path(config_dir), character_uid, legacy_name
@@ -1107,6 +1135,7 @@ class VisitSpool:
             return False
 
         unreadable: list[str] = []
+        busy: list[str] = []
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
             changed = False
             jsonl = visit_path(spool_dir, visit_id, SPOOL_SUFFIX)
@@ -1122,12 +1151,16 @@ class VisitSpool:
                         state["own_char"] = new
                         atomic_write_json(state_path, validate_state(state))
                         changed = True
+            except SpoolBusy:
+                busy.append(visit_id)
             except (OSError, ValueError, SpoolStateUnreadable):
                 unreadable.append(visit_id)
             if changed:
                 renamed.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
+        if busy:
+            raise SpoolBusy(f"spools still being written: {', '.join(busy)}")
         return renamed
 
     @classmethod

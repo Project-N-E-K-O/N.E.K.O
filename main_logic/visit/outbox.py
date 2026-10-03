@@ -337,14 +337,19 @@ class VisitOutbox:
     def encoded_size(self, msg: Mapping[str, Any]) -> tuple[int, int]:
         """``(pieces, bytes)`` of ``msg`` as it would go on the wire, for ``try_reserve``.
 
-        A missing ``seq`` / ``last_seq`` is measured at its widest (u32 max),
-        so the result is an upper bound of what :meth:`send` will charge.
+        A missing ``seq`` / ``last_seq`` is measured at its widest (u32 max)
+        and a ``text``'s ``i_done`` always at its widest
+        (``VISIT_LINE_DELTA_MAX_I``; :meth:`send` and the first transmission
+        rewrite it), so the result is an upper bound of what :meth:`send`
+        will charge and callers need not fill internal fields.
         """
         payload = dict(msg)
         if is_reliable(str(payload.get("t"))):
             payload.setdefault("seq", _U32_MAX)
             if payload.get("t") == "leave":
                 payload.setdefault("last_seq", _U32_MAX)
+            if payload.get("t") == "text":
+                payload["i_done"] = VISIT_LINE_DELTA_MAX_I
         return wire_size(encode_msg(payload), visit_id=self.visit_id)
 
     @property

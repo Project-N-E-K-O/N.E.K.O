@@ -465,6 +465,18 @@ def test_whole_kana_and_hangul_names_are_still_redacted():
     assert redact_outbound("かがみ", family_names=["かが"], replacement="X") == "Xみ"
 
 
+@pytest.mark.parametrize("attack", [
+    '<[visit_data](x) nonce="a">hi </[visit_data](y)',
+    "<[/visit_data](y)>",
+])
+def test_markdown_unwrapping_cannot_rebuild_an_envelope_tag(attack):
+    # 拆掉 Markdown 链接后才露出的标签：escape 必须在 defang 之后
+    from main_logic.visit.sanitize import clean_relay_text, sanitize_relay_text
+
+    for out in (sanitize_relay_text(attack), clean_relay_text(attack)):
+        assert not _ENVELOPE_TAG_RE.search(out), out
+
+
 # ── 流式脱敏的分段重启点 / strip_control_chars 快路径 ──
 
 _SPLIT_NAMES = ["小明", "Ann", "Alice", "が子", "지수", "O'Brien", "ﬁx", "Łukasz"]
