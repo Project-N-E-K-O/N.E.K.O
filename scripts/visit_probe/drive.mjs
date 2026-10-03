@@ -519,7 +519,11 @@ async function phaseT3(c) {
         samples.push({ clickThrough: at.clickThrough, wsExTransparent: at.wsExTransparent });
       }
       const el = await c.eval(`return window.__visitProbe.elementAt(${tcx}, ${tcy});`);
-      r.hit.push({ variant: v.name, elementFromPoint: el, clickThroughSamples: samples });
+      // for the opaque-point variants, record the actual screen colour at the sampled pixel (backdrop-guarded):
+      // proves the visitor pattern is really drawn there, otherwise "click-through" would be vacuous
+      let screenRgb = null;
+      if (v.opaque) { if (backdropGuard) backdropGuard(); screenRgb = os('pixel', tx, ty); }
+      r.hit.push({ variant: v.name, elementFromPoint: el, clickThroughSamples: samples, screenRgb });
       log('t3 hit', v.name, JSON.stringify(el), JSON.stringify(samples));
     }
   } finally {

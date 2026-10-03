@@ -10,6 +10,7 @@
 | `osprobe.py` | 区域截图、`SendInput` 移动鼠标、`WindowFromPoint` 命中判定、透明 / 合成误差计算 |
 | `backdrop.ps1` | T3/T4 用的固定花纹背板窗口（不置顶，位于普通窗口之上、Pet 之下） |
 | `results/{direct,compat}/results.json` | 2026-10-02 实测原始数据（其中引用的区域截图未入库，入库的是 `docs/design/visit-t1-t5/` 的三联图） |
+| `results/compat-2026-10-03/results.json` | 2026-10-03 兼容模式补测（T2 冷启动、T3 不透明像素命中，含屏幕取色） |
 
 ## 步骤
 
