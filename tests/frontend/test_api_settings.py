@@ -2013,7 +2013,10 @@ def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_pa
     expect(model).not_to_have_attribute('placeholder', 'gpt-user-choice')
     model.fill('deepseek-user-choice')
     mock_page.select_option('#conversationModelProvider', 'custom')
-    expect(model).to_have_value('deepseek-user-choice')
+    expect(model).to_have_value('')
+    mock_page.select_option('#conversationModelProvider', 'kimi_code')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('')
 
     mock_page.select_option('#conversationModelProvider', 'follow_assist')
     mock_page.select_option('#conversationModelProvider', 'openai')
@@ -2045,6 +2048,36 @@ def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_pa
         _isLoadingSavedConfig = false;
     }""")
     expect(model).to_have_value('deepseek-user-choice')
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('api_select,follow_mode', [
+    ('assistApiSelect', 'follow_assist'), ('coreApiSelect', 'follow_core'),
+])
+def test_model_id_picker_api_switch_clears_followed_models(mock_page: Page, running_server: str, api_select, follow_mode):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(f'#{api_select} option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    mock_page.select_option('#conversationModelProvider', follow_mode)
+    model = mock_page.locator('#conversationModelId')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'qwen-user-model'")
+    mock_page.select_option(f'#{api_select}', 'openai')
+    expect(model).to_have_value('')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'gpt-user-model'")
+    mock_page.dispatch_event(f'#{api_select}', 'change')
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    expect(model).to_have_value('')
 
 
 @pytest.mark.frontend

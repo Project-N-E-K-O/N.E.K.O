@@ -70,6 +70,9 @@ const CORE_PROVIDERS = {
     qwen: { core_model: 'qwen3.8-omni-flash-realtime' },
     step: { core_model: 'stepaudio-3-realtime-preview' },
 };
+Object.entries(ASSIST_PROVIDERS).forEach(([key, profile]) => {
+    profile.openrouter_url = `https://${key}.example.test/v1`;
+});
 const IMAGE_PROVIDERS = {
     openai: { protocol: 'openai', model: 'gpt-image-2' },
     qwen: { protocol: 'dashscope', model: 'wanx2.1-t2i-turbo' },
@@ -135,6 +138,8 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     };
     const context = vm.createContext({
         console,
+        URL,
+        _isLoadingSavedConfig: false,
         JSON,
         Map,
         Set,
@@ -216,6 +221,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     const setSlot = (modelType, provider, modelId = '') => {
         select(`${modelType}ModelProvider`, provider);
         el(`${modelType}ModelId`).value = modelId;
+        if (ASSIST_PROVIDERS[provider]) el(`${modelType}ModelUrl`).value = ASSIST_PROVIDERS[provider].openrouter_url;
     };
     MODEL_TYPES.forEach(modelType => select(`${modelType}ModelProvider`, 'follow_assist'));
     select('gameMainModelProvider', 'follow_conversation');
@@ -291,6 +297,40 @@ test('named and custom slots fall back the same way as the backend snapshot', ()
     assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'google/gemini-2.5-flash');
     setSlot('gameMain', 'custom');
     assert.equal(context.resolveSlotModelState('gameMain').defaultModelId, '');
+});
+
+test('named slot placeholders require a matching nonempty provider endpoint', () => {
+    const { context, el, setSlot } = createPickerContext();
+    setSlot('conversation', 'openai');
+    for (const url of ['', 'https://other.example.test/v1', 'https://openai.example.test/V1']) {
+        el('conversationModelUrl').value = url;
+        assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'google/gemini-2.5-flash');
+    }
+    for (const url of ['https://OPENAI.example.test:443/v1/', 'https://openai.example.test/v1']) {
+        el('conversationModelUrl').value = url;
+        assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'gpt-5.6-luna');
+    }
+});
+
+test('API provider changes clear only matching follow slots and preserve loads and same-provider refreshes', () => {
+    const { context, setSlot, el } = createPickerContext();
+    for (const mode of ['follow_core', 'follow_assist']) {
+        for (const type of MODEL_TYPES) setSlot(type, mode, 'old-model');
+        setSlot('vision', 'custom', 'custom-model');
+        context.clearFollowModelIdsOnApiChange(mode, 'qwen', 'qwen');
+        assert.equal(el('conversationModelId').value, 'old-model');
+        context._isLoadingSavedConfig = true;
+        context.clearFollowModelIdsOnApiChange(mode, 'qwen', 'openai');
+        assert.equal(el('conversationModelId').value, 'old-model');
+        context._isLoadingSavedConfig = false;
+        context.clearFollowModelIdsOnApiChange(mode, 'qwen', 'openai');
+        for (const type of MODEL_TYPES.filter(type => !['omni', 'tts', 'vision'].includes(type))) {
+            assert.equal(el(`${type}ModelId`).value, '');
+        }
+        assert.equal(el('omniModelId').value, 'old-model');
+        assert.equal(el('ttsModelId').value, 'old-model');
+        assert.equal(el('visionModelId').value, 'custom-model');
+    }
 });
 
 test('game slots mirror or follow the text slots and ignore their own input in follow modes', () => {

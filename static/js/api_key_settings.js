@@ -1456,11 +1456,9 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
     const voiceInput = document.getElementById(`${modelType}VoiceId`);
 
-    const isNamedProvider = value => !!value && value !== 'custom' && !value.startsWith('follow_');
     if (userInitiated && !_isLoadingSavedConfig && modelIdInput
         && modelType !== 'omni' && modelType !== 'tts'
-        && previousProvider !== provider
-        && (isNamedProvider(provider) || provider === 'follow_core' || provider === 'follow_assist')) {
+        && previousProvider !== provider) {
         modelIdInput.value = '';
     }
     // Also remember follow modes that return early below.
@@ -1836,6 +1834,41 @@ function getAssistTierModelId(tier) {
     return getAssistDefaultTierModelId(getSelectedAssistProviderKey(), tier);
 }
 
+function clearFollowModelIdsOnApiChange(mode, previousProvider, provider) {
+    if (_isLoadingSavedConfig || previousProvider === provider) return;
+    MODEL_TYPES.forEach(modelType => {
+        if (modelType === 'omni' || modelType === 'tts') return;
+        const select = document.getElementById(`${modelType}ModelProvider`);
+        const input = document.getElementById(`${modelType}ModelId`);
+        if (select?.value === mode && input) input.value = '';
+    });
+}
+
+function modelSlotEndpointIdentity(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+    const match = text.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?/i);
+    if (!match) return JSON.stringify(['invalid', text]);
+    try {
+        const url = new URL(text);
+        const userInfo = match[2].includes('@') ? match[2].slice(0, match[2].lastIndexOf('@')) : '';
+        return JSON.stringify([url.protocol.toLowerCase(), userInfo,
+            url.hostname.replace(/\.$/, '').toLowerCase(), url.port,
+            match[3].replace(/\/$/, ''), match[4] || '']);
+    } catch {
+        return JSON.stringify(['invalid', text]);
+    }
+}
+
+function namedModelSlotMatchesProvider(modelType, provider) {
+    const identity = modelSlotEndpointIdentity(document.getElementById(`${modelType}ModelUrl`)?.value);
+    if (!identity) return false;
+    const profile = _assistApiProviders[provider] || {};
+    const candidates = [profile.openrouter_url,
+        ...(Array.isArray(profile.openrouter_urls) ? profile.openrouter_urls : [profile.openrouter_urls])];
+    return candidates.some(url => identity === modelSlotEndpointIdentity(url));
+}
+
 // 与后端 _resolve_follow_model_id 同一条回退链，缺档位时也不借辅助 API 的模型
 function getFollowCoreTierModelId(coreProviderKey, tier) {
     return getAssistDefaultTierModelId(coreProviderKey, tier)
@@ -1929,7 +1962,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         };
     }
 
-    if (provider && provider !== 'custom') {
+    if (provider && provider !== 'custom' && namedModelSlotMatchesProvider(modelType, provider)) {
         const namedModel = getAssistDefaultTierModelId(provider, tier);
         if (usesFixedModels(provider)) {
             return { defaultModelId: namedModel, acceptsTypedModelId: false, fixedModelProvider: provider };
@@ -6017,10 +6050,17 @@ async function initializePage() {
         }
 
         // CRITICAL: Core/Assist selector change handlers that recompute follow-provider model slots
+        let previousCoreModelProvider = coreApiSelect?.value || '';
+        let previousAssistModelProvider = document.getElementById('assistApiSelect')?.value || '';
         if (coreApiSelect) {
             coreApiSelect.addEventListener('change', function () {
                 updateAssistApiRecommendation();
                 autoFillCoreApiKey(true);
+                clearFollowModelIdsOnApiChange('follow_core', previousCoreModelProvider, coreApiSelect.value);
+                previousCoreModelProvider = coreApiSelect.value;
+                const assistProvider = document.getElementById('assistApiSelect')?.value || '';
+                clearFollowModelIdsOnApiChange('follow_assist', previousAssistModelProvider, assistProvider);
+                previousAssistModelProvider = assistProvider;
                 // Recompute all follow_core model slots
                 MODEL_TYPES.forEach(mt => {
                     const sel = document.getElementById(`${mt}ModelProvider`);
@@ -6037,6 +6077,8 @@ async function initializePage() {
                 updateMimoTokenPlanControls();
                 updateAssistApiRecommendation();
                 autoFillAssistApiKey(true);
+                clearFollowModelIdsOnApiChange('follow_assist', previousAssistModelProvider, assistApiSelect.value);
+                previousAssistModelProvider = assistApiSelect.value;
                 // Recompute all follow_assist model slots
                 MODEL_TYPES.forEach(mt => {
                     const sel = document.getElementById(`${mt}ModelProvider`);
