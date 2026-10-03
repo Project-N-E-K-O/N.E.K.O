@@ -406,28 +406,37 @@ async def test_concurrent_writes_from_two_instances_are_serialised(tmp_path, mon
 
 
 def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_path, monkeypatch):
-    # 各线程各自的事件循环里并发拉黑：同一把按路径登记的线程锁串行化，整表不互相冲掉。
-    # 事务内读完盘后在屏障处等齐，强制读改写区间交错：没有锁时 8 个线程会读到同一份
-    # 旧表、互相冲掉；有锁时同一时刻只有一个线程在里面，屏障等不齐超时打破后依次放行
+    # 两个线程、各自的事件循环、各自的实例：A 在事务里读完盘后停住，此时启动 B。
+    # 有按路径登记的线程锁时 B 进不了读盘这一步；没有锁时 B 会读到同一份旧表、
+    # 两边互相冲掉。用握手而不是计时屏障，结论不依赖 CI 调度快慢
     import asyncio
+    import contextvars
     import threading
 
     from main_logic.visit import limits
 
-    uids = [f"{i:024x}" for i in range(8)]
-    instances = [Blocklist.load(tmp_path) for _ in uids]
-    barrier = threading.Barrier(len(uids))
+    who: contextvars.ContextVar[str] = contextvars.ContextVar("who", default="")
+    uid_a, uid_b = "a" * 24, "b" * 24
+    bl_a, bl_b = Blocklist.load(tmp_path), Blocklist.load(tmp_path)
+    a_read, release_a, b_read = threading.Event(), threading.Event(), threading.Event()
     real_read = limits.read_json
 
-    def read_then_wait(path):
-        data = real_read(path)
+    def read_hook(path):
+        # 先读（文件还不存在时是 FileNotFoundError），记下结果再打信号 / 停住，最后原样交回
         try:
-            barrier.wait(timeout=0.3)
-        except threading.BrokenBarrierError:
-            pass
-        return data
+            result: object = real_read(path)
+        except FileNotFoundError as exc:
+            result = exc
+        if who.get() == "a":
+            a_read.set()
+            release_a.wait(5)
+        else:
+            b_read.set()
+        if isinstance(result, FileNotFoundError):
+            raise result
+        return result
 
-    monkeypatch.setattr(limits, "read_json", read_then_wait)
+    monkeypatch.setattr(limits, "read_json", read_hook)
     errors: list[Exception] = []
 
     def worker(bl, uid):
@@ -436,12 +445,27 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
         except Exception as exc:          # noqa: BLE001 - 收集后在主线程断言
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(bl, u)) for bl, u in zip(instances, uids)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join(10)
+    # 事务跑在 asyncio.to_thread 的工作线程里，靠 contextvars（to_thread 会复制过去）
+    # 区分是谁在读盘
+    def run_a():
+        who.set("a")
+        worker(bl_a, uid_a)
+
+    def run_b():
+        who.set("b")
+        worker(bl_b, uid_b)
+
+    ta = threading.Thread(target=run_a)
+    ta.start()
+    assert a_read.wait(5)                  # A 已在事务内读完盘、持锁停住
+    tb = threading.Thread(target=run_b)
+    tb.start()
+    entered = b_read.wait(1.0)             # 有锁：B 进不来
+    release_a.set()
+    ta.join(10)
+    tb.join(10)
     monkeypatch.undo()
     assert errors == []
+    assert not entered, "a second transaction read the file while the first held the lock"
     on_disk = Blocklist.load(tmp_path)
-    assert all(on_disk.is_blocked(u) for u in uids)
+    assert on_disk.is_blocked(uid_a) and on_disk.is_blocked(uid_b)
