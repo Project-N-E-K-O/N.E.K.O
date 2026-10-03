@@ -2876,7 +2876,7 @@ class IndependentAsrRuntime:
         speech_probability = frame.speech_probability
         rnnoise_available = frame.rnnoise_available
         rnnoise_evidence = frame.rnnoise_evidence
-        deferred_pause_hint = False
+        deferred_pause_revision: int | None = None
         submit_cancelled = False
 
         try:
@@ -3050,12 +3050,22 @@ class IndependentAsrRuntime:
                                 event is SpeechActivityEvent.CANDIDATE_PAUSE
                                 and lifecycle.provider_policy.observes_local_activity
                             )
+                            pause_revision = (
+                                self._asr_audio_dispatcher.pause_hint_revision
+                                if defer_hint else None
+                            )
                             await self._handle_independent_asr_activity(
                                 event,
                                 identity.session_epoch,
                                 forward_local_hint=not defer_hint,
                             )
-                            deferred_pause_hint |= defer_hint
+                            if defer_hint:
+                                deferred_pause_revision = pause_revision
+                            elif event in {
+                                SpeechActivityEvent.SPEECH_STARTED,
+                                SpeechActivityEvent.SPEECH_RESUMED,
+                            }:
+                                deferred_pause_revision = None
                             if not ingress_is_current():
                                 return AsrSubmitResult(AsrSubmitStatus.STALE)
                     if (
@@ -3242,7 +3252,8 @@ class IndependentAsrRuntime:
             return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
         finally:
             if (
-                deferred_pause_hint and not submit_cancelled
+                deferred_pause_revision is not None and not submit_cancelled
+                and self._asr_audio_dispatcher.pause_hint_revision == deferred_pause_revision
                 and self._ingress_token_matches(ingress_token)
                 and self._asr_lifecycle is identity.lifecycle
                 and self._asr_session_epoch == identity.session_epoch

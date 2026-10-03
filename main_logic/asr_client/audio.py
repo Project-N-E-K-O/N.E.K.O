@@ -288,6 +288,10 @@ class AsrAudioDispatcher:
         for task in tuple(self._pause_hint_tasks):
             task.cancel()
 
+    @property
+    def pause_hint_revision(self) -> int:
+        return self._pause_hint_revision
+
     async def close(self) -> None:
         self.abort()
         worker, self._worker = self._worker, None

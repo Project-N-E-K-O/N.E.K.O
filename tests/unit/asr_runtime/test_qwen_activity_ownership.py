@@ -83,6 +83,48 @@ def _observe_hint_entry(monkeypatch, session, *, reject_after_return=False):
     return entered
 
 
+@pytest.mark.parametrize("sequence", [
+    ("CANDIDATE_PAUSE", "SPEECH_RESUMED"),
+    ("CANDIDATE_PAUSE", "SPEECH_STARTED"),
+    ("SPEECH_RESUMED", "CANDIDATE_PAUSE"),
+    ("CANDIDATE_PAUSE", "SPEECH_RESUMED", "CANDIDATE_PAUSE"),
+])
+async def test_same_frame_activity_preserves_final_observed_state(monkeypatch, qwen_sessions, sequence):
+    make_session, _, policy = qwen_sessions
+    session = make_session()
+    await session.connect()
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+    _install_runtime_session(runtime, session, policy)
+    await component._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, component._asr_session_epoch
+    )
+    hints = []
+    original = session.signal_local_activity
+
+    async def observe(*, speech_active):
+        hints.append((speech_active, session.provider_wire_audio_ms))
+        await original(speech_active=speech_active)
+
+    monkeypatch.setattr(session, "signal_local_activity", observe)
+    component._asr_detector._feed_result = DetectorFeedResult(
+        tuple(SpeechActivityEvent[name] for name in sequence), True
+    )
+    try:
+        result = await component.submit(
+            ProcessedVoiceFrame(b"\0" * 3200, 16000, None),
+            ingress_token=component._asr_current_ingress_token,
+        )
+        assert result.status is runtime_module.AsrSubmitStatus.ACCEPTED
+        await component._asr_audio_dispatcher.wait_idle()
+        await session._request_queue.join()
+        assert hints == ([(True, 0), (False, 100)]
+                         if sequence[-1] == "CANDIDATE_PAUSE" else [(True, 0)])
+    finally:
+        await component._asr_audio_dispatcher.close()
+        await session.close()
+
+
 @pytest.mark.parametrize("cancel_source", ["owner", "resume", "abort"])
 async def test_cancel_inflight_fifo_pause_does_not_deliver_late_hint(
     monkeypatch, qwen_sessions, cancel_source
