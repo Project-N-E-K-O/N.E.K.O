@@ -592,7 +592,7 @@ test('credential and Token Plan changes discard cached and pending model lists',
     await pending;
     await context.fetchModelList(body);
     assert.equal(calls, 2);
-    el('api-key-form').dispatchEvent({ type: 'input', target: { id: 'assistApiKeyInput' } });
+    el('api-key-form').dispatchEvent({ type: 'change', target: { id: 'assistApiKeyInput' } });
     await context.fetchModelList(body);
     assert.equal(calls, 3);
 });

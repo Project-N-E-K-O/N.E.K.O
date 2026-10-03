@@ -887,9 +887,7 @@ function bindProviderDropdownGlobalHandlers() {
     if (providerDropdownHandlersBound) return;
 
     document.addEventListener('click', event => {
-        if (!event.target.closest('.api-provider-dropdown')) {
-            closeAllProviderSelectDropdowns();
-        }
+        closeAllProviderSelectDropdowns(event.target.closest('.api-provider-dropdown'));
     });
 
     document.addEventListener('keydown', event => {
@@ -2492,7 +2490,7 @@ function initModelIdPickers() {
         });
     });
     // 凭证和端点模式变化时，包括掩码密钥对应的服务端值，都使旧列表失效。
-    document.getElementById('api-key-form').addEventListener('input', event => {
+    document.getElementById('api-key-form').addEventListener('change', event => {
         if (/key/i.test(event.target.id)) invalidateModelLists();
     });
     const tokenPlan = document.getElementById('useMimoTokenPlan');

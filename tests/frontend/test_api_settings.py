@@ -2018,3 +2018,22 @@ def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, r
     expect(options).to_have_count(2)
     expect(options.nth(0)).to_have_attribute("data-value", "qwen3.8-flash")
     expect(options.nth(1)).to_have_attribute("data-value", "qwen3.8-plus")
+
+
+@pytest.mark.frontend
+def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: Page, running_server: str):
+    """Clicking another picker input closes the previous menu."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.route('**/api/config/list_models', lambda route: route.fulfill(
+        json={'success': True, 'models': [{'id': 'qwen-test'}]},
+    ))
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="qwen"]', state='attached')
+    mock_page.select_option('#assistApiSelect', 'qwen')
+    mock_page.locator('#assistModelIdInput ~ button').click()
+    menu = mock_page.locator('#assistModelIdInput-model-menu')
+    expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
+    mock_page.evaluate("""() => document.getElementById('conversationModelId')
+        .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
+    expect(menu).to_be_hidden()
