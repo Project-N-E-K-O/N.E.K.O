@@ -42,6 +42,134 @@ function setup() {
     return { dom, api: dom.window.NekoClickGuide, target, doc: dom.window.document };
 }
 
+for (const selector of ['.click-guide-next', '.click-guide-card p', '.click-guide-mask']) {
+    test(`guide presses on ${selector} keep its target open until the next click advances`, async t => {
+        const { dom, api, target, doc } = setup();
+        t.after(() => dom.window.close());
+        const closed = { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 };
+        for (const type of Object.keys(closed)) {
+            doc.addEventListener(type, event => {
+                if (!target.contains(event.target)) {
+                    closed[type]++;
+                    target.style.display = 'none';
+                }
+            });
+        }
+        const guide = api.createRunner({ labels, steps: [
+            { title: 'First tool', target: '#target' },
+            { title: 'Next tool', target: '#target' },
+        ] });
+        await guide.start();
+        const next = doc.querySelector('.click-guide-next');
+        const pressed = doc.querySelector(selector);
+        pressed.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+        pressed.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        const touch = new dom.window.Event('touchstart', { bubbles: true, cancelable: true });
+        assert.equal(pressed.dispatchEvent(touch), true, 'touch default behavior remains available');
+        // Allow geometry tracking to run between press and release, as with a real mouse.
+        await delay(40);
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
+        assert.notEqual(target.style.display, 'none');
+        assert.equal(doc.querySelector('.click-guide-card').style.display, '');
+        pressed.click();
+        await delay(40);
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
+        if (pressed !== next) {
+            assert.equal(guide.index, 0, 'mask and card text clicks do not advance');
+            next.click();
+        }
+        await delay(40);
+        assert.equal(guide.index, 1);
+        await guide.stop();
+        doc.querySelector('#outside').dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+        doc.querySelector('#outside').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        doc.querySelector('#outside').dispatchEvent(new dom.window.Event('touchstart', { bubbles: true }));
+        doc.querySelector('#outside').click();
+        assert.deepEqual(closed, { pointerdown: 1, mousedown: 1, touchstart: 1, click: 1 }, 'normal outside presses still reach the business listeners');
+});
+}
+
+test('choice controls and background preserve outside menus while saving either flow', async t => {
+    const { dom, doc } = setup();
+    t.after(() => dom.window.close());
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    const events = ['pointerdown', 'mousedown', 'touchstart', 'click'];
+    let outside = 0;
+    for (const type of events) doc.addEventListener(type, () => outside++);
+    for (const choice of ['click', 'seven-day']) {
+        let release;
+        const saved = [];
+        const pending = dom.window.NekoTutorialReactivation.open(value => {
+            saved.push(value);
+            return new Promise(resolve => { release = resolve; });
+        });
+        const wrapper = doc.querySelector('.click-guide-choice');
+        const button = wrapper.querySelectorAll('button')[choice === 'click' ? 0 : 1];
+        for (const target of [wrapper, wrapper.querySelector('p'), button]) {
+            for (const type of events.slice(0, -1)) {
+                assert.equal(target.dispatchEvent(new dom.window.Event(type, { bubbles: true, cancelable: true })), true);
+            }
+            if (target !== button) target.click();
+        }
+        button.click();
+        assert.deepEqual(saved, [choice]);
+        assert.equal(outside, 0);
+        assert.equal(button.disabled, true);
+        release();
+        assert.equal(await pending, choice);
+        assert.equal(doc.querySelector('.click-guide-choice'), null);
+    }
+    for (const type of events) doc.querySelector('#outside').dispatchEvent(new dom.window.Event(type, { bubbles: true }));
+    assert.equal(outside, events.length);
+});
+
+test('child guide controls and masks preserve menus while real close and skip still work', async t => {
+    const { dom, api, target } = setup();
+    const popup = new JSDOM('<button id="close">Close</button><button id="outside">Outside</button>', { url: 'http://localhost/settings' });
+    t.after(() => { dom.window.close(); popup.window.close(); });
+    const child = popup.window;
+    child.closed = false;
+    const close = child.document.querySelector('#close');
+    close.getBoundingClientRect = target.getBoundingClientRect;
+    let closes = 0;
+    close.onclick = () => { closes++; };
+    dom.window.open = () => child;
+    const controller = new dom.window.AbortController();
+    api.watchOpenedWindow({ signal: controller.signal, labels, onReturn() {}, copy: {
+        title: 'Return', body: 'Close this page', nextLabel: 'Close', closeSelector: '#close',
+    } });
+    t.after(() => controller.abort());
+    dom.window.open('/settings');
+    await delay(125);
+    const events = ['pointerdown', 'mousedown', 'touchstart', 'click'];
+    let outside = 0;
+    let businessClicks = 0;
+    let skips = 0;
+    dom.window.addEventListener('neko:click-guide-window-skip', () => skips++);
+    child.document.addEventListener('click', event => { if (event.target === close) businessClicks++; });
+    for (const type of events) child.document.addEventListener(type, event => {
+        if (event.target !== close) outside++;
+    });
+    for (const selector of ['.click-guide-card p', '.click-guide-mask', '.click-guide-actions button', '.click-guide-next']) {
+        const control = child.document.querySelector(selector);
+        for (const type of events.slice(0, -1)) {
+            assert.equal(control.dispatchEvent(new child.Event(type, { bubbles: true, cancelable: true })), true);
+        }
+        control.click();
+        assert.equal(outside, 0);
+    }
+    assert.equal(closes, 1, 'return control still invokes the real close action');
+    assert.equal(skips, 1, 'skip control still dispatches to the parent');
+    assert.equal(businessClicks, 1);
+    close.click();
+    assert.equal(closes, 2);
+    assert.equal(businessClicks, 2, 'real business click still bubbles');
+    controller.abort();
+    assert.equal(child.document.querySelector('.click-guide-layer'), null);
+    for (const type of events) child.document.querySelector('#outside').dispatchEvent(new child.Event(type, { bubbles: true }));
+    assert.equal(outside, events.length);
+});
+
 test('opened inline panels guide the real close action before advancing', async () => {
     const { dom, api, target, doc } = setup();
     const close = doc.createElement('button'); close.id = 'close';

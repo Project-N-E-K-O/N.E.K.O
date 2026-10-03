@@ -1342,6 +1342,30 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "modelIdCurrentPlaceholder": "現在使用中：{{model}}",
+        "modelIdFreePlaceholder": "無料版は固定モデルを使用します",
+        "modelPicker": {
+            "fetch": "モデルを取得",
+            "fetchTooltip": "プロバイダーから利用可能なモデル一覧を取得します",
+            "loading": "モデル一覧を取得中…",
+            "noMatch": "一致するモデルがありません",
+            "more": "ほかに {{count}} 件のモデルがあります。キーワードで絞り込めます",
+            "unavailable": {
+                "noProvider": "先にプロバイダーを選択してください",
+                "fixed": "このプロバイダーは固定モデルを使用するため、選択は不要です",
+                "follow": "このモードではモデルは追従先の設定で決まるため、選択は不要です",
+                "missingUrl": "先に API URL を入力してください"
+            },
+            "error": {
+                "urlHint": "API URL に /v1 などのパスが不足していないか確認してください。",
+                "unsupported": "このエンドポイントはモデル一覧を提供していません。モデルIDを手動で入力してください",
+                "key_required": "保存済みのキーは保存時のアドレスでのみ使用できます。APIキーを再入力してください",
+                "core_key_required": "コアプロバイダーが変更されました。API キーを再入力してください",
+                "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください",
+                "empty": "プロバイダーからモデルが返されませんでした",
+                "timeout": "取得がタイムアウトしました。ネットワークを確認して再試行してください"
+            }
+        },
         "disableTts": "TTSを無効化",
         "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
