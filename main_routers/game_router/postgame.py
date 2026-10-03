@@ -56,6 +56,7 @@ from .route_lifecycle import (
     _push_game_speech_cancel,
     _push_game_window_state_change,
     _TAKEOVER_TOKEN_KEY,
+    _clear_route_activity_flags,
     _close_takeover_callback_inbox,
     _settle_game_context_organizer_before_archive,
 )
@@ -1252,36 +1253,39 @@ async def _finalize_game_route_state_inner(
     # / before the archive resolution / before any peer ``/route/start``
     # can replace this state in ``_game_route_states``.
     postgame_context_snapshot = _build_postgame_context_snapshot(state)
-    state["game_route_active"] = False
-    state["game_external_voice_route_active"] = False
-    state["game_external_text_route_active"] = False
-    state["heartbeat_enabled"] = False
+    _clear_route_activity_flags(state)
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
-    await _cancel_route_game_speech_preloads(state)
-    await _cancel_route_game_speech(state, mgr)
-    # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
-    # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
-    # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
-    await _push_game_window_state_change(
-        mgr,
-        action="closed",
-        lanlan_name=lanlan_name,
-        game_type=str(state.get("game_type") or ""),
-        session_id=str(state.get("session_id") or ""),
-        route_instance_id=str(state.get("_sdk_route_instance_id") or ""),
-    )
-    # Release the SessionManager-level takeover so ordinary chat handlers come
-    # back online; chat LLM may produce auto-replies again, but the player has
-    # exited the game so that's the desired behavior. Only this route's own
-    # token releases it: a takeover another owner (or a newer route) holds by
-    # now stays in place.
-    # The token leaves the route state here even without a manager: its
-    # presence is what keeps the game slot locked (``is_game_route_locked``).
-    takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
-    if mgr is not None:
-        mgr.release_takeover(takeover_token)
-    _close_takeover_callback_inbox(state, mgr)
+    try:
+        await _cancel_route_game_speech_preloads(state)
+        await _cancel_route_game_speech(state, mgr)
+        # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
+        # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
+        # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
+        await _push_game_window_state_change(
+            mgr,
+            action="closed",
+            lanlan_name=lanlan_name,
+            game_type=str(state.get("game_type") or ""),
+            session_id=str(state.get("session_id") or ""),
+            route_instance_id=str(state.get("_sdk_route_instance_id") or ""),
+        )
+    finally:
+        # Release the SessionManager-level takeover so ordinary chat handlers
+        # come back online; chat LLM may produce auto-replies again, but the
+        # player has exited the game so that's the desired behavior. Only this
+        # route's own token releases it: a takeover another owner (or a newer
+        # route) holds by now stays in place. This runs even if the steps
+        # above raised or were cancelled: the token's presence on the state is
+        # what keeps the game slot locked (``is_game_route_locked``), so it
+        # must always leave, with or without a manager.
+        takeover_token = state.pop(_TAKEOVER_TOKEN_KEY, None)
+        released = mgr.release_takeover(takeover_token) if mgr is not None else False
+        takeover_owner = getattr(mgr, "takeover_owner", None)
+        # Hand parked cues back only when nobody else holds the takeover now;
+        # otherwise they would be resubmitted straight into that owner's sink.
+        handoff = released or not callable(takeover_owner) or takeover_owner() is None
+        _close_takeover_callback_inbox(state, mgr, handoff=handoff)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
     resume_voice = getattr(

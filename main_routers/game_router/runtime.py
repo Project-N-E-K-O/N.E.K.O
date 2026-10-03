@@ -148,6 +148,7 @@ from .route_lifecycle import (  # noqa: F401
     _push_game_window_state_change,
     _TAKEOVER_CALLBACK_INBOX_KEY,
     _TAKEOVER_TOKEN_KEY,
+    _clear_route_activity_flags,
     _close_takeover_callback_inbox,
     _route_heartbeat_expired,
     _route_heartbeat_timeout_seconds,
@@ -208,7 +209,7 @@ from config.prompts.prompts_minigame_route import (
     get_game_recent_history_message_labels,
 )
 from ..shared_state import get_config_manager, get_session_manager
-from utils.external_route_registry import is_external_route_locked
+from utils.external_route_registry import is_route_slot_taken
 from main_logic.mirror_meta import (
     MIRROR_USER_TEXT_INPUT_TYPE,
     MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE,
@@ -1877,10 +1878,7 @@ async def _finalize_superseded_route_if_current(
 
 def _deactivate_unstarted_route(state: dict, exit_reason: str) -> None:
     """Flip a just-activated route off without running its exit flow."""
-    state['game_route_active'] = False
-    state['game_external_voice_route_active'] = False
-    state['game_external_text_route_active'] = False
-    state['heartbeat_enabled'] = False
+    _clear_route_activity_flags(state)
     state['exit_reason'] = exit_reason
 
 
@@ -1890,13 +1888,12 @@ def _route_slot_owned_by_external(lanlan_name: str, mgr) -> bool:
     The game kind is excluded: an older mini-game route is replaced by the
     supersede flow in ``game_route_start``. Another kind keeps the slot until
     its exit flow finishes (``is_locked``), and a takeover held by another
-    owner would make the game's own acquire fail.
+    owner would make the game's own acquire fail. The slash-command entry in
+    ``main_logic/core/turn.py`` asks the same ``is_route_slot_taken``.
     """
-    if is_external_route_locked(lanlan_name, exclude_kind="game"):
-        return True
     takeover_owner = getattr(mgr, "takeover_owner", None)
     owner = takeover_owner() if callable(takeover_owner) else None
-    return owner not in (None, "game")
+    return is_route_slot_taken(lanlan_name, kind="game", takeover_owner=owner)
 
 
 async def _start_watch_speech_takeover(state: dict, manager) -> None:
@@ -2117,19 +2114,9 @@ async def game_route_start(game_type: str, request: Request):
                         session_id=session_id,
                         expected_state=state,
                     )
-                from main_logic.core.takeover import TakeoverOwned
-                try:
-                    takeover_token = mgr.acquire_takeover("game", _takeover_dispatcher)
-                except TakeoverOwned as exc:
-                    _deactivate_unstarted_route(state, "route_owned_by_external")
-                    logger.warning(
-                        "🎮 route/start 被拒：takeover 已被 %s 持有: game=%s session=%s lanlan=%s",
-                        exc.current_owner,
-                        game_type,
-                        session_id,
-                        lanlan_name,
-                    )
-                    return {"ok": False, "reason": "route_owned_by_external"}
+                # Cannot raise TakeoverOwned: the re-check above refused any
+                # other owner and nothing has awaited since.
+                takeover_token = mgr.acquire_takeover("game", _takeover_dispatcher)
                 # Stored before any await so every exit path (route end,
                 # supersede, failed speech takeover) releases this exact token.
                 state[_TAKEOVER_TOKEN_KEY] = takeover_token

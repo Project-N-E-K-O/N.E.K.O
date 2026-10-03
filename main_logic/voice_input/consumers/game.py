@@ -44,7 +44,20 @@ class GameVoiceInputConsumer:
     )
 
     def is_available(self) -> bool:
-        return is_external_route_active(self.lanlan_name())
+        # Same conditions prepare_turn will accept: a pinnable game identity,
+        # or an active non-game kind that takes voice transcripts per instance.
+        lanlan_name = self.lanlan_name()
+        if not is_external_route_active(lanlan_name):
+            return False
+        if get_active_game_route_identity(lanlan_name) is not None:
+            return True
+        route = get_active_external_route(lanlan_name)
+        return (
+            route is not None
+            and route.kind != "game"
+            and route.route_voice_transcript is not None
+            and route.current_instance is not None
+        )
 
     async def prepare_turn(self, token: VoiceTurnToken) -> bool:
         if token in self._prepared_routes or token in self._prepared_external_kinds:

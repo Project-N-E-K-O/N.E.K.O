@@ -72,16 +72,26 @@ _TAKEOVER_CALLBACK_INBOX_KEY = "_takeover_callback_inbox"
 _TAKEOVER_TOKEN_KEY = "_takeover_token"
 
 
-def _close_takeover_callback_inbox(state: dict, mgr=None) -> None:
+def _clear_route_activity_flags(state: dict) -> None:
+    """Flip every route-activity flag off (exit flow and unstarted rollback)."""
+    state["game_route_active"] = False
+    state["game_external_voice_route_active"] = False
+    state["game_external_text_route_active"] = False
+    state["heartbeat_enabled"] = False
+
+
+def _close_takeover_callback_inbox(state: dict, mgr=None, *, handoff: bool = True) -> None:
     """Close this route's takeover inbox; recent cues return to ordinary delivery.
 
     Call after the takeover flags are cleared, so resubmitted cues are queued
-    for normal proactive delivery instead of the closed sink.
+    for normal proactive delivery instead of the closed sink. With
+    ``handoff=False`` (another owner holds the takeover by now) the cues are
+    declined instead: resubmitting them would land in that owner's sink.
     """
     close = getattr(state.get(_TAKEOVER_CALLBACK_INBOX_KEY), "close", None)
     if not callable(close):
         return
-    submit = getattr(mgr, "submit_proactive_callback", None)
+    submit = getattr(mgr, "submit_proactive_callback", None) if handoff else None
     for callback in close() or ():
         if callable(submit):
             try:

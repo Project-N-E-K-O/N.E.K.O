@@ -192,7 +192,8 @@ def test_startup_backfills_after_cloudsave_bootstrap_and_before_character_init()
     backfill = _first_call_line("abackfill_character_uids")
     assert _first_call_line("bootstrap_local_cloudsave_environment") < backfill
     assert _first_call_line("_run_cloudsave_manager_action") < backfill
-    assert backfill < _first_call_line("initialize_character_data")
+    # After initialize_character_data: on a fresh install it writes characters.json.
+    assert _first_call_line("initialize_character_data") < backfill
 
 
 # --- create / copy / import / rename / delete ------------------------------------

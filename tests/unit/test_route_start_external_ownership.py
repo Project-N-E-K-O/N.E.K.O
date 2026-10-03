@@ -356,3 +356,86 @@ async def test_game_slot_lock_survives_a_manager_replaced_mid_teardown(
         release.set()
         await asyncio.wait_for(finalize, timeout=5)
         assert gr_runtime.is_game_route_locked("Lan") is False
+
+
+
+def _parked_cue():
+    import asyncio
+
+    from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+
+    cue = {"origin": "event", "status": "completed", "summary": "gift", "detail": "gift",
+           "source_kind": "plugin", "source_name": "neko_live", "priority": 0,
+           "coalesce_key": "", "media_images": []}
+    cue[DELIVERY_ACK_FUTURE_KEY] = asyncio.get_running_loop().create_future()
+    return cue
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("still_owner", [True, False], ids=["own-token", "superseded-token"])
+async def test_exit_hands_parked_cues_back_only_when_nobody_else_owns_the_takeover(
+    monkeypatch, still_owner,
+):
+    """A superseded route's parked cues must not land in the new owner's sink.
+
+    Mutation: handing the inbox back unconditionally turns the superseded case red.
+    """
+    from unittest.mock import Mock
+
+    from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+
+    manager = TakeoverManagerDouble(submit_proactive_callback=Mock())
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", AsyncMock())
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        cue = _parked_cue()
+        assert state[_TAKEOVER_CALLBACK_INBOX_KEY].accept(cue) is True
+        new_sink = Mock(return_value=True)
+        if not still_owner:
+            # A newer route of the same owner took the takeover over meanwhile.
+            manager.acquire_takeover("game", AsyncMock(), callback_sink=new_sink)
+
+        await gr_runtime._finalize_game_route_state(state, reason="test_end")
+
+    if still_owner:
+        manager.submit_proactive_callback.assert_called_once()
+        assert manager.takeover_owner() is None
+    else:
+        manager.submit_proactive_callback.assert_not_called()
+        new_sink.assert_not_called()
+        assert cue[DELIVERY_ACK_FUTURE_KEY].result() is False
+        assert manager.takeover_owner() == "game"
+
+
+@pytest.mark.asyncio
+async def test_exit_releases_the_token_even_when_teardown_raises(_icebreaker_clean, monkeypatch):
+    """A teardown step that raises must not leave the slot locked forever.
+
+    Mutation: releasing outside a ``finally`` turns this red.
+    """
+    manager = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+    gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+
+    async def _failing_window_close(*_args, action="", **_kwargs):
+        if action == "closed":
+            raise RuntimeError("window close failed")
+
+    gr_patch_all(monkeypatch, "_push_game_window_state_change", _failing_window_close)
+    with reset_game_route_state():
+        assert (await _start())["ok"] is True
+        state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        with pytest.raises(RuntimeError, match="window close failed"):
+            await gr_runtime._finalize_game_route_state(state, reason="test_end")
+
+        assert _TAKEOVER_TOKEN_KEY not in state
+        assert manager.takeover_owner() is None
+        assert gr_runtime.is_game_route_locked("Lan") is False
+        accepted = await icebreaker_router.icebreaker_route_start(
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"})
+        )
+        assert accepted["ok"] is True

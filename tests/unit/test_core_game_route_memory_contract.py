@@ -5156,3 +5156,36 @@ async def test_refused_mini_game_command_still_drops_staged_images_without_inter
     mgr.session.handle_interruption.assert_not_awaited()
     mgr._clear_tts_pipeline.assert_not_awaited()
     mgr.send_status.assert_awaited_once()
+
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mini_game_command_is_refused_while_another_owner_holds_the_takeover():
+    """Same predicate as /route/start: a takeover held by another owner refuses too.
+
+    Mutation: checking only the registry lock (the earlier version) turns this red.
+    """
+    from main_logic.core.takeover import TakeoverToken
+
+    mgr = _make_transcript_manager()
+    mgr._takeover_token = TakeoverToken(owner="visit", issued_at=0.0)
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session = None
+    mgr.session_ready = False
+    mgr.is_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    sent_types = [payload.get("type") for payload in mgr.websocket.sent]
+    assert "mini_game_invite_resolved" not in sent_types
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr.send_status.assert_awaited_once()

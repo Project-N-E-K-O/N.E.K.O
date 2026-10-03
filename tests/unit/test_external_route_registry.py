@@ -383,3 +383,26 @@ async def test_prepared_game_final_is_not_delivered_to_a_route_that_took_over(
         await consumer.on_final(VoiceTranscriptEvent(turn_token=token, provider="qwen", text="shoot"))
 
     handler.assert_not_awaited()
+
+
+
+@pytest.mark.parametrize(
+    ("with_handler", "with_instance", "available"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+    ids=["takes-voice", "no-voice-handler", "no-instance-id"],
+)
+def test_independent_asr_availability_matches_what_prepare_accepts(
+    empty_registry, with_handler, with_instance, available,
+):
+    # Mutation: is_available returning True for any active kind turns the
+    # last two cases red -- the voice registry would hand the utterance to a
+    # consumer that then refuses to prepare it.
+    registry.register_external_route_kind(_kind(
+        "visit",
+        active=True,
+        route_voice_transcript=AsyncMock(return_value=True) if with_handler else None,
+        instance="visit-1" if with_instance else None,
+    ))
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+
+    assert consumer.is_available() is available

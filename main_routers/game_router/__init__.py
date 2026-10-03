@@ -273,6 +273,7 @@ from .route_lifecycle import (  # noqa: F401
     _push_game_window_state_change,
     _TAKEOVER_CALLBACK_INBOX_KEY,
     _TAKEOVER_TOKEN_KEY,
+    _clear_route_activity_flags,
     _close_takeover_callback_inbox,
     _GAME_ROUTE_OUTPUT_LIMIT,
     _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,

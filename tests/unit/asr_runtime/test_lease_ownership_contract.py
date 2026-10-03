@@ -83,6 +83,11 @@ async def test_hard_mute_overrides_game_consumer(monkeypatch) -> None:
         "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
+    # An active game route always has a pinnable identity; availability requires it.
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("soccer", "match-1", ""),
+    )
 
     await runtime._handle_voice_input_control(
         "lease_sync",

@@ -24,9 +24,12 @@ those branches. Hijack points now ask the registry instead:
   auto-start gate in ``main_logic/core/streaming.py``, the independent ASR
   voice consumer) and the proactive / context-prompt gates look only at
   ``is_active``;
-- slot checks (a new route asking whether it may start) and the character
-  rename / delete guard look at ``is_locked``, which a kind can keep true
-  while its exit flow is still running after ``is_active`` has turned false.
+- slot checks (a new route asking whether it may start) look at
+  ``is_locked``, which a kind can keep true while its exit flow is still
+  running after ``is_active`` has turned false.
+
+``is_character_lifecycle_locked`` is the predicate for a character
+rename / delete guard; no endpoint consults it yet.
 
 The registry stores callables only. It lives in ``utils/`` so that
 ``main_logic/`` can consult it without importing ``main_routers/``; route
@@ -132,12 +135,30 @@ def is_external_route_locked(
     return False
 
 
+def is_route_slot_taken(
+    lanlan_name: str,
+    *,
+    kind: str,
+    takeover_owner: str | None = None,
+) -> bool:
+    """True when something other than ``kind`` occupies ``lanlan_name``'s slot.
+
+    Shared by every place that decides whether a route of ``kind`` may start:
+    another registered kind still locks the slot, or the session takeover is
+    held by a different owner (which would make ``kind``'s own acquire fail).
+    Same-kind predecessors are left to that kind's own supersede logic.
+    """
+    if is_external_route_locked(lanlan_name, exclude_kind=kind):
+        return True
+    return takeover_owner not in (None, kind)
+
+
 def is_character_lifecycle_locked(lanlan_name: str) -> bool:
-    """Guard for character rename / delete.
+    """Predicate for a character rename / delete guard (no endpoint uses it yet).
 
     Besides an occupied slot, a kind may still be writing data keyed to this
-    character in the background after its route ended. Those tasks block
-    rename / delete but never block starting a new route.
+    character in the background after its route ended. Those tasks would
+    block rename / delete but never block starting a new route.
     """
     if is_external_route_locked(lanlan_name):
         return True
