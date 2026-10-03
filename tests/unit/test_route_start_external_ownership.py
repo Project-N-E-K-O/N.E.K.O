@@ -307,6 +307,38 @@ async def test_dropping_an_expired_route_state_releases_its_takeover_token(
         manager._resume_independent_voice_input_after_game.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_a_failing_expired_route_state_is_kept_and_does_not_stop_the_others(
+    _icebreaker_clean, monkeypatch,
+):
+    """A release that raises keeps that state (and its token) for the next
+    sweep and does not stop the sweep over the remaining states.
+
+    Mutation: dropping the state before releasing, or letting the error escape
+    the loop, turns this red.
+    """
+    broken = TakeoverManagerDouble(lanlan_name="Broken")
+    broken.release_takeover = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
+    healthy = TakeoverManagerDouble()
+    gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Broken": broken, "Lan": healthy})
+    healthy_token = healthy.acquire_takeover("game", AsyncMock())
+    with reset_game_route_state():
+        for lanlan, token in (("Broken", object()), ("Lan", healthy_token)):
+            gr_runtime._game_route_states[(lanlan, "drawing_guess")] = {
+                "lanlan_name": lanlan,
+                "game_type": "drawing_guess",
+                "game_route_active": False,
+                "exit_started_at": 0.0,
+                _TAKEOVER_TOKEN_KEY: token,
+            }
+
+        await gr_runtime._drop_expired_route_states(now=10**9)
+
+        assert ("Broken", "drawing_guess") in gr_runtime._game_route_states
+        assert ("Lan", "drawing_guess") not in gr_runtime._game_route_states
+    assert healthy.takeover_owner() is None
+
+
 class _LanguageManager:
     def __init__(self):
         self.user_language = "zh-CN"

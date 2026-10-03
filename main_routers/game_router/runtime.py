@@ -5116,12 +5116,20 @@ async def cleanup_expired_sessions():
             k for k, v in list(_game_sessions.items())
             if now - v['last_activity'] > _SESSION_TIMEOUT_SECONDS
         ]
+        # One bad entry must not end this sweeper task: it also runs the
+        # heartbeat-timeout fallback for every route.
         for key in expired:
-            lanlan_name, game_type, session_id = _parse_game_session_key(key)
-            if await _close_and_remove_session(game_type, session_id, lanlan_name):
-                logger.info("🎮 清理过期游戏 session: %s", key)
+            try:
+                lanlan_name, game_type, session_id = _parse_game_session_key(key)
+                if await _close_and_remove_session(game_type, session_id, lanlan_name):
+                    logger.info("🎮 清理过期游戏 session: %s", key)
+            except Exception as e:
+                logger.warning("🎮 清理过期游戏 session 失败: key=%s err=%s", key, e, exc_info=True)
 
-        await _drop_expired_route_states(now)
+        try:
+            await _drop_expired_route_states(now)
+        except Exception as e:
+            logger.warning("🎮 清理过期游戏路由状态失败: err=%s", e, exc_info=True)
 
 
 async def _drop_expired_route_states(now: float) -> None:
@@ -5136,6 +5144,10 @@ async def _drop_expired_route_states(now: float) -> None:
     the voice input is resumed when this release returned it to core. If the
     stuck flow ever continues, its own release finds no token and its voice
     resume finds the lease already back with core.
+
+    Each state is handled on its own: a failure is logged and leaves that
+    state (and whatever token it still holds) in place for the next sweep
+    instead of dropping the token with it, and does not stop the others.
     """
     expired_routes = [
         k for k, v in list(_game_route_states.items())
@@ -5145,23 +5157,31 @@ async def _drop_expired_route_states(now: float) -> None:
         )
     ]
     for key in expired_routes:
-        state = _game_route_states.pop(key, None)
+        state = _game_route_states.get(key)
         if not state:
             continue
-        if state.get(_TAKEOVER_TOKEN_KEY) is not None:
-            lanlan_name = str(state.get("lanlan_name") or "")
-            mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
-            handoff = _release_route_takeover(state, mgr)
-            logger.warning(
-                "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s handoff=%s",
-                key,
-                handoff,
-            )
-            # Same rule as the exit flow: a newer owner's voice lease stays.
-            resume_voice = getattr(mgr, "_resume_independent_voice_input_after_game", None)
-            if handoff and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
-                try:
-                    await resume_voice()
-                except Exception as exc:
-                    logger.warning("🎮 清理过期游戏路由时恢复语音输入失败: key=%s err=%s", key, exc)
+        try:
+            if state.get(_TAKEOVER_TOKEN_KEY) is not None:
+                lanlan_name = str(state.get("lanlan_name") or "")
+                mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+                handoff = _release_route_takeover(state, mgr)
+                logger.warning(
+                    "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s handoff=%s",
+                    key,
+                    handoff,
+                )
+                # Same rule as the exit flow: a newer owner's voice lease stays.
+                resume_voice = getattr(mgr, "_resume_independent_voice_input_after_game", None)
+                if handoff and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
+                    try:
+                        await resume_voice()
+                    except Exception as exc:
+                        logger.warning("🎮 清理过期游戏路由时恢复语音输入失败: key=%s err=%s", key, exc)
+        except Exception as exc:
+            logger.warning("🎮 清理过期游戏路由状态失败，下次再试: key=%s err=%s", key, exc, exc_info=True)
+            continue
+        # A /route/start during the voice resume may have put a new state at
+        # this key; only the expired one is dropped.
+        if _game_route_states.get(key) is state:
+            _game_route_states.pop(key, None)
         logger.info("🎮 清理过期游戏路由状态: %s", key)
