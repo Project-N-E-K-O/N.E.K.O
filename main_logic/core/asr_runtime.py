@@ -2878,12 +2878,47 @@ class AsrRuntimeMixin:
             connect_budget_seconds=remaining_deadline_seconds,
         )
 
+    def _hold_owed_wrap_up_for_voice_turn(self, turn_id: str) -> None:
+        """Hold the offline reply's owed wrap-up until voice turn ``turn_id`` ends.
+
+        Set right before the turn interrupts the offline reply: the
+        interrupted reply's task can end inside that interruption's awaits,
+        and its idle notification must not pay the wrap-up while the user is
+        still speaking. One hold at a time: a newer voice turn takes it over.
+        See ``TurnMixin._voice_turn_holds_owed_wrap_up``.
+        """
+        self._voice_turn_wrap_up_hold = turn_id
+
+    def _release_voice_turn_wrap_up_hold(self, turn_id: str | None) -> None:
+        """Voice turn ``turn_id`` ended (None: every turn): release its hold.
+
+        Then settle the owed wrap-up in a task of its own: the turn's reply,
+        if it had one, has returned (its completion paid it), and one that
+        ended without a reply leaves nothing else to pay it. Also when the
+        ending task is being cancelled: the transcript worker is cancelled on
+        ASR errors, detaches and transport aborts too, with the offline
+        session alive and idle (a torn-down one pays nothing, see
+        ``_settle_owed_turn_wrap_up``). A hold another turn has taken over is
+        left alone.
+        """
+        hold = getattr(self, "_voice_turn_wrap_up_hold", None)
+        if hold is None or (turn_id is not None and hold != turn_id):
+            return
+        self._voice_turn_wrap_up_hold = None
+        if not getattr(self, "_turn_wrap_up_owed", False):
+            return
+        settle = getattr(self, "_settle_owed_turn_wrap_up", None)
+        fire_task = getattr(self, "_fire_task", None)
+        if callable(settle) and callable(fire_task):
+            fire_task(settle())
+
     def _abandon_core_voice_turn(
         self,
         turn_id: str | None = None,
         *,
         session_ref: object | None = None,
     ) -> None:
+        self._release_voice_turn_wrap_up_hold(turn_id)
         turns = getattr(self, "_core_multimodal_turns", None)
         if turns is not None:
             if turn_id is None:
@@ -5595,9 +5630,14 @@ class AsrRuntimeMixin:
                         )
                     return False
             else:
-                interrupt = getattr(session_ref, "handle_interruption", None)
-                if callable(interrupt):
-                    await interrupt()
+                # Offline: close the reply this voice turn interrupted before
+                # handle_new_message clears its text buffer. Its wrap-up is
+                # owed and held by this turn: paid by its reply's completion,
+                # or settled when the turn ends without one
+                # (_abandon_core_voice_turn), never while the user is still
+                # speaking.
+                self._hold_owed_wrap_up_for_voice_turn(external_turn_id)
+                await self._interrupt_offline_reply(session_ref)
             if not operation_is_current():
                 if abandon_on_failure:
                     self._abandon_core_voice_turn(

@@ -5140,6 +5140,13 @@
                         }
                     })();
 
+                // -------- system turn abandoned --------
+                // The reply to this request was interrupted: release only what was
+                // held for that request (rollback draft, last-submitted marker).
+                // Never seal a bubble here; the interrupting turn owns the current one.
+                } else if (response.type === 'system' && response.data === 'turn abandoned') {
+                    clearPendingRollbackForRequest(response.request_id);
+
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {

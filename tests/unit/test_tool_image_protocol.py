@@ -635,7 +635,8 @@ async def test_offline_client_is_born_knowing_which_session_it_is():
         "handle_output_transcript", "handle_connection_error",
         "handle_response_complete", "handle_repetition_detected",
         "handle_response_discarded", "send_status",
-        "handle_proactive_complete",
+        "handle_proactive_complete", "_close_displaced_offline_turn",
+        "_on_offline_session_idle",
     ):
         setattr(manager, callback, lambda *a, **k: None)
 

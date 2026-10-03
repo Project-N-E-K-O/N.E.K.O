@@ -198,6 +198,10 @@ def _make_manager():
         mgr.user_activity.append(interrupted_speech_id)
 
     async def send_lanlan_response(text, is_first_chunk=False, turn_id=None, metadata=None, **_kwargs):
+        # 真实实现在发布边界复查 publish_if，发布后同步调用 on_published。
+        publish_if = _kwargs.get("publish_if")
+        if publish_if is not None and not publish_if():
+            return None
         mgr.sent_responses.append({
             "text": text,
             "is_first_chunk": is_first_chunk,
@@ -210,6 +214,9 @@ def _make_manager():
         # 都会对"send 到底 track 了没有"失明。
         if _kwargs.get("track_ai_turn", True):
             mgr._current_ai_turn_text += text
+        on_published = _kwargs.get("on_published")
+        if on_published is not None:
+            on_published(0.0)
 
     async def ensure_tts_pipeline_alive():
         return None
@@ -228,6 +235,22 @@ def test_clean_frontend_memory_text_strips_c0_and_c1_controls():
         mgr,
         " hello\x00 \x85world\x9f ",
     ) == "hello world"
+
+
+def _spy_discard_tts_clear(mgr):
+    """A discard clears TTS in steps (``_interrupt_tts_now`` and
+    ``_let_tts_interrupt_land`` before its frontend notice,
+    ``_finish_tts_clear`` after), not via ``_clear_tts_pipeline``: spy on
+    them."""
+    mgr._interrupt_tts_now = Mock(return_value="tts-interrupt")
+    mgr._let_tts_interrupt_land = AsyncMock()
+    mgr._finish_tts_clear = AsyncMock()
+
+
+def _assert_discard_left_tts_alone(mgr):
+    mgr._interrupt_tts_now.assert_not_called()
+    mgr._let_tts_interrupt_land.assert_not_awaited()
+    mgr._finish_tts_clear.assert_not_awaited()
 
 
 def _make_transcript_manager():
@@ -2762,13 +2785,13 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
     discard_callback = mgr.session.stream_text.await_args.kwargs["response_discarded_callback"]
     mgr._active_text_request_id = "req-B"
     mgr.websocket = _FakeConnectedWebSocket()
-    mgr._clear_tts_pipeline = AsyncMock()
+    _spy_discard_tts_clear(mgr)
 
     await discard_callback("guard", 1, 3, False, None)
 
     assert mgr.websocket.sent == []
     assert mgr._active_text_request_id == "req-B"
-    mgr._clear_tts_pipeline.assert_not_awaited()
+    _assert_discard_left_tts_alone(mgr)
     assert {
         "type": "system",
         "data": "response_discarded_clear",
@@ -2791,7 +2814,7 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
     mgr._active_text_request_id = "req-B"
     mgr.current_speech_id = "speech-B"
     mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
-    mgr._clear_tts_pipeline = AsyncMock()
+    _spy_discard_tts_clear(mgr)
     mgr._emit_turn_end = AsyncMock()
     mgr._finalize_turn_after_emit = AsyncMock()
 
@@ -2810,7 +2833,7 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
     assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
     assert mgr.session._conversation_history == ["request-B-history"]
     assert mgr.sent_responses == []
-    mgr._clear_tts_pipeline.assert_not_awaited()
+    _assert_discard_left_tts_alone(mgr)
     mgr._emit_turn_end.assert_not_awaited()
     assert mgr.websocket.sent == []
     # Shared-output writes are suppressed, session accounting still runs.
@@ -2975,7 +2998,7 @@ async def test_unowned_discard_callback_keeps_global_clear_behavior():
     """Legacy/proactive discard callbacks still clear shared output globally."""
     mgr = _make_manager()
     mgr._active_text_request_id = "req-current"
-    mgr._clear_tts_pipeline = AsyncMock()
+    _spy_discard_tts_clear(mgr)
 
     await core_module.LLMSessionManager.handle_response_discarded(
         mgr,
@@ -2985,7 +3008,9 @@ async def test_unowned_discard_callback_keeps_global_clear_behavior():
         True,
     )
 
-    mgr._clear_tts_pipeline.assert_awaited_once()
+    mgr._interrupt_tts_now.assert_called_once_with()
+    mgr._let_tts_interrupt_land.assert_awaited_once()
+    mgr._finish_tts_clear.assert_awaited_once_with("tts-interrupt")
     assert {
         "type": "system",
         "data": "response_discarded_clear",
@@ -3315,6 +3340,126 @@ def test_mini_game_magic_command_table_is_matchable_and_launchable():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind,busy,expect_wrap_up", [
+    ("response", False, True),
+    ("agent_callback", False, False),
+    ("response", True, False),
+])
+async def test_mini_game_command_pays_only_an_owed_wrap_up_on_an_idle_session(
+    kind, busy, expect_wrap_up,
+):
+    """No reply follows a command, so it pays an interrupted reply's owed
+    wrap-up. An agent-callback reply owes none (handle_proactive_complete
+    runs no wrap-up), and a reply still live or finishing keeps the debt for
+    its own completion."""
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._process_stream_data_internal = AsyncMock()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session_ready = True
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._current_ai_turn_text = "half a reply"
+    # Pays the debt the way the real one does (first statement).
+    mgr._finalize_turn_after_emit = AsyncMock(
+        side_effect=lambda: setattr(mgr, "_turn_wrap_up_owed", False)
+    )
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session._pending_plugin_images = []
+    mgr.session.set_proactive_screenshot = Mock()
+    mgr.session.handle_interruption = AsyncMock(return_value=kind)
+    mgr.session._is_responding = busy
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    assert mgr._finalize_turn_after_emit.await_count == int(expect_wrap_up)
+    assert getattr(mgr, "_turn_wrap_up_owed", False) == (kind == "response" and busy)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_openclaw_command_pays_an_owed_wrap_up_on_an_idle_session(monkeypatch, busy):
+    """The explicit OpenClaw command starts no reply either: the typed input's
+    hold (``_process_stream_input``) pays the interrupted reply's owed wrap-up
+    once the command has sent its own turn end, unless a reply is still
+    finishing."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.session.handle_interruption = AsyncMock(return_value="response")
+    mgr.session._is_responding = busy
+    mgr._current_ai_turn_text = "half a reply"
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+    sent_at_wrap_up = []
+
+    async def finalize():
+        sent_at_wrap_up.append(mgr.sync_message_queue.messages[-1].get("data"))
+        mgr._turn_wrap_up_owed = False
+
+    mgr._finalize_turn_after_emit = AsyncMock(side_effect=finalize)
+    mgr._fire_task = lambda coro: coro.close()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_input(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
+    )
+
+    mgr.session.stream_text.assert_not_called()
+    assert mgr._finalize_turn_after_emit.await_count == int(not busy)
+    assert sent_at_wrap_up == ([] if busy else ["turn end agent_callback"])
+    assert mgr._turn_wrap_up_owed is busy
+    assert mgr._reply_setup_depth == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_pays_the_owed_wrap_up_even_while_a_swap_is_imminent():
+    mgr = _make_transcript_manager()
+    mgr._turn_wrap_up_owed = True
+    mgr.is_hot_swap_imminent = True
+    mgr.pending_agent_callbacks = []
+    await core_module.LLMSessionManager._finalize_turn_after_emit(mgr)
+    assert mgr._turn_wrap_up_owed is False
+
+
+def test_the_frontend_turn_abandoned_branch_only_releases_its_request():
+    """'turn abandoned' must not seal a bubble or emit turn-end lifecycle
+    events: the interrupting turn owns the current bubble."""
+    import re
+    from pathlib import Path
+
+    source = Path("static/app/app-websocket.js").read_text(encoding="utf-8")
+    match = re.search(
+        r"response\.data === 'turn abandoned'\) \{(?P<body>.*?)\n\s*// -------- system turn end",
+        source, re.S,
+    )
+    assert match, "the 'turn abandoned' branch is missing"
+    statements = [
+        line.strip() for line in match.group("body").splitlines()
+        if line.strip() and not line.strip().startswith("//") and line.strip() != "}"
+    ]
+    assert statements == ["clearPendingRollbackForRequest(response.request_id);"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("session_state", ["no_session", "starting", "realtime", "offline"])
 async def test_mini_game_magic_command_launches_before_session_lifecycle(session_state):
     """A slash mini-game alias needs no LLM session: no start, no handoff, no stream."""
@@ -3331,6 +3476,15 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
     mgr.is_active = True
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
+    # The interrupted offline reply is closed as its own AI turn (its
+    # cancelled generation never reaches turn end).
+    ai_turn_notes = []
+    mgr._note_ai_turn = lambda text=None, **_kw: ai_turn_notes.append(text)
+    mgr._current_ai_turn_text = "half a reply"
+    sent_at_finalize = []
+    mgr._finalize_turn_after_emit = AsyncMock(
+        side_effect=lambda: sent_at_finalize.append(len(mgr.websocket.sent))
+    )
     if session_state == "no_session":
         mgr.session = None
         mgr.is_active = False
@@ -3371,12 +3525,24 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
     mgr._process_stream_data_internal.assert_not_awaited()
     assert mgr.pending_input_data == []
     mgr._clear_tts_pipeline.assert_awaited_once()
+    assert ai_turn_notes == (["half a reply"] if session_state == "offline" else [])
+    sync_messages = list(mgr.sync_message_queue.messages)
     if session_state == "offline":
         mgr.session.handle_interruption.assert_awaited_once()
         assert mgr.session._pending_images == [earlier_image]
         mgr.session.set_proactive_screenshot.assert_called_once_with(None)
         assert mgr.session._pending_plugin_images == []
-    assert mgr.sync_message_queue.messages[0]["data"]["metadata"] == {
+        # cross_server leaves the interrupted assistant turn before the
+        # command's mirrored user line arrives, and the wrap-up the skipped
+        # completion owned runs here: no new reply follows a command.
+        assert sync_messages.pop(0) == {"type": "system", "data": "turn end"}
+        mgr._finalize_turn_after_emit.assert_awaited_once_with()
+        # Only after the command's own turn end and launch were sent, so
+        # delivered callbacks cannot race the command's cleanup.
+        assert sent_at_finalize == [2]
+    else:
+        mgr._finalize_turn_after_emit.assert_not_awaited()
+    assert sync_messages[0]["data"]["metadata"] == {
         "source": "mini_game",
         "kind": "magic_command",
         "command": "watch-together",
@@ -3412,7 +3578,8 @@ async def test_mini_game_magic_command_removes_only_its_own_staged_attachment(mo
         mgr.session._pending_images.append(image_b64)
 
     mgr.session.stream_image = AsyncMock(side_effect=_stage)
-    mgr.session.handle_interruption = AsyncMock()
+    # Nothing in flight: this test is about the staged attachment.
+    mgr.session.handle_interruption = AsyncMock(return_value="")
     mgr.session.set_proactive_screenshot = Mock()
     mgr.is_active = True
     mgr.session_ready = True
@@ -4590,6 +4757,189 @@ async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interrupted_text", ["A-half;", ""])
+async def test_typed_text_closes_the_interrupted_reply_as_its_own_ai_turn(
+    monkeypatch, interrupted_text,
+):
+    """A cancelled offline generation skips ``on_response_done``, so its turn
+    end never flushes the half it already said. The text interruption closes
+    it; otherwise it is glued onto the next reply's AI turn. Nothing said,
+    nothing recorded: an empty buffer must not become a phantom AI turn."""
+    from main_logic.core._shared import _ReplyTurn
+    from main_logic.omni_offline_client._lifecycle import InterruptedReply
+
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    notes = []
+    mgr._note_ai_turn = lambda text=None, **_kw: notes.append(text)
+    mgr._current_ai_turn_text = interrupted_text
+    mgr._active_text_request_id = "req-old"
+    meta = {"kind": "avatar_interaction"}
+    mgr._pending_turn_meta = meta
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    async def _stream_text(_text, **_kwargs):
+        notes.append("stream_text")
+        # The owed wrap-up must not run while this newer reply streams.
+        mgr._finalize_turn_after_emit.assert_not_awaited()
+        mgr._current_ai_turn_text += "B-full."
+
+    # The cut reply hands back the snapshot it was started with.
+    session.handle_interruption = AsyncMock(return_value=InterruptedReply(
+        "response",
+        owner=_ReplyTurn(speech_id=mgr.current_speech_id, request_id="req-old", meta=meta),
+    ))
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "换个话题"},
+    )
+
+    assert notes == ([interrupted_text] if interrupted_text else []) + ["stream_text"]
+    assert mgr._current_ai_turn_text == "B-full."
+    # cross_server needs a turn end to stop merging the next reply into the
+    # interrupted one; nothing said, nothing to close.
+    turn_ends = [m for m in mgr.sync_message_queue.messages
+                 if isinstance(m, dict) and m.get("data") == "turn end"]
+    # The interrupted request's id rides on its turn end and is retired, as
+    # handle_response_complete would have done.
+    assert turn_ends == (
+        [{"type": "system", "data": "turn end", "request_id": "req-old", "meta": meta}]
+        if interrupted_text else []
+    )
+    assert mgr._active_text_request_id is None
+    # The meta is taken even when nothing was said, so it cannot ride the
+    # new turn's turn end (cross_server would treat that turn as an avatar
+    # turn and drop it from memory).
+    assert mgr._pending_turn_meta is None
+    # The frontend releases what it held for the cut request, without a turn
+    # end that would seal the new turn's bubble.
+    assert [m for m in mgr.websocket.sent if m.get("data") == "turn abandoned"] == [
+        {"type": "system", "data": "turn abandoned", "request_id": "req-old"}
+    ]
+    assert not [m for m in mgr.websocket.sent if m.get("data") == "turn end"]
+    # The interrupted reply's completion will not run, so its wrap-up is
+    # owed (even when it said nothing) to the next finalize, not run here.
+    assert mgr._turn_wrap_up_owed is True
+    mgr._finalize_turn_after_emit.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_typed_text_does_not_close_a_reply_nothing_interrupted(monkeypatch):
+    """handle_interruption() stopped nothing (the reply finished and its own
+    completion is running or done): that completion sends the turn end, so
+    the text path must not send a second one or steal the avatar meta."""
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    notes = []
+    mgr._note_ai_turn = lambda text=None, **_kw: notes.append(text)
+    mgr._current_ai_turn_text = "finished reply"
+    meta = {"kind": "avatar_interaction"}
+    mgr._pending_turn_meta = meta
+    session.handle_interruption = AsyncMock(return_value=False)
+    session.stream_text = AsyncMock()
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "换个话题"},
+    )
+
+    assert not [m for m in mgr.sync_message_queue.messages
+                if isinstance(m, dict) and m.get("data") == "turn end"]
+    assert notes == []
+    assert mgr._pending_turn_meta is meta
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_interrupted_agent_callback_reply_closes_as_agent_callback(monkeypatch):
+    """handle_proactive_complete would send 'turn end agent_callback', which
+    tells cross_server not to send an analyze request for a callback reply.
+    The interruption closes it the same way and leaves the text request's id
+    and any avatar meta alone."""
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._current_ai_turn_text = "回调说到一半"
+    mgr._active_text_request_id = "req-other"
+    mgr.websocket = _FakeConnectedWebSocket()
+    meta = {"kind": "avatar_interaction"}
+    mgr._pending_turn_meta = meta
+    session.handle_interruption = AsyncMock(return_value="agent_callback")
+    session.stream_text = AsyncMock()
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "换个话题"},
+    )
+
+    turn_ends = [m for m in mgr.sync_message_queue.messages
+                 if isinstance(m, dict) and str(m.get("data", "")).startswith("turn end")]
+    assert turn_ends == [{"type": "system", "data": "turn end agent_callback"}]
+    assert mgr._pending_turn_meta is meta
+    # handle_proactive_complete runs no wrap-up, so none is owed, and a
+    # callback reply has no text request for the frontend to release.
+    assert not getattr(mgr, "_turn_wrap_up_owed", False)
+    assert not [m for m in mgr.websocket.sent if m.get("data") == "turn abandoned"]
+
+
+@pytest.mark.unit
+def test_closing_an_agent_callback_turn_leaves_the_text_request_alone():
+    """A callback reply owns no text request: its close must not retire the
+    id of a text request that is still in flight."""
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._current_ai_turn_text = "回调说到一半"
+    mgr._active_text_request_id = "req-other"
+
+    assert core_module.LLMSessionManager._close_interrupted_offline_turn(mgr, "agent_callback")
+    assert mgr._active_text_request_id == "req-other"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_interrupted_avatar_reply_keeps_its_isolation_meta(monkeypatch):
+    """The sync turn end for an interrupted avatar-interaction reply carries
+    (and consumes) its meta, so cross_server keeps the text off ordinary
+    memory, the same as the completion path's _emit_turn_end did."""
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._current_ai_turn_text = "摸头好舒服"
+    meta = {"kind": "avatar_interaction", "memory_note": "tapped"}
+    mgr._pending_turn_meta = meta
+    session.handle_interruption = AsyncMock(return_value=True)
+    session.stream_text = AsyncMock()
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "换个话题"},
+    )
+
+    turn_ends = [m for m in mgr.sync_message_queue.messages
+                 if isinstance(m, dict) and m.get("data") == "turn end"]
+    assert turn_ends == [{"type": "system", "data": "turn end", "meta": meta}]
+    assert mgr._pending_turn_meta is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("images", [[], ["cb-image-1"]])
 async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
     monkeypatch, images,
@@ -5343,3 +5693,21 @@ async def test_audio_auto_start_asks_the_new_instance_when_the_kind_took_over():
 
     assert asked == ["visit-1", "visit-2"]
     mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_new_session_starts_with_no_owed_wrap_up():
+    """An owed wrap-up belongs to the session whose reply was interrupted;
+    a renewal/reset must not carry it into the next session."""
+    mgr = _make_transcript_manager()
+    mgr._turn_wrap_up_owed = True
+    mgr._reset_preparation_state = AsyncMock()
+    mgr._cleanup_pending_session_resources = AsyncMock()
+    mgr.state = SimpleNamespace(reset=AsyncMock())
+    mgr._focus_scorer = None
+    try:
+        await core_module.LLMSessionManager._init_renew_status(mgr)
+    except AttributeError:
+        pass  # later, unrelated resets need state this harness lacks
+    assert mgr._turn_wrap_up_owed is False
