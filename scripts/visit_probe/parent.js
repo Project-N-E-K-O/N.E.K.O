@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 16) return;
-  const P = (window.__visitProbe = { version: 16 });
+  if (window.__visitProbe && window.__visitProbe.version === 17) return;
+  const P = (window.__visitProbe = { version: 17 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -186,6 +186,18 @@
               let a = 0;
               for (let i = 3; i < buf.length; i += 16) a += buf[i];
               diag.glReadAlphaSum = a;
+              // same-realm control: the parent's own 2D canvas drawImage of the same rect, in the same task.
+              // glRead>0 && sameRealm>0 && pack empty -> iframe-side packing path; glRead>0 && sameRealm==0 ->
+              // drawImage snapshot itself (both realms); only a cross-realm-only failure is iframe-specific.
+              const cc = P._diagCanvas || (P._diagCanvas = document.createElement('canvas'));
+              cc.width = Math.max(1, sw); cc.height = Math.max(1, sh);
+              const cx2 = cc.getContext('2d', { willReadFrequently: true });
+              cx2.clearRect(0, 0, cc.width, cc.height);
+              cx2.drawImage(app.view, sx, sy, sw, sh, 0, 0, cc.width, cc.height);
+              const d2 = cx2.getImageData(0, 0, cc.width, cc.height).data;
+              let a2 = 0;
+              for (let i = 3; i < d2.length; i += 16) a2 += d2[i];
+              diag.sameRealmDrawImageAlphaSum = a2;
               const m = lm.currentModel;
               diag.model = m ? { parentIsStage: m.parent === app.stage, visible: m.visible, renderable: m.renderable, worldAlpha: m.worldAlpha, destroyed: !!m.destroyed } : null;
               diag.stageChildren = app.stage.children.length;
