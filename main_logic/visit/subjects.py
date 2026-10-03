@@ -185,7 +185,8 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
     ``state`` is a mapping (or an object with attributes) carrying ``own_uid``,
     ``peer_uid`` and either ``peer_char_tag`` or an already derived
     ``peer_char_id``; when the tag is present the id is derived from it and
-    a supplied ``peer_char_id`` must equal that. ``pair_id`` and ``person_id``
+    a supplied non-empty ``peer_char_id`` must equal that (an empty one counts
+    as not supplied). ``pair_id`` and ``person_id``
     are always derived from the two uids, never trusted from the input. Any
     missing, malformed or inconsistent input
     yields ``[]``: visit memory is then off for this visit and the visit
@@ -200,7 +201,7 @@ def resolve_visit_recall_subjects(state: Any) -> list[dict[str, str]]:
             derived = derive_peer_char_id(peer_uid, char_tag)
             # 两者都给时必须一致：坏掉的头行带着别的 id，会把召回 / digest 写进另一只猫的
             # 主体，名册按 tag 推出的条目里又找不到它，清除时成了孤儿
-            if peer_char_id is not None and peer_char_id != derived:
+            if isinstance(peer_char_id, str) and peer_char_id and peer_char_id != derived:
                 return []
             peer_char_id = derived
         elif not isinstance(peer_char_id, str) or not peer_char_id:

@@ -744,3 +744,5 @@ def test_recall_subjects_reject_a_char_id_that_disagrees_with_the_tag():
     assert len(good) == 3
     assert resolve_visit_recall_subjects(base) == good
     assert resolve_visit_recall_subjects(dict(base, peer_char_id="c_" + "9" * 24)) == []
+    # 空串 id 等于没给，按 tag 推出（不能把这场的召回 / digest 静默关掉）
+    assert resolve_visit_recall_subjects(dict(base, peer_char_id="")) == good

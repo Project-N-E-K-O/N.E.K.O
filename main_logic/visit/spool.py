@@ -70,7 +70,7 @@ from config.visit_settings import (
     VISIT_SPOOL_RETENTION_DAYS,
     VISIT_TEXT_MAX_BYTES,
 )
-from main_logic.visit.subjects import derive_pair_id, path_lock
+from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id, path_lock
 from utils.file_utils import atomic_write_bytes, atomic_write_json
 from utils.logger_config import get_module_logger
 from utils.visit_wire import VISIT_ID_RE, require_visit_id, visit_path
@@ -252,6 +252,12 @@ def validate_header(header: Mapping[str, Any]) -> dict:
     ):
         # pair_id 必须是 (own_uid, peer_uid) 推出的那一对，否则清除按 pair 找不到它
         raise ValueError("spool header pair_id does not match own_uid / peer_uid")
+    if header["peer_char_id"] is not None and header["peer_char_id"] != derive_peer_char_id(
+        header["peer_uid"], header["peer_char_tag"]
+    ):
+        # 对端猫的 id 必须由 (peer_uid, peer_char_tag) 推出：错的 id 会被抄进不带 tag 的
+        # state.json，补录 / debrief 按它把 digest 与召回写进别的猫的主体，名册也清不到
+        raise ValueError("spool header peer_char_id does not match peer_uid / peer_char_tag")
     if not _is_number(header["started_at"]):
         raise ValueError("spool header started_at must be a number")
     return dict(header)
@@ -901,7 +907,13 @@ class VisitSpool:
             self._write_all(fd, data)
             os.fsync(fd)
         except BaseException:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # close 自己报错（网络盘 / U 盘 EIO）不能跳过下面的删文件与撤登记——否则这场
+                # 在进程存活期间永远 SpoolBusy；也不能盖掉原来的异常
+                logger.warning("visit spool %s: closing the failed new spool failed: %s",
+                               self.visit_id, exc)
             with _OPEN_SPOOLS_LOCK:
                 # 登记还在时删掉刚建的文件：留着（可能只有半截头行）的话，同一场重试的
                 # O_EXCL 打开永远 FileExistsError，一次暂时性磁盘错误就让这场再也开不了

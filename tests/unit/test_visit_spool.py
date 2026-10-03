@@ -28,7 +28,7 @@ import pytest
 
 import config.visit_settings as visit_settings
 from main_logic.visit import spool as spool_mod
-from main_logic.visit.subjects import derive_pair_id
+from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
 from main_logic.visit.spool import (
     LINE_SPEAKERS,
     SpoolLineTooLarge,
@@ -55,7 +55,9 @@ PAIR2 = derive_pair_id("own_a", "peer2")
 
 
 def header(visit_id: str, *, own_char="A", own_char_uid="uid_a", pair_id=PAIR1,
-           peer_uid="peer1", peer_char_id="c_peer") -> dict:
+           peer_uid="peer1", peer_char_id=None) -> dict:
+    if peer_char_id is None:
+        peer_char_id = derive_peer_char_id(peer_uid, "f" * 32)
     return {
         "v": 1,
         "visit_id": visit_id,
@@ -80,7 +82,8 @@ def state_for(*, own_char="A", own_char_uid="uid_a", pair_id=PAIR1, peer_uid="pe
               memory_enabled=True) -> dict:
     return new_state(
         own_uid="own_a", own_char=own_char, own_char_uid=own_char_uid, pair_id=pair_id,
-        peer_uid=peer_uid, peer_char_id="c_peer", memory_enabled=memory_enabled,
+        peer_uid=peer_uid, peer_char_id=derive_peer_char_id(peer_uid, "f" * 32),
+        memory_enabled=memory_enabled,
     )
 
 
@@ -1682,3 +1685,42 @@ async def test_retention_sweep_skips_a_visit_still_open_for_appends(tmp_path):
     assert [ln["lp"] for ln in (await live.read_back()).lines] == [1, 2]
     deleted = await VisitSpool.sweep(tmp_path, later)          # 关闭后照常过期
     assert set(deleted) == {live.jsonl_path, live.state_path}
+
+
+def test_header_peer_char_id_must_derive_from_the_tag():
+    # 错的 id 会被抄进不带 tag 的 state.json，补录 / debrief 再也查不出来
+    good = header(vid(61))
+    validate_header(good)
+    with pytest.raises(ValueError):
+        validate_header(dict(good, peer_char_id="c_" + "9" * 24))
+    with pytest.raises(ValueError):
+        validate_header(dict(good, peer_char_tag="e" * 32))
+
+
+async def test_a_failed_close_after_a_failed_header_write_still_cleans_up(tmp_path, monkeypatch):
+    # 头行写 ENOSPC 之后 close 也 EIO：仍要删文件、撤登记，抛出的是原来的 ENOSPC
+    from main_logic.visit.spool import is_spool_open
+
+    real_write, real_close = VisitSpool._write_all, os.close
+    state = {"armed": True}
+
+    def failing_write(fd, data):
+        if state["armed"]:
+            raise OSError(28, "No space left on device")
+        return real_write(fd, data)
+
+    def failing_close(fd):
+        real_close(fd)
+        if state["armed"]:
+            state["armed"] = False
+            raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(VisitSpool, "_write_all", staticmethod(failing_write))
+    monkeypatch.setattr(spool_mod.os, "close", failing_close)
+    sp = VisitSpool(tmp_path, vid(62))
+    with pytest.raises(OSError) as ei:
+        await sp.open(header(vid(62)), now=NOW)
+    assert ei.value.errno == 28
+    assert not sp.jsonl_path.exists() and not is_spool_open(sp.jsonl_path)
+    await sp.open(header(vid(62)), now=NOW)                  # 重试不被 SpoolBusy 卡住
+    await sp.close()
