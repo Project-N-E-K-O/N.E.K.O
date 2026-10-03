@@ -284,7 +284,9 @@ async function blankRun(c, label, frames, hookOpts) {
     if (st.verified >= frames || Date.now() - t0 > 30000) break;
   }
   const hook = await c.eval(`window.__visitProbe.unhook(); return Object.assign({}, window.__visitProbe.stat);`);
-  return { label, framesChecked: st.verified, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), blankDiag: hook.blankDiag || [], hook };
+  // complete=false: the 30 s timeout hit before `frames` verified frames (hidden Pet, stalled rendering) —
+  // such a run does not satisfy the "N consecutive frames without a blank" gate and must not count as clean
+  return { label, framesChecked: st.verified, complete: st.verified >= frames, blankFrames: st.blank, minAlphaSum: st.minAlphaSum, maxAlphaSum: st.maxAlphaSum, packMsAvg: st.packMsAvg, packMsMax: +st.packMsMax.toFixed(2), blankDiag: hook.blankDiag || [], hook };
 }
 
 // Blank-frame check only (300 frames per mode, sync), with per-blank diagnostics.
@@ -305,6 +307,8 @@ async function phaseBlank(c) {
       r.runs.push(b);
       log('blank', b.label, b.blankFrames + '/' + b.framesChecked, JSON.stringify(b.blankDiag.slice(0, 3)));
       save();
+      // fail the phase (data stays only in runs.blank.partialData) instead of promoting an incomplete run
+      if (!b.complete) throw new Error(`${b.label}: only ${b.framesChecked}/300 frames verified before timeout; not a valid blank check`);
     }
   } finally {
     await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
