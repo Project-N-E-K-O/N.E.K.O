@@ -732,6 +732,78 @@ async def test_deeply_nested_json_is_a_servers_error(servers, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_oversized_retry_after_header_is_ignored(servers, monkeypatch):
+    def _handler(request):
+        return httpx.Response(429, json={"code": "quota_exceeded"}, headers={"retry-after": "9" * 5000})
+
+    monkeypatch.setattr(cr, "get_external_http_client",
+                        lambda: httpx.AsyncClient(transport=httpx.MockTransport(_handler)))
+    with pytest.raises(cr.VisitQuotaExceeded) as exc:
+        await _host()
+    assert exc.value.retry_after_s is None
+
+
+@pytest.mark.asyncio
+async def test_ticket_longer_than_the_hello_limit_is_rejected(servers):
+    original = servers._credentials
+
+    def _long(body):
+        data = original(body).json()
+        claims = {k: v for k, v in idm.peek_ticket_claims(data["identity_ticket"]).__dict__.items() if v is not None}
+        claims["display_name"] = "x" * 200
+        claims["pad"] = "p" * 1500
+        data["identity_ticket"] = mint_ticket(claims, servers.key)
+        assert len(data["identity_ticket"]) > 2048
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _long
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+async def test_huge_json_integer_is_an_invalid_number(servers):
+    original = servers._credentials
+
+    def _huge(body):
+        text = original(body).text
+        data = json.loads(text)
+        data["expires_at"] = "__HUGE__"
+        return httpx.Response(200, content=json.dumps(data).replace('"__HUGE__"', "9" * 400).encode(),
+                              headers={"content-type": "application/json"})
+
+    servers._credentials = _huge
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+async def test_inflight_pubkey_refresh_is_awaited_even_while_failures_are_suppressed(servers, monkeypatch):
+    import asyncio
+
+    gate = asyncio.Event()
+    calls = []
+
+    async def _slow_refresh():
+        calls.append(1)
+        await gate.wait()
+        cr._pubkeys_fetched = cr.parse_pubkeys_response(
+            {"keys": [], "revoked": ["k-revoked"], "ttl_s": 86400}, fetched_at=time.time())
+
+    monkeypatch.setattr(cr, "_refresh_pubkeys", _slow_refresh)
+    cr._pubkeys_failed_at = time.time()  # 刚失败过：非强制调用不会再发起新刷新
+    forced = asyncio.ensure_future(cr.fetch_pubkeys(force_refresh=True))
+    await asyncio.sleep(0)
+    waiting = asyncio.ensure_future(cr.fetch_pubkeys())
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    gate.set()
+    keys = await waiting
+    await forced
+    assert calls == [1] and "k-revoked" in keys.revoked
+
+
+@pytest.mark.asyncio
 async def test_credentials_repr_and_logs_never_carry_secrets(servers, caplog):
     with caplog.at_level(logging.DEBUG):
         creds = await _host()

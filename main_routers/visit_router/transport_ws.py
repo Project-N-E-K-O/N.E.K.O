@@ -187,7 +187,8 @@ class VisitTransportSession(ABC):
 
     @abstractmethod
     async def on_preflight(self, caps: dict[str, Any]) -> None:
-        """``caps{stage:'preflight'}`` (already written into the route state).
+        """``caps{stage:'preflight'}`` (already written into the route state as ``caps_preflight``;
+        the runtime must keep ``visit_id`` in its slot, a slot of another visit is left alone).
 
         ``preflight_ok:false`` → finalize ``'unsupported'`` without contacting
         Servers (no quota spent); no ``credentials`` will be sent.
@@ -466,8 +467,9 @@ def _record_preflight(session: VisitTransportSession, msg: dict[str, Any], ok: b
         "at": time.time(),
     }
     # 能力门缓存（PR-09a 读）：只写进本角色仍在的串门槽，不建新槽
+    # 槽按角色名登记，同一角色可能已开了下一场：只写进 visit_id 对得上的那一场
     slot = get_visit_route_state(session.lanlan_name)
-    if slot is not None:
+    if slot is not None and slot.get("visit_id") == session.visit_id:
         slot["caps_preflight"] = dict(caps)
     return caps
 

@@ -157,7 +157,7 @@ def app(monkeypatch):
 def session():
     s = FakeSession()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
     return s
 
 
@@ -331,12 +331,21 @@ def test_failed_preflight_hook_does_not_fetch_credentials(app):
 
     s = _Broken()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
         _sync(ws)
     assert s.issued == 0
+
+
+def test_preflight_is_not_written_into_another_visits_slot(app, session):
+    vrs.activate_visit_route(LANLAN)["visit_id"] = "ZZZZZZZZZZZZZZZZZZZZZZ"  # 同角色已开了下一场
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws, ok=False, reason="no_webrtc")
+        _sync(ws)
+    assert "caps_preflight" not in vrs.get_visit_route_state(LANLAN)
 
 
 def test_credentials_are_sent_once_per_connection(app, session):
@@ -463,7 +472,7 @@ def test_reload_snapshot_is_taken_from_the_runtime_not_hardcoded(app):
     host = FakeSession(side="host")
     host.snapshot = {"subscribe": False, "peer_vid": "g_" + "2" * 24}
     tw.register_transport_session(host)
-    vrs.activate_visit_route(LANLAN)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
     url = f"/api/visit/transport/ws?visit_id={VISIT_ID}&side=host"
     client = _client(app)
     with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
@@ -779,7 +788,7 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
 
     s = _Flaky()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
     client = _client(app)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
@@ -951,7 +960,7 @@ def test_failed_first_credentials_send_does_not_burn_the_slot(app):
     s = GatedSession()
     s.oversize_first = True
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)

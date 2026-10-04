@@ -128,6 +128,7 @@ _PUBKEYS_TIMEOUT_S = 5.0
 _PUBKEYS_RETRY_MIN_S = 30.0
 _CANCEL_BACKOFF_S = (1, 2, 4, 8)
 _JS_MAX_SAFE_INT = 2 ** 53 - 1
+_HELLO_TICKET_MAX_BYTES = 2048  # = utils.visit_wire 的 hello.ticket 上限（_TICKET_MAX_BYTES）
 _REGION_WAIT_S = 1.5
 _DISPLAY_NAME_MAX_CHARS = 64
 # vendor 凭证字段上限：留够实际长度（UserSig / privateMapKey 数百字节、LiveKit JWT 约 1 KB），
@@ -352,7 +353,8 @@ def _retry_after(body: Any, resp: httpx.Response) -> int | None:
     if type(raw) is int and raw >= 0:
         return raw
     header = resp.headers.get("retry-after", "")
-    return int(header) if header.isdigit() else None
+    # 限长：超长数字串会让 int() 抛错（3.11 的整数位数上限），当作没给
+    return int(header) if header.isdigit() and len(header) <= 9 else None
 
 
 def _diag_code(code: str | None) -> str:
@@ -578,7 +580,12 @@ def _need(ok: bool, what: str) -> None:
 
 
 def _finite(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # 超大 JSON 整数转不成 float
+        return False
 
 
 def _short_str(value: Any, limit: int) -> bool:
@@ -675,7 +682,8 @@ def _parse_credentials(
     local_vendor_expiry = min(float(vendor_expires_at), now + grant_ttl)
 
     ticket = payload.get("identity_ticket")
-    _need(isinstance(ticket, str), "identity_ticket")
+    # 与 hello 线协议同一上限：领得到却发不出 hello 的票当坏响应
+    _need(isinstance(ticket, str) and len(ticket.encode("utf-8")) <= _HELLO_TICKET_MAX_BYTES, "identity_ticket")
     try:
         claims = peek_ticket_claims(ticket)
     except MalformedTicket:
@@ -1032,11 +1040,14 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     global _pubkeys_inflight
     now = time.time()
     recently_failed = _pubkeys_failed_at is not None and now - _pubkeys_failed_at < _PUBKEYS_RETRY_MIN_S
-    if force_refresh or (not _pubkeys_cache_valid(now) and not recently_failed):
-        task = _pubkeys_inflight
-        if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
-            task = asyncio.ensure_future(_refresh_pubkeys())
-            _pubkeys_inflight = task
+    task = _pubkeys_inflight
+    if task is not None and (task.done() or task.get_loop() is not asyncio.get_running_loop()):
+        task = None
+    if task is None and (force_refresh or (not _pubkeys_cache_valid(now) and not recently_failed)):
+        task = asyncio.ensure_future(_refresh_pubkeys())
+        _pubkeys_inflight = task
+    if task is not None:
+        # 失败抑制期内也要等已经在进行的刷新：它可能正好带回新的吊销名单
         await asyncio.shield(task)
     return await asyncio.to_thread(PubkeySet.from_runtime, now=time.time(), fetched=_pubkeys_fetched)
 
