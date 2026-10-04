@@ -347,6 +347,12 @@ VISIT_HOST_CREDENTIAL_TTL_S = 3000
 VISIT_VENDOR_GRANT_TTL_S = 600
 """Vendor room grant lifetime (TRTC UserSig / LiveKit JWT); renewed before reconnects."""
 
+VISIT_VENDOR_REFRESH_MARGIN_S = 120
+"""Renew the vendor grant (``credentials{refresh:true}``) once less than this remains."""
+
+VISIT_BANNED_CACHE_S = 60
+"""A Servers ``403 banned`` is remembered this long; new rooms / joins answer 403 locally."""
+
 VISIT_SHORT_ID_LEN = 6
 """UI shows only ``visit_uid[:6].upper()``."""
 
@@ -677,6 +683,8 @@ def _check_invariants() -> None:
          "host ticket must cover invite wait, max duration and margin")
     need(VISIT_CREDENTIAL_TTL_S > VISIT_MAX_DURATION_S,
          "guest ticket must outlive one visit")
+    need(0 < VISIT_VENDOR_REFRESH_MARGIN_S < VISIT_VENDOR_GRANT_TTL_S,
+         "vendor grant renewal margin must fall inside the grant lifetime")
     need(VISIT_MAX_DURATION_S - VISIT_TIME_UP_WRAP_UP_S + VISIT_WRAP_UP_MAX_S
          < VISIT_MAX_DURATION_S,
          "time-up wrap-up must finish before the hard cap")

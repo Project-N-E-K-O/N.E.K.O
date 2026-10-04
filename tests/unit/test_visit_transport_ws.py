@@ -1,0 +1,512 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""``WS /api/visit/transport/ws`` (design §5 PR-07, protocol §4.3)."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+import pytest
+from fastapi import APIRouter, FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+import config.visit_settings as vs
+from main_logic.visit.outbox import PAUSE_PAGE_RELOAD, OutboundFrame
+from main_routers.visit_router import local_guard
+from main_routers.visit_router import transport_ws as tw
+from main_routers.visit_router.credentials import VisitCredentials
+from tests.fastapi_routes import effective_path, iter_routes
+from utils import visit_route_state as vrs
+
+VISIT_ID = "AbCdEfGhIjKlMnOpQrStUv"
+TOKEN = "csrf-test-token"
+ORIGIN = "http://testserver"
+LOOPBACK = ("127.0.0.1", 50123)
+USER_SIG = "usersig-SECRET-91bd"
+PEER_VID = "h_" + "1" * 24
+OWN_VID = "g_" + "2" * 24
+LANLAN = "Mochi"
+
+
+class _Liveness:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def on_page_lost(self, now: float) -> None:
+        self.events.append("page_lost")
+
+    def on_page_back(self, now: float) -> None:
+        self.events.append("page_back")
+
+
+class _Outbox:
+    def __init__(self, log: list) -> None:
+        self.log = log
+        self.paused: set[str] = set()
+        self.hello_pending = False
+        self.backpressure = None
+
+    def pause(self, now=None, reason="transport") -> None:
+        self.paused.add(reason)
+        self.log.append(("pause", reason))
+
+    def resume(self, now=None, reason="transport") -> bool:
+        self.paused.discard(reason)
+        self.log.append(("resume", reason))
+        return not self.paused
+
+    def resend_hello(self, now=None) -> bool:
+        self.hello_pending = True
+        self.log.append(("resend_hello",))
+        return True
+
+    def due(self, now=None) -> list[OutboundFrame]:
+        if self.hello_pending and not self.paused:
+            self.hello_pending = False
+            return [OutboundFrame(cmd=1, payload={"t": "hello", "v": 1, "seq": 1, "ticket": "t"}, nbytes=10, pieces=1)]
+        return []
+
+    def set_backpressure(self, on: bool) -> None:
+        self.backpressure = on
+
+
+def _creds(side: str = "guest") -> VisitCredentials:
+    return VisitCredentials(
+        role=side, visit_id=VISIT_ID, char_tag="c" * 32, transport="trtc",
+        expires_at=2_000_000_000.0, vendor_expires_at=1_999_999_000.0,
+        vendor={"trtc": {"sdk_app_id": 1400000001, "user_id": OWN_VID, "user_sig": USER_SIG,
+                         "private_map_key": "pmk", "str_room_id": VISIT_ID, "expire": 600}},
+        identity_ticket="ticket", visit_uid="0" * 24, vid=OWN_VID if side == "guest" else PEER_VID,
+        peer_vid=PEER_VID if side == "guest" else None,
+        invite_code=None if side == "guest" else "ABCDEFGHJK",
+        invite_expires_at=None if side == "guest" else 2_000_000_000.0,
+    )
+
+
+class FakeSession(tw.VisitTransportSession):
+    def __init__(self, side: str = "guest") -> None:
+        self.log: list = []
+        super().__init__(visit_id=VISIT_ID, side=side, lanlan_name=LANLAN, liveness=_Liveness(),
+                         outbox=_Outbox(self.log))
+        self.preflights: list[dict] = []
+        self.sdk: list[dict] = []
+        self.states: list[dict] = []
+        self.recvs: list[dict] = []
+        self.issued = 0
+        self.unsupported: list[str] = []
+        self.snapshot: dict[str, Any] = {"publish": True, "crop": "upper", "ladder": 0}
+
+    async def on_preflight(self, caps):
+        self.preflights.append(caps)
+        if not caps["preflight_ok"]:
+            self.unsupported.append("preflight")
+
+    async def issue_credentials(self):
+        self.issued += 1
+        return tw.build_credentials_message(_creds(self.side), side=self.side, crop="upper", codec="vp9")
+
+    async def on_sdk_caps(self, caps):
+        self.sdk.append(caps)
+        if not caps["transport_ok"]:
+            self.unsupported.append("sdk")
+
+    async def on_state(self, msg):
+        self.states.append(msg)
+
+    async def on_recv(self, *, from_vid, cmd, payload, nbytes):
+        self.recvs.append({"from_vid": from_vid, "cmd": cmd, "payload": payload, "nbytes": nbytes})
+
+    def media_snapshot(self):
+        return dict(self.snapshot)
+
+
+@pytest.fixture
+def app(monkeypatch):
+    monkeypatch.setattr(local_guard, "AUTOSTART_CSRF_TOKEN", TOKEN)
+    monkeypatch.setattr(vs, "NEKO_VISIT_ALLOW_NONLOCAL", False)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    tw._reset_for_tests()
+    vrs._reset_for_tests()
+    parent = APIRouter(prefix="/api/visit")
+    parent.include_router(tw.router)
+    application = FastAPI()
+    application.include_router(parent)
+    yield application
+    tw._reset_for_tests()
+    vrs._reset_for_tests()
+
+
+@pytest.fixture
+def session():
+    s = FakeSession()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN)
+    return s
+
+
+URL = f"/api/visit/transport/ws?visit_id={VISIT_ID}&side=guest"
+
+
+def _client(app, client=LOOPBACK) -> TestClient:
+    return TestClient(app, client=client)
+
+
+def _auth(ws) -> None:
+    ws.send_text(json.dumps({"type": "auth", "csrf_token": TOKEN}))
+
+
+def _preflight(ws, ok: bool = True, reason: str | None = None) -> None:
+    msg = {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID, "side": "guest", "preflight_ok": ok,
+           "is_secure_context": True, "ua": "Mozilla/5.0"}
+    if reason:
+        msg["reason"] = reason
+    ws.send_text(json.dumps(msg))
+
+
+def _sync(ws) -> None:
+    """Round-trip barrier: stats are processed in order, then the next state is observable."""
+    ws.send_text(json.dumps({"type": "stats", "rx_fps": 30}))
+
+
+def _expect_close(ws, code: int) -> None:
+    with pytest.raises(WebSocketDisconnect) as exc:
+        ws.receive_text()
+    assert exc.value.code == code
+
+
+# ── 路由表 ─────────────────────────────────────────────────────────────
+
+
+def test_route_is_relative_and_mounts_once_under_the_prefix(app):
+    paths = [effective_path(r) for r in iter_routes(app.routes)]
+    assert "/api/visit/transport/ws" in paths
+    assert not any(p.startswith("/api/visit/api/visit") for p in paths)
+    assert [getattr(r, "path", "") for r in tw.router.routes] == ["/transport/ws"]
+
+
+# ── 握手：回环 / 代理头 / Origin / auth ────────────────────────────────
+
+
+def test_bad_origin_is_rejected_before_accept(app, session):
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client(app).websocket_connect(URL, headers={"origin": "http://evil.example"}):
+            pass
+    assert exc.value.code == tw.CLOSE_UNAUTHORIZED
+
+
+def test_non_loopback_peer_is_rejected_even_with_token_and_origin(app, session):
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client(app, client=("192.168.1.20", 5000)).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+            _auth(ws)
+            ws.receive_text()
+    assert exc.value.code == tw.CLOSE_UNAUTHORIZED
+    assert session.preflights == []
+
+
+def test_behind_proxy_rejects_even_a_rewritten_loopback_peer(app, session, monkeypatch):
+    # proxy_headers=True 时 uvicorn 已把 client.host 改写成 XFF 里的 127.0.0.1
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client(app).websocket_connect(URL, headers={"origin": ORIGIN, "x-forwarded-for": "127.0.0.1"}):
+            pass
+    assert exc.value.code == tw.CLOSE_UNAUTHORIZED
+
+
+def test_behind_proxy_disables_visits_even_without_proxy_headers(app, session, monkeypatch):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "1")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}):
+            pass
+    assert exc.value.code == tw.CLOSE_UNAUTHORIZED
+
+
+@pytest.mark.parametrize("header,value", [
+    ("x-forwarded-for", "127.0.0.1"),
+    ("forwarded", "for=127.0.0.1"),
+    ("x-real-ip", "127.0.0.1"),
+])
+def test_any_proxy_header_is_rejected_on_a_real_loopback_peer(app, session, header, value):
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client(app).websocket_connect(URL, headers={"origin": ORIGIN, header: value}):
+            pass
+    assert exc.value.code == tw.CLOSE_UNAUTHORIZED
+
+
+def test_allow_nonlocal_lets_both_through(app, session, monkeypatch):
+    monkeypatch.setattr(vs, "NEKO_VISIT_ALLOW_NONLOCAL", True)
+    for client, headers in (
+        (("192.168.1.20", 5000), {"origin": ORIGIN}),
+        (LOOPBACK, {"origin": ORIGIN, "x-forwarded-for": "10.0.0.1"}),
+    ):
+        with _client(app, client=client).websocket_connect(URL, headers=headers) as ws:
+            _auth(ws)
+            _preflight(ws)
+            assert json.loads(ws.receive_text())["type"] == "credentials"
+        tw._reset_for_tests()
+        tw.register_transport_session(session)
+
+
+def test_first_frame_must_be_auth(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _preflight(ws)
+        _expect_close(ws, tw.CLOSE_UNAUTHORIZED)
+    assert session.preflights == [] and session.issued == 0
+
+
+def test_wrong_token_is_rejected(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        ws.send_text(json.dumps({"type": "auth", "csrf_token": "nope"}))
+        _expect_close(ws, tw.CLOSE_UNAUTHORIZED)
+
+
+def test_auth_then_caps_is_processed(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        msg = json.loads(ws.receive_text())
+    assert msg["type"] == "credentials"
+    assert session.preflights[0]["preflight_ok"] is True
+
+
+def test_unknown_visit_closes_4404(app):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _expect_close(ws, tw.CLOSE_UNKNOWN_VISIT)
+
+
+# ── 能力门与凭证 ───────────────────────────────────────────────────────
+
+
+def test_failed_preflight_is_recorded_and_no_credentials_are_sent(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws, ok=False, reason="no_webrtc")
+        _sync(ws)
+        ws.send_text(json.dumps({"type": "state", "state": "left", "peer_present": False, "remote_video": False}))
+        _sync(ws)
+    slot = vrs.get_visit_route_state(LANLAN)
+    assert slot["caps_preflight"]["preflight_ok"] is False
+    assert slot["caps_preflight"]["reason"] == "no_webrtc"
+    assert session.issued == 0
+    assert session.unsupported == ["preflight"]
+
+
+def test_credentials_are_sent_once_per_connection(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        first = json.loads(ws.receive_text())
+        _preflight(ws)
+        _sync(ws)
+        ws.send_text(json.dumps({"type": "state", "state": "joining", "peer_present": False, "remote_video": False}))
+        _sync(ws)
+        assert session.issued == 1
+        # 运行时再塞一条首发：拒；续期：放行
+        assert not _run(ws, tw.send_downlink, VISIT_ID, "guest", first)
+        assert _run(ws, tw.send_downlink, VISIT_ID, "guest", {**first, "refresh": True})
+        refreshed = json.loads(ws.receive_text())
+    assert refreshed["type"] == "credentials" and refreshed["refresh"] is True
+    assert first["vendor"] == {"trtc": _creds().vendor["trtc"]}
+    assert first["own_vid"] == OWN_VID and first["peer_vid"] == PEER_VID
+    assert "publish_video" not in first and "refresh" not in first
+
+
+def test_host_credentials_have_no_peer_vid_until_hello(app):
+    msg = tw.build_credentials_message(_creds("host"), side="host", crop="full", codec="vp8")
+    assert msg["peer_vid"] is None and msg["publish"]["codec"] == "vp8"
+    assert msg["publish"]["scalability_mode"] == "L1T1" and msg["publish"]["simulcast"] is False
+    with pytest.raises(ValueError):
+        tw.build_credentials_message(_creds("host"), side="guest", crop="full", codec="vp8")
+
+
+def test_sdk_caps_transport_failure_reaches_the_runtime(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "caps", "stage": "sdk", "transport_ok": False, "video_ok": False,
+                                 "reason": "sdk_unsupported", "codecs": []}))
+        _sync(ws)
+        ws.send_text(json.dumps({"type": "caps", "stage": "sdk", "transport_ok": True, "video_ok": True}))
+        _sync(ws)
+    assert [c["transport_ok"] for c in session.sdk] == [False]
+    assert session.unsupported == ["sdk"]
+
+
+def test_sdk_caps_before_credentials_are_ignored(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        ws.send_text(json.dumps({"type": "caps", "stage": "sdk", "transport_ok": True, "video_ok": True}))
+        _sync(ws)
+    assert session.sdk == []
+
+
+# ── 上行转发 ───────────────────────────────────────────────────────────
+
+
+def test_recv_reaches_the_runtime_and_malformed_is_dropped(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        ws.send_text(json.dumps({"type": "recv", "from_vid": PEER_VID, "cmd": 2, "payload": {"t": "text"}}))
+        ws.send_text(json.dumps({"type": "recv", "from_vid": "short", "cmd": 2, "payload": {}}))
+        ws.send_text(json.dumps({"type": "recv", "from_vid": PEER_VID, "cmd": 9, "payload": {}}))
+        ws.send_text(json.dumps({"type": "tx_backpressure", "on": True, "queue": 201, "dropped": True}))
+        _sync(ws)
+    assert len(session.recvs) == 1
+    assert session.recvs[0]["from_vid"] == PEER_VID and session.recvs[0]["payload"] == {"t": "text"}
+    assert session.recvs[0]["nbytes"] > 0
+    assert session.outbox.backpressure is True
+
+
+def test_oversize_frame_closes_the_socket(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        ws.send_text(json.dumps({"type": "stats", "pad": "x" * (tw.FRAME_MAX_BYTES + 1)}))
+        _expect_close(ws, tw.CLOSE_TOO_LARGE)
+
+
+def test_disconnect_starts_the_page_grace(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    assert session.liveness.events == ["page_lost"]
+    assert ("pause", PAUSE_PAGE_RELOAD) in session.log
+    assert not tw.is_transport_attached(VISIT_ID, "guest")
+
+
+# ── 重载 / 顶号 ────────────────────────────────────────────────────────
+
+
+def _rejoin(ws) -> list[dict]:
+    _auth(ws)
+    _preflight(ws)
+    out = [json.loads(ws.receive_text())]
+    ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+    out.append(json.loads(ws.receive_text()))
+    out.append(json.loads(ws.receive_text()))
+    ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
+    _sync(ws)
+    return out
+
+
+def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session):
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _sync(ws)
+    session.log.clear()
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        msgs = _rejoin(ws)
+        ws.send_text(json.dumps({"type": "stats"}))
+    assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
+    assert msgs[1]["payload"]["t"] == "hello"
+    assert msgs[2] == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
+    assert session.liveness.events == ["page_lost", "page_back", "page_lost"]
+    assert ("resume", PAUSE_PAGE_RELOAD) in session.log
+
+
+def test_reload_snapshot_is_taken_from_the_runtime_not_hardcoded(app):
+    host = FakeSession(side="host")
+    host.snapshot = {"subscribe": False, "peer_vid": "g_" + "2" * 24}
+    tw.register_transport_session(host)
+    vrs.activate_visit_route(LANLAN)
+    url = f"/api/visit/transport/ws?visit_id={VISIT_ID}&side=host"
+    client = _client(app)
+    with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
+        msgs = _rejoin(ws)
+    assert msgs[2] == {"type": "media", "subscribe": False, "peer_vid": "g_" + "2" * 24}
+
+
+def test_first_connection_sends_no_media_snapshot(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _sync(ws)
+    assert not any(e[0] == "resend_hello" for e in session.log)
+
+
+def test_second_connection_supersedes_the_first_with_4409(app, session):
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+        _auth(old)
+        _sync(old)
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+            _auth(new)
+            _sync(new)
+            _expect_close(old, tw.CLOSE_SUPERSEDED)
+            assert tw.is_transport_attached(VISIT_ID, "guest")
+            # 被顶掉的旧连接断开不算掉页
+            assert session.liveness.events == ["page_back"]
+
+
+def test_stop_is_sent_once_and_unregister_closes(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+        assert _run(ws, session.send, {"type": "stop", "reason": "home"})
+        assert not _run(ws, session.send, {"type": "stop", "reason": "home"})
+        assert json.loads(ws.receive_text()) == {"type": "stop", "reason": "home"}
+        _run(ws, _unregister, session)
+        _expect_close(ws, tw.CLOSE_NORMAL)
+    assert session.liveness.events == []
+
+
+def test_vendor_grant_never_reaches_the_logs(app, session, caplog):
+    with caplog.at_level(logging.DEBUG):
+        with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+            _auth(ws)
+            _preflight(ws)
+            ws.receive_text()
+            _run(ws, session.send, {**tw.build_credentials_message(_creds(), side="guest", crop="upper",
+                                                                   codec="vp9"), "refresh": True})
+            ws.receive_text()
+            ws.send_text(json.dumps({"type": "nonsense", "user_sig": USER_SIG}))
+            _sync(ws)
+    assert USER_SIG not in caplog.text
+
+
+# ── 本机来源判定 ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("host,ok", [
+    ("127.0.0.1", True), ("127.8.9.10", True), ("::1", True), ("::ffff:127.0.0.1", True),
+    ("192.168.1.20", False), ("10.0.0.1", False), ("localhost", False), ("testclient", False), (None, False),
+])
+def test_loopback_literal_only(host, ok):
+    assert local_guard.is_loopback_host(host) is ok
+
+
+# ── helpers ────────────────────────────────────────────────────────────
+
+
+async def _unregister(s):
+    tw.unregister_transport_session(s)
+
+
+def _run(ws, fn, *args):
+    """Run an async runtime call on the app's event loop (the TestClient portal)."""
+    return ws.portal.call(fn, *args)
