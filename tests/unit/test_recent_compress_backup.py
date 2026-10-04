@@ -395,6 +395,8 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/internal/memory/{lanlan_name}/repetition_insights", "POST"),
         ("/followup_topics/{lanlan_name}", "GET"),
         ("/get_recent_history/{lanlan_name}", "GET"),
+        # The deleted-story management list projects existing public summaries.
+        ("/internal/memory/{lanlan_name}/theater/stories", "GET"),
         ("/search_for_memory/{lanlan_name}/{query}", "GET"),
         ("/get_persona/{lanlan_name}", "GET"),
         ("/api/memory/funnel/{lanlan_name}", "GET"),
@@ -431,6 +433,8 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert ("/cache/{lanlan_name}", "POST") in fenced
     assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
+    assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
+    assert ("/internal/memory/{lanlan_name}/theater/retract", "POST") in fenced
 
 
 @pytest.mark.unit
@@ -1754,6 +1758,45 @@ async def test_run_backup_compress_merges_and_clears_backoff(tmp_path):
         expected_generation=admission_generation,
     )
     assert not memory_server.gates._maint_state[name].get("compress_backup_fail_attempts")  # 退避清零
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_backup_compress_keeps_theater_capsules_out_of_summary_input(tmp_path):
+    """The summary renderer has no theater branch, so capsules must never reach it."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色C"
+    capsule = SystemMessage(
+        content="剧场单集摘要",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "story_id": "story_backup",
+            "session_id": "session_backup",
+        },
+    )
+    ordinary = _history(4)
+    snapshot = [ordinary[0], capsule, *ordinary[1:]]
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    admission_generation = recent_file.capture_recent_generation(recent_path)
+    memory_server.gates._maint_state.pop(name, None)
+
+    fake_mgr = MagicMock()
+    fake_mgr.compress_history = AsyncMock(return_value=(SystemMessage(content="memo"), "memo"))
+    fake_mgr.merge_backup_memo = AsyncMock(return_value="merged")
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server._run_backup_compress(
+            name, snapshot, False, admission_generation,
+        )
+
+    fake_mgr.compress_history.assert_awaited_once_with(ordinary, name, False)
+    # The commit still locates the full snapshot, capsule included.
+    assert fake_mgr.merge_backup_memo.await_args.args[1] == snapshot
     memory_server.gates._maint_state.pop(name, None)
 
 

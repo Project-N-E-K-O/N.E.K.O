@@ -138,6 +138,7 @@ packages = [
   "main_routers",
   "memory",
   "plugin",
+  "services",
   "steamworks",
   "utils",
 ]
@@ -159,6 +160,7 @@ include = [
   "main_routers",
   "memory",
   "plugin",
+  "services",
   "steamworks",
   "utils",
   "static",

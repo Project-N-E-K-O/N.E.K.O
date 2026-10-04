@@ -86,6 +86,36 @@ def test_extract_role_tagged_messages_keeps_user_and_ai():
 
 
 @pytest.mark.unit
+def test_fact_extractors_ignore_numeric_theater_messages():
+    """小剧场里的虚构台词和玩家行动不能沉淀成现实人物事实。"""  # noqa: DOCSTRING_CJK
+    from app.memory_server import (
+        _extract_role_tagged_messages_from_rows,
+        _extract_user_messages_from_rows,
+    )
+
+    theater_metadata = {'source': 'theater_numeric_v2', 'session_id': 'theater_session'}
+    rows = [
+        (datetime(2026, 5, 18, 10, 0, 0), 'sess1', json.dumps({
+            'type': 'human',
+            'data': {'content': '我住在虚构的 302 室。', 'metadata': theater_metadata},
+        })),
+        (datetime(2026, 5, 18, 10, 0, 5), 'sess1', json.dumps({
+            'type': 'ai',
+            'data': {'content': '那是我们在剧本里的家。', 'metadata': theater_metadata},
+        })),
+        (datetime(2026, 5, 18, 10, 0, 10), 'sess1', json.dumps({
+            'type': 'human', 'data': {'content': '现实里我喜欢喝咖啡。'},
+        })),
+    ]
+
+    assert _extract_user_messages_from_rows(rows) == ['现实里我喜欢喝咖啡。']
+    assert _extract_role_tagged_messages_from_rows(rows) == [{
+        'type': 'human',
+        'data': {'content': '现实里我喜欢喝咖啡。'},
+    }]
+
+
+@pytest.mark.unit
 def test_extract_role_tagged_messages_skips_empty_content():
     """空白 content 不该入 list，防 prompt 渲染出空行。"""
     from app.memory_server import _extract_role_tagged_messages_from_rows

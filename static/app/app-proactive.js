@@ -274,7 +274,9 @@
                     const isNewPeer = !_proactivePeers.has(data.id);
                     _proactivePeers.set(data.id, {
                         rank: typeof data.rank === 'number' ? data.rank : 99,
-                        expireAt: Date.now() + PROACTIVE_LEADER_TTL_MS
+                        expireAt: Date.now() + PROACTIVE_LEADER_TTL_MS,
+                        // 对端（如运行小剧场的 chat.html）请求的临时抑制，随心跳 TTL 过期自动失效。
+                        suppressed: data.suppressed === true
                     });
                     // 新 peer 上线：立即回一个 heartbeat，让它在第一次决策前就能感知到我，
                     // 避免新窗口在 announce 后的"无人响应"窗口里误以为只有自己。
@@ -285,9 +287,11 @@
                     if (isNewPeer || data.type === 'announce') {
                         _onProactiveLeadershipMaybeChanged();
                     }
+                    _syncProactiveSuppression();
                 } else if (data.type === 'goodbye') {
                     _proactivePeers.delete(data.id);
                     _onProactiveLeadershipMaybeChanged();
+                    _syncProactiveSuppression();
                 } else if (data.type === 'user_input_reset') {
                     // 分发环境（Electron）下 chat.html 承担文本输入，但 proactive 计时器
                     // 只在 index.html (leader) 运行。chat.html 本地调 resetProactiveChatBackoff
@@ -319,6 +323,8 @@
                 type: type || 'heartbeat',
                 id: PROACTIVE_SELF_ID,
                 rank: PROACTIVE_SELF_RANK,
+                // 只广播本窗口自身的抑制来源，不转发从其他对端听来的状态，避免互相续命。
+                suppressed: isProactiveSuppressedLocally(),
                 ts: Date.now()
             });
         } catch (_) { /* ignore */ }
@@ -438,6 +444,67 @@
         return removed;
     }
 
+    // ======================== transient suppression ========================
+    //
+    // 小剧场等临时场景需要暂停普通主动搭话，但不能改写 S.proactiveChatEnabled：
+    // 该值由 saveSettings 持久化并同步到其他窗口，临时改写会在剧场期间任意一次保存时
+    // 把用户设置永久写成关闭。这里的抑制只存在于内存：本窗口由剧场运行态按会话是否活跃
+    // 实时回答；其他窗口的抑制随 leader 心跳传播，发起窗口关闭或崩溃后按 TTL 自动失效。
+    let _lastProactiveSuppression = false;
+
+    function isProactiveSuppressedLocally() {
+        try {
+            const theater = window.nekoTheaterRuntime;
+            return !!(theater
+                && typeof theater.suppressesProactiveChat === 'function'
+                && theater.suppressesProactiveChat() === true);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isProactiveSuppressedByPeer() {
+        _purgeStaleProactivePeers();
+        for (const info of _proactivePeers.values()) {
+            if (info && info.suppressed === true) return true;
+        }
+        return false;
+    }
+
+    function isProactiveChatSuppressed() {
+        return isProactiveSuppressedLocally() || isProactiveSuppressedByPeer();
+    }
+    mod.isProactiveChatSuppressed = isProactiveChatSuppressed;
+    // 对端抑制目前只来自小剧场运行态；Pet 窗口的麦克风守卫据此得知另一窗口正在演绎（同样按 TTL 过期）。
+    mod.isProactiveSuppressedByPeer = isProactiveSuppressedByPeer;
+
+    function _syncProactiveSuppression() {
+        const suppressed = isProactiveChatSuppressed();
+        if (suppressed === _lastProactiveSuppression) return;
+        _lastProactiveSuppression = suppressed;
+        if (suppressed) {
+            // follower 的定时器是接班 recheck，不能清掉；它接班后的调度仍会被闸门拦下。
+            if (isProactiveLeader()) stopProactiveChatSchedule();
+            return;
+        }
+        // 解除时视同一次用户活动：清退避并重新调度（仅本窗口，各窗口各自处理自己的解除）。
+        try {
+            resetProactiveChatBackoff({ _fromIpc: true });
+        } catch (e) {
+            console.warn('[Proactive] 解除临时抑制后重新调度失败:', e);
+        }
+    }
+
+    /**
+     * 本窗口的抑制来源（如小剧场运行态）变化后调用：立即广播给其他窗口，
+     * 并在本窗口按新状态停止或恢复调度。不读写任何持久化设置。
+     */
+    function refreshProactiveSuppression() {
+        _proactiveBroadcast('heartbeat');
+        _syncProactiveSuppression();
+    }
+    mod.refreshProactiveSuppression = refreshProactiveSuppression;
+
     function isProactiveLeader() {
         if (PROACTIVE_SELF_RANK === 99) return false; // 不参与的页面永远不是
         _purgeStaleProactivePeers();
@@ -491,6 +558,8 @@
             if (_purgeStaleProactivePeers()) {
                 _onProactiveLeadershipMaybeChanged();
             }
+            // 抑制方窗口崩溃时不会发送解除消息，只能靠心跳 TTL 过期后在这里恢复调度。
+            _syncProactiveSuppression();
         }, PROACTIVE_LEADER_HEARTBEAT_MS);
         // 窗口关闭前广播 goodbye，让对端立即接班
         window.addEventListener('beforeunload', function () {
@@ -654,6 +723,11 @@
         // 游戏路由 active 期间，普通 proactive 会干扰游戏语音/文本接管。
         // 赛后 game_postgame 不走 /api/proactive_chat，不受这里影响。
         if (S.gameRouteActive) {
+            return false;
+        }
+
+        // 小剧场等临时抑制（可能来自其他窗口）；不依赖改写 proactiveChatEnabled。
+        if (isProactiveChatSuppressed()) {
             return false;
         }
 
@@ -1042,6 +1116,11 @@
             }
             if (S.gameRouteActive) {
                 console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
+                return;
+            }
+            // 旧定时器可能在抑制开始前已排好；语音快速路径不经过 canTriggerProactively，这里统一拦截。
+            if (isProactiveChatSuppressed()) {
+                console.log('[ProactiveChat] 主动搭话被临时抑制（如小剧场进行中），跳过本次触发');
                 return;
             }
             // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入文本触发 ──
@@ -2555,6 +2634,7 @@
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;
     window.isProactiveLeader = isProactiveLeader;
+    window.isProactiveChatSuppressed = isProactiveChatSuppressed;
     window.captureCanvasFrame = captureCanvasFrame;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;

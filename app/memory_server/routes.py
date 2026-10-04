@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta
@@ -43,6 +44,7 @@ from config.prompts.prompts_memory import (
     MEMORY_UNAVAILABLE_NOTICE,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
+    get_theater_memory_context,
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
@@ -53,7 +55,16 @@ from utils.language_utils import (
     language_context,
     normalize_language_code,
 )
-from utils.llm_client import convert_to_messages
+from memory.message_sources import (
+    is_theater_episode_summary,
+    is_theater_memory_message,
+    theater_memory_episode_key,
+)
+from utils.llm_client import (
+    convert_to_messages,
+    message_metadata,
+    messages_to_dict,
+)
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
@@ -70,6 +81,12 @@ from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
+from memory.recent import (
+    TheaterEpisodeRetracted,
+    _positive_metadata_int,
+    is_retracted_theater_episode,
+    restored_theater_history,
+)
 from .runtime import app
 
 
@@ -77,10 +94,152 @@ class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
     render_language: str | None = None
+    # Theater archive request id; /cache accepts it only on a theater episode write.
+    idempotency_key: str | None = None
+    # Theater archive attempt number; lets a retraction fence late writes of
+    # attempts issued before the player declined the archive.
+    theater_archive_attempt: int | None = Field(default=None, ge=0)
+    # Opaque marker returned by the latest story forget. Once a story is
+    # forgotten, only writes carrying its current marker (issued after the
+    # forget completed) are stored; late writes issued before it are dropped.
+    theater_forget_marker: str | None = Field(default=None, max_length=128)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
     language: str
+
+
+class TheaterMemoryForgetRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+
+
+class TheaterEpisodeRetractRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=256)
+    archive_through_revision: int = Field(ge=0)
+    # Identify the archive attempts to fence against late /cache writes.
+    archive_request_id: str = Field(default="", max_length=160)
+    archive_attempt: int = Field(default=0, ge=0)
+
+
+def _theater_story_event_id(lanlan_name: str, message) -> str:
+    """同一剧本在时间索引中始终使用同一个有界事件 ID。"""  # noqa: DOCSTRING_CJK
+
+    story_id, _ = theater_memory_episode_key(message)
+    digest = hashlib.sha256(
+        f"{lanlan_name}\x1f{story_id}".encode("utf-8")
+    ).hexdigest()
+    return f"theater-story-{digest}"
+
+
+def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[str, list]]:
+    """把 recent 中所有剧场记忆组成按剧本聚合的时间索引事件。"""  # noqa: DOCSTRING_CJK
+
+    grouped: dict[str, list] = {}
+    for message in messages:
+        # 忘记单个剧本时，其他剧本尚未迁移的旧正文仍在 recent；重建索引必须原样保留。
+        if not is_theater_memory_message(message):
+            continue
+        story_id, _ = theater_memory_episode_key(message)
+        if story_id:
+            grouped.setdefault(story_id, []).append(message)
+    return {
+        story_id: (
+            _theater_story_event_id(lanlan_name, story_messages[-1]),
+            story_messages,
+        )
+        for story_id, story_messages in grouped.items()
+    }
+
+
+def _theater_memory_render_state(history: list):
+    """选出每个 Session 最新状态，以及每个 Story 最新周目。"""  # noqa: DOCSTRING_CJK
+
+    latest_by_episode = {
+        theater_memory_episode_key(message): message_metadata(message)
+        for message in history
+        if is_theater_memory_message(message)
+    }
+    latest_episode_by_story: dict[str, tuple[str, str]] = {}
+    latest_rank_by_story: dict[str, tuple[int, int]] = {}
+    for position, (episode_key, metadata) in enumerate(latest_by_episode.items()):
+        story_id = episode_key[0]
+        rank = (_positive_metadata_int(metadata.get("run_index")), position)
+        if rank >= latest_rank_by_story.get(story_id, (-1, -1)):
+            latest_rank_by_story[story_id] = rank
+            latest_episode_by_story[story_id] = episode_key
+    return latest_by_episode, latest_episode_by_story
+
+
+def _iter_theater_rendered_history_unbounded(history: list, *, lang: str, name: str, master: str):
+    """Yield ``(message, capsule_text)`` for the prompt renderings of recent history.
+
+    Each theater Session renders once, at its first position, from its latest
+    metadata; later messages of the same Session are skipped. Only the latest
+    run of a Story carries the story-wide run count and endings seen. Ordinary
+    messages come back with ``capsule_text=None`` for the caller to render.
+    """
+    latest_by_episode, latest_episode_by_story = _theater_memory_render_state(history)
+    rendered_episodes: set[tuple[str, str]] = set()
+    for message in history:
+        if not is_theater_memory_message(message):
+            yield message, None
+            continue
+        episode_key = theater_memory_episode_key(message)
+        if episode_key in rendered_episodes:
+            continue
+        rendered_episodes.add(episode_key)
+        metadata = latest_by_episode[episode_key]
+        is_latest_story_run = latest_episode_by_story.get(episode_key[0]) == episode_key
+        ending_titles = metadata.get("ending_titles_seen")
+        yield message, get_theater_memory_context(
+            lang,
+            name=name,
+            master=master,
+            title=str(metadata.get("story_title") or ""),
+            status=str(metadata.get("episode_status") or "paused"),
+            ending=str(metadata.get("ending_title") or ""),
+            summary=str(
+                metadata.get("episode_summary")
+                or metadata.get("ending_summary")
+                or ""
+            ),
+            run_index=_positive_metadata_int(metadata.get("run_index")),
+            story_run_count=(
+                _positive_metadata_int(metadata.get("story_run_count"))
+                if is_latest_story_run
+                else 0
+            ),
+            ending_titles=(
+                ending_titles
+                if is_latest_story_run and isinstance(ending_titles, list)
+                else []
+            ),
+        )
+
+
+def _iter_theater_rendered_history(history: list, *, lang: str, name: str, master: str):
+    """Apply a separate theater prompt allowance without dropping ordinary text."""
+    from memory.theater_budget import THEATER_MEMORY_BUDGET_TOKENS
+    from utils.tokenize import count_tokens
+
+    rendered = list(_iter_theater_rendered_history_unbounded(
+        history, lang=lang, name=name, master=master,
+    ))
+    selected = set()
+    texts = []
+    for index in range(len(rendered) - 1, -1, -1):
+        _, capsule_text = rendered[index]
+        if capsule_text is None:
+            selected.add(index)
+            continue
+        candidate = [capsule_text, *texts]
+        if count_tokens("\n".join(candidate) + "\n") <= THEATER_MEMORY_BUDGET_TOKENS:
+            selected.add(index)
+            texts = candidate
+    for index, entry in enumerate(rendered):
+        if index in selected:
+            yield entry
 
 
 class RepetitionInsightsRequest(BaseModel):
@@ -247,8 +406,6 @@ async def repetition_insights(lanlan_name: str, req: RepetitionInsightsRequest):
         # normal case rather than an edge case.
         payload["_anti_repeat_response_ids"] = scoped_ids
     return payload
-
-
 def _activate_request_language(language: str | None) -> str:
     """Resolve the locale for this request without changing the process default.
 
@@ -966,15 +1123,95 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             input_history = convert_to_messages(json.loads(request.input_history))
             if not input_history:
                 return {"status": "cached", "count": 0}
+            theater_episode_batch = (
+                len(input_history) == 1
+                and is_theater_episode_summary(input_history[0])
+            )
+            idempotency_key = str(request.idempotency_key or "").strip()
+            if len(idempotency_key) > 160:
+                return {"status": "error", "message": "idempotency_key_too_long"}
+            if idempotency_key and not theater_episode_batch:
+                # Only a theater episode write is idempotent: it upserts one
+                # capsule per Session and the key fences retracted attempts.
+                # Ordinary batches have no dedupe, so refuse rather than
+                # silently appending a retry twice.
+                return {"status": "error", "message": "idempotency_key_requires_theater_episode"}
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = str(uuid4())
+            retracted_request = False
+            theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-                # store_conversation 必须在 lock 内、与 update_history 串行：和
-                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                if theater_episode_batch:
+                    # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
+                    # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
+                    previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                        lanlan_name
+                    )
+                    try:
+                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                            input_history[0],
+                            lanlan_name,
+                            archive_request_id=idempotency_key,
+                            archive_attempt=request.theater_archive_attempt,
+                            forget_marker=request.theater_forget_marker,
+                        )
+                    except TheaterEpisodeRetracted:
+                        # The player declined this archive (or forgot the story)
+                        # while the request was still in flight; the tombstone was
+                        # checked under the same settle lock the retraction holds.
+                        retracted_request = True
+                    else:
+                        input_history = [stored_episode]
+                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name
+                        )
+                        theater_index_events = _theater_index_events(
+                            lanlan_name,
+                            updated_theater_history,
+                        )
+                else:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        compress=False,
+                    )
+                if retracted_request:
+                    pass
+                elif theater_episode_batch:
+                    # 以 recent 为唯一热记忆基线重建剧场时间索引：
+                    # 这会同时淘汰超限周目和升级前遗留的完整正文行。
+                    try:
+                        await runtime.time_manager.areconcile_theater_conversations(
+                            theater_index_events,
+                            lanlan_name,
+                        )
+                    except Exception:
+                        try:
+                            await runtime.recent_history_manager.restore_theater_cache_snapshot(
+                                lanlan_name,
+                                previous_theater_history,
+                                updated_theater_history,
+                            )
+                        except Exception:
+                            logger.exception("[MemoryServer] 剧场时间索引失败后 recent 回滚失败")
+                        raise
+                else:
+                    # store_conversation 必须在 lock 内、与 update_history 串行：和
+                    # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+                    await runtime.time_manager.astore_conversation(
+                        uid,
+                        input_history,
+                        lanlan_name,
+                    )
+            if retracted_request:
+                logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
+                return {"status": "retracted", "count": 0}
+            if theater_episode_batch:
+                # Theater capsules are already committed above. Ordinary
+                # reflection/correction signals must not run for this archive.
+                return {"status": "cached", "count": len(input_history)}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
@@ -986,6 +1223,214 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         except Exception as e:
             logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
+
+
+@app.get("/internal/memory/{lanlan_name}/theater/stories")
+async def list_theater_memory_stories(lanlan_name: str):
+    """Expose saved public summaries for management after a package is deleted."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    characters = await runtime._config_manager.aload_characters()
+    if lanlan_name not in characters.get("猫娘", {}):
+        raise HTTPException(status_code=404, detail="character_not_found")
+    history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    latest, _ = _theater_memory_render_state(history)
+    stories = {}
+    for (story_id, _), metadata in latest.items():
+        if not story_id:
+            continue
+        story = stories.setdefault(story_id, {"story_id": story_id, "title": "", "memory_summaries": []})
+        story["title"] = str(metadata.get("story_title") or story["title"] or story_id)
+        summary = str(metadata.get("episode_summary") or metadata.get("ending_summary") or "").strip()
+        if summary:
+            story["memory_summaries"].append(summary)
+    return {"ok": True, "stories": list(stories.values())}
+
+
+async def _drop_theater_memory_reindexed(
+    lanlan_name: str,
+    current: list,
+    should_drop,
+    drop_recent,
+    operation: str,
+    remaining=None,
+):
+    """Remove theater capsules from the time index, then from recent.
+
+    The caller holds the character's settle lock and passes the recent history
+    it read under it. The recallable index goes first, so a failed recent write
+    still leaves the original summary in place. When ``drop_recent`` fails the
+    index is rebuilt from what recent actually holds: the drop may have been
+    partly persisted, and rolling back to ``current`` would put removed
+    capsules back into the recallable index.
+    """
+
+    if remaining is None:
+        remaining = [message for message in current if not should_drop(message)]
+    reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+        _theater_index_events(lanlan_name, remaining),
+        lanlan_name,
+    )
+    try:
+        removed_recent = await drop_recent()
+    except Exception:
+        try:
+            try:
+                actual = await runtime.recent_history_manager.aget_recent_history(
+                    lanlan_name,
+                )
+            except Exception:
+                logger.exception(
+                    "[MemoryServer] %s: recent re-read failed; restoring index from snapshot",
+                    operation,
+                )
+                actual = current
+            await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, actual),
+                lanlan_name,
+            )
+        except Exception:
+            logger.exception("[MemoryServer] %s: time index rollback failed", operation)
+        raise
+    return removed_recent, reconcile_result
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/forget")
+async def forget_theater_memory(
+    lanlan_name: str,
+    request: TheaterMemoryForgetRequest,
+):
+    """幂等删除指定剧本的热记忆和时间索引。"""  # noqa: DOCSTRING_CJK
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    if not story_id:
+        raise HTTPException(status_code=422, detail="story_id_required")
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            # An archive request the theater timed out on may still land after
+            # this forget. Record the story tombstone first, under the settle lock
+            # /cache checks it under, so such a late write is dropped even when
+            # the rest of this forget fails and is retried.
+            # Every forget issues a fresh marker; the theater attaches it only to
+            # archive requests issued after it recorded this forget, so no write
+            # sent before the forget can carry it (no clock is compared).
+            forget_marker = await runtime.recent_history_manager.record_theater_story_forget(
+                lanlan_name,
+                story_id,
+            )
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
+                lanlan_name,
+                current,
+                lambda message: (
+                    is_theater_memory_message(message)
+                    and str(message_metadata(message).get("story_id") or "") == story_id
+                ),
+                lambda: runtime.recent_history_manager.forget_theater_story(
+                    story_id,
+                    lanlan_name,
+                ),
+                "theater story forget",
+            )
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+            "forget_marker": forget_marker,
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] 删除 %s 的剧本 %s 记忆失败: %s",
+            lanlan_name,
+            story_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_forget_failed",
+        ) from exc
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/retract")
+async def retract_theater_episode(
+    lanlan_name: str,
+    request: TheaterEpisodeRetractRequest,
+):
+    """Idempotently remove the episode capsule of one declined theater archive.
+
+    The theater may time out while this server still commits the archive; when
+    the player then declines the archive, the theater calls this to take back
+    exactly that range's capsule (matched by story, session and through-revision).
+    With ``archive_request_id`` it also leaves a persistent tombstone so a /cache
+    write of any attempt up to ``archive_attempt`` that is still in flight is
+    dropped instead of resurrecting the declined summary.
+    """
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    session_id = request.session_id.strip()
+    through = int(request.archive_through_revision)
+    if not story_id or not session_id:
+        raise HTTPException(status_code=422, detail="theater_episode_identity_required")
+
+    def is_target(message) -> bool:
+        return is_retracted_theater_episode(message, story_id, session_id, through)
+
+    archive_request_id = request.archive_request_id.strip()
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            if archive_request_id:
+                # The archive request may still be in flight (the theater only timed
+                # out). Record the tombstone first, under the settle lock /cache
+                # checks it under, so a late write of these attempts is dropped even
+                # when there is nothing to remove yet.
+                await runtime.recent_history_manager.record_theater_retraction(
+                    lanlan_name,
+                    story_id=story_id,
+                    session_id=session_id,
+                    archive_through_revision=through,
+                    archive_request_id=archive_request_id,
+                    archive_attempt=request.archive_attempt,
+                )
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            if not any(is_target(message) for message in current):
+                return {"ok": True, "removed_recent": 0, "removed_time_index": 0}
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
+                lanlan_name,
+                current,
+                is_target,
+                lambda: runtime.recent_history_manager.retract_theater_episode(
+                    story_id,
+                    session_id,
+                    through,
+                    lanlan_name,
+                ),
+                "theater episode retract",
+                remaining=restored_theater_history(current, story_id, session_id, through),
+            )
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] retracting theater episode %s/%s for %s failed: %s",
+            story_id,
+            session_id,
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_retract_failed",
+        ) from exc
 
 
 @app.post("/process/{lanlan_name}")
@@ -1198,10 +1643,16 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
     history = _screen_guarded_recent_history(
         await runtime.recent_history_manager.aget_recent_history(lanlan_name)
     )
-    _, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
+    master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
-    for i in history:
+    rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
+        history, lang=_lang, name=lanlan_name, master=master_name,
+    )))
+    for i, capsule_text in rendered_history:
+        if capsule_text is not None:
+            result += capsule_text + "\n"
+            continue
         if isinstance(i.content, str):
             content = i.content
         else:
@@ -3924,9 +4375,16 @@ async def _new_dialog(
             time=get_timestamp(),
         )
 
-        for i in _screen_guarded_recent_history(
+        recent_history = _screen_guarded_recent_history(
             await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-        ):
+        )
+        rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
+            recent_history, lang=_lang, name=lanlan_name, master=master_name,
+        )))
+        for i, capsule_text in rendered_history:
+            if capsule_text is not None:
+                result += capsule_text + "\n"
+                continue
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"

@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from utils.llm_client import SQLChatMessageHistory, SystemMessage
+from memory.message_sources import THEATER_MEMORY_SOURCE, is_theater_memory_message
+from utils.llm_client import (
+    SQLChatMessageHistory,
+    SystemMessage,
+    message_metadata,
+    messages_from_dict,
+    messages_to_dict,
+)
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
 from memory.stop_names import collect_stop_names, strip_stop_names
@@ -903,6 +910,149 @@ class TimeIndexedMemory:
     async def astore_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         await asyncio.to_thread(
             self.store_conversation, event_id, messages, lanlan_name, timestamp
+        )
+
+    @staticmethod
+    def _parse_serialized_theater_message(serialized_message: object) -> dict | None:
+        """识别时间索引中的新旧剧场行并返回解析结果；非剧场或解析失败时返回 None（宁可保留）。"""  # noqa: DOCSTRING_CJK
+
+        try:
+            payload = json.loads(str(serialized_message or ""))
+            if not isinstance(payload, dict):
+                return None
+            messages = messages_from_dict([payload])
+            if messages and is_theater_memory_message(messages[0]):
+                return payload
+            return None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def reconcile_theater_conversations(
+        self,
+        events_by_story,
+        lanlan_name,
+        timestamp=None,
+    ):
+        """用 recent 的有界剧场胶囊原子重建时间索引。"""  # noqa: DOCSTRING_CJK
+
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            raise RuntimeError("theater_time_index_unavailable")
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        normalized_batches: list[tuple[str, list[str]]] = []
+        for event_id, messages in events_by_story.values():
+            normalized_event_id = str(event_id or "").strip()
+            if not normalized_event_id:
+                continue
+            normalized_batches.append((
+                normalized_event_id,
+                [
+                    json.dumps(
+                        message,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    for message in messages_to_dict(list(messages))
+                ],
+            ))
+
+        with self.engines[lanlan_name].begin() as conn:
+            # 先由 SQL 按稳定来源标记收窄候选，再逐条反序列化复验，避免每次归档扫描全表。
+            rows = conn.execute(
+                text(
+                    f"SELECT id, session_id, message, timestamp FROM {original_table} "
+                    "WHERE message LIKE :source_marker ORDER BY id"
+                ),
+                {"source_marker": f"%{THEATER_MEMORY_SOURCE}%"},
+            ).fetchall()
+            existing_events: dict[str, list[tuple[str, object]]] = {}
+            theater_row_ids: list[int] = []
+            # One parse per row both classifies it and yields its canonical form.
+            for row in rows:
+                payload = self._parse_serialized_theater_message(row[2])
+                if payload is None:
+                    continue
+                theater_row_ids.append(int(row[0]))
+                canonical_message = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                existing_events.setdefault(str(row[1] or ""), []).append(
+                    (canonical_message, row[3])
+                )
+            if theater_row_ids:
+                conn.execute(
+                    text(f"DELETE FROM {original_table} WHERE id = :row_id"),
+                    [{"row_id": row_id} for row_id in theater_row_ids],
+                )
+            normalized_events = []
+            messages_by_event = {
+                str(event_id).strip(): messages
+                for event_id, messages in events_by_story.values()
+            }
+            for event_id, serialized_messages in normalized_batches:
+                existing = existing_events.get(event_id, [])
+                event_timestamp = timestamp
+                if (
+                    existing
+                    and [message for message, _stored_at in existing]
+                    == serialized_messages
+                    and existing[0][1] is not None
+                ):
+                    # Legacy rows without an event clock may retain their known index time.
+                    event_timestamp = existing[0][1]
+                for message, original in zip(
+                    serialized_messages, messages_by_event[event_id], strict=True,
+                ):
+                    metadata = message_metadata(original)
+                    performed_at = metadata.get("performed_at")
+                    # The optional clock is used by explicit migration/test callers.
+                    # Production archives without a performance clock are unknown,
+                    # including legacy rows previously dated by archive time.
+                    stored_at = event_timestamp if timestamp is not None else None
+                    if "performed_at" in metadata:
+                        # Missing clocks on upgraded sessions are unknown, never "now".
+                        stored_at = None
+                        if isinstance(performed_at, str) and performed_at:
+                            try:
+                                stored_at = datetime.fromisoformat(performed_at)
+                                if stored_at.tzinfo is not None:
+                                    stored_at = stored_at.astimezone().replace(tzinfo=None)
+                            except ValueError:
+                                pass
+                    normalized_events.append({
+                        "session_id": event_id,
+                        "message": message,
+                        "timestamp": stored_at,
+                    })
+            for event in normalized_events:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {original_table} "
+                        "(session_id, message, timestamp) "
+                        "VALUES (:session_id, :message, :timestamp)"
+                    ),
+                    event,
+                )
+        return {
+            "removed": len(theater_row_ids),
+            "stored": len(normalized_events),
+        }
+
+    async def areconcile_theater_conversations(
+        self,
+        events_by_story,
+        lanlan_name,
+        timestamp=None,
+    ):
+        return await asyncio.to_thread(
+            self.reconcile_theater_conversations,
+            events_by_story,
+            lanlan_name,
+            timestamp,
         )
 
     def _validate_table_name(self, table_name: str) -> str:

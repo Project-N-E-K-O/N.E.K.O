@@ -208,6 +208,34 @@ def _runtime_characters_with_safe_master(config_manager) -> dict[str, Any]:
     return runtime_payload
 
 
+def _preserve_local_character_ids(character_map: dict[str, Any], local_character_map: Any) -> None:
+    """Keep this device's ``_reserved.character_id`` for downloaded characters that already exist locally."""
+    from utils.config_manager import delete_reserved, get_reserved, normalize_character_id, set_reserved
+
+    local_map = local_character_map if isinstance(local_character_map, dict) else {}
+    claimed_ids: set[str] = set()
+    cloud_only_names: list[str] = []
+    for name, payload in character_map.items():
+        if not isinstance(payload, dict):
+            continue
+        # 同名角色沿用本机身份：剧场会话等本地数据按 character_id 绑定，
+        # 云端下载覆盖内容时不能把它们变成孤儿。
+        local_id = normalize_character_id(get_reserved(local_map.get(name), "character_id", default=""))
+        if local_id and local_id not in claimed_ids:
+            set_reserved(payload, "character_id", local_id)
+            claimed_ids.add(local_id)
+        else:
+            cloud_only_names.append(name)
+    for name in cloud_only_names:
+        payload = character_map[name]
+        cloud_id = normalize_character_id(get_reserved(payload, "character_id", default=""))
+        if cloud_id and cloud_id not in claimed_ids:
+            claimed_ids.add(cloud_id)
+            continue
+        # 本机新角色才采用云端身份；与本机其它角色冲突时交给下次 load_characters 重新生成。
+        delete_reserved(payload, "character_id")
+
+
 def _assert_single_character_name_safe(character_name: str, *, context: str) -> None:
     audit_result = audit_cloudsave_character_names([character_name])
     try:
@@ -520,6 +548,7 @@ def import_cloudsave_character_unit(
         updated_characters = deepcopy(runtime_characters)
         updated_characters.setdefault("猫娘", {})
         updated_characters["猫娘"][character_name] = deepcopy(cloud_unit["profile"])
+        _preserve_local_character_ids(updated_characters["猫娘"], runtime_characters.get("猫娘"))
         current_character_name = str(updated_characters.get("当前猫娘") or "")
         if not current_character_name:
             updated_characters["当前猫娘"] = character_name
@@ -1595,6 +1624,7 @@ def import_local_cloudsave_snapshot(
             for tombstone_name in tombstone_names:
                 merged_character_map.pop(tombstone_name, None)
             merged_character_map.update(snapshot_character_map)
+            _preserve_local_character_ids(merged_character_map, characters_payload.get("猫娘"))
             characters_payload["猫娘"] = merged_character_map
 
             local_current_name = str(characters_payload.get("当前猫娘") or "").strip()
@@ -1615,6 +1645,11 @@ def import_local_cloudsave_snapshot(
             else:
                 characters_payload["当前猫娘"] = ""
         else:
+            local_characters_payload = config_manager.load_characters()
+            _preserve_local_character_ids(
+                snapshot_character_map,
+                local_characters_payload.get("猫娘") if isinstance(local_characters_payload, dict) else None,
+            )
             characters_payload = deepcopy(cloud_characters_payload)
             characters_payload["猫娘"] = snapshot_character_map
             if not _has_usable_master_profile(characters_payload.get("主人")):

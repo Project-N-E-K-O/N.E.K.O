@@ -49,16 +49,63 @@ from .staging import (
 )
 
 
-def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: Path) -> bool:
+# 与 ConfigManager._get_localized_characters_source 的语言后缀保持一致。
+_LOCALIZED_DEFAULT_CHARACTER_LANGUAGES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def _iter_pristine_characters_payloads(config_manager):
     source_path = None
-    if runtime_path.name == "characters.json":
-        localized_source = getattr(config_manager, "_get_localized_characters_source", lambda: None)()
-        if localized_source:
-            source_path = Path(localized_source)
+    localized_source = getattr(config_manager, "_get_localized_characters_source", lambda: None)()
+    if localized_source:
+        source_path = Path(localized_source)
     if source_path is None:
-        candidate = Path(config_manager.project_config_dir) / runtime_path.name
+        candidate = Path(config_manager.project_config_dir) / "characters.json"
         if candidate.exists():
             source_path = candidate
+    if source_path is not None:
+        seed_payload = _load_json_if_exists(source_path)
+        if seed_payload is not None:
+            yield seed_payload
+
+    # characters.json 缺失时，首次 load_characters 以内存默认值为底稿补 character_id 并写回；
+    # 写入时的 Steam/系统语言可能与此刻不同，所以任一语言的内置默认值都算未改动。
+    yield DEFAULT_CONFIG_DATA.get("characters.json")
+    try:
+        from config import get_localized_default_characters
+    except Exception:
+        return
+    for language in _LOCALIZED_DEFAULT_CHARACTER_LANGUAGES:
+        try:
+            yield get_localized_default_characters(language)
+        except Exception:
+            continue
+
+
+def _runtime_characters_config_matches_pristine_default(config_manager, runtime_path: Path) -> bool:
+    try:
+        runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    # 首次 load_characters 会为每个角色生成随机 character_id 并写回，字节比较必然失败；
+    # 只忽略本地身份后按内容比较，全新安装才不会被误判为已有用户内容；其余差异（含旧版
+    # _reserved 迁移写回）仍按原语义视为已改动。
+    comparable_runtime_payload = _characters_payload_for_content_comparison(runtime_payload)
+    for pristine_payload in _iter_pristine_characters_payloads(config_manager):
+        if pristine_payload is None:
+            continue
+        if comparable_runtime_payload == _characters_payload_for_content_comparison(pristine_payload):
+            return True
+    return False
+
+
+def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: Path) -> bool:
+    if runtime_path.name == "characters.json":
+        return _runtime_characters_config_matches_pristine_default(config_manager, runtime_path)
+
+    source_path = None
+    candidate = Path(config_manager.project_config_dir) / runtime_path.name
+    if candidate.exists():
+        source_path = candidate
 
     if source_path is not None and source_path.exists():
         try:
@@ -89,6 +136,32 @@ def _runtime_config_dir_has_user_content(config_manager) -> bool:
     return False
 
 
+def _theater_dir_has_user_content(theater_dir: Path) -> bool:
+    """Return whether ``theater/`` holds any user file, not just scaffolding.
+
+    Theater storage maintenance runs lazily on the first theater request and
+    creates empty directories (``numeric_v2/packages`` and friends) plus hidden
+    lock/marker files, so a device that only opened the theater page must not
+    count as having user content. Every theater record (packages, sessions,
+    archives, receipts, delete transactions, quarantined files, workshop
+    projects) is a regular non-hidden file, while atomic-write temporaries,
+    locks and markers are dot-prefixed and never the only copy of anything. So
+    any non-hidden regular file anywhere in the tree counts; unreadable trees
+    count too, because under-reporting would let a cloud import replace them.
+    """
+
+    def _raise(error: OSError) -> None:
+        raise error
+
+    try:
+        for _dirpath, _dirnames, filenames in os.walk(theater_dir, onerror=_raise):
+            if any(not name.startswith(".") for name in filenames):
+                return True
+    except OSError:
+        return True
+    return False
+
+
 def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     if not root.exists():
         return False
@@ -107,6 +180,10 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
         if candidate.is_dir():
             if config_dir is not None and candidate == config_dir:
                 if _runtime_config_dir_has_user_content(config_manager):
+                    return True
+                continue
+            if name == "theater":
+                if _theater_dir_has_user_content(candidate):
                     return True
                 continue
             transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(name)
@@ -204,10 +281,23 @@ def _load_seed_characters_payload(config_manager) -> dict[str, Any]:
     return fallback_payload if isinstance(fallback_payload, dict) else {}
 
 
-def _normalize_catgirl_payload(payload: Any) -> dict[str, Any] | None:
+def _catgirl_payload_without_character_id(payload: Any) -> dict[str, Any] | None:
+    """Return a deep copy of a catgirl payload without its device-local ``_reserved.character_id``."""
     if not isinstance(payload, dict):
         return None
-    normalized_payload = deepcopy(payload)
+    from utils.config_manager import delete_reserved
+
+    stripped_payload = deepcopy(payload)
+    # character_id 是每台设备各自生成的本地身份，不属于角色内容；
+    # 所有「内容是否相同」的比较（种子默认卡、云存档指纹）都必须忽略它。
+    delete_reserved(stripped_payload, "character_id")
+    return stripped_payload
+
+
+def _normalize_catgirl_payload(payload: Any) -> dict[str, Any] | None:
+    normalized_payload = _catgirl_payload_without_character_id(payload)
+    if normalized_payload is None:
+        return None
     try:
         from utils.config_manager import migrate_catgirl_reserved
 
@@ -215,6 +305,19 @@ def _normalize_catgirl_payload(payload: Any) -> dict[str, Any] | None:
     except Exception:
         pass
     return normalized_payload
+
+
+def _characters_payload_for_content_comparison(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    comparable_payload = dict(payload)
+    catgirl_map = payload.get("猫娘")
+    if isinstance(catgirl_map, dict):
+        comparable_payload["猫娘"] = {
+            name: _catgirl_payload_without_character_id(catgirl_payload) if isinstance(catgirl_payload, dict) else catgirl_payload
+            for name, catgirl_payload in catgirl_map.items()
+        }
+    return comparable_payload
 
 
 def _character_payload_looks_default(config_manager, name: str, payload: Any) -> bool:

@@ -137,6 +137,27 @@ def test_existing_characters_get_an_id_once_and_keep_it_across_restarts(tmp_path
     assert _uid_on_disk(path, "Old") == uid
 
 
+def test_visit_backfill_preserves_theater_identity_and_persona_hash(tmp_path):
+    from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+    from utils.config_manager import ensure_catgirl_character_id, get_reserved
+    from main_routers.characters_router.cards import _strip_local_character_identity
+
+    profile = {'昵称': 'Old'}
+    theater_id, _ = ensure_catgirl_character_id(profile)
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    _write_characters(cm, {'Old': profile})
+    before = numeric_v2_catgirl_binding(cm, 'Old')
+    assert cm.backfill_character_uids()
+    after = numeric_v2_catgirl_binding(cm, 'Old')
+    saved = cm.load_characters()['猫娘']['Old']
+    assert get_reserved(saved, 'character_id') == theater_id
+    assert is_valid_character_uid(get_character_uid(saved))
+    assert before == after
+    exported = _strip_local_character_identity(json.loads(json.dumps(saved)))
+    assert get_reserved(exported, 'character_id') is None
+    assert get_character_uid(exported) is None
+
 def test_backfill_migrates_legacy_reserved_fields_before_writing(tmp_path):
     """The backfill writes (and caches) the raw file: it must be migrated first.
 
