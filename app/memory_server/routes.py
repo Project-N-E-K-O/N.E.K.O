@@ -3256,6 +3256,12 @@ async def _process_scoped_history_keyed(
     from . import idempotency
 
     key = req.idempotency_key
+    # 请求身份（形态 + 各位置 wire subject）：随键记录永久保留，终态键被另一个
+    # 请求复用时不能把它当成「已处理过」吞掉
+    fingerprint = {
+        "shape": shape,
+        "wire_keys": [context["wire_subject"].key for context in contexts],
+    }
     async with idempotency.key_lock(lanlan_name, key):
         try:
             record = await idempotency.read_key(lanlan_name, key)
@@ -3263,6 +3269,12 @@ async def _process_scoped_history_keyed(
                 record is not None
                 and record.get("state") in idempotency.TERMINAL_KEY_STATES
             ):
+                stored = record.get("request")
+                if stored is not None and stored != fingerprint:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="idempotency_key was already used for a different request",
+                    )
                 return _keyed_duplicate_response(shape, contexts)
             staging = await idempotency.read_staging(lanlan_name, key)
         except idempotency.IdempotencyStateError as exc:
@@ -3305,6 +3317,7 @@ async def _process_scoped_history_keyed(
                     idempotency.transition(
                         idempotency.KEY_STATE_PENDING,
                         client_requested_at=req.client_requested_at,
+                        request=fingerprint,
                     ),
                 )
             except MaintenanceModeError:
@@ -3700,6 +3713,19 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     }
 
 
+def _read_json_list_for_listing(path: str) -> list:
+    """Write-free read of one JSON list file for the listing endpoint (never creates directories)."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] {os.path.basename(path)} 读取失败，按空处理: {exc}")
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _read_persona_for_listing(path: str) -> dict:
     """Strict, write-free persona read for the listing endpoint."""
     if not os.path.exists(path):
@@ -3757,13 +3783,28 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     def _platform_of(subject) -> str:
         return subject.subject_id.split(":", 1)[0]
 
-    facts_full = await runtime.fact_store.aload_facts_full(lanlan_name)
+    # 直接读盘、不经各 store 的加载器：加载器取路径时会 ensure_character_dir，
+    # 本 GET 不进写入围栏，删除 / 改名与它并发时会把刚删掉的角色目录重新建出来
+    from memory.reflection.persistence import PersistenceMixin
+
+    active_facts = await asyncio.to_thread(
+        _read_json_list_for_listing, os.path.join(character_dir, "facts.json"),
+    )
+    archived_facts = await asyncio.to_thread(
+        _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
+    )
+    facts_full = [fact for fact in active_facts + archived_facts if isinstance(fact, dict)]
     active_fact_ids = {
         fact.get("id")
-        for fact in await runtime.fact_store.aload_facts(lanlan_name)
+        for fact in active_facts
         if isinstance(fact, dict) and fact.get("id") is not None
     }
-    reflections = await runtime.reflection_engine.aload_reflections(lanlan_name)
+    reflections_path = os.path.join(character_dir, "reflections.json")
+    reflections = PersistenceMixin._filter_reflections(
+        await asyncio.to_thread(_read_json_list_for_listing, reflections_path),
+        False,
+        reflections_path,
+    )
     persona = await asyncio.to_thread(
         _read_persona_for_listing,
         os.path.join(character_dir, "persona.json"),

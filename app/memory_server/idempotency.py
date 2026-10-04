@@ -417,7 +417,8 @@ async def cleanup_expired(
     """Drop staging leftovers and tombstones older than the retention period.
 
     Key records are never touched (``done`` / ``cancelled`` / ``pending`` are
-    kept forever). Best-effort per character: one unreadable file is logged
+    kept forever), and the staging of a ``pending`` key is kept too: it is
+    the only copy of the generated products and of the apply progress. Best-effort per character: one unreadable file is logged
     and skipped, never aborts the sweep.
     """
     if ttl_s is None:
@@ -444,6 +445,11 @@ async def cleanup_expired(
                 if isinstance(key, str) and key:
                     # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
                     async with key_lock(name, key):
+                        record = await read_key(name, key)
+                        if record is not None and record.get("state") == KEY_STATE_PENDING:
+                            # pending 键的暂存是已生成产物与应用进度的唯一副本：删了重试
+                            # 只能重新生成，序号对不上的 effect_key 会挡错事实、漏掉没应用的
+                            continue
                         if await asyncio.to_thread(_remove_file, path):
                             report["staging_removed"] += 1
                 elif await asyncio.to_thread(_remove_file, path):

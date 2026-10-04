@@ -103,8 +103,10 @@ def env(tmp_path, monkeypatch):
         {"id": "r2", "text": "qq reflection", "status": "confirmed",
          **QQ_PART.as_entry_fields()},
     ]
+    _write(char_dir / "reflections.json", reflections)
+    # 列表端点直接读盘：经 store 加载器取路径会 ensure_character_dir
     reflection_engine = SimpleNamespace(
-        aload_reflections=AsyncMock(return_value=reflections),
+        aload_reflections=AsyncMock(side_effect=AssertionError("must read reflections from disk")),
     )
     persona_manager = SimpleNamespace(
         aensure_persona=AsyncMock(side_effect=AssertionError("must not recover persona")),
@@ -217,3 +219,16 @@ def test_http_route_serves_the_listing_and_is_outside_the_write_fence(env):
     assert runtime._character_write_name_from_path(
         f"/internal/memory/{NAME}/scoped_subjects", "GET",
     ) is None
+
+
+async def test_listing_never_creates_the_character_directory(env):
+    """Deletion racing the GET: the loaders' ensure_character_dir must never run."""
+    import memory
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("listing must not create character directories")
+
+    # FactStore 与 reflection 持久化都在函数内 from memory import ensure_character_dir
+    env.monkeypatch.setattr(memory, "ensure_character_dir", _forbidden)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    assert result["subjects"]

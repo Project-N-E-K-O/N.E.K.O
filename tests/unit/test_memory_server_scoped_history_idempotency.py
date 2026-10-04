@@ -742,3 +742,28 @@ def test_idle_key_locks_are_dropped_from_the_registry(env):
         return sum(1 for (_loop, name, _key) in list(idem._key_locks.keys()) if name == NAME)
 
     assert asyncio.run(_check()) == 0
+
+
+async def test_terminal_key_reused_for_another_request_is_rejected(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(display_name=None))
+    assert _key_state(env, KEY_GROUP) == "done"
+    other = _single_body(display_name=None, subject=PART)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, other)
+    assert excinfo.value.status_code == 422
+    again = await _post(env, _single_body(display_name=None))
+    assert again["duplicate"] is True and env.llm.calls == 1
+
+
+async def test_startup_cleanup_keeps_the_staging_of_a_pending_key(env):
+    idem = env.idem
+    now = time.time()
+    await idem.write_staging(NAME, "k-pending", {"key": "k-pending", "subjects": [], "created_at": now - 500})
+    await idem.update_key(NAME, "k-pending", idem.transition("pending"))
+    await idem.write_staging(NAME, "k-done", {"key": "k-done", "subjects": [], "created_at": now - 500})
+    await idem.update_key(NAME, "k-done", idem.transition("done"))
+    report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert report["staging_removed"] == 1
+    assert Path(idem.staging_path(NAME, "k-pending")).exists()
+    assert not Path(idem.staging_path(NAME, "k-done")).exists()
