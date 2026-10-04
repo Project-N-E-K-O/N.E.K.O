@@ -361,3 +361,34 @@ def test_rename_landing_before_the_guard_is_taken_uses_the_new_name(env, monkeyp
     assert resp.status_code == 200
     assert names == {"C"}
     assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_X, "C")) is None
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
+    ("/api/visit/memory/forget_all", {"catgirl": "A"}),
+])
+def test_character_unresolvable_under_the_guard_is_a_retryable_503(env, monkeypatch, path, body):
+    import contextlib
+
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+    table = {"A": CHAR_UID_A}
+
+    async def chars():
+        return dict(table)
+
+    monkeypatch.setattr(local_chars, "load_local_characters", chars)
+
+    @contextlib.asynccontextmanager
+    async def guard(_uids):
+        table.clear()                                # 拿到守卫时角色配置读不出（或刚被删）
+        yield
+
+    memory_routes.configure_memory_routes(lifecycle_guard=guard)
+    try:
+        resp = client.post(path, json=body, headers=GOOD)
+    finally:
+        memory_routes.configure_memory_routes(lifecycle_guard=None)
+    # 不报成功、也不回 404：分不清「删了」与「一时读不出」，回可重试的 503
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.requests == []

@@ -277,8 +277,9 @@ async def forget_memory_peer(request: Request):
     except VisitActive:
         return _error(409, "visit_active")
     except CharacterUnresolved:
-        # 拿到守卫时角色已被删除
-        return _error(404, "unknown_catgirl")
+        # 拿到守卫时按 uid 解析不出名字：刚被删除与角色配置一时读不出分不清，
+        # 回可重试的 503（真删了的话，重试时入口就会回 404）
+        return _error(503, "forget_failed", retry=True)
     except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)

@@ -525,6 +525,9 @@ async def _upload_pending(
             continue
         if doc is not None:
             sealed.add(visit_id)
+        elif not await _drop_corrupt_sealed(spool_dir, visit_id):
+            # 流水坏了、旁边那份上传文件也不是本场的有效文件：它删不掉就先挡住举报
+            pending.add(visit_id)
     for visit_id in sorted(sealed):
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
@@ -533,11 +536,19 @@ async def _upload_pending(
         path = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
         try:
             doc = await asyncio.to_thread(_load_json, path)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
             logger.warning("visit recovery: pending upload %s unreadable: %s", path.name, exc)
             pending.add(visit_id)
             continue
+        except ValueError:
+            doc = False
         if doc is None:
+            continue
+        if not _sealed_doc_belongs(doc, visit_id):
+            # 没有流水可重封的坏 / 别场上传文件：与损坏流水同一处理，转录已无法恢复，
+            # 删掉它（不交给上传回调），排队的举报随后照常提交
+            if not await _drop_corrupt_sealed(spool_dir, visit_id):
+                pending.add(visit_id)
             continue
         if upload_transcript is None:
             pending.add(visit_id)
@@ -560,6 +571,20 @@ async def _upload_pending(
         # 该场转录上传成功后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
+
+
+async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:
+    """Delete an invalid ``.upload.json`` that has no stream to reseal from; False if it is still there."""
+    path = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
+    if not await asyncio.to_thread(path.exists):
+        return True
+    memory_bridge.diag("upload_doc_corrupt", visit_id=visit_id)
+    try:
+        await asyncio.to_thread(path.unlink, True)
+    except OSError as exc:
+        logger.warning("visit recovery: cannot delete corrupt upload %s: %s", path.name, exc)
+        return False
+    return True
 
 
 def _load_json(path: Path) -> Any:

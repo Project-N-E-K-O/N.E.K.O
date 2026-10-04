@@ -365,8 +365,10 @@ async def forget_all(
     One sentinel (``scope='chars'``) names every character; the roster is
     expanded only after it is on disk, every person's log is written before
     any is executed. ``lifecycle_guard`` is held for the whole operation;
-    ``resolve_char_name`` (optional) re-reads every current name under it
-    (characters gone by then are dropped from the scope).
+    ``resolve_char_name`` (optional) re-reads every current name under it and
+    raises :class:`CharacterUnresolved` when any of them has none (deleted in
+    between, or the character config unreadable: indistinguishable here, so
+    the caller answers a retryable error instead of reporting success).
     """
     if not chars:
         return ForgetOutcome(done=True)
@@ -376,11 +378,12 @@ async def forget_all(
             current: dict[str, str] = {}
             for uid in chars.values():
                 name = await resolve_char_name(uid)
-                if name:
-                    current[name] = uid
+                if not name:
+                    # 解析不出：可能刚被删，也可能角色配置一时读不出（被替换成默认值）。
+                    # 两者在这里分不清，跳过它就会对一个没写下任何哨兵 / 日志的角色报「清除成功」
+                    raise CharacterUnresolved(f"character {uid} has no name")
+                current[name] = uid
             chars = current
-            if not chars:
-                return ForgetOutcome(done=True)
         return await _forget_all(
             Path(config_dir), own_uid=own_uid, chars=chars, client=client,
             void_pending=void_pending, admission_lock=admission_lock,

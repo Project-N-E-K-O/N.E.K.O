@@ -108,6 +108,14 @@ def _write_stream(tmp_path, visit_id, records):
     return path
 
 
+def _sealed(visit_id):
+    """A well-formed ``.upload.json`` of ``visit_id`` (recovery deletes stale streams only next to one)."""
+    return {"v": 1, "own_visit_uid": OWN_A, "request": {
+        "visit_id": visit_id, "role": "host", "started_at": 1000.0, "ended_at": 1001.0,
+        "usage": {}, "lines": [],
+    }}
+
+
 def _header(visit_id, role="host"):
     return {"kind": "header", "visit_id": visit_id, "role": role, "own_visit_uid": OWN_A,
             "started_at": 1000.0, "own_char_uid": CHAR_UID_A, "app_version": "0.8", "transport": "livekit"}
@@ -122,7 +130,7 @@ async def test_startup_cleanup_only_deletes_outboxes(tmp_path):
     await make_visit(tmp_path, v, [ln(0)], last_summary_done=True)
     d = _spool_dir(tmp_path)
     (d / f"{v}.outbox.jsonl").write_text("x", encoding="utf-8")
-    (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
     await _recover(tmp_path)
     assert not (d / f"{v}.outbox.jsonl").exists()
     assert (d / f"{v}.state.json").exists() and (d / f"{v}.upload.json").exists()
@@ -132,7 +140,7 @@ async def test_pending_upload_files_are_retried_once_each(tmp_path):
     await make_visit(tmp_path, vid(1), [], memory_enabled=False, last_summary_done=True)
     d = _spool_dir(tmp_path)
     for n in (1, 2):
-        (d / f"{vid(n)}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": vid(n)}}),
+        (d / f"{vid(n)}.upload.json").write_text(json.dumps(_sealed(vid(n))),
                                                  encoding="utf-8")
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
@@ -206,7 +214,7 @@ async def test_reports_follow_their_upload_and_are_also_scanned_alone(tmp_path):
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     pending, uploaded = vid(8), vid(9)
-    (d / f"{pending}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+    (d / f"{pending}.upload.json").write_text(json.dumps(_sealed(pending)), encoding="utf-8")
     for v in (pending, uploaded):
         (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "reason": "spam"}), encoding="utf-8")
     reports = Reports()
@@ -223,7 +231,7 @@ async def test_size_sweep_keeps_pending_uploads(tmp_path):
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     big = d / f"{vid(10)}.upload.json"
-    big.write_bytes(b"{" + b" " * (21 * 1024 * 1024) + b"}")
+    big.write_text(json.dumps({**_sealed(vid(10)), "pad": " " * (21 * 1024 * 1024)}), encoding="utf-8")
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     assert big.exists()
@@ -509,7 +517,7 @@ async def test_report_of_a_live_visit_waits_for_its_upload(tmp_path):
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     live = vid(33)
-    (d / f"{live}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+    (d / f"{live}.upload.json").write_text(json.dumps(_sealed(live)), encoding="utf-8")
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{live}.json").write_text(json.dumps({"visit_id": live}), encoding="utf-8")
@@ -523,7 +531,7 @@ async def test_stale_stream_next_to_a_sealed_upload_is_not_uploaded_twice(tmp_pa
     v = vid(34)
     _write_stream(tmp_path, v, [_header(v)])
     d = _spool_dir(tmp_path)
-    (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": v}}), encoding="utf-8")
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
     await _recover(tmp_path, upload_transcript=uploads)
@@ -608,7 +616,7 @@ async def test_failing_cleanup_after_upload_does_not_block_the_rest(tmp_path, mo
     d.mkdir(parents=True)
     stuck, other = vid(40), vid(41)
     for v in (stuck, other):
-        (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+        (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
     real_unlink = Path.unlink
 
     def unlink(self, missing_ok=False):
@@ -761,7 +769,7 @@ async def test_undeletable_stale_stream_does_not_block_upload_or_reports(tmp_pat
     v = vid(46)
     _write_stream(tmp_path, v, [_header(v)])
     d = _spool_dir(tmp_path)
-    (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": v}}), encoding="utf-8")
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v}), encoding="utf-8")
@@ -1028,8 +1036,43 @@ async def test_invalid_sealed_upload_is_not_uploaded_when_resealing_fails(tmp_pa
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(foreign), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 已知是别场的文件不能交给上传回调
+    # 已知是别场的文件不能交给上传回调；流水也坏了（转录无法恢复）就同损坏流水一样删掉它，
+    # 不留到下一轮再交上去
     assert uploads.calls == []
+    assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
+
+
+@pytest.mark.parametrize("stream", ["missing", "missing-foreign", "unsealable"])
+async def test_invalid_sealed_upload_never_reaches_upload_and_reports_follow_the_transcript(
+    tmp_path, monkeypatch, stream,
+):
+    from main_logic.visit import recovery
+
+    v = vid(60)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(_sealed(vid(61))) if stream == "missing-foreign" else "{torn"
+    (d / f"{v}.upload.json").write_text(body, encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v}), encoding="utf-8")
+    if stream == "unsealable":
+        _write_stream(tmp_path, v, [_header(v)])
+
+        def broken(*_args, **_kwargs):
+            raise OSError("disk error")
+
+        monkeypatch.setattr(recovery, "_seal_stream_sync", broken)
+    uploads, reports = Uploads(ok=True), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    assert uploads.calls == []
+    if stream != "unsealable":
+        # 没有流水可重封：转录已无法恢复，删掉坏文件，举报照常提交
+        assert not (d / f"{v}.upload.json").exists()
+        assert [visit_id for visit_id, _ in reports.calls] == [v]
+    else:
+        # 流水还在、只是这轮重封失败：坏文件留着等下次重封，举报不能先交
+        assert reports.calls == []
 
 
 async def test_forget_all_retry_resumes_logs_of_people_already_removed_from_the_roster(tmp_path):
@@ -1070,6 +1113,23 @@ async def test_forget_in_progress_is_scoped_to_the_account(tmp_path, record):
     assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
     # 名册与记忆按账号分区：A 账号的清除不挡 B 账号同一角色下的同一对端
     assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_B)
+
+
+async def test_forget_all_with_an_unresolvable_character_is_not_reported_done(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import CharacterUnresolved, forget_all
+
+    await seed_roster(tmp_path)
+
+    async def unreadable_config(_uid):
+        return None          # 角色配置一时读不出：uid 解析不出名字
+
+    with pytest.raises(CharacterUnresolved):
+        await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                         client=FakeMemoryServer().client(), resolve_char_name=unreadable_config)
+    # 什么都没写，也没有报「清除成功」：调用方回可重试的错误
+    assert await ClearingSentinels(tmp_path).list_open() == []
+    assert await PeerRoster(tmp_path, own_uid=OWN_A).peers_of_char("A") == [PEER_X]
 
 
 @pytest.mark.parametrize("scope", ["person", "all"])
