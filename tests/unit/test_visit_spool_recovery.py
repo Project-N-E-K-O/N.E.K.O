@@ -514,3 +514,47 @@ async def test_report_of_a_live_visit_waits_for_its_upload(tmp_path):
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports,
                    is_live=lambda visit_id: visit_id == live)
     assert reports.calls == [] and (reports_dir / f"{live}.json").exists()
+
+
+async def test_stale_stream_next_to_a_sealed_upload_is_not_uploaded_twice(tmp_path):
+    v = vid(34)
+    _write_stream(tmp_path, v, [_header(v)])
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": v}}), encoding="utf-8")
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert [visit_id for visit_id, _ in uploads.calls] == [v]
+    assert not list(d.glob(f"{v}.upload*"))
+
+
+async def test_one_unsealable_stream_does_not_block_the_others(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    bad, good = vid(35), vid(36)
+    _write_stream(tmp_path, bad, [_header(bad)])
+    _write_stream(tmp_path, good, [_header(good)])
+    real_seal = recovery._seal_stream_sync
+
+    def flaky(spool_dir, visit_id, reason):
+        if visit_id == bad:
+            raise PermissionError("locked by antivirus")
+        return real_seal(spool_dir, visit_id, reason)
+
+    monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert [visit_id for visit_id, _ in uploads.calls] == [good]
+    assert (_spool_dir(tmp_path) / f"{bad}.upload.jsonl").exists()
+
+
+async def test_forget_all_counts_people_not_logs(tmp_path):
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path)
+    await seed_roster(tmp_path, own_char="B")
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A, "B": "e" * 32},
+                               client=server.client())
+    assert not outcome.done and outcome.forgotten == 0 and len(outcome.pending_logs) == 2

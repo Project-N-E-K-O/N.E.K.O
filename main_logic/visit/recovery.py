@@ -218,8 +218,9 @@ def _write_private_json(path: Path, doc: dict) -> None:
     atomic_write_json(path, doc)
     try:
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        # 与凭证文件同一立场：权限位尽力而为（Windows 上本就无效），设不上不影响上传
+        logger.debug("visit recovery: chmod 0600 failed for %s: %s", path.name, exc)
 
 
 def _seal_stream_sync(spool_dir: Path, visit_id: str, finalized_reason: str | None) -> dict | None:
@@ -378,7 +379,17 @@ async def _upload_pending(
     pending: set[str] = set()
     sealed = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX,)))
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)):
-        if visit_id in sealed or live(visit_id):
+        if live(visit_id):
+            continue
+        stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
+        if visit_id in sealed:
+            # 封存时「已写 .upload.json、还没删流水」就崩了：上传文件才是这场的那份，
+            # 留着流水会在上传成功后被再封一次、重复上传
+            try:
+                await asyncio.to_thread(stream.unlink, True)
+            except OSError as exc:
+                logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
+                pending.add(visit_id)
             continue
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
         state = None
@@ -387,7 +398,13 @@ async def _upload_pending(
         except (OSError, ValueError) as exc:
             logger.warning("visit recovery: state of %s unreadable, upload marked crash: %s", visit_id, exc)
         reason = state["finalized"] if state else None
-        doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason)
+        try:
+            doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason)
+        except OSError as exc:
+            # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
+            logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
+            pending.add(visit_id)
+            continue
         if doc is not None:
             sealed.add(visit_id)
     for visit_id in sorted(sealed):

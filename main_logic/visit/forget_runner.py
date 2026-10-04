@@ -226,11 +226,14 @@ async def _run_scope(
         )
         if not ok:
             pending.append(rev_id)
-    persons = len({peer for *_rest, peer in opened})
+    # 「清除全部」里同一个人可能在几个本机角色下各有一份日志：按人计数，
+    # 只有这个人的每份日志都完成才算清掉了
+    persons = {peer for *_rest, peer in opened}
+    unfinished = {peer for rev_id, *_rest, peer in opened if rev_id in pending}
     if pending:
-        return ForgetOutcome(done=False, forgotten=persons - len(pending), pending_logs=pending)
+        return ForgetOutcome(done=False, forgotten=len(persons - unfinished), pending_logs=pending)
     await ClearingSentinels(config_dir).remove(sentinel["op_id"])
-    return ForgetOutcome(done=True, forgotten=persons)
+    return ForgetOutcome(done=True, forgotten=len(persons))
 
 
 async def _with_admission_locks(

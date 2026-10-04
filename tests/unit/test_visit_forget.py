@@ -807,7 +807,9 @@ async def test_clearing_sentinels_roundtrip_and_fail_closed(tmp_path):
     assert sentinel_covers(chars, CHAR_UID_B, PEER_Y) and not sentinel_covers(person, CHAR_UID_B)
     # 撤销日志的列表不把哨兵当日志
     assert await RevocationLog.list_all_open(tmp_path) == []
-    assert await store.remove(person["op_id"]) and not await store.remove(person["op_id"])
+    removed = await store.remove(person["op_id"])
+    removed_again = await store.remove(person["op_id"])
+    assert removed is True and removed_again is False
     (tmp_path / "visit_revocations" / f"clearing-{'0' * 32}.json").write_text("[]", encoding="utf-8")
     with pytest.raises(RevocationLogUnreadable):
         await store.list_open()

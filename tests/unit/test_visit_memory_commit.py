@@ -451,7 +451,8 @@ async def test_summary_holds_the_peer_lock_so_a_failing_forget_cannot_be_undone(
     server.fail_always.add("scoped_forget")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=server.client())
-    await summary_task
+    handled = await summary_task
+    assert handled is True                  # 摘要在锁内先完成，清除随后把它删掉
     assert not outcome.done                 # memory_server 不可用，清除留待重放
     # 清除已先删掉摘要；摘要生成不能在那之后把它写回去
     assert await roster.get_last_summary(PEER_X, "A") is None
