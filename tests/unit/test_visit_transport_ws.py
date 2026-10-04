@@ -2100,3 +2100,29 @@ def test_late_page_frames_reach_no_runtime_hook():
         tw._reset_for_tests()
     # 过期页面的预检既不写路由状态、也不交给 runtime（否则 preflight_ok:false 会按 unsupported 收尾）
     assert s.preflights == [] and conn.retired
+
+
+
+def test_unhashable_reason_or_state_does_not_close_the_socket():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        conn = tw._attach(link, _RecordingWS())
+        await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
+                                            "side": "guest", "preflight_ok": False, "reason": ["x"],
+                                            "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
+        await tw._handle_frame(link, conn, {"type": "state", "state": {"a": 1}}, 10, VISIT_ID, "guest")
+        return s, conn
+
+    try:
+        s, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert s.preflights[0]["reason"] is None
+    # runtime 收到的是清洗后的 state
+    assert s.states[-1]["state"] is None and not conn.closed
+    assert tw._sdk_caps({"reason": ["x"]})["reason"] is None

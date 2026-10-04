@@ -1550,3 +1550,19 @@ async def test_capped_grant_is_renewed_again_once_it_expired(servers):
     assert grant.refresh_due(wall_now=wall[0] + 30)
     assert await grant.ensure_fresh(wall_now=wall[0] + 30)
     assert len(calls) == 2 and not grant.refresh_due(wall_now=wall[0] + 30)
+
+
+
+@pytest.mark.asyncio
+async def test_capped_and_already_expired_grant_is_retried_at_most_once_per_margin(servers):
+    first = await _guest()
+    wall = [first.vendor_expires_at - 60]
+    # Servers 仍返回一个（按本地时钟）已过期的截断授权
+    grant, calls = _grant_with_renewals(first, [-10, -10, 600], wall)
+    assert await grant.ensure_fresh(wall_now=wall[0])
+    assert not grant.refresh_due(wall_now=wall[0] + 1)
+    assert not await grant.ensure_fresh(wall_now=wall[0] + 60)
+    assert len(calls) == 1
+    # 过了一个余量再试一次
+    assert await grant.ensure_fresh(wall_now=wall[0] + 120)
+    assert len(calls) == 2

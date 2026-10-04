@@ -906,6 +906,7 @@ class VisitGrant:
         self._fetch = fetch or fetch_visit_credentials
         self._renewing: asyncio.Task | None = None
         self._capped = False
+        self._capped_retry_at: float | None = None
 
     @property
     def current(self) -> VisitCredentials:
@@ -920,11 +921,19 @@ class VisitGrant:
         than the margin left is still valid, False: Servers capped the grant
         at the room's hard deadline, and asking again would only return the
         same one. Once it expired, True again (a later room deadline gives a
-        new grant, an ended room answers 410).
+        new grant, an ended room answers 410) -- at most once per margin while
+        Servers keeps answering an already expired grant (clock skew). An
+        expired grant does not drop a client already in the vendor room (it is
+        checked when entering), and every re-entry renews first, so there is
+        no need to retry before it expires.
         """
         remaining = self._current.vendor_remaining_s(wall_now=wall_now)
-        if self._capped and remaining > 0:
-            return False
+        if self._capped:
+            if remaining > 0:
+                return False
+            now = time.time() if wall_now is None else wall_now
+            if self._capped_retry_at is not None and now < self._capped_retry_at:
+                return False
         return remaining < self._margin
 
     async def renew(self, *, wall_now: float | None = None) -> VisitCredentials:
@@ -951,7 +960,11 @@ class VisitGrant:
             raise VisitServersUnreachable("renewal_mismatch")
         # Servers 把授权截到房间硬期限时，续出来的剩余时间仍不足余量：之后不再续，
         # 否则每次轮询都会再 POST 一次、拿回同一个期限
-        self._capped = fresh.vendor_remaining_s(wall_now=wall_now) < self._margin
+        remaining = fresh.vendor_remaining_s(wall_now=wall_now)
+        self._capped = remaining < self._margin
+        # 截断且回来就已过期（本地时钟偏快 / Servers 过了硬期限还没标结束）：不要每次轮询都再 POST
+        now = time.time() if wall_now is None else wall_now
+        self._capped_retry_at = now + self._margin if self._capped and remaining <= 0 else None
         self._current = cur.with_renewed_vendor(fresh)
         return self._current
 

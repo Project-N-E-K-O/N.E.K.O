@@ -110,6 +110,7 @@ PREFLIGHT_REASONS = frozenset({"insecure_context", "foreign_websocket", "no_webr
 SDK_REASONS = frozenset({"sdk_unsupported", "sdk_load_failed", "no_encoder"})
 REJOINED_STATES = frozenset({"joined", "connected"})
 OUT_OF_ROOM_STATES = frozenset({"joining", "reconnecting", "left", "kicked"})
+STATES = REJOINED_STATES | OUT_OF_ROOM_STATES | {"error"}
 CODECS = ("vp9", "vp8", "h264")
 CROPS = ("upper", "full")
 
@@ -523,12 +524,16 @@ def _is_int(value: Any) -> bool:
     return type(value) is int
 
 
+def _enum(value: Any, allowed: frozenset[str]) -> Optional[str]:
+    """``value`` when it is one of ``allowed``, else None (an unhashable value must not raise)."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
 def _record_preflight(session: VisitTransportSession, msg: dict[str, Any], ok: bool) -> dict[str, Any]:
-    reason = msg.get("reason")
     caps = {
         "stage": "preflight",
         "preflight_ok": ok,
-        "reason": reason if reason in PREFLIGHT_REASONS else None,
+        "reason": _enum(msg.get("reason"), PREFLIGHT_REASONS),
         "is_secure_context": bool(msg.get("is_secure_context")),
         "ua": str(msg.get("ua") or "")[:_UA_MAX_CHARS],
         "at": time.time(),
@@ -542,14 +547,13 @@ def _record_preflight(session: VisitTransportSession, msg: dict[str, Any], ok: b
 
 
 def _sdk_caps(msg: dict[str, Any]) -> dict[str, Any]:
-    reason = msg.get("reason")
     codecs = msg.get("codecs")
     codec_list = [c[:64] for c in codecs if isinstance(c, str)][:_CODECS_MAX_ITEMS] if isinstance(codecs, list) else []
     return {
         "stage": "sdk",
         "transport_ok": msg.get("transport_ok") is True,
         "video_ok": msg.get("video_ok") is True,
-        "reason": reason if reason in SDK_REASONS else None,
+        "reason": _enum(msg.get("reason"), SDK_REASONS),
         "codecs": codec_list,
     }
 
@@ -709,9 +713,10 @@ async def _handle_frame(
             await _call(session, "on_sdk_caps", _sdk_caps(msg))
         return
     if kind == "state":
-        state = msg.get("state")
-        if not isinstance(state, str):
-            state = None  # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线
+        # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线；
+        # 清洗后的值写回再交给 runtime，它那边拿去查集合也不会出错
+        state = _enum(msg.get("state"), STATES)
+        msg = {**msg, "state": state}
         was_in_room = conn.in_room
         # 先当作不在房内：hook 失败时（runtime 没认这条上报，状态可能不一致）不能留着旧的
         # in_room 让后续 stats 去重入；iframe 不再报的话，这场按 fail-safe 到页面期限判 local_page_lost
