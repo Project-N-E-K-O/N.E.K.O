@@ -1131,3 +1131,36 @@ async def test_unreadable_key_file_does_not_block_a_forget(env):
     Path(env.idem.keys_path(NAME)).write_text("{torn", encoding="utf-8")
     result = await _forget(env, GROUP)
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+
+
+async def test_forget_cancels_a_pending_key_whose_staging_is_unreadable(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    _staging_file(env, KEY_GROUP).write_text("{torn", encoding="utf-8")
+    result = await _forget(env, GROUP)
+    # 坏暂存不挡清除：按键记录取消，坏暂存一并删掉
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+    assert not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_forget_cancels_staging_written_after_its_staging_scan(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    assert _staging_file(env, KEY_GROUP).exists()
+
+    async def stale_snapshot(_name):
+        return []          # 暂存扫描的快照取在这份暂存写成之前
+
+    env.monkeypatch.setattr(env.idem, "list_staging", stale_snapshot)
+    result = await _forget(env, GROUP)
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+    assert not _staging_file(env, KEY_GROUP).exists()
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    again = await _post(env, _single_body())
+    assert again["duplicate"] is True and _facts_of(env, GROUP) == []

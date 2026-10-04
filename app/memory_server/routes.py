@@ -3609,11 +3609,20 @@ async def _cancel_staged_writes_for_subjects(
         ):
             continue
         async with idempotency.key_lock(lanlan_name, key):
-            if await idempotency.read_staging(lanlan_name, key) is not None:
-                continue
+            try:
+                await idempotency.read_staging(lanlan_name, key)
+            except idempotency.IdempotencyStateError as exc:
+                # 记录是 pending、暂存读不出：上面按暂存内容的扫描看不到它。不能让它挡住
+                # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
+                # 又会应用。按记录认领：标 cancelled 再删掉这份坏暂存
+                logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {exc}")
+            # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
+            # 暂存（请求失败、已放开键锁）同样要取消，否则擦除之后、第二遍扫描之前的
+            # 同键重试会用清除之后的 generation 把它应用回去
             await idempotency.update_key(
                 lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
             )
+            await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
     return cancelled
 
