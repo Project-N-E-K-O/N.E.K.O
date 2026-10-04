@@ -481,6 +481,18 @@ test('resource repair in a remote browser cannot invoke a local desktop repair a
     assert.equal(localRepairs, 0); assert.equal(url, '/api/voice-identity/resources/repair-guide');
 });
 
+test('idle storage changes refresh the device selector after invalidating trial proof', async () => {
+    const h = harness();
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.canStart(), true);
+    h.storage.set('neko_selected_microphone', 'updated-device');
+    h.events.get('storage')({ key: 'neko_selected_microphone' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.elements.get('voice-identity-microphone').value, 'updated-device');
+    assert.equal(h.controller.canStart(), false);
+});
+
 test('storage changes invalidate the trial proof without cancelling ongoing enrollment', async () => {
     let ongoing = false; let cancelled = 0;
     const h = harness({ enrolling: () => ongoing, cancel: () => { cancelled++; } }); await h.controller.refreshResources();

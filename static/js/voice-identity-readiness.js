@@ -348,8 +348,8 @@
             if (!['neko_selected_microphone', 'neko_mic_gain_db', 'neko_noise_reduction'].includes(event.key)) return;
             try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
             el.gain.value = String(gainDb);
-            enumerate().catch(() => {});
             if (hooks.enrolling()) {
+                enumerate().catch(() => {});
                 inputChangedDuringEnrollment = true;
                 try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
                 accepted = null;
@@ -358,6 +358,7 @@
                 return;
             }
             invalidate('voiceIdentity.inputChanged');
+            enumerate().catch(() => {});
         });
         root.addEventListener('localechange', () => {
             if (actualLabel) el['actual-device'].textContent = actualLabel;
