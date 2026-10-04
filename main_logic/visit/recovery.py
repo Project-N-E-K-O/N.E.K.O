@@ -916,7 +916,13 @@ async def visit_spool_recovery(
         report.swept = len(swept)
         # 待传转录 7 天到期被放弃：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
         # transcript_unavailable，不能当作从没有过待传转录
+        spool_dir = config_dir / VISIT_SPOOL_DIRNAME
         for visit_id in sorted(_expired_upload_visits(swept)):
+            # 流水与封存文件按各自的 mtime 到期：只删掉其中一份时另一份本轮仍可能传上去，
+            # 两份都没了才算这场转录不可用
+            remaining = [visit_path(spool_dir, visit_id, suffix) for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)]
+            if await asyncio.to_thread(lambda paths=remaining: any(path.exists() for path in paths)):
+                continue
             await _mark_report_transcript_unavailable(config_dir, visit_id, "expired")
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: sweep failed: %r", exc)

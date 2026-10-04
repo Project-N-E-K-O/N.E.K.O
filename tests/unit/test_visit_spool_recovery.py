@@ -2059,3 +2059,23 @@ async def test_recovery_digest_protects_family_names_in_peer_labels(tmp_path):
     segments = server.calls("scoped_history")[1]["segments"]
     # 补录的 digest 同样拿到家人称呼：对端自称「妈妈」换成通用标签
     assert "妈妈" not in {seg["speaker_label"] for seg in segments}
+
+
+async def test_report_is_not_marked_unavailable_while_another_upload_copy_remains(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(99)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
+    sealed.write_text(json.dumps(build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(stream, (old, old))                                 # 只有流水过期被删，封存文件还新
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 封存文件本轮照常传上去：举报不能带着「转录不可用」的诊断
+    (visit_id, doc), = reports.calls
+    assert not stream.exists() and "transcript_unavailable" not in doc
