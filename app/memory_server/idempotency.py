@@ -391,6 +391,40 @@ async def scrub_misplaced_staging(
     return True
 
 
+async def drop_unreadable_orphan_staging(lanlan_name: str, path: str) -> bool:
+    """Delete a staging file that no longer parses and that no key record owns.
+
+    Such a file cannot be matched against a forget (its subjects are
+    unreadable) nor cancelled through a key record; kept, it would retain
+    whatever extracted plaintext it holds, and a later repair would let a
+    same-key retry adopt it. Ownership unknown (key records unreadable) or a
+    transient read error keeps it. Returns whether the file was removed.
+    """
+    try:
+        records = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
+    except IdempotencyStateError:
+        return False
+    if any(isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path) for key in records):
+        # 有键记录认领：pending 的由按记录取消的那一遍处理，终态的不会再被应用
+        return False
+
+    def _drop() -> bool:
+        try:
+            document = read_json_tolerating_replace(path)
+        except FileNotFoundError:
+            return False
+        except (ValueError, RecursionError):
+            document = None
+        except OSError:
+            return False
+        if isinstance(document, dict):
+            return False
+        return _remove_file(path)
+
+    async with idempotency_lock(lanlan_name):
+        return await asyncio.to_thread(_drop)
+
+
 async def delete_staging(lanlan_name: str, key: str) -> bool:
     return await asyncio.to_thread(_remove_file, staging_path(lanlan_name, key))
 

@@ -1820,7 +1820,7 @@ async def test_more_journal_damage_fails_closed(env, damage):
 @pytest.mark.parametrize("damage", [
     "orphan_foreign_destination", "provenance_scalar", "dropped_not_int",
     "provenance_label_list", "provenance_trust_out_of_range", "provenance_unknown_field",
-    "provenance_bad_speaker_id",
+    "provenance_bad_speaker_id", "provenance_missing_label",
 ])
 async def test_yet_more_journal_damage_fails_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
@@ -1839,6 +1839,9 @@ async def test_yet_more_journal_damage_fails_closed(env, damage):
     elif damage == "provenance_scalar":
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
         facts_item["speaker_provenance"] = "lost"
+    elif damage == "provenance_missing_label":
+        facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+        facts_item["speaker_provenance"] = {"speaker_trust": 0.5}          # 半截归属：没有 label
     elif damage.startswith("provenance_"):
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
         field, value = {
@@ -2080,3 +2083,31 @@ async def test_cleanup_continues_past_a_malformed_key_record(env):
     # 坏的那条只保留它自己的暂存，其余过期暂存照常清理
     assert paths["bad-key"].exists() and not paths["done-key"].exists()
     assert report["staging_removed"] == 1
+
+
+async def test_forget_drops_an_unreadable_orphan_journal(env):
+    owned = Path(env.idem.staging_path(NAME, "owned-key"))
+    orphan = Path(env.idem.staging_path(NAME, "orphan-key"))
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    await env.idem.update_key(NAME, "owned-key", env.idem.transition("done"))
+    for path in (owned, orphan):
+        path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
+    await _forget(env, GROUP)
+    # 没有键记录认领、读不出的暂存认不出涉及谁：删掉，不留抽取原文、也不让修好后被认领
+    assert not orphan.exists()
+    # 有键记录认领的不归这一步管
+    assert owned.exists()
+
+
+async def test_retry_spelling_out_the_default_scope_is_the_same_request(env):
+    from memory.scopes import MemorySubject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    default_scope = MemorySubject.create(GROUP["subject_kind"], GROUP["subject_id"]).scope
+    result = await _post(env, _single_body(subject={**GROUP, "scope": default_scope}))
+    # 省略 scope 与显式写默认 scope 是同一个 subject：同键重试照常接着应用，不回 422
+    assert result["created"] == 2 and env.llm.calls == 1

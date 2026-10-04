@@ -2902,8 +2902,10 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
         "histories": histories,
         # subject 的 scope 是身份的一部分（同 kind:id 不同 scope 是两个隔离的 subject）：
         # 同一个键换了 scope 不能当作同一个请求
+        # 按归一后的 scope 记：省略 scope 与显式写默认 scope 是同一个 subject，重试换了写法
+        # 不能被当成另一个请求
         "scopes": [
-            source.subject.scope if getattr(source, "subject", None) is not None else None
+            source.subject.to_domain().scope if getattr(source, "subject", None) is not None else None
             for source in sources
         ],
         "trust": [_trust(source) for source in sources],
@@ -3094,10 +3096,11 @@ def _restored_provenance_valid(provenance) -> bool:
         return True
     if not isinstance(provenance, dict) or not provenance or set(provenance) - _RESTORED_PROVENANCE_FIELDS:
         return False
-    if "speaker_label" in provenance:
-        label = provenance["speaker_label"]
-        if not isinstance(label, str) or not label.strip():
-            return False
+    # 两条构造路径产出的 provenance 都带 label（段必填、单条请求无 label 时整个是 None），且已
+    # 清洗成去首尾空白、不超过 64 字符的形式：缺了 label 的半截归属不能照样记成已应用
+    label = provenance.get("speaker_label")
+    if not isinstance(label, str) or not label or label != label.strip() or len(label) > 64:
+        return False
     if "speaker_trust" in provenance:
         trust = provenance["speaker_trust"]
         if not isinstance(trust, (int, float)) or isinstance(trust, bool) or not 0.0 <= float(trust) <= 1.0:
@@ -4082,6 +4085,10 @@ async def _cancel_staged_writes_for_subjects(
     cancelled = 0
     for path, document, _mtime in await idempotency.list_staging(lanlan_name):
         if not isinstance(document, dict):
+            # 读不出的暂存认不出它涉及哪些 subject：没有键记录认领时按记录取消的那一遍也找不到它，
+            # 留着就可能带着被清 subject 的抽取原文、修好后还会被同键重试认领。删掉
+            if await idempotency.drop_unreadable_orphan_staging(lanlan_name, path):
+                cancelled += 1
             continue
         key = document.get("key")
         # 按写入时路由到的 subject 一并匹配：账号绑定关系之后变了，当前的扇出可能已不含
