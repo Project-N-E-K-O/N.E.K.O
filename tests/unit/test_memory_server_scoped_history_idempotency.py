@@ -330,8 +330,8 @@ async def test_crash_mid_apply_retry_skips_llm_and_applies_only_the_rest(env):
     texts = sorted(row["text"] for row in _facts_of(env, GP) + _facts_of(env, PART))
     assert texts == sorted(["团子喜欢晒太阳", "Mika 的猫下午在窗台睡觉", "Mika 想再来玩"])
     assert (GP_KEY, "团子") in env.persona.display_names
-    # 从暂存恢复的重试不再盖显示名（可能已有更新的名字写入），留给下一批
-    assert (PART_KEY, "Mika") not in env.persona.display_names
+    # 从暂存恢复的重试用本次请求带来的当前显示名补上
+    assert (PART_KEY, "Mika") in env.persona.display_names
     assert _key_state(env, KEY_SEGMENTS) == "done"
     assert not _staging_file(env, KEY_SEGMENTS).exists()
 
@@ -854,3 +854,17 @@ async def test_unreadable_active_facts_fail_the_keyed_apply(env):
         await _post(env, _single_body(display_name=None))
     assert excinfo.value.status_code == 503
     assert facts_path.read_text(encoding="utf-8") == "{torn"       # 没被覆盖
+
+
+
+async def test_staged_retry_stamps_the_current_request_display_name_not_the_stale_one(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original_apply = _fail_on_item(env, failing_seq=1)   # seq0 facts 已写，seq1 显示名中断
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name="旧群名"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original_apply)
+    env.persona.display_names.clear()
+    result = await _post(env, _single_body(display_name="新群名"))
+    assert result["status"] == "processed"
+    assert (GROUP_KEY, "新群名") in env.persona.display_names
+    assert (GROUP_KEY, "旧群名") not in env.persona.display_names

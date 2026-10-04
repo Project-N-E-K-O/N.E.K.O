@@ -3139,6 +3139,7 @@ async def _apply_keyed_staging(
     key: str,
     staging: dict,
     generations: dict[int, int] | None = None,
+    display_names: dict[int, str | None] | None = None,
 ) -> None:
     """Apply every item not yet in ``applied``; journal each one atomically.
 
@@ -3191,9 +3192,14 @@ async def _apply_keyed_staging(
         if tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
             entry = {"seq": seq, "dropped_tombstone": True}
         elif generations is None and item.get("kind") == _KEYED_ITEM_DISPLAY_NAME:
-            # 从暂存恢复的重试不再盖显示名：期间可能已有更新的写入改过它，
-            # 「置为暂存里的旧值」会把新名字盖回去。显示名只是装饰，下一批会再盖
-            entry = {"seq": seq, "skipped_stale_display_name": True}
+            # 从暂存恢复的重试：显示名用本次请求带来的当前值，而不是暂存里的旧值——
+            # 期间可能已有更新的写入改过它，盖回旧值会倒退；不盖又会让这批永远缺名字
+            current = (display_names or {}).get(item["segment"])
+            if current:
+                await _apply_keyed_item(
+                    lanlan_name, {**item, "display_name": current}, segment, None,
+                )
+            entry = {"seq": seq, "display_name_from_request": bool(current)}
         else:
             entry = await _apply_keyed_item(lanlan_name, item, segment, generation)
         applied.append(entry)
@@ -3382,7 +3388,10 @@ async def _process_scoped_history_keyed(
                     detail="scoped history staging failed; retry with the same key",
                 ) from exc
         try:
-            await _apply_keyed_staging(lanlan_name, key, staging, generations)
+            await _apply_keyed_staging(
+                lanlan_name, key, staging, generations,
+                {index: context.get("display_name") for index, context in enumerate(contexts)},
+            )
         except (HTTPException, MaintenanceModeError):
             raise
         except Exception as exc:
