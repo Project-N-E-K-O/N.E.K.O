@@ -607,11 +607,20 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                 continue
             key = owner_of_path.get(os.path.normcase(os.path.abspath(path)))
             if key is None:
-                # 没有任何键记录对应这个文件（孤儿：读不出、内嵌键坏了也一样）：不是任何
-                # pending 键的副本，过期即删，抽取原文不长期留在磁盘上
-                if await asyncio.to_thread(_remove_file, path):
-                    report["staging_removed"] += 1
-                continue
+                embedded = document.get("key") if isinstance(document, dict) else None
+                if not (
+                    isinstance(embedded, str) and embedded
+                    and os.path.normcase(os.path.abspath(staging_path(name, embedded)))
+                    == os.path.normcase(os.path.abspath(path))
+                ):
+                    # 没有任何键记录对应这个文件、内嵌键也对不上文件名（读不出 / 坏了）：
+                    # 没有键能认领它，过期即删，抽取原文不长期留在磁盘上
+                    if await asyncio.to_thread(_remove_file, path):
+                        report["staging_removed"] += 1
+                    continue
+                # 孤儿暂存可被同键重试认领（重建 pending 记录后接着应用）。上面的键记录是
+                # 枚举前的快照：删之前拿键级锁、重读最新记录，已被认领成 pending 的不删
+                key = embedded
             # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
             async with key_lock(name, key):
                 record = await read_key(name, key)

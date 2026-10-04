@@ -3045,20 +3045,29 @@ def _keyed_staging_items_valid(
         elif kind == _KEYED_ITEM_LOCALE:
             # 语言项同样要成形：坏的 order 会被当成「没有序号」静默跳过却记成已应用
             order = item.get("order")
-            if not isinstance(item.get("language"), str) or not item["language"]:
+            # 只认受支持的语言码：不受支持的会被语言存储转成 None 落盘，清掉这个 subject
+            # 原本有效的语言，却照样记成已应用
+            if not is_supported_language_code(item.get("language")):
                 return False
             if not isinstance(order, int) or isinstance(order, bool):
                 return False
-    # 已应用的事实项必须留有完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录会让这条
-    # 效果被跳过、键照样记 done
-    facts_seqs = {
-        item.get("seq") for item in items
-        if isinstance(item, dict) and item.get("kind") == _KEYED_ITEM_FACTS
-    }
+    # 每个已应用项都必须留有按类型的完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录
+    # 会让这一项被跳过、键照样记 done
+    kind_of = {item.get("seq"): item.get("kind") for item in items if isinstance(item, dict)}
     for entry in applied:
-        if entry.get("seq") in facts_seqs and not (
-            "fact_ids" in entry or any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
-        ):
+        if any(entry.get(name) is True for name in _KEYED_DROP_MARKERS):
+            continue
+        kind = kind_of.get(entry.get("seq"))
+        if kind == _KEYED_ITEM_FACTS:
+            evidence = "fact_ids" in entry
+        elif kind == _KEYED_ITEM_LOCALE:
+            evidence = entry.get("locale_recorded") is True
+        else:
+            evidence = (
+                entry.get("display_name_stamped") is True
+                or isinstance(entry.get("display_name_from_request"), bool)
+            )
+        if not evidence:
             return False
     return True
 
@@ -3334,11 +3343,13 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
             item.get("language"),
             order=item.get("order"),
         )
+        entry["locale_recorded"] = True
     elif kind == _KEYED_ITEM_DISPLAY_NAME:
         # 「置为该值」天然幂等；只给已存在的 section 盖名字。
         await _stamp_subject_display_name(
             lanlan_name, subject, item.get("display_name"),
         )
+        entry["display_name_stamped"] = True
     else:  # pragma: no cover - staging written by this module only
         raise RuntimeError(f"unknown keyed item kind {kind!r}")
     return entry
@@ -4658,8 +4669,6 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
 
     # 直接读盘、不经各 store 的加载器：加载器取路径时会 ensure_character_dir，
     # 本 GET 不进写入围栏，删除 / 改名与它并发时会把刚删掉的角色目录重新建出来
-    from memory.reflection.persistence import PersistenceMixin
-
     active_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts.json"),
     )
@@ -4704,13 +4713,13 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     reflections_path = os.path.join(character_dir, "reflections.json")
     from memory.reflection._shared import REFLECTION_TERMINAL_STATUSES
 
-    reflections = PersistenceMixin._filter_reflections(
-        await asyncio.to_thread(_read_json_list_for_listing, reflections_path),
-        # 全部已存的反思都列：已终结（promoted / denied / merged …）的仍留在文件里、仍在
-        # scoped_forget 的删除面上，只剩这类数据的 subject 也得能被找到、被清除
-        True,
-        reflections_path,
-    )
+    # 全部已存的反思都列：已终结（promoted / denied / merged …）的、以及 id 缺失 / 坏掉的
+    # 仍留在文件里、仍在 scoped_forget 的删除面上（它按 subject 删，不看 id），只剩这类
+    # 数据的 subject 也得能被找到、被清除。所以不走活跃读路径那个按 id 过滤的加载器
+    reflections = [
+        row for row in await asyncio.to_thread(_read_json_list_for_listing, reflections_path)
+        if isinstance(row, dict)
+    ]
     persona = await asyncio.to_thread(
         _read_persona_for_listing,
         os.path.join(character_dir, "persona.json"),

@@ -1760,12 +1760,13 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
 @pytest.mark.parametrize("damage", [
     "destination_scope", "tombstone_keys_emptied", "epochs_raised", "request_hash_removed",
     "applied_facts_without_evidence", "applied_facts_drop_marker_typo", "locale_order_string",
+    "locale_language_unsupported",
 ])
 async def test_more_journal_damage_fails_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
     failing_seq = 1 if damage.startswith("applied_facts_") else 0
     original = _fail_on_item(env, failing_seq=failing_seq)
-    body = _single_body(language="zh") if damage == "locale_order_string" else _single_body()
+    body = _single_body(language="zh") if damage.startswith("locale_") else _single_body()
     with pytest.raises(HTTPException):
         await _post(env, body)
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
@@ -1795,7 +1796,10 @@ async def test_more_journal_damage_fails_closed(env, damage):
         locale = next((item for item in staging["items"] if item["kind"] == "locale"), None)
         if locale is None:
             pytest.skip("no locale item reserved for this request")
-        locale["order"] = "1"
+        if damage == "locale_order_string":
+            locale["order"] = "1"
+        else:
+            locale["language"] = "invalid"                    # 会被语言存储转成 None、清掉原有语言
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
@@ -1857,3 +1861,62 @@ async def test_tombstone_removed_during_the_erase_is_rebuilt_with_the_completion
     # 回成功就必须留下完成标记与墓碑：同代数的重放据此跳过，不再擦掉之后的新写入
     assert env.idem.erased_epoch(tombstones, GROUP_KEY) == 4
     assert env.idem.tombstone_epoch(tombstones, [GROUP_KEY]) == 4
+
+
+@pytest.mark.parametrize("kind", ["locale", "display_name"])
+async def test_unapplied_locale_or_display_item_marked_applied_without_evidence_fails_closed(env, kind):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)                # 一项都没应用就崩
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    seq = next(item["seq"] for item in staging["items"] if item["kind"] == kind)
+    staging["applied"] = [*staging["applied"], {"seq": seq}]   # 只剩序号、没有完成证据
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(language="zh"))
+    assert excinfo.value.status_code == 503
+
+
+async def test_retry_after_locale_and_facts_applied_resumes(env):
+    env.llm.responses = [SINGLE_FACTS]
+    staged_kinds = []
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        staged_kinds.append(item["kind"])
+        if item["kind"] == "display_name":
+            raise RuntimeError("injected crash during apply")
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    applied = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))["applied"]
+    # 已应用的语言项、事实项都带着各自的完成证据，恢复时校验得过、接着补应用
+    assert any(entry.get("locale_recorded") is True for entry in applied)
+    result = await _post(env, _single_body(language="zh"))
+    assert result["created"] == 2 and _key_state(env, KEY_GROUP) == "done"
+
+
+async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
+    idem = env.idem
+    now = time.time()
+    path = Path(idem.staging_path(NAME, "orphan-key"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"key": "orphan-key", "subjects": [], "created_at": now - 500}), encoding="utf-8")
+    lock = idem.key_lock(NAME, "orphan-key")
+    await lock.acquire()                                         # 同键重试正持键锁认领这份孤儿暂存
+    try:
+        sweep = asyncio.create_task(idem.cleanup_expired([NAME], ttl_s=100.0, now=now))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        await idem.update_key(NAME, "orphan-key", idem.transition("pending"))
+    finally:
+        lock.release()
+    report = await sweep
+    # 枚举前的键记录快照里它还是孤儿；删之前拿键锁重读，已被认领成 pending 的不删
+    assert path.exists() and report["staging_removed"] == 0

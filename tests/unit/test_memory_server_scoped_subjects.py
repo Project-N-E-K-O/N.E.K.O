@@ -372,3 +372,15 @@ async def test_locale_only_subject_is_listed(env):
     # 别的平台的语言行不混进来；已有数据的 subject 不受影响
     assert ("participant", "qq:10001") not in by_key
     assert by_key[("participant", "neko_visit:u_person")]["prompt_locale"] is False
+
+
+async def test_reflection_without_id_still_lists_its_subject(env):
+    lost_id = MemorySubject.participant("neko_visit", "u_no_id")
+    path = env.root / NAME / "reflections.json"
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    rows.append({"text": "id 丢了的反思", "status": "confirmed", **lost_id.as_entry_fields()})
+    _write(path, rows)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
+    # 清除按 subject 删反思、不看 id：只剩这种行的 subject 同样要能被找到
+    assert by_key[("participant", "neko_visit:u_no_id")]["reflections"] == 1
