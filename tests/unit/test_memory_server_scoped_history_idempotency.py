@@ -2527,3 +2527,62 @@ async def test_unrelated_subject_epochs_do_not_change_the_request_identity(env):
     # 重试多带了一个与本请求无关的 subject 的代数：效果完全相同，不能 422
     result = await _post(env, _single_body(subject_epochs={GROUP_KEY: 0, "participant:neko_visit:other": 3}))
     assert result["created"] == 2 and env.llm.calls == 1
+
+
+async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
+    import tempfile
+
+    from app.memory_server import locale_state
+
+    env.llm.responses = [RuntimeError("LLM failed"), BATCH_FACTS]
+    with pytest.raises(RuntimeError):
+        await _post(env, _segments_body(language="zh"))
+
+    def forgotten_meanwhile(old):
+        # 生成期间到达的清除只在记录上记下被清的 subject（键锁被占着），清除本身已删掉它的语言行
+        return {**old, "forgotten_keys": [GP_KEY], "locale_orders": None}
+
+    await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
+    sidecar = Path(locale_state._subject_locale_path(NAME))
+    assert str(sidecar).startswith(tempfile.gettempdir())       # 绝不碰真实运行时根目录
+    locale_state.invalidate_prompt_locale_caches()
+    if sidecar.exists():
+        sidecar.unlink()                                         # 被清后语言存储里没有 GP 了
+    locale_state.invalidate_prompt_locale_caches()
+    original = env.routes._apply_keyed_item
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body(language="zh"))         # 落了暂存（被清段没有语言项）就崩
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    # 从暂存恢复：被清除丢弃的段没有语言项也能通过恢复校验
+    result = await _post(env, _segments_body(language="zh"))
+    assert result["segments"][1]["created"] == 2
+    rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
+    # 被清的段不再预留：不能把被清 subject 重新写进语言存储
+    assert not any(GP["subject_id"] in key for key in rows)
+    assert any(PART["subject_id"] in key for key in rows)
+
+
+async def test_listing_skips_a_forgotten_staging_segment(env):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        if item["segment"] == 1 and item["kind"] == "facts":
+            raise RuntimeError("injected crash before the second segment")
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    await _forget(env, GP)
+    assert _key_state(env, KEY_SEGMENTS) == "pending"           # 暂存留给没被清的段
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
+    # 被清的段已抹掉内容：不能作为「待应用的暂存」让已清除的对象又冒出来
+    assert GP["subject_id"] not in staged and PART["subject_id"] in staged

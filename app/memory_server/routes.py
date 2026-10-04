@@ -3107,7 +3107,13 @@ def _keyed_staging_items_valid(
     for item in items:
         if item.get("kind") == _KEYED_ITEM_LOCALE:
             locale_per_segment[item["segment"]] += 1
-    if expected_locale is not None and any(count != expected_locale for count in locale_per_segment):
+    if expected_locale is not None and any(
+        count != expected_locale
+        # 已被清除丢弃的段可以没有语言项（重试时不再给它预留，免得把被清 subject 写回语言存储）
+        and not (count == 0 and isinstance(segments[index], dict)
+                 and segments[index].get(_SEGMENT_DROPPED_BY_FORGET) is True)
+        for index, count in enumerate(locale_per_segment)
+    ):
         return False
     # 每个已应用项都必须留有按类型的完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录
     # 会让这一项被跳过、键照样记 done
@@ -3278,23 +3284,40 @@ async def _reserve_keyed_locale_orders(
 
     if not is_supported_language_code(language):
         return [None] * len(contexts)
-    subjects = [context["subject"] for context in contexts]
     stored = None
+    forgotten: set[str] = set()
     if key is not None:
         record = await idempotency.read_key(lanlan_name, key)
+        marked = record.get("forgotten_keys") if isinstance(record, dict) else None
+        forgotten = {k for k in marked if isinstance(k, str)} if isinstance(marked, list) else set()
         candidate = record.get("locale_orders") if isinstance(record, dict) else None
         if candidate is not None:
             if not (
                 isinstance(candidate, list) and len(candidate) == len(contexts)
-                and all(isinstance(order, int) and not isinstance(order, bool) and order > 0 for order in candidate)
+                and all(
+                    order is None or (isinstance(order, int) and not isinstance(order, bool) and order > 0)
+                    for order in candidate
+                )
             ):
                 # 已有一份预留、但坏了：另分一批新序号又记不上（不覆盖已有字段），每次重试都会把旧请求
                 # 往后排。按坏状态处理
                 raise idempotency.IdempotencyStateError(f"locale reservation of {key!r} is malformed")
             stored = candidate
-    admission = stored or locale_state.allocate_subject_prompt_locale_orders(
-        lanlan_name, subjects,
-    )
+    # 之前某次尝试期间已被清除的段（记录里的 forgotten_keys）不再预留：清除已删掉它的语言行，
+    # 预留会把被清 subject 重新写进 scoped_prompt_locales.json，而它的语言项注定被丢弃
+    live = [
+        index for index, context in enumerate(contexts)
+        if not ({context["wire_subject"].key, context["subject"].key} & forgotten)
+    ]
+    if stored is None:
+        allocated = locale_state.allocate_subject_prompt_locale_orders(
+            lanlan_name, [contexts[index]["subject"] for index in live],
+        )
+        admission: list[int | None] = [None] * len(contexts)
+        for index, order in zip(live, allocated):
+            admission[index] = order
+    else:
+        admission = list(stored)
     if key is not None and stored is None:
         # 先把分到的序号记在键上、再让预留落盘：生成失败或在两步之间崩溃时，同键重试都复用这批
         # 序号，而不是拿到更新的序号、把旧请求排到期间别的请求写下的语言之后（覆盖掉较新的语言）
@@ -3304,12 +3327,15 @@ async def _reserve_keyed_locale_orders(
             return {**old, "locale_orders": orders}
 
         await idempotency.update_key(lanlan_name, key, _remember)
-    return list(await asyncio.to_thread(
-        locale_state.reserve_subject_prompt_locale_orders,
-        lanlan_name,
-        subjects,
-        orders=admission,
-    ))
+    reserve = [index for index in live if admission[index] is not None]
+    if reserve:
+        await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_orders,
+            lanlan_name,
+            [contexts[index]["subject"] for index in reserve],
+            orders=[admission[index] for index in reserve],
+        )
+    return [admission[index] if index in reserve else None for index in range(len(contexts))]
 
 
 async def _build_keyed_staging(
@@ -4969,6 +4995,9 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
             continue
         segments = document.get("segments")
         for segment in segments if isinstance(segments, list) else []:
+            if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True:
+                # 已被清除丢弃的段（内容已抹）：没有待应用的记忆，不能让已清除的对象又冒出来
+                continue
             raw = segment.get("subject") if isinstance(segment, dict) else None
             subject = subject_from_entry(raw) if isinstance(raw, dict) else None
             if subject is not None:
