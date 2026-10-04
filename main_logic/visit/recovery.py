@@ -190,8 +190,9 @@ def build_upload_doc(
     ``records`` are the stream's JSON objects. The first must be the upload
     header ``{kind:'header', visit_id, role, own_visit_uid, started_at,
     own_char_uid, app_version, transport}``; without it ``None`` is returned
-    (corrupt stream). ``ended_at`` is the ``ts`` of the last record that has
-    one (the header's ``started_at`` when there is none), ``usage`` the sum of
+    (corrupt stream). ``ended_at`` is the ``ts`` of the last accepted record
+    that has one (a valid line, a usage delta or an anomaly; the header's
+    ``started_at`` when there is none), ``usage`` the sum of
     every usage delta, ``anomalies`` the number of anomaly records, ``lines``
     every line record in ``(lp, side_rank)`` order, and ``finalized_reason``
     the given reason or ``'crash'``. A header without ``own_visit_uid`` (an
@@ -212,13 +213,12 @@ def build_upload_doc(
     lines: list[dict] = []
     ended_at = started_at
     for record in records[1:]:
-        ts = _number(record.get("ts"))
-        if ts is not None:
-            ended_at = ts
         kind = record.get("kind")
+        accepted = False
         if kind == "line":
             if _valid_line(record):
                 lines.append({name: record[name] for name in _LINE_FIELDS})
+                accepted = True
         elif kind == "usage":
             delta = record.get("d")
             if isinstance(delta, dict):
@@ -226,8 +226,14 @@ def build_upload_doc(
                     value = delta.get(key)
                     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                         usage[key] += value
+                accepted = True
         elif kind == "anomaly":
             anomalies += 1
+            accepted = True
+        # 只认采纳了的记录的时间：被丢弃的坏行 / 未知记录带的时间戳不能挪动结束时间与时长
+        ts = _number(record.get("ts")) if accepted else None
+        if ts is not None:
+            ended_at = ts
     lines.sort(key=line_order_key)
     request = {
         "visit_id": visit_id,

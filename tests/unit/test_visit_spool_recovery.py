@@ -2144,3 +2144,17 @@ async def test_oversized_state_number_does_not_abort_upload_recovery(tmp_path):
     await _recover(tmp_path, upload_transcript=uploads)
     # 坏 state 那场按读不出处理；不能让 OverflowError 中断整轮，其余场次照常补传
     assert {visit_id for visit_id, _ in uploads.calls} >= {good}
+
+
+def test_discarded_records_do_not_move_the_upload_end_time():
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(106)
+    records = _stream_records(v) + [
+        {"kind": "line", "lp": 9, "ts": 99999.0},                     # 坏行：会被丢弃
+        {"kind": "mystery", "ts": 88888.0},                           # 不认识的记录
+    ]
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    # 被丢弃的记录带的时间戳不能挪动结束时间与时长
+    assert doc["request"]["ended_at"] == 1002.0
+    assert doc["request"]["usage"]["duration_s"] == 2

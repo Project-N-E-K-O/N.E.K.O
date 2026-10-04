@@ -590,3 +590,18 @@ def test_peers_survive_non_finite_timestamps(env, first_seen):
     (row,) = resp.json()["peers"]
     assert row["first_seen"] is None and row["last_seen"] is None
     assert row["chars"][0]["last_visit_at"] is None
+
+
+@pytest.mark.parametrize("marker", [{"old": ["A"], "new": "Z1"}, {"old": "Z0"}, {"old": 5, "new": "Z1"}],
+                         ids=["unhashable", "missing_field", "not_string"])
+def test_malformed_rename_marker_blocks_forget_without_500(env, marker):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = marker
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
+    # 认不出涉及哪两个名字：不能当作无关放行，也不能抛 TypeError 让接口 500；回可重试的 503
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.calls("scoped_forget") == []

@@ -92,9 +92,12 @@ async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -
     marker = await read_roster_marker(config_dir, "pending_rename")
     if marker is None:
         return
-    if not isinstance(marker, dict):
+    old, new = (marker.get("old"), marker.get("new")) if isinstance(marker, dict) else (None, None)
+    if not (isinstance(old, str) and old and isinstance(new, str) and new):
+        # 字段缺失 / 不是非空字符串：认不出涉及哪两个名字，不能当作「与这次清除无关」放行；
+        # 列表之类不可哈希的值也不能在下面拼集合时抛 TypeError 让接口 500
         raise RenamePending("a malformed rename marker is pending")
-    if {marker.get("old"), marker.get("new")} & set(names):
+    if {old, new} & set(names):
         raise RenamePending("a rename of this character is not reconciled yet")
 
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
