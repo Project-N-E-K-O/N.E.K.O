@@ -1949,7 +1949,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
 
 @pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object",
                                     "applied_scalar_entry", "applied_bad_seq", "item_bad_kind",
-                                    "kept_effect_keys_scalar"])
+                                    "kept_effect_keys_scalar", "applied_null"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1969,6 +1969,8 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "applied_null":
+        staging["applied"] = None                                # 字段在、值却是 null
     elif damage == "kept_effect_keys_scalar":
         # 没被清的那段（PART）还没应用的事实项，载荷坏了：留下来也永远重放不了
         part_facts = next(item for item in staging["items"] if item["kind"] == "facts" and item["segment"] == 1)

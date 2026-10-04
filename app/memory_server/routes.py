@@ -4128,11 +4128,10 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
     }
     if not affected or len(affected) == len(segments):
         return False
-    # 先看原值再补缺省：{} / "" 之类假值经 `or []` 会被当成空列表放过，坏日志就被原样写回
-    raw_applied = document.get("applied")
-    applied = [] if raw_applied is None else raw_applied
-    items = document.get("items")
-    items = [] if items is None else items
+    # 先看原值再补缺省：只有字段缺失才当空列表。{} / "" / null 之类坏值都按坏日志处理——
+    # 经 `or []` 或「None 当空」放过，改写副本时仍是坏值，清除就会 500
+    applied = document["applied"] if "applied" in document else []
+    items = document["items"] if "items" in document else []
     if (
         not isinstance(applied, list) or not isinstance(items, list)
         or not all(isinstance(item, dict) for item in items)
