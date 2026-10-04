@@ -2900,6 +2900,12 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
 
     payload = {
         "histories": histories,
+        # subject 的 scope 是身份的一部分（同 kind:id 不同 scope 是两个隔离的 subject）：
+        # 同一个键换了 scope 不能当作同一个请求
+        "scopes": [
+            source.subject.scope if getattr(source, "subject", None) is not None else None
+            for source in sources
+        ],
         "trust": [_trust(source) for source in sources],
         "subject_epochs": req.subject_epochs or {},
         # 语言决定抽取语境与暂存里的语言状态项，同属会改变效果的字段
@@ -3544,14 +3550,21 @@ def _staged_after_forget(
     """
     if forget_epoch is None or request_subject_key is None:
         return False
-    staged = document.get("subjects")
-    if not isinstance(staged, list):
-        return False
-    if subject_keys.intersection(str(s) for s in staged) != {request_subject_key}:
+    if subject_keys.intersection(_staged_subject_keys(document)) != {request_subject_key}:
         return False
     epochs = document.get("epochs")
     epoch = epochs.get(request_subject_key) if isinstance(epochs, dict) else None
     return isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= forget_epoch
+
+
+def _staged_subject_keys(document: dict) -> set[str]:
+    """Every subject key a staged journal touches: wire keys plus each segment's routed subject."""
+    staged = document.get("subjects")
+    keys = {str(s) for s in staged} if isinstance(staged, list) else set()
+    segments = document.get("segments")
+    for segment in segments if isinstance(segments, list) else []:
+        keys |= _segment_subject_keys(segment)
+    return keys
 
 
 def _segment_subject_keys(segment: object) -> set[str]:
@@ -3583,8 +3596,20 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
     if not affected or len(affected) == len(segments):
         return False
     applied = document.setdefault("applied", [])
-    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     items = document.get("items") or []
+    forgotten_seqs = {
+        item.get("seq") for item in items
+        if isinstance(item, dict) and item.get("segment") in affected
+        and item.get("kind") != _KEYED_ITEM_LOCALE
+    }
+    # 被清段已应用的结果（fact_ids、事实身份）对应的行已被擦除：换成丢弃记录，
+    # 重试的响应不再报出已不存在的事实
+    applied[:] = [
+        {"seq": entry.get("seq"), "dropped_forget": True}
+        if isinstance(entry, dict) and entry.get("seq") in forgotten_seqs else entry
+        for entry in applied
+    ]
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     for position, item in enumerate(items):
         if (
             not isinstance(item, dict) or item.get("segment") not in affected
@@ -3647,16 +3672,24 @@ async def _cancel_staged_writes_for_subjects(
     from . import idempotency
 
     cancelled = 0
-    for _path, document, _mtime in await idempotency.list_staging(lanlan_name):
+    for path, document, _mtime in await idempotency.list_staging(lanlan_name):
         if not isinstance(document, dict):
             continue
         key = document.get("key")
-        staged_subjects = document.get("subjects")
-        if not isinstance(key, str) or not isinstance(staged_subjects, list):
+        if not isinstance(key, str) or not isinstance(document.get("subjects"), list):
             continue
-        if not subject_keys.intersection(
-            str(subject_key) for subject_key in staged_subjects
-        ):
+        # 按写入时路由到的 subject 一并匹配：账号绑定关系之后变了，当前的扇出可能已不含
+        # 这份暂存的 wire subject，但它应用时写的是暂存里记下的那个 subject
+        if not subject_keys.intersection(_staged_subject_keys(document)):
+            continue
+        if not idempotency.is_staging_path_of(lanlan_name, key, path):
+            # 内容里的键与文件名对不上：不能顺着这个不可信的键去开另一个路径的暂存。
+            # 就地把这个文件抹成取消标记（保留错位的键，同键重试读它照样 fail closed），
+            # 被清 subject 的抽取原文不留在磁盘上
+            await idempotency.scrub_misplaced_staging(
+                lanlan_name, path, _cancelled_staging_marker,
+            )
+            cancelled += 1
             continue
         async with idempotency.key_lock(lanlan_name, key):
             current = await idempotency.read_staging(lanlan_name, key)

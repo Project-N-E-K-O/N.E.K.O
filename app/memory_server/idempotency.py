@@ -47,6 +47,7 @@ All file I/O runs in worker threads (``scripts/check_async_blocking.py``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -319,6 +320,48 @@ async def write_staging(lanlan_name: str, key: str, document: dict) -> None:
     await asyncio.to_thread(
         _write_json_object, staging_path(lanlan_name, key), doc,
     )
+
+
+def is_staging_path_of(lanlan_name: str, key: str, path: str) -> bool:
+    """Whether ``path`` (from :func:`list_staging`) is the staging file of ``key``."""
+    return (
+        os.path.normcase(os.path.abspath(staging_path(lanlan_name, key)))
+        == os.path.normcase(os.path.abspath(path))
+    )
+
+
+async def scrub_misplaced_staging(
+    lanlan_name: str, path: str, scrub: Callable[[dict], dict],
+) -> bool:
+    """Rewrite one staging file whose embedded key does not match its name, in place.
+
+    The file's real owner is looked up by name in the key records (best
+    effort) and its key lock held, so an in-flight apply of that key never
+    races the rewrite. Returns False when the file changed or vanished meanwhile.
+    """
+    try:
+        records = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
+    except IdempotencyStateError:
+        records = {}
+    owner = next(
+        (key for key in records if isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path)),
+        None,
+    )
+    async with (key_lock(lanlan_name, owner) if owner else contextlib.nullcontext()):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                current = json.load(handle)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, RecursionError):
+            current = None
+        if not isinstance(current, dict) or (
+            isinstance(current.get("key"), str) and is_staging_path_of(lanlan_name, current["key"], path)
+        ):
+            # 已被它真正的键重写成正常暂存（或已读不出）：交给常规流程
+            return False
+        await asyncio.to_thread(_write_json_object, path, scrub(current))
+    return True
 
 
 async def delete_staging(lanlan_name: str, key: str) -> bool:

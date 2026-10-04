@@ -1212,6 +1212,8 @@ async def test_forget_of_one_segment_keeps_the_other_segments_for_retry(env, cra
     assert again.get("duplicate") is None
     # 重试补写没被清的那一段，被清的那一段不会写回
     assert len(_facts_of(env, PART)) == 2 and _facts_of(env, GP) == []
+    # 被清段已应用的结果也清掉：响应不再报出已被擦除的事实
+    assert again["segments"][0]["created"] == 0 and again["segments"][0]["fact_ids"] == []
     # 被清段未应用的显示名项同样不补写（重试时显示名取自当前请求，不记丢弃就会写回）
     assert (GP_KEY, "团子") not in env.persona.display_names
     assert env.llm.calls == 1
@@ -1245,3 +1247,51 @@ async def test_cleanup_judges_staging_by_its_filename_not_its_embedded_key(env, 
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
     kept = owner_state == "pending"
     assert path.exists() is kept and report["staging_removed"] == (0 if kept else 1)
+
+
+
+async def test_same_key_with_another_scope_is_a_different_request(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body())
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(subject={**GROUP, "scope": "another_scope"}))
+    # 同 kind:id、不同 scope 是两个隔离的 subject：不能当作同一个请求回 duplicate
+    assert excinfo.value.status_code == 422
+
+
+async def test_forget_cancels_staging_by_its_routed_subject(env):
+    idem = env.idem
+    routed = {"subject_kind": "participant", "subject_id": "neko_visit:routed-person", "scope": "x"}
+    await idem.update_key(NAME, KEY_GROUP, idem.transition("pending"))
+    await idem.write_staging(NAME, KEY_GROUP, {
+        "shape": "single", "subjects": [GROUP_KEY], "epochs": {}, "created_at": time.time(),
+        "segments": [{"wire_key": GROUP_KEY, "subject": routed, "tombstone_keys": [GROUP_KEY]}],
+        "items": [], "applied": [],
+    })
+    # 当前扇出已不含这份暂存的 wire subject，但它应用时写的是记下的路由后 subject
+    cancelled = await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {"participant:neko_visit:routed-person"},
+    )
+    assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
+    assert not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_forget_scrubs_a_misplaced_staging_file_in_place(env):
+    idem = env.idem
+    path = _staging_file(env, KEY_GROUP)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 文件名属于 KEY_GROUP，内容里的键却是另一个
+    path.write_text(json.dumps({
+        "key": "other-key", "shape": "single", "subjects": [GROUP_KEY], "created_at": time.time(),
+        "segments": [{"wire_key": GROUP_KEY, "subject": GROUP}],
+        "items": [{"seq": 0, "kind": "facts", "segment": 0, "facts": SINGLE_FACTS}], "applied": [],
+    }, ensure_ascii=False), encoding="utf-8")
+    other = _staging_file(env, "other-key")
+    result = await _forget(env, GROUP)
+    assert result["status"] == "forgotten"
+    raw = path.read_text(encoding="utf-8")
+    # 就地抹成取消标记：被清 subject 的原文不留；也不顺着内嵌键去碰别的路径
+    assert "家里阳台种着猫薄荷" not in raw and json.loads(raw)["cancelled_by_forget"] is True
+    assert not other.exists()
+    with pytest.raises(idem.IdempotencyStateError):
+        await idem.read_staging(NAME, KEY_GROUP)               # 同键重试照样 fail closed
