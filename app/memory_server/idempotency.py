@@ -330,6 +330,17 @@ def is_staging_path_of(lanlan_name: str, key: str, path: str) -> bool:
     )
 
 
+def _read_staging_file(path: str) -> tuple[bool, Any]:
+    """``(missing, document_or_None)`` of one staging file read by path."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return False, json.load(handle)
+    except FileNotFoundError:
+        return True, None
+    except (OSError, ValueError, RecursionError):
+        return False, None
+
+
 async def scrub_misplaced_staging(
     lanlan_name: str, path: str, scrub: Callable[[dict], dict],
 ) -> bool:
@@ -348,13 +359,9 @@ async def scrub_misplaced_staging(
         None,
     )
     async with (key_lock(lanlan_name, owner) if owner else contextlib.nullcontext()):
-        try:
-            with open(path, encoding="utf-8") as handle:
-                current = json.load(handle)
-        except FileNotFoundError:
+        missing, current = await asyncio.to_thread(_read_staging_file, path)
+        if missing:
             return False
-        except (OSError, ValueError, RecursionError):
-            current = None
         if not isinstance(current, dict) or (
             isinstance(current.get("key"), str) and is_staging_path_of(lanlan_name, current["key"], path)
         ):
