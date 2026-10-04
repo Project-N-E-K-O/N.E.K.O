@@ -128,6 +128,7 @@ _PUBKEYS_TIMEOUT_S = 5.0
 _PUBKEYS_RETRY_MIN_S = 30.0
 _CANCEL_BACKOFF_S = (1, 2, 4, 8)
 _JS_MAX_SAFE_INT = 2 ** 53 - 1
+_RETRY_AFTER_MAX_S = 7 * 86400
 _HELLO_TICKET_MAX_BYTES = 2048  # = utils.visit_wire 的 hello.ticket 上限（_TICKET_MAX_BYTES）
 _REGION_WAIT_S = 1.5
 _DISPLAY_NAME_MAX_CHARS = 64
@@ -350,11 +351,14 @@ def _body_code(body: Any) -> str | None:
 
 def _retry_after(body: Any, resp: httpx.Response) -> int | None:
     raw = body.get("retry_after_s") if isinstance(body, Mapping) else None
-    if type(raw) is int and raw >= 0:
+    if type(raw) is int and 0 <= raw <= _RETRY_AFTER_MAX_S:
         return raw
     header = resp.headers.get("retry-after", "")
-    # 限长：超长数字串会让 int() 抛错（3.11 的整数位数上限），当作没给
-    return int(header) if header.isdigit() and len(header) <= 9 else None
+    # 只认 ASCII 数字且限长：isdigit() 也认「²」「١」这类 Unicode 数字（int() 会抛错），
+    # 超长数字串会撞 3.11 的整数位数上限；不合规就当没给
+    if header.isascii() and header.isdigit() and len(header) <= 9:
+        return min(int(header), _RETRY_AFTER_MAX_S)
+    return None
 
 
 def _diag_code(code: str | None) -> str:

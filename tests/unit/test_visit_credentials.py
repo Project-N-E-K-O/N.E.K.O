@@ -744,6 +744,27 @@ async def test_oversized_retry_after_header_is_ignored(servers, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["²", "١٢", "12a"])
+async def test_non_ascii_digit_retry_after_is_ignored(servers, monkeypatch, header):
+    def _handler(request):
+        return httpx.Response(429, json={"code": "quota_exceeded"}, headers={"retry-after": header.encode("latin-1", "ignore") or b"x"})
+
+    monkeypatch.setattr(cr, "get_external_http_client",
+                        lambda: httpx.AsyncClient(transport=httpx.MockTransport(_handler)))
+    with pytest.raises(cr.VisitQuotaExceeded) as exc:
+        await _host()
+    assert exc.value.retry_after_s is None
+
+
+@pytest.mark.asyncio
+async def test_retry_after_body_value_is_capped(servers):
+    servers.scripted["/api/visit/credentials"] = [(429, {"code": "quota_exceeded", "retry_after_s": 10 ** 30})]
+    with pytest.raises(cr.VisitQuotaExceeded) as exc:
+        await _host()
+    assert exc.value.retry_after_s is None
+
+
+@pytest.mark.asyncio
 async def test_ticket_longer_than_the_hello_limit_is_rejected(servers):
     original = servers._credentials
 
