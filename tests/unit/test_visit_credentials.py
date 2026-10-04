@@ -608,7 +608,8 @@ async def test_livekit_url_host_must_be_allowlisted(servers, monkeypatch):
     servers.livekit_url = f"wss://{LIVEKIT_HOST}:bad/rtc"
     with pytest.raises(cr.VisitServersUnreachable):
         await _host()
-    for url in ("wss://evil.test/rtc", f"ws://{LIVEKIT_HOST}/rtc", f"wss://{LIVEKIT_HOST}.evil.test/"):
+    for url in ("wss://evil.test/rtc", f"ws://{LIVEKIT_HOST}/rtc", f"wss://{LIVEKIT_HOST}.evil.test/",
+                f"wss://{LIVEKIT_HOST}/rtc#frag", f"wss://{LIVEKIT_HOST}/rtc?x=1"):
         servers.livekit_url = url
         with pytest.raises(cr.VisitLivekitHostRejected):
             await _host()

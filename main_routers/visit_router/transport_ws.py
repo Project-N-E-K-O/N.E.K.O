@@ -255,6 +255,10 @@ class VisitTransportSession(ABC):
         self.outbox.resend_hello(now)
         self.outbox.resume(now, reason=PAUSE_PAGE_RELOAD)
 
+    def now(self) -> float:
+        """Clock of the lifecycle callbacks: the one ``liveness`` / ``outbox`` run on (monotonic)."""
+        return time.monotonic()
+
     # —— 下行 ——
 
     async def send(self, msg: Mapping[str, Any]) -> bool:
@@ -271,6 +275,7 @@ class _Connection:
     reattach: bool
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: bool = False
+    retired: bool = False
     credentials_sent: bool = False
     credentials_reserved: bool = False
     stop_sent: bool = False
@@ -383,7 +388,7 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
     the send is in flight and consumed only when it succeeded, so a failed
     send does not burn them and two concurrent senders cannot both pass.
     """
-    if conn.closed:
+    if conn.closed or conn.retired:
         return False
     kind = msg.get("type")
     first_credentials = kind == "credentials" and not msg.get("refresh")
@@ -467,8 +472,34 @@ async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs:
         return _HOOK_FAILED
 
 
+def _attach(link: _Link, websocket: WebSocket) -> _Connection:
+    """Make a new authenticated socket the current one of ``link``.
+
+    Synchronous on purpose: taking over never waits on the replaced socket,
+    which may be stuck in a backpressured ``send_text`` holding its send lock.
+    """
+    conn = _Connection(websocket=websocket, reattach=link.connections_seen > 0)
+    previous = link.conn
+    link.conn = conn
+    link.connections_seen += 1
+    if previous is not None:
+        # 被顶掉的旧连接收 4409：对它是终态（不重连），否则两个 iframe 会互相驱逐。
+        # 先同步退役（之后发往它的一律拒），关闭放后台
+        previous.retired = True
+        _spawn_close(previous, CLOSE_SUPERSEDED, "superseded")
+    if conn.reattach:
+        try:
+            link.session.on_page_attached(link.session.now())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit transport: on_page_attached failed: %s", type(exc).__name__)
+    return conn
+
+
 def _is_current(link: _Link, conn: _Connection) -> bool:
-    return _links.get((link.session.visit_id, link.session.side)) is link and link.conn is conn and not conn.closed
+    return (
+        _links.get((link.session.visit_id, link.session.side)) is link
+        and link.conn is conn and not conn.closed and not conn.retired
+    )
 
 
 async def _handle_frame(
@@ -513,7 +544,7 @@ async def _handle_frame(
             and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
         ):
             conn.rejoined = True
-            now = time.time()
+            now = session.now()
             try:
                 session.on_page_rejoined(now)
                 frames = list(session.outbox.due(now))
@@ -619,18 +650,7 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
         await websocket.close(code=CLOSE_UNKNOWN_VISIT, reason="unknown visit")
         return
 
-    conn = _Connection(websocket=websocket, reattach=link.connections_seen > 0)
-    previous = link.conn
-    link.conn = conn
-    link.connections_seen += 1
-    if previous is not None:
-        # 被顶掉的旧连接收 4409：对它是终态（不重连），否则两个 iframe 会互相驱逐
-        await previous.close(CLOSE_SUPERSEDED, "superseded")
-    if conn.reattach:
-        try:
-            link.session.on_page_attached(time.time())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("visit transport: on_page_attached failed: %s", type(exc).__name__)
+    conn = _attach(link, websocket)
 
     close_code = CLOSE_NORMAL
     close_reason = ""
@@ -644,7 +664,7 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
             except _FrameError as err:
                 close_code, close_reason = err.code, err.reason
                 break
-            if conn.closed:
+            if conn.closed or conn.retired:
                 break
             await _handle_frame(link, conn, msg, len(text.encode("utf-8")), visit_id, side)
     except Exception as exc:  # noqa: BLE001 - 断开 / 运行时异常都按断线收尾
@@ -655,6 +675,6 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
         if _links.get((visit_id, side)) is link and link.conn is conn:
             link.conn = None
             try:
-                link.session.on_page_lost(time.time())
+                link.session.on_page_lost(link.session.now())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_page_lost failed: %s", type(exc).__name__)

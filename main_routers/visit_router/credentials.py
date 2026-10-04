@@ -626,7 +626,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
     if not host or host not in allowed:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
     secure_ok = parsed.scheme == "wss" or (parsed.scheme == "ws" and host == _dev_livekit_host())
-    if not secure_ok or parsed.username or parsed.password:
+    if not secure_ok or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
     _need(_short_str(raw.get("token"), _LIVEKIT_TOKEN_MAX_CHARS), "vendor.livekit.token")
     _need(_grant_ttl_ok(raw.get("ttl_s")), "vendor.livekit.ttl_s")

@@ -607,6 +607,48 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
     assert old_ws.sent == [] and old_ws.closed_with == tw.CLOSE_SUPERSEDED
 
 
+def test_lifecycle_callbacks_run_on_the_monotonic_clock(app, session, monkeypatch):
+    seen: list[float] = []
+    session.liveness.on_page_lost = lambda now: seen.append(now)
+    from tests.fake_clock import patch_module_clock
+
+    # 墙钟与单调钟故意差很远：回调必须拿到单调钟
+    patch_module_clock(monkeypatch, tw, monotonic=lambda: 12345.0, time=lambda: 9e9)
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    assert seen == [12345.0]
+
+
+def test_takeover_does_not_wait_for_a_stuck_old_socket():
+    import asyncio
+
+    class _StuckWS(_RecordingWS):
+        async def send_text(self, text):
+            await asyncio.Event().wait()
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        old = tw._attach(link, _StuckWS())
+        stuck = asyncio.ensure_future(old.send_json({"type": "media", "publish": True}))
+        await asyncio.sleep(0)
+        new = tw._attach(link, _RecordingWS())  # 同步完成，不等旧连接的发送锁
+        refused = await asyncio.wait_for(tw._send_on(old, {"type": "media", "publish": False}), 1)
+        sent = await asyncio.wait_for(tw.send_downlink(VISIT_ID, "guest", {"type": "media", "publish": False}), 1)
+        stuck.cancel()
+        return old, new, refused, sent
+
+    try:
+        old, new, refused, sent = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert old.retired and refused is False
+    assert sent is True and new.websocket.sent == [{"type": "media", "publish": False}]
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 
