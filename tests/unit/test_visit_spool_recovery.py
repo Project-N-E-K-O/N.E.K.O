@@ -81,6 +81,17 @@ class LLM:
         return "上次聊了天气。"
 
 
+@pytest.fixture(autouse=True)
+def _characters_config_readable(monkeypatch):
+    # 补录总会先严格检查角色配置；测试里不碰真实运行时根目录的 characters.json
+    from main_logic.visit import local_chars
+
+    async def readable():
+        return None
+
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
+
+
 async def _recover(tmp_path, server=None, **kw):
     kw.setdefault("render_chips", Chips())
     render = kw.pop("render_chips")
@@ -1418,33 +1429,65 @@ async def test_rename_marker_of_a_deleted_character_is_dropped(tmp_path):
     assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))
 
 
-async def test_rename_marker_with_uid_is_reconciled_when_both_names_exist(tmp_path, monkeypatch):
+async def _recover_with_chars(tmp_path, monkeypatch, chars, resolve, **kw):
     from main_logic.visit import local_chars
 
-    await seed_roster(tmp_path)                                # 名册条目还在旧名 A 下
+    async def load():
+        return dict(chars)
+
+    monkeypatch.setattr(local_chars, "load_local_characters", load)
+    return await visit_spool_recovery(
+        kw.pop("render_chips", Chips()), None, config_dir=tmp_path, resolve_char_name=resolver(resolve),
+        client=FakeMemoryServer().client(), **kw,
+    )
+
+
+def _set_rename_marker(tmp_path, marker):
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
-    data["pending_rename"] = {"old": "A", "new": "C", "uid": CHAR_UID_A}
+    data["pending_rename"] = marker
     peers_path.write_text(json.dumps(data), encoding="utf-8")
+    return peers_path
 
-    async def chars():
-        # 改名生效后又新建了一个叫 A 的角色：新旧两个名字都在，只有 uid 分得清
-        return {"A": CHAR_UID_B, "C": CHAR_UID_A}
 
-    async def readable():
-        return None
-
-    monkeypatch.setattr(local_chars, "load_local_characters", chars)
-    monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
-    report = await visit_spool_recovery(
-        Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C", CHAR_UID_B: "A"}),
-        client=FakeMemoryServer().client(),
-    )
+async def test_rename_marker_with_uid_moves_forward_by_the_uid(tmp_path, monkeypatch):
+    await seed_roster(tmp_path)                                # 名册条目还在旧名 A 下
+    peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A, "B": CHAR_UID_B},
+                                       {CHAR_UID_A: "C", CHAR_UID_B: "B"})
     assert report.renamed is True
     after = json.loads(peers_path.read_text(encoding="utf-8"))
     assert "pending_rename" not in after
     by_char = after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
-    assert "C" in by_char and "A" not in by_char             # 按 uid 判定为改名已生效，迁到新名
+    assert "C" in by_char and "A" not in by_char
+
+
+async def test_rename_whose_old_name_was_reused_is_kept_and_only_blocks_those_names(tmp_path, monkeypatch):
+    await seed_roster(tmp_path)
+    peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    other = await make_visit(tmp_path, vid(75), [ln(0)], own_char="B", own_char_uid=CHAR_UID_B,
+                             finalized=None, last_summary_done=True)
+    # 改名生效后又新建了一个叫 A 的角色：名册条目只按名字存，迁移会把两个角色的记录混到一起
+    report = await _recover_with_chars(tmp_path, monkeypatch, {"A": CHAR_UID_B, "C": CHAR_UID_A},
+                                       {CHAR_UID_A: "C", CHAR_UID_B: "A"})
+    after = json.loads(peers_path.read_text(encoding="utf-8"))
+    assert report.renamed is False and after["pending_rename"]["old"] == "A"
+    assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]   # 不迁、不混
+    # 只挡这两个名字：别的角色（这里的场次属于新名 A，被跳过）之外的照常补录
+    assert (await other.read_state())["finalized"] is None
+
+
+async def test_ambiguous_rename_does_not_defer_other_characters(tmp_path, monkeypatch):
+    await seed_roster(tmp_path)
+    _set_rename_marker(tmp_path, {"old": "Q0", "new": "Q1", "uid": "9" * 32})
+    _ = await _recover_with_chars(tmp_path, monkeypatch, {"Q0": "8" * 32, "Q1": "9" * 32, "B": CHAR_UID_B},
+                                  {CHAR_UID_B: "B", "8" * 32: "Q0", "9" * 32: "Q1"})
+    spool = await make_visit(tmp_path, vid(76), [ln(0)], own_char="B", own_char_uid=CHAR_UID_B,
+                             finalized=None, last_summary_done=True)
+    await _recover_with_chars(tmp_path, monkeypatch, {"Q0": "8" * 32, "Q1": "9" * 32, "B": CHAR_UID_B},
+                              {CHAR_UID_B: "B", "8" * 32: "Q0", "9" * 32: "Q1"})
+    # Q0 → Q1 对不上账（旧名被占用），但与角色 B 无关：B 的崩溃场次照常补录
+    assert (await spool.read_state())["finalized"] == "crash"
 
 
 async def test_forget_halfway_then_character_deleted_does_not_wedge_the_others(tmp_path):
@@ -1460,11 +1503,14 @@ async def test_forget_halfway_then_character_deleted_does_not_wedge_the_others(t
     assert first.done is False
     server.fail_always.clear()
     # 之后角色 B 被删除（配置读得出、B 已不在）：重放不再让同一哨兵里的 A 永远「清除中」
-    report = await _recover(tmp_path, server, resolve_char_name=resolver({CHAR_UID_A: "A"}),
-                            list_char_names=_names("A"))
-    assert report.forgets_clean is True
+    await _recover(tmp_path, server, resolve_char_name=resolver({CHAR_UID_A: "A"}),
+                   list_char_names=_names("A"))
     assert await ClearingSentinels(tmp_path).list_open() == []
-    assert await RevocationLog.list_all_open(tmp_path) == []
+    # A 的日志跑完关掉；已删角色 B 的日志原样留给退役对账（不丢清除意图），也不再挡哨兵
+    remaining = await RevocationLog.list_all_open(tmp_path)
+    assert [log["own_char_uid"] for log in remaining] == [CHAR_UID_B]
+    from main_logic.visit import memory_bridge
+    assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
 
 
 async def test_unrelated_corrupt_state_does_not_block_a_forget(tmp_path):
@@ -1517,3 +1563,24 @@ async def test_corrupt_state_that_may_be_this_persons_still_blocks_the_wipe(tmp_
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
     # 宁可不结清也不留下对端身份：日志留着等下次
     assert outcome.done is False
+
+
+async def test_injected_names_still_get_the_strict_character_check(tmp_path, monkeypatch):
+    from main_logic.visit import local_chars
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    server.fail_always.clear()
+    server.requests.clear()
+
+    async def damaged():
+        raise local_chars.CharactersUnreadable("character entry cannot be enumerated")
+
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", damaged)
+    # 名单由调用方注入也照样先做严格检查：否则下面会把「解析不出名字」当成「角色已删」
+    report = await _recover(tmp_path, server, resolve_char_name=resolver({}), list_char_names=_names())
+    assert report.renamed is False and server.calls("scoped_forget") == []
+    assert len(await RevocationLog.list_all_open(tmp_path)) == 1

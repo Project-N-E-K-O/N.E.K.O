@@ -362,39 +362,47 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+_ALL_NAMES = None
+"""Sentinel of :func:`_reconcile_rename`: every name-dependent step must wait."""
+
+
 async def _reconcile_rename(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
-) -> bool:
-    """Finish or roll back a pending character rename; True once no rename is pending.
+) -> frozenset[str] | None:
+    """Finish or roll back a pending character rename; return the names still unsettled.
 
     The marker is ``{old, new}`` plus, when the rename transaction wrote it,
     the renamed character's ``uid``: with ``uid_of`` (current name -> uid)
     the direction is decided by which name that uid has now. Without a uid,
     by which of the two names exists. When neither name exists the
     character was deleted (its data is retired by uid): the marker is
-    dropped. False means a rename may still be pending (marker kept, roster
-    unreadable or genuinely ambiguous): name-dependent recovery must wait.
+    dropped. An empty set means no rename is pending; ``{old, new}`` that
+    the marker is kept as genuinely ambiguous (only those two names wait);
+    ``None`` that the roster or marker is unreadable (everything waits).
     """
     try:
         marker = await read_roster_marker(config_dir, "pending_rename")
     except RosterCorruptError as exc:
         logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
-        return False
+        return _ALL_NAMES
     if marker is None:
-        return True
+        return frozenset()
     if not isinstance(marker, dict):
-        return False
+        return _ALL_NAMES
     old, new = marker.get("old"), marker.get("new")
     if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
-        return False
+        return _ALL_NAMES
     # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
     roster = PeerRoster(config_dir, own_uid="pending-rename")
     uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
     if uid is not None and uid_of is not None:
         # 有 uid 就按它现在叫什么定方向：新旧两个名字同时存在（旧名被新建角色占用）也分得清
         current = {name for name, value in uid_of.items() if value == uid}
-        forward = new in current
-        backward = old in current and not forward
+        # 另一个名字被别的角色占着（旧名被新建角色复用）：名册条目只按名字存，迁移会把
+        # 两个角色的记录混到一起。分不开就不迁，留着标记、只挡这两个名字
+        reused = (old in uid_of and uid_of[old] != uid) or (new in uid_of and uid_of[new] != uid)
+        forward = new in current and not reused
+        backward = old in current and not forward and not reused
         deleted = not current
     else:
         forward = new in names and old not in names
@@ -413,8 +421,8 @@ async def _reconcile_rename(
         logger.warning("visit recovery: pending_rename %r -> %r names a deleted character, dropped", old, new)
     else:
         logger.warning("visit recovery: pending_rename %r -> %r is ambiguous, kept", old, new)
-        return False
-    return await clear_roster_marker(config_dir, "pending_rename", marker)
+        return frozenset({old, new})
+    return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
 
 
 async def _cleanup_outboxes(config_dir: Path, live: Callable[[str], bool]) -> None:
@@ -450,6 +458,7 @@ async def _recover_visit(
     resume_diary_commit: ResumeDiaryCommit | None,
     client: ScopedMemoryClient | None,
     report: RecoveryReport,
+    skip_names: frozenset[str] = frozenset(),
 ) -> None:
     spool = VisitSpool(config_dir, visit_id)
     state = await spool.read_state()
@@ -458,6 +467,9 @@ async def _recover_visit(
     own_char = await resolve_char_name(state["own_char_uid"])
     if not own_char:
         # 角色已删：退役流程负责这场的文件，这里不出芯片、不写任何东西
+        return
+    if own_char in skip_names or state["own_char"] in skip_names:
+        # 这个角色的改名还没对账清楚：按名字找名册条目可能找错，留到下次启动
         return
     choice = state["debrief_choice"]
     status = None
@@ -742,25 +754,27 @@ async def visit_spool_recovery(
     # 改名对账先于清除重放：清除按角色当前名字找名册条目，改名迁移没做完时条目还在
     # 旧名字下，remove_char 会「成功」地什么都没删，随后迁移又把条目连同摘要搬到新名字
     try:
-        if list_char_names is None:
-            # 常规加载会静默滤掉坏条目、返回部分名单：改名对账会据此误判「改名已回滚」
-            # 把数据迁回旧名并清掉标记。配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
-            await local_chars.ensure_characters_readable()
+        # 不论名单从哪来都先严格检查角色配置：常规加载会静默滤掉坏条目、返回部分名单，
+        # 改名对账会据此误判方向，下面的清除重放也会把「解析不出名字」当成「角色已删」。
+        # 配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
+        await local_chars.ensure_characters_readable()
         uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
         names = set(await list_char_names()) if list_char_names is not None else set(uid_of)
-        names_settled = await _reconcile_rename(config_dir, names, uid_of)
+        unsettled = await _reconcile_rename(config_dir, names, uid_of)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
-        names_settled = False
-    report.renamed = names_settled
+        unsettled = _ALL_NAMES
+    names_settled = unsettled is not _ALL_NAMES
+    report.renamed = unsettled == frozenset()
     if names_settled:
         try:
+            # 还没对账清楚的改名只涉及它的两个名字：清除重放对这两个名字自己会推迟
             report.forgets_clean = await replay_forgets(
                 config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
                 lifecycle_guard=lifecycle_guard,
                 # 走到这里时角色配置已确认读得出（上面的严格检查），解析不出名字就是已删除
                 drop_deleted_chars=True,
-            )
+            ) and report.renamed
         except Exception as exc:  # noqa: BLE001
             logger.error("visit recovery: forget replay failed: %r", exc)
             report.forgets_clean = False
@@ -779,7 +793,7 @@ async def visit_spool_recovery(
             continue
         try:
             await _recover_visit(
-                visit_id, config_dir=config_dir, render_chips=render_chips,
+                visit_id, config_dir=config_dir, render_chips=render_chips, skip_names=unsettled,
                 resolve_char_name=resolve, spawn_background=spawn_background,
                 summary_llm=summary_llm, family_names=family_names,
                 resume_diary_commit=resume_diary_commit, client=client, report=report,

@@ -582,12 +582,10 @@ async def replay_forgets(
         async with guarded([record["own_char_uid"]]):
             name = await resolve_char_name(record["own_char_uid"])
             if not name:
-                if drop_deleted_chars:
-                    # 角色已删（配置已确认读得出）：它的数据由删除的退役步骤按 uid 处理，
-                    # 这份日志关掉，不再让同一哨兵永远「清除中」
-                    logger.warning("visit forget replay: character of %s was deleted, log closed", record["id"])
-                    await RevocationLog(config_dir, own_uid=record["own_uid"]).discard(record["id"])
-                    continue
+                # 角色已删（或配置一时读不出）：这份日志执行不了，原样留着交给退役对账，
+                # 不删——删了就丢掉这次清除的意图，名册条目与转录里的对端身份可能残留。
+                # drop_deleted_chars 时下面的哨兵复查不再把它算作「还在清」，同一哨兵里的
+                # 其他角色照常结清
                 logger.warning("visit forget replay: character of %s has no name, kept", record["id"])
                 clean = False
                 continue
@@ -615,11 +613,17 @@ async def replay_forgets(
                 remaining = await RevocationLog.list_all_open(config_dir)
             except RevocationLogUnreadable:
                 return False
-            busy = any(
-                log["own_uid"] == sentinel["own_uid"]
-                and sentinel_covers(sentinel, log["own_char_uid"], log["peer_uid"])
-                for log in remaining
-            )
+            busy = False
+            for log in remaining:
+                if log["own_uid"] != sentinel["own_uid"] or not sentinel_covers(
+                    sentinel, log["own_char_uid"], log["peer_uid"],
+                ):
+                    continue
+                if drop_deleted_chars and not await resolve_char_name(log["own_char_uid"]):
+                    # 已删角色留下的日志交给退役对账，不挡这个哨兵结清
+                    continue
+                busy = True
+                break
             if busy:
                 clean = False
             else:
