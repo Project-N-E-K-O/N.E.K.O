@@ -3532,10 +3532,65 @@ def _fingerprint_of_staging(document: dict) -> dict | None:
     }
 
 
+def _staged_after_forget(
+    document: dict, subject_keys: set[str], request_subject_key: str | None, forget_epoch: int | None,
+) -> bool:
+    """Whether a staged write was started knowing this forget (so it must not be cancelled).
+
+    Only decidable for a forget with ``forget_epoch``, and only when the
+    request subject is the sole forgotten subject the staging touches (fan-out
+    subjects keep their own counters): the staging's epoch for it is at least
+    ``forget_epoch``, the same rule that lets such a write pass the tombstone.
+    """
+    if forget_epoch is None or request_subject_key is None:
+        return False
+    staged = document.get("subjects")
+    if not isinstance(staged, list):
+        return False
+    if subject_keys.intersection(str(s) for s in staged) != {request_subject_key}:
+        return False
+    epochs = document.get("epochs")
+    epoch = epochs.get(request_subject_key) if isinstance(epochs, dict) else None
+    return isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= forget_epoch
+
+
+def _cancelled_staging_marker(document: dict) -> dict:
+    """The staging document reduced to what a retry needs to recognise its key as cancelled.
+
+    Drops every extracted product (facts, display names, the subjects'
+    fields): a forget must not leave the forgotten subject's content on disk.
+    """
+    segments = document.get("segments")
+    return {
+        "key": document.get("key"),
+        "state": document.get("state"),
+        "shape": document.get("shape"),
+        "subjects": document.get("subjects"),
+        "epochs": document.get("epochs"),
+        "created_at": document.get("created_at"),
+        "request_hash": document.get("request_hash"),
+        "segments": [
+            {"wire_key": segment.get("wire_key")}
+            for segment in (segments if isinstance(segments, list) else [])
+            if isinstance(segment, dict)
+        ],
+        "items": [],
+        "applied": [],
+        _KEYED_STAGING_CANCELLED: True,
+    }
+
+
 async def _cancel_staged_writes_for_subjects(
-    lanlan_name: str, subject_keys: set[str],
+    lanlan_name: str,
+    subject_keys: set[str],
+    *,
+    request_subject_key: str | None = None,
+    forget_epoch: int | None = None,
 ) -> int:
     """Cancel every staged keyed write that touches one of ``subject_keys``.
+
+    A staging started with an epoch at or above ``forget_epoch`` for the
+    request subject was issued after this forget and is left alone.
 
     Runs after the erase, holding no other lock: each affected key's lock is
     taken on its own (an in-flight apply of the same key finishes first; an
@@ -3560,7 +3615,9 @@ async def _cancel_staged_writes_for_subjects(
             continue
         async with idempotency.key_lock(lanlan_name, key):
             current = await idempotency.read_staging(lanlan_name, key)
-            if current is None:
+            if current is None or _staged_after_forget(
+                current, subject_keys, request_subject_key, forget_epoch,
+            ):
                 continue
             try:
                 await idempotency.update_key(
@@ -3581,8 +3638,8 @@ async def _cancel_staged_writes_for_subjects(
                 logger.warning(
                     f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，取消改记在暂存里: {exc}"
                 )
-                current[_KEYED_STAGING_CANCELLED] = True
-                await idempotency.write_staging(lanlan_name, key, current)
+                # 只留重试认出「已取消」所需的身份字段，抽取出的事实原文与显示名一并抹掉
+                await idempotency.write_staging(lanlan_name, key, _cancelled_staging_marker(current))
                 cancelled += 1
                 continue
             await idempotency.delete_staging(lanlan_name, key)
@@ -3610,12 +3667,18 @@ async def _cancel_staged_writes_for_subjects(
             continue
         async with idempotency.key_lock(lanlan_name, key):
             try:
-                await idempotency.read_staging(lanlan_name, key)
+                staged = await idempotency.read_staging(lanlan_name, key)
             except idempotency.IdempotencyStateError as exc:
+                staged = None
                 # 记录是 pending、暂存读不出：上面按暂存内容的扫描看不到它。不能让它挡住
                 # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
                 # 又会应用。按记录认领：标 cancelled 再删掉这份坏暂存
                 logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {exc}")
+            if staged is not None and _staged_after_forget(
+                staged, subject_keys, request_subject_key, forget_epoch,
+            ):
+                # 带着这次清除之后的代数发起的新请求：它的产物是合法的新记忆，不取消
+                continue
             # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
             # 暂存（请求失败、已放开键锁）同样要取消，否则擦除之后、第二遍扫描之前的
             # 同键重试会用清除之后的 generation 把它应用回去
@@ -3797,7 +3860,10 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
     try:
-        await _cancel_staged_writes_for_subjects(lanlan_name, forgotten_subject_keys)
+        await _cancel_staged_writes_for_subjects(
+            lanlan_name, forgotten_subject_keys,
+            request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+        )
     except MaintenanceModeError:
         raise
     except Exception as exc:
@@ -3920,6 +3986,7 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     try:
         await _cancel_staged_writes_for_subjects(
             lanlan_name, forgotten_subject_keys,
+            request_subject_key=subject.key, forget_epoch=req.forget_epoch,
         )
     except MaintenanceModeError:
         raise

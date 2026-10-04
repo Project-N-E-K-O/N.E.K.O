@@ -1102,8 +1102,13 @@ async def test_unreadable_key_file_does_not_block_a_forget_with_staging(env):
     result = await _forget(env, GROUP)                     # 不带 forget_epoch：没有墓碑
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     # 键文件读不出、取消记不进去：改记在暂存里，暂存留着
-    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    raw = _staging_file(env, KEY_GROUP).read_text(encoding="utf-8")
+    staging = json.loads(raw)
     assert staging["cancelled_by_forget"] is True
+    # 留下的只是取消标记：被清 subject 的抽取原文与显示名都不在磁盘上
+    for fact in SINGLE_FACTS:
+        assert fact["text"] not in raw
+    assert "串门群" not in raw
     keys_file.write_text(intact, encoding="utf-8")         # 键文件修好，记录仍是 pending
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     again = await _post(env, _single_body())
@@ -1164,3 +1169,15 @@ async def test_forget_cancels_staging_written_after_its_staging_scan(env):
     env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
     again = await _post(env, _single_body())
     assert again["duplicate"] is True and _facts_of(env, GROUP) == []
+
+
+@pytest.mark.parametrize("forget_epoch, kept", [(2, True), (3, False)])
+async def test_forget_keeps_staging_issued_after_it_by_epoch(env, forget_epoch, kept):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(subject_epochs={GROUP_KEY: 2}))
+    await _forget(env, GROUP, forget_epoch=forget_epoch)
+    # 请求代数 >= 这次清除的代数：它是知道这次清除之后才发起的新写入，不取消
+    assert _staging_file(env, KEY_GROUP).exists() is kept
+    assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
