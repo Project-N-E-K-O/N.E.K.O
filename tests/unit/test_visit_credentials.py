@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import config.visit_settings as vs
+import utils.config_manager as cm_pkg
 from main_logic.visit import identity as idm
 from main_logic.visit.identity import (
     JtiWindow,
@@ -209,10 +210,8 @@ def servers(monkeypatch):
 
     monkeypatch.setattr(cr, "_servers_session", _session)
 
-    from utils.config_manager import ConfigManager
-    import utils.config_manager as cm_pkg
 
-    monkeypatch.setattr(ConfigManager, "_region_cache", True)
+    monkeypatch.setattr(cm_pkg.ConfigManager, "_region_cache", True)
     region_cm = _RegionCM()
     monkeypatch.setattr(cm_pkg, "get_config_manager", lambda: region_cm)
     fake.region_cm = region_cm
@@ -220,7 +219,7 @@ def servers(monkeypatch):
     def _forbidden(self):  # pragma: no cover - 被调用即失败
         raise AssertionError("_check_non_mainland must never be called by the visit client")
 
-    monkeypatch.setattr(ConfigManager, "_check_non_mainland", _forbidden)
+    monkeypatch.setattr(cm_pkg.ConfigManager, "_check_non_mainland", _forbidden)
     # 内置表清空：每个用例自己决定
     monkeypatch.setattr(idm, "VISIT_SERVERS_PUBKEYS", {})
     monkeypatch.setattr(idm, "NEKO_VISIT_DEV_KEYFILE", "")
@@ -274,7 +273,6 @@ class _CharsCM:
 
 @pytest.mark.asyncio
 async def test_char_tag_is_the_stable_character_uid_across_rename(servers, monkeypatch):
-    import utils.config_manager as cm_pkg
 
     cm = _CharsCM({"Mochi": {"_reserved": {"character_uid": CHAR_TAG}}})
     monkeypatch.setattr(cm_pkg, "get_config_manager", lambda: cm)
@@ -292,7 +290,6 @@ async def test_char_tag_is_the_stable_character_uid_across_rename(servers, monke
 
 @pytest.mark.asyncio
 async def test_char_tag_missing_is_backfilled_first(monkeypatch):
-    import utils.config_manager as cm_pkg
 
     cm = _CharsCM({"Mochi": {}})
     monkeypatch.setattr(cm_pkg, "get_config_manager", lambda: cm)
@@ -589,9 +586,8 @@ async def test_invite_code_never_reaches_the_httpx_request_log(servers, caplog):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cached,expected,waits", [(True, "global", 0), (False, "cn", 0), (None, "unknown", 1)])
 async def test_region_hint_reads_the_cache_only(servers, monkeypatch, cached, expected, waits):
-    from utils.config_manager import ConfigManager
 
-    monkeypatch.setattr(ConfigManager, "_region_cache", cached)
+    monkeypatch.setattr(cm_pkg.ConfigManager, "_region_cache", cached)
     await _host()
     assert servers.bodies("/api/visit/credentials")[-1]["region_hint"] == expected
     assert servers.region_cm.waits == waits
