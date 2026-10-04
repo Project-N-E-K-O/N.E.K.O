@@ -2212,3 +2212,58 @@ def test_a_send_failure_retires_the_socket():
     # 写不出去就收尾：接收循环据此结束、按掉页起期限，不会留下「已提交却没发出去」的重入
     assert not ok and conn.retired and conn.closed
     assert conn.websocket.closed_with == tw.CLOSE_SEND_FAILED
+
+
+
+def test_rejoin_checks_and_commits_with_one_clock_reading():
+    import asyncio
+
+    from main_logic.visit.liveness import VisitLiveness
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        s.liveness = VisitLiveness("guest", -100.0)
+        s.liveness.on_peer_verified(-100.0)
+        s.liveness.on_hello_acked(-100.0)
+        s.liveness.on_ready(-100.0)
+        s.liveness.on_page_lost(0.0)
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        # attach 1.0（连回：绝对期限 30）；帧入口 29.0、重入 29.9；若重入里再取一次时钟就会拿到 30.1（期限刚过）
+        readings = iter([1.0, 29.0, 29.9, 30.1, 30.1, 30.1])
+        s.now = lambda: next(readings)
+        conn = tw._attach(link, _RecordingWS())
+        assert s.liveness.page_deadline == 30.0
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        return s, conn
+
+    try:
+        s, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 用检查时的同一个 now 提交：期限真的清掉了，不会出现「已重入、期限却还在」
+    assert conn.rejoined and s.liveness.page_deadline is None
+
+
+def test_replacing_a_session_closes_its_socket_as_superseded():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        stale, fresh = FakeSession(), FakeSession()
+        tw.register_transport_session(stale)
+        ws = _RecordingWS()
+        tw._attach(tw._links[(VISIT_ID, "guest")], ws)
+        tw.register_transport_session(fresh)
+        await asyncio.sleep(0.05)
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 4409 是终态：旧 iframe 不会重连进新 session
+    assert ws.closed_with == tw.CLOSE_SUPERSEDED

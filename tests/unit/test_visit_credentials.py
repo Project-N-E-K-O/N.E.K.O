@@ -1472,7 +1472,7 @@ async def test_forced_refresh_queues_behind_an_already_sent_request(servers, mon
         await asyncio.sleep(0)
     assert cr._pubkeys_inflight is not early
     gate.set()
-    await forced
+    assert KID in (await forced).keys
     assert calls == 2
 
 
@@ -1495,7 +1495,7 @@ async def test_valid_cache_does_not_wait_for_a_background_refresh(servers, monke
     keys = await asyncio.wait_for(cr.fetch_pubkeys(), 1)
     assert KID in keys.keys and not keys.stale
     gate.set()
-    await stuck
+    assert await stuck is None
 
 
 def _grant_with_renewals(first, lifetimes, wall):

@@ -412,7 +412,8 @@ def register_transport_session(session: VisitTransportSession) -> None:
     old = _links.get(key)
     _links[key] = _Link(session=session)
     if old is not None and old.conn is not None:
-        _spawn_close(old.conn, CLOSE_NORMAL, "visit replaced")
+        # 4409 是终态：旧 runtime 的 iframe 不能重连进新登记的 session、顶掉新 runtime 自己的连接
+        _spawn_close(old.conn, CLOSE_SUPERSEDED, "visit replaced")
 
 
 def unregister_transport_session(session: VisitTransportSession) -> None:
@@ -641,16 +642,18 @@ def _is_current(link: _Link, conn: _Connection) -> bool:
     )
 
 
-def _reload_expired(session: VisitTransportSession) -> Optional[bool]:
+def _reload_expired(session: VisitTransportSession, now: Optional[float] = None) -> Optional[bool]:
     """True when the page reload of ``session`` already missed its deadline; None when the check failed."""
     try:
-        return bool(session.liveness.page_expired(session.now()))
+        return bool(session.liveness.page_expired(session.now() if now is None else now))
     except Exception as exc:  # noqa: BLE001 - 帧处理路径上不能因此结束接收循环
         logger.warning("visit transport: page deadline check failed: %s", type(exc).__name__)
         return None
 
 
-def _close_if_late(conn: _Connection, session: VisitTransportSession) -> Optional[bool]:
+def _close_if_late(
+    conn: _Connection, session: VisitTransportSession, now: Optional[float] = None,
+) -> Optional[bool]:
     """Close a replacement page that missed its reload deadline; True when it did.
 
     False when it is not late (or not a replacement page), None when the
@@ -664,7 +667,7 @@ def _close_if_late(conn: _Connection, session: VisitTransportSession) -> Optiona
     """
     if not conn.reattach or conn.rejoined:
         return False
-    expired = _reload_expired(session)
+    expired = _reload_expired(session, now)
     if not expired:
         return expired
     logger.warning("visit transport: page reload deadline passed, closing the late page")
@@ -781,13 +784,15 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
     # 帧入口已查过一次；这里复查 on_state 等 await 期间刚过期的情形：新 iframe 已经用同一个 vid
     # 回到房里，不能留着（对端会取消 peer_left 宽限），关掉它即离房
-    if _close_if_late(conn, session) is not False:
-        return  # 已关掉，或期限查不了：都不重入（下一次触发再试）
+    # 只取一次时钟：期限检查与随后的提交（on_page_rejoin_committed → on_page_back）用同一个 now，
+    # 否则两次取时之间期限恰好过去，on_page_back 不清期限、连接却被标成已重入
     try:
         now = session.now()
     except Exception as exc:  # noqa: BLE001 - 普通的 stats 帧也会走到这里，不能因此结束接收循环
         logger.warning("visit transport: rejoin check failed: %s", type(exc).__name__)
         return
+    if _close_if_late(conn, session, now) is not False:
+        return  # 已关掉，或期限查不了：都不重入（下一次触发再试）
     saved = None
     try:
         # 快照最先，且按实际下发的那条（含 type、大小上限）检查：它失败时 outbox 仍保持
