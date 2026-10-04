@@ -42,7 +42,7 @@ from fastapi.responses import JSONResponse
 from ..shared_state import get_config_manager, get_initialize_character_data
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
-from utils.config_manager import set_reserved
+from utils.config_manager import assign_new_character_uid, set_reserved
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
     asave_characters_with_recent_activation,
@@ -486,6 +486,8 @@ async def sync_workshop_character_cards(
                                     set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', '')
                                     set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', subscriber_model_ref)
                             
+                            # 工坊卡同步出来的是新角色，生成新的稳定 id。
+                            assign_new_character_uid(catgirl_data)
                             characters['猫娘'][chara_name] = catgirl_data
                             pending_added_catgirls[chara_name] = catgirl_data
                             pending_card_face_writes[chara_name] = {

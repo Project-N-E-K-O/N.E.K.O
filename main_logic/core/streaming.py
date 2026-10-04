@@ -28,6 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -307,6 +308,28 @@ class StreamingMixin:
             if not self.session or not self.is_active:
                 if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
                     return
+                # 根据输入类型确定模式
+                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                # 外部路由可以认领语音自动建会话（不经 websocket_router 的
+                # start_session 分支的那条语音入口）；没有路由认领时原样建会话。
+                # 先问路由、再过下面只针对普通会话的冷却 / 熔断：认领了这次启动
+                # 的路由不建普通会话，不该被它们挡住。
+                if mode == 'audio':
+                    # A route replaced while deciding is re-asked inside the
+                    # registry; an owner that keeps changing drops this frame.
+                    claim, _route = await _core_facade.route_external_start_session(
+                        self.lanlan_name, {'input_type': 'audio'},
+                    )
+                    if claim is not RouteClaim.UNCLAIMED:
+                        return
+                    # The claim check may have suspended: another frame can
+                    # have started a session meanwhile. Audio arriving during a
+                    # start is dropped, as above; a session that came up is used.
+                    if self._starting_session_count > 0:
+                        return
+                    if self.session_ready or (self.session and self.is_active):
+                        await self._process_stream_data_internal(message)
+                        return
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
@@ -315,8 +338,6 @@ class StreamingMixin:
                 if self._session_start_circuit_open:
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
-                # 根据输入类型确定模式
-                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                 try:
                     await self.start_session(self.websocket, new=False, input_mode=mode)
                 except asyncio.CancelledError as exc:

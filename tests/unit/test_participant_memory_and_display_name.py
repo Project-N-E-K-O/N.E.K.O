@@ -470,6 +470,11 @@ def test_scoped_header_language_tables_cover_all_kinds_and_langs():
     assert set(SCOPED_PERSONA_SECTION_HEADER_NAMED) == set(
         SCOPED_PERSONA_SECTION_HEADER
     )
+    # 串门专表（按 kind+platform 选）两张表都要有，且同样八 locale。
+    assert {
+        "group_chat", "participant", "group_participant",
+        "group_chat@neko_visit", "participant@neko_visit",
+    } == set(SCOPED_PERSONA_SECTION_HEADER)
     for kind, table in SCOPED_PERSONA_SECTION_HEADER_NAMED.items():
         # #2623 把既有表的繁中补键留给 #2500；合并 #2616 后两张表必须
         # 锁成同一套八 locale，不能再依赖缺键回退。

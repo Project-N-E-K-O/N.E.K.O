@@ -51,7 +51,15 @@ from .shared_state import (
     get_config_manager,
     get_session_id,
 )
-from .game_router import is_game_route_active, route_external_stream_message
+# Importing game_router registers the ``game`` kind in the external-route
+# registry; the hijack points below only talk to the registry.
+from . import game_router as _game_router  # noqa: F401
+from utils.external_route_registry import (
+    RouteClaim,
+    route_external_microphone_audio,
+    route_external_start_session,
+    route_external_stream_message,
+)
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -803,11 +811,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 except Exception:
                     pass
             return
-        if is_game_route_active(lanlan_name):
-            await route_external_stream_message(
-                lanlan_name,
-                {"input_type": "audio", "stt_provider": "realtime"},
-            )
+        if await route_external_microphone_audio(lanlan_name):
+            return
         await voice_mgr.stream_data(message)
 
     if mgr.pending_agent_callbacks:
@@ -1027,9 +1032,43 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
-                    if is_game_route_active(lanlan_name):
+                    # The owning route decides this start (re-asked if it is
+                    # replaced while deciding); a decline, or no route, falls
+                    # through to the ordinary session path.
+                    claim, external_route = await route_external_start_session(
+                        lanlan_name,
+                        {"input_type": input_type, "request_id": request_id},
+                    )
+                    if claim is RouteClaim.CLAIMED:
+                        continue
+                    if session_id.get(lanlan_name) != this_session_id:
+                        # A newer window took the session while the route
+                        # decided; this socket must not start one. Its next
+                        # message hits the ownership check above and closes.
+                        logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
+                        continue
+                    if claim is RouteClaim.UNSETTLED:
+                        # The owner kept changing while deciding: give up and
+                        # tell the requester, so its preparing state resets.
+                        # Only an addressed failure is sent: without a request
+                        # id, send_session_failed would adopt the id of whatever
+                        # start is in flight and fail that one instead.
+                        logger.info("[%s] start_session failed: external route kept changing during its claim", lanlan_name)
+                        if request_id:
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_failed(
+                                    'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
+                                    request_id=request_id,
+                                )
+                            )
+                        continue
+                    if external_route is not None:
+                        # Default start handling for a route without
+                        # on_start_session (see ExternalRouteKind): text is
+                        # ack-only, audio starts ordinary realtime as the
+                        # route's STT provider.
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
-                            logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
+                            logger.info("[%s] %s route active: acknowledging text entry without starting ordinary text session", lanlan_name, external_route.kind)
                             _fire_task(
                                 session_manager[lanlan_name].send_session_started(
                                     "text", request_id=request_id
@@ -1037,11 +1076,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             )
                             continue
                         if input_type == "audio":
-                            logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            logger.info("[%s] %s route active: starting ordinary realtime as STT provider for route voice", lanlan_name, external_route.kind)
                             _claim_voice_input_connection()
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
-                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            # Announced through the registry, so a route that
+                            # ends or is replaced before this task runs is not
+                            # notified in place of the current owner.
+                            _fire_task(route_external_microphone_audio(lanlan_name))
                             _fire_task(
                                 session_manager[lanlan_name].start_session(
                                     websocket,
@@ -1132,13 +1174,23 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     message,
                     lanlan_name=lanlan_name,
                 )
-                if is_game_route_active(lanlan_name):
-                    if input_type == "audio":
-                        await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
-                    else:
-                        handled_by_game = await route_external_stream_message(lanlan_name, message)
-                        if handled_by_game:
-                            continue
+                if input_type == "audio":
+                    if await route_external_microphone_audio(lanlan_name):
+                        continue
+                else:
+                    claim = await route_external_stream_message(lanlan_name, message)
+                    if claim is RouteClaim.UNSETTLED:
+                        # The owner kept changing: the input reached no route
+                        # and must not leak into ordinary chat, but its request
+                        # still needs a turn end or its bubble stays pending.
+                        # Only an addressed one: an unaddressed turn end (e.g.
+                        # for a screen frame) would seal an unrelated reply.
+                        logger.info("[%s] stream_data dropped: external route kept changing while handling it", lanlan_name)
+                        if message.get("request_id"):
+                            await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
+                        continue
+                    if claim is RouteClaim.CLAIMED:
+                        continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")

@@ -137,6 +137,7 @@ export interface PluginMeta {
   entries?: PluginEntry[]
   runtime_enabled?: boolean
   runtime_auto_start?: boolean
+  autostart_pending?: boolean
   author?: PluginAuthor
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema

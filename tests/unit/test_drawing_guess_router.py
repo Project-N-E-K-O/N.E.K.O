@@ -5737,9 +5737,13 @@ async def test_live_returns_cues_on_cancellation(monkeypatch):
 async def test_drawing_guess_route_start_installs_live_inbox(monkeypatch):
     from main_routers.game_router import runtime as gr_runtime
     from main_routers.game_router.route_lifecycle import _TAKEOVER_CALLBACK_INBOX_KEY
-    from tests.unit.game_route_test_helpers import gr_patch_all, reset_game_route_state
+    from tests.unit.game_route_test_helpers import (
+        TakeoverManagerDouble,
+        gr_patch_all,
+        reset_game_route_state,
+    )
 
-    manager = SimpleNamespace()
+    manager = TakeoverManagerDouble()
     gr_patch_all(monkeypatch, "get_session_manager", lambda: {"YUI": manager})
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
@@ -5758,9 +5762,13 @@ async def test_drawing_guess_route_start_installs_live_inbox(monkeypatch):
 async def test_soccer_route_start_does_not_install_live_inbox(monkeypatch):
     from main_routers.game_router import runtime as gr_runtime
     from main_routers.game_router.route_lifecycle import _TAKEOVER_CALLBACK_INBOX_KEY
-    from tests.unit.game_route_test_helpers import gr_patch_all, reset_game_route_state
+    from tests.unit.game_route_test_helpers import (
+        TakeoverManagerDouble,
+        gr_patch_all,
+        reset_game_route_state,
+    )
 
-    manager = SimpleNamespace()
+    manager = TakeoverManagerDouble()
     gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
 
     async def fake_pregame_context(**_kwargs):

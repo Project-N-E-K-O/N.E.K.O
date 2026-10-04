@@ -31,6 +31,7 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
+from utils.external_route_registry import is_route_slot_taken
 from main_logic.session_state import SessionEvent
 from main_logic.agent_event_bus import dispatch_user_utterance
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
@@ -1805,6 +1806,38 @@ class TurnMixin:
             clear_shot = getattr(self.session, "set_proactive_screenshot", None)
             if callable(clear_shot):
                 clear_shot(None)
+        # Another external route (not a mini-game) holding this character would
+        # make the game's /route/start refuse the slot after its window opened,
+        # so say why instead of opening it -- after dropping this command's
+        # attachments, but before the interrupt steps below, which would cut off
+        # what that route is still saying. The turn end
+        # settles this request on the frontend. A mini-game replacing another
+        # one is handled by the game route's own supersede logic.
+        if is_route_slot_taken(
+            self.lanlan_name, kind="game", takeover_owner=self.takeover_owner(),
+        ):
+            # The user did type the command: record it like a launched one, so
+            # the sync stream shows what the refusal answers.
+            await self.mirror_user_input(
+                data,
+                metadata={
+                    "source": "mini_game",
+                    "kind": "magic_command",
+                    "command": game_type,
+                },
+                request_id=request_id,
+            )
+            await self.send_status(json.dumps({
+                "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
+                "details": {"game_type": game_type},
+            }))
+            await self._emit_agent_callback_turn_end(request_id)
+            logger.info(
+                "[%s] mini-game magic command not launched, external route active: %s",
+                self.lanlan_name,
+                game_type,
+            )
+            return True
         # The turn end below seals the frontend's current assistant bubble, so
         # stop an in-flight reply first, the same way a new text message does,
         # without tearing the session down. Only the offline producer is

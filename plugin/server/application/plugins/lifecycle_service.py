@@ -79,7 +79,10 @@ from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverridePersistenceError,
     get_runtime_auto_start_override,
     get_runtime_override,
+    get_runtime_override_entry,
     migrate_runtime_override,
+    restore_runtime_override,
+    set_runtime_auto_start_override,
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
@@ -93,7 +96,10 @@ from plugin.settings import (
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
 )
-from plugin.server.infrastructure.autostart_approvals import clear_autostart_pending
+from plugin.server.infrastructure.autostart_approvals import (
+    clear_autostart_pending,
+    is_autostart_approved,
+)
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
@@ -356,7 +362,13 @@ def _persist_user_runtime_intent(
     *,
     previous_plugin_ids: tuple[str, ...] = (),
     runtime_state_changed: bool = False,
-) -> None:
+) -> bool:
+    if not enabled and not PLUGIN_SYNC_AUTO_START_ON_TOGGLE:
+        # A manual stop is temporary. Persisting enabled=false would make the
+        # autostart selection skip the plugin at the next launch even though
+        # its auto-start switch still says on; whether it runs at launch is
+        # the switch's job alone.
+        return False
     try:
         auto_start = enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
         if previous_plugin_ids:
@@ -389,38 +401,9 @@ def _persist_user_runtime_intent(
             log_level="error",
         ) from exc
 
-    if enabled:
-        # 清在偏好写盘**之后**。写盘失败会抛上去、只被报成 partial_success，而这台
-        # 机器上就没有用户 override 了——重启后注册表回落到 manifest 默认值
-        # （enabled/auto_start 都是 true）。先清的话，等于凭一个没落地的意图永久发出
-        # 了自启动批准（greptile）。
-        #
-        # 这是 autostart_approvals 那条"一切失败都朝着照常自启"原则的例外，而且不
-        # 冲突：那条原则说的是**读**不出记录时别把用户现有的自启动关掉；这里是**写**，
-        # 而待批准记录只存在于新装插件上——它们本来就没自启过，写失败时不批准，
-        # 回到的正是安装前的状态。
-        persisted = clear_autostart_pending(plugin_id)
-        # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
-        # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
-        # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
-        for previous_plugin_id in previous_plugin_ids:
-            persisted = clear_autostart_pending(previous_plugin_id) and persisted
-        if not persisted:
-            # 批准没落地就不能报成"偏好已保存"。运行时偏好那一半确实写成了，但插件
-            # 仍然留在待批准集合里，重启后自启动筛选会再一次静默把它拦下来，而用户
-            # 手上没有任何线索（greptile）。走和偏好写失败同一条上报通道：调用方把它
-            # 降级成 partial_success，而不是让这次启动失败。
-            raise ServerDomainError(
-                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
-                message="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
-                status_code=500,
-                details={
-                    "plugin_id": plugin_id,
-                    "error_type": "AutostartApprovalPersistenceError",
-                    "runtime_state_changed": runtime_state_changed,
-                },
-                log_level="error",
-            )
+    # Manual start/reload persists runtime intent only, even in legacy sync
+    # mode. Only the independent auto-start switch grants approval.
+    return True
 
 
 def _mark_preference_persistence_failure(
@@ -445,14 +428,14 @@ async def _persist_changed_runtime_intent(
     previous_plugin_ids: tuple[str, ...] = (),
 ) -> None:
     try:
-        await asyncio.to_thread(
+        persisted = await asyncio.to_thread(
             _persist_user_runtime_intent,
             plugin_id,
             enabled,
             previous_plugin_ids=previous_plugin_ids,
             runtime_state_changed=True,
         )
-        response["preference_persisted"] = True
+        response["preference_persisted"] = persisted
     except ServerDomainError as exc:
         logger.error(
             "plugin runtime state changed but user preference could not be persisted: plugin_id={}, enabled={}, err_type={}",
@@ -581,12 +564,16 @@ def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
     return normalized
 
 
-def _set_plugin_runtime_enabled_sync(plugin_id: str, enabled: bool) -> None:
+def _set_plugin_runtime_auto_start_sync(
+    plugin_id: str, auto_start: bool, *, restore_enabled: bool = False,
+) -> None:
     with state.acquire_plugins_write_lock():
         raw_meta = state.plugins.get(plugin_id)
         if not isinstance(raw_meta, dict):
             return
-        raw_meta["runtime_enabled"] = enabled
+        raw_meta["runtime_auto_start"] = auto_start
+        if restore_enabled:
+            raw_meta["runtime_enabled"] = True
         state.plugins[plugin_id] = raw_meta
     state.invalidate_snapshot_cache("plugins")
 
@@ -1636,6 +1623,114 @@ class PluginLifecycleService:
             ) from exc
 
     @serialized_plugin_operation
+    async def set_plugin_auto_start(
+        self, plugin_id: str, auto_start: bool
+    ) -> dict[str, object]:
+        """Persist the user's auto-start preference without touching the process.
+
+        The running host is left as it is. Turning auto-start on is the user
+        asking for the plugin to run at launch, so it also lifts what would
+        otherwise still block that: a persisted ``enabled=false`` left by an
+        earlier stop, and the pending approval of a freshly installed plugin.
+        """
+        meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        if meta is None:
+            raise _to_domain_error(
+                code="PLUGIN_NOT_FOUND",
+                message=f"Plugin '{plugin_id}' not found",
+                status_code=404,
+                plugin_id=plugin_id,
+                error_type="PluginNotFound",
+            )
+        restore_enabled = auto_start and (
+            meta.get("runtime_enabled") is False
+            or await asyncio.to_thread(get_runtime_override, plugin_id) is False
+        )
+        try:
+            was_pending = auto_start and not await asyncio.to_thread(
+                is_autostart_approved, plugin_id, strict=True
+            )
+        except OSError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                message="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "auto_start": auto_start,
+                    "error_type": type(exc).__name__,
+                    "runtime_state_changed": False,
+                },
+                log_level="error",
+            ) from exc
+        # The pending approval is the gate that keeps unapproved code from
+        # running at launch, so it is lifted only after the preference is
+        # durable. Every failure below therefore leaves the gate in place.
+        previous_override = await asyncio.to_thread(get_runtime_override_entry, plugin_id)
+        try:
+            if restore_enabled:
+                await asyncio.to_thread(
+                    set_runtime_override, plugin_id, True, auto_start=True
+                )
+            else:
+                await asyncio.to_thread(
+                    set_runtime_auto_start_override, plugin_id, auto_start
+                )
+        except RuntimeOverridePersistenceError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                message="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "auto_start": auto_start,
+                    "error_type": type(exc).__name__,
+                    "runtime_state_changed": False,
+                },
+                log_level="error",
+            ) from exc
+        if was_pending and not await asyncio.to_thread(clear_autostart_pending, plugin_id):
+            # Undo the preference so the failed request changes nothing. If the
+            # undo fails too, the plugin is still pending and cannot autostart.
+            written_override = await asyncio.to_thread(get_runtime_override_entry, plugin_id)
+            try:
+                rolled_back = await asyncio.to_thread(
+                    restore_runtime_override,
+                    plugin_id,
+                    previous_override,
+                    expected_current=written_override,
+                )
+            except (RuntimeOverridePersistenceError, OSError):
+                rolled_back = False
+            if not rolled_back:
+                logger.error(
+                    "Failed to roll back auto-start preference for {}; it stays pending approval",
+                    plugin_id,
+                )
+            raise ServerDomainError(
+                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                message="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "auto_start": auto_start,
+                    "error_type": "AutostartApprovalPersistenceError",
+                    "runtime_state_changed": False,
+                },
+                log_level="error",
+            )
+        await asyncio.to_thread(
+            _set_plugin_runtime_auto_start_sync, plugin_id, auto_start,
+            restore_enabled=restore_enabled,
+        )
+        return {
+            "success": True,
+            "plugin_id": plugin_id,
+            "auto_start": auto_start,
+            "message": "Plugin auto-start preference updated",
+        }
+
+    @serialized_plugin_operation
     async def reload_plugin(
         self,
         plugin_id: str,
@@ -1677,9 +1772,8 @@ class PluginLifecycleService:
                 "message": "Plugin not running",
             }
 
-        # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
-        # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
-        # 那个插件永远启动得起来、却永远不自启（codex）。
+        # Manual reload persists runtime intent like Start; neither action
+        # approves a pending plugin for future automatic launches.
         try:
             if development_snapshot is not None:
                 await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)

@@ -149,9 +149,7 @@
               </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.sdkVersion')">{{ plugin.sdk_version || $t('common.nA') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.autoStart')">
-                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'">
-                  {{ plugin.autoStart ? $t('plugins.autoStart') : $t('plugins.manualStart') }}
-                </el-tag>
+                <PluginAutoStartSwitch :plugin-id="pluginId" />
               </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.status')">
                 <StatusIndicator :status="pluginStatus" />
@@ -200,6 +198,7 @@ import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginActions from '@/components/plugin/PluginActions.vue'
+import PluginAutoStartSwitch from '@/components/plugin/PluginAutoStartSwitch.vue'
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'

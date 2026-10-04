@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "Игровой LLM не вернул валидный ответ ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "Кадры экрана/камеры пропущены во время игры",
         "GAME_VOICE_STT_GATE_ACTIVE": "Голосовой перехват игры активен",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "Сейчас идёт другое действие, поэтому мини-игру открыть нельзя",
         "INTERNAL_IMPORT_ERROR": "Не удалось загрузить внутренний компонент: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "Структура локальной конфигурации персонажа недействительна",
         "MEMORY_SERVER_RELEASE_FAILED": "Не удалось освободить дескриптор памяти персонажа, повторите позже",

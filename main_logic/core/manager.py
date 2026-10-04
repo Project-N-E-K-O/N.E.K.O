@@ -46,6 +46,7 @@ from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -63,6 +64,7 @@ class LLMSessionManager(
     AsrRuntimeMixin,
     StreamingMixin,
     NotifyMixin,
+    TakeoverMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
@@ -278,9 +280,13 @@ class LLMSessionManager(
         # （text/audio delta、output transcript、response.complete、
         # new-message 通知）都要静音；语音转写也要先丢给外部 dispatcher
         # 处理，处理过的不再走本地 chat 路径。
-        # SessionManager 不知道 takeover 是谁、为什么——只认这两个 flag。
+        # SessionManager 不知道 takeover 是谁、为什么——只认下面三个属性。
+        # 三个属性只由 TakeoverMixin（acquire_takeover / release_takeover /
+        # set_takeover_callback_sink）写；_takeover_token 记录当前持有者，
+        # 不是当前 token 的 release 不生效，接管者之间不会互相解除静音。
         # 当前唯一消费者：main_routers.game_router；未来 plugin/agent 想完
         # 全接管 chat 的场景也走同一套接口。
+        self._takeover_token: Optional[TakeoverToken] = None
         self._takeover_active: bool = False
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
@@ -288,6 +294,10 @@ class LLMSessionManager(
         # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
         # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
         self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
+        # 与 takeover 独立的回调暂扣（TakeoverMixin.hold_callbacks）：takeover
+        # 释放后仍可让 respond 类回调先进这个 sink，不走普通主动搭话投递。
+        self._callback_hold_sink: Optional[Callable[[dict], bool]] = None
+        self._callback_hold_token: Optional[HoldToken] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,

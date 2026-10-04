@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections import deque
 import queue
@@ -5331,6 +5332,367 @@ async def test_a_reconnect_while_queued_for_the_frame_lock_drops_the_frame():
     # The swap really happened and the second call really did pin the old socket,
     # so the assertion above cannot pass by the probe never racing at all.
     assert mgr.websocket is replacement
+
+
+async def _external_route_no_routes(_name):
+    return 0
+
+
+async def _external_route_unclaimed(_name, _message):
+    return False
+
+
+def _register_external_route_kind(kind, *, active, locked=None, on_start_session=None):
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    # The autouse registry fixture in conftest restores the registry afterwards.
+    register_external_route_kind(ExternalRouteKind(
+        kind=kind,
+        is_active=lambda _name: active,
+        route_stream_message=_external_route_unclaimed,
+        on_start_session=on_start_session,
+        finalize_for_character=_external_route_no_routes,
+        is_locked=None if locked is None else (lambda _name: locked),
+        current_instance=lambda _name: "instance-1",
+        audio_passthrough=on_start_session is None,
+    ))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "active", "locked", "launched"),
+    [
+        ("visit", True, None, False),
+        ("visit", False, True, False),
+        ("game", True, None, True),
+        ("visit", False, False, True),
+    ],
+    ids=["other-route-active", "other-route-finishing", "game-replaces-game", "idle-kind"],
+)
+async def test_mini_game_magic_command_is_not_launched_over_another_external_route(
+    kind, active, locked, launched,
+):
+    """The game's /route/start would refuse the slot, so the window must not open."""
+    _register_external_route_kind(kind, active=active, locked=locked)
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.start_session = AsyncMock()
+    mgr._process_stream_data_internal = AsyncMock()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session = None
+    mgr.session_ready = False
+    mgr.is_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+    sent_types = [payload.get("type") for payload in mgr.websocket.sent]
+    # Either way the request is settled on the frontend.
+    assert {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"} in mgr.websocket.sent
+    if launched:
+        assert "mini_game_invite_resolved" in sent_types
+        mgr.send_status.assert_not_awaited()
+        mgr._clear_tts_pipeline.assert_awaited_once()
+    else:
+        # Refused before the interrupt steps: whatever the owning route is
+        # still saying keeps playing. Mutation: checking the lock after the
+        # interrupt (the first version) turns this red.
+        mgr._clear_tts_pipeline.assert_not_awaited()
+        assert mgr.user_activity == []
+        # The typed command is still mirrored, like a launched one, ahead of
+        # the turn end. Mutation: dropping the mirror turns this red.
+        mirrored, turn_end = mgr.sync_message_queue.messages
+        assert mirrored["type"] == "user"
+        assert mirrored["data"]["data"] == "/一起看"
+        assert mirrored["data"]["request_id"] == "req-watch"
+        assert mirrored["data"]["metadata"] == {
+            "source": "mini_game",
+            "kind": "magic_command",
+            "command": "watch-together",
+        }
+        assert turn_end == {"type": "system", "data": "turn end agent_callback", "request_id": "req-watch"}
+        assert "mini_game_invite_resolved" not in sent_types
+        mgr.send_status.assert_awaited_once()
+        status = json.loads(mgr.send_status.await_args.args[0])
+        assert status == {
+            "code": "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
+            "details": {"game_type": "watch-together"},
+        }
+
+
+def _make_auto_start_manager():
+    mgr = _make_transcript_manager()
+    mgr.session = None
+    mgr.is_active = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.start_session = AsyncMock()
+    mgr._process_stream_data_internal = AsyncMock()
+    return mgr
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_is_claimed_by_an_external_route():
+    """Voice reaching an idle manager must not start ordinary realtime under a route that claims it."""
+    claim = AsyncMock(return_value=True)
+    _register_external_route_kind("visit", active=True, on_start_session=claim)
+    mgr = _make_auto_start_manager()
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    claim.assert_awaited_once_with("Lan", {"input_type": "audio"})
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_type", "data", "with_claimant"),
+    [
+        ("audio", [0, 1, 2], False),
+        ("text", "hello", True),
+    ],
+    ids=["no-claimant", "text-is-never-claimed"],
+)
+async def test_auto_start_is_unchanged_when_no_route_claims_it(input_type, data, with_claimant):
+    claim = AsyncMock(return_value=True)
+    if with_claimant:
+        _register_external_route_kind("visit", active=True, on_start_session=claim)
+    else:
+        # The game kind registers no on_start_session: the gate returns False.
+        _register_external_route_kind("game", active=True)
+    mgr = _make_auto_start_manager()
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": input_type, "data": data},
+    )
+
+    claim.assert_not_awaited()
+    mgr.start_session.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refused_mini_game_command_still_drops_staged_images_without_interrupting():
+    """A refused slash command never reaches stream_text: staged images must not leak into the next message."""
+    _register_external_route_kind("visit", active=False, locked=True)
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session_ready = True
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.handle_interruption = AsyncMock()
+    mgr.session.set_proactive_screenshot = Mock()
+    mgr.session._pending_plugin_images = ["plugin-read-image"]
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    # Mutation: returning before the image cleanup turns this red.
+    assert mgr.session._pending_plugin_images == []
+    mgr.session.set_proactive_screenshot.assert_called_once_with(None)
+    mgr.session.handle_interruption.assert_not_awaited()
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr.send_status.assert_awaited_once()
+
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mini_game_command_is_refused_while_another_owner_holds_the_takeover():
+    """Same predicate as /route/start: a takeover held by another owner refuses too.
+
+    Mutation: checking only the registry lock (the earlier version) turns this red.
+    """
+    from main_logic.core.takeover import TakeoverToken
+
+    mgr = _make_transcript_manager()
+    mgr._takeover_token = TakeoverToken(owner="visit", issued_at=0.0)
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session = None
+    mgr.session_ready = False
+    mgr.is_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    sent_types = [payload.get("type") for payload in mgr.websocket.sent]
+    assert "mini_game_invite_resolved" not in sent_types
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr.send_status.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meanwhile", ["another-start-began", "session-came-up"])
+async def test_audio_auto_start_rechecks_after_an_awaited_route_claim(meanwhile):
+    """An on_start_session that suspends must not let two frames both start a session.
+
+    Mutation: calling start_session right after the claim (no re-check)
+    turns both cases red.
+    """
+    mgr = _make_auto_start_manager()
+
+    async def _slow_decline(_name, _message):
+        await asyncio.sleep(0)
+        if meanwhile == "another-start-began":
+            mgr._starting_session_count = 1
+        else:
+            mgr.session = object()
+            mgr.is_active = True
+            mgr.session_ready = True
+        return False
+
+    _register_external_route_kind("visit", active=True, on_start_session=_slow_decline)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    if meanwhile == "session-came-up":
+        mgr._process_stream_data_internal.assert_awaited_once()
+    else:
+        mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_is_dropped_when_the_route_changed_during_its_claim():
+    """Mutation: dropping the post-claim route re-check turns this red."""
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    mgr = _make_auto_start_manager()
+
+    async def _decline_after_replacement(_name, _message):
+        await asyncio.sleep(0)
+        register_external_route_kind(ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_external_route_unclaimed,
+            on_start_session=AsyncMock(return_value=True),
+            finalize_for_character=_external_route_no_routes,
+            current_instance=lambda _name: "instance-2",
+        ))
+        return False
+
+    _register_external_route_kind("visit", active=True, on_start_session=_decline_after_replacement)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["circuit_open", "cooldown"])
+async def test_audio_auto_start_asks_the_route_before_core_only_gates(gate):
+    """Core's start circuit / cooldown only gate an ordinary session; a route
+    that claims the start is asked first.
+
+    Mutation: checking those gates before the route offer turns this red.
+    """
+    mgr = _make_auto_start_manager()
+    if gate == "circuit_open":
+        mgr._session_start_circuit_open = True
+    else:
+        mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=True)
+    claim = AsyncMock(return_value=True)
+    _register_external_route_kind("visit", active=True, on_start_session=claim)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    claim.assert_awaited_once()
+    mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unclaimed_audio_auto_start_still_respects_the_core_circuit():
+    mgr = _make_auto_start_manager()
+    mgr._session_start_circuit_open = True
+    _register_external_route_kind("visit", active=True, on_start_session=AsyncMock(return_value=False))
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audio_auto_start_asks_the_new_instance_when_the_kind_took_over():
+    """The old instance's decline is stale: the new instance decides (and claims).
+
+    Mutation: comparing only the kind object (not its instance) turns this red.
+    """
+    from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
+
+    mgr = _make_auto_start_manager()
+    instance = {"id": "visit-1"}
+    asked = []
+
+    async def _decide(_name, _message):
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return False
+        return True
+
+    register_external_route_kind(ExternalRouteKind(
+        kind="visit",
+        is_active=lambda _name: True,
+        route_stream_message=_external_route_unclaimed,
+        on_start_session=_decide,
+        finalize_for_character=_external_route_no_routes,
+        current_instance=lambda _name: instance["id"],
+    ))
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0, 1, 2]},
+    )
+
+    assert asked == ["visit-1", "visit-2"]
+    mgr.start_session.assert_not_awaited()
 
 
 @pytest.mark.unit

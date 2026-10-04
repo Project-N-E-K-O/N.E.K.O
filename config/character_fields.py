@@ -73,6 +73,8 @@ RESERVED_FIELD_SCHEMA = {
     "voice_id": (str, dict),
     "system_prompt": str,
     "field_order": list,
+    # 角色稳定 id（32 位小写 hex）：新建 / 导入时生成，改名不变，存量角色在启动时补发（backfill_character_uids）。
+    "character_uid": str,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,

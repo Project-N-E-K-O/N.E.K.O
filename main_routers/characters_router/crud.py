@@ -75,6 +75,7 @@ from utils.character_memory import (
     rollback_character_recent_rename,
 )
 from utils.config_manager import (
+    assign_new_character_uid,
     flatten_reserved,
     get_reserved,
     set_reserved,
@@ -1113,26 +1114,29 @@ async def set_current_catgirl(request: Request):
     if old_catgirl != catgirl_name:
         await force_disable_agent_for_character_switch(catgirl_name, old_catgirl)
 
-    # B8: if the previous character had an active game route, finalize it
-    # immediately. Otherwise the heartbeat-based timeout (10-60s) would
-    # leave a stale ``OmniOfflineClient`` consuming game events under the
-    # outgoing character's name and keep the SessionManager takeover
-    # muting the incoming character's ordinary chat output.
+    # B8: if the previous character had an active external route (game),
+    # finalize it immediately. Otherwise the heartbeat-based timeout (10-60s)
+    # would leave a stale ``OmniOfflineClient`` consuming route events under
+    # the outgoing character's name and keep the SessionManager takeover
+    # muting the incoming character's ordinary chat output. Each kind only
+    # waits for its own state flip, not for its whole exit flow.
     if old_catgirl and old_catgirl != catgirl_name:
         try:
-            from main_routers.game_router import finalize_game_routes_for_character
-            finalized = await finalize_game_routes_for_character(old_catgirl)
+            # Importing game_router registers the ``game`` kind.
+            from main_routers import game_router  # noqa: F401
+            from utils.external_route_registry import finalize_external_routes_for_character
+            finalized = await finalize_external_routes_for_character(old_catgirl)
             if finalized:
                 logger.info(
-                    "角色切换：已收尾 %d 个旧角色 %s 的游戏路由",
+                    "角色切换：已收尾 %d 个旧角色 %s 的外部路由",
                     finalized,
                     old_catgirl,
                 )
         except Exception as exc:
             # Swallow — character switch must not fail because of
-            # game-route cleanup; the heartbeat sweep will eventually
+            # route cleanup; the heartbeat sweep will eventually
             # clean up if this hook misses.
-            logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
+            logger.warning("角色切换外部路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
 
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
@@ -1332,6 +1336,8 @@ async def add_catgirl(request: Request):
         # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
         default_free_voice_id = _get_new_catgirl_default_voice_id()
         set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
+        # 新角色（含复制已有角色的字段新建）一律拿新的稳定 id；改名沿用同一条目，id 不变。
+        assign_new_character_uid(catgirl_data)
         publish_cancelled = await asave_characters_with_recent_activation(
             _config_manager, characters, key,
         )

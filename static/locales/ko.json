@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "게임 LLM이 유효한 출력을 반환하지 않았습니다 ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "게임 중에는 화면/카메라 프레임을 건너뛰었습니다",
         "GAME_VOICE_STT_GATE_ACTIVE": "게임 음성 테이크오버가 활성화되었습니다",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "다른 활동이 진행 중이어서 지금은 미니게임을 열 수 없습니다",
         "INTERNAL_IMPORT_ERROR": "내부 구성 요소 로드 실패: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "로컬 캐릭터 설정 구조가 잘못되었습니다",
         "MEMORY_SERVER_RELEASE_FAILED": "캐릭터 메모리 핸들 해제에 실패했습니다. 잠시 후 다시 시도하세요",

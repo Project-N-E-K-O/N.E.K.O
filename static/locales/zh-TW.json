@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "遊戲 LLM 未返回有效輸出（{{error}}）",
         "GAME_ROUTE_MEDIA_SKIPPED": "遊戲期間已忽略螢幕/攝像頭畫面",
         "GAME_VOICE_STT_GATE_ACTIVE": "遊戲語音接管已啟用",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "目前有其他活動正在進行，暫時無法開啟小遊戲",
         "INTERNAL_IMPORT_ERROR": "內部組件載入失敗：{{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "本地角色設定結構無效",
         "MEMORY_SERVER_RELEASE_FAILED": "釋放角色記憶句柄失敗，請稍後重試",

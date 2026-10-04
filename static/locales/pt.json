@@ -657,6 +657,7 @@
         "GAME_ROUTE_LLM_FAILED": "O LLM do jogo não retornou uma saída válida ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "Quadros de tela/câmera ignorados durante o jogo",
         "GAME_VOICE_STT_GATE_ACTIVE": "Tomada de voz do jogo ativa",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "Outra atividade está em andamento; agora não é possível abrir o minijogo",
         "INTERNAL_IMPORT_ERROR": "Falha ao carregar componente interno: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "Estrutura inválida da configuração local do personagem",
         "MEMORY_SERVER_RELEASE_FAILED": "Falha ao liberar handle de memória do personagem, tente novamente mais tarde",

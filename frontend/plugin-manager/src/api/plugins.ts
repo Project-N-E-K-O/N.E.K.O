@@ -1,7 +1,7 @@
 /**
  * 插件相关 API
  */
-import { del, get, post } from './index'
+import { del, get, post, put } from './index'
 import type { AxiosRequestConfig } from 'axios'
 import type { ErrorDisplayRequestConfig } from '@/utils/request'
 import { PLUGIN_LIFECYCLE_TIMEOUT, PLUGIN_RELOAD_ALL_TIMEOUT } from '@/utils/constants'
@@ -139,6 +139,17 @@ export function startPlugin(
 export function stopPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
   const safeId = encodeURIComponent(pluginId)
   return post(`/plugin/${safeId}/stop`)
+}
+
+/**
+ * 设置插件是否随宿主自动启动（只写偏好，不启停进程）
+ */
+export function setPluginAutoStart(
+  pluginId: string,
+  autoStart: boolean,
+): Promise<{ success: boolean; plugin_id: string; auto_start: boolean; message: string }> {
+  const safeId = encodeURIComponent(pluginId)
+  return put(`/plugin/${safeId}/auto-start`, { auto_start: autoStart })
 }
 
 /**

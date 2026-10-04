@@ -220,6 +220,38 @@ def _reset_game_sessions(request):
         yield
 
 
+def _reset_external_route_registry_to_import_state() -> None:
+    registry = sys.modules.get("utils.external_route_registry")
+    if registry is None:
+        return
+    registry._reset_for_tests()
+    game_router = sys.modules.get("main_routers.game_router")
+    register_game = getattr(game_router, "_register_external_route_kind", None)
+    if callable(register_game):
+        register_game()
+
+
+@pytest.fixture(autouse=True)
+def _restore_external_route_registry():
+    """Hold the external-route registry at its import-time state around every unit test.
+
+    Tests install fake kinds (or replace the ``game`` kind) to drive the
+    hijack points. The registry is process-global, so a fake ``is_active``
+    left behind would keep hijacking input in later tests. Rather than
+    restoring a snapshot, the registry is rebuilt from scratch before and
+    after each test: cleared, then the production kinds whose modules are
+    already imported register again (today only the game router). Resetting
+    on setup as well means a kind registered outside any test's own
+    setup/teardown window (e.g. by a coroutine the shared nested event loop
+    resumes late) cannot reach the next test either.
+    """
+    _reset_external_route_registry_to_import_state()
+    try:
+        yield
+    finally:
+        _reset_external_route_registry_to_import_state()
+
+
 @pytest.fixture(autouse=True)
 def _reset_icebreaker_routes(request):
     if not _needs_icebreaker_route_reset(request):
