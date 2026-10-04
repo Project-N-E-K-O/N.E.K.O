@@ -695,8 +695,8 @@ async def _handle_frame(
             # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
             if not _is_current(link, conn):
                 return
-            # 等 on_preflight 期间期限可能刚过：同样不为它领凭证，直接关掉
-            if _close_if_late(conn, session):
+            # 等 on_preflight 期间期限可能刚过（或查不了）：不为它领凭证，过期就直接关掉
+            if _close_if_late(conn, session) is not False:
                 return
             creds = await _call(session, "issue_credentials")
             if creds is None or creds is _HOOK_FAILED:
@@ -704,7 +704,10 @@ async def _handle_frame(
             if not isinstance(creds, Mapping) or creds.get("type") != "credentials" or creds.get("refresh"):
                 logger.warning("visit transport: issue_credentials returned a non-credentials message")
                 return
-            # 等凭证期间本连接可能已被顶掉：只发给本连接，被顶掉（closed）就不发
+            # 等凭证（Servers 往返）期间期限可能刚过：不发，否则 iframe 会带同一个 vid 先入房再被关，
+            # 打断对端的 peer_left 宽限。被顶掉（closed）的连接 _send_on 本身就不发
+            if _close_if_late(conn, session) is not False:
+                return
             await _send_on(conn, creds)
         elif stage == "sdk":
             if conn.sdk_seen or not conn.credentials_sent:
@@ -892,9 +895,8 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
     close_code = CLOSE_NORMAL
     close_reason = ""
     try:
-        # 重载期限已过才连回的页面：不再接它（预检、领凭证、入房都不做）
-        if conn.reattach and _reload_expired(link.session):
-            close_code, close_reason = CLOSE_UNKNOWN_VISIT, "page reload deadline passed"
+        # 重载期限已过才连回的页面：不再接它（预检、领凭证、入房都不做）；与帧入口同一条 4404 路径
+        if _close_if_late(conn, link.session):
             return
         while True:
             try:

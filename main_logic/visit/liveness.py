@@ -39,7 +39,9 @@ and polls ``tick(now)``, which returns the first verdict reached (sticky) or
   and room re-entry. A deadline that already passed is never moved. The
   last-send term (also in ``relay_lost``) applies only once the peer acked
   our ``hello`` (``on_hello_acked``, both sides): only then does its
-  heartbeat clock run on our messages.
+  heartbeat clock run on our messages. Before that a host bounds it by the
+  guest's own 30 s wait (latest room entry + 27 s) while that wait was still
+  running when the drop happened.
 * ``peer_left``: authenticated ``leave`` (after the ``seq`` gap is filled or
   ``VISIT_LEAVE_GAP_GRACE_S`` expires), or a vendor-level leave not undone
   within ``VISIT_PEER_REJOIN_GRACE_S``.
@@ -148,12 +150,17 @@ class VisitLiveness:
         """Host observed the peer entering the vendor room: extend the wait deadline.
 
         New deadline = ``max(deadline, now + VISIT_JOIN_ALLOWANCE_S)``; no
-        effect once the peer is verified or on the guest side.
+        effect once the peer is verified. Host only, also recorded as the
+        start of the guest's own 30 s wait for our ``hello`` (latest entry;
+        cleared by a vendor leave): until the guest acks our ``hello`` it
+        bounds the own-reconnect and page reload deadlines. No effect on the
+        guest side.
         """
-        if self.side == "host" and self.waiting:
+        if self.side != "host":
+            return
+        if self.waiting:
             self.wait_deadline = max(self.wait_deadline, now + self._join_allowance_s)
-        if self.side == "host" and self.peer_entered_at is None:
-            self.peer_entered_at = now
+        self.peer_entered_at = now
 
     def on_peer_verified(self, now: float) -> None:
         """The peer ``hello`` verified: leave the waiting state.
@@ -224,10 +231,10 @@ class VisitLiveness:
         if self.self_disconnected_at is None:
             return None
         deadline = self.self_disconnected_at + self._self_reconnect_s
-        death = self._peer_death_deadline()
+        death = self._peer_death_deadline(self.self_disconnected_at)
         return deadline if death is None else min(deadline, death)
 
-    def _peer_death_deadline(self) -> Optional[float]:
+    def _peer_death_deadline(self, since: float) -> Optional[float]:
         """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
 
         Shared by the own-reconnect deadline and the page reload deadline
@@ -245,7 +252,9 @@ class VisitLiveness:
         """
         if not self.hello_acked:
             if self.peer_entered_at is not None:  # 只有 host 记录
-                return self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
+                bound = self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
+                # 掉线 / 掉页（since）那一刻访客的等待已经过了：它已不在等，不再套这一项
+                return bound if bound > since else None
             return None
         if self.last_sent_at is None:
             return None
@@ -264,7 +273,7 @@ class VisitLiveness:
         if self.page_departed_at is None:
             return None
         deadline = self.page_departed_at + self._rejoin_grace_s - self._page_rejoin_safety_s
-        death = self._peer_death_deadline()
+        death = self._peer_death_deadline(self.page_departed_at)
         return deadline if death is None else min(deadline, death)
 
     def page_reload_state(self) -> tuple[Optional[float], Optional[float], bool]:
@@ -361,6 +370,8 @@ class VisitLiveness:
         """
         if self.peer_departed_at is None:
             self.peer_departed_at = now
+        # 离开的访客不再等本侧 hello：入房时刻那一项不再适用（再来会有新的 on_peer_entered）
+        self.peer_entered_at = None
 
     def on_peer_vendor_rejoined(self, now: float) -> None:
         """The same peer ``vid`` reappeared: clear any grace, restart the heartbeat clock.

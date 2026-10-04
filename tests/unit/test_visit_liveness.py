@@ -416,7 +416,6 @@ def test_host_bounds_a_reload_by_the_waiting_guests_own_clock():
     lv = VisitLiveness("host", 0.0)
     lv.on_message_sent(100.0)
     lv.on_peer_entered(500.0)
-    lv.on_peer_entered(510.0)  # 再次入房不挪基准
     lv.on_page_lost(502.0)
     lv.on_page_socket_back(504.0)
     lv.on_peer_verified(506.0)
@@ -441,3 +440,38 @@ def test_host_ack_tightens_a_reload_already_running():
     assert lv.page_deadline == 132.0  # 还没被 ack：只有离开 + 30
     lv.on_hello_acked(105.0)
     assert lv.page_deadline == 127.0  # min(132, 100 + 27)
+
+
+
+def test_host_entry_bound_only_while_that_guest_is_still_waiting():
+    # 回归（wehos 第十二轮）：访客 t=10 进过房、早已不在等，host t=100 掉页 / 断线不能当场判死
+    h = VisitLiveness("host", 0.0)
+    h.on_peer_entered(10.0)
+    h.on_page_lost(100.0)
+    assert h.page_deadline == 120.0
+    assert h.tick(100.0) is None
+    h2 = VisitLiveness("host", 0.0)
+    h2.on_peer_entered(10.0)
+    h2.on_self_disconnected(100.0)
+    assert h2.self_deadline() == 125.0
+    assert h2.tick(100.0) is None
+
+
+def test_host_entry_bound_uses_the_latest_entry_and_is_cleared_by_a_leave():
+    h = VisitLiveness("host", 0.0)
+    h.on_peer_entered(10.0)
+    h.on_peer_entered(90.0)  # 新的一次入房：访客重新开始等
+    h.on_page_lost(100.0)
+    assert h.page_deadline == 117.0  # min(120, 90 + 27)
+    h2 = VisitLiveness("host", 0.0)
+    h2.on_peer_entered(10.0)
+    h2.on_peer_vendor_left(20.0)  # 访客走了：不再等本侧 hello
+    h2.on_page_lost(25.0)
+    assert h2.page_deadline == 45.0  # 不是 37
+
+
+def test_host_entry_bound_applies_to_the_own_reconnect_too():
+    h = VisitLiveness("host", 0.0)
+    h.on_peer_entered(10.0)
+    h.on_self_disconnected(20.0)
+    assert h.self_deadline() == 37.0  # min(20 + 25, 10 + 27)

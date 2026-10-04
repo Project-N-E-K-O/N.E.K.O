@@ -2126,3 +2126,69 @@ def test_unhashable_reason_or_state_does_not_close_the_socket():
     # runtime 收到的是清洗后的 state
     assert s.states[-1]["state"] is None and not conn.closed
     assert tw._sdk_caps({"reason": ["x"]})["reason"] is None
+
+
+
+def test_credentials_are_not_sent_when_the_deadline_passes_during_the_issue():
+    import asyncio
+
+    class _ExpiresDuringIssue(FakeSession):
+        async def issue_credentials(self):
+            msg = await super().issue_credentials()
+            self.liveness.expired = True  # Servers 往返期间到期
+            return msg
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _ExpiresDuringIssue()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _RecordingWS()
+        conn = tw._attach(link, ws)
+        await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
+                                            "side": "guest", "preflight_ok": True,
+                                            "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
+        await asyncio.sleep(0.05)
+        return s, ws, conn
+
+    try:
+        s, ws, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 领到了但不发：否则 iframe 会带同一个 vid 先入房、再被关
+    assert s.issued == 1 and ws.sent == []
+    assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
+
+
+def test_unknown_deadline_after_preflight_issues_no_credentials():
+    import asyncio
+
+    class _BrokenAfterPreflight(FakeSession):
+        async def on_preflight(self, caps):
+            await super().on_preflight(caps)
+
+            def _boom(now):
+                raise RuntimeError("liveness broken")
+
+            self.liveness.page_expired = _boom
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _BrokenAfterPreflight()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _RecordingWS()
+        conn = tw._attach(link, ws)
+        await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
+                                            "side": "guest", "preflight_ok": True,
+                                            "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
+        return s, conn
+
+    try:
+        s, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 期限查不了：会提交副作用的领凭证一律不做（与重入同一口径）
+    assert s.issued == 0 and not conn.closed
