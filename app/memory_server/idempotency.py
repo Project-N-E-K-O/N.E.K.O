@@ -218,8 +218,14 @@ async def _update_json_object(
 async def read_key(lanlan_name: str, key: str) -> dict | None:
     """Return the current record of ``key`` (a copy), or ``None``."""
     data = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
-    record = data.get(key)
-    return dict(record) if isinstance(record, dict) else None
+    if key not in data:
+        return None
+    record = data[key]
+    if not isinstance(record, dict):
+        # 键在但记录不是对象：不能当作「没有这个键」——它可能原本是 cancelled，
+        # 重新生成会把已清除的记忆写回去。按记录损坏 fail closed
+        raise IdempotencyStateError(f"idempotency record of {key!r} is malformed")
+    return dict(record)
 
 
 async def update_key(

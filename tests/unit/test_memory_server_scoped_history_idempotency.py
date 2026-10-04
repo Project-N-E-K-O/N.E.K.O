@@ -330,7 +330,8 @@ async def test_crash_mid_apply_retry_skips_llm_and_applies_only_the_rest(env):
     texts = sorted(row["text"] for row in _facts_of(env, GP) + _facts_of(env, PART))
     assert texts == sorted(["团子喜欢晒太阳", "Mika 的猫下午在窗台睡觉", "Mika 想再来玩"])
     assert (GP_KEY, "团子") in env.persona.display_names
-    assert (PART_KEY, "Mika") in env.persona.display_names
+    # 从暂存恢复的重试不再盖显示名（可能已有更新的名字写入），留给下一批
+    assert (PART_KEY, "Mika") not in env.persona.display_names
     assert _key_state(env, KEY_SEGMENTS) == "done"
     assert not _staging_file(env, KEY_SEGMENTS).exists()
 
@@ -805,3 +806,51 @@ async def test_orphan_staging_gets_a_fingerprinted_record_before_apply(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(display_name=None, subject=PART))
     assert excinfo.value.status_code == 422
+
+
+
+async def test_same_key_with_different_content_is_rejected(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(display_name=None))
+    changed = _single_body(display_name=None, input_history=_history("完全不同的一批话"))
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, changed)
+    assert excinfo.value.status_code == 422
+    # 显示名不进内容哈希：同一批句子换了显示名重试照样是 duplicate
+    again = await _post(env, _single_body(display_name="新名字"))
+    assert again["duplicate"] is True
+
+
+async def test_pending_staging_rejects_a_retry_with_different_content(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    path = Path(env.idem.keys_path(NAME))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[KEY_GROUP].pop("request", None)            # 只剩暂存里的内容哈希可核对
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None, input_history=_history("另一批")))
+    assert excinfo.value.status_code == 422
+
+
+async def test_malformed_key_record_fails_closed(env):
+    path = Path(env.idem.keys_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({KEY_GROUP: None}), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503
+    assert env.llm.calls == 0 and _facts_of(env, GROUP) == []
+
+
+async def test_unreadable_active_facts_fail_the_keyed_apply(env):
+    env.llm.responses = [SINGLE_FACTS]
+    facts_path = Path(env.fs._facts_path(NAME))
+    facts_path.write_text("{torn", encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503
+    assert facts_path.read_text(encoding="utf-8") == "{torn"       # 没被覆盖

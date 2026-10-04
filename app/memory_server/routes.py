@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -2870,10 +2871,33 @@ def _keyed_duplicate_response(shape: str, contexts: list[dict]) -> dict:
     }
 
 
-def _keyed_staging_matches(staging: dict, shape: str, contexts: list[dict]) -> bool:
-    """Same key, same request: shape and per-position wire subjects agree."""
+def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
+    """Canonical hash of what a keyed request asks to be extracted.
+
+    Covers every ``input_history`` (by position) and ``subject_epochs``: the
+    fields that decide which facts are produced and whether they may land.
+    Display names / speaker labels are left out on purpose: they are
+    cosmetic set-to-value data a caller may legitimately refresh between
+    retries of the same batch.
+    """
+    histories = (
+        [req.input_history] if req.segments is None
+        else [segment.input_history for segment in req.segments]
+    )
+    payload = {"histories": histories, "subject_epochs": req.subject_epochs or {}}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _keyed_staging_matches(
+    staging: dict, shape: str, contexts: list[dict], request_hash: str | None = None,
+) -> bool:
+    """Same key, same request: shape, per-position wire subjects and content agree."""
     segments = staging.get("segments")
     if staging.get("shape") != shape or not isinstance(segments, list):
+        return False
+    stored_hash = staging.get("request_hash")
+    if request_hash is not None and stored_hash is not None and stored_hash != request_hash:
         return False
     if len(segments) != len(contexts):
         return False
@@ -3049,6 +3073,7 @@ async def _build_keyed_staging(
         # 只记诊断，绝不参与任何比较。
         "client_requested_at": req.client_requested_at,
         "created_at": time.time(),
+        "request_hash": _keyed_request_hash(req),
         "segments": segments,
         "items": items,
         "applied": [],
@@ -3165,6 +3190,10 @@ async def _apply_keyed_staging(
         request_epoch = epochs.get(segment.get("wire_key"), 0)
         if tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
             entry = {"seq": seq, "dropped_tombstone": True}
+        elif generations is None and item.get("kind") == _KEYED_ITEM_DISPLAY_NAME:
+            # 从暂存恢复的重试不再盖显示名：期间可能已有更新的写入改过它，
+            # 「置为暂存里的旧值」会把新名字盖回去。显示名只是装饰，下一批会再盖
+            entry = {"seq": seq, "skipped_stale_display_name": True}
         else:
             entry = await _apply_keyed_item(lanlan_name, item, segment, generation)
         applied.append(entry)
@@ -3261,6 +3290,7 @@ async def _process_scoped_history_keyed(
     fingerprint = {
         "shape": shape,
         "wire_keys": [context["wire_subject"].key for context in contexts],
+        "content_hash": _keyed_request_hash(req),
     }
     async with idempotency.key_lock(lanlan_name, key):
         try:
@@ -3286,7 +3316,7 @@ async def _process_scoped_history_keyed(
                 detail="idempotency state unreadable; retry later",
             ) from exc
         if staging is not None and not _keyed_staging_matches(
-            staging, shape, contexts,
+            staging, shape, contexts, fingerprint["content_hash"],
         ):
             raise HTTPException(
                 status_code=422,
