@@ -1950,3 +1950,45 @@ async def test_sealed_normal_end_is_not_resealed_as_crash(tmp_path):
     # 补录把 state 标成 crash，但上传文件里正常结束的原因原样上传，流水按残留删掉
     assert uploaded == doc and uploaded["request"]["finalized_reason"] == "wrap_up"
     assert not stream.exists()
+
+
+async def test_sealed_reason_must_match_a_definitive_state_reason(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    await seed_roster(tmp_path)
+    v = vid(92)
+    await make_visit(tmp_path, v, [ln(0)], finalized="peer_left")
+    records = _stream_records(v)
+    _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")   # 与 state 记的不一致
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # state 已记确定的结束原因：以它为准从流水重封
+    assert uploaded["request"]["finalized_reason"] == "peer_left"
+
+
+async def test_upload_progress_survives_an_undeletable_stale_stream(tmp_path, monkeypatch):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(93)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    sealed.write_text(json.dumps({**doc, "chunk_progress": {"next": 3}}), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def stubborn(self, missing_ok=False):
+        if self == stream:
+            raise PermissionError("locked by antivirus")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", stubborn)
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 上传回调写进文件的分片进度不算「与流水不一致」：不重封、不清零
+    assert uploaded["chunk_progress"] == {"next": 3}
+    assert json.loads(sealed.read_text(encoding="utf-8"))["chunk_progress"] == {"next": 3}

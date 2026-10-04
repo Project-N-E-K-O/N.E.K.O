@@ -628,15 +628,18 @@ async def _upload_pending(
                 sealed_doc = None
             belongs = _sealed_doc_belongs(sealed_doc, visit_id)
             if belongs:
-                # 整份文件都要与从流水重封出来的一致（信封、转录行、用量、时间戳）：缺行 / 改过的
-                # 文件替掉完整的流水，删了流水就再也重封不回来。结束原因不比、沿用文件里记的：
-                # 正常收口写完上传文件后、写 state.finalized 前崩溃时，本轮补录已先把 state 标成
-                # crash，拿它比会把正常结束的场次重封成 crash 上传
+                # 重封会产出的每个字段都要与文件一致（信封、转录行、用量、时间戳）：缺行 / 改过的
+                # 文件替掉完整的流水，删了流水就再也重封不回来。上传回调额外写进文件的分片进度
+                # 不在比较之列，否则删不掉流水时每次补录都会重封、把进度清零。
+                # 结束原因：state 记的是确定的原因时必须一致；state 读不出、或是 crash（正常收口
+                # 写完上传文件后、写 state.finalized 前崩溃，本轮补录先把它标成了 crash）时
+                # 沿用文件里记的，不把正常结束的场次重封成 crash
+                sealed_reason = sealed_doc["request"]["finalized_reason"]
                 expected = await asyncio.to_thread(
                     _stream_doc_sync, spool_dir, visit_id,
-                    sealed_doc["request"]["finalized_reason"], owner,
+                    sealed_reason if reason in (None, "crash") else reason, owner,
                 )
-                belongs = expected is None or expected == sealed_doc
+                belongs = expected is None or all(sealed_doc.get(name) == value for name, value in expected.items())
             if belongs:
                 try:
                     await asyncio.to_thread(stream.unlink, True)

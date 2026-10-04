@@ -35,6 +35,7 @@ are wired the account is unknown: the list is empty and changes answer
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -164,7 +165,19 @@ def local_visit_gate(request: Request, payload: dict | None = None) -> JSONRespo
 
 
 def _clean_uid(value: Any) -> str | None:
-    if isinstance(value, str) and value and len(value) <= _UID_MAX_LEN and value.isprintable():
+    # 首尾带空白（含全空白）的不收：黑名单会先 strip 再用，同一个人在清除与拉黑两边成了两个 id，
+    # 全空白的还会在 strip 后变成空串、让拉黑抛 500
+    if (
+        isinstance(value, str) and value and value == value.strip()
+        and len(value) <= _UID_MAX_LEN and value.isprintable()
+    ):
+        return value
+    return None
+
+
+def _finite_ts(value: Any) -> float | int | None:
+    # 名册是非严格读：NaN / Infinity 之类的坏时间戳序列化不了，会让整张列表 500
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         return value
     return None
 
@@ -255,7 +268,7 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
                     "peer_char_id": char_id,
                     "display_name": str(info.get("display_name") or ""),
                     "pair_id": pair_id,
-                    "last_visit_at": info.get("last_seen"),
+                    "last_visit_at": _finite_ts(info.get("last_seen")),
                     "fact_count": _count(counts, subject, "facts"),
                 })
         visits = entry.get("visits")
@@ -263,8 +276,8 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
             "peer_uid": peer_uid,
             "short_id": derive_short_code(peer_uid),
             "display_name": str(peer.get("display_name") or ""),
-            "first_seen": peer.get("first_seen"),
-            "last_seen": peer.get("last_seen"),
+            "first_seen": _finite_ts(peer.get("first_seen")),
+            "last_seen": _finite_ts(peer.get("last_seen")),
             "visits": visits if isinstance(visits, int) and not isinstance(visits, bool) else 0,
             "blocked": is_blocked(peer_uid),
             "fact_count": sum(_count(counts, s, "facts") for s in subjects),

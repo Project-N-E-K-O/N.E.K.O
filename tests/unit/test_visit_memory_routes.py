@@ -559,3 +559,33 @@ def test_rename_marker_of_another_character_does_not_block_forget(env):
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
     # 改名门槛只挡涉及那两个名字的清除
     assert resp.status_code == 200 and server.calls("scoped_forget")
+
+
+@pytest.mark.parametrize("peer_uid", [" ", "\u3000", f" {PEER_X}"])
+def test_blank_or_padded_peer_ids_are_rejected(env, peer_uid):
+    client, server, tmp_path, state = env
+    _seed(tmp_path)
+    resp = client.post("/api/visit/contacts/block", json={"peer_uid": peer_uid, "blocked": True}, headers=GOOD)
+    # 拉黑会先 strip：全空白的会变空串抛 500，带空白的会和清除成了两个 id
+    assert resp.status_code == 400 and state["blocked_calls"] == []
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": peer_uid}, headers=GOOD)
+    assert resp.status_code == 400 and server.requests == []
+
+
+def test_peers_survive_non_finite_timestamps(env):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    peer = data["accounts"][OWN_A]["peers"][PEER_X]
+    peer["first_seen"] = float("nan")
+    peer["last_seen"] = float("inf")
+    chars = peer["by_char"]["A"]["chars"]
+    chars[next(iter(chars))]["last_seen"] = float("-inf")
+    path.write_text(json.dumps(data), encoding="utf-8")         # 写出 NaN / Infinity 字面量
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    # 坏时间戳回 null，不让整张列表序列化失败
+    assert resp.status_code == 200
+    (row,) = resp.json()["peers"]
+    assert row["first_seen"] is None and row["last_seen"] is None
+    assert row["chars"][0]["last_visit_at"] is None
