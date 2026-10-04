@@ -1118,15 +1118,20 @@ async def test_unreadable_key_file_does_not_block_a_forget_with_staging(env):
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
 
-async def test_cleanup_keeps_unreadable_staging(env):
+@pytest.mark.parametrize("owner_state", ["pending", "done", None])
+async def test_cleanup_judges_unreadable_staging_by_its_filename_owner(env, owner_state):
     idem = env.idem
     now = time.time()
+    if owner_state is not None:
+        await idem.update_key(NAME, "torn-key", idem.transition(owner_state))
     path = Path(idem.staging_path(NAME, "torn-key"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{torn", encoding="utf-8")
     os.utime(path, (now - 500, now - 500))
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    assert report["staging_removed"] == 0 and path.exists()
+    # 按文件名反查到 pending 键就保留（它的唯一副本）；已终结或没有任何键记录的孤儿过期即删
+    kept = owner_state == "pending"
+    assert path.exists() is kept and report["staging_removed"] == (0 if kept else 1)
 
 
 async def test_unreadable_key_file_does_not_block_a_forget(env):
@@ -1213,24 +1218,30 @@ async def test_forget_of_one_segment_keeps_the_other_segments_for_retry(env, cra
     assert _key_state(env, KEY_SEGMENTS) == "done"
 
 
-async def test_recording_over_a_malformed_tombstone_fails_closed(env):
-    idem = env.idem
-    path = Path(idem.tombstones_path(NAME))
-    path.parent.mkdir(parents=True, exist_ok=True)
+async def test_forget_over_a_malformed_tombstone_erases_and_keeps_it(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    assert _facts_of(env, GROUP)
+    path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "9"}}), encoding="utf-8")
-    with pytest.raises(idem.IdempotencyStateError):
-        await idem.record_tombstones(NAME, [GROUP_KEY], 1)
-    # 坏的墓碑原样留着，不被较低的代数覆盖
+    result = await _forget(env, GROUP, forget_epoch=1)
+    # 坏墓碑不挡清除：照常擦除
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    # 也不被较低的代数覆盖：原样留着（读路径对它 fail closed）
     assert json.loads(path.read_text(encoding="utf-8")) == {GROUP_KEY: {"forget_epoch": "9"}}
+    with pytest.raises(env.idem.IdempotencyStateError):
+        env.idem.tombstone_epoch(await env.idem.read_tombstones(NAME), [GROUP_KEY])
 
 
-async def test_cleanup_keeps_staging_whose_embedded_key_is_not_its_own(env):
+@pytest.mark.parametrize("owner_state", ["pending", "done"])
+async def test_cleanup_judges_staging_by_its_filename_not_its_embedded_key(env, owner_state):
     idem = env.idem
     now = time.time()
-    await idem.update_key(NAME, "key-a", idem.transition("pending"))
+    await idem.update_key(NAME, "key-a", idem.transition(owner_state))
     path = Path(idem.staging_path(NAME, "key-a"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    # key-a 的暂存文件里键被改成了 key-b（key-b 没有 pending 记录）
+    # key-a 的暂存文件里键被改成了 key-b（key-b 没有任何记录）
     path.write_text(json.dumps({"key": "key-b", "subjects": [], "created_at": now - 500}), encoding="utf-8")
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
-    assert report["staging_removed"] == 0 and path.exists()
+    kept = owner_state == "pending"
+    assert path.exists() is kept and report["staging_removed"] == (0 if kept else 1)

@@ -389,9 +389,11 @@ async def record_tombstones(
                 or isinstance(current_epoch, bool)
                 or current_epoch < 0
             ):
-                # 与读路径同口径：墓碑在但内容坏了，原值可能是更高的围栏，不能用这次
-                # 较低的代数覆盖掉
-                raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
+                # 墓碑在但内容坏了：原值可能是更高的围栏，不能用这次较低的代数覆盖掉；
+                # 也不能因此挡住这次清除（擦除照常进行）。原样留着它：读路径对它
+                # fail closed，这个 subject 的带键写入在修好之前一律 503
+                logger.warning(f"[Idempotency] {lanlan_name}: 墓碑 {subject_key!r} 内容损坏，保留不覆盖")
+                continue
             if (
                 isinstance(current_epoch, int)
                 and not isinstance(current_epoch, bool)
@@ -475,6 +477,14 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
     if not await asyncio.to_thread(os.path.isdir, _character_dir(name)):
         return
     try:
+        # 按文件名反查它属于哪个键：文件名是键的摘要，内容里的键可能坏了 / 被改过，
+        # 只有键记录能说明这份暂存还是不是某个 pending 键唯一的副本
+        records = await asyncio.to_thread(_read_json_object, keys_path(name))
+        owner_of_path = {
+            os.path.normcase(os.path.abspath(staging_path(name, key))): key
+            for key in records
+            if isinstance(key, str) and key
+        }
         for path, document, mtime in await list_staging(name):
             created = (
                 document.get("created_at") if isinstance(document, dict) else None
@@ -486,27 +496,23 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
             )
             if age_anchor >= cutoff:
                 continue
-            key = document.get("key") if isinstance(document, dict) else None
-            if (
-                isinstance(key, str) and key
-                and os.path.normcase(os.path.abspath(staging_path(name, key)))
-                == os.path.normcase(os.path.abspath(path))
-            ):
-                # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
-                async with key_lock(name, key):
-                    record = await read_key(name, key)
-                    if record is not None and record.get("state") == KEY_STATE_PENDING:
-                        # pending 键的暂存是已生成产物与应用进度的唯一副本：删了重试
-                        # 只能重新生成，序号对不上的 effect_key 会挡错事实、漏掉没应用的
-                        continue
-                    if await asyncio.to_thread(_remove_file, path):
-                        report["staging_removed"] += 1
-            else:
-                # 读不出 / 没有键 / 内容里的键与文件名对不上的暂存：文件名只是键的摘要，
-                # 查不到它真正的键记录，可能正是
-                # 某个 pending 键唯一的产物与进度副本。不按过期删；同键重试读它会
-                # fail closed，而不是当作没有暂存去重新生成
-                logger.warning(f"[Idempotency] {name}: 暂存 {os.path.basename(path)} 读不出，保留")
+            key = owner_of_path.get(os.path.normcase(os.path.abspath(path)))
+            if key is None:
+                # 没有任何键记录对应这个文件（孤儿：读不出、内嵌键坏了也一样）：不是任何
+                # pending 键的副本，过期即删，抽取原文不长期留在磁盘上
+                if await asyncio.to_thread(_remove_file, path):
+                    report["staging_removed"] += 1
+                continue
+            # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
+            async with key_lock(name, key):
+                record = await read_key(name, key)
+                if record is not None and record.get("state") == KEY_STATE_PENDING:
+                    # pending 键的暂存是已生成产物与应用进度的唯一副本（读不出 / 内嵌键
+                    # 坏了也一样：同键重试读它会 fail closed）：删了重试只能重新生成，
+                    # 序号对不上的 effect_key 会挡错事实、漏掉没应用的
+                    continue
+                if await asyncio.to_thread(_remove_file, path):
+                    report["staging_removed"] += 1
     except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
         logger.warning(f"[Idempotency] {name}: 暂存清理失败（跳过）: {exc}")
     try:
