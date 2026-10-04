@@ -615,6 +615,9 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                 wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
                 if isinstance(wire_keys, list):
                     protected.update(str(k) for k in wire_keys)
+                routed = record.get("routed_keys")
+                if isinstance(routed, list):
+                    protected.update(str(k) for k in routed)
 
         def _drop_expired(data: dict) -> bool:
             for subject_key, row in list(data.items()):

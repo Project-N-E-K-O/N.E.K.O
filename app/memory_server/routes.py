@@ -3325,6 +3325,9 @@ async def _process_scoped_history_keyed(
         "wire_keys": [context["wire_subject"].key for context in contexts],
         "content_hash": _keyed_request_hash(req),
     }
+    # 路由后实际写入的 subject 单独记在 pending 记录上（不进请求身份：路由关系在重试
+    # 之间可能变化）。暂存还没写成时，清除只能靠它认出经路由写到被清 subject 的键
+    routed_keys = sorted({context["subject"].key for context in contexts})
     async with idempotency.key_lock(lanlan_name, key):
         try:
             record = await idempotency.read_key(lanlan_name, key)
@@ -3386,6 +3389,7 @@ async def _process_scoped_history_keyed(
                         idempotency.KEY_STATE_PENDING,
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
+                        routed_keys=routed_keys,
                     ),
                 )
             except MaintenanceModeError:
@@ -3428,6 +3432,7 @@ async def _process_scoped_history_keyed(
                         idempotency.KEY_STATE_PENDING,
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
+                        routed_keys=routed_keys,
                     ),
                 )
                 await idempotency.write_staging(lanlan_name, key, staging)
@@ -3746,6 +3751,8 @@ async def _cancel_staged_writes_for_subjects(
         request = record.get("request")
         wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
         wire_keys = [str(k) for k in wire_keys] if isinstance(wire_keys, list) else []
+        routed = record.get("routed_keys")
+        wire_keys += [str(k) for k in routed] if isinstance(routed, list) else []
         # 上面的暂存扫描只是快照，之后才写成的暂存可能经路由写到被清的 subject，记录里
         # 却只有 wire key：有暂存就按它记下的全部 subject（wire + 路由后）匹配，没有暂存
         # 才退回只看 wire key。先不拿锁预读一次筛掉无关的键——无关请求可能正持着自己的

@@ -1381,3 +1381,27 @@ async def test_forget_is_not_blocked_by_an_unrelated_key_holding_its_lock(env):
             env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY}), timeout=2,
         )
     assert cancelled == 0 and _key_state(env, "unrelated") == "pending"
+
+
+async def test_pending_record_keeps_routed_subjects_for_forget_without_staging(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    records = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
+    # 路由后实际写入的 subject 单独记在 pending 记录上，不进请求身份
+    assert records[KEY_GROUP]["routed_keys"] == [GROUP_KEY]
+    assert "routed_keys" not in records[KEY_GROUP]["request"]
+
+
+async def test_record_pass_matches_routed_keys_when_staging_is_not_written_yet(env):
+    idem = env.idem
+    await idem.update_key(NAME, KEY_GROUP, idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+        routed_keys=["participant:neko_visit:routed-person"],
+    ))
+    # 暂存还没写成：只能靠记录里的路由后 subject 认出它
+    cancelled = await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {"participant:neko_visit:routed-person"},
+    )
+    assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
