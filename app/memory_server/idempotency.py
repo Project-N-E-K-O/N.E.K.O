@@ -424,8 +424,12 @@ async def cleanup_expired(
 
     Key records are never touched (``done`` / ``cancelled`` / ``pending`` are
     kept forever), and the staging of a ``pending`` key is kept too: it is
-    the only copy of the generated products and of the apply progress. Best-effort per character: one unreadable file is logged
-    and skipped, never aborts the sweep.
+    the only copy of the generated products and of the apply progress; so
+    are the tombstones of subjects such a staging document references.
+    Characters being released (rename / delete draining) are skipped through
+    the same lifecycle admission the write endpoints use. Best-effort per
+    character: one unreadable file is logged and skipped, never aborts the
+    sweep.
     """
     if ttl_s is None:
         from config import MEMORY_IDEMPOTENCY_TTL_S
@@ -434,54 +438,18 @@ async def cleanup_expired(
     current = time.time() if now is None else float(now)
     cutoff = current - float(ttl_s)
     report = {"staging_removed": 0, "tombstones_removed": 0}
+    from . import runtime
+
     for name in lanlan_names:
+        # 与写端点同一套角色生命周期准入：删除 / 改名正在排空时不碰这个角色，
+        # 否则写回墓碑文件会把刚删掉的角色目录重新建出来
+        lease = runtime._begin_character_request(name)
+        if lease is None:
+            continue
         try:
-            for path, document, mtime in await list_staging(name):
-                created = (
-                    document.get("created_at") if isinstance(document, dict) else None
-                )
-                age_anchor = (
-                    float(created)
-                    if isinstance(created, (int, float)) and not isinstance(created, bool)
-                    else mtime
-                )
-                if age_anchor >= cutoff:
-                    continue
-                key = document.get("key") if isinstance(document, dict) else None
-                if isinstance(key, str) and key:
-                    # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
-                    async with key_lock(name, key):
-                        record = await read_key(name, key)
-                        if record is not None and record.get("state") == KEY_STATE_PENDING:
-                            # pending 键的暂存是已生成产物与应用进度的唯一副本：删了重试
-                            # 只能重新生成，序号对不上的 effect_key 会挡错事实、漏掉没应用的
-                            continue
-                        if await asyncio.to_thread(_remove_file, path):
-                            report["staging_removed"] += 1
-                elif await asyncio.to_thread(_remove_file, path):
-                    report["staging_removed"] += 1
-        except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
-            logger.warning(f"[Idempotency] {name}: 暂存清理失败（跳过）: {exc}")
-        try:
-            removed: list[str] = []
-
-            def _drop_expired(data: dict) -> bool:
-                for subject_key, row in list(data.items()):
-                    stamp = row.get("forgotten_at") if isinstance(row, dict) else None
-                    if (
-                        isinstance(stamp, (int, float))
-                        and not isinstance(stamp, bool)
-                        and stamp < cutoff
-                    ):
-                        data.pop(subject_key, None)
-                        removed.append(subject_key)
-                return bool(removed)
-
-            if await asyncio.to_thread(os.path.exists, tombstones_path(name)):
-                await _update_json_object(name, tombstones_path(name), _drop_expired)
-            report["tombstones_removed"] += len(removed)
-        except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
-            logger.warning(f"[Idempotency] {name}: 墓碑清理失败（跳过）: {exc}")
+            await _cleanup_one(name, cutoff, report)
+        finally:
+            runtime._end_character_request(name, lease)
     if report["staging_removed"] or report["tombstones_removed"]:
         logger.info(
             "[Idempotency] 启动清理：暂存 %d、墓碑 %d",
@@ -489,3 +457,68 @@ async def cleanup_expired(
             report["tombstones_removed"],
         )
     return report
+
+
+async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
+    protected: set[str] = set()
+    if not await asyncio.to_thread(os.path.isdir, _character_dir(name)):
+        return
+    try:
+        for path, document, mtime in await list_staging(name):
+            created = (
+                document.get("created_at") if isinstance(document, dict) else None
+            )
+            age_anchor = (
+                float(created)
+                if isinstance(created, (int, float)) and not isinstance(created, bool)
+                else mtime
+            )
+            if age_anchor >= cutoff:
+                continue
+            key = document.get("key") if isinstance(document, dict) else None
+            if isinstance(key, str) and key:
+                # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
+                async with key_lock(name, key):
+                    record = await read_key(name, key)
+                    if record is not None and record.get("state") == KEY_STATE_PENDING:
+                        # pending 键的暂存是已生成产物与应用进度的唯一副本：删了重试
+                        # 只能重新生成，序号对不上的 effect_key 会挡错事实、漏掉没应用的
+                        continue
+                    if await asyncio.to_thread(_remove_file, path):
+                        report["staging_removed"] += 1
+            elif await asyncio.to_thread(_remove_file, path):
+                report["staging_removed"] += 1
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
+        logger.warning(f"[Idempotency] {name}: 暂存清理失败（跳过）: {exc}")
+    try:
+        removed: list[str] = []
+
+        # 还被保留着的暂存（pending）引用的 subject：它们的墓碑是「这份暂存早于清除」
+        # 的唯一持久证据，不能先于暂存过期
+        for _path, document, _mtime in await list_staging(name):
+            protected.update(_staged_subjects(document))
+
+        def _drop_expired(data: dict) -> bool:
+            for subject_key, row in list(data.items()):
+                if subject_key in protected:
+                    continue
+                stamp = row.get("forgotten_at") if isinstance(row, dict) else None
+                if (
+                    isinstance(stamp, (int, float))
+                    and not isinstance(stamp, bool)
+                    and stamp < cutoff
+                ):
+                    data.pop(subject_key, None)
+                    removed.append(subject_key)
+            return bool(removed)
+
+        if await asyncio.to_thread(os.path.exists, tombstones_path(name)):
+            await _update_json_object(name, tombstones_path(name), _drop_expired)
+        report["tombstones_removed"] += len(removed)
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
+        logger.warning(f"[Idempotency] {name}: 墓碑清理失败（跳过）: {exc}")
+
+
+def _staged_subjects(document: Any) -> set[str]:
+    subjects = document.get("subjects") if isinstance(document, dict) else None
+    return {str(s) for s in subjects} if isinstance(subjects, list) else set()

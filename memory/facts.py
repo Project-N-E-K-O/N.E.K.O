@@ -580,15 +580,16 @@ class FactStore:
     async def aload_facts_full(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.load_facts_full, name)
 
-    def _assert_active_facts_readable(self, name: str) -> None:
+    def _assert_active_facts_readable(self, name: str) -> int:
         """Raise ``RuntimeError`` when ``facts.json`` exists but is not a readable JSON list.
 
         Keyed scoped writes only: the lenient loader caches an unreadable
         active pool as empty, and saving on top of that would erase it.
+        Returns the number of rows on disk (0 when the file is absent).
         """
         path = self._facts_path(name)
         if not os.path.exists(path):
-            return
+            return 0
         try:
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
@@ -596,6 +597,7 @@ class FactStore:
             raise RuntimeError(f"facts of {name!r} unreadable: {e}") from e
         if not isinstance(data, list):
             raise RuntimeError(f"facts of {name!r} is not a list")
+        return len(data)
 
     def _read_archived_effect_keys(self, name: str) -> set[str]:
         """Effect keys stamped on archived rows (keyed scoped writes only).
@@ -3683,6 +3685,12 @@ class FactStore:
                 f"existing_speaker={existing_speaker_id or '-'} "
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
+        if effect_keys is not None:
+            # 带键写入：先严格核对磁盘，再从磁盘出发。宽松加载器曾把读不出的文件缓存成
+            # 空列表；文件修好后缓存仍是空的，照它保存会把修好的事实整个覆盖掉
+            on_disk = await asyncio.to_thread(self._assert_active_facts_readable, lanlan_name)
+            if on_disk and not self._facts.get(lanlan_name):
+                self._facts.pop(lanlan_name, None)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3704,9 +3712,6 @@ class FactStore:
         # + 归档里已出现过的 effect_key。不传时完全不读归档、不建集合。
         existing_effect_keys: set[str] | None = None
         if effect_keys is not None:
-            # 带键写入不能从「读不出就当空」的缓存出发：save_facts 会把坏掉的
-            # facts.json 整个覆盖成只剩这一批，已有事实全部丢失。先严格核对磁盘
-            await asyncio.to_thread(self._assert_active_facts_readable, lanlan_name)
             existing_effect_keys = {
                 f['effect_key'] for f in existing_facts
                 if isinstance(f, dict) and isinstance(f.get('effect_key'), str)

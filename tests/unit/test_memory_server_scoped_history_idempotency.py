@@ -868,3 +868,61 @@ async def test_staged_retry_stamps_the_current_request_display_name_not_the_stal
     assert result["status"] == "processed"
     assert (GROUP_KEY, "新群名") in env.persona.display_names
     assert (GROUP_KEY, "旧群名") not in env.persona.display_names
+
+
+# ── review round 6 ────────────────────────────────────────────────────────
+
+async def test_forget_epoch_is_not_copied_onto_fanout_subjects(env):
+    linked = MemorySubject.create(PART["subject_kind"], PART["subject_id"])
+    original = env.routes._forget_fanout_targets
+
+    def fanout(subject):
+        return list(original(subject)) + [linked]
+
+    env.monkeypatch.setattr(env.routes, "_forget_fanout_targets", fanout)
+    await _forget(env, GROUP, forget_epoch=7)
+    tombstones = json.loads(Path(env.idem.tombstones_path(NAME)).read_text(encoding="utf-8"))
+    assert set(tombstones) == {GROUP_KEY}
+
+
+async def test_same_key_in_another_language_is_rejected(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(display_name=None, language="zh"))
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None, language="en"))
+    assert excinfo.value.status_code == 422
+
+
+async def test_repaired_facts_file_is_not_overwritten_by_a_stale_empty_cache(env):
+    facts_path = Path(env.fs._facts_path(NAME))
+    facts_path.write_text("{torn", encoding="utf-8")
+    assert await env.fs.aload_facts(NAME) == []            # 宽松加载器把坏文件缓存成空
+    kept = {"id": "kept-1", "text": "修好的旧事实", "importance": 6, "hash": "h-kept",
+            **{k: v for k, v in GROUP.items()}, "scope": f"{GROUP['subject_kind']}:{GROUP['subject_id']}"}
+    facts_path.write_text(json.dumps([kept], ensure_ascii=False), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(display_name=None))
+    on_disk = json.loads(facts_path.read_text(encoding="utf-8"))
+    assert "kept-1" in {row.get("id") for row in on_disk}
+
+
+async def test_tombstones_referenced_by_pending_staging_do_not_expire(env):
+    idem = env.idem
+    now = time.time()
+    await idem.write_staging(NAME, "k-pending", {"key": "k-pending", "subjects": ["a:kept"],
+                                                 "created_at": now - 500})
+    await idem.update_key(NAME, "k-pending", idem.transition("pending"))
+    await idem.record_tombstones(NAME, ["a:kept"], 2, now=now - 500)
+    await idem.record_tombstones(NAME, ["a:gone"], 2, now=now - 500)
+    await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert set(await idem.read_tombstones(NAME)) == {"a:kept"}
+
+
+async def test_startup_cleanup_skips_a_character_being_released(env):
+    idem = env.idem
+    now = time.time()
+    await idem.record_tombstones(NAME, ["a:old"], 1, now=now - 500)
+    env.monkeypatch.setattr(env.runtime, "_begin_character_request", lambda name: None)
+    report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert report == {"staging_removed": 0, "tombstones_removed": 0}
+    assert set(await idem.read_tombstones(NAME)) == {"a:old"}

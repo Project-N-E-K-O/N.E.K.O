@@ -2874,8 +2874,9 @@ def _keyed_duplicate_response(shape: str, contexts: list[dict]) -> dict:
 def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
     """Canonical hash of what a keyed request asks to be extracted.
 
-    Covers every ``input_history`` (by position) and ``subject_epochs``: the
-    fields that decide which facts are produced and whether they may land.
+    Covers every ``input_history`` (by position), ``subject_epochs`` and
+    ``language``: the fields that decide which facts and locale state are
+    produced and whether they may land.
     Display names / speaker labels are left out on purpose: they are
     cosmetic set-to-value data a caller may legitimately refresh between
     retries of the same batch.
@@ -2884,7 +2885,12 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
         [req.input_history] if req.segments is None
         else [segment.input_history for segment in req.segments]
     )
-    payload = {"histories": histories, "subject_epochs": req.subject_epochs or {}}
+    payload = {
+        "histories": histories,
+        "subject_epochs": req.subject_epochs or {},
+        # 语言决定抽取语境与暂存里的语言状态项，同属会改变效果的字段
+        "language": req.language,
+    }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -3631,8 +3637,11 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         from . import idempotency
 
         try:
+            # 代数只属于请求里这个 subject（客户端按 MemorySubject.key 各自计数）：
+            # 不抄给扇出的关联 subject，否则它们自己较小的代数会被永久挡下。
+            # 扇出目标上在飞的写入由事实存储的 forget generation 兜住
             await idempotency.record_tombstones(
-                lanlan_name, forgotten_subject_keys, req.forget_epoch,
+                lanlan_name, {subject.key}, req.forget_epoch,
             )
         except MaintenanceModeError:
             raise
