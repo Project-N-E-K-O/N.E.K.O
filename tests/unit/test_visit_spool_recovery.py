@@ -1646,8 +1646,21 @@ async def test_corrupt_state_of_a_wiped_visit_of_this_character_is_dropped(tmp_p
     wiped.state_path.write_text("{torn", encoding="utf-8")     # 之后 state.json 又坏了
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 谁都用不了的坏 state 不再让这个角色的清除永远卡住；查找只跳过它、不删文件
-    assert outcome.done and wiped.state_path.exists()
+    # 谁都用不了的坏 state 不再让这个角色的清除永远卡住，并由抹身份步骤删掉（不留残余身份）
+    assert outcome.done and not wiped.state_path.exists()
+
+
+async def test_lookup_alone_never_deletes_a_corrupt_state(tmp_path):
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import derive_pair_id as _pair
+
+    await seed_roster(tmp_path)
+    wiped = await make_visit(tmp_path, vid(79), [ln(0)], finalized="wrap_up")
+    await wiped.delete_peer_fields()
+    wiped.state_path.write_text("{torn", encoding="utf-8")
+    found = await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, [_pair(OWN_A, PEER_Y)])
+    # 查找（开场交接也调用）只跳过、不删
+    assert found == [] and wiped.state_path.exists()
 
 
 async def test_malformed_rename_marker_is_dropped(tmp_path):

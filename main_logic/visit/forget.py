@@ -867,11 +867,16 @@ async def run_revocation(
         elif step == STEP_REMOVE_CHAR:
             await roster.remove_char(peer_uid, char_name)
         elif step == STEP_WIPE_SPOOL:
+            corrupt_wiped: list[str] = []
             visit_ids = await VisitSpool.find_visits_for_pairs(
-                log.config_dir, record["own_char_uid"], record["pair_ids"]
+                log.config_dir, record["own_char_uid"], record["pair_ids"], corrupt_wiped=corrupt_wiped,
             )
             for visit_id in visit_ids:
                 await VisitSpool(log.config_dir, visit_id).delete_peer_fields()
+            for visit_id in corrupt_wiped:
+                # 头行身份已抹、state.json 内容损坏（可能崩在抹身份的两步之间）：谁都用不了，
+                # 连同里面可能残留的对端字段一并删掉，清除报完成时本地不留身份
+                await VisitSpool.drop_corrupt_state(log.config_dir, visit_id)
         elif step == STEP_VOID_PENDING:
             # 必填：缺省时静默记完成会让暂存的日记事实 / 预览在清除后照样被提交
             await void_pending(copy.deepcopy(record))

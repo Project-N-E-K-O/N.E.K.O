@@ -1424,7 +1424,8 @@ class VisitSpool:
 
     @classmethod
     def _find_visits_sync(
-        cls, config_dir: Path, own_char_uid: str, pair_ids: frozenset[str]
+        cls, config_dir: Path, own_char_uid: str, pair_ids: frozenset[str],
+        corrupt_wiped: list[str] | None = None,
     ) -> list[str]:
         spool_dir = _spool_dir(config_dir)
         found = []
@@ -1466,10 +1467,12 @@ class VisitSpool:
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
             ):
                 if state_corrupt and header is not None:
-                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这场属于某个之前已被
-                    # 清除的人，不会是这次要找的这一对；这份 state 谁都用不了，跳过它，不让
-                    # 这个角色之后每一次清除都卡死。这里是查找（开场交接也调用），不删任何
-                    # 文件；坏 state 里可能残留的字段随场次按 7 天回收
+                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这份 state 谁都用不了，
+                    # 不能让这个角色之后每一次清除都卡死。这里只是查找（开场交接也调用），
+                    # 不删任何文件；单独报给调用方，由清除的抹身份步骤把它（连同可能残留
+                    # 的对端字段）删掉
+                    if corrupt_wiped is not None:
+                        corrupt_wiped.append(visit_id)
                     continue
                 unreadable.append(visit_id)
         if unreadable:
@@ -1478,7 +1481,8 @@ class VisitSpool:
 
     @classmethod
     async def find_visits_for_pairs(
-        cls, config_dir: str | Path, own_char_uid: str, pair_ids: Iterable[str]
+        cls, config_dir: str | Path, own_char_uid: str, pair_ids: Iterable[str],
+        *, corrupt_wiped: list[str] | None = None,
     ) -> list[str]:
         """Return visit ids of ``own_char_uid`` whose state or header still names one of ``pair_ids``.
 
@@ -1489,8 +1493,24 @@ class VisitSpool:
         pending instead of silently missing that visit).
         """
         return await asyncio.to_thread(
-            cls._find_visits_sync, Path(config_dir), own_char_uid, frozenset(pair_ids)
+            cls._find_visits_sync, Path(config_dir), own_char_uid, frozenset(pair_ids), corrupt_wiped,
         )
+
+    @classmethod
+    async def drop_corrupt_state(cls, config_dir: str | Path, visit_id: str) -> None:
+        """Delete a content-corrupt ``state.json`` (unusable by anyone) during a forget."""
+        path = visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX)
+
+        def drop() -> None:
+            try:
+                _read_state_file(path)
+            except ValueError:
+                # 仍是坏的才删：期间被重写成好的就交给常规流程
+                path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+
+        await asyncio.to_thread(drop)
 
     @classmethod
     def _sweep_sync(cls, config_dir: Path, now: float) -> list[Path]:
