@@ -477,8 +477,16 @@ async def last_summary_handoff(
             continue
         if state is None or state["last_summary_done"]:
             continue
-        if state["finalized"] is None and is_live is None:
-            continue
+        if state["finalized"] is None:
+            if is_live is None:
+                continue
+            # 已确认不在飞、却没收口：上次崩溃、补录还没跑到它。先照补录的口径标成 crash
+            # （芯片由补录照常补弹），摘要的收口闸才放行——它不会对在飞场次的半截转录生成
+            try:
+                await spool.update_state(finalized="crash")
+            except Exception as exc:  # noqa: BLE001 - 标不上就不替它生成，等补录
+                logger.warning("visit last-summary handoff: cannot mark %s crashed: %r", visit_id, exc)
+                continue
         waits.append(track_last_summary(visit_id, start_summary(spool)))
     if waits:
         await asyncio.gather(*(asyncio.shield(w) for w in waits), return_exceptions=True)
