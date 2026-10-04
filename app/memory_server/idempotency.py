@@ -68,6 +68,7 @@ KEY_STATE_PENDING = "pending"
 KEY_STATE_DONE = "done"
 KEY_STATE_CANCELLED = "cancelled"
 TERMINAL_KEY_STATES = frozenset({KEY_STATE_DONE, KEY_STATE_CANCELLED})
+_KNOWN_KEY_STATES = frozenset({KEY_STATE_PENDING}) | TERMINAL_KEY_STATES
 
 STAGING_STATE_GENERATED = "generated"
 
@@ -221,9 +222,9 @@ async def read_key(lanlan_name: str, key: str) -> dict | None:
     if key not in data:
         return None
     record = data[key]
-    if not isinstance(record, dict):
-        # 键在但记录不是对象：不能当作「没有这个键」——它可能原本是 cancelled，
-        # 重新生成会把已清除的记忆写回去。按记录损坏 fail closed
+    if not isinstance(record, dict) or record.get("state") not in _KNOWN_KEY_STATES:
+        # 键在但记录不是对象、或状态缺失 / 不认识：不能当作「没有这个键」或「未完成」——
+        # 它可能原本是 done / cancelled，重新生成会把已完成或已清除的产物再写一遍
         raise IdempotencyStateError(f"idempotency record of {key!r} is malformed")
     return dict(record)
 
@@ -497,6 +498,18 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
         # 的唯一持久证据，不能先于暂存过期
         for _path, document, _mtime in await list_staging(name):
             protected.update(_staged_subjects(document))
+        # 先记 pending、后写暂存：崩在两步之间的 pending 键没有暂存，清除也取消不了它，
+        # 它的请求 subject 的墓碑同样是唯一的证据
+        try:
+            records = await asyncio.to_thread(_read_json_object, keys_path(name))
+        except Exception:  # noqa: BLE001 - 读不出键记录就不删任何墓碑
+            return
+        for record in records.values():
+            if isinstance(record, dict) and record.get("state") == KEY_STATE_PENDING:
+                request = record.get("request")
+                wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
+                if isinstance(wire_keys, list):
+                    protected.update(str(k) for k in wire_keys)
 
         def _drop_expired(data: dict) -> bool:
             for subject_key, row in list(data.items()):

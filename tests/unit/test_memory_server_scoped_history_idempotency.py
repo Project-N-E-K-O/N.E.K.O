@@ -1005,3 +1005,35 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
         await _post(env, _single_body(display_name=None))
     result = await _post(env, _single_body(display_name=None))
     assert result["created"] == 0 and _facts_of(env, GROUP) == []
+
+
+# ── review round 9 ────────────────────────────────────────────────────────
+
+async def test_key_record_with_unknown_state_fails_closed(env):
+    path = Path(env.idem.keys_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({KEY_GROUP: {"written_at": 1.0}}), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503 and env.llm.calls == 0
+
+
+async def test_pending_key_without_staging_protects_its_tombstone(env):
+    idem = env.idem
+    now = time.time()
+    await idem.update_key(NAME, KEY_GROUP, idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"}))
+    await idem.record_tombstones(NAME, [GROUP_KEY], 2, now=now - 500)
+    await idem.record_tombstones(NAME, ["a:gone"], 2, now=now - 500)
+    await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert set(await idem.read_tombstones(NAME)) == {GROUP_KEY}
+
+
+async def test_tombstones_are_compared_on_the_wire_key_only(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    assert [seg["tombstone_keys"] for seg in staging["segments"]] == [[GROUP_KEY]]

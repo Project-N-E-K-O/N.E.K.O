@@ -3040,7 +3040,9 @@ async def _build_keyed_staging(
     for index, context in enumerate(contexts):
         wire_key = context["wire_subject"].key
         routed_key = context["subject"].key
-        tombstone_keys = [wire_key] + ([routed_key] if routed_key != wire_key else [])
+        # 墓碑只按请求自己的 wire key 比：请求代数属于这个 key 的代数域，混入
+        # 路由后 key 的墓碑会拿两个互不相关的计数器作比较
+        tombstone_keys = [wire_key]
         subject_keys.update(tombstone_keys)
         segments.append({
             "wire_key": wire_key,
@@ -3940,10 +3942,18 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             return None
         return fid
 
+    def _identity(fact: dict):
+        # 与事实层的完整身份同口径：(id, subject_kind, subject_id, scope)；
+        # 不同 subject / scope 恰好重用同一个裸 id 时不能互相吞掉
+        fid = _fact_id(fact)
+        if fid is None:
+            return None
+        return (fid, fact.get("subject_kind"), fact.get("subject_id"), fact.get("scope"))
+
     active_fact_ids = {
-        _fact_id(fact)
+        _identity(fact)
         for fact in active_facts
-        if isinstance(fact, dict) and _fact_id(fact) is not None
+        if isinstance(fact, dict) and _identity(fact) is not None
     }
     # 与 load_facts_full 同口径按 id 去重：归档先写 facts_archive.json、后改
     # facts.json，两步之间中断时同一条事实会暂时同时出现在两份文件里
@@ -3953,7 +3963,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     facts_full = active_rows + [
         fact for fact in archived_facts
         if isinstance(fact, dict)
-        and (_fact_id(fact) is None or _fact_id(fact) not in active_fact_ids)
+        and (_identity(fact) is None or _identity(fact) not in active_fact_ids)
     ]
     reflections_path = os.path.join(character_dir, "reflections.json")
     reflections = PersistenceMixin._filter_reflections(
