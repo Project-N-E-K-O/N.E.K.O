@@ -1770,7 +1770,8 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
 
 @pytest.mark.parametrize("damage", [
     "destination_scope", "tombstone_keys_emptied", "epochs_raised", "request_hash_removed",
-    "applied_facts_without_evidence", "applied_facts_drop_marker_typo", "locale_order_string",
+    "applied_facts_without_evidence", "applied_facts_drop_marker_typo", "applied_facts_empty_ids",
+    "locale_order_string",
     "locale_language_unsupported",
 ])
 async def test_more_journal_damage_fails_closed(env, damage):
@@ -1795,6 +1796,12 @@ async def test_more_journal_damage_fails_closed(env, damage):
         facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
         staging["applied"] = [{"seq": facts_seq} if e["seq"] == facts_seq else e for e in staging["applied"]]
         assert any(e == {"seq": facts_seq} for e in staging["applied"])
+    elif damage == "applied_facts_empty_ids":
+        # 空的 fact_ids 也是合法结果：只凭它不能证明这一项应用过
+        facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
+        staging["applied"] = [
+            {"seq": facts_seq, "fact_ids": []} if e["seq"] == facts_seq else e for e in staging["applied"]
+        ]
     elif damage == "applied_facts_drop_marker_typo":
         # 名字像丢弃标记、但不是本模块写的那几个：不能当成完成证据
         facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
@@ -1939,7 +1946,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
 
 
 @pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object",
-                                    "applied_scalar_entry"])
+                                    "applied_scalar_entry", "applied_bad_seq"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1959,6 +1966,8 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "applied_bad_seq":
+        staging["applied"].append({"seq": "bad"})               # 对象，但序号坏了
     elif damage == "applied_scalar_entry":
         staging["applied"].append(7)                             # 已应用记录里混进一个标量
     elif damage == "items_empty_object":
@@ -2211,3 +2220,59 @@ async def test_retry_after_a_failed_generation_reuses_the_reserved_locale_order(
     locale = next(item for item in staging["items"] if item["kind"] == "locale")
     # 生成失败后的同键重试沿用第一次预留的序号，不拿更新的序号把旧请求往后排
     assert locale["order"] == first_order
+
+
+async def test_malformed_locale_reservation_fails_closed(env):
+    env.llm.responses = [RuntimeError("LLM failed"), SINGLE_FACTS]
+    with pytest.raises(RuntimeError):
+        await _post(env, _single_body(language="zh"))
+
+    def damage(old):
+        return {**old, "locale_orders": ["bad"]}
+
+    await env.idem.update_key(NAME, KEY_GROUP, damage)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(language="zh"))
+    # 已有的预留坏了：不能另分一批记不上的新序号、每次重试都把旧请求往后排
+    assert excinfo.value.status_code == 503 and env.llm.calls == 1
+
+
+async def test_fenced_segment_does_not_move_the_trust_pool(env):
+    captured = []
+    real = env.routes._apply_trust_for_segments
+
+    async def capture(states):
+        captured.append(list(states))
+        return await real(states)
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", capture)
+    await _forget(env, GROUP, forget_epoch=5)                   # 清除之后才到的旧请求（代数 0）
+    env.llm.responses = [SINGLE_FACTS]
+    body = _single_body(
+        speaker_label="Mika", speaker_id="neko_visit:5f2c1b7e", speaker_tier="none",
+        speaker_activity_events=[{"id": "evt-00001", "count": 1}],
+    )
+    await _post(env, body)
+    # 记忆被墓碑挡下的段，它的 activity 也不能进信赖池
+    (states,) = captured
+    assert env.routes._trust_mutation_for(states[0]) is None
+    assert _facts_of(env, GROUP) == []
+
+
+async def test_duplicate_forget_still_cancels_a_late_pre_forget_staging(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _forget(env, GROUP, forget_epoch=5)                   # 原擦除已完成
+    real_apply = env.routes._apply_keyed_staging
+
+    async def crash(*_args, **_kwargs):
+        raise RuntimeError("process killed before applying")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())                        # 之后才到的清除前请求：落了暂存就崩
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    assert _staging_file(env, KEY_GROUP).exists()
+    result = await _forget(env, GROUP, forget_epoch=5)          # 重放同一代数的清除
+    # 不再擦存储（duplicate），但残留的明文暂存照常取消，不会被 TTL 清理永久保护
+    assert result.get("duplicate") is True
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
