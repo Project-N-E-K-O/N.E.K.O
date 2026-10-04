@@ -13,6 +13,7 @@ services:
       - |
         echo "开始初始化 N.E.K.O 运行环境..."
         mkdir -p /host-dir/neko-home /host-dir/logs /host-dir/nginx
+        # 权限对齐到容器内的 neko 用户（通常 UID 为 1000）
         chown -R 1000:1000 /host-dir/neko-home /host-dir/logs /host-dir/nginx || true
         echo "初始化完成！环境已就绪。"
     volumes:
@@ -21,6 +22,7 @@ services:
       - neko-network
 
   neko-main:
+    # 默认：加速代理 + 完整版（国内强烈推荐，免去首次启动下载 Chromium 卡死）
     image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full}
     # 选项1：加速代理 + 标准版
     # image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
@@ -33,6 +35,7 @@ services:
         condition: service_completed_successfully
     environment:
       - TZ=Asia/Shanghai
+      # 防止空 nginx 目录覆盖镜像默认配置
       - NEKO_KEEP_CUSTOM_NGINX_CONF=1
       # 如果需要外网域名访问，取消下方注释并填入你的域名/IP
       # - NEKO_TRUSTED_HOSTS=your-domain.duckdns.org
@@ -59,21 +62,26 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        # 1. 写入真正的高强度自愈看门狗脚本
         mkdir -p /host-opt/neko
         cat > /host-opt/neko/watchdog.sh <<'WATCHDOG_EOF'
         #!/bin/bash
         LOG_FILE="/var/log/neko-watchdog.log"
-        FAIL_COUNT_FILE="/tmp/neko_fail_count"
+        FAIL_COUNT_FILE="/opt/neko/neko_fail_count"
         
         IS_HEALTHY=false
         
+        # 第一层检查：容器进程是否存活
         if docker inspect -f '{{.State.Running}}' neko 2>/dev/null | grep -q "true"; then
+            # 第二层检查：应用端口 48911 是否真的响应 HTTP 请求
             if command -v curl &> /dev/null; then
-                HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 http://127.0.0.1:48911)
+                # 修复：加了 || echo "000" 防止 curl 超时后仍返回旧状态码
+                HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 http://127.0.0.1:48911 || echo "000")
                 if [ "$$HTTP_CODE" = "200" ] || [ "$$HTTP_CODE" = "302" ] || [ "$$HTTP_CODE" = "403" ]; then
                     IS_HEALTHY=true
                 fi
             else
+                # 如果没有 curl，退回 Bash 原生的 /dev/tcp 探测端口（不需要任何外部依赖）
                 if timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/48911" 2>/dev/null; then
                     IS_HEALTHY=true
                 fi
@@ -81,10 +89,12 @@ services:
         fi
         
         if [ "$$IS_HEALTHY" = true ]; then
+            # 健康，清空失败计数并退出
             rm -f $$FAIL_COUNT_FILE
             exit 0
         fi
         
+        # 失败处理逻辑
         FAIL_COUNT=$$(cat $$FAIL_COUNT_FILE 2>/dev/null || echo 0)
         FAIL_COUNT=$$((FAIL_COUNT + 1))
         echo $$FAIL_COUNT > $$FAIL_COUNT_FILE
@@ -102,6 +112,7 @@ services:
         WATCHDOG_EOF
         chmod +x /host-opt/neko/watchdog.sh
         
+        # 2. 写入宿主 cron 任务（每5分钟一次）
         cat > /host-cron.d/neko-watchdog <<'CRON_EOF'
         */5 * * * * root /opt/neko/watchdog.sh
         CRON_EOF
@@ -116,4 +127,4 @@ services:
 
 networks:
   neko-network:
-    driver: bridge
+    driver: bridgege
