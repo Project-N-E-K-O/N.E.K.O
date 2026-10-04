@@ -654,3 +654,14 @@ async def test_transcript_of_another_identity_is_neither_digested_nor_summarized
     assert not await _summarize(spool, llm)
     # 不能把这份转录的摘要存到 state 那个角色名下
     assert await roster.get_last_summary(PEER_X, "A") is None
+
+
+async def test_digest_sends_the_recorded_transcript_language(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    lang = (await spool.read_back()).header["lang"]
+    server = FakeMemoryServer()
+    assert (await _commit(spool, server)).ok
+    group, segments = server.calls("scoped_history")[:2]
+    # 抽取语境与语言状态按转录记录时定格的语言，而不是补录时的当前界面语言
+    assert group["language"] == lang and segments["language"] == lang

@@ -708,3 +708,18 @@ async def test_duplicate_answer_of_a_completed_key_counts_as_done():
     async with http:
         assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, idempotency_key="k")
         assert (await client.post_history_batch("Lanlan", segments=[segment], idempotency_key="k")).ok
+
+
+@pytest.mark.asyncio
+async def test_history_language_is_sent_only_when_supported():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    async with http:
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, language="ja")
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, language="xx-bogus")
+        await client.post_history_batch("Lanlan", segments=[segment], language="ja")
+    plain, single, bogus, batch = (json.loads(r.content) for r in recorder.requests)
+    assert "language" not in plain and "language" not in bogus
+    assert single["language"] == "ja" and batch["language"] == "ja"

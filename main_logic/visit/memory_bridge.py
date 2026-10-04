@@ -319,6 +319,8 @@ async def post_visit_digest(
             name, subject=subject, messages=messages,
             idempotency_key=idempotency_key, client_requested_at=client_requested_at,
             subject_epochs=dict(subject_epochs) if subject_epochs is not None else None,
+            # 转录记录时定格的语言：抽取语境与语言状态都按它，而不是补录时的当前界面语言
+            language=lang,
         ),
         shutdown=shutdown, failed=False,
     )
@@ -345,6 +347,7 @@ async def post_visit_segments(
     idempotency_key: str,
     client_requested_at: float,
     subject_epochs: Mapping[str, int] | None = None,
+    lang: str | None = None,
     shutdown: bool = False,
     client: ScopedMemoryClient | None = None,
 ) -> bool:
@@ -399,6 +402,7 @@ async def post_visit_segments(
             name, segments=segments,
             idempotency_key=idempotency_key, client_requested_at=client_requested_at,
             subject_epochs=dict(subject_epochs) if subject_epochs is not None else None,
+            language=lang,
         ),
         shutdown=shutdown, failed=False,
     )

@@ -393,11 +393,14 @@ class ScopedMemoryClient:
         speaker_id: str | None = None,
         speaker_is_owner: bool = False,
         display_name: str | None = None,
+        language: str | None = None,
     ) -> bool:
         """Extract scoped facts from one subject's history batch.
 
         The single-subject shape of ``/scoped_history``. The speaker fields
         follow the QQ reference: each is sent only when it carries a value.
+        ``language`` (the language the history was recorded in) is sent only
+        when it is a supported code, like ``scoped_context``.
         """
         body: dict[str, Any] = {
             "input_history": _encode_history(messages),
@@ -417,6 +420,8 @@ class ScopedMemoryClient:
             body["speaker_is_owner"] = True
         if display_name:
             body["display_name"] = display_name
+        if is_supported_language_code(language):
+            body["language"] = language
         _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,
@@ -447,6 +452,7 @@ class ScopedMemoryClient:
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
         subject_epochs: dict[str, int] | None = None,
+        language: str | None = None,
     ) -> ScopedBatchResult:
         """Extract facts for several single-speaker segments in one call.
 
@@ -468,6 +474,9 @@ class ScopedMemoryClient:
             raise ValueError("post_history_batch needs at least one segment")
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
+        # 同单条形状：只在是受支持的语言码时才上线（批次共用一个 language）
+        if is_supported_language_code(language):
+            body["language"] = language
         _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,

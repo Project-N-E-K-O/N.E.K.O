@@ -406,7 +406,7 @@ async def _commit_locked(
             peer_human_display=human_display, lines=batch,
             idempotency_key=digest_key(spool.visit_id, run, "segments", b),
             client_requested_at=requested_at,
-            subject_epochs=_epochs_for(epochs, subjects[1:]),
+            subject_epochs=_epochs_for(epochs, subjects[1:]), lang=lang,
             shutdown=shutdown, client=client,
         )
         if not ok:
