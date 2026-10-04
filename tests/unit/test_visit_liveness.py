@@ -429,3 +429,15 @@ def test_guest_side_ignores_peer_entered_for_the_death_term():
     lv.on_page_lost(6.0)
     lv.on_page_socket_back(7.0)
     assert lv.page_deadline == 36.0
+
+
+
+def test_host_ack_tightens_a_reload_already_running():
+    lv = VisitLiveness("host", 0.0)
+    lv.on_peer_verified(1.0)
+    lv.on_message_sent(100.0)
+    lv.on_page_lost(102.0)
+    lv.on_page_socket_back(104.0)
+    assert lv.page_deadline == 132.0  # 还没被 ack：只有离开 + 30
+    lv.on_hello_acked(105.0)
+    assert lv.page_deadline == 127.0  # min(132, 100 + 27)

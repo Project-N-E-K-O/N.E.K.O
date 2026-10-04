@@ -186,10 +186,9 @@ class VisitLiveness:
         cumulative ack (triggered by a retransmitted ``hello``) must not re-arm
         the wait of an already active visit.
         """
-        if not self.hello_acked:
-            self.hello_acked = True
-            if self.page_deadline is not None and not self.page_expired(now):
-                self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
+        self.hello_acked = True
+        if self.page_deadline is not None and not self.page_expired(now):
+            self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
         if self.side == "guest" and self.ready_deadline is None and not self.ready_received:
             self.ready_deadline = now + self._ready_wait_s
 
@@ -238,6 +237,11 @@ class VisitLiveness:
         not counting yet (``None``); a host's guest waits 30 s from its own
         room join for our ``hello``, approximated by the first time we saw it
         enter (an earlier bound than any message of ours it could have seen).
+        The ack lags the peer's clock: it is in flight, or (before the peer
+        verified our ``hello`` it drops everything else) waits for the next
+        ``hello`` retransmission. For up to one retransmission backoff the
+        guest side runs without this term, i.e. without the 3 s margin; the
+        host side keeps the room-entry bound meanwhile.
         """
         if not self.hello_acked:
             if self.peer_entered_at is not None:  # 只有 host 记录
