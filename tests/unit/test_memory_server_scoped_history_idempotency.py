@@ -1421,10 +1421,10 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
     gate, reached = asyncio.Event(), asyncio.Event()
     real_mark = env.idem.mark_tombstone_erased
 
-    async def slow_mark(*args):
+    async def slow_mark(*args, **kwargs):
         reached.set()
         await gate.wait()        # 较新的清除已擦完、放了擦除锁，还没记完成标记
-        return await real_mark(*args)
+        return await real_mark(*args, **kwargs)
 
     env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", slow_mark)
     newer = asyncio.create_task(_forget(env, GROUP, forget_epoch=20))
@@ -1922,7 +1922,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
     assert path.exists() and report["staging_removed"] == 0
 
 
-@pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar"])
+@pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1942,6 +1942,8 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "items_empty_object":
+        staging["items"] = {}                                    # 假值：不能经 `or []` 当成空列表放过
     else:
         staging["items"].append(7)
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
@@ -1987,3 +1989,26 @@ async def test_restored_journal_missing_its_display_item_is_completed_from_the_r
     # 用重试请求带的显示名补回这一项，不能就此收尾、永久漏掉
     assert result["created"] == 2 and _key_state(env, KEY_GROUP) == "done"
     assert (GROUP_KEY, "串门群") in env.persona.display_names
+
+
+async def test_damaged_erased_marker_never_skips_a_forget(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    path = Path(env.idem.tombstones_path(NAME))
+    path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "bad", "erased_epoch": 999}}), encoding="utf-8")
+    with pytest.raises(HTTPException):
+        await _forget(env, GROUP, forget_epoch=5)
+    # 围栏坏了的行上的完成标记不算数：照常擦除，不当成已擦过回 duplicate
+    assert _facts_of(env, GROUP) == []
+    assert env.idem.erased_epoch({GROUP_KEY: {"forget_epoch": 3, "erased_epoch": 4}}, GROUP_KEY) is None
+
+
+async def test_erase_behind_a_higher_fence_marks_that_fence_erased(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    # 更新的清除（代数 9）已立起墓碑、还没擦就失败了
+    await env.idem.record_tombstones(NAME, {GROUP_KEY}, 9)
+    result = await _forget(env, GROUP, forget_epoch=4)
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    # 这次擦除在代数 9 的围栏之后进行：一并记为擦到 9，代数 9 的重试不再擦掉之后的合法写入
+    assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 9

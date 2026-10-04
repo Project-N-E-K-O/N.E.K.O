@@ -3948,7 +3948,9 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
     if not affected or len(affected) == len(segments):
         return False
     applied = document.setdefault("applied", [])
-    items = document.get("items") or []
+    # 先看原值再补缺省：{} / "" 之类假值经 `or []` 会被当成空列表放过，坏日志就被原样写回
+    items = document.get("items")
+    items = [] if items is None else items
     if (
         not isinstance(applied, list) or not isinstance(items, list)
         or not all(isinstance(item, dict) for item in items)
@@ -3998,7 +4000,8 @@ def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
     if not affected:
         return
     applied = document.setdefault("applied", [])
-    items = document.get("items") or []
+    items = document.get("items")
+    items = [] if items is None else items
     if not isinstance(applied, list) or not isinstance(items, list):
         raise ValueError("staging journal is malformed")
     done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
@@ -4384,6 +4387,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         # 代数、墓碑、已擦标记都按 kind:id 记：非默认 scope 带代数会让同一 key 的另一个
         # scope 被当成「已擦过」跳过（漏删）。带代数的清除只用于默认 scope
         raise HTTPException(status_code=422, detail="forget_epoch requires the default subject scope")
+    fence_at_start = None
     if req.forget_epoch is not None:
         # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
         # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
@@ -4394,9 +4398,13 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             # 代数只属于请求里这个 subject（客户端按 MemorySubject.key 各自计数）：
             # 不抄给扇出的关联 subject，否则它们自己较小的代数会被永久挡下。
             # 扇出目标上在飞的写入由事实存储的 forget generation 兜住
-            await idempotency.record_tombstones(
+            recorded = await idempotency.record_tombstones(
                 lanlan_name, {subject.key}, req.forget_epoch,
             )
+            # 擦除开始前已在位的围栏（更新的清除可能已抬高它、却没擦就失败了）：本次擦除
+            # 在它之后进行，完成时一并记为已擦到这个代数
+            fence_row = recorded.get(subject.key) if isinstance(recorded, dict) else None
+            fence_at_start = fence_row.get("forget_epoch") if isinstance(fence_row, dict) else None
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -4567,7 +4575,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
 
         try:
             # 擦除与两遍取消都完成之后才记「这个代数擦完了」
-            await idempotency.mark_tombstone_erased(lanlan_name, subject.key, req.forget_epoch)
+            await idempotency.mark_tombstone_erased(
+                lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
+            )
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:

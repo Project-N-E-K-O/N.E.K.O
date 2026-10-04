@@ -478,14 +478,22 @@ async def record_tombstones(
     )
 
 
-async def mark_tombstone_erased(lanlan_name: str, subject_key: str, forget_epoch: int) -> None:
+async def mark_tombstone_erased(
+    lanlan_name: str, subject_key: str, forget_epoch: int, *, covered_epoch: int | None = None,
+) -> None:
     """Record that the erase of ``forget_epoch`` for ``subject_key`` completed (monotonic).
 
     The tombstone is written BEFORE the erase, so it alone does not prove the
     erase finished; this marker does, and lets a replayed or stale forget of
     an epoch at or below it skip re-erasing writes made after it.
+
+    ``covered_epoch`` is the tombstone fence already in place before this
+    erase started (a newer forget may have raised it and then failed before
+    erasing). The erase ran behind that fence, so it completes that epoch too.
     """
     epoch = int(forget_epoch)
+    if isinstance(covered_epoch, int) and not isinstance(covered_epoch, bool) and covered_epoch > epoch:
+        epoch = covered_epoch
 
     def _mutate(data: dict) -> bool:
         row = data.get(subject_key)
@@ -511,11 +519,23 @@ async def mark_tombstone_erased(lanlan_name: str, subject_key: str, forget_epoch
     await _update_json_object(lanlan_name, tombstones_path(lanlan_name), _mutate)
 
 
+def _non_negative_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def erased_epoch(tombstones: dict, subject_key: str) -> int | None:
-    """Highest forget epoch whose erase completed for ``subject_key`` (None when unknown)."""
+    """Highest forget epoch whose erase completed for ``subject_key`` (None when unknown).
+
+    Only a well-formed row counts: the fence must be valid and the marker may
+    not exceed it. A damaged row must never let a forget be skipped.
+    """
     row = tombstones.get(subject_key)
-    value = row.get("erased_epoch") if isinstance(row, dict) else None
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    if not isinstance(row, dict):
+        return None
+    fence, value = row.get("forget_epoch"), row.get("erased_epoch")
+    if not _non_negative_int(fence) or not _non_negative_int(value) or value > fence:
+        return None
+    return value
 
 
 def tombstone_epoch(tombstones: dict, subject_keys: Iterable[str]) -> int | None:
