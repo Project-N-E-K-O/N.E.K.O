@@ -799,6 +799,76 @@ async def test_host_cancel_retries_network_errors(servers, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_host_cancel_stops_when_the_account_changes(servers, monkeypatch):
+    sessions = iter(["u1", "u2"])
+
+    async def _session():
+        return cr._ServersSession(base_url=BASE, access_token=BEARER, client_id="client-1", account=next(sessions))
+
+    async def _sleep(d):
+        return None
+
+    monkeypatch.setattr(cr, "_servers_session", _session)
+    monkeypatch.setattr(cr, "_sleep", _sleep)
+    # 第一次 503，退避期间换了账号：第二次不能以新账号去取消（403 invite_invalid 会被误判成功）
+    servers.scripted["/api/visit/rooms/"] = [(503, {}), (403, {"code": "invite_invalid"})]
+    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=time.time() + 500)
+    assert servers.count("/cancel") == 1
+
+
+@pytest.mark.asyncio
+async def test_host_cancel_refuses_a_different_account_from_the_start(servers):
+    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=time.time() + 500, account="someone-else")
+    assert servers.count("/cancel") == 0
+    creds = await _host()
+    assert creds.account == "u1"
+    assert await cr.cancel_visit_room(VISIT_ID, invite_expires_at=creds.invite_expires_at, account=creds.account)
+
+
+@pytest.mark.asyncio
+async def test_host_cancel_deadline_is_capped_by_the_invite_lifetime(servers, monkeypatch):
+    clock = [time.time()]
+    patch_module_clock(monkeypatch, cr, time=lambda: clock[0])
+
+    async def _sleep(d):
+        clock[0] += d
+
+    monkeypatch.setattr(cr, "_sleep", _sleep)
+    servers.scripted["/api/visit/rooms/"] = [(503, {})] * 1000
+    start = clock[0]
+    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=start + 10 * 86400)
+    assert clock[0] - start <= vs.VISIT_INVITE_CODE_TTL_S + vs.VISIT_TICKET_CLOCK_TOLERANCE_S
+
+
+@pytest.mark.asyncio
+async def test_far_future_invite_expiry_is_rejected(servers):
+    original = servers._credentials
+
+    def _far(body):
+        data = original(body).json()
+        data["invite_expires_at"] = time.time() + 86400
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _far
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+
+
+@pytest.mark.asyncio
+async def test_trtc_app_id_must_survive_json_numbers(servers):
+    original = servers._credentials
+
+    def _huge(body):
+        data = original(body).json()
+        data["vendor"]["trtc"]["sdk_app_id"] = 2 ** 53 + 1
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _huge
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status,code", [(409, "guest_joined"), (403, "invite_invalid")])
 async def test_host_cancel_done_replies(servers, status, code):
     servers.scripted["/api/visit/rooms/"] = [(status, {"code": code})]

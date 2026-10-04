@@ -474,6 +474,9 @@ def _is_current(link: _Link, conn: _Connection) -> bool:
 async def _handle_frame(
     link: _Link, conn: _Connection, msg: dict[str, Any], nbytes: int, visit_id: str, side: str,
 ) -> None:
+    # 被顶掉（4409）或场次已注销的连接，后续帧一概不交给 runtime
+    if not _is_current(link, conn):
+        return
     session = link.session
     kind = msg.get("type")
     if kind == "caps":

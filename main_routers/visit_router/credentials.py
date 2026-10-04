@@ -127,6 +127,7 @@ _PUBKEYS_TIMEOUT_S = 5.0
 # 非强制刷新失败后的最小重试间隔：拉不到时不要每次核验都打一遍 Servers。
 _PUBKEYS_RETRY_MIN_S = 30.0
 _CANCEL_BACKOFF_S = (1, 2, 4, 8)
+_JS_MAX_SAFE_INT = 2 ** 53 - 1
 _REGION_WAIT_S = 1.5
 _DISPLAY_NAME_MAX_CHARS = 64
 # vendor 凭证字段上限：留够实际长度（UserSig / privateMapKey 数百字节、LiveKit JWT 约 1 KB），
@@ -547,6 +548,8 @@ class VisitCredentials:
     invite_expires_at: Optional[float] = None
     cross_region: bool = False
     entitlement: Optional[Mapping[str, Any]] = None
+    account: str = ""
+    """Community ``local_user_id`` that fetched these credentials (owns the room side)."""
 
     def vendor_remaining_s(self, now: float) -> float:
         """Seconds left on the vendor grant (negative once expired)."""
@@ -589,7 +592,8 @@ def _grant_ttl_ok(value: Any) -> bool:
 def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
     _need(isinstance(raw, Mapping), "vendor.trtc")
     sdk_app_id = raw.get("sdk_app_id")
-    _need(type(sdk_app_id) is int and sdk_app_id > 0, "vendor.trtc.sdk_app_id")
+    # 下行经 JSON 给 iframe：超出 JS 安全整数会被 JSON.parse 改值
+    _need(type(sdk_app_id) is int and 0 < sdk_app_id <= _JS_MAX_SAFE_INT, "vendor.trtc.sdk_app_id")
     user_id = raw.get("user_id")
     _need(isinstance(user_id, str) and _TRTC_USER_ID_RE.fullmatch(user_id) is not None, "vendor.trtc.user_id")
     _need(user_id == vid, "vendor.trtc.user_id")
@@ -630,7 +634,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
 
 
 def _parse_credentials(
-    payload: Any, *, role: str, visit_id: str, char_tag: str, now: float,
+    payload: Any, *, role: str, visit_id: str, char_tag: str, now: float, account: str = "",
 ) -> VisitCredentials:
     _need(isinstance(payload, Mapping), "body")
     transport = payload.get("transport")
@@ -703,6 +707,9 @@ def _parse_credentials(
             _need(isinstance(invite_code, str) and INVITE_CODE_RE.fullmatch(invite_code) is not None,
                   "invite_code")
             _need(_finite(invite_expires_at), "invite_expires_at")
+            # 邀请只活 10 min：更远的到期时刻是坏响应（取消重试的截止时刻以它为准）
+            _need(invite_expires_at - now <= VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
+                  "invite_expires_at")
 
     cross_region = payload.get("cross_region", False)
     _need(isinstance(cross_region, bool), "cross_region")
@@ -727,6 +734,7 @@ def _parse_credentials(
         invite_expires_at=float(invite_expires_at) if invite_expires_at is not None else None,
         cross_region=cross_region,
         entitlement=entitlement,
+        account=account,
     )
 
 
@@ -794,6 +802,7 @@ async def fetch_visit_credentials(
     try:
         return _parse_credentials(
             _body_json(resp), role=role, visit_id=visit_id, char_tag=char_tag, now=time.time(),
+            account=session.account,
         )
     except _BadResponse as exc:
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
@@ -903,8 +912,15 @@ async def cancel_visit_room(
     visit_id: str,
     *,
     invite_expires_at: float | None = None,
+    account: str | None = None,
 ) -> bool:
     """``POST /api/visit/rooms/{visit_id}/cancel`` until done or the invite expires.
+
+    Every attempt must authenticate as the account that created the room
+    (``account`` = ``VisitCredentials.account``; when omitted, the account
+    of the first attempt is pinned). If the user switched accounts in
+    between, the retries stop: another account cannot cancel the room and
+    its ``403 invite_invalid`` would be misread as success.
 
     Called in the background by the host runtime when it ends a visit before
     the peer ``hello`` verified (phase ``pending / invite_ready / joining``).
@@ -915,14 +931,19 @@ async def cancel_visit_room(
     False when it gave up (expired, logged out, uncontracted reply).
     """
     require_visit_id(visit_id)
-    deadline = (
-        float(invite_expires_at) if invite_expires_at is not None
-        else time.time() + VISIT_INVITE_CODE_TTL_S
-    )
+    # 截止时刻再夹一道上限：无论传进来什么，最多重试到「现在 + 邀请有效期 + 容差」
+    latest = time.time() + VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S
+    deadline = min(float(invite_expires_at), latest) if invite_expires_at is not None else latest
+    pinned = account or None
     delays = itertools.chain(_CANCEL_BACKOFF_S, itertools.repeat(_CANCEL_BACKOFF_S[-1]))
     while True:
         try:
             session = await _servers_session()
+            if pinned is None:
+                pinned = session.account
+            elif session.account != pinned:
+                logger.warning("visit servers cancel: community account changed, invite left to expire")
+                return False
             resp = await _send(
                 "POST",
                 f"{session.base_url}/api/visit/rooms/{visit_id}/cancel",

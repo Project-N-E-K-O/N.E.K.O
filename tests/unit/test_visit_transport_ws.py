@@ -607,6 +607,31 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
     assert old_ws.sent == [] and old_ws.closed_with == tw.CLOSE_SUPERSEDED
 
 
+def test_frames_of_a_replaced_connection_never_reach_the_runtime():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        old = tw._Connection(websocket=_RecordingWS(), reattach=False)
+        new = tw._Connection(websocket=_RecordingWS(), reattach=True)
+        link.conn = new
+        await old.close(tw.CLOSE_SUPERSEDED, "superseded")
+        await tw._handle_frame(link, old, {"type": "state", "state": "kicked", "peer_present": False,
+                                           "remote_video": False, "vendor_reason": "kick"}, 10, VISIT_ID, "guest")
+        await tw._handle_frame(link, old, {"type": "recv", "from_vid": PEER_VID, "cmd": 2,
+                                           "payload": {"t": "text"}}, 10, VISIT_ID, "guest")
+        return s
+
+    try:
+        s = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert s.states == [] and s.recvs == []
+
+
 def test_superseding_a_live_socket_pauses_the_outbox_until_the_new_iframe_rejoins(app, session):
     client = _client(app)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
