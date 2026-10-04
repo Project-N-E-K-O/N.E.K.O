@@ -489,6 +489,159 @@ def test_vendor_grant_never_reaches_the_logs(app, session, caplog):
     assert USER_SIG not in caplog.text
 
 
+class GatedSession(FakeSession):
+    """``issue_credentials`` calls listed in ``hold_issue`` wait until released.
+
+    Each issued ``credentials`` carries its call number in ``expires_at`` so a
+    test can tell which call's message reached which socket.
+    """
+
+    def __init__(self, *, hold_issue=()) -> None:
+        super().__init__()
+        self.hold_issue = set(hold_issue)
+        self.gates: dict = {}
+        self.oversize_first = False
+
+    async def _wait(self, key):
+        import asyncio
+
+        self.gates[key] = asyncio.Event()
+        await self.gates[key].wait()
+
+    async def issue_credentials(self):
+        self.issued += 1
+        n = self.issued
+        if n in self.hold_issue:
+            await self._wait(("issue", n))
+        msg = tw.build_credentials_message(_creds(self.side), side=self.side, crop="upper", codec="vp9")
+        msg["expires_at"] = float(n)
+        if self.oversize_first and n == 1:
+            msg["pad"] = "x" * tw.CREDENTIALS_MAX_BYTES
+        return msg
+
+
+def _release(s, key):
+    async def _go():
+        s.gates[key].set()
+    return _go
+
+
+def _wait_gate(ws, s, key):
+    for _ in range(200):
+        if ws.portal.call(_has_gate, s, key):
+            return
+        import time as _t
+        _t.sleep(0.01)
+    raise AssertionError(f"gate {key} never reached")
+
+
+async def _has_gate(s, key):
+    return key in s.gates
+
+
+class _RecordingWS:
+    """Stand-in websocket for driving ``_handle_frame`` directly on one event loop."""
+
+    def __init__(self) -> None:
+        from starlette.websockets import WebSocketState
+
+        self.sent: list[dict] = []
+        self.closed_with = None
+        self.application_state = WebSocketState.CONNECTED
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(json.loads(text))
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        from starlette.websockets import WebSocketState
+
+        self.closed_with = code
+        self.application_state = WebSocketState.DISCONNECTED
+
+
+def test_late_credentials_of_a_replaced_connection_are_dropped():
+    # TestClient 在服务端关掉连接后不再调度旧 handler 的后续代码，这个时序只能直接驱动 _handle_frame
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = GatedSession(hold_issue={1})
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        old_ws, new_ws = _RecordingWS(), _RecordingWS()
+        old = tw._Connection(websocket=old_ws, reattach=False)
+        link.conn = old
+        preflight = {"type": "caps", "stage": "preflight", "preflight_ok": True}
+        task = asyncio.ensure_future(tw._handle_frame(link, old, preflight, 10, VISIT_ID, "guest"))
+        while ("issue", 1) not in s.gates:
+            await asyncio.sleep(0)
+        # 等 Servers 期间页面重载：新连接已过预检、正等自己的凭证
+        new = tw._Connection(websocket=new_ws, reattach=True)
+        new.preflight_seen = True
+        link.conn = new
+        await old.close(tw.CLOSE_SUPERSEDED, "superseded")
+        s.gates[("issue", 1)].set()
+        await task
+        return old_ws, new_ws
+
+    try:
+        old_ws, new_ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert new_ws.sent == []
+    assert old_ws.sent == [] and old_ws.closed_with == tw.CLOSE_SUPERSEDED
+
+
+def test_superseding_a_live_socket_pauses_the_outbox_until_the_new_iframe_rejoins(app, session):
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+        _auth(old)
+        _sync(old)
+        assert session.outbox.paused == set()
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+            msgs = _rejoin_with_pause_check(new, session)
+            _expect_close(old, tw.CLOSE_SUPERSEDED)
+    assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
+
+
+def _rejoin_with_pause_check(ws, session) -> list[dict]:
+    _auth(ws)
+    _sync(ws)
+    # 新 iframe 还没入房：outbox 不跑，任何 hello / 重传都等它重入后再发到它自己的 socket
+    assert PAUSE_PAGE_RELOAD in session.outbox.paused
+    return _rejoin(ws)
+
+
+def test_reload_state_before_credentials_does_not_rejoin(app, session):
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    session.log.clear()
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _sync(ws)
+        _run(ws, session.send, {"type": "stop", "reason": "home"})
+        assert json.loads(ws.receive_text())["type"] == "stop"
+    assert not any(e[0] in ("resend_hello", "resume") for e in session.log)
+
+
+def test_failed_first_credentials_send_does_not_burn_the_slot(app):
+    s = GatedSession()
+    s.oversize_first = True
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN)
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        _sync(ws)
+        msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+        assert _run(ws, tw.send_downlink, VISIT_ID, "guest", msg)
+        assert json.loads(ws.receive_text())["type"] == "credentials"
+        assert not _run(ws, tw.send_downlink, VISIT_ID, "guest", msg)
+
+
 # ── 本机来源判定 ───────────────────────────────────────────────────────
 
 

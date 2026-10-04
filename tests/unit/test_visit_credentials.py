@@ -205,7 +205,7 @@ def servers(monkeypatch):
     monkeypatch.setattr(cr, "social_base_url", lambda: BASE)
 
     async def _session():
-        return cr._ServersSession(base_url=BASE, access_token=BEARER, client_id="client-1")
+        return cr._ServersSession(base_url=BASE, access_token=BEARER, client_id="client-1", account="u1")
 
     monkeypatch.setattr(cr, "_servers_session", _session)
 
@@ -323,11 +323,15 @@ def oauth(monkeypatch):
     }
 
     async def _status():
-        return state["status"]
+        status = dict(state["status"])
+        status.setdefault("snapshot", state["snapshot"])
+        return status
 
     monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", _status)
     monkeypatch.setattr(community_oauth, "status_session_saved", lambda s: state["saved"])
-    monkeypatch.setattr(card_drop, "_desktop_session_snapshot", lambda: state["snapshot"])
+    # 磁盘上已经换成别的账号：会话必须用 resolver 校验过的那份，不能重读
+    monkeypatch.setattr(card_drop, "_desktop_session_snapshot",
+                        lambda: {"base_url": BASE, "access_token": "other-account-token", "local_user_id": "u9"})
     monkeypatch.setattr(card_drop, "_get_client_id", lambda: state["client_id"])
     monkeypatch.setattr(cr, "social_base_url", lambda: BASE)
     return state
@@ -337,6 +341,7 @@ def oauth(monkeypatch):
 async def test_session_requires_oauth_login(oauth):
     session = await cr._servers_session()
     assert session.headers() == {"Authorization": f"Bearer {BEARER}", "X-Client-Id": "client-1"}
+    assert session.account == "u1"
     assert BEARER not in repr(session)
 
     oauth["status"] = {"logged_in": False}
@@ -435,12 +440,60 @@ async def test_every_credentials_error_variant_maps(servers, status, code):
 
 
 @pytest.mark.asyncio
-async def test_banned_is_cached_for_a_minute(servers):
-    assert not cr.banned_recently()
+async def test_banned_is_cached_for_a_minute_per_account(servers):
+    assert not cr.banned_recently("u1")
     servers.scripted["/api/visit/credentials"] = [(403, {"code": "banned"})]
     with pytest.raises(cr.VisitBanned):
         await _host()
-    assert cr.banned_recently()
+    assert cr.banned_recently("u1")
+    # 同一台机器换成别的账号不受牵连
+    assert not cr.banned_recently("u2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["expires_at", "vendor_expires_at"])
+async def test_already_expired_credentials_are_rejected(servers, field):
+    original = servers._credentials
+
+    def _stale(body):
+        data = original(body).json()
+        past = int(time.time()) - vs.VISIT_TICKET_CLOCK_TOLERANCE_S - 5
+        if field == "expires_at":
+            # 票本身也一起过期（exp 与 expires_at 一致），只让「已过期」这一条把它拒掉
+            ttl = vs.VISIT_CREDENTIAL_TTL_S
+            data["identity_ticket"] = servers.ticket(
+                role="guest", iat=past - ttl, ttl=ttl, transport="trtc", char_tag=body["char_tag"],
+            )
+        data[field] = past
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _stale
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["trtc", "livekit"])
+async def test_longest_accepted_grant_still_fits_one_credentials_message(servers, monkeypatch, transport):
+    from main_routers.visit_router import transport_ws as tw
+
+    monkeypatch.setattr(vs, "VISIT_LIVEKIT_HOSTS", frozenset({LIVEKIT_HOST}))
+    servers.transport = transport
+    original = servers._credentials
+
+    def _longest(body):
+        data = original(body).json()
+        if transport == "trtc":
+            data["vendor"]["trtc"]["user_sig"] = "s" * cr._TRTC_SIG_MAX_CHARS
+            data["vendor"]["trtc"]["private_map_key"] = "k" * cr._TRTC_SIG_MAX_CHARS
+        else:
+            data["vendor"]["livekit"]["token"] = "t" * cr._LIVEKIT_TOKEN_MAX_CHARS
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _longest
+    creds = await _guest()
+    msg = tw.build_credentials_message(creds, side="guest", crop="upper", codec="vp9")
+    assert len(json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode()) <= tw.CREDENTIALS_MAX_BYTES
 
 
 @pytest.mark.asyncio
@@ -491,6 +544,43 @@ async def test_redirects_are_not_followed(servers, monkeypatch):
         await _host()
     # bearer 只发给 Servers：跳转目标一次都没被请求
     assert not any(r.url.host == "elsewhere.test" for r in seen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim,value", [
+    ("v", 2), ("iss", "someone-else"), ("aud", "other"), ("iat", None),
+])
+async def test_ticket_fixed_and_temporal_claims_are_checked(servers, claim, value):
+    original = servers._credentials
+
+    def _bad(body):
+        data = original(body).json()
+        claims = idm.peek_ticket_claims(data["identity_ticket"]).__dict__.copy()
+        claims = {k: v for k, v in claims.items() if v is not None}
+        if claim == "iat":
+            # 未来签发：票面时长与 expires_at 都对得上，只有 iat 在未来
+            shift = vs.VISIT_TICKET_CLOCK_TOLERANCE_S + 60
+            claims["iat"] += shift
+            claims["exp"] += shift
+            data["expires_at"] = claims["exp"]
+        else:
+            claims[claim] = value
+        data["identity_ticket"] = mint_ticket(claims, servers.key)
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _bad
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+
+
+@pytest.mark.asyncio
+async def test_invite_code_never_reaches_the_httpx_request_log(servers, caplog):
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"',
+                                        f"{BASE}/api/visit/invites/{INVITE}/preview")
+        logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"', f"{BASE}/api/visit/pubkeys")
+    assert INVITE not in caplog.text
+    assert "/api/visit/pubkeys" in caplog.text
 
 
 # ── 区域提示 ───────────────────────────────────────────────────────────

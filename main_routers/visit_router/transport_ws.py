@@ -236,19 +236,24 @@ class VisitTransportSession(ABC):
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_attached(self, now: float) -> None:
-        """A replacement socket authenticated within the grace."""
-        self.liveness.on_page_back(now)
+        """A replacement socket authenticated within the grace.
 
-    async def on_page_rejoined(self, now: float) -> None:
-        """The replacement iframe is back in the vendor room: resend ``hello``, resume, flush."""
+        The outbox stays paused until this socket's iframe is back in the
+        vendor room (it may replace a live socket, which never paused it).
+        """
+        self.liveness.on_page_back(now)
+        self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
+
+    def on_page_rejoined(self, now: float) -> None:
+        """The replacement iframe is back in the vendor room: queue ``hello`` first, resume.
+
+        Synchronous on purpose: the transport calls it only while the socket
+        is still the current one and sends what the outbox releases right
+        after it on that same socket, so a socket replaced meanwhile can never
+        resume the outbox or flush into its successor.
+        """
         self.outbox.resend_hello(now)
         self.outbox.resume(now, reason=PAUSE_PAGE_RELOAD)
-        await self.flush_outbox(now)
-
-    async def flush_outbox(self, now: float) -> None:
-        """Send whatever the outbox releases now as ``send`` messages."""
-        for frame in self.outbox.due(now):
-            await self.send(frame.to_ws())
 
     # —— 下行 ——
 
@@ -267,7 +272,9 @@ class _Connection:
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: bool = False
     credentials_sent: bool = False
+    credentials_reserved: bool = False
     stop_sent: bool = False
+    stop_reserved: bool = False
     preflight_seen: bool = False
     sdk_seen: bool = False
     rejoined: bool = False
@@ -360,26 +367,50 @@ async def send_downlink(visit_id: str, side: str, msg: Mapping[str, Any]) -> boo
     preflight; ``stop`` once per connection. Returns False when nothing was
     sent (no socket, rule violation, oversize, socket closing).
     """
+    if msg.get("type") not in DOWNLINK_TYPES:
+        raise ValueError("unknown downlink type")
     link = _links.get((visit_id, side))
     conn = link.conn if link is not None else None
-    if conn is None or conn.closed:
+    if conn is None:
+        return False
+    return await _send_on(conn, msg)
+
+
+async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
+    """Send on one specific connection, enforcing the per-connection downlink rules.
+
+    The once-only slots (first ``credentials``, ``stop``) are reserved while
+    the send is in flight and consumed only when it succeeded, so a failed
+    send does not burn them and two concurrent senders cannot both pass.
+    """
+    if conn.closed:
         return False
     kind = msg.get("type")
-    if kind not in DOWNLINK_TYPES:
-        raise ValueError("unknown downlink type")
-    if kind == "credentials" and not msg.get("refresh"):
-        if conn.credentials_sent or not conn.preflight_seen:
+    first_credentials = kind == "credentials" and not msg.get("refresh")
+    if first_credentials:
+        if conn.credentials_sent or conn.credentials_reserved or not conn.preflight_seen:
             logger.warning("visit transport: refusing a second first-issue credentials")
             return False
-        conn.credentials_sent = True
+        conn.credentials_reserved = True
     elif kind == "credentials" and not conn.credentials_sent:
         # 续期只替换已有凭证：首发之前没有可替换的
         return False
     if kind == "stop":
-        if conn.stop_sent:
+        if conn.stop_sent or conn.stop_reserved:
             return False
+        conn.stop_reserved = True
+    try:
+        ok = await conn.send_json(msg)
+    finally:
+        if first_credentials:
+            conn.credentials_reserved = False
+        if kind == "stop":
+            conn.stop_reserved = False
+    if ok and first_credentials:
+        conn.credentials_sent = True
+    if ok and kind == "stop":
         conn.stop_sent = True
-    return await conn.send_json(msg)
+    return ok
 
 
 def _reset_for_tests() -> None:
@@ -432,6 +463,10 @@ async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs:
         return None
 
 
+def _is_current(link: _Link, conn: _Connection) -> bool:
+    return _links.get((link.session.visit_id, link.session.side)) is link and link.conn is conn and not conn.closed
+
+
 async def _handle_frame(
     link: _Link, conn: _Connection, msg: dict[str, Any], nbytes: int, visit_id: str, side: str,
 ) -> None:
@@ -454,7 +489,8 @@ async def _handle_frame(
             if not isinstance(creds, Mapping) or creds.get("type") != "credentials" or creds.get("refresh"):
                 logger.warning("visit transport: issue_credentials returned a non-credentials message")
                 return
-            await send_downlink(visit_id, side, creds)
+            # 等凭证期间本连接可能已被顶掉：只发给本连接，被顶掉（closed）就不发
+            await _send_on(conn, creds)
         elif stage == "sdk":
             if conn.sdk_seen or not conn.credentials_sent:
                 return
@@ -463,16 +499,31 @@ async def _handle_frame(
         return
     if kind == "state":
         await _call(session, "on_state", msg)
-        if conn.reattach and not conn.rejoined and msg.get("state") in REJOINED_STATES:
+        # 重入只认「本连接已拿到首发凭证、且仍是当前连接」之后的入房上报：
+        # 否则会绕过预检提前恢复 outbox，或让已被顶掉的旧连接替新连接恢复
+        if (
+            conn.reattach and not conn.rejoined and conn.credentials_sent
+            and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
+        ):
             conn.rejoined = True
-            await _call(session, "on_page_rejoined", time.time())
+            now = time.time()
+            try:
+                session.on_page_rejoined(now)
+                frames = list(session.outbox.due(now))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
+                return
+            for frame in frames:
+                await _send_on(conn, frame.to_ws())
+            if not _is_current(link, conn):
+                return
             snapshot = None
             try:
                 snapshot = session.media_snapshot()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
             if isinstance(snapshot, Mapping):
-                await send_downlink(visit_id, side, {**snapshot, "type": "media"})
+                await _send_on(conn, {**snapshot, "type": "media"})
         return
     if kind == "recv":
         from_vid = msg.get("from_vid")

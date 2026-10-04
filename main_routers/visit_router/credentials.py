@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import math
 import re
 import time
@@ -53,6 +54,9 @@ import config.visit_settings as visit_settings
 from config.application import APP_VERSION
 from config.visit_settings import (
     VISIT_BANNED_CACHE_S,
+    VISIT_TICKET_AUD,
+    VISIT_TICKET_ISS,
+    VISIT_TICKET_VERSION,
     VISIT_INVITE_CODE_TTL_S,
     VISIT_PUBKEYS_CACHE_S,
     VISIT_TICKET_CLOCK_TOLERANCE_S,
@@ -78,6 +82,33 @@ from utils.visit_wire import require_visit_id
 
 logger = get_module_logger(__name__, "Main")
 
+_INVITE_PATH_MARK = "/api/visit/invites/"
+
+
+class _InviteUrlLogFilter(logging.Filter):
+    """Drop httpx request log lines whose URL carries an invite code.
+
+    The preview path embeds the one-time code; httpx logs every request URL
+    at INFO. Installed on the ``httpx`` logger itself, so it holds in every
+    process layout (the main-server entry point's own httpx filter does not
+    run in merged mode).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return _INVITE_PATH_MARK not in record.getMessage()
+        except Exception:  # noqa: BLE001 - 格式化失败的记录不拦
+            return True
+
+
+def _install_httpx_invite_filter() -> None:
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(f, _InviteUrlLogFilter) for f in httpx_logger.filters):
+        httpx_logger.addFilter(_InviteUrlLogFilter())
+
+
+_install_httpx_invite_filter()
+
 ROLES = ("host", "guest")
 TRANSPORTS = ("trtc", "livekit")
 
@@ -98,7 +129,10 @@ _PUBKEYS_RETRY_MIN_S = 30.0
 _CANCEL_BACKOFF_S = (1, 2, 4, 8)
 _REGION_WAIT_S = 1.5
 _DISPLAY_NAME_MAX_CHARS = 64
-_TOKEN_MAX_CHARS = 8192
+# vendor 凭证字段上限：留够实际长度（UserSig / privateMapKey 数百字节、LiveKit JWT 约 1 KB），
+# 同时保证校验通过的凭证拼成下行 credentials 后一定不超过 8 KB
+_TRTC_SIG_MAX_CHARS = 2048
+_LIVEKIT_TOKEN_MAX_CHARS = 4096
 _ROOM_ID_MAX_CHARS = 64
 _ENTITLEMENT_MAX_KEYS = 16
 
@@ -272,23 +306,29 @@ CANCEL_DONE_REPLIES: frozenset[tuple[int, str]] = frozenset({
 
 
 # 被封缓存（§4.6 rooms / join：上次 Servers 403 banned 的 60 s 内本机直接 403）。
-_banned_until: float = 0.0
+# 按社区账号（local_user_id）分开记：同一台机器 60 s 内换成未被封的账号不受牵连
+_banned_until: dict[str, float] = {}
 
 
-def _note_banned() -> None:
-    global _banned_until
-    _banned_until = time.monotonic() + VISIT_BANNED_CACHE_S
+def _note_banned(account: str) -> None:
+    now = time.monotonic()
+    for key in [k for k, until in _banned_until.items() if until <= now]:
+        del _banned_until[key]
+    _banned_until[account] = now + VISIT_BANNED_CACHE_S
 
 
-def banned_recently() -> bool:
-    """True within ``VISIT_BANNED_CACHE_S`` of the last Servers ``403 banned``."""
-    return time.monotonic() < _banned_until
+def banned_recently(account: str) -> bool:
+    """True within ``VISIT_BANNED_CACHE_S`` of the last Servers ``403 banned`` for this account.
+
+    ``account`` is the community ``local_user_id`` of the current session.
+    """
+    return time.monotonic() < _banned_until.get(account, 0.0)
 
 
 def _reset_for_tests() -> None:
     """Clear module caches (unit tests only)."""
     global _banned_until, _pubkeys_fetched, _pubkeys_failed_at, _pubkeys_inflight
-    _banned_until = 0.0
+    _banned_until = {}
     _pubkeys_fetched = None
     _pubkeys_failed_at = None
     _pubkeys_inflight = None
@@ -322,7 +362,7 @@ def _diag_code(code: str | None) -> str:
 
 
 def _map_error(
-    resp: httpx.Response, table: Mapping[tuple[int, str], ErrorFactory], *, op: str,
+    resp: httpx.Response, table: Mapping[tuple[int, str], ErrorFactory], *, op: str, account: str,
 ) -> VisitServersError:
     status = resp.status_code
     if status >= 500:
@@ -339,7 +379,7 @@ def _map_error(
         return VisitServersUnreachable("uncontracted_reply", servers_status=status)
     err = factory(code, retry_after_s=_retry_after(body, resp), servers_status=status)
     if isinstance(err, VisitBanned):
-        _note_banned()
+        _note_banned(account)
     return err
 
 
@@ -351,6 +391,8 @@ class _ServersSession:
     base_url: str
     access_token: str = field(repr=False)
     client_id: str
+    account: str
+    """Community ``local_user_id`` of the session (keys the banned cache)."""
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}", "X-Client-Id": self.client_id}
@@ -359,7 +401,8 @@ class _ServersSession:
 async def _servers_session() -> _ServersSession:
     """Resolve the community OAuth session (refreshing it when needed) for one Servers call.
 
-    Not logged in → :class:`VisitLoginRequired`; a saved session the cloud
+    The bearer is the one in the snapshot the resolver just validated, never
+    a re-read of the session file. Not logged in → :class:`VisitLoginRequired`; a saved session the cloud
     could not verify right now → :class:`VisitServersUnreachable`. A login
     that belongs to another community origin is never sent to the configured
     one (same posture as the card-drop routes).
@@ -372,8 +415,9 @@ async def _servers_session() -> _ServersSession:
         if community_oauth.status_session_saved(status):
             raise VisitServersUnreachable("session_unverified")
         raise VisitLoginRequired()
-    snapshot = await asyncio.to_thread(card_drop._desktop_session_snapshot)
-    if not snapshot or not snapshot.get("local_user_id") or not snapshot.get("access_token"):
+    # 只用 resolver 刚校验过（必要时刷新过）的那份快照：再从磁盘重读可能读到并发换号后的另一个账号
+    snapshot = status.get("snapshot")
+    if not isinstance(snapshot, Mapping) or not snapshot or not snapshot.get("local_user_id") or not snapshot.get("access_token"):
         raise VisitLoginRequired()
     base = social_base_url().strip().rstrip("/")
     snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
@@ -382,7 +426,12 @@ async def _servers_session() -> _ServersSession:
     client_id = await asyncio.to_thread(card_drop._get_client_id)
     if not client_id:
         raise VisitServersUnreachable("client_not_registered")
-    return _ServersSession(base_url=base, access_token=str(snapshot["access_token"]), client_id=client_id)
+    return _ServersSession(
+        base_url=base,
+        access_token=str(snapshot["access_token"]),
+        client_id=client_id,
+        account=str(snapshot["local_user_id"]),
+    )
 
 
 async def _send(
@@ -544,8 +593,8 @@ def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
     user_id = raw.get("user_id")
     _need(isinstance(user_id, str) and _TRTC_USER_ID_RE.fullmatch(user_id) is not None, "vendor.trtc.user_id")
     _need(user_id == vid, "vendor.trtc.user_id")
-    _need(_short_str(raw.get("user_sig"), _TOKEN_MAX_CHARS), "vendor.trtc.user_sig")
-    _need(_short_str(raw.get("private_map_key"), _TOKEN_MAX_CHARS), "vendor.trtc.private_map_key")
+    _need(_short_str(raw.get("user_sig"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.user_sig")
+    _need(_short_str(raw.get("private_map_key"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.private_map_key")
     room = raw.get("str_room_id")
     _need(_short_str(room, _ROOM_ID_MAX_CHARS) and room == visit_id, "vendor.trtc.str_room_id")
     _need(_grant_ttl_ok(raw.get("expire")), "vendor.trtc.expire")
@@ -574,7 +623,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
     secure_ok = parsed.scheme == "wss" or (parsed.scheme == "ws" and host == _dev_livekit_host())
     if not secure_ok or parsed.username or parsed.password:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
-    _need(_short_str(raw.get("token"), _TOKEN_MAX_CHARS), "vendor.livekit.token")
+    _need(_short_str(raw.get("token"), _LIVEKIT_TOKEN_MAX_CHARS), "vendor.livekit.token")
     _need(_grant_ttl_ok(raw.get("ttl_s")), "vendor.livekit.ttl_s")
     return {"url": url, "token": raw["token"], "ttl_s": raw["ttl_s"]}
 
@@ -594,6 +643,9 @@ def _parse_credentials(
     vendor_expires_at = payload.get("vendor_expires_at")
     _need(_finite(expires_at), "expires_at")
     _need(_finite(vendor_expires_at), "vendor_expires_at")
+    # 已经过期（含时钟容差）的凭证没法入房：当坏响应处理，不当成功
+    _need(expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "expires_at")
+    _need(vendor_expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "vendor_expires_at")
     # vendor 凭证只有 10 min：比这更长的一律不收（短凭证续期与强制结束后的暴露上限靠它）
     _need(
         vendor_expires_at - now <= VISIT_VENDOR_GRANT_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
@@ -613,6 +665,11 @@ def _parse_credentials(
         claims = peek_ticket_claims(ticket)
     except MalformedTicket:
         raise _BadResponse("identity_ticket") from None
+    _need(claims.v == VISIT_TICKET_VERSION, "identity_ticket.v")
+    _need(claims.iss == VISIT_TICKET_ISS, "identity_ticket.iss")
+    _need(claims.aud == VISIT_TICKET_AUD, "identity_ticket.aud")
+    # 签发时刻不能在未来（含时钟容差）；过期由下面的 expires_at 检查兜住
+    _need(claims.iat - VISIT_TICKET_CLOCK_TOLERANCE_S <= now, "identity_ticket.iat")
     _need(claims.role == role, "identity_ticket.role")
     _need(claims.visit_id == visit_id, "identity_ticket.visit_id")
     _need(claims.vid == vid, "identity_ticket.vid")
@@ -729,7 +786,7 @@ async def fetch_visit_credentials(
         raise post
     resp = post
     if not 200 <= resp.status_code < 300:
-        raise _map_error(resp, CREDENTIALS_ERROR_CONTRACT, op="credentials")
+        raise _map_error(resp, CREDENTIALS_ERROR_CONTRACT, op="credentials", account=session.account)
     try:
         return _parse_credentials(
             _body_json(resp), role=role, visit_id=visit_id, char_tag=char_tag, now=time.time(),
@@ -1046,7 +1103,7 @@ async def fetch_invite_preview(
         timeout=_PREVIEW_TIMEOUT_S,
     )
     if not 200 <= resp.status_code < 300:
-        raise _map_error(resp, PREVIEW_ERROR_CONTRACT, op="invite_preview")
+        raise _map_error(resp, PREVIEW_ERROR_CONTRACT, op="invite_preview", account=session.account)
     try:
         return _parse_preview(
             _body_json(resp), protected_names=protected_names, generic_label=generic_label,
