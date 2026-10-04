@@ -1948,7 +1948,8 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
 
 
 @pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object",
-                                    "applied_scalar_entry", "applied_bad_seq", "item_bad_kind"])
+                                    "applied_scalar_entry", "applied_bad_seq", "item_bad_kind",
+                                    "kept_effect_keys_scalar"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1968,6 +1969,10 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "kept_effect_keys_scalar":
+        # 没被清的那段（PART）还没应用的事实项，载荷坏了：留下来也永远重放不了
+        part_facts = next(item for item in staging["items"] if item["kind"] == "facts" and item["segment"] == 1)
+        part_facts["effect_keys"] = 5
     elif damage == "item_bad_kind":
         staging["items"][0]["kind"] = "bogus"                   # 条目是对象，但类型坏了
     elif damage == "applied_bad_seq":
@@ -2334,3 +2339,52 @@ async def test_stale_duplicate_forget_cancels_against_the_effective_fence(env):
     assert result.get("duplicate") is True
     assert _key_state(env, KEY_GROUP) == "cancelled"
     assert not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_malformed_positional_routes_fail_closed(env):
+    env.llm.responses = [BATCH_FACTS]
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    original = env.routes._apply_keyed_item
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    first, second = staging["segments"]
+    first["subject"], second["subject"] = second["subject"], first["subject"]
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+
+    def truncate(old):
+        return {**old, "routed_positions": old["routed_positions"][:1]}   # 截断按位置的路由
+
+    await env.idem.update_key(NAME, KEY_SEGMENTS, truncate)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _segments_body())
+    # 有这个字段却坏了：不能退回只看集合的核对，否则互换的目标就放过去了
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
+
+
+async def test_failed_display_name_write_is_retried_not_marked_done(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real = env.persona.aupdate_subject_display_name
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("persona.json locked")
+        return await real(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    # 显示名没写成：这一项不能记成已应用、键不能收尾
+    assert _key_state(env, KEY_GROUP) == "pending"
+    assert (GROUP_KEY, "串门群") not in env.persona.display_names
+    await _post(env, _single_body())
+    assert _key_state(env, KEY_GROUP) == "done" and (GROUP_KEY, "串门群") in env.persona.display_names

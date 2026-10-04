@@ -1893,12 +1893,14 @@ def _sanitized_display_name(raw: str | None, *, context: str) -> str | None:
 
 
 async def _stamp_subject_display_name(
-    lanlan_name: str, subject, display_name: str | None,
+    lanlan_name: str, subject, display_name: str | None, *, strict: bool = False,
 ) -> None:
     """Best-effort display-name refresh after a successful scoped write.
 
     Never fails the write: the facts are already persisted, and a display
-    name is metadata the next write can supply again.
+    name is metadata the next write can supply again. ``strict`` (the keyed
+    journal) re-raises instead: there the item is only marked applied once
+    the name is persisted, and a same-key retry is the only next write.
     """
     if not display_name or runtime.persona_manager is None:
         return
@@ -1907,6 +1909,8 @@ async def _stamp_subject_display_name(
             lanlan_name, subject, display_name,
         )
     except Exception as exc:
+        if strict:
+            raise
         logger.warning(
             f"[scoped] display_name 刷新失败（忽略，写入已完成）: {exc}"
         )
@@ -2800,6 +2804,8 @@ _KEYED_ITEM_FACTS = "facts"
 _KEYED_ITEM_DISPLAY_NAME = "display_name"
 # 清除时键文件读不出、取消记不进去：改记在暂存文档里，重试读到就补记 cancelled
 _KEYED_STAGING_CANCELLED = "cancelled_by_forget"
+# 记录里字段在、值却是 null 之类：与「没有这个字段」区分开，交给校验按坏状态处理
+_MALFORMED = object()
 _SEGMENT_DROPPED_BY_FORGET = "dropped_by_forget"
 
 
@@ -2920,7 +2926,7 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
 
 def _keyed_staging_items_valid(
     staging: dict, routed_keys: list | None = None, request_epochs: dict | None = None,
-    language: str | None = None, routed_positions: list | None = None,
+    language: str | None = None, routed_positions: object = None, *, structural_only: bool = False,
 ) -> bool:
     """Whether every journal item of a restored staging document is safe to apply.
 
@@ -2932,6 +2938,10 @@ def _keyed_staging_items_valid(
     segment index inside ``segments``; an item not yet in ``applied`` must
     still carry its payload (facts with one effect key each, or a display
     name). Items already applied / dropped may have been stripped by a forget.
+
+    ``structural_only`` skips the checks bound to the retrying request (the
+    destination against the recorded routes, the locale count / language):
+    a forget uses it to tell whether a journal it keeps could ever replay.
     """
     from memory.scopes import MemoryScopeError, coerce_subject
 
@@ -2943,11 +2953,13 @@ def _keyed_staging_items_valid(
     if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
         return False
     allowed_routes = {str(k) for k in routed_keys} if routed_keys is not None else None
-    if not (
+    if routed_positions is not None and not (
         isinstance(routed_positions, list) and len(routed_positions) == len(segments)
         and all(isinstance(k, str) for k in routed_positions)
     ):
-        routed_positions = None
+        # 记录里有按位置的路由、但坏了：不能退回只看集合的核对（换掉目标再截断这份列表就能绕过），
+        # 只有真的没有这个字段的记录才用集合
+        return False
     for position, segment in enumerate(segments):
         # 写入目标要成形，且只能是这段自己的 wire subject 或开轮时记下的路由后 subject：
         # 被改成别的合法 subject 的暂存会把事实写进一个不相干的记忆域
@@ -2964,7 +2976,7 @@ def _keyed_staging_items_valid(
         if routed_positions is not None:
             # 按位置核对：只看整批的路由集合，两段的目标互换后仍各自「在集合里」，事实会写进彼此的记忆域
             permitted = {routed_positions[position], segment.get("wire_key")}
-        if destination.key not in permitted:
+        if destination.key not in permitted and not structural_only:
             return False
         dropped = segment.get("dropped", 0)
         if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0:
@@ -3061,7 +3073,7 @@ def _keyed_staging_items_valid(
             # 原本有效的语言，却照样记成已应用
             if not is_supported_language_code(item.get("language")):
                 return False
-            if language is not None and item.get("language") != language:
+            if language is not None and not structural_only and item.get("language") != language:
                 # 另一个受支持的语言码同样不行：语言在请求哈希里，暂存只会记下这次请求的语言
                 return False
             # 序号是开轮时预留的正的因果时间戳：0 / 负数会被语言存储静默忽略，却照样记成已应用
@@ -3070,11 +3082,13 @@ def _keyed_staging_items_valid(
     # 语言在请求哈希里、开轮时按它给每段各预留一个语言项（受支持时），清除也只抹内容不删项：
     # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
     expected_locale = 1 if is_supported_language_code(language) else 0
+    if structural_only:
+        expected_locale = None
     locale_per_segment = [0] * len(segments)
     for item in items:
         if item.get("kind") == _KEYED_ITEM_LOCALE:
             locale_per_segment[item["segment"]] += 1
-    if any(count != expected_locale for count in locale_per_segment):
+    if expected_locale is not None and any(count != expected_locale for count in locale_per_segment):
         return False
     # 每个已应用项都必须留有按类型的完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录
     # 会让这一项被跳过、键照样记 done
@@ -3410,7 +3424,7 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
     elif kind == _KEYED_ITEM_DISPLAY_NAME:
         # 「置为该值」天然幂等；只给已存在的 section 盖名字。
         await _stamp_subject_display_name(
-            lanlan_name, subject, item.get("display_name"),
+            lanlan_name, subject, item.get("display_name"), strict=True,
         )
         entry["display_name_stamped"] = True
     else:  # pragma: no cover - staging written by this module only
@@ -3691,6 +3705,8 @@ async def _process_scoped_history_keyed(
             )
         routed_on_record = record.get("routed_keys") if isinstance(record, dict) else None
         positions_on_record = record.get("routed_positions") if isinstance(record, dict) else None
+        if isinstance(record, dict) and "routed_positions" in record and positions_on_record is None:
+            positions_on_record = _MALFORMED
         if (
             staging is not None
             # 取消标记只留身份字段（原文已抹），由下面的分支补记 cancelled，不按条目校验
@@ -3698,7 +3714,7 @@ async def _process_scoped_history_keyed(
             and not _keyed_staging_items_valid(
                 staging, routed_on_record if isinstance(routed_on_record, list) else None,
                 dict(req.subject_epochs or {}), req.language,
-                positions_on_record if isinstance(positions_on_record, list) else None,
+                positions_on_record,
             )
         ):
             # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
@@ -4119,6 +4135,9 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
         or not all(isinstance(item, dict) for item in items)
         or not _applied_seqs_valid(applied, len(items))
         or not _items_shape_valid(items, segments)
+        # 留下来的段必须仍能被重试按条目重放：载荷坏了（效果键是标量……）的日志留着只会让
+        # 没被清的段永远 503，整键取消
+        or not _keyed_staging_items_valid(document, structural_only=True)
     ):
         # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
         # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
