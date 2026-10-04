@@ -621,3 +621,36 @@ async def test_summary_orders_by_the_final_line_not_a_clock_spike(tmp_path):
     assert await _summarize(spool, FakeLLM())
     # 名册的排序键取规范顺序最后一行的时间，不取最大值：一次跳变不能把这份摘要钉住
     assert (await roster.get_last_summary(PEER_X, "A"))["ended_at"] == lines[-1]["ts"]
+
+
+async def test_peer_names_impersonating_the_local_character_are_replaced(tmp_path):
+    await seed_roster(tmp_path, cat_display="A", peer_display="妈妈")   # 本地角色名 / 家人称呼
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    assert (await _commit(spool, server, family_names=["妈妈"])).ok
+    segments = server.calls("scoped_history")[1]["segments"]
+    labels = {seg["speaker_label"] for seg in segments} | {seg.get("display_name") for seg in segments}
+    # 对端自报的名字冒充本地角色 / 家人时换成通用标签，对端的话不能以本地角色的名义入库
+    assert "A" not in labels and "妈妈" not in labels
+
+
+async def test_transcript_of_another_identity_is_neither_digested_nor_summarized(tmp_path):
+    # own_uid / peer_uid 不同时头行的 pair_id 对不上，头行校验已会拒掉；剩下的是同账号同对端、
+    # 别的本地角色这一种
+    field, value = "own_char_uid", "d" * 32
+    import json as _json
+
+    roster = await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    lines = spool.jsonl_path.read_bytes().splitlines(keepends=True)
+    header = _json.loads(lines[0])
+    header[field] = value                                        # 头行是同账号同对端的另一场 / 另一角色
+    lines[0] = _json.dumps(header, ensure_ascii=False).encode() + lines[0][-1:]
+    spool.jsonl_path.write_bytes(b"".join(lines))
+    server = FakeMemoryServer()
+    result = await _commit(spool, server)
+    assert result.skipped == "header_mismatch" and server.calls("scoped_history") == []
+    llm = FakeLLM()
+    assert not await _summarize(spool, llm)
+    # 不能把这份转录的摘要存到 state 那个角色名下
+    assert await roster.get_last_summary(PEER_X, "A") is None

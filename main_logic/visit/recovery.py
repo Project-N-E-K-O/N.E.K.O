@@ -588,7 +588,9 @@ async def _recover_visit(
         await _maybe_await(resume_diary_commit(spool, state))
 
     async def digest() -> Any:
-        return await commit_visit_region(spool, resolve_char_name=resolve_char_name, client=client)
+        return await commit_visit_region(
+            spool, resolve_char_name=resolve_char_name, client=client, family_names=family_names,
+        )
 
     async def summary() -> Any:
         return await commit_last_summary(
@@ -790,6 +792,29 @@ async def _submit_report(
             logger.warning("visit recovery: report %s accepted but cannot delete it: %s", path.name, exc)
 
 
+def _expired_upload_visits(deleted: Iterable[Path]) -> set[str]:
+    out = set()
+    for path in deleted:
+        for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX):
+            if path.name.endswith(suffix):
+                out.add(path.name[: -len(suffix)])
+                break
+    return out
+
+
+async def _mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> None:
+    """Record on a queued report why its transcript will never be uploaded (diagnostics)."""
+    path = visit_path(config_dir / VISIT_REPORTS_DIRNAME, visit_id, ".json")
+    try:
+        doc = await asyncio.to_thread(_load_json, path)
+        if not isinstance(doc, dict) or doc.get("transcript_unavailable"):
+            return
+        await asyncio.to_thread(_write_private_json, path, {**doc, "transcript_unavailable": reason})
+    except (OSError, ValueError) as exc:
+        # 只是诊断字段：记不上也照常提交举报
+        logger.warning("visit recovery: cannot mark report %s transcript_unavailable: %s", path.name, exc)
+
+
 async def _submit_reports(
     config_dir: Path, *, skip: set[str], submit_report: SubmitReport | None, report: RecoveryReport,
 ) -> None:
@@ -883,7 +908,12 @@ async def visit_spool_recovery(
         report.forgets_clean = False
     await _cleanup_outboxes(config_dir, live)
     try:
-        report.swept = len(await VisitSpool.sweep(config_dir, time.time() if now is None else now, is_live=live))
+        swept = await VisitSpool.sweep(config_dir, time.time() if now is None else now, is_live=live)
+        report.swept = len(swept)
+        # 待传转录 7 天到期被放弃：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
+        # transcript_unavailable，不能当作从没有过待传转录
+        for visit_id in sorted(_expired_upload_visits(swept)):
+            await _mark_report_transcript_unavailable(config_dir, visit_id, "expired")
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: sweep failed: %r", exc)
     for visit_id in (await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)) if names_settled else []):

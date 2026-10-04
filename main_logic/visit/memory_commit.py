@@ -202,8 +202,17 @@ def _visit_subjects(state: Mapping[str, Any]) -> list[dict]:
     ]
 
 
+_IDENTITY_FIELDS = ("own_uid", "own_char_uid", "peer_uid", "pair_id", "peer_char_id")
+
+
+def _header_matches_state(header: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
+    """Whether the transcript header and ``state.json`` describe the same visit identity."""
+    return all(header.get(name) == state[name] for name in _IDENTITY_FIELDS)
+
+
 async def _peer_displays(
     config_dir: Path, state: Mapping[str, Any], own_char: str, lang: str | None,
+    family_names: Iterable[str] = (),
 ) -> tuple[str, str]:
     cat_label = get_visit_speaker_header("peer_cat", lang).strip("[] ")
     human_label = get_visit_speaker_header("peer_human", lang).strip("[] ")
@@ -216,9 +225,12 @@ async def _peer_displays(
     cat_info = chars.get(state["peer_char_id"]) if isinstance(chars, dict) else None
     peer = peer if isinstance(peer, dict) else {}
     cat_info = cat_info if isinstance(cat_info, dict) else {}
-    cat = neutralize_display_name(cat_info.get("display_name"), protected_names=(),
+    # 对端自报的名字冒充本地角色 / 家人 / 通用标签时换成通用标签：否则对端的话会以本地角色的
+    # 名义进 speaker_label 与 display_name，抽出的事实归属就错了
+    protected = (own_char, cat_label, human_label, *family_names)
+    cat = neutralize_display_name(cat_info.get("display_name"), protected_names=protected,
                                   generic_label=cat_label, short_code=short)
-    human = neutralize_display_name(peer.get("display_name"), protected_names=(),
+    human = neutralize_display_name(peer.get("display_name"), protected_names=protected,
                                     generic_label=human_label, short_code=short)
     return cat, human
 
@@ -230,6 +242,7 @@ async def commit_visit_region(
     client: ScopedMemoryClient | None = None,
     shutdown: bool = False,
     now: float | None = None,
+    family_names: Iterable[str] = (),
 ) -> CommitResult:
     """Digest one finished visit into the visit memory region (finalize or recovery).
 
@@ -259,7 +272,8 @@ async def commit_visit_region(
     async def locked() -> CommitResult:
         async with lock:
             return await _commit_locked(spool, resolve_char_name=resolve_char_name,
-                                        client=client, shutdown=shutdown, now=now)
+                                        client=client, shutdown=shutdown, now=now,
+                                        family_names=family_names)
 
     if shutdown:
         # 关机预算按整次提交算：等锁（可能有摘要的 LLM 调用正持着它）与先后几个批次
@@ -283,6 +297,7 @@ async def _commit_locked(
     client: ScopedMemoryClient | None,
     shutdown: bool,
     now: float | None,
+    family_names: Iterable[str] = (),
 ) -> CommitResult:
     # 锁内重读：等锁期间「清除这个人」可能已抹掉对端身份
     state = await spool.read_state()
@@ -304,7 +319,7 @@ async def _commit_locked(
     header = contents.header
     if header is None:
         return CommitResult(ok=True, skipped="no_transcript")
-    if header.get("pair_id") != state["pair_id"] or header.get("peer_char_id") != state["peer_char_id"]:
+    if not _header_matches_state(header, state):
         memory_bridge.diag("digest_header_mismatch", visit_id=spool.visit_id)
         return CommitResult(ok=False, skipped="header_mismatch")
     lang = header.get("lang")
@@ -380,7 +395,7 @@ async def _commit_locked(
         record["group"][str(b)] = True
         await spool.update_state(digest_writes=runs)
     if segment_batches:
-        cat_display, human_display = await _peer_displays(spool.config_dir, state, name, lang)
+        cat_display, human_display = await _peer_displays(spool.config_dir, state, name, lang, family_names)
     for b, batch in enumerate(segment_batches):
         if record["segments"][str(b)]:
             continue
@@ -628,6 +643,11 @@ async def _summary_locked(
     if contents.header is None or not lines:
         await _mark_summary_done(spool, own_char_uid)
         return True
+    if not _header_matches_state(contents.header, state):
+        # 转录头行与 state 指的不是同一场（同账号同对端、别的本地角色……）：不能把这份转录的
+        # 摘要存到 state 那个角色名下
+        memory_bridge.diag("summary_header_mismatch", visit_id=spool.visit_id)
+        return False
     lang = contents.header.get("lang")
     own_char = await resolve_char_name(own_char_uid)
     if not own_char:

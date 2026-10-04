@@ -2028,3 +2028,33 @@ async def test_sealed_upload_with_a_bad_envelope_and_no_stream_is_not_uploaded(t
     # 只剩上传文件、没有流水可比：角色 id / 传输方式坏了同样按损坏处理，不交给上传回调
     assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
 
+
+
+async def test_expired_upload_marks_its_queued_report_transcript_unavailable(tmp_path):
+    v = vid(97)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))                                 # 待传转录已过 7 天
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 转录到期被放弃：举报照常提交，并在举报里记下转录不可用的原因
+    (visit_id, doc), = reports.calls
+    assert not sealed.exists() and doc["transcript_unavailable"] == "expired"
+    assert doc["include_transcript"] is True
+
+
+async def test_recovery_digest_protects_family_names_in_peer_labels(tmp_path):
+    await seed_roster(tmp_path, peer_display="妈妈")
+    await make_visit(tmp_path, vid(98), [ln(i, f"line {i}", ("own_cat", "peer_cat", "peer_human", "own_human")[i % 4])
+                                         for i in range(8)])
+    server = FakeMemoryServer()
+    await _recover(tmp_path, server, family_names=["妈妈"])
+    segments = server.calls("scoped_history")[1]["segments"]
+    # 补录的 digest 同样拿到家人称呼：对端自称「妈妈」换成通用标签
+    assert "妈妈" not in {seg["speaker_label"] for seg in segments}
