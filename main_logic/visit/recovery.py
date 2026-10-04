@@ -52,7 +52,7 @@ from typing import Any
 
 from config.visit_settings import VISIT_REPORTS_DIRNAME, VISIT_SPOOL_DIRNAME
 from main_logic.visit import local_chars, memory_bridge
-from main_logic.visit.forget_runner import VoidPending, replay_forgets
+from main_logic.visit.forget_runner import LifecycleGuard, VoidPending, replay_forgets
 from main_logic.visit.memory_commit import (
     ResolveCharName,
     SummaryLLM,
@@ -265,6 +265,27 @@ def _spool_header_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
     return _owner_or_none(header.get("own_uid"))
 
 
+def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
+    """Whether a ``.upload.json`` is this visit's well-formed sealed upload.
+
+    Only then may the stream next to it be deleted; anything else (another
+    visit's document, a wrong version, a broken request) is resealed from
+    the stream, the only intact copy.
+    """
+    if not isinstance(doc, dict) or doc.get("v") != UPLOAD_DOC_VERSION:
+        return False
+    request = doc.get("request")
+    return (
+        isinstance(request, dict)
+        and request.get("visit_id") == visit_id
+        and request.get("role") in ("host", "guest")
+        and _number(request.get("started_at")) is not None
+        and _number(request.get("ended_at")) is not None
+        and isinstance(request.get("usage"), dict)
+        and isinstance(request.get("lines"), list)
+    )
+
+
 def _write_private_json(path: Path, doc: dict) -> None:
     atomic_write_json(path, doc)
     try:
@@ -472,7 +493,7 @@ async def _upload_pending(
                 )
             except (OSError, ValueError):
                 sealed_doc = None
-            if isinstance(sealed_doc, dict) and isinstance(sealed_doc.get("request"), dict):
+            if _sealed_doc_belongs(sealed_doc, visit_id):
                 try:
                     await asyncio.to_thread(stream.unlink, True)
                 except OSError as exc:
@@ -481,7 +502,7 @@ async def _upload_pending(
                     # 就让这场的转录与排队举报永远交不上去
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                 continue
-            logger.warning("visit recovery: sealed upload of %s unreadable, resealing from its stream",
+            logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
         state = None
@@ -603,6 +624,7 @@ async def visit_spool_recovery(
     submit_report: SubmitReport | None = None,
     resume_diary_commit: ResumeDiaryCommit | None = None,
     void_pending: VoidPending | None = None,
+    lifecycle_guard: LifecycleGuard | None = None,
     client: ScopedMemoryClient | None = None,
     now: float | None = None,
 ) -> RecoveryReport:
@@ -612,7 +634,9 @@ async def visit_spool_recovery(
     process (their files are never touched). ``spawn_background`` routes the
     digest / summary commits through the character's visit background-task
     entry. ``summary_llm`` is required for last-visit summaries (without it
-    they wait for a later pass). The other callbacks are optional and their
+    they wait for a later pass). ``lifecycle_guard`` is the clearing
+    endpoints' rename / delete guard, held while forgets are replayed. The
+    other callbacks are optional and their
     steps are skipped (files kept) when missing. Independent of
     ``visitMemoryEnabled`` and of the ``NEKO_VISIT_ENABLED`` release switch.
     """
@@ -638,6 +662,7 @@ async def visit_spool_recovery(
         try:
             report.forgets_clean = await replay_forgets(
                 config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
+                lifecycle_guard=lifecycle_guard,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("visit recovery: forget replay failed: %r", exc)

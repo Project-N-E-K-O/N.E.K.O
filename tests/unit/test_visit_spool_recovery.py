@@ -914,3 +914,67 @@ async def test_unresolved_rename_defers_forget_replay_and_visit_recovery(tmp_pat
     assert not report.forgets_clean and server.calls("scoped_forget") == []
     assert len(await RevocationLog.list_all_open(tmp_path)) == 1
     assert (await spool.read_state())["finalized"] is None
+
+
+# ── 评审第十一轮 ──────────────────────────────────────────────────────
+
+
+async def test_forget_replay_holds_the_lifecycle_guard_around_resolve_and_execute(tmp_path):
+    import contextlib
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    server.fail_always.clear()
+    events = []
+    real_resolve = resolver()
+
+    async def resolve(uid):
+        events.append("resolve")
+        return await real_resolve(uid)
+
+    @contextlib.asynccontextmanager
+    async def guard(uids):
+        events.append(("enter", tuple(uids)))
+        yield
+        events.append("exit")
+
+    real_handler = server.handler
+
+    async def handler(request):
+        if "scoped_forget" in str(request.url):
+            events.append("forget")
+        return await real_handler(request)
+
+    server.handler = handler
+    report = await _recover(tmp_path, server, resolve_char_name=resolve, lifecycle_guard=guard)
+    assert report.forgets_clean
+    # 哨兵展开与日志重放：每次按 uid 解析名字、每次清除请求都在守卫里（改名迁移插不进来）
+    depth = 0
+    for event in events:
+        if isinstance(event, tuple):
+            depth += 1
+        elif event == "exit":
+            depth -= 1
+        else:
+            assert depth == 1, events
+    assert "forget" in events
+
+
+async def test_sealed_upload_of_another_visit_is_resealed_from_the_stream(tmp_path):
+    v = vid(55)
+    _write_stream(tmp_path, v, [_header(v), {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                             "ts": 1001.0, "text": "a", "truncated": False}])
+    d = _spool_dir(tmp_path)
+    foreign = {"v": 1, "own_visit_uid": OWN_A, "request": {"visit_id": vid(56), "role": "host",
+                                                           "started_at": 1.0, "ended_at": 2.0,
+                                                           "usage": {}, "lines": []}}
+    (d / f"{v}.upload.json").write_text(json.dumps(foreign), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    # 别场的上传文件不算数：从流水重新封存，流水不会被当成「已封存的残留」删掉
+    assert visit_id == v and doc["request"]["visit_id"] == v
+    assert [line["text"] for line in doc["request"]["lines"]] == ["a"]

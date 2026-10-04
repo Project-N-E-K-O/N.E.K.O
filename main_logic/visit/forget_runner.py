@@ -378,8 +378,13 @@ async def replay_forgets(
     resolve_char_name: ResolveCharName,
     client: ScopedMemoryClient | None = None,
     void_pending: VoidPending | None = None,
+    lifecycle_guard: LifecycleGuard | None = None,
 ) -> bool:
     """Finish every unfinished clearing operation (startup recovery); True when nothing is left.
+
+    ``lifecycle_guard`` (optional, the one the clearing endpoints use) is held
+    around each sentinel expansion and each log replay, from resolving the
+    character name by uid until the replay ends.
 
     Leftover sentinels are re-expanded within their own scope first (covers a
     crash before their logs were written), then every open revocation log of
@@ -398,9 +403,13 @@ async def replay_forgets(
     else:
         clean = True
     unexpanded: set[str] = set()
+    def guarded(uids: list[str]):
+        return lifecycle_guard(sorted(uids)) if lifecycle_guard else contextlib.nullcontext()
+
     for sentinel in sentinels:
         try:
-            await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
+            async with guarded(sentinel["own_char_uids"]):
+                await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
         except _STEP_ERRORS as exc:
             logger.warning("visit forget replay: cannot expand %s: %r", sentinel["op_id"], exc)
             # 范围没展开成功（名册读不出等）：哨兵是这次清除唯一的记录，必须留到下次
@@ -412,17 +421,20 @@ async def replay_forgets(
         logger.error("visit forget replay: unreadable revocation logs %s", exc.ids)
         return False
     for record in logs:
-        name = await resolve_char_name(record["own_char_uid"])
-        if not name:
-            # 角色已删：它的数据由删除事务的退役步骤处理，这份日志留给退役对账
-            logger.warning("visit forget replay: character of %s no longer exists", record["id"])
-            clean = False
-            continue
-        ok = await execute_log(
-            config_dir, record["id"], own_uid=record["own_uid"], own_char=name,
-            own_char_uid=record["own_char_uid"], peer_uid=record["peer_uid"],
-            client=client, void_pending=void_pending,
-        )
+        # 与端点同一把生命周期守卫：从按 uid 解析名字到重放结束都持有，期间角色
+        # 改不了名、删不掉，不会把清除发到已经迁走的旧名字上又把日志当完成关掉
+        async with guarded([record["own_char_uid"]]):
+            name = await resolve_char_name(record["own_char_uid"])
+            if not name:
+                # 角色已删：它的数据由删除事务的退役步骤处理，这份日志留给退役对账
+                logger.warning("visit forget replay: character of %s no longer exists", record["id"])
+                clean = False
+                continue
+            ok = await execute_log(
+                config_dir, record["id"], own_uid=record["own_uid"], own_char=name,
+                own_char_uid=record["own_char_uid"], peer_uid=record["peer_uid"],
+                client=client, void_pending=void_pending,
+            )
         clean = clean and ok
     try:
         remaining = await RevocationLog.list_all_open(config_dir)
