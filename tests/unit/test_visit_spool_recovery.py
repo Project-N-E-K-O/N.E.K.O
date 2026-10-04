@@ -2129,3 +2129,18 @@ async def test_terminal_upload_rejection_marks_the_queued_report(tmp_path):
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
     (visit_id, doc), = reports.calls
     assert not sealed.exists() and doc["transcript_unavailable"] == "parts_out_of_range"
+
+
+async def test_oversized_state_number_does_not_abort_upload_recovery(tmp_path):
+    bad, good = vid(104), vid(105)
+    for v in (bad, good):
+        await make_visit(tmp_path, v, [ln(0)], finalized="wrap_up")
+        _write_stream(tmp_path, v, _stream_records(v))
+    state_path = _spool_dir(tmp_path) / f"{bad}.state.json"
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    data["digest_writes"] = {"0": {"requested_at": 10 ** 400, "through_lp": 0, "group": {}, "segments": {}}}
+    state_path.write_text(json.dumps(data), encoding="utf-8")     # 超出浮点范围的整数
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 坏 state 那场按读不出处理；不能让 OverflowError 中断整轮，其余场次照常补传
+    assert {visit_id for visit_id, _ in uploads.calls} >= {good}

@@ -212,11 +212,14 @@ def _is_int(value: Any) -> bool:
 
 
 def _is_number(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（state 判为损坏），
+        # 不能让未捕获的异常中断整轮补录 / 补传
+        return False
 
 
 def validate_header(header: Mapping[str, Any]) -> dict:
