@@ -56,7 +56,7 @@ import json
 import math
 import os
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1145,16 +1145,16 @@ class VisitSpool:
         every line counts as dropped.
         """
 
-        def read() -> bytes | None:
+        def read() -> SpoolContents:
+            # 读与解析都在工作线程：长场次的转录可能有几十 MB，逐行 JSON 解码与校验放在
+            # 事件循环上会卡住在飞的 WebSocket
             try:
-                return self.jsonl_path.read_bytes()
+                data = self.jsonl_path.read_bytes()
             except FileNotFoundError:
-                return None
+                return SpoolContents(header=None)
+            return _parse_spool_bytes(data, self.visit_id)
 
-        data = await asyncio.to_thread(read)
-        if data is None:
-            return SpoolContents(header=None)
-        return _parse_spool_bytes(data, self.visit_id)
+        return await asyncio.to_thread(read)
 
     # ── state.json ──
 
@@ -1591,7 +1591,9 @@ class VisitSpool:
         await asyncio.to_thread(drop)
 
     @classmethod
-    def _sweep_sync(cls, config_dir: Path, now: float) -> list[Path]:
+    def _sweep_sync(
+        cls, config_dir: Path, now: float, is_live: Callable[[str], bool] | None = None,
+    ) -> list[Path]:
         spool_dir = _spool_dir(config_dir).resolve()
         deleted: list[Path] = []
         remaining = []
@@ -1625,8 +1627,10 @@ class VisitSpool:
                 # 还开着写的场次（墙钟往前跳过 7 天也会显得过期）整场不动：逐路径锁挡不住
                 # append，删掉后追加写进已删除的 inode、关闭时连同恢复数据一起消失。
                 # 判定与删除在同一把登记锁里，open 不能夹在中间登记
+                # 关了记忆的在飞场次只有上传流水、没有登记的记忆 spool：靠调用方的在飞判断兜住
+                live = is_live is not None and is_live(visit_id)
                 with _OPEN_SPOOLS_LOCK:
-                    busy = _spool_key(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)) in _OPEN_SPOOLS
+                    busy = live or _spool_key(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)) in _OPEN_SPOOLS
                     unlinked = False if busy else _sweep_unlink(path)
                 if not unlinked:
                     if busy or path.exists():
@@ -1647,6 +1651,8 @@ class VisitSpool:
             by_visit.setdefault(visit_id, []).append((suffix, path, st))
         candidates = []
         for visit_id, files in by_visit.items():
+            if is_live is not None and is_live(visit_id):
+                continue
             state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             if state is None or not transcript_releasable(state):
                 continue
@@ -1690,7 +1696,9 @@ class VisitSpool:
         return deleted
 
     @classmethod
-    async def sweep(cls, config_dir: str | Path, now: float) -> list[Path]:
+    async def sweep(
+        cls, config_dir: str | Path, now: float, *, is_live: Callable[[str], bool] | None = None,
+    ) -> list[Path]:
         """Reclaim spool directory space; return the deleted paths.
 
         ``now`` must be wall-clock epoch seconds (``time.time()``): file ages
@@ -1713,5 +1721,7 @@ class VisitSpool:
 
         A file that cannot be deleted (locked, no permission, a directory) is
         logged and kept for a later sweep; the rest of the sweep continues.
+        Visits for which ``is_live`` answers True (in flight, possibly with
+        only an upload stream) are never touched.
         """
-        return await asyncio.to_thread(cls._sweep_sync, Path(config_dir), now)
+        return await asyncio.to_thread(cls._sweep_sync, Path(config_dir), now, is_live)

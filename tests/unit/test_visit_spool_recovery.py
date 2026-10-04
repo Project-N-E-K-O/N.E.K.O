@@ -1992,3 +1992,25 @@ async def test_upload_progress_survives_an_undeletable_stale_stream(tmp_path, mo
     # 上传回调写进文件的分片进度不算「与流水不一致」：不重封、不清零
     assert uploaded["chunk_progress"] == {"next": 3}
     assert json.loads(sealed.read_text(encoding="utf-8"))["chunk_progress"] == {"next": 3}
+
+
+async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(94)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    doc["request"]["lines"] = doc["request"]["lines"][:1]      # 封存文件缺行
+    sealed.write_text(json.dumps(doc), encoding="utf-8")
+
+    def locked(path):
+        raise PermissionError("locked by antivirus")
+
+    monkeypatch.setattr(recovery, "_read_stream", locked)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 流水在却读不出：比对做不了，两份都留着、这轮不上传，不能把缺行的文件当正本传上去
+    assert uploads.calls == [] and stream.exists() and sealed.exists()

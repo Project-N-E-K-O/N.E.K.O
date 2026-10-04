@@ -658,7 +658,8 @@ async def _summary_locked(
     text = (await asyncio.to_thread(truncate_to_tokens, text, VISIT_LAST_SUMMARY_MAX_TOKENS)).strip()
     peer_texts = [str(line["text"]) for line in lines if line["from"] in _PEER_SPEAKERS]
     try:
-        assert_no_peer_ngram(text, peer_texts, n=VISIT_PEER_NGRAM_N)
+        # 全转录逐字扫描：对端行可能很多，放到工作线程，不卡事件循环
+        await asyncio.to_thread(assert_no_peer_ngram, text, peer_texts, n=VISIT_PEER_NGRAM_N)
     except PeerNgramHit:
         memory_bridge.diag("last_summary_peer_ngram", visit_id=spool.visit_id)
         text = ""

@@ -1755,3 +1755,39 @@ async def test_close_errors_still_unregister_the_spool(tmp_path, monkeypatch, fs
     assert ei.value.errno == (28 if fsync_fails else 5)      # fsync 先失败时抛的是它
     assert not is_spool_open(sp.jsonl_path)
     await VisitSpool(tmp_path, vid(63)).delete_peer_fields()  # 不再 SpoolBusy
+
+
+async def test_sweep_never_touches_a_live_visit_without_a_memory_spool(tmp_path):
+    from main_logic.visit.spool import UPLOAD_JSONL_SUFFIX, visit_path
+
+    live = vid(61)
+    stream = visit_path(tmp_path / "visit_spool", live, UPLOAD_JSONL_SUFFIX)
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_bytes(b'{"kind":"header"}' + bytes([10]))           # 一行头行（以换行结尾）
+    _age(stream, 8)                                   # 墙钟往前跳过 7 天：看起来已过期
+    deleted = await VisitSpool.sweep(tmp_path, NOW, is_live=lambda visit_id: visit_id == live)
+    # 关了记忆的在飞场次只有上传流水、没有登记的 spool：靠调用方的在飞判断兜住
+    assert deleted == [] and stream.exists()
+    assert await VisitSpool.sweep(tmp_path, NOW) == [stream]
+
+
+async def test_read_back_parses_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from main_logic.visit import spool as spool_module
+
+    sp = VisitSpool(tmp_path, vid(62))
+    await sp.write_state(state_for())
+    real = spool_module._parse_spool_bytes
+    threads = []
+
+    def parse(data, visit_id):
+        threads.append(threading.current_thread())
+        return real(data, visit_id)
+
+    monkeypatch.setattr(spool_module, "_parse_spool_bytes", parse)
+    sp.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    sp.jsonl_path.write_bytes(b"")
+    await sp.read_back()
+    # 长转录的逐行解码与校验不能放在事件循环线程上
+    assert threads and threads[0] is not threading.main_thread()

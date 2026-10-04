@@ -373,6 +373,9 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
         "chars", {"c_" + "9" * 24: {"char_tag": "f" * 32, "last_seen": 1.0}}),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"].__setitem__(
         derive_peer_char_id("peer_x", "f" * 32), {"last_seen": 1.0}),
+    # 超出浮点范围的超大整数时间戳：isfinite 会抛 OverflowError，必须判为损坏而不是让清除 500
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"][
+        derive_peer_char_id("peer_x", "f" * 32)].__setitem__("last_seen", 10 ** 400),
 ])
 async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
     # JSON 合法但结构坏了：严格读不能把它当成「没有条目」

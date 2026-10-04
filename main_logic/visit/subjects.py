@@ -339,8 +339,14 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
 
 
 def _is_finite_number(value: Any) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（名册判为损坏），
+        # 不能让清除 / 重放带着未捕获的异常中断
+        return False
 
 
 def _pair_of(own_uid: Any, peer_uid: Any) -> str:

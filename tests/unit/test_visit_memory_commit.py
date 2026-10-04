@@ -591,3 +591,23 @@ async def test_handoff_never_treats_the_opening_visit_as_crashed(tmp_path):
                                start_summary=start, is_live=lambda _v: False,
                                opening_visit_id=vid(85))
     assert started == [] and (await opening.read_state())["finalized"] is None
+
+
+async def test_peer_ngram_scan_runs_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from main_logic.visit import memory_commit
+
+    await seed_roster(tmp_path)
+    real = memory_commit.assert_no_peer_ngram
+    threads = []
+
+    def scan(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(memory_commit, "assert_no_peer_ngram", scan)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    assert await _summarize(spool, FakeLLM())
+    # 全转录逐字扫描放到工作线程，不卡事件循环
+    assert threads and threads[0] is not threading.main_thread()

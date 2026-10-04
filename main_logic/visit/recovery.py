@@ -307,10 +307,14 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
 def _stream_doc_sync(
     spool_dir: Path, visit_id: str, finalized_reason: str | None, owner: str | None,
 ) -> dict | None:
-    """The document resealing the stream would produce, or None when it cannot be read."""
+    """The document resealing the stream would produce, or None when the stream is gone or corrupt.
+
+    Any other read error (permission, a locked file) is raised: the sealed
+    document cannot be checked then, so neither file may be acted on.
+    """
     try:
         records = _read_stream(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
-    except OSError:
+    except FileNotFoundError:
         return None
     if owner is None:
         owner = _spool_header_owner_sync(spool_dir, visit_id)
@@ -635,10 +639,18 @@ async def _upload_pending(
                 # 写完上传文件后、写 state.finalized 前崩溃，本轮补录先把它标成了 crash）时
                 # 沿用文件里记的，不把正常结束的场次重封成 crash
                 sealed_reason = sealed_doc["request"]["finalized_reason"]
-                expected = await asyncio.to_thread(
-                    _stream_doc_sync, spool_dir, visit_id,
-                    sealed_reason if reason in (None, "crash") else reason, owner,
-                )
+                try:
+                    expected = await asyncio.to_thread(
+                        _stream_doc_sync, spool_dir, visit_id,
+                        sealed_reason if reason in (None, "crash") else reason, owner,
+                    )
+                except OSError as exc:
+                    # 流水还在却一时读不出（权限、被占用）：比对做不了，两份都不动、这轮不上传。
+                    # 不能当成「流水没了」放行——删掉完整的流水、传上去的可能是缺行的文件
+                    logger.warning("visit recovery: stream of %s unreadable, upload deferred: %s", visit_id, exc)
+                    sealed.discard(visit_id)
+                    pending.add(visit_id)
+                    continue
                 belongs = expected is None or all(sealed_doc.get(name) == value for name, value in expected.items())
             if belongs:
                 try:
@@ -859,7 +871,7 @@ async def visit_spool_recovery(
         report.forgets_clean = False
     await _cleanup_outboxes(config_dir, live)
     try:
-        report.swept = len(await VisitSpool.sweep(config_dir, time.time() if now is None else now))
+        report.swept = len(await VisitSpool.sweep(config_dir, time.time() if now is None else now, is_live=live))
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: sweep failed: %r", exc)
     for visit_id in (await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)) if names_settled else []):
