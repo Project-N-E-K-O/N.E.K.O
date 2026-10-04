@@ -721,6 +721,9 @@ class PeerRoster:
             node: Any = data
             for key in ("accounts", self.own_uid, "peers"):
                 if key not in node:
+                    if key == "peers":
+                        # upsert 建账户时总会带上 peers：账户在而 peers 缺，只能是损坏
+                        raise RosterCorruptError(f"{self.path.name}: account entry has no peers")
                     return []
                 node = node[key]
                 if not isinstance(node, dict):

@@ -756,11 +756,14 @@ async def test_lifecycle_guard_is_held_for_the_whole_forget(tmp_path):
 # ── 评审第九轮 ────────────────────────────────────────────────────────
 
 
-async def test_stale_stream_that_cannot_be_deleted_holds_back_the_upload(tmp_path, monkeypatch):
+async def test_undeletable_stale_stream_does_not_block_upload_or_reports(tmp_path, monkeypatch):
     v = vid(46)
     _write_stream(tmp_path, v, [_header(v)])
     d = _spool_dir(tmp_path)
     (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": v}}), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v}), encoding="utf-8")
     real_unlink = Path.unlink
 
     def unlink(self, missing_ok=False):
@@ -769,9 +772,11 @@ async def test_stale_stream_that_cannot_be_deleted_holds_back_the_upload(tmp_pat
         return real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", unlink)
-    uploads = Uploads()
-    await _recover(tmp_path, upload_transcript=uploads)
-    assert uploads.calls == [] and (d / f"{v}.upload.json").exists()
+    uploads, reports = Uploads(), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    # Servers 按 visit_id + role 幂等：照常上传，举报也照常提交
+    assert [visit_id for visit_id, _ in uploads.calls] == [v]
+    assert [visit_id for visit_id, _ in reports.calls] == [v]
 
 
 async def test_pending_preview_is_replayed_and_crash_keeps_its_status(tmp_path):
@@ -800,3 +805,15 @@ async def test_retried_forget_reuses_the_open_sentinel(tmp_path):
                                  peer_uid=PEER_X, client=server.client())
     assert second.done
     assert await ClearingSentinels(tmp_path).list_open() == []
+
+
+
+async def test_forget_all_rejects_an_account_without_peers(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import forget_all
+    from main_logic.visit.subjects import RosterCorruptError
+
+    (tmp_path / "visit_peers.json").write_text(json.dumps({"accounts": {OWN_A: {}}}), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=FakeMemoryServer().client())
+    assert len(await ClearingSentinels(tmp_path).list_open()) == 1

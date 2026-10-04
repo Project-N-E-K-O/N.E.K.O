@@ -409,7 +409,6 @@ async def _upload_pending(
     """Retry pending uploads; return the visit ids whose upload is still pending."""
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     pending: set[str] = set()
-    blocked: set[str] = set()
     sealed = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX,)))
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)):
         if live(visit_id):
@@ -429,10 +428,10 @@ async def _upload_pending(
                 try:
                     await asyncio.to_thread(stream.unlink, True)
                 except OSError as exc:
-                    # 流水删不掉就这一轮先不传：传完删了上传文件、流水还在，下次会再封一次重复上传
+                    # 删不掉就照常上传：Servers 按 visit_id + role 幂等，下次再从残留流水
+                    # 封存上传只会得到 duplicate；若因此挡住上传，一个长期删不掉的文件
+                    # 就让这场的转录与排队举报永远交不上去
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
-                    pending.add(visit_id)
-                    blocked.add(visit_id)
                 continue
             logger.warning("visit recovery: sealed upload of %s unreadable, resealing from its stream",
                            visit_id)
@@ -453,8 +452,6 @@ async def _upload_pending(
         if doc is not None:
             sealed.add(visit_id)
     for visit_id in sorted(sealed):
-        if visit_id in blocked:
-            continue
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
             pending.add(visit_id)
