@@ -459,6 +459,37 @@ async def record_tombstones(
     )
 
 
+async def mark_tombstone_erased(lanlan_name: str, subject_key: str, forget_epoch: int) -> None:
+    """Record that the erase of ``forget_epoch`` for ``subject_key`` completed (monotonic).
+
+    The tombstone is written BEFORE the erase, so it alone does not prove the
+    erase finished; this marker does, and lets a replayed or stale forget of
+    an epoch at or below it skip re-erasing writes made after it.
+    """
+    epoch = int(forget_epoch)
+
+    def _mutate(data: dict) -> bool:
+        row = data.get(subject_key)
+        fence = row.get("forget_epoch") if isinstance(row, dict) else None
+        if not isinstance(fence, int) or isinstance(fence, bool) or fence < 0:
+            # 坏墓碑原样留着（读路径对它 fail closed），不往上记完成标记
+            return False
+        current = row.get("erased_epoch")
+        if isinstance(current, int) and not isinstance(current, bool) and current >= epoch:
+            return False
+        row["erased_epoch"] = epoch
+        return True
+
+    await _update_json_object(lanlan_name, tombstones_path(lanlan_name), _mutate)
+
+
+def erased_epoch(tombstones: dict, subject_key: str) -> int | None:
+    """Highest forget epoch whose erase completed for ``subject_key`` (None when unknown)."""
+    row = tombstones.get(subject_key)
+    value = row.get("erased_epoch") if isinstance(row, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def tombstone_epoch(tombstones: dict, subject_keys: Iterable[str]) -> int | None:
     """Largest forget epoch recorded for any of ``subject_keys`` (or None)."""
     best: int | None = None

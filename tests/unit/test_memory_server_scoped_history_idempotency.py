@@ -369,6 +369,8 @@ async def test_fact_row_written_but_journal_not_updated_is_not_duplicated(env):
     rows = _facts_of(env, GROUP)
     assert len(rows) == 2
     assert len({row["effect_key"] for row in rows}) == 2
+    # 重放命中的效果把已有的行作为这次的结果带回：调用方拿得到这些事实的身份
+    assert result["created"] == 2 and set(result["fact_ids"]) == {row["id"] for row in rows}
     assert env.llm.calls == 1
     assert _key_state(env, KEY_GROUP) == "done"
 
@@ -1295,3 +1297,29 @@ async def test_forget_scrubs_a_misplaced_staging_file_in_place(env):
     assert not other.exists()
     with pytest.raises(idem.IdempotencyStateError):
         await idem.read_staging(NAME, KEY_GROUP)               # 同键重试照样 fail closed
+
+
+
+async def test_replayed_or_stale_forget_does_not_erase_writes_made_after_it(env):
+    env.llm.responses = [SINGLE_FACTS, SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    first = await _forget(env, GROUP, forget_epoch=2)
+    assert first["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    # 清除之后、带着新代数的合法写入
+    await _post(env, _single_body(subject_epochs={GROUP_KEY: 2}, display_name=None))
+    assert len(_facts_of(env, GROUP)) == 2
+    for epoch in (2, 1):                       # 同代数重放、迟到的旧清除
+        again = await _forget(env, GROUP, forget_epoch=epoch)
+        assert again["status"] == "forgotten" and again.get("duplicate") is True
+        assert len(_facts_of(env, GROUP)) == 2
+    newer = await _forget(env, GROUP, forget_epoch=3)   # 更新的清除照常擦
+    assert newer.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
+async def test_forget_whose_erase_did_not_finish_is_not_skipped_on_retry(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    # 墓碑已落盘、擦除还没完成（崩在两步之间）：重试必须照常擦
+    await env.idem.record_tombstones(NAME, [GROUP_KEY], 2)
+    result = await _forget(env, GROUP, forget_epoch=2)
+    assert result.get("duplicate") is None and _facts_of(env, GROUP) == []

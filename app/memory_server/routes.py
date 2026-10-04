@@ -3945,6 +3945,21 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 status_code=500,
                 detail="scoped forget failed; retry is safe and idempotent",
             ) from exc
+        # 这个代数（或更新的）的擦除已经完成过：重放 / 迟到的旧清除不再擦一遍，否则
+        # 会把之后带着新代数合法写入的记忆一并删掉。读不出就照常擦（偏向多删）
+        try:
+            done_epoch = idempotency.erased_epoch(
+                await idempotency.read_tombstones(lanlan_name), subject.key,
+            )
+        except idempotency.IdempotencyStateError:
+            done_epoch = None
+        if done_epoch is not None and done_epoch >= req.forget_epoch:
+            return {
+                "status": "forgotten",
+                "subject": subject.as_entry_fields(),
+                "forgotten_subjects": [target.as_entry_fields() for target in targets],
+                "duplicate": True,
+            }
     # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
@@ -4085,6 +4100,16 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             status_code=500,
             detail="scoped forget failed; retry is safe and idempotent",
         ) from exc
+    if req.forget_epoch is not None:
+        from . import idempotency
+
+        try:
+            # 擦除与两遍取消都完成之后才记「这个代数擦完了」
+            await idempotency.mark_tombstone_erased(lanlan_name, subject.key, req.forget_epoch)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 记不上只是下次重放会再擦一遍（偏向多删）
+            logger.warning(f"[scoped_forget] {lanlan_name}: 记录擦除完成失败: {exc}")
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
@@ -4264,8 +4289,10 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         ):
             continue
         section_subject = persona_subject_from_section(section_key, section)
+        raw_entries = section.get("facts")
+        # 一个 section 的 facts 坏了（不是列表）只当作空，不能让整个列表接口 500
         entries = [
-            entry for entry in (section.get("facts") or [])
+            entry for entry in (raw_entries if isinstance(raw_entries, list) else [])
             if isinstance(entry, dict)
         ]
         persona_entries.extend(entries)

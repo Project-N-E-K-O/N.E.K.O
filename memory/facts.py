@@ -3711,11 +3711,16 @@ class FactStore:
         # 效果键集合（只有带幂等键的 scoped_history 才传 effect_keys）：活跃池
         # + 归档里已出现过的 effect_key。不传时完全不读归档、不建集合。
         existing_effect_keys: set[str] | None = None
+        # 重放命中的效果对应的现有行：一并作为这次的结果返回，否则「事实已写、日志未记」
+        # 之后的重试会报 created: 0、调用方拿不到这些事实的身份
+        replayed_effect_rows: list[dict] = []
+        active_effect_rows: dict[str, dict] = {}
         if effect_keys is not None:
-            existing_effect_keys = {
-                f['effect_key'] for f in existing_facts
+            active_effect_rows = {
+                f['effect_key']: f for f in existing_facts
                 if isinstance(f, dict) and isinstance(f.get('effect_key'), str)
             }
+            existing_effect_keys = set(active_effect_rows)
             existing_effect_keys |= await asyncio.to_thread(
                 self._read_archived_effect_keys, lanlan_name,
             )
@@ -3730,6 +3735,8 @@ class FactStore:
                     effect_key = candidate_effect_key
             if effect_key is not None and effect_key in existing_effect_keys:
                 # 这条效果上一次已经落盘（崩在「事实已写、日志未记」之间）。
+                if effect_key in active_effect_rows:
+                    replayed_effect_rows.append(dict(active_effect_rows[effect_key]))
                 continue
             text = fact.get('text', '').strip()
             if not text:
@@ -4139,7 +4146,7 @@ class FactStore:
                 }
                 reconciled_facts.extend(reconciled_by_identity.values())
 
-        return new_facts
+        return new_facts + replayed_effect_rows
 
     async def _aensure_fact_index_backfilled(
         self, lanlan_name: str, active_facts: list[dict],

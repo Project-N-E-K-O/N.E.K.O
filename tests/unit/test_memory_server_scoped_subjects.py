@@ -288,3 +288,14 @@ async def test_unhashable_subject_fields_do_not_break_the_listing(env):
     _write(char_dir / "facts.json", active)
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])
+
+
+
+async def test_damaged_persona_facts_do_not_break_the_listing(env):
+    char_dir = env.root / NAME
+    persona = json.loads((char_dir / "persona.json").read_text(encoding="utf-8"))
+    persona[VISIT_GROUP.persona_section_key]["facts"] = 1
+    _write(char_dir / "persona.json", persona)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    # 一个 section 的 facts 坏了只当作空：其余 subject 照常列出
+    assert any(row["subject_id"] == VISIT_PART.subject_id for row in result["subjects"])
