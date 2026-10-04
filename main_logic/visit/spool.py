@@ -1426,6 +1426,7 @@ class VisitSpool:
     def _find_visits_sync(
         cls, config_dir: Path, own_char_uid: str, pair_ids: frozenset[str],
         corrupt_wiped: list[str] | None = None, own_uid: str | None = None,
+        strict: bool = True,
     ) -> list[str]:
         spool_dir = _spool_dir(config_dir)
         found = []
@@ -1466,6 +1467,13 @@ class VisitSpool:
                 header is None
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
             ):
+                if state_corrupt and header is None:
+                    # 只剩 state.json（已结清的场次常常如此）且内容损坏：谁都用不了，也认不出
+                    # 是谁的。挡住会让本机每个角色的每次清除都卡死；它若正属于被清的人，删掉
+                    # 本就是清除要做的事。同样只报给调用方，由清除路径删
+                    if corrupt_wiped is not None:
+                        corrupt_wiped.append(visit_id)
+                    continue
                 if state_corrupt and header is not None:
                     # 头行身份已抹（同一角色）而 state.json 内容损坏：这份 state 谁都用不了，
                     # 不能让这个角色之后每一次清除都卡死。这里只是查找（开场交接也调用），
@@ -1476,7 +1484,7 @@ class VisitSpool:
                         corrupt_wiped.append(visit_id)
                     continue
                 unreadable.append(visit_id)
-        if unreadable:
+        if unreadable and strict:
             raise SpoolStateUnreadable(unreadable)
         return found
 
@@ -1484,6 +1492,7 @@ class VisitSpool:
     async def find_visits_for_pairs(
         cls, config_dir: str | Path, own_char_uid: str, pair_ids: Iterable[str],
         *, corrupt_wiped: list[str] | None = None, own_uid: str | None = None,
+        strict: bool = True,
     ) -> list[str]:
         """Return visit ids of ``own_char_uid`` whose state or header still names one of ``pair_ids``.
 
@@ -1495,7 +1504,7 @@ class VisitSpool:
         """
         return await asyncio.to_thread(
             cls._find_visits_sync, Path(config_dir), own_char_uid, frozenset(pair_ids), corrupt_wiped,
-            own_uid,
+            own_uid, strict,
         )
 
     @classmethod
@@ -1504,13 +1513,15 @@ class VisitSpool:
         path = visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX)
 
         def drop() -> None:
-            try:
-                _read_state_file(path)
-            except ValueError:
-                # 仍是坏的才删：期间被重写成好的就交给常规流程
-                path.unlink(missing_ok=True)
-            except FileNotFoundError:
-                pass
+            # 与 state.json 的其他写入者同一把文件锁：不与并发的 update_state 交错
+            with path_lock(path):
+                try:
+                    _read_state_file(path)
+                except ValueError:
+                    # 仍是坏的才删：期间被重写成好的就交给常规流程
+                    path.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
 
         await asyncio.to_thread(drop)
 

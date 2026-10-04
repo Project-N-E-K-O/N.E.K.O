@@ -398,8 +398,10 @@ async def test_forget_planning_refuses_an_unreadable_roster(tmp_path):
         await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
 
 
-async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path):
-    # 已结清的场次常只剩 state.json：它读不出来时 wipe_spool 不能记完成
+async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path, monkeypatch):
+    # 已结清的场次常只剩 state.json：它一时读不出（被占用）时 wipe_spool 不能记完成。
+    # 内容损坏的那种谁都用不了，由清除直接删掉（见 test_visit_spool_recovery）
+    from main_logic.visit import spool as spool_module
     from main_logic.visit.spool import SpoolStateUnreadable
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -408,9 +410,16 @@ async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path
     await sp.write_state(new_state(own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                    pair_id=pair_a, peer_uid=PEER_X, peer_char_id=cid,
                                    memory_enabled=True))
-    sp.state_path.write_text("{broken", encoding="utf-8")
     log = RevocationLog(tmp_path, own_uid=OWN_A)
     rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    real_read = spool_module._read_state_file
+
+    def locked(path):
+        if path == sp.state_path:
+            raise PermissionError("locked by another process")
+        return real_read(path)
+
+    monkeypatch.setattr(spool_module, "_read_state_file", locked)
     with pytest.raises(SpoolStateUnreadable):
         await run_revocation(log, rev_id, roster=roster,
                              forget_subject=FakeMemoryServer().forget, void_pending=_no_void, own_char="A")

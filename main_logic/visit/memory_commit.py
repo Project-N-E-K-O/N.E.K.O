@@ -463,8 +463,10 @@ async def last_summary_handoff(
 
     pair_id = derive_pair_id(own_uid, peer_uid)
     try:
-        visit_ids = await VisitSpool.find_visits_for_pairs(config_dir, own_char_uid, [pair_id])
-    except Exception as exc:  # noqa: BLE001 - 扫描失败只是少等一场，不挡开场
+        # 宽松查找：读不出的场次跳过，只返回能确认属于这一对的；一场无关的坏文件不能
+        # 让这一对的所有上一场都不等
+        visit_ids = await VisitSpool.find_visits_for_pairs(config_dir, own_char_uid, [pair_id], strict=False)
+    except Exception as exc:  # noqa: BLE001 - 扫描失败只是少等，不挡开场
         logger.warning("visit last-summary handoff: cannot scan spools: %s", exc)
         visit_ids = []
     waits: list[asyncio.Future[Any]] = []

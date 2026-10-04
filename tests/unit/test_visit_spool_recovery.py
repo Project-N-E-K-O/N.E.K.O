@@ -1558,15 +1558,45 @@ async def test_any_finalized_visit_without_a_choice_gets_its_chip(tmp_path):
 
 
 
-async def test_corrupt_state_that_may_be_this_persons_still_blocks_the_wipe(tmp_path):
+async def test_state_only_corrupt_visit_is_dropped_by_the_wipe_not_blocking(tmp_path):
     await seed_roster(tmp_path)
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{vid(74)}.state.json").write_text("{torn", encoding="utf-8")   # 没有头行可认：分不清是谁的
+    corrupt = d / f"{vid(74)}.state.json"
+    corrupt.write_text("{torn", encoding="utf-8")              # 只剩 state、且坏了：认不出是谁的
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 宁可不结清也不留下对端身份：日志留着等下次
-    assert outcome.done is False
+    # 不再挡住清除；它若正属于被清的人，删掉本就是清除要做的事
+    assert outcome.done is True and not corrupt.exists()
+
+
+async def test_one_lock_held_state_does_not_hide_the_previous_visit_from_the_handoff(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_module
+    from main_logic.visit.memory_commit import last_summary_handoff
+
+    await seed_roster(tmp_path)
+    previous = await make_visit(tmp_path, vid(81), [ln(0)], finalized="wrap_up")
+    # 只剩 state.json 的一场（认不出是谁的），一时被占用读不出
+    other = await make_visit(tmp_path, vid(82), [], own_char="B", own_char_uid=CHAR_UID_B,
+                             memory_enabled=False)
+    real_read = spool_module._read_state_file
+
+    def flaky(path):
+        if path == other.state_path:
+            raise PermissionError("locked")                    # 一场无关的 state 一时读不出
+        return real_read(path)
+
+    monkeypatch.setattr(spool_module, "_read_state_file", flaky)
+    started = []
+
+    async def start(spool):
+        started.append(spool.visit_id)
+        return True
+
+    await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
+                               start_summary=start, is_live=lambda _v: False)
+    # 交接是宽松查找：读不出的跳过，这一对的上一场照常等
+    assert started == [previous.visit_id]
 
 
 async def test_injected_names_still_get_the_strict_character_check(tmp_path, monkeypatch):
