@@ -1920,3 +1920,70 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
     report = await sweep
     # 枚举前的键记录快照里它还是孤儿；删之前拿键锁重读，已被认领成 pending 的不删
     assert path.exists() and report["staging_removed"] == 0
+
+
+@pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar"])
+async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        if item["segment"] == 1 and item["kind"] == "facts":
+            raise RuntimeError("injected crash before the second segment")
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    if damage == "applied_object":
+        staging["applied"] = {}
+    elif damage == "items_scalar":
+        staging["items"] = 1
+    else:
+        staging["items"].append(7)
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    assert _facts_of(env, GP)
+    result = await _forget(env, GP)
+    # 只丢被清段做不了：整个键按取消处理，隐私擦除照常完成
+    assert result["status"] == "forgotten" and _facts_of(env, GP) == []
+    assert _key_state(env, KEY_SEGMENTS) == "cancelled"
+
+
+async def test_restored_journal_missing_a_locale_item_fails_closed(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    items = [item for item in staging["items"] if item["kind"] != "locale"]
+    assert len(items) < len(staging["items"])
+    for position, item in enumerate(items):
+        item["seq"] = position                                   # 序号重排后其余检查都过得去
+    staging["items"] = items
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(language="zh"))
+    # 语言在请求身份里、开轮时必有一项：整条没了就不能按它收尾
+    assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
+
+
+async def test_restored_journal_missing_its_display_item_is_completed_from_the_retry(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    assert staging["items"][-1]["kind"] == "display_name"
+    staging["items"].pop()                                       # 末尾的显示名项整条丢了
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    result = await _post(env, _single_body())
+    # 用重试请求带的显示名补回这一项，不能就此收尾、永久漏掉
+    assert result["created"] == 2 and _key_state(env, KEY_GROUP) == "done"
+    assert (GROUP_KEY, "串门群") in env.persona.display_names

@@ -2917,6 +2917,7 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
 
 def _keyed_staging_items_valid(
     staging: dict, routed_keys: list | None = None, request_epochs: dict | None = None,
+    language: str | None = None,
 ) -> bool:
     """Whether every journal item of a restored staging document is safe to apply.
 
@@ -3051,6 +3052,15 @@ def _keyed_staging_items_valid(
                 return False
             if not isinstance(order, int) or isinstance(order, bool):
                 return False
+    # 语言在请求哈希里、开轮时按它给每段各预留一个语言项（受支持时），清除也只抹内容不删项：
+    # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
+    expected_locale = 1 if is_supported_language_code(language) else 0
+    locale_per_segment = [0] * len(segments)
+    for item in items:
+        if item.get("kind") == _KEYED_ITEM_LOCALE:
+            locale_per_segment[item["segment"]] += 1
+    if any(count != expected_locale for count in locale_per_segment):
+        return False
     # 每个已应用项都必须留有按类型的完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录
     # 会让这一项被跳过、键照样记 done
     kind_of = {item.get("seq"): item.get("kind") for item in items if isinstance(item, dict)}
@@ -3355,6 +3365,31 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
     return entry
 
 
+def _restore_missing_display_items(staging: dict, display_names: dict[int, str | None]) -> None:
+    """Re-add the display-name item of a segment whose item is missing from a restored journal.
+
+    The display name is not part of the request identity and a restored retry
+    applies the current request's value anyway, so a journal that lost a
+    trailing display item is completed from the retry instead of finalizing
+    the key without it. Segments already dropped by a forget are left alone.
+    """
+    items = staging["items"]
+    dropped_seqs = {
+        entry.get("seq") for entry in staging.get("applied") or []
+        if isinstance(entry, dict) and any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
+    }
+    dropped_segments = {item.get("segment") for item in items if item.get("seq") in dropped_seqs}
+    present = {item.get("segment") for item in items if item.get("kind") == _KEYED_ITEM_DISPLAY_NAME}
+    for index, name in sorted(display_names.items()):
+        if name and index not in present and index not in dropped_segments:
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_DISPLAY_NAME,
+                "segment": index,
+                "display_name": name,
+            })
+
+
 async def _apply_keyed_staging(
     lanlan_name: str,
     key: str,
@@ -3386,6 +3421,8 @@ async def _apply_keyed_staging(
 
     from . import idempotency
 
+    if generations is None and display_names:
+        _restore_missing_display_items(staging, display_names)
     applied = list(staging.get("applied") or [])
     done_seqs = {
         entry.get("seq") for entry in applied if isinstance(entry, dict)
@@ -3588,7 +3625,7 @@ async def _process_scoped_history_keyed(
             and staging.get(_KEYED_STAGING_CANCELLED) is not True
             and not _keyed_staging_items_valid(
                 staging, routed_on_record if isinstance(routed_on_record, list) else None,
-                dict(req.subject_epochs or {}),
+                dict(req.subject_epochs or {}), req.language,
             )
         ):
             # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
@@ -3912,6 +3949,13 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
         return False
     applied = document.setdefault("applied", [])
     items = document.get("items") or []
+    if (
+        not isinstance(applied, list) or not isinstance(items, list)
+        or not all(isinstance(item, dict) for item in items)
+    ):
+        # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
+        # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
+        return False
     forgotten_seqs = {
         item.get("seq") for item in items
         if isinstance(item, dict) and item.get("segment") in affected
@@ -3954,13 +3998,15 @@ def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
     if not affected:
         return
     applied = document.setdefault("applied", [])
-    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     items = document.get("items") or []
+    if not isinstance(applied, list) or not isinstance(items, list):
+        raise ValueError("staging journal is malformed")
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     for position, item in enumerate(items):
-        if item.get("segment") not in affected:
+        if not isinstance(item, dict) or item.get("segment") not in affected:
             continue
-        if item["seq"] not in done:
-            applied.append({"seq": item["seq"], "dropped_forget": True})
+        if item.get("seq") not in done:
+            applied.append({"seq": item.get("seq"), "dropped_forget": True})
         if item.get("kind") != _KEYED_ITEM_LOCALE:
             items[position] = _stripped_item(item)
 
