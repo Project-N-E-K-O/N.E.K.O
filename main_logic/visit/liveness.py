@@ -244,8 +244,14 @@ class VisitLiveness:
         ``hello`` it keeps no heartbeat clock on our messages (whether we
         already verified the peer says nothing about that): a guest's host is
         not counting yet (``None``); a host's guest waits 30 s from its own
-        room join for our ``hello``, approximated by the first time we saw it
-        enter (an earlier bound than any message of ours it could have seen).
+        room join for our ``hello``, approximated by the latest time we saw it
+        enter (cleared by its vendor leave). That entry bound applies only
+        while the guest is still waiting at the drop (``entry + 30 s`` not yet
+        passed, no margin); inside the last 3 s it already lies in the past,
+        which ends the visit at once -- the conservative side. A guest that
+        re-enters under a new vendor identity keeps its original wait, which
+        room events cannot see; carrying the wait start in its ``hello`` is
+        left to the PR-09a protocol.
         The ack lags the peer's clock: it is in flight, or (before the peer
         verified our ``hello`` it drops everything else) waits for the next
         ``hello`` retransmission. For up to one retransmission backoff the
@@ -254,9 +260,11 @@ class VisitLiveness:
         """
         if not self.hello_acked:
             if self.peer_entered_at is not None:  # 只有 host 记录
-                bound = self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
-                # 掉线 / 掉页（since）那一刻访客的等待已经过了：它已不在等，不再套这一项
-                return bound if bound > since else None
+                # 掉线 / 掉页（since）那一刻访客的 30 s 等待已经过了（不带余量判断）：它已不在等，不再套这一项。
+                # 最后 3 s 内掉线时这一项落在过去、当场判死，是保守的一侧
+                if self.peer_entered_at + self._peer_lost_s <= since:
+                    return None
+                return self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
             return None
         if self.last_sent_at is None:
             return None

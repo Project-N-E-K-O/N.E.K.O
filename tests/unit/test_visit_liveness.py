@@ -499,3 +499,17 @@ def test_ack_during_the_socket_stage_keeps_this_drops_budget():
     lv.on_message_sent(501.0)
     lv.on_hello_acked(503.0)
     assert lv.page_deadline == 522.0  # 仍是本次断线 + 20（min(522, 532, 528)）
+
+
+
+def test_entry_bound_judges_the_guest_wait_without_the_margin():
+    # 访客 t=10 入房、要等到 t=40；host 在 t=38 断线：访客还在等，不能当成「已不在等」放宽到 63
+    h = VisitLiveness("host", 0.0)
+    h.on_peer_entered(10.0)
+    h.on_self_disconnected(38.0)
+    assert h.self_deadline() == 37.0  # 落在过去：当场判死，保守的一侧
+    assert h.tick(38.0) == "relay_lost"
+    h2 = VisitLiveness("host", 0.0)
+    h2.on_peer_entered(10.0)
+    h2.on_self_disconnected(40.0)  # 访客的等待已经过了
+    assert h2.self_deadline() == 65.0
