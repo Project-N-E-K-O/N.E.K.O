@@ -176,10 +176,14 @@ def _clean_uid(value: Any) -> str | None:
 
 
 def _finite_ts(value: Any) -> float | int | None:
-    # 名册是非严格读：NaN / Infinity 之类的坏时间戳序列化不了，会让整张列表 500
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return value
-    return None
+    # 名册是非严格读：NaN / Infinity 之类的坏时间戳序列化不了，会让整张列表 500；
+    # 超出浮点范围的超大整数会让 isfinite 抛 OverflowError，同样按坏值回 None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 async def _subject_counts(name: str) -> dict[str, dict]:

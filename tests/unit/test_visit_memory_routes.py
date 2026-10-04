@@ -572,13 +572,14 @@ def test_blank_or_padded_peer_ids_are_rejected(env, peer_uid):
     assert resp.status_code == 400 and server.requests == []
 
 
-def test_peers_survive_non_finite_timestamps(env):
+@pytest.mark.parametrize("first_seen", [float("nan"), 10 ** 400], ids=["nan", "huge_int"])
+def test_peers_survive_non_finite_timestamps(env, first_seen):
     client, _server, tmp_path, _state = env
     _seed(tmp_path)
     path = tmp_path / "visit_peers.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     peer = data["accounts"][OWN_A]["peers"][PEER_X]
-    peer["first_seen"] = float("nan")
+    peer["first_seen"] = first_seen
     peer["last_seen"] = float("inf")
     chars = peer["by_char"]["A"]["chars"]
     chars[next(iter(chars))]["last_seen"] = float("-inf")
