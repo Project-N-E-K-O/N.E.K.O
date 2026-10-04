@@ -804,6 +804,71 @@ async def test_inflight_pubkey_refresh_is_awaited_even_while_failures_are_suppre
 
 
 @pytest.mark.asyncio
+async def test_huge_ticket_timestamps_are_a_bad_response(servers):
+    original = servers._credentials
+
+    def _huge(body):
+        data = original(body).json()
+        claims = {k: v for k, v in idm.peek_ticket_claims(data["identity_ticket"]).__dict__.items() if v is not None}
+        # 负向超大：能绕过「iat 不在未来」与票面时长两道检查，直到与浮点相减时溢出
+        claims["iat"] = -(10 ** 400)
+        claims["exp"] = -(10 ** 400) + idm.ticket_ttl_s("guest")
+        data["identity_ticket"] = mint_ticket(claims, servers.key)
+        data["expires_at"] += 0.5  # 真实 Servers 回的是浮点：大整数与浮点相减才会溢出
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _huge
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+async def test_ticket_with_an_unpaired_surrogate_is_a_bad_response(servers):
+    original = servers._credentials
+
+    def _surrogate(body):
+        data = original(body).json()
+        raw = json.dumps(data).replace(data["identity_ticket"], data["identity_ticket"][:-2] + "\\ud800")
+        return httpx.Response(200, content=raw.encode(), headers={"content-type": "application/json"})
+
+    servers._credentials = _surrogate
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+async def test_pubkey_ttl_overflow_is_a_failed_refresh(servers, monkeypatch):
+    original = servers.handler
+
+    def _handler(request):
+        if request.url.path == "/api/visit/pubkeys":
+            return httpx.Response(200, content=('{"keys":[],"revoked":[],"ttl_s":' + "9" * 400 + "}").encode(),
+                                  headers={"content-type": "application/json"})
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    keys = await cr.fetch_pubkeys(force_refresh=True)
+    assert keys.stale
+
+
+@pytest.mark.asyncio
+async def test_host_cancel_deadline_keeps_the_clock_tolerance(servers, monkeypatch):
+    clock = [time.time()]
+    patch_module_clock(monkeypatch, cr, time=lambda: clock[0])
+
+    async def _sleep(d):
+        clock[0] += d
+
+    monkeypatch.setattr(cr, "_sleep", _sleep)
+    servers.scripted["/api/visit/rooms/"] = [(503, {})] * 1000
+    start = clock[0]
+    # 本机时钟比 Servers 快：Servers 说还剩 10 s，本机看已经到期——仍要在容差内继续重试
+    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=start - 10)
+    assert clock[0] - start >= vs.VISIT_TICKET_CLOCK_TOLERANCE_S - 20
+
+
+@pytest.mark.asyncio
 async def test_credentials_repr_and_logs_never_carry_secrets(servers, caplog):
     with caplog.at_level(logging.DEBUG):
         creds = await _host()
@@ -1004,13 +1069,18 @@ async def test_host_cancel_done_replies(servers, status, code):
 
 @pytest.mark.asyncio
 async def test_host_cancel_gives_up_at_invite_expiry(servers, monkeypatch):
+    clock = [time.time()]
+    patch_module_clock(monkeypatch, cr, time=lambda: clock[0])
+
     async def _sleep(d):
-        return None
+        clock[0] += d
 
     monkeypatch.setattr(cr, "_sleep", _sleep)
-    servers.scripted["/api/visit/rooms/"] = [(503, {})] * 50
-    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=time.time() + 5)
-    assert 1 <= servers.count("/cancel") <= 4
+    servers.scripted["/api/visit/rooms/"] = [(503, {})] * 1000
+    start = clock[0]
+    assert not await cr.cancel_visit_room(VISIT_ID, invite_expires_at=start + 5)
+    # 截止 = 邀请到期 + 时钟容差
+    assert clock[0] - start <= 5 + vs.VISIT_TICKET_CLOCK_TOLERANCE_S
 
 
 # ── 公钥 ───────────────────────────────────────────────────────────────

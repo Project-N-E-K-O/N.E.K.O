@@ -683,11 +683,14 @@ def _parse_credentials(
 
     ticket = payload.get("identity_ticket")
     # 与 hello 线协议同一上限：领得到却发不出 hello 的票当坏响应
-    _need(isinstance(ticket, str) and len(ticket.encode("utf-8")) <= _HELLO_TICKET_MAX_BYTES, "identity_ticket")
+    # 票是两段 base64url：先要求 ASCII（孤立代理字符等在 encode 时会抛错），再按字节限长
+    _need(isinstance(ticket, str) and ticket.isascii() and len(ticket) <= _HELLO_TICKET_MAX_BYTES, "identity_ticket")
     try:
         claims = peek_ticket_claims(ticket)
     except MalformedTicket:
         raise _BadResponse("identity_ticket") from None
+    # 后面要与浮点做运算：超出 JS 安全整数的时间戳先拒，免得 OverflowError 漏出去
+    _need(0 <= claims.iat <= _JS_MAX_SAFE_INT and 0 <= claims.exp <= _JS_MAX_SAFE_INT, "identity_ticket.time")
     _need(claims.v == VISIT_TICKET_VERSION, "identity_ticket.v")
     _need(claims.iss == VISIT_TICKET_ISS, "identity_ticket.iss")
     _need(claims.aud == VISIT_TICKET_AUD, "identity_ticket.aud")
@@ -949,7 +952,11 @@ async def cancel_visit_room(
     require_visit_id(visit_id)
     # 截止时刻再夹一道上限：无论传进来什么，最多重试到「现在 + 邀请有效期 + 容差」
     latest = time.time() + VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S
-    deadline = min(float(invite_expires_at), latest) if invite_expires_at is not None else latest
+    # invite_expires_at 是 Servers 时间：本机时钟快时要加容差，否则邀请还活着就先放弃了
+    deadline = (
+        min(float(invite_expires_at) + VISIT_TICKET_CLOCK_TOLERANCE_S, latest)
+        if invite_expires_at is not None else latest
+    )
     pinned = account or None
     delays = itertools.chain(_CANCEL_BACKOFF_S, itertools.repeat(_CANCEL_BACKOFF_S[-1]))
     while True:
@@ -1019,7 +1026,7 @@ async def _refresh_pubkeys() -> None:
         return
     try:
         fetched = parse_pubkeys_response(_body_json(resp), fetched_at=time.time())
-    except ValueError as exc:
+    except (ValueError, TypeError, OverflowError) as exc:  # 含超大整数：一律按刷新失败
         logger.warning("visit servers pubkeys: malformed reply: %s", exc)
         _pubkeys_failed_at = time.time()
         return

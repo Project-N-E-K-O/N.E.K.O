@@ -895,6 +895,34 @@ def test_replaced_during_preflight_does_not_fetch_credentials():
     assert s.issued == 0
 
 
+def test_unregistered_session_never_delivers_late_credentials():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = GatedSession(hold_issue={1})
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        ws = _RecordingWS()
+        conn = tw._attach(link, ws)
+        preflight = {"type": "caps", "stage": "preflight", "preflight_ok": True}
+        task = asyncio.ensure_future(tw._handle_frame(link, conn, preflight, 10, VISIT_ID, "guest"))
+        while ("issue", 1) not in s.gates:
+            await asyncio.sleep(0)
+        # Servers 回来与场次结束同一拍：handler 先恢复，关闭任务还没来得及跑
+        s.gates[("issue", 1)].set()
+        tw.unregister_transport_session(s)
+        await task
+        await asyncio.sleep(0)
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert ws.sent == []
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 

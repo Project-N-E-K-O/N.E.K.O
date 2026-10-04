@@ -385,6 +385,8 @@ _close_tasks: set[asyncio.Task] = set()
 
 
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
+    # 先同步退役：关闭任务真正跑起来之前，仍卡在 await 里的 handler 恢复后也发不出任何下行
+    conn.retired = True
     task = asyncio.ensure_future(conn.close(code, reason))
     _close_tasks.add(task)
     task.add_done_callback(_close_tasks.discard)
