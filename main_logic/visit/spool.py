@@ -1466,14 +1466,11 @@ class VisitSpool:
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
             ):
                 if state_corrupt and header is not None:
-                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这份 state 谁都用不了，
-                    # 里面可能残留的对端字段随文件一并删掉，视为已处理——否则这个角色之后
-                    # 每一次清除都卡在这里，永远结不清
-                    try:
-                        visit_path(spool_dir, visit_id, STATE_SUFFIX).unlink(missing_ok=True)
-                        continue
-                    except OSError:
-                        pass
+                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这场属于某个之前已被
+                    # 清除的人，不会是这次要找的这一对；这份 state 谁都用不了，跳过它，不让
+                    # 这个角色之后每一次清除都卡死。这里是查找（开场交接也调用），不删任何
+                    # 文件；坏 state 里可能残留的字段随场次按 7 天回收
+                    continue
                 unreadable.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
