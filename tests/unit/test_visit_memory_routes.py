@@ -307,3 +307,16 @@ def test_peers_survive_a_damaged_cat_record(env):
     assert resp.status_code == 200
     (row,) = resp.json()["peers"]
     assert row["chars"][0]["display_name"] == ""
+
+
+def test_unreadable_sentinel_answers_retryable_503(env):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+    sentinel_dir = tmp_path / "visit_revocations"
+    sentinel_dir.mkdir()
+    (sentinel_dir / f"clearing-{'0' * 32}.json").write_text("{torn", encoding="utf-8")
+    for path, body in (("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
+                       ("/api/visit/memory/forget_all", {"catgirl": "A"})):
+        resp = client.post(path, json=body, headers=GOOD)
+        assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.requests == []

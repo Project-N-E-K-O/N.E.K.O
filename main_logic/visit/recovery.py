@@ -190,7 +190,13 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
         return None
     header = records[0]
     started_at = _number(header.get("started_at"))
-    if header.get("visit_id") != visit_id or started_at is None or header.get("role") not in ("host", "guest"):
+    owner = header.get("own_visit_uid")
+    if (
+        header.get("visit_id") != visit_id or started_at is None
+        or header.get("role") not in ("host", "guest")
+        # 没有占房账号就没人能补传它（只在当前登录账号 = own_visit_uid 时才上传）
+        or not isinstance(owner, str) or not owner
+    ):
         return None
     usage = {key: 0 for key in _USAGE_KEYS}
     anomalies = 0
@@ -272,11 +278,18 @@ async def _maybe_await(value: Any) -> Any:
 
 
 async def _reconcile_rename(config_dir: Path, names: set[str]) -> bool:
+    """Finish or roll back a pending character rename; True once no rename is pending.
+
+    False means a rename may still be pending (marker kept, roster unreadable
+    or ambiguous): name-dependent recovery must wait for a later pass.
+    """
     try:
         marker = await read_roster_marker(config_dir, "pending_rename")
     except RosterCorruptError as exc:
         logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
         return False
+    if marker is None:
+        return True
     if not isinstance(marker, dict):
         return False
     old, new = marker.get("old"), marker.get("new")
@@ -585,22 +598,30 @@ async def visit_spool_recovery(
     try:
         names = (set(await list_char_names()) if list_char_names is not None
                  else set((await local_chars.load_local_characters()).keys()))
-        report.renamed = await _reconcile_rename(config_dir, names)
+        names_settled = await _reconcile_rename(config_dir, names)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
-    try:
-        report.forgets_clean = await replay_forgets(
-            config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("visit recovery: forget replay failed: %r", exc)
+        names_settled = False
+    report.renamed = names_settled
+    if names_settled:
+        try:
+            report.forgets_clean = await replay_forgets(
+                config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("visit recovery: forget replay failed: %r", exc)
+            report.forgets_clean = False
+    else:
+        # 改名还没对账清楚：清除与逐场补录都按角色当前名字找名册条目，此时条目可能还
+        # 在旧名下，清除会「成功」地什么都没删。留到下次启动（转录补传与举报不依赖名字）
+        logger.warning("visit recovery: pending rename unresolved, forget replay and visit recovery deferred")
         report.forgets_clean = False
     await _cleanup_outboxes(config_dir, live)
     try:
         report.swept = len(await VisitSpool.sweep(config_dir, time.time() if now is None else now))
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: sweep failed: %r", exc)
-    for visit_id in await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)):
+    for visit_id in (await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)) if names_settled else []):
         if live(visit_id) or is_spool_open(visit_path(config_dir / VISIT_SPOOL_DIRNAME, visit_id, ".jsonl")):
             continue
         try:

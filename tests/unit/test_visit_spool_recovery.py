@@ -783,7 +783,7 @@ async def test_pending_preview_is_replayed_and_crash_keeps_its_status(tmp_path):
     await seed_roster(tmp_path)
     preview = await make_visit(tmp_path, vid(47), [ln(0)], debrief_choice="preview:diary",
                                debrief_pending={"diary": "d", "facts": []}, last_summary_done=True)
-    crashed = await make_visit(tmp_path, vid(48), [ln(0)], finalized="crash",
+    await make_visit(tmp_path, vid(48), [ln(0)], finalized="crash",
                                debrief_choice="ask_later", debrief_chip_pending=True, last_summary_done=True)
     chips = Chips()
     await _recover(tmp_path, render_chips=chips)
@@ -841,3 +841,33 @@ async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, 
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
     assert [visit_id for visit_id, _ in reports.calls] == [v]           # 下一轮照样能重试
     assert not (reports_dir / f"{v}.json").exists()
+
+
+async def test_stream_header_without_owner_is_not_sealed(tmp_path):
+    v = vid(50)
+    header = _header(v)
+    header.pop("own_visit_uid")
+    _write_stream(tmp_path, v, [header])
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert uploads.calls == []
+
+
+async def test_unresolved_rename_defers_forget_replay_and_visit_recovery(tmp_path):
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    spool = await make_visit(tmp_path, vid(51), [ln(0)], finalized=None)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A", "new": "C"}
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    server.fail_always.clear()
+    server.requests.clear()
+    # 新旧名字都在配置里：改名无法判定，清除与逐场补录都要等
+    report = await _recover(tmp_path, server, list_char_names=_names("A", "C"))
+    assert not report.forgets_clean and server.calls("scoped_forget") == []
+    assert len(await RevocationLog.list_all_open(tmp_path)) == 1
+    assert (await spool.read_state())["finalized"] is None

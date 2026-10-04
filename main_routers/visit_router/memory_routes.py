@@ -53,6 +53,7 @@ from main_logic.visit.forget_runner import (
     forget_all,
     forget_person,
 )
+from main_logic.visit.forget import RevocationLogUnreadable
 from main_logic.visit.limits import Blocklist, BlocklistUnavailable
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -273,7 +274,7 @@ async def forget_memory_peer(request: Request):
         )
     except VisitActive:
         return _error(409, "visit_active")
-    except (RosterCorruptError, OSError, ValueError) as exc:
+    except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
     if not outcome.done:
@@ -310,7 +311,7 @@ async def forget_all_memory(request: Request):
         )
     except VisitActive:
         return _error(409, "visit_active")
-    except (RosterCorruptError, OSError, ValueError) as exc:
+    except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
         logger.error("visit forget_all failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
     if not outcome.done:
