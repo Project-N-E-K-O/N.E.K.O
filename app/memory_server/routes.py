@@ -3948,7 +3948,11 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         fid = _fact_id(fact)
         if fid is None:
             return None
-        return (fid, fact.get("subject_kind"), fact.get("subject_id"), fact.get("scope"))
+        parts = (fact.get("subject_kind"), fact.get("subject_id"), fact.get("scope"))
+        # 身份字段被手改成列表 / 对象之类：不可哈希，按「没有身份」处理、不参与去重
+        if any(part is not None and not isinstance(part, str) for part in parts):
+            return None
+        return (fid, *parts)
 
     active_fact_ids = {
         _identity(fact)

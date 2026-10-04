@@ -222,7 +222,8 @@ async def read_key(lanlan_name: str, key: str) -> dict | None:
     if key not in data:
         return None
     record = data[key]
-    if not isinstance(record, dict) or record.get("state") not in _KNOWN_KEY_STATES:
+    state = record.get("state") if isinstance(record, dict) else None
+    if not isinstance(state, str) or state not in _KNOWN_KEY_STATES:
         # 键在但记录不是对象、或状态缺失 / 不认识：不能当作「没有这个键」或「未完成」——
         # 它可能原本是 done / cancelled，重新生成会把已完成或已清除的产物再写一遍
         raise IdempotencyStateError(f"idempotency record of {key!r} is malformed")

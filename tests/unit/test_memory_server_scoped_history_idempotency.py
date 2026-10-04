@@ -1037,3 +1037,14 @@ async def test_tombstones_are_compared_on_the_wire_key_only(env):
         await _post(env, _single_body(display_name=None))
     staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
     assert [seg["tombstone_keys"] for seg in staging["segments"]] == [[GROUP_KEY]]
+
+
+
+async def test_key_record_with_unhashable_state_fails_closed(env):
+    path = Path(env.idem.keys_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({KEY_GROUP: {"state": ["done"]}}), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503

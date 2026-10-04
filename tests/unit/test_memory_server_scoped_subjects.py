@@ -278,3 +278,13 @@ async def test_same_bare_id_in_two_subjects_is_not_merged(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     part = next(row for row in result["subjects"] if row["subject_id"] == VISIT_PART.subject_id)
     assert part["facts"] == 3
+
+
+
+async def test_unhashable_subject_fields_do_not_break_the_listing(env):
+    char_dir = env.root / NAME
+    active = json.loads((char_dir / "facts.json").read_text(encoding="utf-8"))
+    active.append({**_fact("odd", VISIT_PART, "2026-09-06T10:00:00"), "scope": ["bad"]})
+    _write(char_dir / "facts.json", active)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])
