@@ -3050,7 +3050,8 @@ def _keyed_staging_items_valid(
             # 原本有效的语言，却照样记成已应用
             if not is_supported_language_code(item.get("language")):
                 return False
-            if not isinstance(order, int) or isinstance(order, bool):
+            # 序号是开轮时预留的正的因果时间戳：0 / 负数会被语言存储静默忽略，却照样记成已应用
+            if not isinstance(order, int) or isinstance(order, bool) or order <= 0:
                 return False
     # 语言在请求哈希里、开轮时按它给每段各预留一个语言项（受支持时），清除也只抹内容不删项：
     # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
@@ -3655,6 +3656,15 @@ async def _process_scoped_history_keyed(
                     detail="idempotency state unreadable; retry later",
                 ) from exc
             return _keyed_duplicate_response(shape, contexts)
+        if staging is None and record is not None and stored is None:
+            # 已有 pending 记录却既没有请求身份、也没有暂存：没有任何证据说明这次重试与原来那次
+            # 是同一个请求（原暂存丢失前可能已应用过部分效果，序号推出的效果键会撞上）。
+            # 不能当成全新请求接手
+            logger.error(f"[scoped_history] {lanlan_name}: pending 记录缺请求身份且无暂存，拒绝接手")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            )
         if staging is not None and stored is None:
             # 「暂存已写、键还没记成 pending」之间失败留下的孤儿暂存：先补一条带
             # 请求身份的 pending 记录再应用，否则之后的 done 记录没有身份可核对
@@ -4074,13 +4084,13 @@ async def _cancel_staged_writes_for_subjects(
         if not isinstance(document, dict):
             continue
         key = document.get("key")
-        if not isinstance(key, str) or not isinstance(document.get("subjects"), list):
-            continue
         # 按写入时路由到的 subject 一并匹配：账号绑定关系之后变了，当前的扇出可能已不含
-        # 这份暂存的 wire subject，但它应用时写的是暂存里记下的那个 subject
+        # 这份暂存的 wire subject，但它应用时写的是暂存里记下的那个 subject。
+        # subjects 索引坏了 / 缺了也照样按各段认：不能凭一个坏索引跳过，孤儿暂存之后会被
+        # 同键重试认领、把清除之前的事实写回去
         if not subject_keys.intersection(_staged_subject_keys(document)):
             continue
-        if not idempotency.is_staging_path_of(lanlan_name, key, path):
+        if not isinstance(key, str) or not key or not idempotency.is_staging_path_of(lanlan_name, key, path):
             # 内容里的键与文件名对不上：不能顺着这个不可信的键去开另一个路径的暂存。
             # 就地把这个文件抹成取消标记（保留错位的键，同键重试读它照样 fail closed），
             # 被清 subject 的抽取原文不留在磁盘上

@@ -643,7 +643,13 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                 key = embedded
             # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
             async with key_lock(name, key):
-                record = await read_key(name, key)
+                try:
+                    record = await read_key(name, key)
+                except IdempotencyStateError as exc:
+                    # 这一条键记录坏了：只保留它对应的这份暂存（可能是 pending 键的唯一副本），
+                    # 不能让整个角色的清理就此停下、其余过期暂存一直留在磁盘上
+                    logger.warning(f"[Idempotency] {name}: 键记录 {key!r} 不可读，保留其暂存: {exc}")
+                    continue
                 if record is not None and record.get("state") == KEY_STATE_PENDING:
                     # pending 键的暂存是已生成产物与应用进度的唯一副本（读不出 / 内嵌键
                     # 坏了也一样：同键重试读它会 fail closed）：删了重试只能重新生成，

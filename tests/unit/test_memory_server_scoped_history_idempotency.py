@@ -531,12 +531,23 @@ async def test_crash_during_generation_regenerates_on_retry(env):
 
 async def test_pending_key_without_staging_regenerates_instead_of_duplicate(env):
     """Staging lost (e.g. swept) while the key is pending: regenerate, never skip."""
-    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("pending"))
-    env.llm.responses = [SINGLE_FACTS]
+    env.llm.responses = [RuntimeError("LLM failed"), SINGLE_FACTS]
+    with pytest.raises(RuntimeError):
+        await _post(env, _single_body())                     # 记下带请求身份的 pending，生成失败、没有暂存
+    assert _key_state(env, KEY_GROUP) == "pending" and not _staging_file(env, KEY_GROUP).exists()
     result = await _post(env, _single_body())
     assert result.get("duplicate") is None
     assert result["created"] == 2
-    assert env.llm.calls == 1
+    assert env.llm.calls == 2
+
+
+async def test_identityless_pending_key_without_staging_is_not_adopted(env):
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("pending"))
+    env.llm.responses = [SINGLE_FACTS]
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    # 既没有请求身份也没有暂存：核对不了是不是同一个请求，不能当成全新请求接手
+    assert excinfo.value.status_code == 503 and env.llm.calls == 0
 
 
 async def test_incomplete_batch_generation_is_502_and_stages_nothing(env):
@@ -2012,3 +2023,60 @@ async def test_erase_behind_a_higher_fence_marks_that_fence_erased(env):
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     # 这次擦除在代数 9 的围栏之后进行：一并记为擦到 9，代数 9 的重试不再擦掉之后的合法写入
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 9
+
+
+async def test_forget_scrubs_a_journal_whose_subject_index_is_damaged(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    staging.pop("subjects")                                    # 索引丢了，各段仍指认被清的 subject
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    Path(env.idem.keys_path(NAME)).unlink()                    # 孤儿：没有键记录可按记录取消
+    await _forget(env, GROUP)
+    # 不能凭坏索引跳过：抽取原文不能留在磁盘上，之后的同键重试也不能把清除前的事实写回去
+    assert "猫薄荷" not in (path.read_text(encoding="utf-8") if path.exists() else "")
+    result = await _post(env, _single_body())
+    assert result.get("duplicate") is True and _facts_of(env, GROUP) == []
+
+
+async def test_restored_locale_item_with_non_positive_order_fails_closed(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    next(item for item in staging["items"] if item["kind"] == "locale")["order"] = -1
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(language="zh"))
+    assert excinfo.value.status_code == 503
+
+
+async def test_cleanup_continues_past_a_malformed_key_record(env):
+    idem = env.idem
+    now = time.time()
+    keys_path = Path(idem.keys_path(NAME))
+    keys_path.parent.mkdir(parents=True, exist_ok=True)
+    keys_path.write_text(json.dumps({"bad-key": "not a record", "done-key": {"state": "done"}}), encoding="utf-8")
+    paths = {}
+    for key in ("bad-key", "done-key"):
+        paths[key] = Path(idem.staging_path(NAME, key))
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text(json.dumps({"key": key, "subjects": [], "created_at": now - 500}), encoding="utf-8")
+    real_list = idem.list_staging
+
+    async def bad_first(name):
+        rows = await real_list(name)
+        return sorted(rows, key=lambda row: Path(row[0]) != paths["bad-key"])   # 坏记录的暂存先被扫到
+
+    env.monkeypatch.setattr(idem, "list_staging", bad_first)
+    report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    # 坏的那条只保留它自己的暂存，其余过期暂存照常清理
+    assert paths["bad-key"].exists() and not paths["done-key"].exists()
+    assert report["staging_removed"] == 1
