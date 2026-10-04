@@ -1405,3 +1405,43 @@ async def test_record_pass_matches_routed_keys_when_staging_is_not_written_yet(e
         NAME, {"participant:neko_visit:routed-person"},
     )
     assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
+
+
+async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_epoch(env):
+    env.llm.responses = [SINGLE_FACTS, SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_mark = env.idem.mark_tombstone_erased
+
+    async def slow_mark(*args):
+        reached.set()
+        await gate.wait()        # 较新的清除已擦完、放了擦除锁，还没记完成标记
+        return await real_mark(*args)
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", slow_mark)
+    newer = asyncio.create_task(_forget(env, GROUP, forget_epoch=20))
+    await reached.wait()
+    # 较新清除之后、带着新代数的合法写入
+    await _post(env, _single_body(subject_epochs={GROUP_KEY: 20}, display_name=None))
+    assert len(_facts_of(env, GROUP)) == 2
+    real_check = env.routes._forget_epoch_already_erased
+    checks = {"n": 0}
+
+    async def counted(*args):
+        checks["n"] += 1
+        return await real_check(*args)
+
+    env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", counted)
+    older = asyncio.create_task(_forget(env, GROUP, forget_epoch=10))
+    # 给旧清除足够时间：没有栅栏时它会跑到持锁复核（第 2 次核对）并擦除；
+    # 有栅栏时它一直挡在栅栏外，一次核对都做不了
+    for _ in range(200):
+        if checks["n"] >= 2 or older.done():
+            break
+        await asyncio.sleep(0.01)
+    gate.set()
+    await newer
+    stale = await older
+    # 旧清除排在较新清除公布完成代数之后才核对：不再擦掉那批合法写入
+    assert stale.get("duplicate") is True
+    assert len(_facts_of(env, GROUP)) == 2

@@ -3903,6 +3903,27 @@ class ScopedForgetRequest(BaseModel):
 
 @app.post("/internal/memory/{lanlan_name}/scoped_forget")
 async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+    """Erase one subject domain; epoch-tagged forgets of a subject run one at a time.
+
+    The per-subject fence spans the completed-epoch check, the erase, both
+    cancellation passes and the completion marker: without it an older
+    forget could recheck after a newer one released its erase locks but
+    before it published its completed epoch, and erase again.
+    """
+    if req.forget_epoch is None:
+        return await _forget_scoped_subject(lanlan_name, req)
+    from . import idempotency
+
+    try:
+        fence_key = req.subject.to_domain().key
+        fence_name = validate_lanlan_name(lanlan_name)
+    except Exception:  # noqa: BLE001 - 非法请求交给下面的实现照常报错
+        return await _forget_scoped_subject(lanlan_name, req)
+    async with idempotency.forget_fence(fence_name, fence_key):
+        return await _forget_scoped_subject(lanlan_name, req)
+
+
+async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     """Delete every stored memory of one exact (subject, scope) domain.
 
     撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
@@ -4177,7 +4198,7 @@ def _read_persona_for_listing(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         logger.warning(f"[scoped_subjects] persona 读取失败，按无 persona 处理: {exc}")
         return {}
     return data if isinstance(data, dict) else {}

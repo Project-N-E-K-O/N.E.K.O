@@ -299,3 +299,10 @@ async def test_damaged_persona_facts_do_not_break_the_listing(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     # 一个 section 的 facts 坏了只当作空：其余 subject 照常列出
     assert any(row["subject_id"] == VISIT_PART.subject_id for row in result["subjects"])
+
+
+async def test_deeply_nested_persona_does_not_break_the_listing(env):
+    (env.root / NAME / "persona.json").write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    # 嵌套过深的 persona 按读不出处理：其余 subject 照常列出
+    assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])

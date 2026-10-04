@@ -124,6 +124,17 @@ def key_lock(lanlan_name: str, key: str) -> asyncio.Lock:
     return lock
 
 
+def forget_fence(lanlan_name: str, subject_key: str) -> asyncio.Lock:
+    """Return the per-subject lock that serializes epoch-tagged forgets of one subject.
+
+    Held from the completed-epoch check through the erase, both cancellation
+    passes and the completion marker, so the next forget of the subject only
+    checks once the previous one has published (or failed to publish) its
+    completed epoch. Taken before any other lock, by forgets only.
+    """
+    return key_lock(lanlan_name, "forget-fence:" + subject_key)
+
+
 # ── paths ────────────────────────────────────────────────────────────────
 
 def _config_manager():
