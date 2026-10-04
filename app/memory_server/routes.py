@@ -3554,6 +3554,51 @@ def _staged_after_forget(
     return isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= forget_epoch
 
 
+def _segment_subject_keys(segment: object) -> set[str]:
+    if not isinstance(segment, dict):
+        return set()
+    keys = {str(segment.get("wire_key"))}
+    subject = segment.get("subject")
+    if isinstance(subject, dict) and subject.get("subject_kind") and subject.get("subject_id"):
+        keys.add(f"{subject['subject_kind']}:{subject['subject_id']}")
+    return keys
+
+
+def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
+    """Drop only the forgotten segments of a partly affected multi-segment journal.
+
+    Returns False (nothing changed) when no segment or every segment touches
+    ``subject_keys``: the whole key is cancelled then. Otherwise every
+    not-yet-applied item of an affected segment is journaled as
+    ``dropped_forget`` and every item of such a segment loses its extracted
+    content, so a retry applies only the untouched segments.
+    """
+    segments = document.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return False
+    affected = {
+        index for index, segment in enumerate(segments)
+        if _segment_subject_keys(segment) & subject_keys
+    }
+    if not affected or len(affected) == len(segments):
+        return False
+    applied = document.setdefault("applied", [])
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    items = document.get("items") or []
+    for position, item in enumerate(items):
+        if (
+            not isinstance(item, dict) or item.get("segment") not in affected
+            or item.get("kind") == _KEYED_ITEM_LOCALE
+        ):
+            # 语言序号项与生成期间被清时同口径保留（不含被清 subject 的内容）
+            continue
+        if item.get("seq") not in done:
+            applied.append({"seq": item.get("seq"), "dropped_forget": True})
+        # 被清 subject 的抽取原文 / 显示名不能留在磁盘上；只留响应与跳过所需的序号
+        items[position] = {"seq": item.get("seq"), "kind": item.get("kind"), "segment": item.get("segment")}
+    return True
+
+
 def _cancelled_staging_marker(document: dict) -> dict:
     """The staging document reduced to what a retry needs to recognise its key as cancelled.
 
@@ -3619,6 +3664,12 @@ async def _cancel_staged_writes_for_subjects(
                 current, subject_keys, request_subject_key, forget_epoch,
             ):
                 continue
+            if _drop_forgotten_segments(current, subject_keys):
+                # 多段批次只有部分段涉及被清的 subject：只把这些段未应用的项记为丢弃、
+                # 抹掉它们的抽取原文，键保持 pending、暂存留着，重试照常补写其余段
+                await idempotency.write_staging(lanlan_name, key, current)
+                cancelled += 1
+                continue
             try:
                 await idempotency.update_key(
                     lanlan_name,
@@ -3678,6 +3729,11 @@ async def _cancel_staged_writes_for_subjects(
                 staged, subject_keys, request_subject_key, forget_epoch,
             ):
                 # 带着这次清除之后的代数发起的新请求：它的产物是合法的新记忆，不取消
+                continue
+            if staged is not None and _drop_forgotten_segments(staged, subject_keys):
+                # 同上面的暂存扫描：多段批次只丢涉及被清 subject 的段，其余段留给重试
+                await idempotency.write_staging(lanlan_name, key, staged)
+                cancelled += 1
                 continue
             # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
             # 暂存（请求失败、已放开键锁）同样要取消，否则擦除之后、第二遍扫描之前的

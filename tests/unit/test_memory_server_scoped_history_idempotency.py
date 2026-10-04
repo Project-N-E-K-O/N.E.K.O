@@ -1181,3 +1181,56 @@ async def test_forget_keeps_staging_issued_after_it_by_epoch(env, forget_epoch, 
     # 请求代数 >= 这次清除的代数：它是知道这次清除之后才发起的新写入，不取消
     assert _staging_file(env, KEY_GROUP).exists() is kept
     assert _key_state(env, KEY_GROUP) == ("pending" if kept else "cancelled")
+
+
+@pytest.mark.parametrize("crash_segment", [0, 1], ids=["before-forgotten-segment", "after-it"])
+async def test_forget_of_one_segment_keeps_the_other_segments_for_retry(env, crash_segment):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        if item["segment"] == crash_segment and item["kind"] == "facts":
+            raise RuntimeError("injected crash before the second segment")
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    assert len(_facts_of(env, GP)) == (0 if crash_segment == 0 else 1) and _facts_of(env, PART) == []
+    result = await _forget(env, GP)
+    assert result["status"] == "forgotten" and _facts_of(env, GP) == []
+    # 只丢被清的那一段：键仍 pending、暂存留着，且其中没有被清段的抽取原文
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    assert "团子喜欢晒太阳" not in _staging_file(env, KEY_SEGMENTS).read_text(encoding="utf-8")
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    again = await _post(env, _segments_body())
+    assert again.get("duplicate") is None
+    # 重试补写没被清的那一段，被清的那一段不会写回
+    assert len(_facts_of(env, PART)) == 2 and _facts_of(env, GP) == []
+    # 被清段未应用的显示名项同样不补写（重试时显示名取自当前请求，不记丢弃就会写回）
+    assert (GP_KEY, "团子") not in env.persona.display_names
+    assert env.llm.calls == 1
+    assert _key_state(env, KEY_SEGMENTS) == "done"
+
+
+async def test_recording_over_a_malformed_tombstone_fails_closed(env):
+    idem = env.idem
+    path = Path(idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "9"}}), encoding="utf-8")
+    with pytest.raises(idem.IdempotencyStateError):
+        await idem.record_tombstones(NAME, [GROUP_KEY], 1)
+    # 坏的墓碑原样留着，不被较低的代数覆盖
+    assert json.loads(path.read_text(encoding="utf-8")) == {GROUP_KEY: {"forget_epoch": "9"}}
+
+
+async def test_cleanup_keeps_staging_whose_embedded_key_is_not_its_own(env):
+    idem = env.idem
+    now = time.time()
+    await idem.update_key(NAME, "key-a", idem.transition("pending"))
+    path = Path(idem.staging_path(NAME, "key-a"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # key-a 的暂存文件里键被改成了 key-b（key-b 没有 pending 记录）
+    path.write_text(json.dumps({"key": "key-b", "subjects": [], "created_at": now - 500}), encoding="utf-8")
+    report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert report["staging_removed"] == 0 and path.exists()

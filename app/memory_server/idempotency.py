@@ -384,6 +384,14 @@ async def record_tombstones(
                 current.get("forget_epoch")
                 if isinstance(current, dict) else None
             )
+            if subject_key in data and (
+                not isinstance(current_epoch, int)
+                or isinstance(current_epoch, bool)
+                or current_epoch < 0
+            ):
+                # 与读路径同口径：墓碑在但内容坏了，原值可能是更高的围栏，不能用这次
+                # 较低的代数覆盖掉
+                raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
             if (
                 isinstance(current_epoch, int)
                 and not isinstance(current_epoch, bool)
@@ -479,7 +487,11 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
             if age_anchor >= cutoff:
                 continue
             key = document.get("key") if isinstance(document, dict) else None
-            if isinstance(key, str) and key:
+            if (
+                isinstance(key, str) and key
+                and os.path.normcase(os.path.abspath(staging_path(name, key)))
+                == os.path.normcase(os.path.abspath(path))
+            ):
                 # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
                 async with key_lock(name, key):
                     record = await read_key(name, key)
@@ -490,7 +502,8 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                     if await asyncio.to_thread(_remove_file, path):
                         report["staging_removed"] += 1
             else:
-                # 读不出 / 没有键的暂存：文件名只是键的摘要，查不到它的键记录，可能正是
+                # 读不出 / 没有键 / 内容里的键与文件名对不上的暂存：文件名只是键的摘要，
+                # 查不到它真正的键记录，可能正是
                 # 某个 pending 键唯一的产物与进度副本。不按过期删；同键重试读它会
                 # fail closed，而不是当作没有暂存去重新生成
                 logger.warning(f"[Idempotency] {name}: 暂存 {os.path.basename(path)} 读不出，保留")
