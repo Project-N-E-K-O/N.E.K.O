@@ -1670,3 +1670,42 @@ async def test_malformed_rename_marker_is_dropped(tmp_path):
     # 没有可对账的信息：记诊断后清掉，不再永久挡住补录与清除
     assert report.renamed is True
     assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))
+
+
+async def test_corrupt_wiped_state_of_another_account_is_left_alone(tmp_path):
+    await seed_roster(tmp_path)
+    other = await make_visit(tmp_path, vid(80), [ln(0)], own_uid=OWN_B, finalized="wrap_up")
+    await other.delete_peer_fields()
+    other.state_path.write_text("{torn", encoding="utf-8")
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 别的账号下的坏 state 不在这次清除范围内：不挡、也不删
+    assert outcome.done and other.state_path.exists()
+
+
+async def test_rename_reconciliation_reloads_names_under_the_guard(tmp_path, monkeypatch):
+    import contextlib
+
+    from main_logic.visit import local_chars
+
+    await seed_roster(tmp_path)
+    _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    table = {"C": CHAR_UID_A}
+
+    async def load():
+        return dict(table)
+
+    @contextlib.asynccontextmanager
+    async def guard(_uids):
+        table.clear()                                          # 等守卫期间角色被删除
+        yield
+
+    monkeypatch.setattr(local_chars, "load_local_characters", load)
+    report = await visit_spool_recovery(
+        Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({}),
+        client=FakeMemoryServer().client(), is_live=lambda _v: False, lifecycle_guard=guard,
+    )
+    # 守卫内重读到「角色已删」：按删除处理（丢标记、不迁名册），而不是按旧快照正向迁移
+    assert report.renamed is True
+    after = json.loads((tmp_path / "visit_peers.json").read_text(encoding="utf-8"))
+    assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]

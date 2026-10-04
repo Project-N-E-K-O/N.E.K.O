@@ -870,6 +870,7 @@ async def run_revocation(
             corrupt_wiped: list[str] = []
             visit_ids = await VisitSpool.find_visits_for_pairs(
                 log.config_dir, record["own_char_uid"], record["pair_ids"], corrupt_wiped=corrupt_wiped,
+                own_uid=record["own_uid"],
             )
             for visit_id in visit_ids:
                 await VisitSpool(log.config_dir, visit_id).delete_peer_fields()

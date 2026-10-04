@@ -371,6 +371,7 @@ _ALL_NAMES = None
 async def _reconcile_rename_guarded(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None,
     lifecycle_guard: LifecycleGuard | None,
+    reload: Callable[[], Awaitable[tuple[set[str], dict[str, str] | None]]] | None = None,
 ) -> frozenset[str] | None:
     """:func:`_reconcile_rename` under the renamed character's lifecycle guard.
 
@@ -393,7 +394,10 @@ async def _reconcile_rename_guarded(
     if not uids:
         return await _reconcile_rename(config_dir, names, uid_of)
     async with lifecycle_guard(sorted(uids)):
-        # 守卫内重读名单与标记（等守卫期间正常改名可能已完成并清掉标记）
+        # 守卫内重读名单与标记：等守卫期间角色可能又被改名或删除，拿守卫之前的快照会算错
+        # 方向；标记由 _reconcile_rename 自己重读
+        if reload is not None:
+            names, uid_of = await reload()
         return await _reconcile_rename(config_dir, names, uid_of)
 
 
@@ -793,10 +797,14 @@ async def visit_spool_recovery(
         # 不论名单从哪来都先严格检查角色配置：常规加载会静默滤掉坏条目、返回部分名单，
         # 改名对账会据此误判方向，下面的清除重放也会把「解析不出名字」当成「角色已删」。
         # 配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
-        await local_chars.ensure_characters_readable()
-        uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
-        names = set(await list_char_names()) if list_char_names is not None else set(uid_of)
-        unsettled = await _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard)
+        async def load_names() -> tuple[set[str], dict[str, str] | None]:
+            await local_chars.ensure_characters_readable()
+            uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
+            names = set(await list_char_names()) if list_char_names is not None else set(uid_of)
+            return names, uid_of
+
+        names, uid_of = await load_names()
+        unsettled = await _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
         unsettled = _ALL_NAMES

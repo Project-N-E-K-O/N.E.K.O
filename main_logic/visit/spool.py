@@ -1425,7 +1425,7 @@ class VisitSpool:
     @classmethod
     def _find_visits_sync(
         cls, config_dir: Path, own_char_uid: str, pair_ids: frozenset[str],
-        corrupt_wiped: list[str] | None = None,
+        corrupt_wiped: list[str] | None = None, own_uid: str | None = None,
     ) -> list[str]:
         spool_dir = _spool_dir(config_dir)
         found = []
@@ -1471,7 +1471,8 @@ class VisitSpool:
                     # 不能让这个角色之后每一次清除都卡死。这里只是查找（开场交接也调用），
                     # 不删任何文件；单独报给调用方，由清除的抹身份步骤把它（连同可能残留
                     # 的对端字段）删掉
-                    if corrupt_wiped is not None:
+                    # 只报同一账号下的（头行的 own_uid 抹身份时保留）：别的账号的场次与这次清除无关
+                    if corrupt_wiped is not None and (own_uid is None or header.get("own_uid") == own_uid):
                         corrupt_wiped.append(visit_id)
                     continue
                 unreadable.append(visit_id)
@@ -1482,7 +1483,7 @@ class VisitSpool:
     @classmethod
     async def find_visits_for_pairs(
         cls, config_dir: str | Path, own_char_uid: str, pair_ids: Iterable[str],
-        *, corrupt_wiped: list[str] | None = None,
+        *, corrupt_wiped: list[str] | None = None, own_uid: str | None = None,
     ) -> list[str]:
         """Return visit ids of ``own_char_uid`` whose state or header still names one of ``pair_ids``.
 
@@ -1494,6 +1495,7 @@ class VisitSpool:
         """
         return await asyncio.to_thread(
             cls._find_visits_sync, Path(config_dir), own_char_uid, frozenset(pair_ids), corrupt_wiped,
+            own_uid,
         )
 
     @classmethod
