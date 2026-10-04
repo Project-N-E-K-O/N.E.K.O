@@ -232,8 +232,14 @@ async def unregister_remote_tool(
     half-registered on some role; pruning local tracking in that case
     means a later ``clear_plugin_tools`` can't catch the stragglers and
     the model would still see them.
+
+    The payload carries ``expected_source`` so ``main_server`` refuses to
+    remove the name when it is owned by a different source (e.g. our own
+    registration was rejected by the cross-source guard and the name
+    actually belongs to another plugin) — a plugin can never unregister
+    another plugin's tool by name collision.
     """
-    payload = {"name": name, "role": role}
+    payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/unregister"
     try:
@@ -255,6 +261,14 @@ async def unregister_remote_tool(
             f"main_server /api/tools/unregister returned {resp.status_code}: {text[:500]}"
         )
     body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    refused_roles = body.get("refused_roles") if isinstance(body, dict) else None
+    if refused_roles:
+        # 名字归属其它 source：我们的注册从未在 main_server 生效（跨 source
+        # 守卫拒绝、缓存竞态等）。本地跟踪作废即可，绝不能触碰别人的工具。
+        logger.warning(
+            "unregister_remote_tool refused foreign-owned name: plugin_id={}, name={}, refused_roles={}",
+            plugin_id, name, refused_roles,
+        )
     failed_roles = body.get("failed_roles") if isinstance(body, dict) else None
     if failed_roles:
         logger.warning(
