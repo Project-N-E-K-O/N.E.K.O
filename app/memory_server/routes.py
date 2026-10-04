@@ -3746,9 +3746,17 @@ async def _cancel_staged_writes_for_subjects(
         request = record.get("request")
         wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
         wire_keys = [str(k) for k in wire_keys] if isinstance(wire_keys, list) else []
-        # 先在键锁下读暂存再判断是否相关：上面的暂存扫描只是快照，之后才写成的暂存
-        # 可能经路由写到被清的 subject，记录里却只有 wire key。有暂存就按它记下的
-        # 全部 subject（wire + 路由后）匹配，没有暂存才退回只看 wire key
+        # 上面的暂存扫描只是快照，之后才写成的暂存可能经路由写到被清的 subject，记录里
+        # 却只有 wire key：有暂存就按它记下的全部 subject（wire + 路由后）匹配，没有暂存
+        # 才退回只看 wire key。先不拿锁预读一次筛掉无关的键——无关请求可能正持着自己的
+        # 键锁等 LLM，不能让隐私清除排在它后面；相关的再在键锁下重读、复核
+        try:
+            peek = await idempotency.read_staging(lanlan_name, key)
+        except idempotency.IdempotencyStateError:
+            peek = None
+        peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
+        if not subject_keys.intersection(peek_touched):
+            continue
         async with idempotency.key_lock(lanlan_name, key):
             unreadable = None
             try:

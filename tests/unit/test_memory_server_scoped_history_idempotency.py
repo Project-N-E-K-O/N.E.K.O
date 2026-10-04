@@ -1369,3 +1369,15 @@ async def test_record_pass_matches_late_staging_by_its_routed_subject(env):
     # 键记录里只有 wire key，但读到的暂存记着路由后的被清 subject：照样取消
     assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
     assert not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_forget_is_not_blocked_by_an_unrelated_key_holding_its_lock(env):
+    idem = env.idem
+    await idem.update_key(NAME, "unrelated", idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [PART_KEY], "content_hash": "h"},
+    ))
+    async with idem.key_lock(NAME, "unrelated"):       # 无关请求正持着自己的键锁等 LLM
+        cancelled = await asyncio.wait_for(
+            env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY}), timeout=2,
+        )
+    assert cancelled == 0 and _key_state(env, "unrelated") == "pending"
