@@ -67,6 +67,11 @@ logger = get_module_logger(__name__, "Main")
 
 VoidPending = Callable[[dict], Awaitable[None]]
 AdmissionLock = Callable[[str], AsyncContextManager[Any]]
+IsVisitActive = Callable[[str], bool]
+
+
+class VisitActive(RuntimeError):
+    """A character named by the clearing is visiting right now (checked under its admission lock)."""
 
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
@@ -241,9 +246,20 @@ async def _with_admission_locks(
 ) -> contextlib.AsyncExitStack:
     stack = contextlib.AsyncExitStack()
     if admission_lock is not None:
-        for uid in sorted(set(own_char_uids)):
-            await stack.enter_async_context(admission_lock(uid))
+        try:
+            for uid in sorted(set(own_char_uids)):
+                await stack.enter_async_context(admission_lock(uid))
+        except BaseException:
+            # 拿到一半失败 / 被取消：已拿到的锁必须放掉，否则这些角色再也进不了串门
+            await stack.aclose()
+            raise
     return stack
+
+
+def _refuse_active(is_visit_active: IsVisitActive | None, names: Iterable[str]) -> None:
+    # 在准入锁内复查：锁外检查之后、哨兵落盘之前开场的串门也要挡下
+    if is_visit_active is not None and any(is_visit_active(name) for name in names):
+        raise VisitActive("a character in scope is visiting")
 
 
 async def forget_person(
@@ -256,16 +272,20 @@ async def forget_person(
     client: ScopedMemoryClient | None = None,
     void_pending: VoidPending | None = None,
     admission_lock: AdmissionLock | None = None,
+    is_visit_active: IsVisitActive | None = None,
 ) -> ForgetOutcome:
     """"Forget this person" under one local character (``scope='person'``).
 
     ``admission_lock(own_char_uid)`` (optional, the visit admission lock of a
     character) is held only while the sentinel is written, so a visit admitted
     before it is visible either already exists or sees the sentinel.
+    ``is_visit_active(name)`` is checked again under that lock and raises
+    :class:`VisitActive` before anything is written.
     """
     config_dir = Path(config_dir)
     stack = await _with_admission_locks(admission_lock, [own_char_uid])
     async with stack:
+        _refuse_active(is_visit_active, [own_char])
         sentinel = await ClearingSentinels(config_dir).create(
             own_uid=own_uid, scope="person", own_char_uids=[own_char_uid], peer_uid=peer_uid,
         )
@@ -285,6 +305,7 @@ async def forget_all(
     client: ScopedMemoryClient | None = None,
     void_pending: VoidPending | None = None,
     admission_lock: AdmissionLock | None = None,
+    is_visit_active: IsVisitActive | None = None,
 ) -> ForgetOutcome:
     """"Forget everyone" under the local characters ``chars`` (``{name: character_uid}``).
 
@@ -298,6 +319,7 @@ async def forget_all(
     by_uid = {uid: name for name, uid in chars.items()}
     stack = await _with_admission_locks(admission_lock, by_uid)
     async with stack:
+        _refuse_active(is_visit_active, chars)
         sentinel = await ClearingSentinels(config_dir).create(
             own_uid=own_uid, scope="chars", own_char_uids=list(by_uid),
         )

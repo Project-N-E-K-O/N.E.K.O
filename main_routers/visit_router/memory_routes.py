@@ -46,7 +46,7 @@ from fastapi.responses import JSONResponse
 
 from config.visit_settings import NEKO_VISIT_ALLOW_NONLOCAL, VISIT_MEMORY_PLATFORM
 from main_logic.visit import local_chars, memory_bridge
-from main_logic.visit.forget_runner import AdmissionLock, forget_all, forget_person
+from main_logic.visit.forget_runner import AdmissionLock, VisitActive, forget_all, forget_person
 from main_logic.visit.limits import Blocklist, BlocklistUnavailable
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -251,7 +251,10 @@ async def forget_memory_peer(request: Request):
         outcome = await forget_person(
             _hooks.config_dir(), own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
             peer_uid=peer_uid, client=_hooks.client(), admission_lock=_hooks.admission_lock,
+            is_visit_active=_hooks.is_visit_active,
         )
+    except VisitActive:
+        return _error(409, "visit_active")
     except (RosterCorruptError, OSError, ValueError) as exc:
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
@@ -284,8 +287,10 @@ async def forget_all_memory(request: Request):
     try:
         outcome = await forget_all(
             _hooks.config_dir(), own_uid=own_uid, chars=chars, client=_hooks.client(),
-            admission_lock=_hooks.admission_lock,
+            admission_lock=_hooks.admission_lock, is_visit_active=_hooks.is_visit_active,
         )
+    except VisitActive:
+        return _error(409, "visit_active")
     except (RosterCorruptError, OSError, ValueError) as exc:
         logger.error("visit forget_all failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)

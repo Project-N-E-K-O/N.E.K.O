@@ -318,11 +318,20 @@ async def _recover_visit(
     status = None
     show_chip = False
     if state["finalized"] is None:
-        state = await spool.update_state(finalized="crash")
+        # 只在有可 digest 句时出芯片（记忆关的场次没有 .jsonl）；不写任何私聊记忆。
+        # 崩溃标记与芯片标记同一次原子写：两步之间被杀，下次就再也判不出要弹芯片
+        show_chip = choice in (None, "ask_later") and await _has_digestable_lines(spool, state)
+        changes: dict[str, Any] = {"finalized": "crash"}
+        if show_chip:
+            changes["debrief_chip_pending"] = True
+        state = await spool.update_state(**changes)
         report.crashed.append(visit_id)
         status = "interrupted"
-        # 只在有可 digest 句时出芯片（记忆关的场次没有 .jsonl）；不写任何私聊记忆
-        show_chip = choice in (None, "ask_later") and await _has_digestable_lines(spool, state)
+    elif state["finalized"] == "crash" and choice is None and not state["debrief_chip_pending"]:
+        # 旧版本或别的路径留下的「已标崩溃、没记芯片」：照样补弹
+        if await _has_digestable_lines(spool, state):
+            show_chip = True
+            status = "interrupted"
     elif state["finalized"] == "shutdown" and choice is None:
         # 兜底：老版本关机没写 ask_later，或写之前就被杀
         if await _has_digestable_lines(spool, state):
@@ -443,7 +452,13 @@ async def _upload_pending(
         if not ok:
             pending.add(visit_id)
             continue
-        await asyncio.to_thread(path.unlink, True)
+        try:
+            await asyncio.to_thread(path.unlink, True)
+        except OSError as exc:
+            # 已传上去但本地删不掉：只记这一场（下次 duplicate 后再删），不挡其余场次
+            logger.warning("visit recovery: uploaded %s but cannot delete it: %s", path.name, exc)
+            pending.add(visit_id)
+            continue
         # 该场转录上传成功后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
@@ -480,7 +495,10 @@ async def _submit_report(
     report.reports[visit_id] = ok
     if ok:
         # 举报文件只在 Servers 受理后删
-        await asyncio.to_thread(path.unlink, True)
+        try:
+            await asyncio.to_thread(path.unlink, True)
+        except OSError as exc:
+            logger.warning("visit recovery: report %s accepted but cannot delete it: %s", path.name, exc)
 
 
 async def _submit_reports(

@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 import os
 import re
 import time
@@ -571,3 +573,97 @@ async def test_corrupt_sealed_upload_is_resealed_from_its_stream(tmp_path):
     (visit_id, doc), = uploads.calls
     assert visit_id == v and [line["text"] for line in doc["request"]["lines"]] == ["a"]
     assert not list(d.glob(f"{v}.upload*"))
+
+
+# ── 评审第三轮 ────────────────────────────────────────────────────────
+
+
+async def test_crash_marked_visit_without_chip_flag_gets_its_chip(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, vid(38), [ln(0, "你好")], finalized="crash")
+    chips = Chips()
+    await _recover(tmp_path, render_chips=chips)
+    assert (await spool.read_state())["debrief_chip_pending"] is True
+    assert chips.calls == [(vid(38), "A", "interrupted")]
+
+
+async def test_crash_marker_and_chip_flag_are_written_together(tmp_path, monkeypatch):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, vid(39), [ln(0, "你好")], finalized=None)
+    writes = []
+    real_update = type(spool).update_state
+
+    async def spy(self, **changes):
+        writes.append(dict(changes))
+        return await real_update(self, **changes)
+
+    monkeypatch.setattr(type(spool), "update_state", spy)
+    await _recover(tmp_path)
+    assert {"finalized": "crash", "debrief_chip_pending": True} in writes
+
+
+async def test_failing_cleanup_after_upload_does_not_block_the_rest(tmp_path, monkeypatch):
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    stuck, other = vid(40), vid(41)
+    for v in (stuck, other):
+        (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == f"{stuck}.upload.json":
+            raise PermissionError("read-only")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert sorted(v for v, _ in uploads.calls) == [stuck, other]
+    assert not (d / f"{other}.upload.json").exists()
+
+
+async def test_forget_rechecks_visit_activity_under_the_admission_lock(tmp_path):
+    import asyncio
+    import contextlib
+
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import VisitActive
+
+    await seed_roster(tmp_path)
+    started = {"A": False}
+
+    @contextlib.asynccontextmanager
+    async def admission(_uid):
+        started["A"] = True              # 锁外检查之后、拿到锁之前开场的一场
+        yield
+
+    with pytest.raises(VisitActive):
+        await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                            peer_uid=PEER_X, client=FakeMemoryServer().client(),
+                            admission_lock=admission, is_visit_active=lambda name: started[name])
+    assert await ClearingSentinels(tmp_path).list_open() == []
+    assert await RevocationLog.list_all_open(tmp_path) == []
+
+
+async def test_partially_acquired_admission_locks_are_released(tmp_path):
+    from main_logic.visit.forget_runner import forget_all
+
+    events: list[str] = []
+
+    class Admission:
+        # 普通类而非生成器：只有显式 __aexit__ 才算放锁，垃圾回收不会替我们放
+        def __init__(self, uid):
+            self.uid = uid
+
+        async def __aenter__(self):
+            if self.uid == "e" * 32:
+                raise RuntimeError("admission store unavailable")
+            events.append(f"enter {self.uid[:1]}")
+
+        async def __aexit__(self, *exc):
+            events.append(f"exit {self.uid[:1]}")
+
+    with pytest.raises(RuntimeError):
+        await forget_all(tmp_path, own_uid=OWN_A, chars={"A": "c" * 32, "B": "e" * 32},
+                         client=FakeMemoryServer().client(), admission_lock=Admission)
+    assert events == ["enter c", "exit c"]
