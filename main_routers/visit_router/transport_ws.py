@@ -578,13 +578,14 @@ async def _handle_frame(
             and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
         ):
             now = session.now()
-            # 全部同步备好（快照先于 due()，失败时不白白消耗 outbox 的帧）再置 rejoined；
+            # 全部同步备好（快照先于恢复与 due()，失败时不恢复、也不白白消耗 outbox 的帧）再置 rejoined；
             # 任何一步失败都不置位，下一条 joined / connected 整套重做（hello 去重、resume 幂等）
             try:
-                session.on_page_rejoined(now)
+                # 快照最先：它失败时 outbox 仍保持 page_reload 暂停，不会出现「已恢复、重入却没完成」
                 snapshot = session.media_snapshot()
                 if not isinstance(snapshot, Mapping):
                     raise TypeError("media_snapshot must return a mapping")
+                session.on_page_rejoined(now)
                 frames = list(session.outbox.due(now))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)

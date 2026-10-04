@@ -201,6 +201,20 @@ def _wait_page_lost(session, count: int) -> None:
         _t.sleep(0.01)
 
 
+def _barrier(ws, session) -> None:
+    """Real round-trip barrier: frames are handled in order, so once this ``recv`` reached
+    the runtime every frame sent before it has been fully processed."""
+    import time as _t
+
+    marker = {"t": "barrier", "n": len(session.recvs)}
+    ws.send_text(json.dumps({"type": "recv", "from_vid": PEER_VID, "cmd": 3, "payload": marker}))
+    deadline = _t.monotonic() + 5
+    while not any(r["payload"] == marker for r in session.recvs):
+        if _t.monotonic() > deadline:
+            raise AssertionError("barrier frame never reached the runtime")
+        _t.sleep(0.01)
+
+
 def _expect_close(ws, code: int) -> None:
     with pytest.raises(WebSocketDisconnect) as exc:
         ws.receive_text()
@@ -955,10 +969,10 @@ def test_failed_state_hook_or_snapshot_retries_the_whole_rejoin(app, broken):
         _preflight(ws)
         ws.receive_text()
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
-        _sync(ws)
-        if broken == "on_state":
-            # runtime 没处理好这条上报：这一拍不能开始重入
-            assert not any(e[0] == "resend_hello" for e in s.log)
+        _barrier(ws, s)
+        # 失败的这一拍不能开始重入：on_state 失败时 outbox 不动；快照失败时也不能已经恢复 outbox
+        assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
+        assert PAUSE_PAGE_RELOAD in s.outbox.paused
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
                                  "remote_video": False}))
         hello = json.loads(ws.receive_text())

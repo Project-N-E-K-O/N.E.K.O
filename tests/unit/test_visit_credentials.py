@@ -753,7 +753,7 @@ async def test_oversized_retry_after_header_is_ignored(servers, monkeypatch):
 @pytest.mark.parametrize("header", ["²", "١٢", "12a"])
 async def test_non_ascii_digit_retry_after_is_ignored(servers, monkeypatch, header):
     def _handler(request):
-        return httpx.Response(429, json={"code": "quota_exceeded"}, headers={"retry-after": header.encode("latin-1", "ignore") or b"x"})
+        return httpx.Response(429, json={"code": "quota_exceeded"}, headers={"retry-after": header.encode("utf-8")})
 
     monkeypatch.setattr(cr, "get_external_http_client",
                         lambda: httpx.AsyncClient(transport=httpx.MockTransport(_handler)))
