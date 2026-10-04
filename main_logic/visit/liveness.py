@@ -37,9 +37,9 @@ and polls ``tick(now)``, which returns the first verdict reached (sticky) or
   ``min(left + VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S, last
   successful send + 30 s - VISIT_RECONNECT_MARGIN_S)`` for the SDK reload
   and room re-entry. A deadline that already passed is never moved. The
-  last-send term (also in ``relay_lost``) applies only once the peer is
-  verified on the host side: before that no heartbeat clock of the peer
-  runs on the host.
+  last-send term (also in ``relay_lost``) applies only once the peer acked
+  our ``hello`` (``on_hello_acked``, both sides): only then does its
+  heartbeat clock run on our messages.
 * ``peer_left``: authenticated ``leave`` (after the ``seq`` gap is filled or
   ``VISIT_LEAVE_GAP_GRACE_S`` expires), or a vendor-level leave not undone
   within ``VISIT_PEER_REJOIN_GRACE_S``.
@@ -128,6 +128,7 @@ class VisitLiveness:
         self.peer_last_seen: Optional[float] = None
         self.ready_deadline: Optional[float] = None
         self.ready_received = False
+        self.hello_acked = False
         self.last_sent_at: Optional[float] = None
         self.self_disconnected_at: Optional[float] = None
         self.page_departed_at: Optional[float] = None
@@ -157,13 +158,7 @@ class VisitLiveness:
         ``peer_last_seen`` restarts at ``now``; a later re-verification (same
         ``jti`` after a reconnect) only refreshes it.
         """
-        if self.waiting and self.side == "host" and self.last_sent_at is not None:
-            # 对端对本侧的心跳时钟从这里才开始算：等待期里的旧发出时刻不能让期限一核验就落在过去
-            self.last_sent_at = max(self.last_sent_at, now)
         self.waiting = False
-        if self.page_deadline is not None and not self.page_expired(now):
-            # 等待期里开始的页面重载：最后发出那一项现在才生效，期限按同一个式子收紧
-            self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
         self.peer_last_seen = now if self.peer_last_seen is None else max(self.peer_last_seen, now)
         # 核验通过的 hello 本身就证明对端在场：等待期里留下的暂定离开（对端刷新后
         # 换了 vendor 身份重进，runtime 不会调 on_peer_vendor_rejoined）不能再判 peer_left
@@ -178,12 +173,20 @@ class VisitLiveness:
             self.peer_last_seen = now
 
     def on_hello_acked(self, now: float) -> None:
-        """Guest: the host acked our ``hello``; start the 85 s wait for ``ready``.
+        """The peer acked our ``hello`` (both sides; the runtime calls it for each).
 
-        Ignored once ``ready`` already arrived: the first ack may be lost and
-        a later cumulative ack (triggered by a retransmitted ``hello``) must
-        not re-arm the wait of an already active visit.
+        From here the peer verified us and its heartbeat clock runs on our
+        messages, so the last-send term of the own-reconnect and page reload
+        deadlines applies (a reload already running is tightened by the same
+        formula). Guest: also starts the 85 s wait for ``ready`` -- ignored
+        once ``ready`` already arrived: the first ack may be lost and a later
+        cumulative ack (triggered by a retransmitted ``hello``) must not re-arm
+        the wait of an already active visit.
         """
+        if not self.hello_acked:
+            self.hello_acked = True
+            if self.page_deadline is not None and not self.page_expired(now):
+                self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
         if self.side == "guest" and self.ready_deadline is None and not self.ready_received:
             self.ready_deadline = now + self._ready_wait_s
 
@@ -226,14 +229,13 @@ class VisitLiveness:
         """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
 
         Shared by the own-reconnect deadline and the page reload deadline
-        (design §4.8 calls them "the same formula"). ``None`` for a host
-        still waiting for the peer: the guest's clock on the host is its own
-        30 s wait, so an old host send must not end a reload or a reconnect
-        before it could matter (the first verification clamps the last send
-        to its moment). A waiting guest keeps the term: the host may already
-        have verified it and be counting.
+        (design §4.8 calls them "the same formula"). ``None`` until the peer
+        acked our ``hello``: before that it has not verified us and keeps no
+        heartbeat clock on our messages (whether we already verified the peer
+        says nothing about that), so an old send must not end a reload or a
+        reconnect early.
         """
-        if (self.waiting and self.side == "host") or self.last_sent_at is None:
+        if not self.hello_acked or self.last_sent_at is None:
             return None
         return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
 

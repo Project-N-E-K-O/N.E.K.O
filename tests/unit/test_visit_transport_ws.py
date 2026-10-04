@@ -1293,7 +1293,9 @@ def _reload_session():
 
     s = FakeSession()
     s.liveness = VisitLiveness("guest", -1000.0)
-    s.liveness.on_peer_verified(-1000.0)  # 已在会话中：不再处于等对端的阶段
+    s.liveness.on_peer_verified(-1000.0)  # 已在会话中：双方 hello 都已核验、ack
+    s.liveness.on_hello_acked(-1000.0)
+    s.liveness.on_ready(-1000.0)
     return s
 
 

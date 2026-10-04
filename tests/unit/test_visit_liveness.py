@@ -23,8 +23,12 @@ from main_logic.visit.liveness import READY_WAIT_S, VisitLiveness
 
 
 def verified(side: str = "host", t: float = 0.0) -> VisitLiveness:
+    """Both ``hello`` verified and acked (guest: ``ready`` too): an active visit."""
     lv = VisitLiveness(side, t)  # type: ignore[arg-type]
     lv.on_peer_verified(t)
+    lv.on_hello_acked(t)
+    if side == "guest":
+        lv.on_ready(t)
     return lv
 
 
@@ -341,8 +345,8 @@ def test_page_back_clears_the_reload():
     assert lv.page_reload_deadline() is None and not lv.page_expired(100.0)
 
 
-def test_last_send_term_waits_for_the_peer_hello_exchange():
-    # host 发过一条消息后仍在等对端：对端的心跳时钟还没开始算我们，旧的发出时刻不能让期限一设下就过期
+def test_last_send_term_waits_for_the_peer_to_ack_our_hello():
+    # host 发过一条消息后仍在等对端：对端还没核验本侧、没在计时，旧的发出时刻不能让期限一设下就过期
     lv = VisitLiveness("host", 0.0)
     lv.on_message_sent(0.0)
     lv.on_page_lost(60.0)
@@ -350,15 +354,14 @@ def test_last_send_term_waits_for_the_peer_hello_exchange():
     assert lv.tick(60.0) is None
     lv.on_self_disconnected(70.0)
     assert lv.self_deadline() == 95.0
-    # 核验通过之后才套上这一项，且从核验时刻算起：不会一核验就落在过去
-    lv.on_peer_verified(75.0)
+    # 本侧核验了对端也不算：对端是否在计时，看的是它有没有 ack 本侧的 hello
+    lv.on_peer_verified(72.0)
     assert lv.self_deadline() == 95.0
-    assert lv.tick(75.0) is None
-    lv2 = VisitLiveness("host", 0.0)
-    lv2.on_message_sent(0.0)
-    lv2.on_self_disconnected(70.0)
-    lv2.on_peer_verified(90.0)
-    assert lv2.self_deadline() == 95.0  # min(70 + 25, 90 + 27)
+    # 对端 ack 了本侧 hello（hello 是刚重发出去的）：按真实的最后发出时刻算，不虚增
+    lv.on_message_sent(74.0)
+    lv.on_hello_acked(75.0)
+    assert lv.self_deadline() == 95.0  # min(70 + 25, 74 + 27)
+    assert lv.last_sent_at == 74.0
 
 
 def test_page_rejoin_safety_margin_is_injectable():
@@ -370,30 +373,32 @@ def test_page_rejoin_safety_margin_is_injectable():
 
 
 
-def test_waiting_guest_keeps_the_last_send_term():
-    # guest 等 host hello 时，host 可能已核验了 guest、正在对它计 30 s：这一项照算
+def test_guest_last_send_term_starts_with_the_host_ack():
+    # guest 发出 hello 后 host 还没核验它：host 没在计时，掉页期限只按离开 + 30
     lv = VisitLiveness("guest", 0.0)
-    lv.on_message_sent(10.0)
-    lv.on_page_lost(12.0)
-    assert lv.page_reload_deadline() == 37.0  # min(12 + 30, 10 + 27)
+    lv.on_message_sent(0.0)
+    lv.on_page_lost(1.0)
+    lv.on_page_socket_back(19.0)
+    assert lv.page_deadline == 31.0
+    # host ack 了 guest 的 hello：同一个式子收紧到最后发出 + 27
+    lv.on_message_sent(20.0)
+    lv.on_hello_acked(21.0)
+    assert lv.page_deadline == 31.0  # min(31, 20 + 27)
+    lv2 = VisitLiveness("guest", 0.0)
+    lv2.on_message_sent(0.0)
+    lv2.on_page_lost(1.0)
+    lv2.on_page_socket_back(19.0)
+    lv2.on_hello_acked(19.5)
+    assert lv2.page_deadline == 27.0  # min(31, 0 + 27)
 
 
-def test_first_verification_tightens_a_reload_started_while_waiting():
-    lv = VisitLiveness("host", 0.0)
-    lv.on_page_lost(100.0)
-    lv.on_page_socket_back(105.0)
-    assert lv.page_deadline == 130.0  # 等待期：只有离开 + 30
-    lv.on_message_sent(98.0)
-    lv.on_peer_verified(101.0)
-    # 核验后最后发出那一项生效（98 夹到核验时刻 101）：min(130, 101 + 27)
-    assert lv.page_deadline == 128.0
-
-
-def test_re_verification_does_not_move_the_last_send():
+def test_repeated_ack_does_not_move_anything():
     lv = verified("host", 0.0)
     lv.on_message_sent(10.0)
-    lv.on_peer_verified(50.0)  # 对端重连后同 jti 复验：对端的时钟仍从我们最后一次发出算
-    assert lv.last_sent_at == 10.0
+    lv.on_page_lost(12.0)
+    deadline = lv.page_deadline
+    lv.on_hello_acked(13.0)  # 重传 hello 触发的累计 ack
+    assert lv.page_deadline == deadline and lv.last_sent_at == 10.0
 
 
 def test_injected_durations_must_keep_the_invariants():
