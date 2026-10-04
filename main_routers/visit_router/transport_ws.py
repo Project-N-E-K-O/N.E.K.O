@@ -308,7 +308,9 @@ class _Connection:
     async def close(self, code: int, reason: str = "") -> None:
         """Close once. ``closed`` flips first so queued sends give up; waits at most
         ``CLOSE_LOCK_WAIT_S`` for an in-flight send (a backpressured ``send_text``
-        may never return) and then closes anyway."""
+        may never return) and at most as long again for the close frame itself,
+        so the background close task always ends. A socket whose writes never
+        drain cannot deliver the close frame; the server's ping timeout reaps it."""
         if self.closed:
             return
         self.closed = True
@@ -319,8 +321,8 @@ class _Connection:
             locked = False
         try:
             if self.websocket.application_state != WebSocketState.DISCONNECTED:
-                await self.websocket.close(code=code, reason=reason)
-        except Exception as exc:  # noqa: BLE001
+                await asyncio.wait_for(self.websocket.close(code=code, reason=reason), CLOSE_LOCK_WAIT_S)
+        except Exception as exc:  # noqa: BLE001 - 含超时：写不出去的关闭帧交给服务端心跳超时回收
             logger.debug("visit transport: close failed: %s", type(exc).__name__)
         finally:
             if locked:

@@ -698,6 +698,29 @@ def test_close_is_not_blocked_by_a_stuck_send(monkeypatch):
     assert asyncio.run(scenario()) == tw.CLOSE_SUPERSEDED
 
 
+def test_close_task_ends_even_if_the_close_frame_never_drains(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(tw, "CLOSE_LOCK_WAIT_S", 0.05)
+
+    class _DeadWS(_RecordingWS):
+        async def send_text(self, text):
+            await asyncio.Event().wait()
+
+        async def close(self, code=1000, reason=""):
+            await asyncio.Event().wait()
+
+    async def scenario():
+        conn = tw._Connection(websocket=_DeadWS(), reattach=False)
+        stuck = asyncio.ensure_future(conn.send_json({"type": "media", "publish": True}))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(conn.close(tw.CLOSE_SUPERSEDED, "superseded"), 1)
+        stuck.cancel()
+        return conn.closed
+
+    assert asyncio.run(scenario()) is True
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 
