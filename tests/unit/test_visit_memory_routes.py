@@ -486,3 +486,38 @@ def test_peers_skip_a_malformed_peer_id(env):
     # 坏 id 那一条跳过，其余对端照常列出
     assert resp.status_code == 200
     assert [row["peer_uid"] for row in resp.json()["peers"]] == [PEER_X]
+
+
+@pytest.mark.parametrize("damage", ["pair", "char"])
+def test_peers_skip_a_malformed_pair_or_char_id(env, damage):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entry = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]
+    if damage == "pair":
+        entry["pairs"].append("")
+    else:
+        entry["chars"][""] = {"display_name": "x"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    # 构不成 subject 的 pair id 只跳过它自己
+    assert resp.status_code == 200 and [row["peer_uid"] for row in resp.json()["peers"]] == [PEER_X]
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
+    ("/api/visit/memory/forget_all", {"catgirl": "A"}),
+])
+def test_forget_waits_for_a_pending_rename_to_be_reconciled(env, path, body):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A0", "new": "A"}       # 改名崩在名册迁移之前
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.post(path, json=body, headers=GOOD)
+    # 不按新名展开出一个空条目报成功：回可重试的 503，等启动补录对账
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.requests == []
+    assert not list((tmp_path / "visit_revocations").glob("*.json"))      # 没写任何哨兵 / 日志

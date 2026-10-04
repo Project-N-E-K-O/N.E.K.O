@@ -59,7 +59,7 @@ from main_logic.visit.spool import (
     VisitSpool,
     STATE_SUFFIX,
 )
-from main_logic.visit.subjects import PeerRoster, RosterCorruptError
+from main_logic.visit.subjects import PeerRoster, RosterCorruptError, read_roster_marker
 from memory.scoped_client import ScopedMemoryClient
 from utils.logger_config import get_module_logger
 
@@ -78,6 +78,17 @@ class VisitActive(RuntimeError):
 
 class CharacterUnresolved(ValueError):
     """A character named by a clearing has no current name (deleted, or its config unreadable)."""
+
+
+class RenamePending(CharacterUnresolved):
+    """A character rename has not been reconciled yet (``visit_peers.json.pending_rename``)."""
+
+
+async def _refuse_pending_rename(config_dir: str | Path) -> None:
+    # 改名崩在「配置已是新名、名册还在旧名」之间：此时按新名展开会找不到条目，
+    # 清除会「成功」地什么都没删，之后补录又把旧名下没清的数据搬出来。等启动补录对账完
+    if await read_roster_marker(config_dir, "pending_rename") is not None:
+        raise RenamePending("a character rename is not reconciled yet")
 
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
@@ -311,6 +322,7 @@ async def forget_person(
     :class:`CharacterUnresolved` when the character is gone.
     """
     async with (lifecycle_guard([own_char_uid]) if lifecycle_guard else contextlib.nullcontext()):
+        await _refuse_pending_rename(config_dir)
         if resolve_char_name is not None:
             own_char = await resolve_char_name(own_char_uid)
             if not own_char:
@@ -374,6 +386,7 @@ async def forget_all(
         return ForgetOutcome(done=True)
     async with (lifecycle_guard(sorted(chars.values())) if lifecycle_guard
                 else contextlib.nullcontext()):
+        await _refuse_pending_rename(config_dir)
         if resolve_char_name is not None:
             current: dict[str, str] = {}
             for uid in chars.values():
