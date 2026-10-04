@@ -2915,7 +2915,9 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _keyed_staging_items_valid(staging: dict, routed_keys: list | None = None) -> bool:
+def _keyed_staging_items_valid(
+    staging: dict, routed_keys: list | None = None, request_epochs: dict | None = None,
+) -> bool:
     """Whether every journal item of a restored staging document is safe to apply.
 
     Every segment's persisted destination (``subject``) must be a valid
@@ -2949,6 +2951,21 @@ def _keyed_staging_items_valid(staging: dict, routed_keys: list | None = None) -
         if destination is None:
             return False
         if allowed_routes is not None and destination.key not in allowed_routes | {segment.get("wire_key")}:
+            return False
+        if destination.scope != destination.key:
+            # 带键写入只有默认 scope：被改了 scope 的目标会写进另一个隔离的记忆域
+            return False
+        if segment.get("tombstone_keys") != [segment.get("wire_key")]:
+            # 墓碑只按这段自己的 wire key 比（见生成时的约定）：被清空 / 改掉就会漏过清除
+            return False
+    if request_epochs is not None:
+        # 暂存记下的请求代数必须与这次请求带的一致（内容哈希已覆盖请求代数），被改高了
+        # 就会放过一次中间发生的带代数清除
+        staged_epochs = staging.get("epochs")
+        wire_keys = {segment.get("wire_key") for segment in segments if isinstance(segment, dict)}
+        if not isinstance(staged_epochs, dict) or any(
+            staged_epochs.get(wire_key) != request_epochs.get(wire_key) for wire_key in wire_keys
+        ):
             return False
     if any(not isinstance(entry, dict) for entry in applied):
         return False
@@ -3015,6 +3032,24 @@ def _keyed_staging_items_valid(staging: dict, routed_keys: list | None = None) -
         elif kind == _KEYED_ITEM_DISPLAY_NAME:
             if item.get("display_name") is not None and not isinstance(item.get("display_name"), str):
                 return False
+        elif kind == _KEYED_ITEM_LOCALE:
+            # 语言项同样要成形：坏的 order 会被当成「没有序号」静默跳过却记成已应用
+            order = item.get("order")
+            if not isinstance(item.get("language"), str) or not item["language"]:
+                return False
+            if not isinstance(order, int) or isinstance(order, bool):
+                return False
+    # 已应用的事实项必须留有完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录会让这条
+    # 效果被跳过、键照样记 done
+    facts_seqs = {
+        item.get("seq") for item in items
+        if isinstance(item, dict) and item.get("kind") == _KEYED_ITEM_FACTS
+    }
+    for entry in applied:
+        if entry.get("seq") in facts_seqs and not (
+            "fact_ids" in entry or any(name.startswith("dropped") and entry.get(name) is True for name in entry)
+        ):
+            return False
     return True
 
 
@@ -3026,7 +3061,8 @@ def _keyed_staging_matches(
     if staging.get("shape") != shape or not isinstance(segments, list):
         return False
     stored_hash = staging.get("request_hash")
-    if request_hash is not None and stored_hash is not None and stored_hash != request_hash:
+    # 没有内容哈希的暂存不能当通配：被截掉哈希的旧日志会被另一份内容的请求认领
+    if request_hash is not None and (not isinstance(stored_hash, str) or stored_hash != request_hash):
         return False
     if len(segments) != len(contexts):
         return False
@@ -3497,6 +3533,7 @@ async def _process_scoped_history_keyed(
             and staging.get(_KEYED_STAGING_CANCELLED) is not True
             and not _keyed_staging_items_valid(
                 staging, routed_on_record if isinstance(routed_on_record, list) else None,
+                dict(req.subject_epochs or {}),
             )
         ):
             # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，

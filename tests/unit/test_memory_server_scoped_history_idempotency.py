@@ -1748,3 +1748,40 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
         await _post(env, _single_body())
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GROUP) == [] and _facts_of(env, PART) == []
+
+
+@pytest.mark.parametrize("damage", [
+    "destination_scope", "tombstone_keys_emptied", "epochs_raised", "request_hash_removed",
+    "applied_facts_without_evidence", "locale_order_string",
+])
+async def test_more_journal_damage_fails_closed(env, damage):
+    env.llm.responses = [SINGLE_FACTS]
+    failing_seq = 1 if damage == "applied_facts_without_evidence" else 0
+    original = _fail_on_item(env, failing_seq=failing_seq)
+    body = _single_body(language="zh") if damage == "locale_order_string" else _single_body()
+    with pytest.raises(HTTPException):
+        await _post(env, body)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    if damage == "destination_scope":
+        staging["segments"][0]["subject"] = {**staging["segments"][0]["subject"], "scope": "another_scope"}
+    elif damage == "tombstone_keys_emptied":
+        staging["segments"][0]["tombstone_keys"] = []
+    elif damage == "epochs_raised":
+        staging["epochs"] = {GROUP_KEY: 99}
+    elif damage == "request_hash_removed":
+        staging.pop("request_hash")
+    elif damage == "applied_facts_without_evidence":
+        facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
+        staging["applied"] = [{"seq": facts_seq} if e["seq"] == facts_seq else e for e in staging["applied"]]
+        assert any(e == {"seq": facts_seq} for e in staging["applied"])
+    else:
+        locale = next((item for item in staging["items"] if item["kind"] == "locale"), None)
+        if locale is None:
+            pytest.skip("no locale item reserved for this request")
+        locale["order"] = "1"
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    assert excinfo.value.status_code in (422, 503)
