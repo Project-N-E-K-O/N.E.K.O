@@ -283,6 +283,8 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
         and _number(request.get("ended_at")) is not None
         and isinstance(request.get("usage"), dict)
         and isinstance(request.get("lines"), list)
+        # 逐行核对：转录行坏了的上传文件同样不能顶替完整的流水
+        and all(isinstance(line, dict) and _valid_line(line) for line in request["lines"])
     )
 
 

@@ -978,3 +978,18 @@ async def test_sealed_upload_of_another_visit_is_resealed_from_the_stream(tmp_pa
     # 别场的上传文件不算数：从流水重新封存，流水不会被当成「已封存的残留」删掉
     assert visit_id == v and doc["request"]["visit_id"] == v
     assert [line["text"] for line in doc["request"]["lines"]] == ["a"]
+
+
+async def test_sealed_upload_with_broken_lines_is_resealed_from_the_stream(tmp_path):
+    v = vid(57)
+    _write_stream(tmp_path, v, [_header(v), {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                             "ts": 1001.0, "text": "a", "truncated": False}])
+    broken = {"v": 1, "own_visit_uid": OWN_A, "request": {"visit_id": v, "role": "host",
+                                                          "started_at": 1.0, "ended_at": 2.0, "usage": {},
+                                                          "lines": [{"lp": None, "text": 3}]}}
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(broken), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    # 转录行坏了的上传文件不算数：从完整的流水重新封存
+    assert visit_id == v and [line["text"] for line in doc["request"]["lines"]] == ["a"]
