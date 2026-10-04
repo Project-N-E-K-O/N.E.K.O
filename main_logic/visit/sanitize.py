@@ -618,6 +618,23 @@ def neutralize_display_name(
     return text
 
 
+# 情绪装饰标签：模型偶尔在台词里带 <happy> / </sad> 之类的短标签（TTS 侧另行剥掉）。
+# 只认闭合的短标签，落单的 "<3" / "a < b" 原样保留
+_EMOTION_TAG_RE = re.compile(r"</?[^<>\s]{1,32}>")
+
+
+def strip_emotion_tags(text: str) -> str:
+    """Remove closed short angle-bracket decoration tags (``<happy>``, ``</sad>``) and tidy spaces.
+
+    A lone ``<`` or ``>`` is kept. Whitespace runs left by a removed tag are
+    collapsed within each line; line breaks are kept.
+    """
+    if not text or "<" not in text:
+        return text or ""
+    stripped = _EMOTION_TAG_RE.sub("", text)
+    return "\n".join(" ".join(line.split()) for line in stripped.splitlines()).strip()
+
+
 # ── 回家自述 n-gram 断言 ────────────────────────────────────────────────
 
 
@@ -725,5 +742,6 @@ __all__ = [
     "redact_outbound_with_spans",
     "sanitize_relay_text",
     "strip_control_chars",
+    "strip_emotion_tags",
     "wrap_nonce_envelope",
 ]

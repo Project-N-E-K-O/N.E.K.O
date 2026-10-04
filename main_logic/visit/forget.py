@@ -31,7 +31,8 @@ reuses the same log.
 Step order (each step idempotent, recorded in ``done_steps`` when done)::
 
     clear_last_summary          local roster write, no memory_server needed
-    forget:<kind>:<subject_id>  one /scoped_forget per subject
+    forget:<kind>:<subject_id>  bump the subject's forget epoch, then one
+                                /scoped_forget per subject
     remove_char                 only after every forget step is done
     wipe_spool                  null peer fields in related spool state/headers
     void_pending                drop staged pending work (callback, PR-08)
@@ -49,13 +50,18 @@ import copy
 import hashlib
 import json
 import os
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config.visit_settings import VISIT_MEMORY_PLATFORM, VISIT_REVOCATIONS_DIRNAME
+from config.visit_settings import (
+    VISIT_FORGET_EPOCHS_FILENAME,
+    VISIT_MEMORY_PLATFORM,
+    VISIT_REVOCATIONS_DIRNAME,
+)
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -68,7 +74,7 @@ from main_logic.visit.subjects import (
 )
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
-from utils.visit_wire import REVOCATION_ID_RE, revocation_path
+from utils.visit_wire import CLEARING_ID_RE, REVOCATION_ID_RE, id_path, revocation_path
 
 logger = get_module_logger(__name__, "Main")
 
@@ -531,6 +537,237 @@ class RevocationLog:
         return await asyncio.to_thread(cls._list_dir_sync, directory, None)
 
 
+# ── 清除代数（forget epoch）────────────────────────────────────────────
+
+
+def subject_key(subject: Mapping[str, Any]) -> str:
+    """Return ``"<subject_kind>:<subject_id>"`` (``MemorySubject.key``).
+
+    The key of the client forget epochs and of memory_server's tombstones.
+    """
+    clean = _clean_subject(subject)
+    return f"{clean['subject_kind']}:{clean['subject_id']}"
+
+
+class ForgetEpochsUnreadable(RuntimeError):
+    """``visit_forget_epochs.json`` exists but cannot be read; callers fail closed."""
+
+
+class ForgetEpochs:
+    """Per-subject forget generations ``config_dir/visit_forget_epochs.json``.
+
+    Document: ``{subject_key: int}``. A generation only ever increases and is
+    never deleted: a forget bumps every subject it erases (and persists that)
+    before sending ``/scoped_forget{forget_epoch}``; a digest run records the
+    generations current when it opens and sends them as ``subject_epochs``.
+    memory_server drops keyed history products whose generation is lower than
+    the subject's tombstone, so a digest started before a forget can never
+    write the erased memory back, however late it arrives.
+
+    An unreadable file raises :class:`ForgetEpochsUnreadable` instead of
+    reading as empty: restarting from zero would make every later digest of an
+    already forgotten subject look older than its tombstone and be dropped.
+    """
+
+    def __init__(self, config_dir: str | Path) -> None:
+        self.config_dir = Path(config_dir)
+        self.path = self.config_dir / VISIT_FORGET_EPOCHS_FILENAME
+
+    def _load_sync(self) -> dict[str, int]:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise ForgetEpochsUnreadable(f"cannot read {self.path.name}: {exc!r}") from exc
+        if not isinstance(data, dict) or not all(
+            isinstance(k, str) and k and type(v) is int and v >= 0 for k, v in data.items()
+        ):
+            raise ForgetEpochsUnreadable(f"{self.path.name} is not a map of subject keys to ints")
+        return data
+
+    def _get_sync(self, keys: list[str]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+        return {key: data.get(key, 0) for key in keys}
+
+    def _bump_sync(self, keys: list[str]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+            for key in keys:
+                data[key] = data.get(key, 0) + 1
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(self.path, data)
+        return {key: data[key] for key in keys}
+
+    async def get(self, subjects: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        """Return the current generation of each subject (0 when never forgotten)."""
+        keys = list(dict.fromkeys(subject_key(s) for s in subjects))
+        return await asyncio.to_thread(self._get_sync, keys)
+
+    async def bump(self, subjects: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        """Increase each subject's generation by one, persist it, and return the new values."""
+        keys = list(dict.fromkeys(subject_key(s) for s in subjects))
+        return await asyncio.to_thread(self._bump_sync, keys)
+
+
+# ── 清除意图哨兵（clearing sentinel）──────────────────────────────────
+
+
+class ClearingSentinels:
+    """Clearing intents ``config_dir/visit_revocations/clearing-<op_id>.json``.
+
+    Every clearing operation (one person, or every person under some local
+    characters) first persists one sentinel with its whole scope, then expands
+    the roster inside that scope, writes every revocation log, runs them, and
+    only then deletes the sentinel. Startup replay re-expands the scope of a
+    leftover sentinel, so a crash before the logs were written still clears
+    everyone in scope. The admission gates refuse new visits of any character
+    named in an open sentinel.
+
+    Document: ``{v, op_id, own_uid, scope: 'person'|'chars', own_char_uids,
+    peer_uid, requested_at}``; ``peer_uid`` is set only for ``person``.
+    """
+
+    def __init__(self, config_dir: str | Path) -> None:
+        self.config_dir = Path(config_dir)
+        self.dir = self.config_dir / VISIT_REVOCATIONS_DIRNAME
+
+    def path_for(self, op_id: str) -> Path:
+        """Return the sentinel path of ``op_id`` (``clearing-<32 hex>``), format-checked."""
+        return id_path(self.dir, op_id, CLEARING_ID_RE, ".json")
+
+    @staticmethod
+    def _validate(doc: Any, op_id: str) -> dict:
+        if not isinstance(doc, dict) or doc.get("v") != 1 or doc.get("op_id") != op_id:
+            raise ValueError("clearing sentinel is malformed")
+        if not isinstance(doc.get("own_uid"), str) or not doc["own_uid"]:
+            raise ValueError("clearing sentinel own_uid missing")
+        uids = doc.get("own_char_uids")
+        if not isinstance(uids, list) or not uids or not all(isinstance(u, str) and u for u in uids):
+            raise ValueError("clearing sentinel own_char_uids must be non-empty strings")
+        scope = doc.get("scope")
+        peer = doc.get("peer_uid")
+        if scope == "person":
+            if len(uids) != 1 or not isinstance(peer, str) or not peer:
+                raise ValueError("person clearing needs one character and a peer_uid")
+        elif scope == "chars":
+            if peer is not None:
+                raise ValueError("chars clearing carries no peer_uid")
+        else:
+            raise ValueError("clearing sentinel scope must be person or chars")
+        return doc
+
+    def _create_sync(self, doc: dict) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self.path_for(doc["op_id"])
+        with path_lock(path):
+            atomic_write_json(path, doc)
+
+    async def find_or_create(
+        self,
+        *,
+        own_uid: str,
+        scope: str,
+        own_char_uids: Iterable[str],
+        peer_uid: str | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Reuse an open sentinel with exactly this scope, else :meth:`create` one.
+
+        A retried clearing must not leave the earlier attempt's sentinel
+        behind: removing only the new one would keep the characters looking
+        "being cleared" (no new visits, no memory block) until a restart.
+        """
+        uids = sorted(dict.fromkeys(own_char_uids))
+        for doc in await self.list_open():
+            if (
+                doc["own_uid"] == own_uid and doc["scope"] == scope
+                and sorted(doc["own_char_uids"]) == uids and doc.get("peer_uid") == peer_uid
+            ):
+                return copy.deepcopy(doc)
+        return await self.create(own_uid=own_uid, scope=scope, own_char_uids=uids,
+                                 peer_uid=peer_uid, now=now)
+
+    async def create(
+        self,
+        *,
+        own_uid: str,
+        scope: str,
+        own_char_uids: Iterable[str],
+        peer_uid: str | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Persist a new sentinel and return its document (``op_id`` is random)."""
+        op_id = "clearing-" + secrets.token_hex(16)
+        doc = {
+            "v": 1,
+            "op_id": op_id,
+            "own_uid": own_uid,
+            "scope": scope,
+            "own_char_uids": sorted(dict.fromkeys(own_char_uids)),
+            "peer_uid": peer_uid,
+            "requested_at": time.time() if now is None else now,
+        }
+        self._validate(doc, op_id)
+        await asyncio.to_thread(self._create_sync, doc)
+        return copy.deepcopy(doc)
+
+    def _list_sync(self) -> list[dict]:
+        out: list[dict] = []
+        unreadable: list[str] = []
+        try:
+            names = sorted(os.listdir(self.dir))
+        except FileNotFoundError:
+            return out
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            op_id = name[: -len(".json")]
+            if not CLEARING_ID_RE.fullmatch(op_id):
+                continue
+            try:
+                with open(self.dir / name, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+                out.append(self._validate(doc, op_id))
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, RecursionError) as exc:
+                logger.error("visit clearing sentinel %s unreadable: %s", name, exc)
+                unreadable.append(op_id)
+        if unreadable:
+            # 读不出来的清除意图不能当作没有：放行会让新串门写进正在清除的范围
+            raise RevocationLogUnreadable(unreadable)
+        return out
+
+    async def list_open(self) -> list[dict]:
+        """Return every open sentinel (all accounts); unreadable ones raise :class:`RevocationLogUnreadable`."""
+        return await asyncio.to_thread(self._list_sync)
+
+    def _remove_sync(self, op_id: str) -> bool:
+        path = self.path_for(op_id)
+        with path_lock(path):
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
+                return False
+
+    async def remove(self, op_id: str) -> bool:
+        """Delete a finished sentinel; returns whether a file was removed."""
+        return await asyncio.to_thread(self._remove_sync, op_id)
+
+
+def sentinel_covers(doc: Mapping[str, Any], own_char_uid: str, peer_uid: str | None = None) -> bool:
+    """Whether an open clearing sentinel covers ``own_char_uid`` (and ``peer_uid`` when given)."""
+    if own_char_uid not in (doc.get("own_char_uids") or ()):
+        return False
+    if doc.get("scope") == "person" and peer_uid is not None:
+        return doc.get("peer_uid") == peer_uid
+    return True
+
+
 ForgetSubject = Callable[[dict], Awaitable[bool]]
 
 
@@ -620,6 +857,9 @@ async def run_revocation(
             subject = subjects.get(step)
             if subject is None:
                 raise ValueError(f"revocation step {step!r} has no subject")
+            # 先把这个 subject 的清除代数加 1 并落盘，再发 /scoped_forget：之前开轮的 digest
+            # 带的代数更小，不论多晚到达都会被服务端墓碑挡下（重放时再加一次也无妨，只增不减）
+            await ForgetEpochs(log.config_dir).bump([subject])
             # 只认明确的 True：post_forget 失败返回 False，不检查就会记完成、
             # 随后删名册与日志，残留记忆再也没有重放入口
             if await forget_subject(dict(subject)) is not True:

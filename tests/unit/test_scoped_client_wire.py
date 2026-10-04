@@ -661,3 +661,50 @@ async def test_deeply_nested_response_bodies_are_treated_as_malformed():
         assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES) is False
         result = await client.post_history_batch("Lanlan", segments=[segment])
     assert result.segments_ok == (False,)
+
+
+@pytest.mark.asyncio
+async def test_forget_epoch_is_sent_only_when_given():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    async with http:
+        assert await client.post_forget("Lanlan", subject=_SUBJECT)
+        assert await client.post_forget("Lanlan", subject=_SUBJECT, forget_epoch=3)
+    plain, with_epoch = (json.loads(r.content) for r in recorder.requests)
+    assert plain == {"subject": _SUBJECT}
+    assert with_epoch == {"subject": _SUBJECT, "forget_epoch": 3}
+
+
+@pytest.mark.asyncio
+async def test_subject_epochs_ride_with_the_idempotency_key_only_when_given():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    epochs = {"participant:qq:1": 2}
+    async with http:
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES,
+                                  idempotency_key="k", subject_epochs=epochs)
+        await client.post_history_batch("Lanlan", segments=[segment], idempotency_key="k2",
+                                        subject_epochs=epochs)
+    plain, single, batch = (json.loads(r.content) for r in recorder.requests)
+    assert "subject_epochs" not in plain and "idempotency_key" not in plain
+    assert single["subject_epochs"] == epochs and single["idempotency_key"] == "k"
+    assert batch["subject_epochs"] == epochs and batch["idempotency_key"] == "k2"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_answer_of_a_completed_key_counts_as_done():
+    def responder(request):
+        body = json.loads(request.content)
+        if "segments" in body:
+            return httpx.Response(200, json={"status": "processed", "duplicate": True, "segments": [
+                {"status": "ok", "created": 0, "trust": {"persisted": None}} for _ in body["segments"]]})
+        return httpx.Response(200, json={"status": "processed", "duplicate": True, "created": 0,
+                                         "trust": {"persisted": None}})
+
+    client, http = _client(_Recorder(responder))
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    async with http:
+        assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, idempotency_key="k")
+        assert (await client.post_history_batch("Lanlan", segments=[segment], idempotency_key="k")).ok
