@@ -3745,19 +3745,25 @@ async def _cancel_staged_writes_for_subjects(
             continue
         request = record.get("request")
         wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
-        if not isinstance(wire_keys, list) or not subject_keys.intersection(
-            str(wire_key) for wire_key in wire_keys
-        ):
-            continue
+        wire_keys = [str(k) for k in wire_keys] if isinstance(wire_keys, list) else []
+        # 先在键锁下读暂存再判断是否相关：上面的暂存扫描只是快照，之后才写成的暂存
+        # 可能经路由写到被清的 subject，记录里却只有 wire key。有暂存就按它记下的
+        # 全部 subject（wire + 路由后）匹配，没有暂存才退回只看 wire key
         async with idempotency.key_lock(lanlan_name, key):
+            unreadable = None
             try:
                 staged = await idempotency.read_staging(lanlan_name, key)
             except idempotency.IdempotencyStateError as exc:
                 staged = None
+                unreadable = exc
+            touched = _staged_subject_keys(staged) | set(wire_keys) if staged is not None else set(wire_keys)
+            if not subject_keys.intersection(touched):
+                continue
+            if unreadable is not None:
                 # 记录是 pending、暂存读不出：上面按暂存内容的扫描看不到它。不能让它挡住
                 # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
                 # 又会应用。按记录认领：标 cancelled 再删掉这份坏暂存
-                logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {exc}")
+                logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {unreadable}")
             if staged is not None and _staged_after_forget(
                 staged, subject_keys, request_subject_key, forget_epoch,
             ):
@@ -3946,20 +3952,9 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 detail="scoped forget failed; retry is safe and idempotent",
             ) from exc
         # 这个代数（或更新的）的擦除已经完成过：重放 / 迟到的旧清除不再擦一遍，否则
-        # 会把之后带着新代数合法写入的记忆一并删掉。读不出就照常擦（偏向多删）
-        try:
-            done_epoch = idempotency.erased_epoch(
-                await idempotency.read_tombstones(lanlan_name), subject.key,
-            )
-        except idempotency.IdempotencyStateError:
-            done_epoch = None
-        if done_epoch is not None and done_epoch >= req.forget_epoch:
-            return {
-                "status": "forgotten",
-                "subject": subject.as_entry_fields(),
-                "forgotten_subjects": [target.as_entry_fields() for target in targets],
-                "duplicate": True,
-            }
+        # 会把之后带着新代数合法写入的记忆一并删掉。拿到擦除事务锁之后还会再核一次
+        if await _forget_epoch_already_erased(lanlan_name, subject.key, req.forget_epoch):
+            return _forget_duplicate_response(subject, targets)
     # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
@@ -4000,6 +3995,12 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             )
             await lock.acquire()
             acquired_locks.append(lock)
+        # 并发的新旧清除可能都在锁外通过了上面的核对：较新的那个擦完、放锁之后，
+        # 旧的这个才拿到锁。持锁之后再核一次，免得把较新清除之后的合法写入擦掉
+        if req.forget_epoch is not None and await _forget_epoch_already_erased(
+            lanlan_name, subject.key, req.forget_epoch,
+        ):
+            return _forget_duplicate_response(subject, targets)
         # ALL tombstones open before ANY erase.
         for target in targets:
             await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
@@ -4117,6 +4118,27 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             target.as_entry_fields() for target in targets
         ],
         **stats,
+    }
+
+
+async def _forget_epoch_already_erased(lanlan_name: str, subject_key: str, forget_epoch: int) -> bool:
+    """Whether the erase of ``forget_epoch`` (or a newer one) already completed; unreadable reads as no."""
+    from . import idempotency
+
+    try:
+        done = idempotency.erased_epoch(await idempotency.read_tombstones(lanlan_name), subject_key)
+    except idempotency.IdempotencyStateError:
+        # 读不出就照常擦（偏向多删）
+        return False
+    return done is not None and done >= forget_epoch
+
+
+def _forget_duplicate_response(subject, targets) -> dict:
+    return {
+        "status": "forgotten",
+        "subject": subject.as_entry_fields(),
+        "forgotten_subjects": [target.as_entry_fields() for target in targets],
+        "duplicate": True,
     }
 
 

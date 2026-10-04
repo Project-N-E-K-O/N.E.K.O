@@ -1323,3 +1323,49 @@ async def test_forget_whose_erase_did_not_finish_is_not_skipped_on_retry(env):
     await env.idem.record_tombstones(NAME, [GROUP_KEY], 2)
     result = await _forget(env, GROUP, forget_epoch=2)
     assert result.get("duplicate") is None and _facts_of(env, GROUP) == []
+
+
+async def test_older_forget_rechecks_the_erased_epoch_under_the_transaction_locks(env):
+    env.llm.responses = [SINGLE_FACTS, SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    await _forget(env, GROUP, forget_epoch=3)
+    await _post(env, _single_body(subject_epochs={GROUP_KEY: 3}, display_name=None))
+    assert len(_facts_of(env, GROUP)) == 2
+    real_check = env.routes._forget_epoch_already_erased
+    calls = {"n": 0}
+
+    async def check(*args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False        # 锁外那次核对发生在较新的清除完成之前
+        return await real_check(*args)
+
+    env.monkeypatch.setattr(env.routes, "_forget_epoch_already_erased", check)
+    stale = await _forget(env, GROUP, forget_epoch=2)
+    # 持锁后再核一次：看到较新的清除已擦完，旧清除不再擦掉之后的合法写入
+    assert stale.get("duplicate") is True and calls["n"] == 2
+    assert len(_facts_of(env, GROUP)) == 2
+
+
+async def test_record_pass_matches_late_staging_by_its_routed_subject(env):
+    idem = env.idem
+    routed = {"subject_kind": "participant", "subject_id": "neko_visit:routed-person", "scope": "x"}
+    await idem.update_key(NAME, KEY_GROUP, idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+    ))
+    await idem.write_staging(NAME, KEY_GROUP, {
+        "shape": "single", "subjects": [GROUP_KEY], "epochs": {}, "created_at": time.time(),
+        "segments": [{"wire_key": GROUP_KEY, "subject": routed, "tombstone_keys": [GROUP_KEY]}],
+        "items": [], "applied": [],
+    })
+
+    async def stale_snapshot(_name):
+        return []          # 暂存扫描的快照取在这份暂存写成之前
+
+    env.monkeypatch.setattr(idem, "list_staging", stale_snapshot)
+    cancelled = await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {"participant:neko_visit:routed-person"},
+    )
+    # 键记录里只有 wire key，但读到的暂存记着路由后的被清 subject：照样取消
+    assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
+    assert not _staging_file(env, KEY_GROUP).exists()
