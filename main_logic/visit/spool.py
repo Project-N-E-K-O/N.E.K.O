@@ -700,6 +700,21 @@ def _raw_state_may_name(
     return not (isinstance(pair, str) and pair and pair not in pair_ids)
 
 
+def _raw_state_names_pair(
+    path: Path, own_char_uid: str, pair_ids: frozenset[str], own_uid: str | None = None,
+) -> bool:
+    """Whether a parseable but schema-invalid ``state.json`` explicitly names this (character, pair)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return False
+    if not isinstance(raw, dict) or not _names_pair(raw, own_char_uid, pair_ids):
+        return False
+    account = raw.get("own_uid")
+    return own_uid is None or not (isinstance(account, str) and account and account != own_uid)
+
+
 def _read_state_file(path: Path) -> dict | None:
     # 文件名就是场次：state 里没有对得上的 visit_id 时（文件被换过 / 复制过）不能信它的归属，
     # 退役、清除、改名都会按它去动别的场次的文件
@@ -1463,6 +1478,7 @@ class VisitSpool:
             state_unreadable = False
             state_corrupt = False
             schema_excludes = False
+            schema_names = False
             try:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
@@ -1472,6 +1488,9 @@ class VisitSpool:
                 # 不是「谁都用不了」，绝不删。先记下它的原始字段是否明确排除这次清除，
                 # 头行照常检查（头行仍指认这一对时照样要清它的对端字段）
                 schema_excludes = not _raw_state_may_name(
+                    visit_path(spool_dir, visit_id, STATE_SUFFIX), own_char_uid, pair_ids, own_uid,
+                )
+                schema_names = _raw_state_names_pair(
                     visit_path(spool_dir, visit_id, STATE_SUFFIX), own_char_uid, pair_ids, own_uid,
                 )
                 state = None
@@ -1499,6 +1518,10 @@ class VisitSpool:
                 continue
             if _names_pair(header, own_char_uid, pair_ids):
                 found.append(visit_id)
+            elif schema_names:
+                # 不合 schema 的 state 原始字段明确指认这一对，头行却指向别处（或缺）：对端字段
+                # 仍在 state 里，不能凭头行把它排除掉，按读不出处理（fail closed）
+                unreadable.append(visit_id)
             elif state_unreadable and (
                 header is None
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)

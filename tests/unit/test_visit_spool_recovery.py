@@ -1852,3 +1852,82 @@ async def test_schema_invalid_wiped_state_of_another_account_does_not_block(tmp_
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
     # 原始字段里的账号是别的账号：不挡这次清除，也不删
     assert outcome.done and other.state_path.exists()
+
+
+async def test_schema_invalid_state_naming_this_pair_is_not_excluded_by_another_header(tmp_path):
+    await seed_roster(tmp_path)
+    mine = await make_visit(tmp_path, vid(87), [ln(0)], finalized="wrap_up")
+    lines = mine.jsonl_path.read_bytes().splitlines(keepends=True)
+    header = json.loads(lines[0])
+    # 头行被换成指向别的一对（自洽的合法头行）
+    header.update(peer_uid=PEER_Y, pair_id=derive_pair_id(OWN_A, PEER_Y),
+                  peer_char_id=derive_peer_char_id(PEER_Y, header["peer_char_tag"]))
+    lines[0] = json.dumps(header, ensure_ascii=False).encode() + b"\n"
+    mine.jsonl_path.write_bytes(b"".join(lines))
+    data = json.loads(mine.state_path.read_text(encoding="utf-8"))
+    assert data["pair_id"] == derive_pair_id(OWN_A, PEER_X)    # state 原始字段仍指认这一对
+    data["field_from_a_newer_version"] = 1
+    mine.state_path.write_text(json.dumps(data), encoding="utf-8")
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 对端字段还在 state 里：不能凭头行把它排除掉记完成
+    assert outcome.done is False
+
+
+def _stream_records(v):
+    return [_header(v)] + [
+        {"kind": "line", "lp": i, "side": "host", "from": "own_cat", "ts": 1001.0 + i,
+         "text": f"t{i}", "truncated": False}
+        for i in range(2)
+    ] + [{"kind": "usage", "d": {"llm_input_tokens": 5}}]
+
+
+async def test_sealed_upload_missing_content_is_resealed_from_the_stream(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(88)
+    records = _stream_records(v)
+    _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason=None)
+    doc["request"]["lines"] = doc["request"]["lines"][:1]       # 信封一致、结构合法，但少了一行
+    doc["request"]["usage"]["llm_input_tokens"] = 0
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 与流水重封出来的不一致：以完整的流水为准重封，不删流水换上缺行的文件
+    assert [line["text"] for line in uploaded["request"]["lines"]] == ["t0", "t1"]
+    assert uploaded["request"]["usage"]["llm_input_tokens"] == 5
+
+
+async def test_matching_sealed_upload_keeps_its_reason_when_state_is_gone(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(89)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 与流水一致的封存文件就是正本：删流水、原样上传；state 不在时不把结束原因改成 crash
+    assert uploaded == doc and not stream.exists()
+
+
+@pytest.mark.parametrize("include_transcript", [False, True, None])
+async def test_report_without_transcript_is_not_held_by_a_pending_upload(tmp_path, include_transcript):
+    v = vid(90)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    queued = {"visit_id": v}
+    if include_transcript is not None:
+        queued["include_transcript"] = include_transcript
+    (reports_dir / f"{v}.json").write_text(json.dumps(queued), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 转录上传失败：明确不附转录的举报照常提交，附转录（或没写明）的等转录
+    assert [visit_id for visit_id, _ in reports.calls] == ([v] if include_transcript is False else [])

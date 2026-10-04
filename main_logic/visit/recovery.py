@@ -304,22 +304,18 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     )
 
 
-_ENVELOPE_FIELDS = ("own_visit_uid", "own_char_uid", "transport")
-
-
-def _stream_envelope_sync(
+def _stream_doc_sync(
     spool_dir: Path, visit_id: str, finalized_reason: str | None, owner: str | None,
 ) -> dict | None:
-    """The envelope fields resealing the stream would produce, or None when it cannot be read."""
+    """The document resealing the stream would produce, or None when it cannot be read."""
     try:
         records = _read_stream(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
     except OSError:
         return None
     if owner is None:
         owner = _spool_header_owner_sync(spool_dir, visit_id)
-    doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=finalized_reason,
-                           fallback_own_visit_uid=owner)
-    return {name: doc[name] for name in _ENVELOPE_FIELDS} if doc is not None else None
+    return build_upload_doc(records, visit_id=visit_id, finalized_reason=finalized_reason,
+                            fallback_own_visit_uid=owner)
 
 
 def _write_private_json(path: Path, doc: dict) -> None:
@@ -632,12 +628,14 @@ async def _upload_pending(
                 sealed_doc = None
             belongs = _sealed_doc_belongs(sealed_doc, visit_id)
             if belongs:
-                # 信封（占房账号、角色 id、传输方式）也要与流水一致：坏了的信封会让上传回调
-                # 永远认不出账号，删了流水就再也重封不回来
-                expected = await asyncio.to_thread(_stream_envelope_sync, spool_dir, visit_id, reason, owner)
-                belongs = expected is None or all(
-                    sealed_doc.get(name) == expected[name] for name in _ENVELOPE_FIELDS
+                # 整份文件都要与从流水重封出来的一致（信封、转录行、用量、时间戳）：缺行 / 改过的
+                # 文件替掉完整的流水，删了流水就再也重封不回来。state 读不出（结束原因未知）时
+                # 沿用文件里记的结束原因，不因此把正常结束的场次重封成 crash
+                expected = await asyncio.to_thread(
+                    _stream_doc_sync, spool_dir, visit_id,
+                    reason or sealed_doc["request"]["finalized_reason"], owner,
                 )
+                belongs = expected is None or expected == sealed_doc
             if belongs:
                 try:
                     await asyncio.to_thread(stream.unlink, True)
@@ -735,6 +733,7 @@ def _load_json(path: Path) -> Any:
 
 async def _submit_report(
     config_dir: Path, visit_id: str, submit_report: SubmitReport | None, report: RecoveryReport,
+    *, transcript_gated: bool = False,
 ) -> None:
     if submit_report is None:
         return
@@ -745,6 +744,9 @@ async def _submit_report(
         logger.warning("visit recovery: queued report %s unreadable: %s", path.name, exc)
         return
     if doc is None:
+        return
+    if transcript_gated and not (isinstance(doc, dict) and doc.get("include_transcript") is False):
+        # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸
         return
     try:
         ok = bool(await submit_report(visit_id, doc))
@@ -770,9 +772,9 @@ async def _submit_reports(
         return
     for name in sorted(names):
         visit_id = name[: -len(".json")] if name.endswith(".json") else ""
-        if not VISIT_ID_RE.fullmatch(visit_id) or visit_id in skip or visit_id in report.reports:
+        if not VISIT_ID_RE.fullmatch(visit_id) or visit_id in report.reports:
             continue
-        await _submit_report(config_dir, visit_id, submit_report, report)
+        await _submit_report(config_dir, visit_id, submit_report, report, transcript_gated=visit_id in skip)
 
 
 async def visit_spool_recovery(
