@@ -799,7 +799,7 @@ async def test_inflight_pubkey_refresh_is_awaited_even_while_failures_are_suppre
     assert not waiting.done()
     gate.set()
     keys = await waiting
-    await forced
+    assert (await forced).stale is False
     assert calls == [1] and "k-revoked" in keys.revoked
 
 

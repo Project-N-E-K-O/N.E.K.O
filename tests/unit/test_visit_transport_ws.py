@@ -626,7 +626,7 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
         link.conn = new
         await old.close(tw.CLOSE_SUPERSEDED, "superseded")
         s.gates[("issue", 1)].set()
-        await task
+        assert await task is None
         return old_ws, new_ws
 
     try:
@@ -849,7 +849,7 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
             await asyncio.sleep(0)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):  # 被取消正是本用例要的结局
-            await task
+            _ = await task
         return s
 
     try:
@@ -885,7 +885,7 @@ def test_replaced_during_preflight_does_not_fetch_credentials():
             await asyncio.sleep(0)
         tw._attach(link, _RecordingWS())  # 页面重载，新连接接管
         s.gate.set()
-        await task
+        assert await task is None
         return s
 
     try:
@@ -912,7 +912,7 @@ def test_unregistered_session_never_delivers_late_credentials():
         # Servers 回来与场次结束同一拍：handler 先恢复，关闭任务还没来得及跑
         s.gates[("issue", 1)].set()
         tw.unregister_transport_session(s)
-        await task
+        assert await task is None
         await asyncio.sleep(0)
         return ws
 
