@@ -403,12 +403,13 @@ def tombstone_epoch(tombstones: dict, subject_keys: Iterable[str]) -> int | None
     """Largest forget epoch recorded for any of ``subject_keys`` (or None)."""
     best: int | None = None
     for subject_key in subject_keys:
-        row = tombstones.get(subject_key)
-        if not isinstance(row, dict):
+        if subject_key not in tombstones:
             continue
-        epoch = row.get("forget_epoch")
-        if not isinstance(epoch, int) or isinstance(epoch, bool):
-            continue
+        row = tombstones[subject_key]
+        epoch = row.get("forget_epoch") if isinstance(row, dict) else None
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+            # 墓碑在但内容坏了：不能当作没有墓碑放行，旧请求会借此写回已清除的记忆
+            raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
         if best is None or epoch > best:
             best = epoch
     return best

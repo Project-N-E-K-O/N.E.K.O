@@ -982,16 +982,17 @@ async def test_startup_cleanup_skips_a_character_being_released(env):
 
 async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(env):
     env.llm.responses = [SINGLE_FACTS]
-    real_write = env.idem.write_staging
+    real_update = env.idem.update_key
     real_apply = env.routes._apply_keyed_staging
     state = {"forgot": False, "crash": True}
 
-    async def write_then_forget(lanlan_name, key, document):
+    async def forget_then_update(lanlan_name, key, fn):
         if not state["forgot"]:
             state["forgot"] = True
-            # 清除整个落在「生成后的检查」与「暂存落盘」之间：它的取消扫描看不到这份暂存
+            # 清除整个落在「生成后的检查」与 pending 落盘之间：两遍取消扫描都还看不到
+            # 这个键（既无记录也无暂存），只能靠暂存落盘之后的复核
             await _forget(env, GROUP)
-        await real_write(lanlan_name, key, document)
+        return await real_update(lanlan_name, key, fn)
 
     async def crash_before_apply(*args, **kwargs):
         if state["crash"]:
@@ -999,7 +1000,7 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
             raise RuntimeError("killed after staging, before apply")
         return await real_apply(*args, **kwargs)
 
-    env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
+    env.monkeypatch.setattr(env.idem, "update_key", forget_then_update)
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name=None))
@@ -1048,3 +1049,41 @@ async def test_key_record_with_unhashable_state_fails_closed(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(display_name=None))
     assert excinfo.value.status_code == 503
+
+
+# ── review round 10 ───────────────────────────────────────────────────────
+
+async def test_malformed_tombstone_fails_closed(env):
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({GROUP_KEY: {"forgotten_at": 1.0}}), encoding="utf-8")
+    env.llm.responses = [SINGLE_FACTS]
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GROUP) == []
+
+
+async def test_epochless_forget_cancels_a_pending_key_without_staging(env):
+    idem = env.idem
+    await idem.update_key(NAME, KEY_GROUP, idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"}))
+    await _forget(env, GROUP)
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+
+
+async def test_staged_writes_are_cancelled_before_the_erase_starts(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    seen = {}
+    real_forget = env.fs.aforget_subject
+
+    async def spy(name, subject):
+        seen.setdefault("state_at_erase", _key_state(env, KEY_GROUP))
+        return await real_forget(name, subject)
+
+    env.monkeypatch.setattr(env.fs, "aforget_subject", spy)
+    await _forget(env, GROUP)
+    assert seen["state_at_erase"] == "cancelled"

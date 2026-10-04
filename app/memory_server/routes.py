@@ -3039,7 +3039,6 @@ async def _build_keyed_staging(
     effect_ordinal = 0
     for index, context in enumerate(contexts):
         wire_key = context["wire_subject"].key
-        routed_key = context["subject"].key
         # 墓碑只按请求自己的 wire key 比：请求代数属于这个 key 的代数域，混入
         # 路由后 key 的墓碑会拿两个互不相关的计数器作比较
         tombstone_keys = [wire_key]
@@ -3552,6 +3551,28 @@ async def _cancel_staged_writes_for_subjects(
             )
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
+    # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。
+    # 按记录里的请求身份认领，同样标 cancelled，免得之后同键重试用清除之后的
+    # generation 重新生成并写回
+    records = await asyncio.to_thread(
+        idempotency._read_json_object, idempotency.keys_path(lanlan_name),
+    )
+    for key, record in records.items():
+        if not isinstance(record, dict) or record.get("state") != idempotency.KEY_STATE_PENDING:
+            continue
+        request = record.get("request")
+        wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
+        if not isinstance(wire_keys, list) or not subject_keys.intersection(
+            str(wire_key) for wire_key in wire_keys
+        ):
+            continue
+        async with idempotency.key_lock(lanlan_name, key):
+            if await idempotency.read_staging(lanlan_name, key) is not None:
+                continue
+            await idempotency.update_key(
+                lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+            )
+            cancelled += 1
     return cancelled
 
 
@@ -3721,6 +3742,19 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                 status_code=500,
                 detail="scoped forget failed; retry is safe and idempotent",
             ) from exc
+    # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
+    # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
+    # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
+    try:
+        await _cancel_staged_writes_for_subjects(lanlan_name, forgotten_subject_keys)
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 预先取消带键暂存失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
     stats: dict = {}
     fact_forget_started: list = []
     reflection_forget_started: list = []
