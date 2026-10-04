@@ -558,3 +558,16 @@ async def test_forget_all_counts_people_not_logs(tmp_path):
     outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A, "B": "e" * 32},
                                client=server.client())
     assert not outcome.done and outcome.forgotten == 0 and len(outcome.pending_logs) == 2
+
+
+async def test_corrupt_sealed_upload_is_resealed_from_its_stream(tmp_path):
+    v = vid(37)
+    _write_stream(tmp_path, v, [_header(v), {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                             "ts": 1001.0, "text": "a", "truncated": False}])
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    assert visit_id == v and [line["text"] for line in doc["request"]["lines"]] == ["a"]
+    assert not list(d.glob(f"{v}.upload*"))

@@ -384,13 +384,23 @@ async def _upload_pending(
         stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
         if visit_id in sealed:
             # 封存时「已写 .upload.json、还没删流水」就崩了：上传文件才是这场的那份，
-            # 留着流水会在上传成功后被再封一次、重复上传
+            # 留着流水会在上传成功后被再封一次、重复上传。先确认上传文件读得出来再删流水；
+            # 上传文件坏了就从流水重新封存（覆盖坏文件），流水是这时唯一完整的副本
             try:
-                await asyncio.to_thread(stream.unlink, True)
-            except OSError as exc:
-                logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
-                pending.add(visit_id)
-            continue
+                sealed_doc = await asyncio.to_thread(
+                    _load_json, visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX),
+                )
+            except (OSError, ValueError):
+                sealed_doc = None
+            if isinstance(sealed_doc, dict) and isinstance(sealed_doc.get("request"), dict):
+                try:
+                    await asyncio.to_thread(stream.unlink, True)
+                except OSError as exc:
+                    logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
+                    pending.add(visit_id)
+                continue
+            logger.warning("visit recovery: sealed upload of %s unreadable, resealing from its stream",
+                           visit_id)
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
         state = None
         try:
