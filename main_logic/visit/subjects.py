@@ -679,8 +679,12 @@ class PeerRoster:
 
         return await asyncio.to_thread(self._read, fn)
 
-    async def list_peers(self) -> dict[str, dict]:
-        """Return a deep copy of every peer entry of this account."""
+    async def list_peers(self, *, strict: bool = False) -> dict[str, dict]:
+        """Return a deep copy of every peer entry of this account.
+
+        ``strict=True`` raises :class:`RosterCorruptError` on an unreadable
+        roster instead of reading it as empty (forget expansion uses it).
+        """
 
         def fn(data: dict):
             return {
@@ -689,7 +693,7 @@ class PeerRoster:
                 if isinstance(peer, dict)
             }
 
-        return await asyncio.to_thread(self._read, fn)
+        return await asyncio.to_thread(self._read, fn, strict)
 
     async def expand_subjects(
         self,

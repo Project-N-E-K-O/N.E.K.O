@@ -450,3 +450,67 @@ async def test_spool_is_untouched_for_live_visits(tmp_path):
     await _recover(tmp_path, render_chips=chips, is_live=lambda visit_id: visit_id == v)
     assert (await spool.read_state())["finalized"] is None and chips.calls == []
     assert (_spool_dir(tmp_path) / f"{v}.outbox.jsonl").exists()
+
+
+# ── 评审第一轮 ────────────────────────────────────────────────────────
+
+
+async def test_sentinel_survives_when_its_scope_cannot_be_expanded(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+
+    await seed_roster(tmp_path)
+    sentinel = await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars",
+                                                        own_char_uids=[CHAR_UID_A])
+    (tmp_path / "visit_peers.json").write_text("{broken", encoding="utf-8")
+    report = await _recover(tmp_path)
+    assert not report.forgets_clean
+    assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [sentinel["op_id"]]
+
+
+async def test_pending_rename_is_reconciled_before_forget_replay(tmp_path):
+    roster = await seed_roster(tmp_path)
+    await roster.set_last_summary(PEER_X, "A", visit_id=vid(30), ended_at=1.0, text="要清掉", pair_id=PAIR)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    # 清除日志卡住期间角色 A 改名为 C，改名迁移还没做完就崩溃
+    await roster.set_last_summary(PEER_X, "A", visit_id=vid(31), ended_at=2.0, text="又写回", pair_id=PAIR)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A", "new": "C"}
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    server.fail_always.clear()
+    report = await _recover(tmp_path, server, list_char_names=_names("C", "B"),
+                            resolve_char_name=resolver({CHAR_UID_A: "C"}))
+    assert report.renamed and report.forgets_clean
+    assert await roster.get_peer(PEER_X) is None
+
+
+async def test_crashed_visit_of_a_forgotten_person_gets_no_chip(tmp_path):
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    spool = await make_visit(tmp_path, vid(32), [ln(0, "你好")], finalized=None)
+    server.fail_always.clear()
+    chips = Chips()
+    await _recover(tmp_path, server, render_chips=chips)
+    state = await spool.read_state()
+    assert state["finalized"] == "crash" and state["debrief_choice"] == "forget"
+    assert state["peer_uid"] is None and chips.calls == []
+
+
+async def test_report_of_a_live_visit_waits_for_its_upload(tmp_path):
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    live = vid(33)
+    (d / f"{live}.upload.json").write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{live}.json").write_text(json.dumps({"visit_id": live}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports,
+                   is_live=lambda visit_id: visit_id == live)
+    assert reports.calls == [] and (reports_dir / f"{live}.json").exists()

@@ -104,3 +104,11 @@ def test_visit_meta_filters_assistant_message_and_turn_end():
     )
     assert is_mirror_assistant_message({"type": "gemini_response", "metadata": meta}) is True
     assert is_mirror_turn_end_meta(meta) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_non_boolean_explicit_value_falls_back_to_the_previous_rules(value):
+    for base in ({}, {"hasUserSpeech": True}, {"game_memory_enabled": False}):
+        event = {**base, "memory_enabled": value}
+        assert is_mirror_event_memory_disabled(event) is _frozen_is_mirror_event_memory_disabled(base)

@@ -110,7 +110,9 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
                 continue
             if state["pair_id"] is not None and state["pair_id"] not in pairs:
                 continue
-            if state["finalized"] is None or state["debrief_choice"] not in _VOIDABLE_CHOICES:
+            # 不看 finalized：启动补录先重放清除、后标崩溃，崩溃场次此时 finalized 仍为空，
+            # 漏掉它会让补录随后照样弹芯片。清除只在该角色没有在飞串门时进行
+            if state["debrief_choice"] not in _VOIDABLE_CHOICES:
                 continue
             try:
                 await spool.mark_forget()
@@ -193,7 +195,8 @@ async def _open_logs_in_scope(
             peers = [sentinel["peer_uid"]]
         else:
             peers = [
-                peer_uid for peer_uid, peer in (await roster.list_peers()).items()
+                # 严格读：名册读不出不能当作「没有人」，否则清除全部会什么都不展开就结束
+                peer_uid for peer_uid, peer in (await roster.list_peers(strict=True)).items()
                 if isinstance(peer.get("by_char"), dict) and name in peer["by_char"]
             ]
         for peer_uid in peers:
@@ -328,11 +331,14 @@ async def replay_forgets(
         clean = False
     else:
         clean = True
+    unexpanded: set[str] = set()
     for sentinel in sentinels:
         try:
             await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
         except _STEP_ERRORS as exc:
             logger.warning("visit forget replay: cannot expand %s: %r", sentinel["op_id"], exc)
+            # 范围没展开成功（名册读不出等）：哨兵是这次清除唯一的记录，必须留到下次
+            unexpanded.add(sentinel["op_id"])
             clean = False
     try:
         logs = await RevocationLog.list_all_open(config_dir)
@@ -362,7 +368,7 @@ async def replay_forgets(
             and sentinel_covers(sentinel, log["own_char_uid"], log["peer_uid"])
             for log in remaining
         )
-        if busy:
+        if busy or sentinel["op_id"] in unexpanded:
             clean = False
         else:
             await sentinels_store.remove(sentinel["op_id"])

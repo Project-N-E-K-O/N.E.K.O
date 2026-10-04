@@ -18,8 +18,9 @@ Design: ``docs/design/visit-infrastructure.md`` section 3.7.3 item 7 and
 PR-08 ``recovery.py``. :func:`visit_spool_recovery` is started with
 ``asyncio.create_task`` after startup (PR-09b) and runs, in order:
 
-1. unfinished local forgets (clearing sentinels, then revocation logs);
-2. the character-rename reconciliation (``visit_peers.json.pending_rename``);
+1. the character-rename reconciliation (``visit_peers.json.pending_rename``),
+   first, so forgets resolve roster entries under their current name;
+2. unfinished local forgets (clearing sentinels, then revocation logs);
 3. startup cleanup: only leftover ``.outbox.jsonl`` files are deleted;
 4. ``VisitSpool.sweep`` (7 days / 20 MB, pending uploads and unsettled
    visits are never reclaimed for size);
@@ -391,6 +392,8 @@ async def _upload_pending(
             sealed.add(visit_id)
     for visit_id in sorted(sealed):
         if live(visit_id):
+            # 在飞场次的转录还没传：它排队的举报也不能先交
+            pending.add(visit_id)
             continue
         path = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
         try:
@@ -503,19 +506,21 @@ async def visit_spool_recovery(
     config_dir = Path(config_dir)
     resolve = resolve_char_name or local_chars.resolve_char_name
     live = is_live or (lambda _visit_id: False)
-    try:
-        report.forgets_clean = await replay_forgets(
-            config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
-        )
-    except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
-        logger.error("visit recovery: forget replay failed: %r", exc)
-        report.forgets_clean = False
+    # 改名对账先于清除重放：清除按角色当前名字找名册条目，改名迁移没做完时条目还在
+    # 旧名字下，remove_char 会「成功」地什么都没删，随后迁移又把条目连同摘要搬到新名字
     try:
         names = (set(await list_char_names()) if list_char_names is not None
                  else set((await local_chars.load_local_characters()).keys()))
         report.renamed = await _reconcile_rename(config_dir, names)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
+    try:
+        report.forgets_clean = await replay_forgets(
+            config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("visit recovery: forget replay failed: %r", exc)
+        report.forgets_clean = False
     await _cleanup_outboxes(config_dir, live)
     try:
         report.swept = len(await VisitSpool.sweep(config_dir, time.time() if now is None else now))

@@ -85,14 +85,16 @@ def is_mirror_event_memory_disabled(event: dict) -> bool:
     """Whether a mirror event's payload says it should be filtered from
     ordinary chat memory.
 
-    An explicit ``memory_enabled`` key wins over every other rule (visit
-    events always pass ``{'memory_enabled': False}``); without it the rules
-    below apply unchanged.
+    An explicit boolean ``memory_enabled`` wins over every other rule (visit
+    events always pass ``{'memory_enabled': False}``); without it, or with a
+    non-boolean value, the rules below apply unchanged.
     """
     # 显式键优先：串门的所有 mirror event 都带 {'memory_enabled': False}，
-    # 不再依赖「无用户输入 → 过滤」的默认分支
-    if "memory_enabled" in event:
-        return not bool(event["memory_enabled"])
+    # 不再依赖「无用户输入 → 过滤」的默认分支。只认真布尔值（与本函数其它
+    # 开关同口径）："false" / 0 之类不能被 bool() 翻成「记」
+    explicit = event.get("memory_enabled")
+    if isinstance(explicit, bool):
+        return not explicit
     has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True
     if has_user_input:
         player_interaction_enabled = _payload_bool_from_keys(
