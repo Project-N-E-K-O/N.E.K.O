@@ -346,6 +346,9 @@
         el.gain.addEventListener('change', () => { gainDb = root.nekoMicrophoneInput.gain(el.gain.value); try { localStorage.setItem('neko_mic_gain_db', String(gainDb)); } catch (_) {} invalidate('voiceIdentity.inputChanged'); });
         root.addEventListener('storage', event => {
             if (!['neko_selected_microphone', 'neko_mic_gain_db', 'neko_noise_reduction'].includes(event.key)) return;
+            try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
+            el.gain.value = String(gainDb);
+            enumerate().catch(() => {});
             if (hooks.enrolling()) {
                 inputChangedDuringEnrollment = true;
                 try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
@@ -354,11 +357,7 @@
                 render();
                 return;
             }
-            try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
-            el.gain.value = String(gainDb);
-            if (hooks.enrolling()) { accepted = null; message('voiceIdentity.inputChanged'); render(); }
-            else invalidate('voiceIdentity.inputChanged');
-            enumerate().catch(() => {});
+            invalidate('voiceIdentity.inputChanged');
         });
         root.addEventListener('localechange', () => {
             if (actualLabel) el['actual-device'].textContent = actualLabel;

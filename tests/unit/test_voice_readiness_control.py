@@ -15,6 +15,7 @@ import weakref
 from fastapi import FastAPI
 import httpx
 import pytest
+from starlette.websockets import WebSocketState
 
 import main_logic.core.asr_runtime as asr_module
 import main_logic.core.voice_readiness as readiness_module
@@ -23,6 +24,7 @@ import main_routers.websocket_router as router
 import main_routers.voice_identity_router as identity_router
 from main_routers.system_router import _shared as system_shared
 from main_logic.core.streaming import StreamingMixin
+from main_logic.core.notify import NotifyMixin
 from main_logic.voice_input.activation import ActivationState
 from main_logic.voice_turn.contracts import AsrSubmitResult, AsrSubmitStatus
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
@@ -358,7 +360,8 @@ async def test_disconnect_release_is_bound_to_original_connection_and_cannot_rel
 
 
 @pytest.mark.parametrize("input_mode", ["audio", "text"])
-async def test_route_start_during_preview_uses_explicit_failure_and_text_revocation(registry, input_mode):
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_route_start_during_preview_uses_explicit_failure_and_text_revocation(registry, input_mode, superseded):
     owner, value = manager("blocked"), manager("blocked")
     for inactive in (owner, value):
         inactive._voice_lease_synchronized = False
@@ -367,7 +370,15 @@ async def test_route_start_during_preview_uses_explicit_failure_and_text_revocat
     registry.mark_ready(ticket)
     failed = AsyncMock(return_value=True)
     value._fail_closed_voice_route = failed
-    value._send_to_voice_owner = AsyncMock()
+    socket = SimpleNamespace(client_state=WebSocketState.CONNECTED, send_text=AsyncMock())
+    value.websocket = socket
+    voice_socket = SimpleNamespace(client_state=WebSocketState.CONNECTED, send_text=AsyncMock()) if superseded else socket
+    value._voice_input_websocket = voice_socket
+    value.sync_message_queue = SimpleNamespace(put=lambda _message: None)
+    value._start_notification_context = lambda: (None, None, lambda: None)
+    value.send_status = NotifyMixin.send_status.__get__(value)
+    value._voice_owner_socket = NotifyMixin._voice_owner_socket.__get__(value)
+    value._send_to_voice_owner = NotifyMixin._send_to_voice_owner.__get__(value)
     generation = value._asr_route_operation_generation
     try:
         await value._start_independent_asr_if_enabled(input_mode)
@@ -375,7 +386,9 @@ async def test_route_start_during_preview_uses_explicit_failure_and_text_revocat
         if input_mode == "audio":
             failed.assert_not_awaited()
             assert value._asr_route_operation_generation == generation
-            assert "VOICE_INPUT_PREVIEW_BUSY" in value._send_to_voice_owner.await_args.args[0]["message"]
+            socket.send_text.assert_awaited_once()
+            assert "VOICE_INPUT_PREVIEW_BUSY" in socket.send_text.await_args.args[0]
+            voice_socket.send_text.assert_awaited_once()
         else:
             assert failed.await_args.args[0] == "text_session_active"
     finally:

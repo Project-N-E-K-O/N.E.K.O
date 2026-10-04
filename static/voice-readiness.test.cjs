@@ -46,7 +46,7 @@ function harness({ checkGate, captureGate, accepted = true, resourceReady = true
     };
     vm.runInNewContext(readinessSource, { window: root, document, navigator: { mediaDevices: { enumerateDevices: async () => [], addEventListener(name,fn) { mediaEvents.set(name,fn); } } }, localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) }, crypto, AbortController, Uint8Array, Date: clock, Math, Promise }, { filename: path.join(__dirname, 'js/voice-identity-readiness.js') });
     controller = root.createVoiceIdentityReadiness(hooks);
-    return { controller, calls, elements, events, mediaEvents, hooks, root, stopped: () => stopped };
+    return { controller, calls, elements, events, mediaEvents, hooks, root, storage, stopped: () => stopped };
 }
 test('opening a selected unavailable device reports the real fallback device', async () => {
     const stream = trackStream(); const constraints = [];
@@ -488,14 +488,20 @@ test('storage changes invalidate the trial proof without cancelling ongoing enro
     assert.equal(h.controller.canStart(), true);
     const before = h.stopped();
     ongoing = true;
+    h.storage.set('neko_mic_gain_db', '12');
+    h.storage.set('neko_selected_microphone', 'updated-device');
     h.events.get('storage')({ key: 'neko_mic_gain_db' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.elements.get('voice-identity-gain').value, '12');
+    assert.equal(h.elements.get('voice-identity-microphone').value, 'updated-device');
     ongoing = false;
     assert.equal(cancelled, 0);
     assert.equal(h.stopped(), before);
     assert.equal(h.controller.canStart(), false);
     assert.equal(h.controller.canResume(), false);
-    const restored = h.root.createVoiceIdentityReadiness(h.hooks);
-    assert.equal(restored.canResume(), false);
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.canStart(), true);
+    assert.equal(h.controller.canResume(), true);
 });
 
 test('device fallback during existing enrollment persistently blocks continuation', () => {

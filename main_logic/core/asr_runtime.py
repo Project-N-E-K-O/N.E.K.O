@@ -2486,8 +2486,8 @@ class AsrRuntimeMixin:
         """
         self._ensure_asr_runtime_state()
         if input_mode == "audio" and preview_isolation_registry.is_manager_isolated(self):
-            await self._send_to_voice_owner({"type": "status", "message": json.dumps({
-                "code": "VOICE_INPUT_PREVIEW_BUSY", "details": {"reason": "preview_busy"}})})
+            await self._send_voice_control_status(json.dumps({
+                "code": "VOICE_INPUT_PREVIEW_BUSY", "details": {"reason": "preview_busy"}}))
             return
         operation_generation = self._begin_asr_route_operation()
         await self._close_independent_asr(
