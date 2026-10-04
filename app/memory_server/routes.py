@@ -3402,6 +3402,13 @@ async def _process_scoped_history_keyed(
                     ),
                 )
                 await idempotency.write_staging(lanlan_name, key, staging)
+                # 暂存落盘之后再核一次：在上面两次写入期间完成的清除，取消扫描时
+                # 还看不到这份暂存；它推进 generation 必在扫描之前，所以这里一定能看到。
+                # 此后的清除都会在键级锁下找到并取消这份暂存
+                if _mark_items_forgotten_during_generation(
+                    lanlan_name, staging, contexts, generations,
+                ):
+                    await idempotency.write_staging(lanlan_name, key, staging)
             except MaintenanceModeError:
                 raise
             except Exception as exc:
@@ -3465,9 +3472,10 @@ async def _process_scoped_history_keyed(
 
 def _mark_items_forgotten_during_generation(
     lanlan_name: str, staging: dict, contexts: list[dict], generations: dict[int, int] | None,
-) -> None:
+) -> bool:
+    """Journal as dropped every item of a subject whose forget generation moved; return whether any was added."""
     if not generations:
-        return
+        return False
     changed = {
         index for index, context in enumerate(contexts)
         if index in generations
@@ -3475,11 +3483,19 @@ def _mark_items_forgotten_during_generation(
         != generations[index]
     }
     if not changed:
-        return
+        return False
     applied = staging.setdefault("applied", [])
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    added = False
     for item in staging.get("items") or []:
-        if item.get("segment") in changed and item.get("kind") != _KEYED_ITEM_LOCALE:
+        if (
+            item.get("segment") in changed
+            and item.get("kind") != _KEYED_ITEM_LOCALE
+            and item["seq"] not in done
+        ):
             applied.append({"seq": item["seq"], "dropped_forget_during_generation": True})
+            added = True
+    return added
 
 
 def _fingerprint_of_staging(document: dict) -> dict | None:

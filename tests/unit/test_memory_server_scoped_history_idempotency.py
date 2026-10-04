@@ -977,3 +977,31 @@ async def test_startup_cleanup_skips_a_character_being_released(env):
     report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
     assert report == {"staging_removed": 0, "tombstones_removed": 0}
     assert set(await idem.read_tombstones(NAME)) == {"a:old"}
+
+
+
+async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real_write = env.idem.write_staging
+    real_apply = env.routes._apply_keyed_staging
+    state = {"forgot": False, "crash": True}
+
+    async def write_then_forget(lanlan_name, key, document):
+        if not state["forgot"]:
+            state["forgot"] = True
+            # 清除整个落在「生成后的检查」与「暂存落盘」之间：它的取消扫描看不到这份暂存
+            await _forget(env, GROUP)
+        await real_write(lanlan_name, key, document)
+
+    async def crash_before_apply(*args, **kwargs):
+        if state["crash"]:
+            state["crash"] = False
+            raise RuntimeError("killed after staging, before apply")
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "write_staging", write_then_forget)
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    result = await _post(env, _single_body(display_name=None))
+    assert result["created"] == 0 and _facts_of(env, GROUP) == []
