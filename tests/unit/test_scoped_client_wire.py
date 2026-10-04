@@ -723,3 +723,22 @@ async def test_history_language_is_sent_only_when_supported():
     plain, single, bogus, batch = (json.loads(r.content) for r in recorder.requests)
     assert "language" not in plain and "language" not in bogus
     assert single["language"] == "ja" and batch["language"] == "ja"
+
+
+@pytest.mark.asyncio
+async def test_keyed_batch_with_an_unsettled_trust_write_fails_as_a_whole():
+    def responder(request):
+        return httpx.Response(200, json={"status": "processed", "segments": [
+            {"status": "ok", "created": 1, "trust": {"persisted": None}},
+            {"status": "ok", "created": 1, "trust": {"persisted": False}},
+        ]})
+
+    client, http = _client(_Recorder(responder))
+    segments = [{"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": label} for label in ("A", "B")]
+    async with http:
+        keyed = await client.post_history_batch("Lanlan", segments=segments, idempotency_key="k")
+        plain = await client.post_history_batch("Lanlan", segments=segments)
+    # 带键批次服务端整键保留 pending：只能同键整批重试，所以每一位都算失败
+    assert keyed.failed_positions == (0, 1)
+    # 不带键时仍按位置报：只有信赖池没落盘的那一位失败
+    assert plain.failed_positions == (1,)

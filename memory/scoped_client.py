@@ -465,7 +465,9 @@ class ScopedMemoryClient:
         only when every segment came back ``"ok"``). The server commits the
         successful segments and reports them in request order, so callers
         retry only ``failed_positions`` instead of re-extracting the whole
-        batch. An empty ``segments`` raises ``ValueError`` without a request
+        batch. A keyed batch (``idempotency_key``) succeeds or fails as a
+        whole: any unsettled position marks every position failed, and the
+        caller retries the identical batch under the same key. An empty ``segments`` raises ``ValueError`` without a request
         (the server rejects it and there would be nothing to retry).
         """
         if not segments:
@@ -502,6 +504,10 @@ class ScopedMemoryClient:
             isinstance(result, dict) and result.get("status") == "ok" and _trust_settled(result)
             for result in results
         ))
+        if idempotency_key is not None and outcome.failed_positions:
+            # 带键批次在服务端整键成败（信赖池没落盘时整键保留 pending）：只能同键整批重试，
+            # 只重试失败位的子集请求与键记录的请求身份对不上、会被 422。所以整批都算失败
+            outcome = none_ok
         if outcome.failed_positions:
             logger.warning(
                 "scoped_history segments not extracted: positions %s",
