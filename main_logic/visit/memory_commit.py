@@ -208,9 +208,13 @@ async def _peer_displays(
     human_label = get_visit_speaker_header("peer_human", lang).strip("[] ")
     short = derive_short_code(state["peer_uid"])
     roster = PeerRoster(config_dir, own_uid=state["own_uid"])
-    peer = await roster.get_peer(state["peer_uid"]) or {}
-    entry = await roster.get_char_entry(state["peer_uid"], own_char) or {}
-    cat_info = (entry.get("chars") or {}).get(state["peer_char_id"]) or {}
+    # 显示名只是装饰：名册条目结构坏了也退回通用标签，不能让 segments digest 失败
+    peer = await roster.get_peer(state["peer_uid"])
+    entry = await roster.get_char_entry(state["peer_uid"], own_char)
+    chars = entry.get("chars") if isinstance(entry, dict) else None
+    cat_info = chars.get(state["peer_char_id"]) if isinstance(chars, dict) else None
+    peer = peer if isinstance(peer, dict) else {}
+    cat_info = cat_info if isinstance(cat_info, dict) else {}
     cat = neutralize_display_name(cat_info.get("display_name"), protected_names=(),
                                   generic_label=cat_label, short_code=short)
     human = neutralize_display_name(peer.get("display_name"), protected_names=(),

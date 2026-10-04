@@ -673,3 +673,38 @@ async def test_partially_acquired_admission_locks_are_released(tmp_path):
         await forget_all(tmp_path, own_uid=OWN_A, chars={"A": "c" * 32, "B": "e" * 32},
                          client=FakeMemoryServer().client(), admission_lock=Admission)
     assert events == ["enter c", "exit c"]
+
+
+async def test_schema_damaged_stream_lines_are_dropped_not_fatal(tmp_path):
+    bad, good = vid(42), vid(43)
+    _write_stream(tmp_path, bad, [
+        _header(bad),
+        {"kind": "line", "lp": None, "side": "host", "from": "own_cat", "ts": 1.0, "text": "x", "truncated": False},
+        {"kind": "line", "lp": 1, "side": "host", "from": "own_cat", "ts": 1.0, "text": "ok", "truncated": False},
+        {"kind": "usage", "ts": 10 ** 400, "d": {}},
+    ])
+    _write_stream(tmp_path, good, [_header(good)])
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    docs = dict(uploads.calls)
+    assert set(docs) == {bad, good}
+    assert [line["text"] for line in docs[bad]["request"]["lines"]] == ["ok"]
+
+
+async def test_seal_validation_errors_only_skip_that_visit(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    bad, good = vid(44), vid(45)
+    _write_stream(tmp_path, bad, [_header(bad)])
+    _write_stream(tmp_path, good, [_header(good)])
+    real_seal = recovery._seal_stream_sync
+
+    def flaky(spool_dir, visit_id, reason):
+        if visit_id == bad:
+            raise TypeError("'<' not supported between instances of 'NoneType' and 'int'")
+        return real_seal(spool_dir, visit_id, reason)
+
+    monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert [v for v, _ in uploads.calls] == [good]

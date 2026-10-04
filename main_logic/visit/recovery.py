@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -151,7 +152,26 @@ def _read_stream(path: Path) -> list[dict]:
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _valid_line(record: dict) -> bool:
+    # 能解析成对象但字段坏了的行（lp 为 null、side 不认识……）按损坏丢掉：
+    # 它们会让排序抛错，整轮补录随之中断
+    lp = record.get("lp")
+    return (
+        all(name in record for name in _LINE_FIELDS)
+        and isinstance(lp, int) and not isinstance(lp, bool) and lp >= 0
+        and record.get("side") in ("host", "guest")
+        and record.get("from") in ("own_cat", "peer_cat", "own_human", "peer_human")
+        and _number(record.get("ts")) is not None
+        and isinstance(record.get("text"), str)
+        and isinstance(record.get("truncated"), bool)
+    )
 
 
 def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: str | None) -> dict | None:
@@ -182,7 +202,7 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
             ended_at = ts
         kind = record.get("kind")
         if kind == "line":
-            if all(name in record for name in _LINE_FIELDS):
+            if _valid_line(record):
                 lines.append({name: record[name] for name in _LINE_FIELDS})
         elif kind == "usage":
             delta = record.get("d")
@@ -419,7 +439,7 @@ async def _upload_pending(
         reason = state["finalized"] if state else None
         try:
             doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason)
-        except OSError as exc:
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
             # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
             pending.add(visit_id)

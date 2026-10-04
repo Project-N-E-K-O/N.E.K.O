@@ -456,3 +456,21 @@ async def test_summary_holds_the_peer_lock_so_a_failing_forget_cannot_be_undone(
     assert not outcome.done                 # memory_server 不可用，清除留待重放
     # 清除已先删掉摘要；摘要生成不能在那之后把它写回去
     assert await roster.get_last_summary(PEER_X, "A") is None
+
+
+async def test_damaged_display_metadata_falls_back_to_generic_labels(tmp_path):
+    import json as _json
+
+    await seed_roster(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    entry = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]
+    cid = next(iter(entry["chars"]))
+    entry["chars"][cid] = "broken"                       # 单只猫的记录不是对象
+    data["accounts"][OWN_A]["peers"][PEER_X]["display_name"] = {"bad": 1}
+    path.write_text(_json.dumps(data), encoding="utf-8")
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    assert (await _commit(spool, server)).ok
+    segments = server.calls("scoped_history")[1]["segments"]
+    assert all(isinstance(seg["speaker_label"], str) and seg["speaker_label"] for seg in segments)

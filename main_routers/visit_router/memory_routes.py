@@ -122,9 +122,12 @@ def _is_loopback(host: str | None) -> bool:
     if not host:
         return False
     try:
-        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+        address = ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
         return False
+    # ::ffff:127.0.0.1 之类 IPv4 映射地址：3.11.11 之前的 is_loopback 认不出，先拆开
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
 
 
 def local_visit_gate(request: Request, payload: dict | None = None) -> JSONResponse | None:

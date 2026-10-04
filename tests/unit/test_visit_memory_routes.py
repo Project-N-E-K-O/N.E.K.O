@@ -283,3 +283,11 @@ def test_forget_voids_unwritten_debriefs_of_that_person(env):
     assert state["peer_uid"] is None and state["debrief_chip_pending"] is False
     assert mine.jsonl_path.exists()                    # 转录正文不删，等结清或 7 天回收
     assert _run(other.read_state())["debrief_choice"] == "ask_later"
+
+
+def test_ipv4_mapped_loopback_is_local(env):
+    client, *_ = env
+    assert memory_routes._is_loopback("::ffff:127.0.0.1")
+    assert not memory_routes._is_loopback("::ffff:192.168.1.20")
+    mapped = TestClient(client.app, client=("::ffff:127.0.0.1", 5000))
+    assert mapped.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).status_code == 200
