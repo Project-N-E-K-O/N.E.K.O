@@ -665,6 +665,31 @@ class ClearingSentinels:
         with path_lock(path):
             atomic_write_json(path, doc)
 
+    async def find_or_create(
+        self,
+        *,
+        own_uid: str,
+        scope: str,
+        own_char_uids: Iterable[str],
+        peer_uid: str | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Reuse an open sentinel with exactly this scope, else :meth:`create` one.
+
+        A retried clearing must not leave the earlier attempt's sentinel
+        behind: removing only the new one would keep the characters looking
+        "being cleared" (no new visits, no memory block) until a restart.
+        """
+        uids = sorted(dict.fromkeys(own_char_uids))
+        for doc in await self.list_open():
+            if (
+                doc["own_uid"] == own_uid and doc["scope"] == scope
+                and sorted(doc["own_char_uids"]) == uids and doc.get("peer_uid") == peer_uid
+            ):
+                return copy.deepcopy(doc)
+        return await self.create(own_uid=own_uid, scope=scope, own_char_uids=uids,
+                                 peer_uid=peer_uid, now=now)
+
     async def create(
         self,
         *,

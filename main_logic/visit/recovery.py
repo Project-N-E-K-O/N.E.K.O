@@ -359,9 +359,12 @@ async def _recover_visit(
             show_chip = True
     elif choice == "ask_later":
         show_chip = True
-    if choice in ("generating:diary", "commit_failed:diary"):
-        # 生成预览时崩溃 / 永久性写入失败：零 LLM、零写入，只经 bind 重放
+    if choice in ("generating:diary", "preview:diary", "commit_failed:diary"):
+        # 生成预览时崩溃 / 已落盘的预览待确认 / 永久性写入失败：零 LLM、零写入，只经 bind 重放
         show_chip = True
+    if show_chip and state["finalized"] == "crash":
+        # 崩溃场次每次重放都带上「意外中断」，不只在第一次标崩溃时
+        status = "interrupted"
     if show_chip:
         if not state["debrief_chip_pending"]:
             state = await spool.update_state(debrief_chip_pending=True)
@@ -406,6 +409,7 @@ async def _upload_pending(
     """Retry pending uploads; return the visit ids whose upload is still pending."""
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     pending: set[str] = set()
+    blocked: set[str] = set()
     sealed = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX,)))
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)):
         if live(visit_id):
@@ -425,8 +429,10 @@ async def _upload_pending(
                 try:
                     await asyncio.to_thread(stream.unlink, True)
                 except OSError as exc:
+                    # 流水删不掉就这一轮先不传：传完删了上传文件、流水还在，下次会再封一次重复上传
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                     pending.add(visit_id)
+                    blocked.add(visit_id)
                 continue
             logger.warning("visit recovery: sealed upload of %s unreadable, resealing from its stream",
                            visit_id)
@@ -447,6 +453,8 @@ async def _upload_pending(
         if doc is not None:
             sealed.add(visit_id)
     for visit_id in sorted(sealed):
+        if visit_id in blocked:
+            continue
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
             pending.add(visit_id)

@@ -308,7 +308,7 @@ async def _forget_person(
     stack = await _with_admission_locks(admission_lock, [own_char_uid])
     async with stack:
         _refuse_active(is_visit_active, [own_char])
-        sentinel = await ClearingSentinels(config_dir).create(
+        sentinel = await ClearingSentinels(config_dir).find_or_create(
             own_uid=own_uid, scope="person", own_char_uids=[own_char_uid], peer_uid=peer_uid,
         )
 
@@ -361,7 +361,7 @@ async def _forget_all(
     stack = await _with_admission_locks(admission_lock, by_uid)
     async with stack:
         _refuse_active(is_visit_active, chars)
-        sentinel = await ClearingSentinels(config_dir).create(
+        sentinel = await ClearingSentinels(config_dir).find_or_create(
             own_uid=own_uid, scope="chars", own_char_uids=list(by_uid),
         )
 

@@ -751,3 +751,52 @@ async def test_lifecycle_guard_is_held_for_the_whole_forget(tmp_path):
     assert outcome.done
     assert events[0] == ("enter", (CHAR_UID_A,)) and events[-1] == "exit"
     assert "request" in events[1:-1]
+
+
+# ── 评审第九轮 ────────────────────────────────────────────────────────
+
+
+async def test_stale_stream_that_cannot_be_deleted_holds_back_the_upload(tmp_path, monkeypatch):
+    v = vid(46)
+    _write_stream(tmp_path, v, [_header(v)])
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text(json.dumps({"v": 1, "request": {"visit_id": v}}), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == f"{v}.upload.jsonl":
+            raise PermissionError("locked")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert uploads.calls == [] and (d / f"{v}.upload.json").exists()
+
+
+async def test_pending_preview_is_replayed_and_crash_keeps_its_status(tmp_path):
+    await seed_roster(tmp_path)
+    preview = await make_visit(tmp_path, vid(47), [ln(0)], debrief_choice="preview:diary",
+                               debrief_pending={"diary": "d", "facts": []}, last_summary_done=True)
+    crashed = await make_visit(tmp_path, vid(48), [ln(0)], finalized="crash",
+                               debrief_choice="ask_later", debrief_chip_pending=True, last_summary_done=True)
+    chips = Chips()
+    await _recover(tmp_path, render_chips=chips)
+    assert (await preview.read_state())["debrief_chip_pending"] is True
+    assert sorted(chips.calls) == [(vid(47), "A", None), (vid(48), "A", "interrupted")]
+
+
+async def test_retried_forget_reuses_the_open_sentinel(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    first = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                peer_uid=PEER_X, client=server.client())
+    assert not first.done and len(await ClearingSentinels(tmp_path).list_open()) == 1
+    server.fail_always.clear()
+    second = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                 peer_uid=PEER_X, client=server.client())
+    assert second.done
+    assert await ClearingSentinels(tmp_path).list_open() == []
