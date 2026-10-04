@@ -190,12 +190,9 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
         return None
     header = records[0]
     started_at = _number(header.get("started_at"))
-    owner = header.get("own_visit_uid")
     if (
         header.get("visit_id") != visit_id or started_at is None
         or header.get("role") not in ("host", "guest")
-        # 没有占房账号就没人能补传它（只在当前登录账号 = own_visit_uid 时才上传）
-        or not isinstance(owner, str) or not owner
     ):
         return None
     usage = {key: 0 for key in _USAGE_KEYS}
@@ -233,7 +230,11 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
     }
     return {
         "v": UPLOAD_DOC_VERSION,
-        "own_visit_uid": header.get("own_visit_uid"),
+        # 设计稿较早的上传头定义没有这个字段：缺失或类型不对时记 None 照样封存（不删唯一
+        # 的流水副本），由上传回调按 None 处理账号核对
+        "own_visit_uid": (header.get("own_visit_uid")
+                          if isinstance(header.get("own_visit_uid"), str) and header.get("own_visit_uid")
+                          else None),
         "own_char_uid": header.get("own_char_uid"),
         "transport": header.get("transport"),
         "request": request,

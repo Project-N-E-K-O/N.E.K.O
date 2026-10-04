@@ -843,14 +843,18 @@ async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, 
     assert not (reports_dir / f"{v}.json").exists()
 
 
-async def test_stream_header_without_owner_is_not_sealed(tmp_path):
+async def test_stream_header_without_owner_is_still_sealed_not_deleted(tmp_path):
     v = vid(50)
     header = _header(v)
-    header.pop("own_visit_uid")
-    _write_stream(tmp_path, v, [header])
-    uploads = Uploads()
+    header.pop("own_visit_uid")          # 设计稿较早的上传头定义没有这个字段
+    _write_stream(tmp_path, v, [header, {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                         "ts": 1001.0, "text": "a", "truncated": False}])
+    uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
-    assert uploads.calls == []
+    (visit_id, doc), = uploads.calls
+    assert visit_id == v and doc["own_visit_uid"] is None
+    assert [line["text"] for line in doc["request"]["lines"]] == ["a"]
+    assert (_spool_dir(tmp_path) / f"{v}.upload.json").exists()     # 唯一副本保留着
 
 
 async def test_unresolved_rename_defers_forget_replay_and_visit_recovery(tmp_path):
