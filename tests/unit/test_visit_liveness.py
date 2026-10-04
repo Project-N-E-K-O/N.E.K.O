@@ -408,3 +408,24 @@ def test_injected_durations_must_keep_the_invariants():
         VisitLiveness("guest", 0.0, page_rejoin_safety_s=0.0)
     with pytest.raises(ValueError, match="outlast"):
         VisitLiveness("guest", 0.0, rejoin_grace_s=24.0)  # 24 − 5 不比 20 长
+
+
+
+def test_host_bounds_a_reload_by_the_waiting_guests_own_clock():
+    # 访客入房后自己只等 30 s：host 在对端 ack 之前，以第一次看到它入房的时刻为基准
+    lv = VisitLiveness("host", 0.0)
+    lv.on_message_sent(100.0)
+    lv.on_peer_entered(500.0)
+    lv.on_peer_entered(510.0)  # 再次入房不挪基准
+    lv.on_page_lost(502.0)
+    lv.on_page_socket_back(504.0)
+    lv.on_peer_verified(506.0)
+    assert lv.page_deadline == 527.0  # min(502 + 30, 500 + 27)，不是 532
+
+
+def test_guest_side_ignores_peer_entered_for_the_death_term():
+    lv = VisitLiveness("guest", 0.0)
+    lv.on_peer_entered(5.0)
+    lv.on_page_lost(6.0)
+    lv.on_page_socket_back(7.0)
+    assert lv.page_deadline == 36.0

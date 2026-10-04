@@ -256,7 +256,8 @@ class VisitTransportSession(ABC):
         The timing lives in ``VisitLiveness.on_page_lost`` (socket stage:
         ``min(this drop + 20 s, absolute)``). When ``tick`` later reports
         ``local_page_lost`` the page is not in the vendor room (the transport
-        stops an iframe that re-enters too late), so no data-channel ``leave``
+        closes a page that comes back too late 4404, and an iframe leaves the
+        room when its socket closes), so no data-channel ``leave``
         can go out; the peer sees the vendor-level leave and ends within its
         rejoin grace / heartbeat clock.
         """
@@ -340,6 +341,8 @@ class _Connection:
     media_seq: int = 0
     media_last_ok: int = 0
     media_pending: set[int] = field(default_factory=set)
+    close_code: Optional[int] = None
+    close_reason: str = ""
 
     async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
         """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
@@ -408,7 +411,11 @@ def register_transport_session(session: VisitTransportSession) -> None:
 
 
 def unregister_transport_session(session: VisitTransportSession) -> None:
-    """Forget the session; its socket (if any) is closed 1000 (send ``stop`` first)."""
+    """Forget the session; its socket (if any) is closed 1000.
+
+    A runtime that wants the iframe to leave first sends ``stop`` through
+    :meth:`VisitTransportSession.send` before unregistering.
+    """
     key = (session.visit_id, session.side)
     link = _links.get(key)
     if link is None or link.session is not session:
@@ -434,8 +441,12 @@ _close_tasks: set[asyncio.Task] = set()
 
 
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
-    # 先同步退役：关闭任务真正跑起来之前，仍卡在 await 里的 handler 恢复后也发不出任何下行
+    # 先同步退役：关闭任务真正跑起来之前，仍卡在 await 里的 handler 恢复后也发不出任何下行。
+    # 关闭码也同步记下：接收循环有缓冲帧时不让出事件循环，会先走到 finally 自己关，
+    # 那里要用这个码（4404 / 4409 是终态），不能被默认的 1000 抢先
     conn.retired = True
+    if conn.close_code is None:
+        conn.close_code, conn.close_reason = code, reason
     task = asyncio.ensure_future(conn.close(code, reason))
     _close_tasks.add(task)
     task.add_done_callback(_close_tasks.discard)
@@ -622,20 +633,35 @@ def _is_current(link: _Link, conn: _Connection) -> bool:
     )
 
 
-def _reload_expired(session: VisitTransportSession) -> bool:
-    """True when the page reload of ``session`` already missed its deadline; errors count as False."""
+def _reload_expired(session: VisitTransportSession) -> Optional[bool]:
+    """True when the page reload of ``session`` already missed its deadline; None when the check failed."""
     try:
         return bool(session.liveness.page_expired(session.now()))
     except Exception as exc:  # noqa: BLE001 - 帧处理路径上不能因此结束接收循环
         logger.warning("visit transport: page deadline check failed: %s", type(exc).__name__)
+        return None
+
+
+def _close_if_late(conn: _Connection, session: VisitTransportSession) -> Optional[bool]:
+    """Close a replacement page that missed its reload deadline; True when it did.
+
+    False when it is not late (or not a replacement page), None when the
+    deadline could not be checked (callers that would commit something treat
+    that as "do not").
+
+    4404 is terminal for the iframe (the parent page removes it) and an iframe
+    leaves the vendor room when its socket closes, so no ``stop`` is needed
+    and nothing waits on the send lock. Retired synchronously: no later frame
+    of it is handled.
+    """
+    if not conn.reattach or conn.rejoined:
         return False
-
-
-def _close_late_page(conn: _Connection) -> None:
-    # 页面重载已过期限：直接关（4404 对 iframe 是终态，父页移除 iframe；WS 一关 iframe 就离开 vendor 房间，
-    # 不需要先发 stop，也就不会卡在发送锁上）。同步退役，之后的帧一概不处理
+    expired = _reload_expired(session)
+    if not expired:
+        return expired
     logger.warning("visit transport: page reload deadline passed, closing the late page")
     _spawn_close(conn, CLOSE_UNKNOWN_VISIT, "page reload deadline passed")
+    return True
 
 
 async def _handle_frame(
@@ -645,6 +671,9 @@ async def _handle_frame(
     if not _is_current(link, conn):
         return
     session = link.session
+    # 重载期限已过的替换页面：任何帧都不再交给 runtime（预检写路由状态、sdk 能力都不做），直接关掉
+    if _close_if_late(conn, session):
+        return
     kind = msg.get("type")
     if kind == "caps":
         stage = msg.get("stage")
@@ -662,9 +691,8 @@ async def _handle_frame(
             # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
             if not _is_current(link, conn):
                 return
-            # 重载期限已过：同样不为它领凭证，直接关掉
-            if conn.reattach and _reload_expired(session):
-                _close_late_page(conn)
+            # 等 on_preflight 期间期限可能刚过：同样不为它领凭证，直接关掉
+            if _close_if_late(conn, session):
                 return
             creds = await _call(session, "issue_credentials")
             if creds is None or creds is _HOOK_FAILED:
@@ -738,17 +766,15 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
     if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
         return
+    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
+    # 帧入口已查过一次；这里复查 on_state 等 await 期间刚过期的情形：新 iframe 已经用同一个 vid
+    # 回到房里，不能留着（对端会取消 peer_left 宽限），关掉它即离房
+    if _close_if_late(conn, session) is not False:
+        return  # 已关掉，或期限查不了：都不重入（下一次触发再试）
     try:
         now = session.now()
-        expired = session.liveness.page_expired(now)
     except Exception as exc:  # noqa: BLE001 - 普通的 stats 帧也会走到这里，不能因此结束接收循环
         logger.warning("visit transport: rejoin check failed: %s", type(exc).__name__)
-        return
-    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
-    # attach / 预检时就会拦下；这里兜底期限恰好落在领凭证与入房之间的情形：
-    # 新 iframe 已经用同一个 vid 回到房里，不能留着（对端会取消 peer_left 宽限），关掉它即离房
-    if expired:
-        _close_late_page(conn)
         return
     saved = None
     try:
@@ -889,4 +915,7 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
                 link.session.on_page_lost(link.session.now())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_page_lost failed: %s", type(exc).__name__)
+        if conn.close_code is not None:
+            # 已经排了关闭（4404 迟到页面 / 4409 被顶掉）：用那个码，不让默认的 1000 抢先
+            close_code, close_reason = conn.close_code, conn.close_reason
         await conn.close(close_code, close_reason)

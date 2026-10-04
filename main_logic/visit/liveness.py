@@ -129,6 +129,7 @@ class VisitLiveness:
         self.ready_deadline: Optional[float] = None
         self.ready_received = False
         self.hello_acked = False
+        self.peer_entered_at: Optional[float] = None
         self.last_sent_at: Optional[float] = None
         self.self_disconnected_at: Optional[float] = None
         self.page_departed_at: Optional[float] = None
@@ -151,6 +152,8 @@ class VisitLiveness:
         """
         if self.side == "host" and self.waiting:
             self.wait_deadline = max(self.wait_deadline, now + self._join_allowance_s)
+        if self.side == "host" and self.peer_entered_at is None:
+            self.peer_entered_at = now
 
     def on_peer_verified(self, now: float) -> None:
         """The peer ``hello`` verified: leave the waiting state.
@@ -229,13 +232,18 @@ class VisitLiveness:
         """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
 
         Shared by the own-reconnect deadline and the page reload deadline
-        (design §4.8 calls them "the same formula"). ``None`` until the peer
-        acked our ``hello``: before that it has not verified us and keeps no
-        heartbeat clock on our messages (whether we already verified the peer
-        says nothing about that), so an old send must not end a reload or a
-        reconnect early.
+        (design §4.8 calls them "the same formula"). Until the peer acked our
+        ``hello`` it keeps no heartbeat clock on our messages (whether we
+        already verified the peer says nothing about that): a guest's host is
+        not counting yet (``None``); a host's guest waits 30 s from its own
+        room join for our ``hello``, approximated by the first time we saw it
+        enter (an earlier bound than any message of ours it could have seen).
         """
-        if not self.hello_acked or self.last_sent_at is None:
+        if not self.hello_acked:
+            if self.peer_entered_at is not None:  # 只有 host 记录
+                return self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
+            return None
+        if self.last_sent_at is None:
             return None
         return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
 

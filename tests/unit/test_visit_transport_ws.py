@@ -2000,3 +2000,103 @@ def test_rollback_restores_the_deadline_even_when_pausing_fails(app):
         assert s.liveness.events[-2:] == ["page_back", "page_restored"]
 
     _reload_and_join(_client(app), s, scenario)
+
+
+
+class _BufferedWS:
+    """A server-side websocket whose ``receive`` never yields while frames are buffered
+    (like uvicorn's websockets implementation), for driving ``visit_transport_ws`` directly."""
+
+    def __init__(self, frames):
+        from types import SimpleNamespace
+
+        from starlette.websockets import WebSocketState
+
+        self.client = SimpleNamespace(host="127.0.0.1", port=50123)
+        self.headers = {"origin": ORIGIN}
+        self.url = SimpleNamespace(hostname="testserver")
+        self.query_params = {"visit_id": VISIT_ID, "side": "guest"}
+        self.frames = [json.dumps(f) for f in frames]
+        self.sent: list[dict] = []
+        self.closed_with = None
+        self.application_state = WebSocketState.CONNECTED
+
+    async def accept(self):
+        return None
+
+    async def receive(self):
+        if self.frames:
+            return {"type": "websocket.receive", "text": self.frames.pop(0)}
+        return {"type": "websocket.disconnect"}
+
+    async def send_text(self, text):
+        self.sent.append(json.loads(text))
+
+    async def close(self, code=1000, reason=""):
+        from starlette.websockets import WebSocketState
+
+        if self.closed_with is None:
+            self.closed_with = code
+        self.application_state = WebSocketState.DISCONNECTED
+
+
+def test_buffered_frames_cannot_turn_the_late_page_close_into_1000(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(local_guard, "AUTOSTART_CSRF_TOKEN", TOKEN)
+    monkeypatch.setattr(vs, "NEKO_VISIT_ALLOW_NONLOCAL", False)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+
+    class _ExpiresAfterIssue(FakeSession):
+        async def issue_credentials(self):
+            msg = await super().issue_credentials()
+            self.liveness.expired = True  # 领完凭证即到期
+            return msg
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _ExpiresAfterIssue()
+        tw.register_transport_session(s)
+        tw._links[(VISIT_ID, "guest")].connections_seen = 1  # 页面重载后的替换连接
+        ws = _BufferedWS([
+            {"type": "auth", "csrf_token": TOKEN},
+            {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID, "side": "guest",
+             "preflight_ok": True, "is_secure_context": True, "ua": "x"},
+            {"type": "state", "state": "joined"},
+            {"type": "state", "state": "connected"},
+            {"type": "stats"},
+        ])
+        await tw.visit_transport_ws(ws)
+        await asyncio.sleep(0.05)
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 1000 对 iframe 不是终态（会再重连一轮）；必须是 4404
+    assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
+
+
+def test_late_page_frames_reach_no_runtime_hook():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        conn = tw._attach(link, _RecordingWS())
+        s.liveness.expired = True  # attach 之后、预检之前到期
+        await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
+                                            "side": "guest", "preflight_ok": False,
+                                            "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
+        return s, conn
+
+    try:
+        s, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 过期页面的预检既不写路由状态、也不交给 runtime（否则 preflight_ok:false 会按 unsupported 收尾）
+    assert s.preflights == [] and conn.retired
