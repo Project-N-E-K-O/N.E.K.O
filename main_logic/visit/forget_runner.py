@@ -254,6 +254,26 @@ async def _run_scope(
             raise CharacterUnresolved(f"character of {record['id']} has no name")
         opened.append((record["id"], name, record["own_char_uid"], record["peer_uid"]))
         seen.add(record["id"])
+    if sentinel["scope"] == "chars":
+        # 范围内还开着的单人清除哨兵：那个人可能已不在名册里（上次单人清除做完了
+        # remove_char、却没来得及删哨兵；或单人清除还没展开）。替它开日志一并执行——
+        # 没清过的这次清掉，清过的再清一遍也是幂等的——之后它的哨兵才能随这次一起删掉
+        pairs = {(uid, peer) for *_rest, uid, peer in opened}
+        for other in await ClearingSentinels(config_dir).list_open():
+            if other["scope"] != "person" or not _sentinel_within(sentinel, other):
+                continue
+            for own_char_uid in other["own_char_uids"]:
+                if (own_char_uid, other["peer_uid"]) in pairs:
+                    continue
+                name = await resolve_char_name(own_char_uid)
+                if not name:
+                    raise CharacterUnresolved(f"character {own_char_uid} of {other['op_id']} has no name")
+                rev_id = await open_person_log(
+                    config_dir, own_uid=sentinel["own_uid"], own_char=name, own_char_uid=own_char_uid,
+                    peer_uid=other["peer_uid"],
+                )
+                opened.append((rev_id, name, own_char_uid, other["peer_uid"]))
+                pairs.add((own_char_uid, other["peer_uid"]))
     # 全部日志落盘之后才开始逐对执行：中途崩溃时还没轮到的人也已有日志可重放
     pending: list[str] = []
     for rev_id, name, own_char_uid, peer_uid in opened:

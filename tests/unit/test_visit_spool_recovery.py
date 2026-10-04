@@ -1343,18 +1343,23 @@ async def test_person_forget_keeps_an_unexpanded_chars_sentinel_of_the_same_char
     assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [pending_all["op_id"]]
 
 
-async def test_forget_all_keeps_an_unexecuted_person_sentinel_for_someone_not_in_the_roster(tmp_path):
+async def test_forget_all_executes_a_pending_person_sentinel_for_someone_not_in_the_roster(tmp_path):
     from main_logic.visit.forget import ClearingSentinels
     from main_logic.visit.forget_runner import forget_all
+    from main_logic.visit.subjects import derive_person_id, participant_subject
 
     await seed_roster(tmp_path)
-    # 单人清除崩在展开之前，而那个人已不在名册里：「清除全部」不会经名册清到他
-    person = await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="person",
-                                                      own_char_uids=[CHAR_UID_A], peer_uid=PEER_Y)
-    outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
-                               client=FakeMemoryServer().client())
+    # 那个人已不在名册里：单人清除还没展开，或已做完却没来得及删哨兵，两种情况分不清
+    await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="person",
+                                             own_char_uids=[CHAR_UID_A], peer_uid=PEER_Y)
+    server = FakeMemoryServer()
+    outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=server.client())
     assert outcome.done
-    assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [person["op_id"]]
+    # 「清除全部」替它开日志一并执行（没清过的清掉、清过的幂等再清），之后哨兵随之删除，
+    # 不再挡着这个角色的新串门
+    person = participant_subject(derive_person_id(OWN_A, PEER_Y))
+    assert person in [call["subject"] for call in server.calls("scoped_forget")]
+    assert await ClearingSentinels(tmp_path).list_open() == []
 
 
 async def test_forget_all_removes_a_person_sentinel_it_actually_executed(tmp_path):
@@ -1368,3 +1373,31 @@ async def test_forget_all_removes_a_person_sentinel_it_actually_executed(tmp_pat
                                client=FakeMemoryServer().client())
     # 这个人在名册里、这次已一并清掉：他的旧单人哨兵随之删除
     assert outcome.done and await ClearingSentinels(tmp_path).list_open() == []
+
+
+async def test_person_sentinel_appearing_after_execution_is_not_removed(tmp_path, monkeypatch):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path)
+    real_list = ClearingSentinels.list_open
+    created = {}
+    calls = {"n": 0}
+
+    async def list_open(self):
+        docs = await real_list(self)
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # 第 1 次是复用哨兵时的列举、第 2 次是接手范围内单人哨兵时的列举；这之后才出现的
+            # 单人清除（并发发起）这次「清除全部」没执行它
+            created["doc"] = await ClearingSentinels(tmp_path).create(
+                own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A], peer_uid=PEER_Y,
+            )
+        return docs
+
+    monkeypatch.setattr(ClearingSentinels, "list_open", list_open)
+    outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                               client=FakeMemoryServer().client())
+    assert outcome.done
+    monkeypatch.setattr(ClearingSentinels, "list_open", real_list)
+    assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [created["doc"]["op_id"]]
