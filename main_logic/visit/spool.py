@@ -674,7 +674,9 @@ def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
     return out
 
 
-def _raw_state_may_name(path: Path, own_char_uid: str, pair_ids: frozenset[str]) -> bool:
+def _raw_state_may_name(
+    path: Path, own_char_uid: str, pair_ids: frozenset[str], own_uid: str | None = None,
+) -> bool:
     """Whether a parseable but schema-invalid ``state.json`` may belong to this (character, pair).
 
     False only when its raw fields clearly name another character or another
@@ -689,6 +691,10 @@ def _raw_state_may_name(path: Path, own_char_uid: str, pair_ids: frozenset[str])
         return True
     char = raw.get("own_char_uid")
     if isinstance(char, str) and char and char != own_char_uid:
+        return False
+    account = raw.get("own_uid")
+    if own_uid is not None and isinstance(account, str) and account and account != own_uid:
+        # 别的账号下的场次：与这次清除无关（对端身份已抹、pair_id 为空时也能凭它排除）
         return False
     pair = raw.get("pair_id")
     return not (isinstance(pair, str) and pair and pair not in pair_ids)
@@ -1456,17 +1462,18 @@ class VisitSpool:
             # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
             state_unreadable = False
             state_corrupt = False
+            schema_excludes = False
             try:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
                 state = None
             except SpoolStateError:
                 # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：别的版本还读得了，
-                # 不是「谁都用不了」，绝不删。按原始字段判断归属：明确属于别的角色 / 别的一对就跳过，
-                # 否则按读不出处理（下次重试）
-                if not _raw_state_may_name(visit_path(spool_dir, visit_id, STATE_SUFFIX),
-                                           own_char_uid, pair_ids):
-                    continue
+                # 不是「谁都用不了」，绝不删。先记下它的原始字段是否明确排除这次清除，
+                # 头行照常检查（头行仍指认这一对时照样要清它的对端字段）
+                schema_excludes = not _raw_state_may_name(
+                    visit_path(spool_dir, visit_id, STATE_SUFFIX), own_char_uid, pair_ids, own_uid,
+                )
                 state = None
                 state_unreadable = True
             except ValueError:
@@ -1496,6 +1503,10 @@ class VisitSpool:
                 header is None
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
             ):
+                if schema_excludes:
+                    # 头行没指认这一对（或不在 / 已抹），而不合 schema 的 state 原始字段明确属于
+                    # 别的角色 / 别的一对 / 别的账号：两处都排除，跳过（不挡、不删）
+                    continue
                 if state_corrupt and header is None:
                     # 只剩 state.json（已结清的场次常常如此）且内容损坏：谁都用不了，也认不出
                     # 是谁的。挡住会让本机每个角色的每次清除都卡死；它若正属于被清的人，删掉

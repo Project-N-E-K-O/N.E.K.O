@@ -1826,3 +1826,29 @@ async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp
     )
     # 对账前按拿守卫时的标记再核一次：换了就按新标记重新拿 B 的守卫
     assert taken[:2] == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True
+
+
+async def test_schema_invalid_state_does_not_hide_a_header_that_names_this_pair(tmp_path):
+    await seed_roster(tmp_path)
+    mine = await make_visit(tmp_path, vid(85), [ln(0)], finalized="wrap_up")   # 头行指认这一对
+    data = json.loads(mine.state_path.read_text(encoding="utf-8"))
+    data["pair_id"] = derive_pair_id(OWN_A, PEER_Y)            # 不合 schema 的 state 指向别的一对
+    data["field_from_a_newer_version"] = 1
+    mine.state_path.write_text(json.dumps(data), encoding="utf-8")
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 头行仍指认这一对：不能只凭 state 的原始字段跳过——它改写不了，清除留着等下次
+    assert outcome.done is False
+
+
+async def test_schema_invalid_wiped_state_of_another_account_does_not_block(tmp_path):
+    await seed_roster(tmp_path)
+    other = await make_visit(tmp_path, vid(86), [], own_uid=OWN_B, memory_enabled=False)
+    await other.delete_peer_fields()                            # 身份已抹（pair_id 为空）
+    data = json.loads(other.state_path.read_text(encoding="utf-8"))
+    data["field_from_a_newer_version"] = 1
+    other.state_path.write_text(json.dumps(data), encoding="utf-8")
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 原始字段里的账号是别的账号：不挡这次清除，也不删
+    assert outcome.done and other.state_path.exists()
