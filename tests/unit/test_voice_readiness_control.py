@@ -454,7 +454,12 @@ async def test_preview_retires_actual_producer_and_never_reopens_on_release(regi
         )
         assert result["ok"] is True
         assert result["token"]
-        assert 0 < result["ttl_seconds"] <= registry.TTL_SECONDS
+        ttl = result["ttl_seconds"]
+        assert ttl > 0
+        # Subtracting monotonic timestamps can round just above the exact TTL.
+        assert ttl <= registry.TTL_SECONDS or ttl == pytest.approx(
+            registry.TTL_SECONDS, rel=0, abs=1e-9
+        )
         assert value._asr_route_mode == "blocked"
         assert not value._voice_input_accepts_pcm()
         pcm = b"\x01\x00" * 160
