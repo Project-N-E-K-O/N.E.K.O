@@ -3028,9 +3028,9 @@ def _keyed_staging_items_valid(
             facts = item.get("facts")
             if not isinstance(facts, list) or len(facts) != len(item["effect_keys"]):
                 return False
-            provenance = item.get("speaker_provenance")
-            if provenance is not None and not isinstance(provenance, dict):
-                # 说话人来源被改成标量 / 列表会被持久化层静默忽略，事实就丢了归属却照样记成已应用
+            if not _restored_provenance_valid(item.get("speaker_provenance")):
+                # 说话人来源坏了会被持久化层静默忽略或字符串化，事实就丢了归属 / 挂上编出来的
+                # 标签，却照样记成已应用
                 return False
             # 与生成后同一条要求：每条都是带非空正文的对象。坏掉的条目会被持久化静默跳过、
             # 却照样记成已应用，这条效果就永久丢了
@@ -3057,8 +3057,42 @@ def _keyed_staging_items_valid(
     }
     for entry in applied:
         if entry.get("seq") in facts_seqs and not (
-            "fact_ids" in entry or any(name.startswith("dropped") and entry.get(name) is True for name in entry)
+            "fact_ids" in entry or any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
         ):
+            return False
+    return True
+
+
+# 本模块给已应用事实项记的丢弃标记（与写入处一一对应）：只认这几个名字，别的字段不算完成证据
+_KEYED_DROP_MARKERS = ("dropped_tombstone", "dropped_forget", "dropped_forget_during_generation")
+_RESTORED_PROVENANCE_FIELDS = frozenset({"speaker_label", "speaker_trust", "speaker_id", "speaker_entity_id"})
+
+
+def _restored_provenance_valid(provenance) -> bool:
+    """A restored ``speaker_provenance`` has exactly the shape the route builds (or is absent)."""
+    if provenance is None:
+        return True
+    if not isinstance(provenance, dict) or not provenance or set(provenance) - _RESTORED_PROVENANCE_FIELDS:
+        return False
+    if "speaker_label" in provenance:
+        label = provenance["speaker_label"]
+        if not isinstance(label, str) or not label.strip():
+            return False
+    if "speaker_trust" in provenance:
+        trust = provenance["speaker_trust"]
+        if not isinstance(trust, (int, float)) or isinstance(trust, bool) or not 0.0 <= float(trust) <= 1.0:
+            return False
+    if "speaker_id" in provenance:
+        from memory.speaker_trust import stable_speaker_id
+
+        speaker_id = provenance["speaker_id"]
+        if not isinstance(speaker_id, str) or stable_speaker_id(speaker_id) != speaker_id:
+            return False
+    elif "speaker_entity_id" in provenance:
+        return False
+    if "speaker_entity_id" in provenance:
+        entity_id = provenance["speaker_entity_id"]
+        if not isinstance(entity_id, str) or not entity_id.strip():
             return False
     return True
 
@@ -4480,8 +4514,13 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
-            # 墓碑文件整体读不出（上面已跳过记墓碑）：本来就记不上，照常返回
-            logger.warning(f"[scoped_forget] {lanlan_name}: 墓碑文件不可读，未记擦除完成: {exc}")
+            # 墓碑文件读不出或这一行坏了：擦除已做完，但「这个代数已擦完」记不上。回 503 让
+            # 调用方重试到墓碑修好、标记落盘为止；期间这个 subject 的带键写入读墓碑同样 503
+            logger.warning(f"[scoped_forget] {lanlan_name}: 墓碑损坏，未记擦除完成: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="scoped forget erased but its completion marker could not be recorded; retry",
+            ) from exc
         except Exception as exc:
             # 擦除做完了，但「这个代数已擦完」没落盘：回成功的话调用方不再重试，之后同代数
             # 或更旧的清除重放会再擦一遍，把成功之后合法写入的记忆删掉。回错误让它重试到落盘
@@ -4532,6 +4571,35 @@ def _read_json_list_for_listing(path: str) -> list:
         logger.warning(f"[scoped_subjects] {os.path.basename(path)} 读取失败，按空处理: {exc}")
         return []
     return data if isinstance(data, list) else []
+
+
+def _read_locale_subjects_for_listing(path: str) -> list:
+    """Write-free read of the subjects that have a scoped prompt-locale row."""
+    from memory.scopes import subject_from_entry
+
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] scoped_prompt_locales.json 读取失败，按空处理: {exc}")
+        return []
+    rows = data.get("subjects") if isinstance(data, dict) else None
+    subjects = []
+    for key, row in (rows.items() if isinstance(rows, dict) else ()):
+        if not isinstance(key, str) or not isinstance(row, dict):
+            continue
+        try:
+            parts = json.loads(key)
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        if not isinstance(parts, list) or len(parts) != 3 or not all(isinstance(p, str) for p in parts):
+            continue
+        subject = subject_from_entry({"subject_kind": parts[0], "subject_id": parts[1], "scope": parts[2]})
+        if subject is not None:
+            subjects.append(subject)
+    return subjects
 
 
 def _read_persona_for_listing(path: str) -> dict:
@@ -4647,6 +4715,10 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         _read_persona_for_listing,
         os.path.join(character_dir, "persona.json"),
     )
+    locale_subjects = await asyncio.to_thread(
+        _read_locale_subjects_for_listing,
+        os.path.join(character_dir, "scoped_prompt_locales.json"),
+    )
 
     rows: dict[tuple[str, str], dict] = {}
 
@@ -4664,6 +4736,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
                 "reflections": 0,
                 "active_reflections": 0,
                 "persona": False,
+                "prompt_locale": False,
             }
             rows[marker] = row
         return row
@@ -4718,6 +4791,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             row["persona"] = True
         if isinstance(display_name, str) and display_name:
             row["display_name"] = display_name
+    # 只存了语言的 subject（抽取没出事实、或带键生成中断只留下预留的语言行）同样在
+    # scoped_forget 的删除面上，得能被找到、被清除
+    for locale_subject in locale_subjects:
+        row = _row(locale_subject)
+        if row is not None:
+            row["prompt_locale"] = True
     last_writes, _no_timestamp = collect_subject_last_writes(
         [facts_full, reflections, persona_entries],
     )
@@ -4734,6 +4813,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             "facts": row["facts"],
             "reflections": row["reflections"],
             "persona": row["persona"],
+            "prompt_locale": row["prompt_locale"],
             "last_write_at": last[1].isoformat() if last is not None else None,
             # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
             # 已终结的反思（promoted / denied …）照样列出、计入 reflections，但不算活跃面

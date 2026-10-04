@@ -1235,9 +1235,10 @@ async def test_forget_over_a_malformed_tombstone_erases_and_keeps_it(env):
     assert _facts_of(env, GROUP)
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "9"}}), encoding="utf-8")
-    result = await _forget(env, GROUP, forget_epoch=1)
-    # 坏墓碑不挡清除：照常擦除
-    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, GROUP, forget_epoch=1)
+    # 坏墓碑不挡擦除：照常擦掉；但完成标记记不上，回 503 让调用方重试到墓碑修好
+    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
     # 也不被较低的代数覆盖：原样留着（读路径对它 fail closed）
     assert json.loads(path.read_text(encoding="utf-8")) == {GROUP_KEY: {"forget_epoch": "9"}}
     with pytest.raises(env.idem.IdempotencyStateError):
@@ -1621,9 +1622,15 @@ async def test_corrupt_tombstone_file_does_not_block_an_epoch_forget(env):
     await _post(env, _single_body(key=None, display_name=None))
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text("{torn", encoding="utf-8")                 # 整个墓碑文件读不出
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, GROUP, forget_epoch=2)
+    # 辅助文件坏了不挡隐私清除：照常擦除；完成标记记不上，回 503 而不是成功
+    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
+    # 文件修好之后重试：记上完成标记、回成功
+    path.write_text("{}", encoding="utf-8")
     result = await _forget(env, GROUP, forget_epoch=2)
-    # 辅助文件坏了不挡隐私清除：照常擦除
-    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    assert result["status"] == "forgotten"
+    assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 2
 
 
 async def test_keyed_request_without_epochs_is_rejected(env):
@@ -1752,11 +1759,11 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
 
 @pytest.mark.parametrize("damage", [
     "destination_scope", "tombstone_keys_emptied", "epochs_raised", "request_hash_removed",
-    "applied_facts_without_evidence", "locale_order_string",
+    "applied_facts_without_evidence", "applied_facts_drop_marker_typo", "locale_order_string",
 ])
 async def test_more_journal_damage_fails_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
-    failing_seq = 1 if damage == "applied_facts_without_evidence" else 0
+    failing_seq = 1 if damage.startswith("applied_facts_") else 0
     original = _fail_on_item(env, failing_seq=failing_seq)
     body = _single_body(language="zh") if damage == "locale_order_string" else _single_body()
     with pytest.raises(HTTPException):
@@ -1776,6 +1783,14 @@ async def test_more_journal_damage_fails_closed(env, damage):
         facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
         staging["applied"] = [{"seq": facts_seq} if e["seq"] == facts_seq else e for e in staging["applied"]]
         assert any(e == {"seq": facts_seq} for e in staging["applied"])
+    elif damage == "applied_facts_drop_marker_typo":
+        # 名字像丢弃标记、但不是本模块写的那几个：不能当成完成证据
+        facts_seq = next(item["seq"] for item in staging["items"] if item["kind"] == "facts")
+        staging["applied"] = [
+            {"seq": facts_seq, "dropped_typo": True} if e["seq"] == facts_seq else e
+            for e in staging["applied"]
+        ]
+        assert any(e == {"seq": facts_seq, "dropped_typo": True} for e in staging["applied"])
     else:
         locale = next((item for item in staging["items"] if item["kind"] == "locale"), None)
         if locale is None:
@@ -1787,7 +1802,11 @@ async def test_more_journal_damage_fails_closed(env, damage):
     assert excinfo.value.status_code in (422, 503)
 
 
-@pytest.mark.parametrize("damage", ["orphan_foreign_destination", "provenance_scalar", "dropped_not_int"])
+@pytest.mark.parametrize("damage", [
+    "orphan_foreign_destination", "provenance_scalar", "dropped_not_int",
+    "provenance_label_list", "provenance_trust_out_of_range", "provenance_unknown_field",
+    "provenance_bad_speaker_id",
+])
 async def test_yet_more_journal_damage_fails_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
     original = _fail_on_item(env, failing_seq=0)
@@ -1805,6 +1824,15 @@ async def test_yet_more_journal_damage_fails_closed(env, damage):
     elif damage == "provenance_scalar":
         facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
         facts_item["speaker_provenance"] = "lost"
+    elif damage.startswith("provenance_"):
+        facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+        field, value = {
+            "provenance_label_list": ("speaker_label", []),
+            "provenance_trust_out_of_range": ("speaker_trust", 7),
+            "provenance_unknown_field": ("speaker_mood", "x"),
+            "provenance_bad_speaker_id": ("speaker_id", "no colon here"),
+        }[damage]
+        facts_item["speaker_provenance"] = {**(facts_item.get("speaker_provenance") or {}), field: value}
     else:
         staging["segments"][0]["dropped"] = "many"
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")

@@ -490,8 +490,13 @@ async def mark_tombstone_erased(lanlan_name: str, subject_key: str, forget_epoch
     def _mutate(data: dict) -> bool:
         row = data.get(subject_key)
         fence = row.get("forget_epoch") if isinstance(row, dict) else None
-        if not isinstance(fence, int) or isinstance(fence, bool) or fence < 0:
-            # 坏墓碑原样留着（读路径对它 fail closed），不往上记完成标记
+        if subject_key in data and (
+            not isinstance(fence, int) or isinstance(fence, bool) or fence < 0
+        ):
+            # 坏墓碑原样留着（读路径对它 fail closed），完成标记记不上：报错让调用方重试到
+            # 墓碑修好为止，不能回成功——否则修好之后的重放会把修好后合法写入的记忆再擦一遍
+            raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
+        if not isinstance(row, dict):
             return False
         current = row.get("erased_epoch")
         if isinstance(current, int) and not isinstance(current, bool) and current >= epoch:

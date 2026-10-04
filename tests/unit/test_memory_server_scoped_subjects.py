@@ -148,6 +148,7 @@ async def test_platform_filter_uses_kind_and_platform_component(env):
         "facts": 2,
         "reflections": 0,
         "persona": True,
+        "prompt_locale": False,
         "last_write_at": "2026-09-10T10:00:00",
         "archived": False,
     }
@@ -349,3 +350,25 @@ async def test_unhashable_reflection_status_does_not_break_the_listing(env):
     _write(char_dir / "reflections.json", reflections)
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])
+
+
+async def test_locale_only_subject_is_listed(env):
+    locale_only = MemorySubject.participant("neko_visit", "u_quiet")
+    key = json.dumps(
+        [locale_only.kind, locale_only.subject_id, locale_only.scope],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    _write(env.root / NAME / "scoped_prompt_locales.json", {"subjects": {
+        key: {"reserved_order": 5},                       # 带键生成中断只留下预留的语言行
+        "not json": {"language": "zh"},
+        json.dumps([QQ_PART.kind, QQ_PART.subject_id, QQ_PART.scope]): {"language": "zh"},
+    }})
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
+    # 只存了语言的 subject 同样在清除的删除面上：要能被列出来
+    row = by_key[("participant", "neko_visit:u_quiet")]
+    assert row["prompt_locale"] is True and row["facts"] == 0 and row["persona"] is False
+    assert row["archived"] is False
+    # 别的平台的语言行不混进来；已有数据的 subject 不受影响
+    assert ("participant", "qq:10001") not in by_key
+    assert by_key[("participant", "neko_visit:u_person")]["prompt_locale"] is False
