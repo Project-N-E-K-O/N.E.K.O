@@ -4587,6 +4587,8 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         and (_identity(fact) is None or _identity(fact) not in active_fact_ids)
     ]
     reflections_path = os.path.join(character_dir, "reflections.json")
+    from memory.reflection._shared import REFLECTION_TERMINAL_STATUSES
+
     reflections = PersistenceMixin._filter_reflections(
         await asyncio.to_thread(_read_json_list_for_listing, reflections_path),
         # 全部已存的反思都列：已终结（promoted / denied / merged …）的仍留在文件里、仍在
@@ -4613,6 +4615,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
                 "facts": 0,
                 "active_facts": 0,
                 "reflections": 0,
+                "active_reflections": 0,
                 "persona": False,
             }
             rows[marker] = row
@@ -4635,6 +4638,8 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         row = _row(subject) if subject is not None else None
         if row is not None:
             row["reflections"] += 1
+            if reflection.get("status") not in REFLECTION_TERMINAL_STATUSES:
+                row["active_reflections"] += 1
     persona_entries: list[dict] = []
     for section_key, section in persona.items():
         if not isinstance(section, dict) or not str(section_key).startswith(
@@ -4682,10 +4687,11 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             "persona": row["persona"],
             "last_write_at": last[1].isoformat() if last is not None else None,
             # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
+            # 已终结的反思（promoted / denied …）照样列出、计入 reflections，但不算活跃面
             "archived": (
                 row["facts"] > 0
                 and row["active_facts"] == 0
-                and row["reflections"] == 0
+                and row["active_reflections"] == 0
                 and not row["persona"]
             ),
         })

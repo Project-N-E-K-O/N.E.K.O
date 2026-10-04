@@ -327,3 +327,15 @@ async def test_subject_with_only_terminal_reflections_is_listed(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     # 已终结的反思仍在文件里、仍在清除面上：只剩它的 subject 也要能被找到
     assert any(row["subject_id"] == only_reflection.subject_id for row in result["subjects"])
+
+
+async def test_terminal_reflections_do_not_make_an_archived_subject_active(env):
+    char_dir = env.root / NAME
+    reflections = json.loads((char_dir / "reflections.json").read_text(encoding="utf-8"))
+    reflections.append({"id": "r10", "text": "已否决的反思", "status": "denied",
+                        **VISIT_ARCHIVED.as_entry_fields()})
+    _write(char_dir / "reflections.json", reflections)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    row = next(r for r in result["subjects"] if r["subject_id"] == VISIT_ARCHIVED.subject_id)
+    # 只剩归档事实与已终结反思：照样计入 reflections，但仍是归档状态
+    assert row["reflections"] == 1 and row["archived"] is True
