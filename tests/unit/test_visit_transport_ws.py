@@ -55,9 +55,12 @@ class _Liveness:
     def on_page_back(self, now: float) -> None:
         self.events.append("page_back")
 
-    def arm_page_reload(self, departed_at: float, *, attached_at: float | None = None) -> None:
-        # 断线记 page_lost（起宽限），新 socket 连回记 page_armed（改用 SDK 阶段期限）
-        self.events.append("page_armed" if attached_at is not None else "page_lost")
+    def on_page_socket_back(self, now: float) -> None:
+        # 新 socket 连回：期限改为页面重载的绝对期限
+        self.events.append("page_armed")
+
+    def page_expired(self, now: float) -> bool:
+        return False
 
 
 class _Outbox:
@@ -658,7 +661,7 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
 
 def test_lifecycle_callbacks_run_on_the_monotonic_clock(app, session, monkeypatch):
     seen: list[float] = []
-    session.liveness.arm_page_reload = lambda departed_at, *, attached_at=None: seen.append(departed_at)
+    session.liveness.on_page_lost = lambda now: seen.append(now)
     from tests.fake_clock import patch_module_clock
 
     # 墙钟与单调钟故意差很远：回调必须拿到单调钟
@@ -1188,15 +1191,17 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _sync(ws)
-    _wait_until(lambda: s.liveness.page_lost_at is not None)
-    lost_at = s.liveness.page_lost_at
+    _wait_until(lambda: s.liveness.page_deadline is not None)
+    departed = s.liveness.page_departed_at
+    assert s.liveness.page_deadline == pytest.approx(departed + vs.VISIT_LOCAL_PAGE_GRACE_S)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws, ok=False, reason="no_webrtc")  # 新 iframe 预检失败：永远不会重入
         _barrier(ws, s)
-        # auth 不清宽限；SDK 阶段期限 = min(连回 + 20 s, 离开 + 30 s)，不会超出绝对期限
-        assert s.liveness.page_lost_at is not None
-        assert lost_at <= s.liveness.page_lost_at <= lost_at + 10 + 1e-6
+        # auth 不清期限，也不重起 20 s：改为绝对期限（离开 + 35 − 5），起点不变
+        assert s.liveness.page_departed_at == departed
+        assert s.liveness.page_deadline == pytest.approx(
+            departed + vs.VISIT_PEER_REJOIN_GRACE_S - vs.VISIT_PAGE_REJOIN_SAFETY_S)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
@@ -1205,7 +1210,7 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
         ws.receive_text()
         ws.receive_text()
         _barrier(ws, s)
-        assert s.liveness.page_lost_at is None  # 重入成功才清
+        assert s.liveness.page_deadline is None  # 重入成功才清
 
 
 def test_superseding_a_live_socket_starts_the_page_grace(app):
@@ -1219,12 +1224,12 @@ def test_superseding_a_live_socket_starts_the_page_grace(app):
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
         _auth(old)
         _barrier(old, s)
-        assert s.liveness.page_lost_at is None
+        assert s.liveness.page_deadline is None
         with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
             _auth(new)
             _barrier(new, s)
             # 旧 iframe 已被顶掉、新的还没入房：要有截止时间
-            assert s.liveness.page_lost_at is not None
+            assert s.liveness.page_deadline is not None
 
 
 def test_failed_preflight_blocks_a_runtime_first_issue(app, session):
@@ -1304,9 +1309,9 @@ def test_reload_ws_back_at_19s_sdk_at_21s_survives():
     assert _tick(s, 20.5) is None
     s.on_page_rejoined(21.0)
     # 重入准备完之前不清期限（失败时要能回滚），提交之后才清
-    assert s.liveness.page_lost_at is not None
+    assert s.liveness.page_deadline is not None
     s.on_page_rejoin_committed(21.0)
-    assert s.liveness.page_lost_at is None
+    assert s.liveness.page_deadline is None
     assert _tick(s, 25.0) is None
 
 
@@ -1338,18 +1343,74 @@ def test_flapping_page_never_extends_past_the_absolute_deadline():
 
 def test_superseding_a_live_socket_starts_the_reload_now():
     s = _reload_session()
-    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算，SDK 阶段 20 s
-    assert _tick(s, 119.9) is None
-    assert _tick(s, 120.0) == "local_page_lost"
+    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算
+    assert _tick(s, 129.9) is None
+    assert _tick(s, 130.0) == "local_page_lost"
 
 
-def test_sdk_stage_gets_its_own_budget_capped_by_the_absolute_deadline():
-    # WS 第 2 s 就连回：SDK 阶段 = min(2 + VISIT_CAPS_SDK_TIMEOUT_S, 0 + 30) = 22 s
+def test_sdk_stage_uses_the_absolute_deadline_not_the_caps_timer():
+    # WS 第 2 s 就连回：重入期限就是绝对期限 30 s；VISIT_CAPS_SDK_TIMEOUT_S 是能力门自己的计时（runtime）
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(2.0)
-    assert _tick(s, 21.9) is None
-    assert _tick(s, 22.0) == "local_page_lost"
+    assert _tick(s, 29.9) is None
+    assert _tick(s, 30.0) == "local_page_lost"
+
+
+def test_second_drop_after_reconnect_gets_its_own_socket_budget():
+    # 复现（wehos）：t=0 断、t=5 连回、t=25 又断；绝对期限 min(30, 0 + 27) = 27，不能在 t=25 当场判死
+    s = _reload_session()
+    s.liveness.on_message_sent(0.0)
+    s.on_page_lost(0.0)
+    s.on_page_attached(5.0)
+    s.on_page_lost(25.0)
+    assert _tick(s, 25.0) is None
+    assert _tick(s, 26.9) is None
+    assert _tick(s, 27.0) == "local_page_lost"
+
+
+def test_a_late_socket_cannot_revive_an_expired_page():
+    # t=0 断、WS 期限 t=20；tick 还没跑到时 t=20.2 才连回：期限不能被挪走
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(20.2)
+    assert s.liveness.page_deadline == 20.0
+    assert _tick(s, 20.5) == "local_page_lost"
+
+
+def test_rejoin_after_the_deadline_is_refused():
+    # SDK 在绝对期限之后、下一次 tick 之前才报 joined：不能清期限、不能恢复 outbox
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(19.0)
+    assert s.page_reload_expired(31.0)
+    s.on_page_rejoin_committed(31.0)
+    assert s.liveness.page_deadline is not None
+    assert _tick(s, 31.0) == "local_page_lost"
+
+
+def test_transport_does_not_re_enter_after_the_deadline():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        s.page_reload_expired = lambda now: True
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _RecordingWS()
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        return s, ws, conn
+
+    try:
+        s, ws, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert ws.sent == [] and not conn.rejoined
+    assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
 
 
 class _FailingDueOutbox(_Outbox):

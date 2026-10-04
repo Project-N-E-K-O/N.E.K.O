@@ -36,12 +36,13 @@ The visit runtime (PR-09a) plugs in by registering a
 closes 4404. A second connection for the same pair replaces the first
 (the old one gets 4409 and must not reconnect). When the current connection
 drops: ``liveness.on_page_lost`` + ``outbox.pause(PAUSE_PAGE_RELOAD)``. A
-replacement connection keeps the pause and moves the page deadline to the
-absolute reload deadline (design §4.8: start + 30 s, capped by last send +
-27 s); only once its iframe is back in the vendor room (first ``state``
-joined / connected, after its own preflight and credentials) does the
-session clear it (``liveness.on_page_back``), resend ``hello`` and resume the
-outbox, then exactly one full ``media`` snapshot from
+replacement connection keeps the pause and calls
+``liveness.on_page_socket_back`` (the SDK reload gets the absolute reload
+deadline of design §4.8); only once its iframe is back in the vendor room
+(first ``state`` joined / connected, after its own preflight and
+credentials, before the deadline) does the session resend ``hello``, resume
+the outbox and clear the deadline (``liveness.on_page_back``), then exactly
+one full ``media`` snapshot from
 ``session.media_snapshot()`` follows. Downlink goes only through
 :meth:`VisitTransportSession.send` (bound to the registered session).
 """
@@ -190,8 +191,6 @@ class VisitTransportSession(ABC):
         self.lanlan_name = lanlan_name
         self.liveness = liveness
         self.outbox = outbox
-        # 本次页面重载的起点（旧 iframe 离开 vendor 房的时刻）；重入成功清空
-        self._page_departed_at: float | None = None
 
     # —— 上行回调（runtime 实现）——
 
@@ -245,32 +244,29 @@ class VisitTransportSession(ABC):
     # —— 页面生命周期（默认实现即 §4.3 的规则）——
 
     def on_page_lost(self, now: float) -> None:
-        """The current transport socket dropped: page grace armed, delivery timers pause.
+        """The current transport socket dropped: the reload deadline runs, delivery timers pause.
 
-        The iframe leaves the vendor room as soon as its socket closes, so
-        this is the start of the reload. While no socket is back the limit is
-        ``min(start + 20 s, absolute)`` (``VisitLiveness.arm_page_reload``).
+        The timing lives in ``VisitLiveness.on_page_lost`` (socket stage:
+        ``min(this drop + 20 s, absolute)``).
         """
-        if self._page_departed_at is None:
-            self._page_departed_at = now
-        self.liveness.arm_page_reload(self._page_departed_at)
+        self.liveness.on_page_lost(now)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_attached(self, now: float) -> None:
         """A replacement socket authenticated: the page is NOT back in the room yet.
 
-        The SDK reload and re-entry get ``min(now + VISIT_CAPS_SDK_TIMEOUT_S,
-        absolute)`` with the absolute reload deadline of design §4.8
-        (``min(start + 30 s, last send + 27 s)``) -- not only what is left of
-        the socket's 20 s, and never past the absolute deadline.
+        The SDK reload and re-entry get the absolute reload deadline of
+        design §4.8 (``min(start + 30 s, last send + 27 s)``;
+        ``VisitLiveness.on_page_socket_back``) -- not only what is left of
+        the socket's 20 s. The capability gate's own
+        ``VISIT_CAPS_SDK_TIMEOUT_S`` (``min(20 s, absolute remaining)``) is
+        the runtime's timer.
         A socket that replaced a live one starts the reload now. The outbox
         stays paused; only :meth:`on_page_rejoined` clears the deadline, so a
         page that never re-enters (failed preflight, no credentials, SDK never
         joins) or keeps reconnecting still ends in ``local_page_lost``.
         """
-        if self._page_departed_at is None:
-            self._page_departed_at = now
-        self.liveness.arm_page_reload(self._page_departed_at, attached_at=now)
+        self.liveness.on_page_socket_back(now)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_rejoined(self, now: float) -> None:
@@ -289,8 +285,11 @@ class VisitTransportSession(ABC):
 
     def on_page_rejoin_committed(self, now: float) -> None:
         """The whole re-entry was prepared: the reload is over, clear the page deadline."""
-        self._page_departed_at = None
         self.liveness.on_page_back(now)
+
+    def page_reload_expired(self, now: float) -> bool:
+        """True when the running page reload already missed its deadline (re-entry refused)."""
+        return bool(self.liveness.page_expired(now))
 
     def now(self) -> float:
         """Clock of the lifecycle callbacks: the one ``liveness`` / ``outbox`` run on (monotonic)."""
@@ -620,6 +619,10 @@ async def _handle_frame(
             and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
         ):
             now = session.now()
+            # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost
+            if session.page_reload_expired(now):
+                logger.warning("visit transport: page reload deadline passed, not re-entering")
+                return
             # 全部同步备好（快照先于恢复与 due()，失败时不恢复、也不白白消耗 outbox 的帧）再置 rejoined；
             # 任何一步失败都不置位，下一条 joined / connected 整套重做（hello 去重、resume 幂等）
             try:

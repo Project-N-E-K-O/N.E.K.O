@@ -149,6 +149,12 @@ VISIT_PEER_REJOIN_GRACE_S = 35
 
 Must exceed ``VISIT_LOCAL_PAGE_GRACE_S`` plus a 15 s SDK reload budget."""
 
+VISIT_PAGE_REJOIN_SAFETY_S = 5
+"""A reloaded page must be back in the vendor room this long before the peer's rejoin grace ends.
+
+Absolute reload deadline = ``min(left + VISIT_PEER_REJOIN_GRACE_S - this,
+last successful send + VISIT_PEER_LOST_S - VISIT_RECONNECT_MARGIN_S)``."""
+
 VISIT_CAPS_PREFLIGHT_TIMEOUT_S = 15
 """Wait limit for capability gates 1-2 (before credentials)."""
 
@@ -660,6 +666,8 @@ def _check_invariants() -> None:
          "page grace must end a heartbeat before self reconnect")
     need(VISIT_PEER_REJOIN_GRACE_S >= VISIT_LOCAL_PAGE_GRACE_S + 15,
          "rejoin grace must cover page grace plus SDK reload budget")
+    need(VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S > VISIT_LOCAL_PAGE_GRACE_S,
+         "absolute page reload deadline must outlast the transport WS grace")
     need(VISIT_INVITE_WAIT_S == VISIT_INVITE_CODE_TTL_S,
          "host wait must equal the invite code lifetime")
     guest_ready_wait = (VISIT_ACCEPT_TIMEOUT_S + VISIT_ACTIVATION_ALLOWANCE_S
