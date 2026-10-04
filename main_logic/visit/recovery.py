@@ -253,7 +253,12 @@ def _seal_stream_sync(spool_dir: Path, visit_id: str, finalized_reason: str | No
         return None
     # 与 finalize 同一顺序：先原子写 .upload.json，再删流水
     _write_private_json(sealed, doc)
-    stream.unlink(missing_ok=True)
+    try:
+        stream.unlink(missing_ok=True)
+    except OSError as exc:
+        # 上传文件已经封好：流水删不掉也照常上传与提交举报（Servers 按 visit_id + role
+        # 幂等，下次再封只会得到 duplicate），不能让一个删不掉的文件卡住这场
+        logger.warning("visit recovery: sealed %s but cannot delete its stream: %s", sealed.name, exc)
     return doc
 
 

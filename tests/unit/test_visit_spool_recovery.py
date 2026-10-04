@@ -817,3 +817,27 @@ async def test_forget_all_rejects_an_account_without_peers(tmp_path):
     with pytest.raises(RosterCorruptError):
         await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=FakeMemoryServer().client())
     assert len(await ClearingSentinels(tmp_path).list_open()) == 1
+
+
+
+async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, monkeypatch):
+    v = vid(49)
+    _write_stream(tmp_path, v, [_header(v)])
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v}), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == f"{v}.upload.jsonl":
+            raise PermissionError("locked")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    failing = Reports(ok=False)
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=failing)
+    assert [visit_id for visit_id, _ in failing.calls] == [v]          # 第一轮举报提交失败
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    assert [visit_id for visit_id, _ in reports.calls] == [v]           # 下一轮照样能重试
+    assert not (reports_dir / f"{v}.json").exists()
