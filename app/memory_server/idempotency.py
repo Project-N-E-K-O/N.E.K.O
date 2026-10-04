@@ -93,6 +93,9 @@ _character_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _key_locks: "weakref.WeakValueDictionary[tuple[int, str, str], asyncio.Lock]" = (
     weakref.WeakValueDictionary()
 )
+_fence_locks: "weakref.WeakValueDictionary[tuple[int, str, str], asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _loop_id() -> int:
@@ -132,7 +135,14 @@ def forget_fence(lanlan_name: str, subject_key: str) -> asyncio.Lock:
     checks once the previous one has published (or failed to publish) its
     completed epoch. Taken before any other lock, by forgets only.
     """
-    return key_lock(lanlan_name, "forget-fence:" + subject_key)
+    # 独立的登记表：客户端的幂等键可以是任意合法字符串，借用键锁的命名空间会让
+    # 某个键恰好与栅栏同名，清除拿着栅栏再去拿同名键锁就会自己等自己
+    registry_key = (_loop_id(), lanlan_name, subject_key)
+    lock = _fence_locks.get(registry_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _fence_locks[registry_key] = lock
+    return lock
 
 
 # ── paths ────────────────────────────────────────────────────────────────
@@ -185,7 +195,7 @@ def _read_json_object(path: str) -> dict:
             data = json.load(handle)
     except FileNotFoundError:
         return {}
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         raise IdempotencyStateError(f"{os.path.basename(path)} unreadable: {exc}") from exc
     if not isinstance(data, dict):
         raise IdempotencyStateError(f"{os.path.basename(path)} is not an object")
@@ -305,7 +315,7 @@ def _read_staging_sync(path: str, key: str) -> dict | None:
             data = json.load(handle)
     except FileNotFoundError:
         return None
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         raise IdempotencyStateError(f"staging unreadable: {exc}") from exc
     if not isinstance(data, dict) or data.get("key") != key:
         # 文件名只是摘要：内容里的原键对不上（截断碰撞 / 手改）时绝不套用
@@ -402,7 +412,7 @@ def _list_staging_sync(directory: str) -> list[tuple[str, dict | None, float]]:
         try:
             with open(entry.path, encoding="utf-8") as handle:
                 data = json.load(handle)
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError):
             data = None
         rows.append((entry.path, data if isinstance(data, dict) else None, mtime))
     return rows

@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -2915,6 +2916,48 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _keyed_staging_items_valid(staging: dict) -> bool:
+    """Whether every journal item of a restored staging document is safe to apply.
+
+    Items must be objects numbered ``seq == position`` with a known kind and a
+    segment index inside ``segments``; an item not yet in ``applied`` must
+    still carry its payload (facts with one effect key each, or a display
+    name). Items already applied / dropped may have been stripped by a forget.
+    """
+    segments = staging.get("segments")
+    items = staging.get("items")
+    applied = staging.get("applied")
+    if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
+        return False
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    if any(not isinstance(entry, dict) for entry in applied):
+        return False
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            return False
+        seq, segment, kind = item.get("seq"), item.get("segment"), item.get("kind")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq != position:
+            return False
+        if not isinstance(segment, int) or isinstance(segment, bool) or not 0 <= segment < len(segments):
+            return False
+        if kind not in (_KEYED_ITEM_LOCALE, _KEYED_ITEM_FACTS, _KEYED_ITEM_DISPLAY_NAME):
+            return False
+        if seq in done:
+            continue
+        if kind == _KEYED_ITEM_FACTS:
+            facts, effect_keys = item.get("facts"), item.get("effect_keys")
+            if (
+                not isinstance(facts, list) or not isinstance(effect_keys, list)
+                or len(facts) != len(effect_keys)
+                or not all(isinstance(k, str) and k for k in effect_keys)
+            ):
+                return False
+        elif kind == _KEYED_ITEM_DISPLAY_NAME:
+            if item.get("display_name") is not None and not isinstance(item.get("display_name"), str):
+                return False
+    return True
+
+
 def _keyed_staging_matches(
     staging: dict, shape: str, contexts: list[dict], request_hash: str | None = None,
 ) -> bool:
@@ -3358,6 +3401,14 @@ async def _process_scoped_history_keyed(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
             )
+        if staging is not None and not _keyed_staging_items_valid(staging):
+            # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
+            # 负的段号会把事实写到另一个 subject 上
+            logger.error(f"[scoped_history] {lanlan_name}: 暂存条目结构损坏，拒绝应用")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            )
         if staging is not None and staging.get(_KEYED_STAGING_CANCELLED) is True:
             # 清除时键文件读不出、取消只记在了暂存里：补记 cancelled 再删暂存，绝不应用
             try:
@@ -3402,29 +3453,10 @@ async def _process_scoped_history_keyed(
                 ) from exc
         generations = None
         if staging is None:
-            # 与不带键路径（extract_facts）同一时机：在调 LLM 之前取各 subject 的
-            # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
-            # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
-            # 事实存储据此丢弃这次写入
-            generations = {
-                index: runtime.fact_store._subject_forget_generation(
-                    lanlan_name, context["subject"],
-                )
-                for index, context in enumerate(contexts)
-            }
-            staging = await _build_keyed_staging(
-                lanlan_name,
-                req,
-                shape=shape,
-                contexts=contexts,
-                prompt_segments=prompt_segments,
-            )
-            # 生成期间有清除推进了某个 subject 的 forget generation：它的产物从一开始就
-            # 记为丢弃再落盘。否则「暂存已写、还没应用」之间崩溃后，重试只能读到清除之后
-            # 的 generation，会把清除之前抽出的事实当成新的写回去
-            _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
+            # 调 LLM 之前就把带请求身份与路由后 subject 的 pending 记下：生成失败时也留有
+            # 持久记录，之后的清除能把这个键取消；否则清除之后同键重试会用清除之后的
+            # generation 重新抽取，把旧内容写回去
             try:
-                # 先记带请求身份的 pending、再写暂存：不会出现没有身份记录的孤儿暂存
                 await idempotency.update_key(
                     lanlan_name,
                     key,
@@ -3435,6 +3467,51 @@ async def _process_scoped_history_keyed(
                         routed_keys=routed_keys,
                     ),
                 )
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 预记 pending 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
+            # 与不带键路径（extract_facts）同一时机：在调 LLM 之前取各 subject 的
+            # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
+            # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
+            # 事实存储据此丢弃这次写入
+            generations = {
+                index: runtime.fact_store._subject_forget_generation(
+                    lanlan_name, context["subject"],
+                )
+                for index, context in enumerate(contexts)
+            }
+            try:
+                staging = await _build_keyed_staging(
+                    lanlan_name,
+                    req,
+                    shape=shape,
+                    contexts=contexts,
+                    prompt_segments=prompt_segments,
+                )
+            except BaseException:
+                # 生成失败，而生成期间有清除推进了某个 subject 的 generation：清除那时
+                # 因为键锁被占着跳过了这个键。这里替它把键标成取消，否则同键重试会用清除
+                # 之后的 generation 重新抽取，把旧内容写回去
+                if any(
+                    runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
+                    != generations[index]
+                    for index, context in enumerate(contexts)
+                ):
+                    with contextlib.suppress(Exception):
+                        await idempotency.update_key(
+                            lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+                        )
+                raise
+            # 生成期间有清除推进了某个 subject 的 forget generation：它的产物从一开始就
+            # 记为丢弃再落盘。否则「暂存已写、还没应用」之间崩溃后，重试只能读到清除之后
+            # 的 generation，会把清除之前抽出的事实当成新的写回去
+            _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
+            try:
                 await idempotency.write_staging(lanlan_name, key, staging)
                 # 暂存落盘之后再核一次：在上面两次写入期间完成的清除，取消扫描时
                 # 还看不到这份暂存；它推进 generation 必在扫描之前，所以这里一定能看到。
@@ -3757,12 +3834,18 @@ async def _cancel_staged_writes_for_subjects(
         # 却只有 wire key：有暂存就按它记下的全部 subject（wire + 路由后）匹配，没有暂存
         # 才退回只看 wire key。先不拿锁预读一次筛掉无关的键——无关请求可能正持着自己的
         # 键锁等 LLM，不能让隐私清除排在它后面；相关的再在键锁下重读、复核
+        peek_unreadable = False
         try:
             peek = await idempotency.read_staging(lanlan_name, key)
         except idempotency.IdempotencyStateError:
             peek = None
+            peek_unreadable = True
         peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
         if not subject_keys.intersection(peek_touched):
+            continue
+        if peek is None and not peek_unreadable and idempotency.key_lock(lanlan_name, key).locked():
+            # 还没有暂存、键锁被占着：持锁的请求正在调 LLM。不排在它后面——它在调 LLM 之前
+            # 取了 generation，产物由 generation 兜住；生成失败时它自己把键标成取消
             continue
         async with idempotency.key_lock(lanlan_name, key):
             unreadable = None

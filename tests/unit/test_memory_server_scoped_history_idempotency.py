@@ -517,7 +517,8 @@ async def test_crash_during_generation_regenerates_on_retry(env):
     with pytest.raises(RuntimeError):
         await _post(env, _single_body())
     assert not _staging_file(env, KEY_GROUP).exists()
-    assert _key_state(env, KEY_GROUP) is None
+    # 调 LLM 之前就记了 pending（生成失败也留有可被清除取消的持久记录）；没有暂存，重试照常重新生成
+    assert _key_state(env, KEY_GROUP) == "pending"
 
     result = await _post(env, _single_body())
     assert env.llm.calls == 2
@@ -541,7 +542,7 @@ async def test_incomplete_batch_generation_is_502_and_stages_nothing(env):
         await _post(env, _segments_body())
     assert excinfo.value.status_code == 502
     assert not _staging_file(env, KEY_SEGMENTS).exists()
-    assert _key_state(env, KEY_SEGMENTS) is None
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
     assert _facts_of(env, GP) == []
 
 
@@ -984,17 +985,17 @@ async def test_startup_cleanup_skips_a_character_being_released(env):
 
 async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(env):
     env.llm.responses = [SINGLE_FACTS]
-    real_update = env.idem.update_key
+    real_write = env.idem.write_staging
     real_apply = env.routes._apply_keyed_staging
     state = {"forgot": False, "crash": True}
 
-    async def forget_then_update(lanlan_name, key, fn):
+    async def forget_then_write(lanlan_name, key, document):
         if not state["forgot"]:
             state["forgot"] = True
-            # 清除整个落在「生成后的检查」与 pending 落盘之间：两遍取消扫描都还看不到
-            # 这个键（既无记录也无暂存），只能靠暂存落盘之后的复核
+            # 清除整个落在「生成后的检查」与暂存落盘之间：两遍取消扫描都看不到暂存，
+            # 键锁又被占着（跳过），只能靠暂存落盘之后的复核
             await _forget(env, GROUP)
-        return await real_update(lanlan_name, key, fn)
+        return await real_write(lanlan_name, key, document)
 
     async def crash_before_apply(*args, **kwargs):
         if state["crash"]:
@@ -1002,7 +1003,7 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
             raise RuntimeError("killed after staging, before apply")
         return await real_apply(*args, **kwargs)
 
-    env.monkeypatch.setattr(env.idem, "update_key", forget_then_update)
+    env.monkeypatch.setattr(env.idem, "write_staging", forget_then_write)
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name=None))
@@ -1440,8 +1441,86 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
             break
         await asyncio.sleep(0.01)
     gate.set()
-    await newer
+    assert (await newer)["status"] == "forgotten"
     stale = await older
     # 旧清除排在较新清除公布完成代数之后才核对：不再擦掉那批合法写入
     assert stale.get("duplicate") is True
     assert len(_facts_of(env, GROUP)) == 2
+
+
+
+async def test_generation_failing_after_a_forget_cancels_its_key(env):
+    env.llm.responses = [RuntimeError("LLM failed")]
+    env.llm.gate = asyncio.Event()
+    env.llm.entered = asyncio.Event()
+    task = asyncio.create_task(_post(env, _single_body()))
+    await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
+    # 生成期间的清除：键锁被占着，它跳过这个键
+    await _forget(env, GROUP)
+    assert _key_state(env, KEY_GROUP) == "pending"
+    env.llm.gate.set()
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(task, timeout=5)
+    # 生成失败时它自己把键标成取消：清除之后同键重试不会重新抽取把旧内容写回
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+    env.llm.gate = None
+    env.llm.responses = [SINGLE_FACTS]
+    again = await _post(env, _single_body())
+    assert again["duplicate"] is True and _facts_of(env, GROUP) == []
+
+
+async def test_forget_cancels_a_pending_key_whose_generation_failed_earlier(env):
+    env.llm.responses = [RuntimeError("LLM failed")]
+    with pytest.raises(RuntimeError):
+        await _post(env, _single_body())
+    assert _key_state(env, KEY_GROUP) == "pending"       # 生成失败，留下 pending、没有暂存
+    await _forget(env, GROUP)
+    # 键锁空着：清除把它取消，之后同键重试只得到 duplicate
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+    env.llm.responses = [SINGLE_FACTS]
+    again = await _post(env, _single_body())
+    assert again["duplicate"] is True and _facts_of(env, GROUP) == []
+
+
+@pytest.mark.parametrize("damage", ["negative_segment", "segment_out_of_range", "seq_shuffled", "effect_keys_short"])
+async def test_damaged_staging_items_fail_closed(env, damage):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+    if damage == "negative_segment":
+        facts_item["segment"] = -1
+    elif damage == "segment_out_of_range":
+        facts_item["segment"] = 5
+    elif damage == "seq_shuffled":
+        facts_item["seq"] = 99
+    else:
+        facts_item["effect_keys"] = facts_item["effect_keys"][:1]
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    # 条目坏了绝不应用（负段号会写到另一个 subject 上）：503，什么都不写
+    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
+
+
+async def test_deeply_nested_staging_does_not_block_a_forget(env):
+    path = _staging_file(env, "deep-key")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    result = await _forget(env, GROUP)
+    # 嵌套过深的暂存按读不出处理，不让每次清除都 500
+    assert result["status"] == "forgotten"
+
+
+async def test_client_key_named_like_the_forget_fence_does_not_deadlock(env):
+    idem = env.idem
+    clash = f"forget-fence:{GROUP_KEY}"
+    await idem.update_key(NAME, clash, idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+    ))
+    # 栅栏用独立的登记表：与它同名的客户端键不会让清除自己等自己
+    result = await asyncio.wait_for(_forget(env, GROUP, forget_epoch=1), timeout=5)
+    assert result["status"] == "forgotten" and _key_state(env, clash) == "cancelled"
