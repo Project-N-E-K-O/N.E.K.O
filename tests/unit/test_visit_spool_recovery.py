@@ -1261,3 +1261,29 @@ async def test_sealed_upload_with_a_malformed_owner_and_no_stream_is_not_uploade
     await _recover(tmp_path, upload_transcript=uploads)
     # 占房账号坏了：任何账号都传不出去，没有流水可重封就按损坏处理
     assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
+
+
+async def test_rename_is_not_reconciled_from_a_partially_readable_character_config(tmp_path, monkeypatch):
+    from main_logic.visit import local_chars
+
+    await seed_roster(tmp_path)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A", "new": "C"}
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+
+    async def partial():
+        return {"A": CHAR_UID_A}            # 新名字 C 的条目坏了，被常规加载静默滤掉
+
+    async def damaged():
+        raise local_chars.CharactersUnreadable("character entry 'C' cannot be enumerated")
+
+    monkeypatch.setattr(local_chars, "load_local_characters", partial)
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", damaged)
+    report = await visit_spool_recovery(
+        Chips(), None, config_dir=tmp_path, resolve_char_name=resolver(),
+        client=FakeMemoryServer().client(),
+    )
+    # 配置有坏条目就不对账：不把数据迁回旧名、标记留着等下次
+    assert report.renamed is False
+    assert json.loads(peers_path.read_text(encoding="utf-8"))["pending_rename"] == {"old": "A", "new": "C"}

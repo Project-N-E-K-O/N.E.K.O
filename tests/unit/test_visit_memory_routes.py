@@ -472,3 +472,17 @@ def test_forget_with_unreadable_character_config_is_a_retryable_503(env, monkeyp
     # 不回看似永久的 404：回可重试的 503
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
+
+
+def test_peers_skip_a_malformed_peer_id(env):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    peers = data["accounts"][OWN_A]["peers"]
+    peers[""] = json.loads(json.dumps(peers[PEER_X]))       # 坏了的对端 id
+    path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    # 坏 id 那一条跳过，其余对端照常列出
+    assert resp.status_code == 200
+    assert [row["peer_uid"] for row in resp.json()["peers"]] == [PEER_X]

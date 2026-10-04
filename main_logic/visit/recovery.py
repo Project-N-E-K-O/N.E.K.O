@@ -720,6 +720,10 @@ async def visit_spool_recovery(
     # 改名对账先于清除重放：清除按角色当前名字找名册条目，改名迁移没做完时条目还在
     # 旧名字下，remove_char 会「成功」地什么都没删，随后迁移又把条目连同摘要搬到新名字
     try:
+        if list_char_names is None:
+            # 常规加载会静默滤掉坏条目、返回部分名单：改名对账会据此误判「改名已回滚」
+            # 把数据迁回旧名并清掉标记。配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
+            await local_chars.ensure_characters_readable()
         names = (set(await list_char_names()) if list_char_names is not None
                  else set((await local_chars.load_local_characters()).keys()))
         names_settled = await _reconcile_rename(config_dir, names)

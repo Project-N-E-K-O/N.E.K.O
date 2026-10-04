@@ -218,7 +218,11 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         # 名册是非严格读：一条坏了的 pairs（不是列表）只当作空，不能让整张列表 500
         pairs = [p for p in raw_pairs if isinstance(p, str)] if isinstance(raw_pairs, list) else []
         chars = entry.get("chars") if isinstance(entry.get("chars"), dict) else {}
-        person = participant_subject(derive_person_id(own_uid, peer_uid))
+        try:
+            person = participant_subject(derive_person_id(own_uid, peer_uid))
+        except ValueError:
+            # 名册里坏了的对端 id（空串等）：跳过这一条，不让整张列表 500
+            continue
         subjects = [person] + [group_chat_subject(p) for p in pairs]
         char_rows = []
         for char_id, info in sorted(chars.items()):
