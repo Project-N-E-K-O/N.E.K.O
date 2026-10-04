@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from fastapi import APIRouter, FastAPI
@@ -415,11 +416,31 @@ def test_forget_all_with_unreadable_character_config_is_a_retryable_503(env, mon
     assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_peer(PEER_X)) is not None
 
 
-@pytest.mark.parametrize("body, ok", [(None, True), ('{"猫娘": {}}', True), ("{torn", False), ("[]", False)])
+def _char(uid=None):
+    from utils.config_manager.reserved_schema import set_reserved
+
+    data: dict = {}
+    if uid is not None:
+        set_reserved(data, "character_uid", uid)
+    return data
+
+
+@pytest.mark.parametrize("body, ok", [
+    (None, True),
+    ('{"猫娘": {}}', True),
+    ("{torn", False),
+    ("[]", False),
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char(CHAR_UID_B)}}, True),
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": "damaged"}}, False),          # 记录坏了
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char()}}, False),             # 缺 id
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char("not-a-uid")}}, False),  # id 坏了
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char(CHAR_UID_A)}}, False),   # id 重复
+], ids=["missing", "empty", "torn", "list", "valid", "bad_record", "no_uid", "bad_uid", "dup_uid"])
 def test_character_config_check(tmp_path, body, ok):
     path = tmp_path / "characters.json"
     if body is not None:
-        path.write_text(body, encoding="utf-8")
+        path.write_text(body if isinstance(body, str) else json.dumps(body, ensure_ascii=False),
+                        encoding="utf-8")
     if ok:
         local_chars._check_characters_file(str(path))
     else:

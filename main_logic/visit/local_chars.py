@@ -43,6 +43,15 @@ def _check_characters_file(path: str) -> None:
         raise CharactersUnreadable(f"characters.json unreadable: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("猫娘"), dict):
         raise CharactersUnreadable("characters.json has no character map")
+    # 逐个核对：枚举（load_local_characters）会静默跳过的条目——名字 / 记录坏了、
+    # 缺 id 或 id 坏了（启动时会补发，此刻缺就是异常）、id 重复——都不能当作「没有这个角色」，
+    # 否则清除全部会漏掉它还照样报成功
+    seen: set[str] = set()
+    for name, entry in data["猫娘"].items():
+        uid = get_character_uid(entry) if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name or uid is None or uid in seen:
+            raise CharactersUnreadable(f"character entry {name!r} cannot be enumerated")
+        seen.add(uid)
 
 
 async def ensure_characters_readable() -> None:
