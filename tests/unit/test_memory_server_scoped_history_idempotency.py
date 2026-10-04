@@ -676,6 +676,8 @@ async def test_startup_cleanup_drops_expired_staging_and_tombstones_only(env):
         "k-done": "done", "k-cancelled": "cancelled", "k-pending": "pending",
     }
     report = await idem.cleanup_expired([NAME], ttl_s=0, now=now + 10**9)
+    # 再过很久：剩下的暂存与墓碑都过期被清，键记录仍一字不动
+    assert report == {"staging_removed": 1, "tombstones_removed": 1}
     records_after = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))
     assert records_after == records
 
