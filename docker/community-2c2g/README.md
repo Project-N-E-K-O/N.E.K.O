@@ -218,6 +218,11 @@ sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实
 这套架构，是我作为一个初中生，在极度受限的资源下探索出的最优解。它曾经让我从"因为差 15 块钱续费而绝望"，变成了"在 2 核 2G 的机器上也能稳稳保护我的 AI 伙伴"。
 
 如果你在使用这份指南时遇到了问题，欢迎在 Issue 区交流。开源的精神就是互相搀扶，希望 YUI 能在更多人的设备里安稳地活下去。
+### 卸载与清理
+如果你想彻底移除本方案（执行 `docker compose down` 后），请记得手动清理宿主机的看门狗残留：
+```bash
+sudo rm -f /etc/cron.d/neko-watchdog
+sudo rm -f /opt/neko/watchdog.sh
 
 ---
 
