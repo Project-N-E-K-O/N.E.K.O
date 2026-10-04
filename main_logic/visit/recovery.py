@@ -418,11 +418,13 @@ async def _reconcile_rename(
         return _ALL_NAMES
     if marker is None:
         return frozenset()
-    if not isinstance(marker, dict):
-        return _ALL_NAMES
-    old, new = marker.get("old"), marker.get("new")
+    old = marker.get("old") if isinstance(marker, dict) else None
+    new = marker.get("new") if isinstance(marker, dict) else None
     if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
-        return _ALL_NAMES
+        # 格式坏了的标记已没有可对账的信息，留着只会永久挡住补录与清除：记诊断后清掉
+        memory_bridge.diag("pending_rename_malformed")
+        logger.error("visit recovery: malformed pending_rename %r dropped", marker)
+        return frozenset() if await clear_roster_marker(config_dir, "pending_rename", marker) else _ALL_NAMES
     # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
     roster = PeerRoster(config_dir, own_uid="pending-rename")
     uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None

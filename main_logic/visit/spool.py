@@ -1433,11 +1433,17 @@ class VisitSpool:
             # 清除路径要严格读：已结清的场次常常只剩 state.json，读不出来就跳过
             # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
             state_unreadable = False
+            state_corrupt = False
             try:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
                 state = None
-            except (OSError, ValueError):
+            except ValueError:
+                # 内容损坏：谁都用不了它（与 OSError 的一时读不出不同）
+                state = None
+                state_unreadable = True
+                state_corrupt = True
+            except OSError:
                 # state 读不出时先看头行：头行明确属于别的角色、或指认的是别的一对，就不是
                 # 这次要清的场次——一份无关的坏文件不能把所有清除永远卡住。头行也读不出、
                 # 或身份已被抹掉而角色相同（分不清是不是这个人）时才按读不出处理
@@ -1459,6 +1465,15 @@ class VisitSpool:
                 header is None
                 or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
             ):
+                if state_corrupt and header is not None:
+                    # 头行身份已抹（同一角色）而 state.json 内容损坏：这份 state 谁都用不了，
+                    # 里面可能残留的对端字段随文件一并删掉，视为已处理——否则这个角色之后
+                    # 每一次清除都卡在这里，永远结不清
+                    try:
+                        visit_path(spool_dir, visit_id, STATE_SUFFIX).unlink(missing_ok=True)
+                        continue
+                    except OSError:
+                        pass
                 unreadable.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)

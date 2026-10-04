@@ -531,8 +531,9 @@ async def replay_forgets(
 
     ``drop_deleted_chars``: the caller verified the character config is
     readable, so a character uid without a name was deleted. Its part of a
-    sentinel is skipped and its open logs are closed (the deletion retires
-    its data by uid) instead of keeping every clearing that names it open.
+    sentinel is skipped and its open logs are kept as they are for the
+    deletion's retirement to reconcile; they no longer keep the sentinel
+    (and the other characters it names) open.
 
     ``lifecycle_guard`` (optional, the one the clearing endpoints use) is held
     around each sentinel expansion and each log replay, from resolving the

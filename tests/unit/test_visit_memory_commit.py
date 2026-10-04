@@ -573,3 +573,21 @@ async def test_summary_already_in_the_roster_is_not_regenerated(tmp_path):
     assert calls["n"] == 0
     assert (await roster.get_last_summary(PEER_X, "A"))["text"] == "已提交的摘要"
     assert (await spool.read_state())["last_summary_done"] is True
+
+
+async def test_handoff_never_treats_the_opening_visit_as_crashed(tmp_path):
+    from main_logic.visit.memory_commit import last_summary_handoff
+
+    await seed_roster(tmp_path)
+    opening = await make_visit(tmp_path, vid(85), [ln(0, "你好")], finalized=None)
+    started = []
+
+    async def start(spool):
+        started.append(spool.visit_id)
+        return True
+
+    # 调用方还没把这一场登记成在飞（is_live 仍为假）：交接也不能把它标 crash、替它生成摘要
+    await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
+                               start_summary=start, is_live=lambda _v: False,
+                               opening_visit_id=vid(85))
+    assert started == [] and (await opening.read_state())["finalized"] is None

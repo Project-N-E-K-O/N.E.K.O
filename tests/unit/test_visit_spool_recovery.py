@@ -1637,3 +1637,23 @@ async def test_rename_reconciliation_holds_the_lifecycle_guard(tmp_path, monkeyp
     report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A}, {CHAR_UID_A: "C"},
                                        lifecycle_guard=guard)
     assert report.renamed is True and held["uids"] == [CHAR_UID_A]
+
+
+async def test_corrupt_state_of_a_wiped_visit_of_this_character_is_dropped(tmp_path):
+    await seed_roster(tmp_path)
+    wiped = await make_visit(tmp_path, vid(78), [ln(0)], finalized="wrap_up")
+    await wiped.delete_peer_fields()                           # 已抹身份的一场（同一角色）
+    wiped.state_path.write_text("{torn", encoding="utf-8")     # 之后 state.json 又坏了
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 谁都用不了的坏 state 随残留字段一并删掉，不再让这个角色的清除永远卡住
+    assert outcome.done and not wiped.state_path.exists()
+
+
+async def test_malformed_rename_marker_is_dropped(tmp_path):
+    await seed_roster(tmp_path)
+    peers_path = _set_rename_marker(tmp_path, "garbled")
+    report = await _recover(tmp_path)
+    # 没有可对账的信息：记诊断后清掉，不再永久挡住补录与清除
+    assert report.renamed is True
+    assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))

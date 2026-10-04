@@ -443,8 +443,13 @@ async def last_summary_handoff(
     peer_uid: str,
     start_summary: Callable[[VisitSpool], Awaitable[Any]] | None = None,
     is_live: Callable[[str], bool] | None = None,
+    opening_visit_id: str | None = None,
 ) -> None:
     """Let the previous visits of this pair finish their last-visit summary.
+
+    ``opening_visit_id`` is the visit being opened right now: it is never
+    treated as a previous visit, whatever order the caller registers it as
+    live in.
 
     For every local visit of ``(own_char_uid, pair)`` whose summary is not
     done and that is no longer running (finalized, or not live: a crash not
@@ -464,6 +469,9 @@ async def last_summary_handoff(
         visit_ids = []
     waits: list[asyncio.Future[Any]] = []
     for visit_id in visit_ids:
+        if visit_id == opening_visit_id:
+            # 正要开场的这一场自己：可能还没登记成在飞，不能被当成崩溃场次标 crash
+            continue
         running = _SUMMARY_TASKS.get(visit_id)
         if running is not None:
             waits.append(running)
