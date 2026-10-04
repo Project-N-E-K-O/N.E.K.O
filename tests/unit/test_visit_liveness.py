@@ -475,3 +475,27 @@ def test_host_entry_bound_applies_to_the_own_reconnect_too():
     h.on_peer_entered(10.0)
     h.on_self_disconnected(20.0)
     assert h.self_deadline() == 37.0  # min(20 + 25, 10 + 27)
+
+
+
+def test_ack_recomputes_the_reload_deadline_instead_of_only_tightening():
+    # host 用访客入房时刻设的上限比真实时钟严：ack 之后按真实的最后发出时刻重算（Greptile）
+    lv = VisitLiveness("host", 0.0)
+    lv.on_peer_entered(500.0)
+    lv.on_page_lost(502.0)
+    lv.on_page_socket_back(504.0)
+    assert lv.page_deadline == 527.0
+    lv.on_message_sent(510.0)
+    lv.on_hello_acked(511.0)
+    assert lv.page_deadline == 532.0  # min(502 + 30, 510 + 27)
+    assert lv.tick(530.0) is None
+
+
+def test_ack_during_the_socket_stage_keeps_this_drops_budget():
+    lv = VisitLiveness("host", 0.0)
+    lv.on_peer_entered(500.0)
+    lv.on_page_lost(502.0)
+    assert lv.page_deadline == 522.0  # min(502 + 20, 527)
+    lv.on_message_sent(501.0)
+    lv.on_hello_acked(503.0)
+    assert lv.page_deadline == 522.0  # 仍是本次断线 + 20（min(522, 532, 528)）

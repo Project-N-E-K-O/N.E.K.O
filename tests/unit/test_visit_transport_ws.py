@@ -2192,3 +2192,23 @@ def test_unknown_deadline_after_preflight_issues_no_credentials():
         tw._reset_for_tests()
     # 期限查不了：会提交副作用的领凭证一律不做（与重入同一口径）
     assert s.issued == 0 and not conn.closed
+
+
+
+def test_a_send_failure_retires_the_socket():
+    import asyncio
+
+    class _BrokenWS(_RecordingWS):
+        async def send_text(self, text):
+            raise RuntimeError("socket gone")
+
+    async def scenario():
+        conn = tw._Connection(websocket=_BrokenWS(), reattach=False)
+        ok = await conn.send_json({"type": "media", "publish": True})
+        await asyncio.sleep(0.05)
+        return ok, conn
+
+    ok, conn = asyncio.run(scenario())
+    # 写不出去就收尾：接收循环据此结束、按掉页起期限，不会留下「已提交却没发出去」的重入
+    assert not ok and conn.retired and conn.closed
+    assert conn.websocket.closed_with == tw.CLOSE_SEND_FAILED

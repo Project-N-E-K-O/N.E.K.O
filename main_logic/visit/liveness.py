@@ -137,6 +137,7 @@ class VisitLiveness:
         self.page_departed_at: Optional[float] = None
         self.page_deadline: Optional[float] = None
         self.page_socket_back = False
+        self.page_socket_lost_at: Optional[float] = None
         self.leave_received_at: Optional[float] = None
         self.peer_departed_at: Optional[float] = None
         self.vendor_timeout_events = 0
@@ -187,15 +188,16 @@ class VisitLiveness:
 
         From here the peer verified us and its heartbeat clock runs on our
         messages, so the last-send term of the own-reconnect and page reload
-        deadlines applies (a reload already running is tightened by the same
-        formula). Guest: also starts the 85 s wait for ``ready`` -- ignored
+        deadlines applies (a reload already running is recomputed for its
+        stage: the room-entry bound a host used until now may have been
+        stricter or looser than the real clock). Guest: also starts the 85 s wait for ``ready`` -- ignored
         once ``ready`` already arrived: the first ack may be lost and a later
         cumulative ack (triggered by a retransmitted ``hello``) must not re-arm
         the wait of an already active visit.
         """
         self.hello_acked = True
         if self.page_deadline is not None and not self.page_expired(now):
-            self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
+            self.page_deadline = self._page_stage_deadline()
         if self.side == "guest" and self.ready_deadline is None and not self.ready_received:
             self.ready_deadline = now + self._ready_wait_s
 
@@ -276,13 +278,20 @@ class VisitLiveness:
         death = self._peer_death_deadline(self.page_departed_at)
         return deadline if death is None else min(deadline, death)
 
-    def page_reload_state(self) -> tuple[Optional[float], Optional[float], bool]:
-        """Opaque copy of the page reload fields, for :meth:`restore_page_reload_state`."""
-        return (self.page_departed_at, self.page_deadline, self.page_socket_back)
+    def _page_stage_deadline(self) -> Optional[float]:
+        """Deadline of the running reload's current stage (socket: this drop + 20 s; SDK: absolute)."""
+        absolute = self.page_reload_deadline()
+        if self.page_socket_back or self.page_socket_lost_at is None or absolute is None:
+            return absolute
+        return min(self.page_socket_lost_at + self._page_grace_s, absolute)
 
-    def restore_page_reload_state(self, state: tuple[Optional[float], Optional[float], bool]) -> None:
+    def page_reload_state(self) -> tuple:
+        """Opaque copy of the page reload fields, for :meth:`restore_page_reload_state`."""
+        return (self.page_departed_at, self.page_deadline, self.page_socket_back, self.page_socket_lost_at)
+
+    def restore_page_reload_state(self, state: tuple) -> None:
         """Put back a :meth:`page_reload_state` copy (a re-entry that failed after clearing it)."""
-        self.page_departed_at, self.page_deadline, self.page_socket_back = state
+        self.page_departed_at, self.page_deadline, self.page_socket_back, self.page_socket_lost_at = state
 
     def page_expired(self, now: float) -> bool:
         """True once the running page reload missed its deadline (whether or not ``tick`` ran yet)."""
@@ -306,7 +315,8 @@ class VisitLiveness:
         if self.page_departed_at is None:
             self.page_departed_at = now
         self.page_socket_back = False
-        self.page_deadline = min(now + self._page_grace_s, self.page_reload_deadline())
+        self.page_socket_lost_at = now
+        self.page_deadline = self._page_stage_deadline()
 
     def on_page_socket_back(self, now: float) -> None:
         """A new transport socket authenticated: the SDK reload and re-entry get the absolute deadline.
@@ -322,7 +332,7 @@ class VisitLiveness:
         if self.page_departed_at is None:
             self.page_departed_at = now
         self.page_socket_back = True
-        self.page_deadline = self.page_reload_deadline()
+        self.page_deadline = self._page_stage_deadline()
 
     def on_page_back(self, now: float) -> None:
         """The reloaded page is back in the vendor room: the reload is over.
@@ -335,6 +345,7 @@ class VisitLiveness:
         self.page_departed_at = None
         self.page_deadline = None
         self.page_socket_back = False
+        self.page_socket_lost_at = None
 
     # ------------------------------------------------------------------
     # 对端离开

@@ -103,6 +103,7 @@ CLOSE_SUPERSEDED = 4409
 CLOSE_TOO_LARGE = 1009
 CLOSE_UNSUPPORTED_DATA = 1003
 CLOSE_NORMAL = 1000
+CLOSE_SEND_FAILED = 1011
 
 SIDES = ("host", "guest")
 DOWNLINK_TYPES = frozenset({"credentials", "media", "send", "stop"})
@@ -365,6 +366,9 @@ class _Connection:
                 await self.websocket.send_text(text)
             except Exception as exc:  # noqa: BLE001 - 断开中的 socket：当作未送达
                 logger.debug("visit transport: send failed: %s", type(exc).__name__)
+                # 写不出去的 socket 不能留着继续收帧：退役并关闭（1011，iframe 会重连），
+                # 接收循环随即结束、按掉页起期限——「已提交重入却没发出去」的状态因此不会留下
+                _spawn_close(self, CLOSE_SEND_FAILED, "send failed")
                 return False
         return True
 
