@@ -278,6 +278,10 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     """
     if not isinstance(doc, dict) or doc.get("v") != UPLOAD_DOC_VERSION:
         return False
+    owner = doc.get("own_visit_uid")
+    if owner is not None and (not isinstance(owner, str) or not owner):
+        # 上传只在登录账号与它一致时进行：坏值会让这份文件永远传不出去
+        return False
     request = doc.get("request")
     usage = request.get("usage") if isinstance(request, dict) else None
     return (
@@ -296,6 +300,24 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
         # 逐行核对：转录行坏了的上传文件同样不能顶替完整的流水
         and all(isinstance(line, dict) and _valid_line(line) for line in request["lines"])
     )
+
+
+_ENVELOPE_FIELDS = ("own_visit_uid", "own_char_uid", "transport")
+
+
+def _stream_envelope_sync(
+    spool_dir: Path, visit_id: str, finalized_reason: str | None, owner: str | None,
+) -> dict | None:
+    """The envelope fields resealing the stream would produce, or None when it cannot be read."""
+    try:
+        records = _read_stream(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
+    except OSError:
+        return None
+    if owner is None:
+        owner = _spool_header_owner_sync(spool_dir, visit_id)
+    doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=finalized_reason,
+                           fallback_own_visit_uid=owner)
+    return {name: doc[name] for name in _ENVELOPE_FIELDS} if doc is not None else None
 
 
 def _write_private_json(path: Path, doc: dict) -> None:
@@ -495,6 +517,13 @@ async def _upload_pending(
         if live(visit_id):
             continue
         stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
+        state = None
+        try:
+            state = await VisitSpool(config_dir, visit_id).read_state()
+        except (OSError, ValueError) as exc:
+            logger.warning("visit recovery: state of %s unreadable, upload marked crash: %s", visit_id, exc)
+        reason = state["finalized"] if state else None
+        owner = state["own_uid"] if state else None
         if visit_id in sealed:
             # 封存时「已写 .upload.json、还没删流水」就崩了：上传文件才是这场的那份，
             # 留着流水会在上传成功后被再封一次、重复上传。先确认上传文件读得出来再删流水；
@@ -505,7 +534,15 @@ async def _upload_pending(
                 )
             except (OSError, ValueError):
                 sealed_doc = None
-            if _sealed_doc_belongs(sealed_doc, visit_id):
+            belongs = _sealed_doc_belongs(sealed_doc, visit_id)
+            if belongs:
+                # 信封（占房账号、角色 id、传输方式）也要与流水一致：坏了的信封会让上传回调
+                # 永远认不出账号，删了流水就再也重封不回来
+                expected = await asyncio.to_thread(_stream_envelope_sync, spool_dir, visit_id, reason, owner)
+                belongs = expected is None or all(
+                    sealed_doc.get(name) == expected[name] for name in _ENVELOPE_FIELDS
+                )
+            if belongs:
                 try:
                     await asyncio.to_thread(stream.unlink, True)
                 except OSError as exc:
@@ -519,13 +556,6 @@ async def _upload_pending(
             logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
-        state = None
-        try:
-            state = await VisitSpool(config_dir, visit_id).read_state()
-        except (OSError, ValueError) as exc:
-            logger.warning("visit recovery: state of %s unreadable, upload marked crash: %s", visit_id, exc)
-        reason = state["finalized"] if state else None
-        owner = state["own_uid"] if state else None
         try:
             doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason, owner)
         except (OSError, ValueError, TypeError, OverflowError) as exc:

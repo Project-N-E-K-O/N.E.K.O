@@ -214,7 +214,9 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         entry = by_char.get(catgirl) if isinstance(by_char, dict) else None
         if not isinstance(entry, dict):
             continue
-        pairs = [p for p in entry.get("pairs") or [] if isinstance(p, str)]
+        raw_pairs = entry.get("pairs")
+        # 名册是非严格读：一条坏了的 pairs（不是列表）只当作空，不能让整张列表 500
+        pairs = [p for p in raw_pairs if isinstance(p, str)] if isinstance(raw_pairs, list) else []
         chars = entry.get("chars") if isinstance(entry.get("chars"), dict) else {}
         person = participant_subject(derive_person_id(own_uid, peer_uid))
         subjects = [person] + [group_chat_subject(p) for p in pairs]
@@ -264,6 +266,13 @@ async def forget_memory_peer(request: Request):
         return _error(409, "VISIT_LOGIN_REQUIRED")
     if _hooks.is_visit_active(catgirl):
         return _error(409, "visit_active")
+    try:
+        # 与清除全部同一道严格检查：读不出 / 条目坏了时常规加载会静默换成默认或滤掉它，
+        # 下面就会回一个看似永久的 404，这次清除既没落盘也不提示重试
+        await local_chars.ensure_characters_readable()
+    except local_chars.CharactersUnreadable as exc:
+        logger.error("visit forget: character config unreadable: %s", exc)
+        return _error(503, "forget_failed", retry=True)
     char_uid = await local_chars.resolve_char_uid(catgirl)
     if char_uid is None:
         return _error(404, "unknown_catgirl")

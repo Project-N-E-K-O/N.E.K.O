@@ -301,8 +301,6 @@ def test_ipv4_mapped_loopback_is_local(env):
 
 
 def test_peers_survive_a_damaged_cat_record(env):
-    import json
-
     client, _server, tmp_path, _state = env
     _seed(tmp_path)
     path = tmp_path / "visit_peers.json"
@@ -446,3 +444,31 @@ def test_character_config_check(tmp_path, body, ok):
     else:
         with pytest.raises(local_chars.CharactersUnreadable):
             local_chars._check_characters_file(str(path))
+
+
+def test_peers_survive_a_damaged_pairs_list(env):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    _seed(tmp_path, peer_uid=PEER_Z)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]["pairs"] = 1
+    path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    # 一条坏了的 pairs 只当作空，其余对端照常列出
+    assert resp.status_code == 200
+    assert {row["peer_uid"] for row in resp.json()["peers"]} == {PEER_X, PEER_Z}
+
+
+def test_forget_with_unreadable_character_config_is_a_retryable_503(env, monkeypatch):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+
+    async def unreadable():
+        raise local_chars.CharactersUnreadable("characters.json unreadable")
+
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", unreadable)
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
+    # 不回看似永久的 404：回可重试的 503
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.requests == []

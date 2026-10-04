@@ -111,7 +111,7 @@ def _write_stream(tmp_path, visit_id, records):
 def _sealed(visit_id):
     """A well-formed ``.upload.json`` of ``visit_id`` (recovery deletes stale streams only next to one)."""
     usage = {"duration_s": 1, "llm_input_tokens": 0, "llm_output_tokens": 0, "tts_requests": 0, "tts_chars": 0}
-    return {"v": 1, "own_visit_uid": OWN_A, "request": {
+    return {"v": 1, "own_visit_uid": OWN_A, "own_char_uid": CHAR_UID_A, "transport": "livekit", "request": {
         "visit_id": visit_id, "role": "host", "started_at": 1000.0, "ended_at": 1001.0,
         "finalized_reason": "crash", "usage": usage, "lines": [], "anomalies": 0, "app_version": "",
     }}
@@ -1229,3 +1229,35 @@ async def test_replay_removes_sentinels_only_under_their_lifecycle_guard(tmp_pat
     assert clean is True
     # 复查剩余日志与删除哨兵都在该哨兵的守卫里：端点复用哨兵插不进这段
     assert removed == [1]
+
+
+
+@pytest.mark.parametrize("envelope", [{"own_visit_uid": 7}, {"own_visit_uid": "c" * 24},
+                                      {"own_char_uid": "x"}, {"transport": "other"}],
+                         ids=["owner_type", "owner_differs", "char_differs", "transport_differs"])
+async def test_sealed_upload_with_a_damaged_envelope_is_resealed(tmp_path, envelope):
+    v = vid(63)
+    header = _header(v)
+    _write_stream(tmp_path, v, [header, {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                         "ts": 1001.0, "text": "a", "truncated": False}])
+    doc = _sealed(v)
+    doc.update({"own_char_uid": header.get("own_char_uid"), "transport": header.get("transport")})
+    doc.update(envelope)
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 信封与流水对不上：从流水重封，信封以流水为准
+    assert visit_id == v and uploaded["own_visit_uid"] == OWN_A
+    assert [line["text"] for line in uploaded["request"]["lines"]] == ["a"]
+
+
+async def test_sealed_upload_with_a_malformed_owner_and_no_stream_is_not_uploaded(tmp_path):
+    v = vid(64)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": 7}), encoding="utf-8")
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 占房账号坏了：任何账号都传不出去，没有流水可重封就按损坏处理
+    assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
