@@ -498,12 +498,18 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     if state["digest_runs"] not in (len(runs), len(runs) - 1):
         raise SpoolStateError("digest_runs does not match the registered digest_writes runs")
     for run, record in runs.items():
-        if not isinstance(record, Mapping) or set(record) - {"epochs"} != {
+        if not isinstance(record, Mapping) or set(record) - {"epochs", "plan"} != {
             "requested_at", "through_lp", "group", "segments",
         }:
             raise SpoolStateError(
-                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs]}}"
+                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs, plan]}}"
             )
+        plan = record.get("plan", {})
+        # 开轮时的切批参数（句数上限、每批句数）：升级改了常量之后续跑仍按原计划切批
+        if not isinstance(plan, Mapping) or set(plan) - {"max_lines", "batch_size"} or not all(
+            _is_int(value) and value >= 1 for value in plan.values()
+        ):
+            raise SpoolStateError(f"digest_writes[{run}].plan must be {{max_lines, batch_size}} ints >= 1")
         epochs = record.get("epochs", {})
         # 开轮时记下的各 subject 清除代数：同键重试沿用，服务端按它丢弃清除之前发起的产物
         if not isinstance(epochs, Mapping) or not all(
@@ -1426,13 +1432,17 @@ class VisitSpool:
         for visit_id in cls._visit_ids(spool_dir, (SPOOL_SUFFIX, STATE_SUFFIX)):
             # 清除路径要严格读：已结清的场次常常只剩 state.json，读不出来就跳过
             # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
+            state_unreadable = False
             try:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
                 state = None
             except (OSError, ValueError):
-                unreadable.append(visit_id)
-                continue
+                # state 读不出时先看头行：头行明确属于别的角色、或指认的是别的一对，就不是
+                # 这次要清的场次——一份无关的坏文件不能把所有清除永远卡住。头行也读不出、
+                # 或身份已被抹掉而角色相同（分不清是不是这个人）时才按读不出处理
+                state = None
+                state_unreadable = True
             if _names_pair(state, own_char_uid, pair_ids):
                 found.append(visit_id)
                 continue
@@ -1445,6 +1455,11 @@ class VisitSpool:
                 continue
             if _names_pair(header, own_char_uid, pair_ids):
                 found.append(visit_id)
+            elif state_unreadable and (
+                header is None
+                or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
+            ):
+                unreadable.append(visit_id)
         if unreadable:
             raise SpoolStateUnreadable(unreadable)
         return found

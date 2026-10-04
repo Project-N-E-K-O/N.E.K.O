@@ -84,11 +84,18 @@ class RenamePending(CharacterUnresolved):
     """A character rename has not been reconciled yet (``visit_peers.json.pending_rename``)."""
 
 
-async def _refuse_pending_rename(config_dir: str | Path) -> None:
+async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -> None:
     # 改名崩在「配置已是新名、名册还在旧名」之间：此时按新名展开会找不到条目，
-    # 清除会「成功」地什么都没删，之后补录又把旧名下没清的数据搬出来。等启动补录对账完
-    if await read_roster_marker(config_dir, "pending_rename") is not None:
-        raise RenamePending("a character rename is not reconciled yet")
+    # 清除会「成功」地什么都没删，之后补录又把旧名下没清的数据搬出来。等启动补录对账完。
+    # 只挡涉及改名两端名字的清除：别的角色的名册条目与这次改名无关，不能被一个
+    # 一时对不上账的标记连带挡住
+    marker = await read_roster_marker(config_dir, "pending_rename")
+    if marker is None:
+        return
+    if not isinstance(marker, dict):
+        raise RenamePending("a malformed rename marker is pending")
+    if {marker.get("old"), marker.get("new")} & set(names):
+        raise RenamePending("a rename of this character is not reconciled yet")
 
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
@@ -126,9 +133,18 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
             spool = VisitSpool(config_dir, visit_id)
             try:
                 state = await spool.read_state()
-            except (OSError, ValueError) as exc:
+            except OSError as exc:
+                # 读不出可能只是一时被占用：先不结清这份日志，下次再试
                 raise SpoolStateUnreadable([visit_id]) from exc
+            except ValueError as exc:
+                # 内容损坏的 state.json：任何流程都用不了它（debrief 读它同样失败），不能让
+                # 一份无关的坏文件把所有清除永远卡住。记下来跳过
+                logger.warning("visit forget: skipping corrupt state of %s: %r", visit_id, exc)
+                continue
             if state is None or state["own_char_uid"] != own_char_uid:
+                continue
+            if state["own_uid"] != record["own_uid"]:
+                # 别的账号下的场次（含已被抹掉身份的）与这次清除无关
                 continue
             if state["pair_id"] is not None and state["pair_id"] not in pairs:
                 continue
@@ -204,14 +220,24 @@ async def _open_logs_in_scope(
     sentinel: Mapping[str, Any],
     *,
     resolve_char_name: ResolveCharName,
+    drop_deleted_chars: bool = False,
 ) -> list[tuple[str, str, str, str]]:
-    """Expand a sentinel's scope from the roster and write every log; return ``(rev_id, name, uid, peer)``."""
+    """Expand a sentinel's scope from the roster and write every log; return ``(rev_id, name, uid, peer)``.
+
+    ``drop_deleted_chars`` (startup replay, the character config verified
+    readable): a character without a name was deleted and is skipped (its
+    data is retired by uid); otherwise :class:`CharacterUnresolved`.
+    """
     own_uid = sentinel["own_uid"]
     roster = PeerRoster(config_dir, own_uid=own_uid)
     opened: list[tuple[str, str, str, str]] = []
     for own_char_uid in sentinel["own_char_uids"]:
         name = await resolve_char_name(own_char_uid)
         if not name:
+            if drop_deleted_chars:
+                # 角色配置已确认读得出：它确实被删了，数据由删除的退役步骤按 uid 处理。
+                # 从这次展开里剔除，同一哨兵里的其他角色照常清、哨兵能结清
+                continue
             # 名字解析不出可能只是角色配置一时读不出（被替换成默认值）：当作「范围没展开」
             # 留住哨兵，不能当作「这个角色没有要清的人」把哨兵删掉、清除永远不再执行
             raise CharacterUnresolved(f"character {own_char_uid} of {sentinel['op_id']} has no name")
@@ -385,11 +411,11 @@ async def forget_person(
     :class:`CharacterUnresolved` when the character is gone.
     """
     async with (lifecycle_guard([own_char_uid]) if lifecycle_guard else contextlib.nullcontext()):
-        await _refuse_pending_rename(config_dir)
         if resolve_char_name is not None:
             own_char = await resolve_char_name(own_char_uid)
             if not own_char:
                 raise CharacterUnresolved(f"character {own_char_uid} has no name")
+        await _refuse_pending_rename(config_dir, [own_char])
         return await _forget_person(
             Path(config_dir), own_uid=own_uid, own_char=own_char, own_char_uid=own_char_uid,
             peer_uid=peer_uid, client=client, void_pending=void_pending,
@@ -449,7 +475,6 @@ async def forget_all(
         return ForgetOutcome(done=True)
     async with (lifecycle_guard(sorted(chars.values())) if lifecycle_guard
                 else contextlib.nullcontext()):
-        await _refuse_pending_rename(config_dir)
         if resolve_char_name is not None:
             current: dict[str, str] = {}
             for uid in chars.values():
@@ -460,6 +485,7 @@ async def forget_all(
                     raise CharacterUnresolved(f"character {uid} has no name")
                 current[name] = uid
             chars = current
+        await _refuse_pending_rename(config_dir, chars)
         return await _forget_all(
             Path(config_dir), own_uid=own_uid, chars=chars, client=client,
             void_pending=void_pending, admission_lock=admission_lock,
@@ -499,8 +525,14 @@ async def replay_forgets(
     client: ScopedMemoryClient | None = None,
     void_pending: VoidPending | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
+    drop_deleted_chars: bool = False,
 ) -> bool:
     """Finish every unfinished clearing operation (startup recovery); True when nothing is left.
+
+    ``drop_deleted_chars``: the caller verified the character config is
+    readable, so a character uid without a name was deleted. Its part of a
+    sentinel is skipped and its open logs are closed (the deletion retires
+    its data by uid) instead of keeping every clearing that names it open.
 
     ``lifecycle_guard`` (optional, the one the clearing endpoints use) is held
     around each sentinel expansion and each log replay, from resolving the
@@ -530,8 +562,10 @@ async def replay_forgets(
         try:
             async with guarded(sentinel["own_char_uids"]):
                 # 补录开头对过一次改名，但之后、拿到守卫之前可能又有改名崩在半路：守卫内再查
-                await _refuse_pending_rename(config_dir)
-                await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
+                names = [n for uid in sentinel["own_char_uids"] if (n := await resolve_char_name(uid))]
+                await _refuse_pending_rename(config_dir, names)
+                await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name,
+                                          drop_deleted_chars=drop_deleted_chars)
         except _STEP_ERRORS as exc:
             logger.warning("visit forget replay: cannot expand %s: %r", sentinel["op_id"], exc)
             # 范围没展开成功（名册读不出等）：哨兵是这次清除唯一的记录，必须留到下次
@@ -546,17 +580,22 @@ async def replay_forgets(
         # 与端点同一把生命周期守卫：从按 uid 解析名字到重放结束都持有，期间角色
         # 改不了名、删不掉，不会把清除发到已经迁走的旧名字上又把日志当完成关掉
         async with guarded([record["own_char_uid"]]):
+            name = await resolve_char_name(record["own_char_uid"])
+            if not name:
+                if drop_deleted_chars:
+                    # 角色已删（配置已确认读得出）：它的数据由删除的退役步骤按 uid 处理，
+                    # 这份日志关掉，不再让同一哨兵永远「清除中」
+                    logger.warning("visit forget replay: character of %s was deleted, log closed", record["id"])
+                    await RevocationLog(config_dir, own_uid=record["own_uid"]).discard(record["id"])
+                    continue
+                logger.warning("visit forget replay: character of %s has no name, kept", record["id"])
+                clean = False
+                continue
             try:
-                await _refuse_pending_rename(config_dir)
+                await _refuse_pending_rename(config_dir, [name])
             except (RenamePending, RosterCorruptError) as exc:
                 # 改名没对账完：按新名重放会对着空条目把日志关掉，留到下次启动
                 logger.warning("visit forget replay: %s deferred: %r", record["id"], exc)
-                clean = False
-                continue
-            name = await resolve_char_name(record["own_char_uid"])
-            if not name:
-                # 角色已删：它的数据由删除事务的退役步骤处理，这份日志留给退役对账
-                logger.warning("visit forget replay: character of %s no longer exists", record["id"])
                 clean = False
                 continue
             ok = await execute_log(

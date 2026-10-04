@@ -362,11 +362,18 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-async def _reconcile_rename(config_dir: Path, names: set[str]) -> bool:
+async def _reconcile_rename(
+    config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
+) -> bool:
     """Finish or roll back a pending character rename; True once no rename is pending.
 
-    False means a rename may still be pending (marker kept, roster unreadable
-    or ambiguous): name-dependent recovery must wait for a later pass.
+    The marker is ``{old, new}`` plus, when the rename transaction wrote it,
+    the renamed character's ``uid``: with ``uid_of`` (current name -> uid)
+    the direction is decided by which name that uid has now. Without a uid,
+    by which of the two names exists. When neither name exists the
+    character was deleted (its data is retired by uid): the marker is
+    dropped. False means a rename may still be pending (marker kept, roster
+    unreadable or genuinely ambiguous): name-dependent recovery must wait.
     """
     try:
         marker = await read_roster_marker(config_dir, "pending_rename")
@@ -382,13 +389,28 @@ async def _reconcile_rename(config_dir: Path, names: set[str]) -> bool:
         return False
     # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
     roster = PeerRoster(config_dir, own_uid="pending-rename")
-    if new in names and old not in names:
+    uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
+    if uid is not None and uid_of is not None:
+        # 有 uid 就按它现在叫什么定方向：新旧两个名字同时存在（旧名被新建角色占用）也分得清
+        current = {name for name, value in uid_of.items() if value == uid}
+        forward = new in current
+        backward = old in current and not forward
+        deleted = not current
+    else:
+        forward = new in names and old not in names
+        backward = old in names and new not in names
+        deleted = old not in names and new not in names
+    if forward:
         await roster.rename_char(old, new)
         await VisitSpool.rename_own_char(config_dir, old, new)
-    elif old in names and new not in names:
+    elif backward:
         # 改名没生效：把已经改写成新名的场次改回旧名
         await VisitSpool.rename_own_char(config_dir, new, old)
         await roster.rename_char(new, old)
+    elif deleted:
+        # 两个名字都不在：这个角色已被删除，它的名册条目与场次由删除的退役步骤按 uid
+        # 处理。标记不再有可对账的对象，留着只会永远挡住清除与逐场补录
+        logger.warning("visit recovery: pending_rename %r -> %r names a deleted character, dropped", old, new)
     else:
         logger.warning("visit recovery: pending_rename %r -> %r is ambiguous, kept", old, new)
         return False
@@ -450,16 +472,16 @@ async def _recover_visit(
         state = await spool.update_state(**changes)
         report.crashed.append(visit_id)
         status = "interrupted"
-    elif state["finalized"] == "crash" and choice is None and not state["debrief_chip_pending"]:
-        # 旧版本或别的路径留下的「已标崩溃、没记芯片」：照样补弹
-        if await _has_digestable_lines(spool, state):
-            show_chip = True
-            status = "interrupted"
     elif state["finalized"] == "shutdown" and choice is None:
         # 兜底：老版本关机没写 ask_later，或写之前就被杀
         if await _has_digestable_lines(spool, state):
             state = await spool.update_state(debrief_choice="ask_later")
             show_chip = True
+    elif choice is None:
+        # 已收口、用户还没决定：芯片标记在就每次启动都重弹（与 ask_later 一致，崩溃场次
+        # 不只弹第一次）；标记不在——任何收口原因（wrap_up / peer_left …）写完 finalized、
+        # 还没来得及记芯片就被杀，或旧版本留下的崩溃场次——有可 digest 句就补记并弹出
+        show_chip = state["debrief_chip_pending"] or await _has_digestable_lines(spool, state)
     elif choice == "ask_later":
         show_chip = True
     if choice in ("generating:diary", "preview:diary", "commit_failed:diary"):
@@ -724,9 +746,9 @@ async def visit_spool_recovery(
             # 常规加载会静默滤掉坏条目、返回部分名单：改名对账会据此误判「改名已回滚」
             # 把数据迁回旧名并清掉标记。配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
             await local_chars.ensure_characters_readable()
-        names = (set(await list_char_names()) if list_char_names is not None
-                 else set((await local_chars.load_local_characters()).keys()))
-        names_settled = await _reconcile_rename(config_dir, names)
+        uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
+        names = set(await list_char_names()) if list_char_names is not None else set(uid_of)
+        names_settled = await _reconcile_rename(config_dir, names, uid_of)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
         names_settled = False
@@ -736,6 +758,8 @@ async def visit_spool_recovery(
             report.forgets_clean = await replay_forgets(
                 config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
                 lifecycle_guard=lifecycle_guard,
+                # 走到这里时角色配置已确认读得出（上面的严格检查），解析不出名字就是已删除
+                drop_deleted_chars=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("visit recovery: forget replay failed: %r", exc)

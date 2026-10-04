@@ -510,6 +510,19 @@ class RevocationLog:
             self._mark_done_sync, rev_id, step, time.time() if now is None else now
         )
 
+    def _discard_sync(self, rev_id: str) -> bool:
+        path = self.path_for(rev_id)
+        with path_lock(path):
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
+                return False
+
+    async def discard(self, rev_id: str) -> bool:
+        """Delete a log whose steps can no longer run (its character was deleted)."""
+        return await asyncio.to_thread(self._discard_sync, rev_id)
+
     async def close(self, rev_id: str) -> bool:
         """Delete the log once every step is done; return whether a file was removed.
 

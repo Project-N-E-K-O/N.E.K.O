@@ -204,9 +204,18 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
     peers = await roster.list_peers()
     try:
         blocklist = await Blocklist.aload(config_dir)
-        blocked = {entry.visit_uid for entry in blocklist.entries()} if blocklist.available else set()
     except BlocklistUnavailable:
-        blocked = set()
+        blocklist = None
+
+    def is_blocked(peer_uid: str) -> bool:
+        # 交给 Blocklist 自己归一化（strip + 小写）：名册里的 peer_uid 原样保存
+        if blocklist is None or not blocklist.available:
+            return False
+        try:
+            return blocklist.is_blocked(peer_uid)
+        except BlocklistUnavailable:
+            return False
+
     counts = await _subject_counts(catgirl)
     out = []
     for peer_uid, peer in sorted(peers.items()):
@@ -257,7 +266,7 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
             "first_seen": peer.get("first_seen"),
             "last_seen": peer.get("last_seen"),
             "visits": visits if isinstance(visits, int) and not isinstance(visits, bool) else 0,
-            "blocked": peer_uid in blocked,
+            "blocked": is_blocked(peer_uid),
             "fact_count": sum(_count(counts, s, "facts") for s in subjects),
             "reflection_count": sum(_count(counts, s, "reflections") for s in subjects),
             "chars": char_rows,
@@ -381,6 +390,11 @@ async def block_contact(request: Request):
     except BlocklistUnavailable:
         return _error(503, "blocklist_unavailable", retry=True)
     if blocked and _hooks.on_blocked is not None:
-        # 在飞串门中拉黑对端 → 立即结束这场
-        await _hooks.on_blocked(peer_uid)
+        # 在飞串门中拉黑对端 → 立即结束这场。屏蔽已经落盘：结束失败只记日志并如实告知，
+        # 不能回 500 让前端以为没屏蔽（重试只会得到 changed=false）
+        try:
+            await _hooks.on_blocked(peer_uid)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("visit block: ending the live visit failed: %r", exc)
+            return JSONResponse({"ok": True, "changed": bool(changed), "ended": False})
     return JSONResponse({"ok": True, "changed": bool(changed)})

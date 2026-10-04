@@ -57,6 +57,7 @@ from config.prompts.prompts_visit import (
 )
 from config.visit_settings import (
     VISIT_DIGEST_MAX_LINES,
+    VISIT_SHUTDOWN_BUDGET_S,
     VISIT_LAST_SUMMARY_INPUT_MAX_TOKENS,
     VISIT_LAST_SUMMARY_MAX_TOKENS,
     VISIT_LLM_TIMEOUT_S,
@@ -254,9 +255,22 @@ async def commit_visit_region(
     if state["peer_uid"] is None:
         return CommitResult(ok=True, skipped="peer_forgotten")
     lock = peer_lock(state["own_char_uid"], state["peer_uid"])
-    async with lock:
-        result = await _commit_locked(spool, resolve_char_name=resolve_char_name,
-                                      client=client, shutdown=shutdown, now=now)
+
+    async def locked() -> CommitResult:
+        async with lock:
+            return await _commit_locked(spool, resolve_char_name=resolve_char_name,
+                                        client=client, shutdown=shutdown, now=now)
+
+    if shutdown:
+        # 关机预算按整次提交算：等锁（可能有摘要的 LLM 调用正持着它）与先后几个批次
+        # 共用同一个 VISIT_SHUTDOWN_BUDGET_S，超时就把剩下的留给补录
+        try:
+            result = await asyncio.wait_for(locked(), VISIT_SHUTDOWN_BUDGET_S)
+        except asyncio.TimeoutError:
+            logger.warning("visit digest exceeded the shutdown budget; left for recovery")
+            return CommitResult(ok=False, skipped="shutdown_budget")
+    else:
+        result = await locked()
     if result.ok:
         await spool.delete_if_settled()
     return result
@@ -308,8 +322,12 @@ async def _commit_locked(
         run = len(runs)
         through = max(line["lp"] for line in fresh)
     run_lines = [line for line in contents.lines if previous < line["lp"] <= through]
-    selected, dropped = select_digest_lines(run_lines)
-    group_batches, segment_batches = plan_digest_batches(selected)
+    # 续跑按开轮时记下的切批参数切：升级改了句数上限 / 每批句数，批号与幂等键仍对得上
+    plan = dict(record.get("plan") or {}) if resume else {}
+    max_lines = int(plan.get("max_lines", VISIT_DIGEST_MAX_LINES))
+    batch_size = int(plan.get("batch_size", SCOPED_HISTORY_BATCH_MAX_MESSAGES))
+    selected, dropped = select_digest_lines(run_lines, max_lines)
+    group_batches, segment_batches = plan_digest_batches(selected, batch_size)
     subjects = _visit_subjects(state)
     if resume:
         if len(record["group"]) != len(group_batches) or len(record["segments"]) != len(segment_batches):
@@ -328,6 +346,7 @@ async def _commit_locked(
             "group": {str(b): False for b in range(len(group_batches))},
             "segments": {str(b): False for b in range(len(segment_batches))},
             "epochs": epochs,
+            "plan": {"max_lines": max_lines, "batch_size": batch_size},
         }
         runs[str(run)] = record
         # 先落盘本轮 through_lp / requested_at / 全部批号 / 清除代数，再发第一个请求：重试沿用它们
@@ -472,8 +491,17 @@ def _record_block_within_budget(lines: Sequence[Mapping[str, Any]], lang: str | 
         chosen = ordered[len(ordered) - len(kept):]
         block = build_visit_record_block([(line["from"], line.get("text") or "") for line in chosen], lang)
         excess = count_tokens(block) - budget
-        if excess <= 0 or len(chosen) <= 1:
+        if excess <= 0:
             return block
+        if len(chosen) <= 1:
+            if not chosen:
+                return block
+            # 只剩最新一句、它本身就超过预算：截短这一句，不把超长输入整句送进 LLM
+            # （否则每次都超时、每次启动都重试）
+            line = chosen[0]
+            text = line.get("text") or ""
+            room = max(count_tokens(text) - excess - 8, 1)
+            return build_visit_record_block([(line["from"], truncate_to_tokens(text, room))], lang)
         # 数据块分隔符与说话人分组的开销不在逐句预算里：按超出量收紧后重取，仍从最新一句往前整句取
         allowance -= excess + 8
 

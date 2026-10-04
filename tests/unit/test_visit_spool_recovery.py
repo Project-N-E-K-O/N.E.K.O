@@ -1401,3 +1401,119 @@ async def test_person_sentinel_appearing_after_execution_is_not_removed(tmp_path
     assert outcome.done
     monkeypatch.setattr(ClearingSentinels, "list_open", real_list)
     assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [created["doc"]["op_id"]]
+
+
+
+# ── 用户评审（10-04）──────────────────────────────────────────────────
+
+
+async def test_rename_marker_of_a_deleted_character_is_dropped(tmp_path):
+    await seed_roster(tmp_path)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "Q0", "new": "Q1"}       # 两个名字都不在：角色已被删除
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    report = await _recover(tmp_path)
+    assert report.renamed is True
+    assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))
+
+
+async def test_rename_marker_with_uid_is_reconciled_when_both_names_exist(tmp_path, monkeypatch):
+    from main_logic.visit import local_chars
+
+    await seed_roster(tmp_path)                                # 名册条目还在旧名 A 下
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A", "new": "C", "uid": CHAR_UID_A}
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+
+    async def chars():
+        # 改名生效后又新建了一个叫 A 的角色：新旧两个名字都在，只有 uid 分得清
+        return {"A": CHAR_UID_B, "C": CHAR_UID_A}
+
+    async def readable():
+        return None
+
+    monkeypatch.setattr(local_chars, "load_local_characters", chars)
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
+    report = await visit_spool_recovery(
+        Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C", CHAR_UID_B: "A"}),
+        client=FakeMemoryServer().client(),
+    )
+    assert report.renamed is True
+    after = json.loads(peers_path.read_text(encoding="utf-8"))
+    assert "pending_rename" not in after
+    by_char = after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
+    assert "C" in by_char and "A" not in by_char             # 按 uid 判定为改名已生效，迁到新名
+
+
+async def test_forget_halfway_then_character_deleted_does_not_wedge_the_others(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path)
+    await seed_roster(tmp_path, own_char="B")
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    first = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A, "B": CHAR_UID_B},
+                             client=server.client())
+    assert first.done is False
+    server.fail_always.clear()
+    # 之后角色 B 被删除（配置读得出、B 已不在）：重放不再让同一哨兵里的 A 永远「清除中」
+    report = await _recover(tmp_path, server, resolve_char_name=resolver({CHAR_UID_A: "A"}),
+                            list_char_names=_names("A"))
+    assert report.forgets_clean is True
+    assert await ClearingSentinels(tmp_path).list_open() == []
+    assert await RevocationLog.list_all_open(tmp_path) == []
+
+
+async def test_unrelated_corrupt_state_does_not_block_a_forget(tmp_path):
+    await seed_roster(tmp_path)
+    other = await make_visit(tmp_path, vid(70), [ln(0)], own_char="B", own_char_uid=CHAR_UID_B)
+    other.state_path.write_text("{torn", encoding="utf-8")   # 别的角色一场的 state 坏了，转录头行还在
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    assert outcome.done
+
+
+async def test_forget_does_not_void_wiped_visits_of_another_account(tmp_path):
+    await seed_roster(tmp_path)
+    other = await make_visit(tmp_path, vid(71), [ln(0)], own_uid=OWN_B, finalized="wrap_up",
+                             debrief_choice="ask_later")
+    await other.delete_peer_fields()                           # 别的账号下一场身份已抹的场次
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    assert outcome.done
+    assert (await other.read_state())["debrief_choice"] == "ask_later"
+
+
+async def test_crash_chip_is_replayed_on_every_start(tmp_path):
+    v = vid(72)
+    await make_visit(tmp_path, v, [ln(0)], finalized="crash", debrief_chip_pending=True,
+                     last_summary_done=True)
+    chips = Chips(delivered=False)
+    await _recover(tmp_path, render_chips=chips)
+    # 第二次（及以后）启动仍弹，且带「意外中断」
+    assert chips.calls == [(v, "A", "interrupted")]
+
+
+async def test_any_finalized_visit_without_a_choice_gets_its_chip(tmp_path):
+    v = vid(73)
+    spool = await make_visit(tmp_path, v, [ln(0)], finalized="peer_left", last_summary_done=True)
+    chips = Chips(delivered=False)
+    await _recover(tmp_path, render_chips=chips)
+    # 正常收口后、还没来得及记芯片就被杀：补记并弹出
+    assert chips.calls == [(v, "A", None)]
+    assert (await spool.read_state())["debrief_chip_pending"] is True
+
+
+
+async def test_corrupt_state_that_may_be_this_persons_still_blocks_the_wipe(tmp_path):
+    await seed_roster(tmp_path)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{vid(74)}.state.json").write_text("{torn", encoding="utf-8")   # 没有头行可认：分不清是谁的
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 宁可不结清也不留下对端身份：日志留着等下次
+    assert outcome.done is False

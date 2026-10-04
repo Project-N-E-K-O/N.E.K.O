@@ -521,3 +521,41 @@ def test_forget_waits_for_a_pending_rename_to_be_reconciled(env, path, body):
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
     assert not list((tmp_path / "visit_revocations").glob("*.json"))      # 没写任何哨兵 / 日志
+
+
+
+def test_peers_show_blocked_regardless_of_uid_case(env):
+    client, _server, tmp_path, _state = env
+    mixed = "AbCdEf" + "1" * 18
+    _seed(tmp_path, peer_uid=mixed)
+    assert client.post("/api/visit/contacts/block", json={"peer_uid": mixed, "blocked": True},
+                       headers=GOOD).status_code == 200
+    rows = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).json()["peers"]
+    # 屏蔽名单按小写存、名册按原样存：交给 Blocklist 自己归一化后比较
+    assert [row["blocked"] for row in rows if row["peer_uid"] == mixed] == [True]
+
+
+def test_block_reports_success_when_ending_the_live_visit_fails(env):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+
+    async def failing(_peer_uid):
+        raise RuntimeError("runtime gone")
+
+    memory_routes.configure_memory_routes(on_blocked=failing)
+    resp = client.post("/api/visit/contacts/block", json={"peer_uid": PEER_X, "blocked": True}, headers=GOOD)
+    # 屏蔽已经落盘：不回 500，如实告知没能结束在飞串门
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "changed": True, "ended": False}
+    assert Blocklist.load(tmp_path).is_blocked(PEER_X)
+
+
+def test_rename_marker_of_another_character_does_not_block_forget(env):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "Z0", "new": "Z1"}       # 与角色 A 无关的改名
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
+    # 改名门槛只挡涉及那两个名字的清除
+    assert resp.status_code == 200 and server.calls("scoped_forget")

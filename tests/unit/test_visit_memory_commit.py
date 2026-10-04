@@ -486,3 +486,42 @@ async def test_summary_skipped_after_forget_still_reclaims_the_transcript(tmp_pa
     assert outcome.done and spool.jsonl_path.exists()
     assert await _summarize(spool, FakeLLM())
     assert not spool.jsonl_path.exists()
+
+
+
+async def test_shutdown_budget_covers_the_whole_commit_including_the_lock(tmp_path, monkeypatch):
+    from main_logic.visit.memory_commit import peer_lock
+
+    monkeypatch.setattr(memory_commit, "VISIT_SHUTDOWN_BUDGET_S", 0.2)
+    spool = await make_visit(tmp_path, vid(80), [ln(0)], finalized="wrap_up")
+    async with peer_lock(CHAR_UID_A, PEER_X):                  # 摘要的 LLM 调用正持着这把锁
+        result = await asyncio.wait_for(
+            commit_visit_region(spool, resolve_char_name=resolver(),
+                                client=FakeMemoryServer().client(), shutdown=True),
+            timeout=5,
+        )
+    # 等锁也计入关机预算：到点就把这一场留给补录
+    assert result.ok is False and result.skipped == "shutdown_budget"
+
+
+def test_a_single_line_over_the_summary_budget_is_truncated():
+    line = {"lp": 0, "side": "host", "from": "peer_human", "ts": 1.0, "text": "很长的一句话。" * 4000}
+    block = memory_commit._record_block_within_budget([line], "zh", 200)
+    assert count_tokens(block) <= 200 + 16
+
+
+async def test_resumed_run_keeps_the_batch_plan_it_started_with(tmp_path, monkeypatch):
+    lines = [ln(i, f"对端第{i}句", "peer_human") for i in range(5)]
+    spool = await make_visit(tmp_path, vid(81), lines, finalized="wrap_up")
+    monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 2)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_history")                   # 这一轮已登记、一个批次都没跑完
+    first = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    assert first.ok is False
+    plan = (await spool.read_state())["digest_writes"]["0"]["plan"]
+    assert plan["batch_size"] == 2
+    # 升级改了每批句数：续跑仍按开轮时记下的计划切批，不报批次对不上
+    monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 50)
+    server.fail_always.clear()
+    again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    assert again.ok is True and again.skipped is None
