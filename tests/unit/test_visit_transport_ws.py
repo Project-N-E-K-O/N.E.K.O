@@ -55,9 +55,9 @@ class _Liveness:
     def on_page_back(self, now: float) -> None:
         self.events.append("page_back")
 
-    def arm_page_reload(self, departed_at: float, *, socket_back: bool) -> None:
-        # 断线记 page_lost（起宽限），新 socket 连回记 page_armed（改用绝对期限）
-        self.events.append("page_armed" if socket_back else "page_lost")
+    def arm_page_reload(self, departed_at: float, *, attached_at: float | None = None) -> None:
+        # 断线记 page_lost（起宽限），新 socket 连回记 page_armed（改用 SDK 阶段期限）
+        self.events.append("page_armed" if attached_at is not None else "page_lost")
 
 
 class _Outbox:
@@ -658,7 +658,7 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
 
 def test_lifecycle_callbacks_run_on_the_monotonic_clock(app, session, monkeypatch):
     seen: list[float] = []
-    session.liveness.arm_page_reload = lambda departed_at, *, socket_back: seen.append(departed_at)
+    session.liveness.arm_page_reload = lambda departed_at, *, attached_at=None: seen.append(departed_at)
     from tests.fake_clock import patch_module_clock
 
     # 墙钟与单调钟故意差很远：回调必须拿到单调钟
@@ -1164,13 +1164,17 @@ def test_unserializable_snapshot_keeps_the_socket_open(app, session):
         _preflight(ws)
         ws.receive_text()
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
-        assert json.loads(ws.receive_text())["type"] == "send"
         _barrier(ws, session)
-        # 快照发不出去只是这一条丢了：socket 仍是当前连接，没有被当成断线
+        # 快照序列化不了：重入整套不做（不发 hello、outbox 仍暂停、宽限没清），socket 也没被当成断线
         assert tw.is_transport_attached(VISIT_ID, "guest")
-        assert session.liveness.events.count("page_lost") == 1  # 只有第一条断开，第二条没被当成断线
-        assert _run(ws, session.send, {"type": "stop", "reason": "home"})
-        assert json.loads(ws.receive_text()) == {"type": "stop", "reason": "home"}
+        assert PAUSE_PAGE_RELOAD in session.outbox.paused
+        assert "page_back" not in session.liveness.events
+        assert session.liveness.events.count("page_lost") == 1
+        # 快照恢复正常后，下一条上报完成重入
+        session.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
+        ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
+        assert json.loads(ws.receive_text())["type"] == "send"
+        assert json.loads(ws.receive_text()) == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
 
 
 def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
@@ -1190,8 +1194,9 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
         _auth(ws)
         _preflight(ws, ok=False, reason="no_webrtc")  # 新 iframe 预检失败：永远不会重入
         _barrier(ws, s)
-        # auth 不清宽限，也不重起 20 s：期限移到绝对期限（离开 + 30 s，即 page_lost_at = 离开 + 10）
-        assert s.liveness.page_lost_at == pytest.approx(lost_at + 10)
+        # auth 不清宽限；SDK 阶段期限 = min(连回 + 20 s, 离开 + 30 s)，不会超出绝对期限
+        assert s.liveness.page_lost_at is not None
+        assert lost_at <= s.liveness.page_lost_at <= lost_at + 10 + 1e-6
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
@@ -1241,8 +1246,17 @@ def test_module_has_no_key_routed_downlink_entry():
 def test_credentials_message_tier_comes_from_the_credentials():
     import dataclasses
 
-    creds = dataclasses.replace(_creds(), tier="hd900")
-    assert tw.build_credentials_message(creds, side="guest", crop="upper", codec="vp9")["tier"] == "hd900"
+    creds = dataclasses.replace(_creds(), tier="hd1200")
+    msg = tw.build_credentials_message(creds, side="guest", crop="upper", codec="vp9")
+    # 档位、码率、帧率都取自凭证的档位，不再是 sd600 写死
+    assert msg["tier"] == "hd1200"
+    assert msg["publish"]["bitrate_kbps"] == vs.VISIT_TIERS["hd1200"]["video_kbps"]
+    assert msg["publish"]["fps"] == vs.VISIT_TIERS["hd1200"]["fps"]
+    # 该档位没有全身裁剪：拒绝
+    with pytest.raises(ValueError):
+        tw.build_credentials_message(creds, side="guest", crop="full", codec="vp9")
+    sd = tw.build_credentials_message(_creds(), side="guest", crop="full", codec="vp9")
+    assert sd["publish"]["bitrate_kbps"] == vs.VISIT_TIERS["sd600"]["video_kbps"]
 
 
 def _wait_until(pred, timeout: float = 5.0) -> None:
@@ -1289,6 +1303,9 @@ def test_reload_ws_back_at_19s_sdk_at_21s_survives():
     s.on_page_attached(19.0)
     assert _tick(s, 20.5) is None
     s.on_page_rejoined(21.0)
+    # 重入准备完之前不清期限（失败时要能回滚），提交之后才清
+    assert s.liveness.page_lost_at is not None
+    s.on_page_rejoin_committed(21.0)
     assert s.liveness.page_lost_at is None
     assert _tick(s, 25.0) is None
 
@@ -1321,6 +1338,69 @@ def test_flapping_page_never_extends_past_the_absolute_deadline():
 
 def test_superseding_a_live_socket_starts_the_reload_now():
     s = _reload_session()
-    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算
-    assert _tick(s, 129.9) is None
-    assert _tick(s, 130.0) == "local_page_lost"
+    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算，SDK 阶段 20 s
+    assert _tick(s, 119.9) is None
+    assert _tick(s, 120.0) == "local_page_lost"
+
+
+def test_sdk_stage_gets_its_own_budget_capped_by_the_absolute_deadline():
+    # WS 第 2 s 就连回：SDK 阶段 = min(2 + VISIT_CAPS_SDK_TIMEOUT_S, 0 + 30) = 22 s
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(2.0)
+    assert _tick(s, 21.9) is None
+    assert _tick(s, 22.0) == "local_page_lost"
+
+
+class _FailingDueOutbox(_Outbox):
+    def __init__(self, log):
+        super().__init__(log)
+        self.fail_due = 1
+
+    def due(self, now=None):
+        if self.fail_due:
+            self.fail_due -= 1
+            raise RuntimeError("replay preparation failed")
+        return super().due(now)
+
+
+def test_failed_replay_preparation_rolls_the_rejoin_back(app):
+    s = FakeSession()
+    s.outbox = _FailingDueOutbox(s.log)
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(s, 1)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _barrier(ws, s)
+        # 失败时：outbox 重新暂停、页面期限仍在（没有 page_back），不留半恢复状态
+        assert PAUSE_PAGE_RELOAD in s.outbox.paused
+        assert "page_back" not in s.liveness.events
+        ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
+        assert json.loads(ws.receive_text())["type"] == "send"
+        assert json.loads(ws.receive_text())["type"] == "media"
+        _barrier(ws, s)
+        assert s.liveness.events[-1] == "page_back"
+
+
+def test_failed_preflight_hook_does_not_open_the_credentials_gate(app):
+    class _Broken(FakeSession):
+        async def on_preflight(self, caps):
+            raise RuntimeError("state update failed")
+
+    s = _Broken()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)  # 预检本身通过，但 runtime 没处理好
+        _barrier(ws, s)
+        msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+        assert not _run(ws, s.send, msg)

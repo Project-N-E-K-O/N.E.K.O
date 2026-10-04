@@ -45,6 +45,7 @@ be passed in.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import itertools
 import logging
 import math
@@ -519,6 +520,15 @@ def _dev_livekit_host() -> str | None:
     return host.lower() if host else None
 
 
+def _is_loopback_name(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 def _require_invite_code(invite_code: Any) -> str:
     if not isinstance(invite_code, str) or INVITE_CODE_RE.fullmatch(invite_code) is None:
         raise VisitInviteFormat("invite_code_format")
@@ -649,7 +659,10 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
     allowed = allowed_livekit_hosts()
     if not host or host not in allowed:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
-    secure_ok = parsed.scheme == "wss" or (parsed.scheme == "ws" and host == _dev_livekit_host())
+    # 明文 ws:// 只给开发环回：配置的开发主机必须是回环字面地址（localhost / 127.0.0.0/8 / ::1）
+    secure_ok = parsed.scheme == "wss" or (
+        parsed.scheme == "ws" and host == _dev_livekit_host() and _is_loopback_name(host)
+    )
     if not secure_ok or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
     _need(_token_str(raw.get("token"), _LIVEKIT_TOKEN_MAX_CHARS), "vendor.livekit.token")
@@ -785,7 +798,7 @@ async def fetch_visit_credentials(
     ``char_tag`` is the character's stable ``character_uid`` (see
     :func:`resolve_char_tag`), never derived from the name. A guest must pass
     ``invite_code`` (format-checked before any network); a host must not.
-    Also starts a background pubkey refresh (not awaited).
+    After a successful issue, starts a background pubkey refresh (not awaited).
     Raises a :class:`VisitServersError` subclass on every failure.
     """
     if role not in ROLES:
@@ -814,9 +827,6 @@ async def fetch_visit_credentials(
     if invite_code is not None:
         body["invite_code"] = invite_code
 
-    # 每次领凭证顺带刷新公钥与吊销名单（此时必然连得上 Servers）。后台进行、不等它：
-    # 刷新卡住时不能拖慢建房 / 续期（挤占能力门超时与重连窗口），刷新失败本就忽略
-    _kick_pubkeys_refresh()
     resp = await _send(
         "POST",
         f"{session.base_url}/api/visit/credentials",
@@ -828,13 +838,17 @@ async def fetch_visit_credentials(
     if not 200 <= resp.status_code < 300:
         raise _map_error(resp, CREDENTIALS_ERROR_CONTRACT, op="credentials", account=session.account)
     try:
-        return _parse_credentials(
+        creds = _parse_credentials(
             _body_json(resp), role=role, visit_id=visit_id, char_tag=char_tag, now=time.time(),
             account=session.account, tier=tier,
         )
     except _BadResponse as exc:
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
         raise VisitServersUnreachable("invalid_response") from None
+    # 签发之后再刷新公钥与吊销名单（后台、不等）：签名钥匙轮换时，先拉公钥再签发
+    # 可能拿到旧的钥匙表、却收到新 kid 签的票，旧表还会被当成新鲜缓存 24 h
+    _kick_pubkeys_refresh()
+    return creds
 
 
 async def resolve_char_tag(lanlan_name: str) -> str:
@@ -878,14 +892,12 @@ class VisitGrant:
         self,
         credentials: VisitCredentials,
         *,
-        tier: str | None = None,
         display_name: str | None = None,
         invite_code: str | None = None,
         refresh_margin_s: float = VISIT_VENDOR_REFRESH_MARGIN_S,
         fetch: Callable[..., Awaitable[VisitCredentials]] | None = None,
     ) -> None:
         self._current = credentials
-        self._tier = credentials.tier if tier is None else tier
         self._display_name = display_name
         self._invite_code = invite_code if credentials.role == "guest" else None
         self._margin = float(refresh_margin_s)
@@ -919,11 +931,11 @@ class VisitGrant:
             role=cur.role,
             visit_id=cur.visit_id,
             char_tag=cur.char_tag,
-            tier=self._tier,
+            tier=cur.tier,
             display_name=self._display_name,
             invite_code=self._invite_code,
         )
-        if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):
+        if (fresh.vid, fresh.visit_uid, fresh.transport, fresh.tier) != (cur.vid, cur.visit_uid, cur.transport, cur.tier):
             logger.warning("visit servers credentials: renewal changed the room binding")
             raise VisitServersUnreachable("renewal_mismatch")
         self._current = cur.with_renewed_vendor(fresh)

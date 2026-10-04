@@ -1341,3 +1341,62 @@ async def test_credentials_do_not_wait_for_a_stuck_pubkey_refresh(servers, monke
     assert cr._pubkeys_inflight is not None and not cr._pubkeys_inflight.done()
     gate.set()
     await cr._pubkeys_inflight
+
+
+@pytest.mark.asyncio
+async def test_plaintext_dev_livekit_url_only_for_loopback(servers, monkeypatch):
+    servers.transport = "livekit"
+    monkeypatch.setattr(vs, "VISIT_LIVEKIT_HOSTS", frozenset())
+    monkeypatch.setattr(vs, "NEKO_VISIT_DEV_LIVEKIT_URL", "ws://192.168.1.5:7880")
+    servers.livekit_url = "ws://192.168.1.5:7880/rtc"
+    with pytest.raises(cr.VisitLivekitHostRejected):
+        await _host()
+    monkeypatch.setattr(vs, "NEKO_VISIT_DEV_LIVEKIT_URL", "ws://127.0.0.1:7880")
+    servers.livekit_url = "ws://127.0.0.1:7880/rtc"
+    assert (await _host()).vendor["livekit"]["url"] == "ws://127.0.0.1:7880/rtc"
+
+
+@pytest.mark.asyncio
+async def test_pubkeys_refresh_starts_after_the_credentials_issue(servers, monkeypatch):
+    import asyncio
+
+    gate = asyncio.Event()
+    in_flight = asyncio.Event()
+    original = servers.handler
+
+    async def _handler(request):
+        if request.url.path == "/api/visit/credentials":
+            in_flight.set()
+            await gate.wait()  # 签发还没回来
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    task = asyncio.ensure_future(_host())
+    await in_flight.wait()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # 先签发、后拉公钥：钥匙轮换时不会拿到比票更旧的钥匙表
+    assert servers.count("/pubkeys") == 0
+    gate.set()
+    await task
+    await cr._pubkeys_inflight
+    assert servers.count("/pubkeys") == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_issue_does_not_refresh_pubkeys(servers):
+    servers.scripted["/api/visit/credentials"] = [(403, {"code": "banned"})]
+    with pytest.raises(cr.VisitBanned):
+        await _host()
+    assert servers.count("/pubkeys") == 0
+
+
+@pytest.mark.asyncio
+async def test_grant_renews_with_the_tier_it_was_issued_for(servers):
+    first = await _guest()
+    grant = cr.VisitGrant(first, invite_code=INVITE)
+    renewed = await grant.renew()
+    assert servers.bodies("/api/visit/credentials")[-1]["tier"] == first.tier == renewed.tier
+    with pytest.raises(TypeError):
+        cr.VisitGrant(first, tier="hd1200")

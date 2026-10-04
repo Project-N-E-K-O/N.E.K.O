@@ -46,6 +46,7 @@ from typing import Literal, Optional
 
 from config.visit_settings import (
     VISIT_ACCEPT_TIMEOUT_S,
+    VISIT_CAPS_SDK_TIMEOUT_S,
     VISIT_ACTIVATION_ALLOWANCE_S,
     VISIT_HEARTBEAT_S,
     VISIT_INVITE_WAIT_S,
@@ -226,19 +227,22 @@ class VisitLiveness:
             deadline = min(deadline, self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s)
         return deadline
 
-    def arm_page_reload(self, departed_at: float, *, socket_back: bool) -> None:
+    def arm_page_reload(self, departed_at: float, *, attached_at: Optional[float] = None) -> None:
         """(Re)arm the page-loss verdict of a page reload that started at ``departed_at``.
 
-        While the transport WS is down the limit is ``min(departed + 20 s,
-        absolute)``; once a new socket is back (``socket_back``) the SDK
-        reload and room re-entry may use what remains of the absolute
-        deadline (:meth:`page_reload_deadline`) -- never a fresh 20 s, so a
-        page that keeps reconnecting without re-entering still ends there.
-        Cleared by :meth:`on_page_back`.
+        Two stages (design §4.8): while the transport WS is down the limit is
+        ``min(departed + 20 s, absolute)``; once a new socket authenticated
+        at ``attached_at`` the SDK reload and room re-entry get
+        ``min(attached + VISIT_CAPS_SDK_TIMEOUT_S, absolute)`` -- never a
+        fresh full budget past the absolute deadline
+        (:meth:`page_reload_deadline`), so a page that keeps reconnecting
+        without re-entering still ends there. Cleared by :meth:`on_page_back`.
         """
         deadline = self.page_reload_deadline(departed_at)
-        if not socket_back:
+        if attached_at is None:
             deadline = min(deadline, departed_at + self._page_grace_s)
+        else:
+            deadline = min(deadline, attached_at + VISIT_CAPS_SDK_TIMEOUT_S)
         self.page_lost_at = deadline - self._page_grace_s
 
     # ------------------------------------------------------------------

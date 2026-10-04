@@ -59,9 +59,8 @@ from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketState
 
 from config.visit_settings import (
-    VISIT_CAPTURE_FPS,
     VISIT_LIVEKIT_PUBLISH,
-    VISIT_VIDEO_KBPS,
+    VISIT_TIERS,
 )
 from main_logic.visit.outbox import PAUSE_PAGE_RELOAD
 from main_routers.visit_router.credentials import VisitCredentials, allowed_livekit_hosts
@@ -138,6 +137,11 @@ def build_credentials_message(
         raise ValueError("crop must be 'upper' or 'full'")
     if codec not in CODECS:
         raise ValueError("codec must be one of vp9 / vp8 / h264")
+    tier = VISIT_TIERS.get(creds.tier)
+    if tier is None:
+        raise ValueError("unknown tier")
+    if crop == "full" and not tier.get("crop_full"):
+        raise ValueError("this tier has no full-body crop")
     msg: dict[str, Any] = {
         "type": "credentials",
         "visit_id": creds.visit_id,
@@ -151,8 +155,8 @@ def build_credentials_message(
         "crop": crop,
         "publish": {
             "codec": codec,
-            "bitrate_kbps": VISIT_VIDEO_KBPS,
-            "fps": VISIT_CAPTURE_FPS,
+            "bitrate_kbps": tier["video_kbps"],
+            "fps": tier["fps"],
             "scalability_mode": VISIT_LIVEKIT_PUBLISH["scalabilityMode"],
             "simulcast": VISIT_LIVEKIT_PUBLISH["simulcast"],
             "degradation": VISIT_LIVEKIT_PUBLISH["degradationPreference"],
@@ -249,15 +253,16 @@ class VisitTransportSession(ABC):
         """
         if self._page_departed_at is None:
             self._page_departed_at = now
-        self.liveness.arm_page_reload(self._page_departed_at, socket_back=False)
+        self.liveness.arm_page_reload(self._page_departed_at)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_attached(self, now: float) -> None:
         """A replacement socket authenticated: the page is NOT back in the room yet.
 
-        The SDK reload and re-entry get what remains of the absolute reload
-        deadline (design §4.8: ``min(start + 30 s, last send + 27 s)``) --
-        not a fresh 20 s, and not only what is left of the socket's 20 s.
+        The SDK reload and re-entry get ``min(now + VISIT_CAPS_SDK_TIMEOUT_S,
+        absolute)`` with the absolute reload deadline of design §4.8
+        (``min(start + 30 s, last send + 27 s)``) -- not only what is left of
+        the socket's 20 s, and never past the absolute deadline.
         A socket that replaced a live one starts the reload now. The outbox
         stays paused; only :meth:`on_page_rejoined` clears the deadline, so a
         page that never re-enters (failed preflight, no credentials, SDK never
@@ -265,21 +270,27 @@ class VisitTransportSession(ABC):
         """
         if self._page_departed_at is None:
             self._page_departed_at = now
-        self.liveness.arm_page_reload(self._page_departed_at, socket_back=True)
+        self.liveness.arm_page_reload(self._page_departed_at, attached_at=now)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_rejoined(self, now: float) -> None:
-        """The replacement iframe is back in the vendor room: clear the grace, queue ``hello`` first, resume.
+        """The replacement iframe is back in the vendor room: queue ``hello`` first, resume.
 
         Synchronous on purpose: the transport calls it only while the socket
         is still the current one and sends what the outbox releases right
         after it on that same socket, so a socket replaced meanwhile can never
-        resume the outbox or flush into its successor.
+        resume the outbox or flush into its successor. The page deadline is
+        NOT cleared here: if anything later in the re-entry fails, the
+        transport pauses the outbox again and the deadline keeps running;
+        :meth:`on_page_rejoin_committed` clears it once everything succeeded.
         """
-        self._page_departed_at = None
-        self.liveness.on_page_back(now)
         self.outbox.resend_hello(now)
         self.outbox.resume(now, reason=PAUSE_PAGE_RELOAD)
+
+    def on_page_rejoin_committed(self, now: float) -> None:
+        """The whole re-entry was prepared: the reload is over, clear the page deadline."""
+        self._page_departed_at = None
+        self.liveness.on_page_back(now)
 
     def now(self) -> float:
         """Clock of the lifecycle callbacks: the one ``liveness`` / ``outbox`` run on (monotonic)."""
@@ -510,6 +521,17 @@ def _sdk_caps(msg: dict[str, Any]) -> dict[str, Any]:
 _HOOK_FAILED = object()
 
 
+def _serializable_mapping(value: Any) -> bool:
+    """A mapping that ``send_json`` can encode (same ``json.dumps`` options)."""
+    if not isinstance(value, Mapping):
+        return False
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs: Any) -> Any:
     """Await a runtime hook; an exception is logged and returns ``_HOOK_FAILED``."""
     try:
@@ -564,11 +586,12 @@ async def _handle_frame(
                 return
             conn.preflight_seen = True
             ok = msg.get("preflight_ok") is True
-            conn.preflight_ok = ok
             caps = _record_preflight(session, msg, ok)
-            # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证
+            # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证，
+            # 也不认这次预检：首发凭证闸门只在 hook 成功之后才放行
             if await _call(session, "on_preflight", caps) is _HOOK_FAILED or not ok:
                 return
+            conn.preflight_ok = True
             # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
             if not _is_current(link, conn):
                 return
@@ -600,16 +623,26 @@ async def _handle_frame(
             # 全部同步备好（快照先于恢复与 due()，失败时不恢复、也不白白消耗 outbox 的帧）再置 rejoined；
             # 任何一步失败都不置位，下一条 joined / connected 整套重做（hello 去重、resume 幂等）
             try:
-                # 快照最先：它失败时 outbox 仍保持 page_reload 暂停，不会出现「已恢复、重入却没完成」
+                # 快照最先、且要能序列化：它失败时 outbox 仍保持 page_reload 暂停，
+                # 不会出现「已恢复、重入却没完成」，也不会置位后才发现快照发不出去
                 snapshot = session.media_snapshot()
-                if not isinstance(snapshot, Mapping):
-                    raise TypeError("media_snapshot must return a mapping")
+                if not _serializable_mapping(snapshot):
+                    raise TypeError("media_snapshot must return a JSON-serializable mapping")
                 session.on_page_rejoined(now)
                 frames = list(session.outbox.due(now))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
+                # 回滚：恢复了的 outbox 重新暂停（宽限从没清过），下一条 joined / connected 整套重做
+                try:
+                    session.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
+                except Exception as pause_exc:  # noqa: BLE001
+                    logger.warning("visit transport: rejoin rollback failed: %s", type(pause_exc).__name__)
                 return
             conn.rejoined = True
+            try:
+                session.on_page_rejoin_committed(now)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: rejoin commit failed: %s", type(exc).__name__)
             for frame in frames:
                 await _send_on(conn, frame.to_ws())
             if _is_current(link, conn):
@@ -618,7 +651,7 @@ async def _handle_frame(
                 # 取到即同步入发送锁队列，不会再被更早的状态盖掉
                 try:
                     latest = session.media_snapshot()
-                    if isinstance(latest, Mapping):
+                    if _serializable_mapping(latest):
                         snapshot = latest
                 except Exception as exc:  # noqa: BLE001 - 取不到就用前面那份
                     logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
