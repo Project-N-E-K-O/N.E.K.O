@@ -3539,16 +3539,24 @@ async def _cancel_staged_writes_for_subjects(
         async with idempotency.key_lock(lanlan_name, key):
             if await idempotency.read_staging(lanlan_name, key) is None:
                 continue
-            await idempotency.update_key(
-                lanlan_name,
-                key,
-                # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的
-                # cancelled 记录会让别的请求借这个键拿到 duplicate
-                idempotency.transition(
-                    idempotency.KEY_STATE_CANCELLED,
-                    request=_fingerprint_of_staging(document),
-                ),
-            )
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的
+                    # cancelled 记录会让别的请求借这个键拿到 duplicate
+                    idempotency.transition(
+                        idempotency.KEY_STATE_CANCELLED,
+                        request=_fingerprint_of_staging(document),
+                    ),
+                )
+            except idempotency.IdempotencyStateError as exc:
+                # 键文件读不出：辅助文件坏了不能挡住隐私清除。此时所有带键请求本身就
+                # fail closed（503），照样删掉这份暂存——留着它，键文件修好后的重试
+                # 会把已清除的产物写回去
+                logger.warning(
+                    f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，未记取消、直接删除暂存: {exc}"
+                )
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
     # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。

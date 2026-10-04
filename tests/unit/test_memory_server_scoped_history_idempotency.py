@@ -1090,6 +1090,25 @@ async def test_staged_writes_are_cancelled_before_the_erase_starts(env):
 
 
 
+async def test_unreadable_key_file_does_not_block_a_forget_with_staging(env):
+    await env.idem.write_staging(NAME, KEY_GROUP, {"subjects": [GROUP_KEY], "created_at": time.time()})
+    Path(env.idem.keys_path(NAME)).write_text("{torn", encoding="utf-8")
+    result = await _forget(env, GROUP)
+    assert result["status"] == "forgotten"
+    assert not _staging_file(env, KEY_GROUP).exists()      # 可复活的暂存照样删掉
+
+
+async def test_cleanup_keeps_unreadable_staging(env):
+    idem = env.idem
+    now = time.time()
+    path = Path(idem.staging_path(NAME, "torn-key"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{torn", encoding="utf-8")
+    os.utime(path, (now - 500, now - 500))
+    report = await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    assert report["staging_removed"] == 0 and path.exists()
+
+
 async def test_unreadable_key_file_does_not_block_a_forget(env):
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, display_name=None))       # 不带键写入两条事实

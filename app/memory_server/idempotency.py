@@ -489,8 +489,11 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                         continue
                     if await asyncio.to_thread(_remove_file, path):
                         report["staging_removed"] += 1
-            elif await asyncio.to_thread(_remove_file, path):
-                report["staging_removed"] += 1
+            else:
+                # 读不出 / 没有键的暂存：文件名只是键的摘要，查不到它的键记录，可能正是
+                # 某个 pending 键唯一的产物与进度副本。不按过期删；同键重试读它会
+                # fail closed，而不是当作没有暂存去重新生成
+                logger.warning(f"[Idempotency] {name}: 暂存 {os.path.basename(path)} 读不出，保留")
     except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
         logger.warning(f"[Idempotency] {name}: 暂存清理失败（跳过）: {exc}")
     try:
