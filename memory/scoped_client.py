@@ -31,10 +31,12 @@ locale code, and optional speaker fields are sent only when they carry a
 value, so an absent field keeps its server default instead of being pinned to
 an explicit null.
 
-``idempotency_key`` / ``client_requested_at`` on ``scoped_history`` are sent
-only when not ``None``. The server learns those two fields in a later change;
-until then a ``None`` must leave the request body byte-identical to a caller
-that never heard of them.
+``idempotency_key`` / ``client_requested_at`` / ``subject_epochs`` on
+``scoped_history`` and ``forget_epoch`` on ``scoped_forget`` are sent only
+when not ``None``: a ``None`` leaves the request body byte-identical to a
+caller that never heard of them. A keyed ``scoped_history`` retry the server
+already completed answers ``duplicate: true`` in the same success shape, so
+it reads as a success here.
 
 Bodies are serialized here, not by httpx (``json.dumps`` compact separators,
 ``ensure_ascii=False``, UTF-8), so the bytes on the wire do not depend on the
@@ -151,6 +153,13 @@ class ScopedMemoryClient:
         self._http = http
         self._retry_delays = tuple(float(delay) for delay in retry_delays)
         self._sleep = sleep
+
+    def with_retry_delays(self, retry_delays: Sequence[float]) -> "ScopedMemoryClient":
+        """Return a client for the same server and HTTP client with another 502 back-off."""
+        return ScopedMemoryClient(
+            base_url=self._base_url, http=self._http,
+            retry_delays=retry_delays, sleep=self._sleep,
+        )
 
     # ------------------------------------------------------------------ wire
 
@@ -337,14 +346,23 @@ class ScopedMemoryClient:
             return False
         return True
 
-    async def post_forget(self, lanlan: str, *, subject: dict) -> bool:
+    async def post_forget(
+        self, lanlan: str, *, subject: dict, forget_epoch: int | None = None,
+    ) -> bool:
         """Erase everything stored for one exact subject. Idempotent.
+
+        ``forget_epoch`` is the client-side erase generation of this subject
+        (sent only when not ``None``); the server keeps it as a tombstone and
+        drops keyed history products stamped with a lower generation.
 
         ``True`` only when the server confirms ``status: "forgotten"``; a
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
+        body: dict[str, Any] = {"subject": subject}
+        if forget_epoch is not None:
+            body["forget_epoch"] = forget_epoch
         response = await self._post_write(
-            self._url(lanlan, "scoped_forget"), {"subject": subject},
+            self._url(lanlan, "scoped_forget"), body,
             timeout=_FORGET_TIMEOUT_S, what="scoped_forget",
         )
         if response is None:
@@ -367,6 +385,7 @@ class ScopedMemoryClient:
         messages: list[dict],
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
+        subject_epochs: dict[str, int] | None = None,
         speaker_label: str | None = None,
         speaker_tier: str | None = None,
         speaker_activity_events: list[dict] | None = None,
@@ -398,7 +417,7 @@ class ScopedMemoryClient:
             body["speaker_is_owner"] = True
         if display_name:
             body["display_name"] = display_name
-        _put_retry_identity(body, idempotency_key, client_requested_at)
+        _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history",
@@ -427,6 +446,7 @@ class ScopedMemoryClient:
         segments: list[dict],
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
+        subject_epochs: dict[str, int] | None = None,
     ) -> ScopedBatchResult:
         """Extract facts for several single-speaker segments in one call.
 
@@ -448,7 +468,7 @@ class ScopedMemoryClient:
             raise ValueError("post_history_batch needs at least one segment")
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
-        _put_retry_identity(body, idempotency_key, client_requested_at)
+        _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history segments",
@@ -513,13 +533,16 @@ def _put_retry_identity(
     body: dict[str, Any],
     idempotency_key: str | None,
     client_requested_at: float | None,
+    subject_epochs: dict[str, int] | None = None,
 ) -> None:
-    # None 时两个键都不出现：服务端还不认识它们，不带时请求体须与旧调用方
-    # 逐字节一致；非 None 原样带上，不做任何改写。
+    # None 时这几个键都不出现：不带时请求体须与旧调用方逐字节一致；
+    # 非 None 原样带上，不做任何改写。
     if idempotency_key is not None:
         body["idempotency_key"] = idempotency_key
     if client_requested_at is not None:
         body["client_requested_at"] = client_requested_at
+    if subject_epochs is not None:
+        body["subject_epochs"] = dict(subject_epochs)
 
 
 def _wire_segment(segment: dict[str, Any]) -> dict[str, Any]:

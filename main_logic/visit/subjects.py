@@ -378,6 +378,57 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
     return merged
 
 
+def _read_top_level_sync(path: Path) -> dict:
+    with path_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+    if not isinstance(data, dict):
+        raise RosterCorruptError(f"{path.name} is not a JSON object")
+    return data
+
+
+async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
+    """Return a deep copy of the top-level ``key`` of ``visit_peers.json`` (``None`` when absent).
+
+    For the rename / delete transaction markers (``pending_rename``,
+    ``pending_retire``) that live outside every account partition. Reads
+    strictly: an unreadable roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return copy.deepcopy(data.get(key))
+
+
+def _clear_marker_sync(path: Path, key: str, expected: Any) -> bool:
+    with path_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, RecursionError) as exc:
+            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+        if not isinstance(data, dict) or key not in data or data[key] != expected:
+            return False
+        del data[key]
+        atomic_write_json(path, data)
+        return True
+
+
+async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -> bool:
+    """Delete the top-level ``key`` only while it still equals ``expected``; return whether it did.
+
+    The compare-and-delete keeps a marker rewritten by a newer transaction.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_clear_marker_sync, path, key, expected)
+
+
 class PeerRoster:
     """The local peer roster of one community account (``accounts[own_uid]``).
 
@@ -489,6 +540,7 @@ class PeerRoster:
         char_display_name: str = "",
         display_name: str | None = None,
         now: float,
+        visit_id: str | None = None,
     ) -> None:
         """Record that ``peer_uid`` visited local character ``own_char``.
 
@@ -499,7 +551,10 @@ class PeerRoster:
         Creates the peer and its ``by_char[own_char]`` entry if needed, adds
         ``pair_id`` to ``pairs`` and ``peer_char_id`` to ``chars``, and bumps
         ``last_seen``. ``display_name`` (the person) is only replaced when
-        given; ``short_code`` is derived from ``peer_uid``.
+        given; ``short_code`` is derived from ``peer_uid``. With ``visit_id``
+        the entry's ``visits`` counter counts each distinct visit once
+        (``last_visit_id`` remembers the latest), so repeated upserts of one
+        visit do not inflate it.
         """
         if not _is_finite_number(now):
             # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
@@ -551,6 +606,11 @@ class PeerRoster:
                 "display_name": char_display_name,
                 "last_seen": now,
             }
+            if visit_id is not None and entry.get("last_visit_id") != visit_id:
+                visits = entry.get("visits")
+                entry["visits"] = (visits if isinstance(visits, int) and not isinstance(visits, bool)
+                                   and visits >= 0 else 0) + 1
+                entry["last_visit_id"] = visit_id
             return None, True
 
         await asyncio.to_thread(self._mutate, fn)

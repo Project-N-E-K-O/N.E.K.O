@@ -498,12 +498,19 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     if state["digest_runs"] not in (len(runs), len(runs) - 1):
         raise SpoolStateError("digest_runs does not match the registered digest_writes runs")
     for run, record in runs.items():
-        if not isinstance(record, Mapping) or set(record) != {
+        if not isinstance(record, Mapping) or set(record) - {"epochs"} != {
             "requested_at", "through_lp", "group", "segments",
         }:
             raise SpoolStateError(
-                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments}}"
+                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs]}}"
             )
+        epochs = record.get("epochs", {})
+        # 开轮时记下的各 subject 清除代数：同键重试沿用，服务端按它丢弃清除之前发起的产物
+        if not isinstance(epochs, Mapping) or not all(
+            isinstance(key, str) and key and _is_int(value) and value >= 0
+            for key, value in epochs.items()
+        ):
+            raise SpoolStateError(f"digest_writes[{run}].epochs must map subject keys to ints >= 0")
         if not _is_number(record["requested_at"]):
             raise SpoolStateError(f"digest_writes[{run}].requested_at must be a number")
         if not _is_int(record["through_lp"]) or not 0 <= record["through_lp"] <= VISIT_LP_MAX:
@@ -1270,6 +1277,11 @@ class VisitSpool:
                 raise ValueError(f"spool header of {visit_id} has a malformed own_char")
             return uid, name
         return None, None
+
+    @classmethod
+    async def list_visit_ids(cls, config_dir: str | Path, suffixes: Iterable[str]) -> list[str]:
+        """Return the sorted visit ids that have a file with one of ``suffixes`` (names only, no stat)."""
+        return await asyncio.to_thread(cls._visit_ids, _spool_dir(config_dir), tuple(suffixes))
 
     @classmethod
     def _visit_ids(cls, spool_dir: Path, suffixes: Iterable[str]) -> list[str]:

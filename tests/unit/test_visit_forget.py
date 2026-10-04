@@ -756,3 +756,60 @@ async def test_deep_or_wrong_version_logs_fail_closed(tmp_path, body):
         await log.list_open()
     with pytest.raises(RevocationLogUnreadable):
         await RevocationLog.list_all_open(tmp_path)
+
+
+# ── 清除代数与清除意图哨兵（PR-08）────────────────────────────────────
+
+
+async def test_forget_epoch_is_bumped_and_persisted_before_each_scoped_forget(tmp_path):
+    from main_logic.visit.forget import ForgetEpochs
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    seen = []
+
+    async def forget(subject):
+        seen.append((await ForgetEpochs(tmp_path).get([subject]))[f"{subject['subject_kind']}:{subject['subject_id']}"])
+        return True
+
+    assert await run_revocation(log, rev_id, roster=roster, forget_subject=forget,
+                                void_pending=_no_void, own_char="A")
+    assert seen == [1, 1, 1]
+
+
+async def test_unreadable_epochs_file_fails_the_step_and_keeps_the_log(tmp_path):
+    from main_logic.visit.forget import ForgetEpochsUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    (tmp_path / "visit_forget_epochs.json").write_text("{not json", encoding="utf-8")
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    server = FakeMemoryServer()
+    with pytest.raises(ForgetEpochsUnreadable):
+        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget,
+                             void_pending=_no_void, own_char="A")
+    assert server.calls == []
+    assert await log.load(rev_id) is not None
+
+
+async def test_clearing_sentinels_roundtrip_and_fail_closed(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels, RevocationLogUnreadable, sentinel_covers
+
+    store = ClearingSentinels(tmp_path)
+    person = await store.create(own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A], peer_uid=PEER_X)
+    chars = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_B, CHAR_UID_A])
+    listed = await store.list_open()
+    assert {d["op_id"] for d in listed} == {person["op_id"], chars["op_id"]}
+    assert sentinel_covers(person, CHAR_UID_A, PEER_X) and not sentinel_covers(person, CHAR_UID_A, PEER_Y)
+    assert sentinel_covers(chars, CHAR_UID_B, PEER_Y) and not sentinel_covers(person, CHAR_UID_B)
+    # 撤销日志的列表不把哨兵当日志
+    assert await RevocationLog.list_all_open(tmp_path) == []
+    assert await store.remove(person["op_id"]) and not await store.remove(person["op_id"])
+    (tmp_path / "visit_revocations" / f"clearing-{'0' * 32}.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable):
+        await store.list_open()
+    with pytest.raises(ValueError):
+        await store.create(own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A])
