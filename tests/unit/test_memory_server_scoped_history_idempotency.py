@@ -1007,6 +1007,9 @@ async def test_forget_landing_while_staging_is_written_is_caught_by_the_recheck(
     env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name=None))
+    # 请求在应用前中断：暂存留在盘上，但被清 subject 的抽取原文已随丢弃标记一并抹掉
+    raw = _staging_file(env, KEY_GROUP).read_text(encoding="utf-8")
+    assert all(fact["text"] not in raw for fact in SINGLE_FACTS)
     result = await _post(env, _single_body(display_name=None))
     assert result["created"] == 0 and _facts_of(env, GROUP) == []
 

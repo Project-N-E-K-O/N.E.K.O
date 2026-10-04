@@ -3637,13 +3637,16 @@ def _mark_items_forgotten_during_generation(
     applied = staging.setdefault("applied", [])
     done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     added = False
-    for item in staging.get("items") or []:
+    items = staging.get("items") or []
+    for position, item in enumerate(items):
         if (
             item.get("segment") in changed
             and item.get("kind") != _KEYED_ITEM_LOCALE
             and item["seq"] not in done
         ):
             applied.append({"seq": item["seq"], "dropped_forget_during_generation": True})
+            # 被清 subject 的抽取原文 / 显示名一并抹掉：之后请求若中断，暂存里也不留它们
+            items[position] = _stripped_item(item)
             added = True
     return added
 
