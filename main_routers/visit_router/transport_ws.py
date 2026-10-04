@@ -40,14 +40,16 @@ replacement connection keeps the pause and calls
 ``liveness.on_page_socket_back`` (the SDK reload gets the absolute reload
 deadline of design §4.8); only once its iframe is back in the vendor room
 (first ``state`` joined / connected, after its own preflight and
-credentials, before the deadline; an iframe that only gets there after the
-deadline is sent ``stop`` and closed, it must not stay in the room) does the
-session resend ``hello``, resume
+credentials, before the deadline) does the session resend ``hello``, resume
 the outbox and clear the deadline (``liveness.on_page_back``), then exactly
 one full ``media`` snapshot from
 ``session.media_snapshot()`` follows. A re-entry whose preparation failed is
 retried on the next ``joined`` / ``connected`` report or 5 s ``stats`` frame
-of that connection while it is in the room. Downlink goes only through
+of that connection while it is in the room. A replacement socket that
+shows up after the reload deadline is closed 4404 (terminal for the iframe,
+which leaves the vendor room when its socket closes) -- on attach, before its
+credentials are issued, or at the latest when it reports being in the room.
+Downlink goes only through
 :meth:`VisitTransportSession.send` (bound to the registered session).
 """
 
@@ -336,7 +338,6 @@ class _Connection:
     in_room: bool = False
     rejoined: bool = False
     media_queued: int = 0
-    ending: bool = False
 
     async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
         """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
@@ -428,17 +429,6 @@ def is_transport_attached(visit_id: str, side: str) -> bool:
 
 
 _close_tasks: set[asyncio.Task] = set()
-
-
-async def _stop_then_close(conn: _Connection, reason: str) -> None:
-    # stop 最多等 CLOSE_LOCK_WAIT_S（发送可能被背压卡住）；无论发没发出去都关闭，
-    # 关闭事件本身也会让 iframe 离房
-    try:
-        await asyncio.wait_for(_send_on(conn, {"type": "stop"}), CLOSE_LOCK_WAIT_S)
-    except asyncio.TimeoutError:
-        logger.debug("visit transport: stop not sent before closing")
-    conn.retired = True
-    await conn.close(CLOSE_NORMAL, reason)
 
 
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
@@ -612,8 +602,24 @@ def _attach(link: _Link, websocket: WebSocket) -> _Connection:
 def _is_current(link: _Link, conn: _Connection) -> bool:
     return (
         _links.get((link.session.visit_id, link.session.side)) is link
-        and link.conn is conn and not conn.closed and not conn.retired and not conn.ending
+        and link.conn is conn and not conn.closed and not conn.retired
     )
+
+
+def _reload_expired(session: VisitTransportSession) -> bool:
+    """True when the page reload of ``session`` already missed its deadline; errors count as False."""
+    try:
+        return bool(session.liveness.page_expired(session.now()))
+    except Exception as exc:  # noqa: BLE001 - 帧处理路径上不能因此结束接收循环
+        logger.warning("visit transport: page deadline check failed: %s", type(exc).__name__)
+        return False
+
+
+def _close_late_page(conn: _Connection) -> None:
+    # 页面重载已过期限：直接关（4404 对 iframe 是终态，父页移除 iframe；WS 一关 iframe 就离开 vendor 房间，
+    # 不需要先发 stop，也就不会卡在发送锁上）。同步退役，之后的帧一概不处理
+    logger.warning("visit transport: page reload deadline passed, closing the late page")
+    _spawn_close(conn, CLOSE_UNKNOWN_VISIT, "page reload deadline passed")
 
 
 async def _handle_frame(
@@ -639,6 +645,10 @@ async def _handle_frame(
             conn.preflight_ok = True
             # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
             if not _is_current(link, conn):
+                return
+            # 重载期限已过：同样不为它领凭证，直接关掉
+            if conn.reattach and _reload_expired(session):
+                _close_late_page(conn)
                 return
             creds = await _call(session, "issue_credentials")
             if creds is None or creds is _HOOK_FAILED:
@@ -717,15 +727,10 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         logger.warning("visit transport: rejoin check failed: %s", type(exc).__name__)
         return
     # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
-    # 新 iframe 已经用同一个 vid 回到房里，不能留着：对端会因此取消 peer_left 宽限，
-    # 本侧却已判死，两侧结果不一致。发 stop 让它离房，再关掉这条 socket（之后的帧一概不处理）
+    # attach / 预检时就会拦下；这里兜底期限恰好落在领凭证与入房之间的情形：
+    # 新 iframe 已经用同一个 vid 回到房里，不能留着（对端会取消 peer_left 宽限），关掉它即离房
     if expired:
-        logger.warning("visit transport: page reload deadline passed, stopping the late iframe")
-        # 同步标记收尾（之后的帧一概不处理），stop + 关闭放后台：关闭不依赖 stop 发送完成
-        conn.ending = True
-        task = asyncio.ensure_future(_stop_then_close(conn, "page reload deadline passed"))
-        _close_tasks.add(task)
-        task.add_done_callback(_close_tasks.discard)
+        _close_late_page(conn)
         return
     saved = None
     try:
@@ -834,6 +839,10 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
     close_code = CLOSE_NORMAL
     close_reason = ""
     try:
+        # 重载期限已过才连回的页面：不再接它（预检、领凭证、入房都不做）
+        if conn.reattach and _reload_expired(link.session):
+            close_code, close_reason = CLOSE_UNKNOWN_VISIT, "page reload deadline passed"
+            return
         while True:
             try:
                 text = await _receive_text(websocket)

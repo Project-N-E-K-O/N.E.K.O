@@ -350,9 +350,15 @@ def test_last_send_term_waits_for_the_peer_hello_exchange():
     assert lv.tick(60.0) is None
     lv.on_self_disconnected(70.0)
     assert lv.self_deadline() == 95.0
-    # 核验通过之后才套上这一项
+    # 核验通过之后才套上这一项，且从核验时刻算起：不会一核验就落在过去
     lv.on_peer_verified(75.0)
-    assert lv.self_deadline() == 27.0
+    assert lv.self_deadline() == 95.0
+    assert lv.tick(75.0) is None
+    lv2 = VisitLiveness("host", 0.0)
+    lv2.on_message_sent(0.0)
+    lv2.on_self_disconnected(70.0)
+    lv2.on_peer_verified(90.0)
+    assert lv2.self_deadline() == 95.0  # min(70 + 25, 90 + 27)
 
 
 def test_page_rejoin_safety_margin_is_injectable():
@@ -361,3 +367,39 @@ def test_page_rejoin_safety_margin_is_injectable():
     lv.on_page_lost(0.0)
     lv.on_page_socket_back(1.0)
     assert lv.page_deadline == 10.0
+
+
+
+def test_waiting_guest_keeps_the_last_send_term():
+    # guest 等 host hello 时，host 可能已核验了 guest、正在对它计 30 s：这一项照算
+    lv = VisitLiveness("guest", 0.0)
+    lv.on_message_sent(10.0)
+    lv.on_page_lost(12.0)
+    assert lv.page_reload_deadline() == 37.0  # min(12 + 30, 10 + 27)
+
+
+def test_first_verification_tightens_a_reload_started_while_waiting():
+    lv = VisitLiveness("host", 0.0)
+    lv.on_page_lost(100.0)
+    lv.on_page_socket_back(105.0)
+    assert lv.page_deadline == 130.0  # 等待期：只有离开 + 30
+    lv.on_message_sent(98.0)
+    lv.on_peer_verified(101.0)
+    # 核验后最后发出那一项生效（98 夹到核验时刻 101）：min(130, 101 + 27)
+    assert lv.page_deadline == 128.0
+
+
+def test_re_verification_does_not_move_the_last_send():
+    lv = verified("host", 0.0)
+    lv.on_message_sent(10.0)
+    lv.on_peer_verified(50.0)  # 对端重连后同 jti 复验：对端的时钟仍从我们最后一次发出算
+    assert lv.last_sent_at == 10.0
+
+
+def test_injected_durations_must_keep_the_invariants():
+    import pytest
+
+    with pytest.raises(ValueError, match="positive"):
+        VisitLiveness("guest", 0.0, page_rejoin_safety_s=0.0)
+    with pytest.raises(ValueError, match="outlast"):
+        VisitLiveness("guest", 0.0, rejoin_grace_s=24.0)  # 24 − 5 不比 20 长

@@ -38,7 +38,8 @@ and polls ``tick(now)``, which returns the first verdict reached (sticky) or
   successful send + 30 s - VISIT_RECONNECT_MARGIN_S)`` for the SDK reload
   and room re-entry. A deadline that already passed is never moved. The
   last-send term (also in ``relay_lost``) applies only once the peer is
-  verified: before that no heartbeat clock of the peer runs on us.
+  verified on the host side: before that no heartbeat clock of the peer
+  runs on the host.
 * ``peer_left``: authenticated ``leave`` (after the ``seq`` gap is filled or
   ``VISIT_LEAVE_GAP_GRACE_S`` expires), or a vendor-level leave not undone
   within ``VISIT_PEER_REJOIN_GRACE_S``.
@@ -104,6 +105,11 @@ class VisitLiveness:
         """
         if side not in ("host", "guest"):
             raise ValueError(f"invalid side: {side!r}")
+        # 与 config 的不变量同一组关系：注入的时长也要满足
+        if not page_rejoin_safety_s > 0:
+            raise ValueError("page_rejoin_safety_s must be positive")
+        if not rejoin_grace_s - page_rejoin_safety_s > page_grace_s:
+            raise ValueError("the absolute page reload deadline must outlast the socket grace")
         self.side: Side = side
         self._peer_lost_s = float(peer_lost_s)
         self._join_allowance_s = float(join_allowance_s)
@@ -151,7 +157,13 @@ class VisitLiveness:
         ``peer_last_seen`` restarts at ``now``; a later re-verification (same
         ``jti`` after a reconnect) only refreshes it.
         """
+        if self.waiting and self.side == "host" and self.last_sent_at is not None:
+            # 对端对本侧的心跳时钟从这里才开始算：等待期里的旧发出时刻不能让期限一核验就落在过去
+            self.last_sent_at = max(self.last_sent_at, now)
         self.waiting = False
+        if self.page_deadline is not None and not self.page_expired(now):
+            # 等待期里开始的页面重载：最后发出那一项现在才生效，期限按同一个式子收紧
+            self.page_deadline = min(self.page_deadline, self.page_reload_deadline())
         self.peer_last_seen = now if self.peer_last_seen is None else max(self.peer_last_seen, now)
         # 核验通过的 hello 本身就证明对端在场：等待期里留下的暂定离开（对端刷新后
         # 换了 vendor 身份重进，runtime 不会调 on_peer_vendor_rejoined）不能再判 peer_left
@@ -214,13 +226,14 @@ class VisitLiveness:
         """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
 
         Shared by the own-reconnect deadline and the page reload deadline
-        (design §4.8 calls them "the same formula"). ``None`` while still
-        waiting for the peer: its heartbeat clock on us only runs once the
-        ``hello`` exchange is done (host: from verification; the guest's own
-        30 s wait is its wait deadline), so an old send must not end a reload
-        or a reconnect before it could matter.
+        (design §4.8 calls them "the same formula"). ``None`` for a host
+        still waiting for the peer: the guest's clock on the host is its own
+        30 s wait, so an old host send must not end a reload or a reconnect
+        before it could matter (the first verification clamps the last send
+        to its moment). A waiting guest keeps the term: the host may already
+        have verified it and be counting.
         """
-        if self.waiting or self.last_sent_at is None:
+        if (self.waiting and self.side == "host") or self.last_sent_at is None:
             return None
         return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
 
