@@ -21,8 +21,39 @@ name that may be stale after a rename; every write that names the character
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
+
+
+class CharactersUnreadable(OSError):
+    """``characters.json`` exists but cannot be read as a character map."""
+
+
+def _check_characters_file(path: str) -> None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        # 没有配置文件就是全新安装：默认角色就是这台机器真实的角色
+        return
+    except (OSError, ValueError, RecursionError) as exc:
+        raise CharactersUnreadable(f"characters.json unreadable: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("猫娘"), dict):
+        raise CharactersUnreadable("characters.json has no character map")
+
+
+async def ensure_characters_readable() -> None:
+    """Raise :class:`CharactersUnreadable` when ``characters.json`` exists but is unreadable.
+
+    The regular loader silently falls back to the default characters; an
+    erase that enumerates "every local character" must not take those
+    defaults for the real scope.
+    """
+    path = str(get_config_manager().get_config_path("characters.json"))
+    await asyncio.to_thread(_check_characters_file, path)
 
 
 async def load_local_characters() -> dict[str, str]:

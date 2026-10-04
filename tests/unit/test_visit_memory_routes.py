@@ -75,6 +75,12 @@ def env(tmp_path, monkeypatch):
         return {"A": CHAR_UID_A, "B": CHAR_UID_B}
 
     monkeypatch.setattr(local_chars, "load_local_characters", chars)
+
+    async def readable():
+        return None
+
+    # 不碰真实运行时根目录里的 characters.json
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     app = FastAPI()
     outer = APIRouter(prefix="/api/visit")
@@ -392,3 +398,30 @@ def test_character_unresolvable_under_the_guard_is_a_retryable_503(env, monkeypa
     # 不报成功、也不回 404：分不清「删了」与「一时读不出」，回可重试的 503
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
+
+
+def test_forget_all_with_unreadable_character_config_is_a_retryable_503(env, monkeypatch):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)
+
+    async def unreadable():
+        raise local_chars.CharactersUnreadable("characters.json unreadable")
+
+    monkeypatch.setattr(local_chars, "ensure_characters_readable", unreadable)
+    resp = client.post("/api/visit/memory/forget_all", json={}, headers=GOOD)
+    # 常规加载会静默换成默认角色：不能把默认角色当成完整范围报成功
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+    assert server.requests == []
+    assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_peer(PEER_X)) is not None
+
+
+@pytest.mark.parametrize("body, ok", [(None, True), ('{"猫娘": {}}', True), ("{torn", False), ("[]", False)])
+def test_character_config_check(tmp_path, body, ok):
+    path = tmp_path / "characters.json"
+    if body is not None:
+        path.write_text(body, encoding="utf-8")
+    if ok:
+        local_chars._check_characters_file(str(path))
+    else:
+        with pytest.raises(local_chars.CharactersUnreadable):
+            local_chars._check_characters_file(str(path))

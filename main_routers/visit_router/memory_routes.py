@@ -302,6 +302,12 @@ async def forget_all_memory(request: Request):
     own_uid = await _hooks.own_visit_uid()
     if not own_uid:
         return _error(409, "VISIT_LOGIN_REQUIRED")
+    try:
+        # 读不出时常规加载会静默换成默认角色：清除全部不能把默认角色当成完整范围报成功
+        await local_chars.ensure_characters_readable()
+    except local_chars.CharactersUnreadable as exc:
+        logger.error("visit forget_all: character config unreadable: %s", exc)
+        return _error(503, "forget_failed", retry=True)
     chars = await local_chars.load_local_characters()
     if catgirl is not None:
         if catgirl not in chars:

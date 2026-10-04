@@ -110,9 +110,10 @@ def _write_stream(tmp_path, visit_id, records):
 
 def _sealed(visit_id):
     """A well-formed ``.upload.json`` of ``visit_id`` (recovery deletes stale streams only next to one)."""
+    usage = {"duration_s": 1, "llm_input_tokens": 0, "llm_output_tokens": 0, "tts_requests": 0, "tts_chars": 0}
     return {"v": 1, "own_visit_uid": OWN_A, "request": {
         "visit_id": visit_id, "role": "host", "started_at": 1000.0, "ended_at": 1001.0,
-        "usage": {}, "lines": [],
+        "finalized_reason": "crash", "usage": usage, "lines": [], "anomalies": 0, "app_version": "",
     }}
 
 
@@ -1173,3 +1174,58 @@ async def test_forget_uses_the_name_resolved_under_the_lifecycle_guard(tmp_path,
     # 清的是改名后 B 名下的条目，而不是旧名 A 下的空条目
     assert await PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_X, "B") is None
     assert names and set(names) == {"B"}
+
+
+
+@pytest.mark.parametrize("breakage", ["no_reason", "bad_usage", "bad_anomalies", "no_app_version"])
+async def test_sealed_upload_missing_required_fields_is_resealed(tmp_path, breakage):
+    v = vid(62)
+    _write_stream(tmp_path, v, [_header(v), {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                             "ts": 1001.0, "text": "a", "truncated": False}])
+    doc = _sealed(v)
+    request = doc["request"]
+    if breakage == "no_reason":
+        del request["finalized_reason"]
+    elif breakage == "bad_usage":
+        request["usage"]["tts_chars"] = "many"
+    elif breakage == "bad_anomalies":
+        request["anomalies"] = -1
+    else:
+        del request["app_version"]
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 结构不完整的上传文件不能顶替完整的流水：从流水重封
+    assert visit_id == v and [line["text"] for line in uploaded["request"]["lines"]] == ["a"]
+
+
+async def test_replay_removes_sentinels_only_under_their_lifecycle_guard(tmp_path, monkeypatch):
+    import contextlib
+
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import replay_forgets
+
+    await seed_roster(tmp_path)
+    await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
+    depth = {"n": 0}
+    removed = []
+
+    @contextlib.asynccontextmanager
+    async def guard(_uids):
+        depth["n"] += 1
+        yield
+        depth["n"] -= 1
+
+    real_remove = ClearingSentinels.remove
+
+    async def remove(self, op_id):
+        removed.append(depth["n"])
+        return await real_remove(self, op_id)
+
+    monkeypatch.setattr(ClearingSentinels, "remove", remove)
+    clean = await replay_forgets(tmp_path, resolve_char_name=resolver(), client=FakeMemoryServer().client(),
+                                 lifecycle_guard=guard)
+    assert clean is True
+    # 复查剩余日志与删除哨兵都在该哨兵的守卫里：端点复用哨兵插不进这段
+    assert removed == [1]

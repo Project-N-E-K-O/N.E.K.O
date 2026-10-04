@@ -480,18 +480,24 @@ async def replay_forgets(
                 client=client, void_pending=void_pending,
             )
         clean = clean and ok
-    try:
-        remaining = await RevocationLog.list_all_open(config_dir)
-    except RevocationLogUnreadable:
-        return False
     for sentinel in sentinels:
-        busy = any(
-            log["own_uid"] == sentinel["own_uid"]
-            and sentinel_covers(sentinel, log["own_char_uid"], log["peer_uid"])
-            for log in remaining
-        )
-        if busy or sentinel["op_id"] in unexpanded:
+        if sentinel["op_id"] in unexpanded:
             clean = False
-        else:
-            await sentinels_store.remove(sentinel["op_id"])
+            continue
+        # 最后的复查与删除也在该哨兵的守卫里：否则端点在这之间复用同一个哨兵、
+        # 开始展开新日志时，这里按旧快照把哨兵删掉，准入就看不见「正在清除」
+        async with guarded(sentinel["own_char_uids"]):
+            try:
+                remaining = await RevocationLog.list_all_open(config_dir)
+            except RevocationLogUnreadable:
+                return False
+            busy = any(
+                log["own_uid"] == sentinel["own_uid"]
+                and sentinel_covers(sentinel, log["own_char_uid"], log["peer_uid"])
+                for log in remaining
+            )
+            if busy:
+                clean = False
+            else:
+                await sentinels_store.remove(sentinel["op_id"])
     return clean

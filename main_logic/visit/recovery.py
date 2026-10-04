@@ -265,6 +265,10 @@ def _spool_header_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
     return _owner_or_none(header.get("own_uid"))
 
 
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     """Whether a ``.upload.json`` is this visit's well-formed sealed upload.
 
@@ -275,13 +279,19 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     if not isinstance(doc, dict) or doc.get("v") != UPLOAD_DOC_VERSION:
         return False
     request = doc.get("request")
+    usage = request.get("usage") if isinstance(request, dict) else None
     return (
         isinstance(request, dict)
         and request.get("visit_id") == visit_id
         and request.get("role") in ("host", "guest")
         and _number(request.get("started_at")) is not None
         and _number(request.get("ended_at")) is not None
-        and isinstance(request.get("usage"), dict)
+        and isinstance(request.get("finalized_reason"), str) and bool(request["finalized_reason"])
+        and _count(request.get("anomalies"))
+        and isinstance(request.get("app_version"), str)
+        # 与 build_upload_doc 产出的完整结构同口径：用量各计数都得是非负整数
+        and isinstance(usage, dict)
+        and all(_count(usage.get(key)) for key in ("duration_s", *_USAGE_KEYS))
         and isinstance(request.get("lines"), list)
         # 逐行核对：转录行坏了的上传文件同样不能顶替完整的流水
         and all(isinstance(line, dict) and _valid_line(line) for line in request["lines"])
