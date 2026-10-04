@@ -127,4 +127,4 @@ services:
 
 networks:
   neko-network:
-    driver: bridgege
+    driver: bridge
