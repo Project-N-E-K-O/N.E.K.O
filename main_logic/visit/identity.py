@@ -638,6 +638,23 @@ def _claims_from_dict(raw: Mapping[str, Any]) -> TicketClaims:
 _ROLE_TICKET_TTL_S = {"guest": VISIT_CREDENTIAL_TTL_S, "host": VISIT_HOST_CREDENTIAL_TTL_S}
 
 
+def peek_ticket_claims(ticket: str) -> TicketClaims:
+    """Parse the claims of a ticket WITHOUT verifying its signature.
+
+    Only for local consistency checks on a ticket this side just received
+    from Servers for itself (the credentials client compares it with the
+    rest of the response). Never use the result to trust a peer: that is
+    :func:`verify_identity_ticket`. Raises :class:`MalformedTicket`.
+    """
+    _seg, raw, _sig = _split_ticket(ticket)
+    return _claims_from_dict(raw)
+
+
+def ticket_ttl_s(role: str) -> int:
+    """Identity ticket lifetime (``exp - iat``) Servers issues for ``role``."""
+    return _ROLE_TICKET_TTL_S[role]
+
+
 def verify_identity_ticket(
     ticket: str,
     *,
@@ -776,5 +793,7 @@ __all__ = [
     "load_dev_public_key",
     "mint_ticket",
     "parse_pubkeys_response",
+    "peek_ticket_claims",
+    "ticket_ttl_s",
     "verify_identity_ticket",
 ]
