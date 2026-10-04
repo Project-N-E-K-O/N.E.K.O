@@ -717,7 +717,7 @@ async def visit_spool_recovery(
     render_chips: RenderChips,
     upload_transcript: UploadTranscript | None = None,
     *,
-    is_live: Callable[[str], bool] | None = None,
+    is_live: Callable[[str], bool],
     spawn_background: SpawnBackground | None = None,
     config_dir: str | Path | None = None,
     resolve_char_name: ResolveCharName | None = None,
@@ -733,8 +733,10 @@ async def visit_spool_recovery(
 ) -> RecoveryReport:
     """Run one startup recovery pass over the visit files (see the module docstring).
 
-    ``is_live(visit_id)`` tells visits of a ``VisitRuntime`` alive in this
-    process (their files are never touched). ``spawn_background`` routes the
+    ``is_live(visit_id)`` (required) tells visits of a ``VisitRuntime`` alive
+    in this process (their files are never touched): recovery runs as a
+    background task, so a visit may start before it reaches the uploads, and
+    sealing its stream or deleting its outbox would truncate it. ``spawn_background`` routes the
     digest / summary commits through the character's visit background-task
     entry. ``summary_llm`` is required for last-visit summaries (without it
     they wait for a later pass). ``lifecycle_guard`` is the clearing
@@ -750,7 +752,7 @@ async def visit_spool_recovery(
         config_dir = get_config_manager().config_dir
     config_dir = Path(config_dir)
     resolve = resolve_char_name or local_chars.resolve_char_name
-    live = is_live or (lambda _visit_id: False)
+    live = is_live
     # 改名对账先于清除重放：清除按角色当前名字找名册条目，改名迁移没做完时条目还在
     # 旧名字下，remove_char 会「成功」地什么都没删，随后迁移又把条目连同摘要搬到新名字
     try:

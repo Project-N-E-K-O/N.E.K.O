@@ -95,6 +95,7 @@ def _characters_config_readable(monkeypatch):
 async def _recover(tmp_path, server=None, **kw):
     kw.setdefault("render_chips", Chips())
     render = kw.pop("render_chips")
+    kw.setdefault("is_live", lambda _visit_id: False)
     return await visit_spool_recovery(
         render, kw.pop("upload_transcript", None), config_dir=tmp_path,
         resolve_char_name=kw.pop("resolve_char_name", resolver()),
@@ -1295,7 +1296,7 @@ async def test_rename_is_not_reconciled_from_a_partially_readable_character_conf
     monkeypatch.setattr(local_chars, "ensure_characters_readable", damaged)
     report = await visit_spool_recovery(
         Chips(), None, config_dir=tmp_path, resolve_char_name=resolver(),
-        client=FakeMemoryServer().client(),
+        client=FakeMemoryServer().client(), is_live=lambda _visit_id: False,
     )
     # 配置有坏条目就不对账：不把数据迁回旧名、标记留着等下次
     assert report.renamed is False
@@ -1438,7 +1439,7 @@ async def _recover_with_chars(tmp_path, monkeypatch, chars, resolve, **kw):
     monkeypatch.setattr(local_chars, "load_local_characters", load)
     return await visit_spool_recovery(
         kw.pop("render_chips", Chips()), None, config_dir=tmp_path, resolve_char_name=resolver(resolve),
-        client=FakeMemoryServer().client(), **kw,
+        client=FakeMemoryServer().client(), is_live=lambda _visit_id: False, **kw,
     )
 
 
@@ -1584,3 +1585,9 @@ async def test_injected_names_still_get_the_strict_character_check(tmp_path, mon
     report = await _recover(tmp_path, server, resolve_char_name=resolver({}), list_char_names=_names())
     assert report.renamed is False and server.calls("scoped_forget") == []
     assert len(await RevocationLog.list_all_open(tmp_path)) == 1
+
+
+async def test_is_live_must_be_given(tmp_path):
+    # 补录在后台跑，漏接 is_live 会把在飞场次的流水提前封存、outbox 删掉：必须显式传入
+    with pytest.raises(TypeError):
+        await visit_spool_recovery(Chips(), None, config_dir=tmp_path)

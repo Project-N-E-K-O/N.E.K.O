@@ -525,3 +525,31 @@ async def test_resumed_run_keeps_the_batch_plan_it_started_with(tmp_path, monkey
     server.fail_always.clear()
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     assert again.ok is True and again.skipped is None
+
+
+async def test_last_summary_waits_for_finalize(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, vid(82), [ln(0, "你好")], finalized=None)
+    calls = {"n": 0}
+
+    async def llm(_prompt):
+        calls["n"] += 1
+        return "摘要"
+
+    # 在飞场次的转录还是半截：不生成、不记 done，收口时再生成
+    assert await commit_last_summary(spool, llm=llm, resolve_char_name=resolver()) is False
+    assert calls["n"] == 0 and (await spool.read_state())["last_summary_done"] is False
+
+
+async def test_replayed_plan_over_the_current_wire_limit_does_not_raise(tmp_path, monkeypatch):
+    lines = [ln(i, f"对端第{i}句", "peer_human") for i in range(5)]
+    spool = await make_visit(tmp_path, vid(83), lines, finalized="wrap_up")
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_history")
+    await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    # 升级把每批句数的协议上限调低到比开轮时的计划还小
+    monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 1)
+    server.fail_always.clear()
+    result = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    # 不抛错卡住每次启动：记诊断、留着这一轮
+    assert result.ok is False and result.skipped == "plan_exceeds_wire_limit"

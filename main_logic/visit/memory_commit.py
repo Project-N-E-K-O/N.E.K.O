@@ -326,6 +326,13 @@ async def _commit_locked(
     plan = dict(record.get("plan") or {}) if resume else {}
     max_lines = int(plan.get("max_lines", VISIT_DIGEST_MAX_LINES))
     batch_size = int(plan.get("batch_size", SCOPED_HISTORY_BATCH_MAX_MESSAGES))
+    if batch_size > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
+        # 开轮时的每批句数比当前的上行上限大（升级把这个协议上限调低了）：按原计划续跑
+        # 发不出去，换新键重切又会与已登记的批次与服务端记录冲突。不抛错卡住每次启动，
+        # 记诊断、留着这一轮（7 天按龄回收）
+        memory_bridge.diag("digest_plan_exceeds_wire_limit", visit_id=spool.visit_id, run=run,
+                           batch_size=batch_size, limit=SCOPED_HISTORY_BATCH_MAX_MESSAGES)
+        return CommitResult(ok=False, skipped="plan_exceeds_wire_limit", run=run)
     selected, dropped = select_digest_lines(run_lines, max_lines)
     group_batches, segment_batches = plan_digest_batches(selected, batch_size)
     subjects = _visit_subjects(state)
@@ -559,6 +566,10 @@ async def commit_last_summary(
     state = await spool.read_state()
     if state is None or state["last_summary_done"]:
         return True
+    if state["finalized"] is None:
+        # 与 commit_visit_region 同一道闸：在飞场次的转录还是半截，现在生成并记 done，
+        # 收口时就不会再生成，下一场开场带的是截断的摘要
+        return False
     if not is_digestable(state) or state["peer_uid"] is None or state["pair_id"] is None:
         if await _mark_summary_done(spool, state["own_char_uid"]):
             # 「清除这个人」后补完的摘要也可能让这场刚好结清：与正常路径同一处回收转录
