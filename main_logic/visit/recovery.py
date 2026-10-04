@@ -259,7 +259,10 @@ def _spool_header_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
         header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX), validate=False)
     except (OSError, ValueError):
         return None
-    return _owner_or_none(header.get("own_uid")) if header else None
+    if not header or header.get("visit_id") != visit_id:
+        # 被换过 / 复制过的头行：别的场次的账号不能套到这一场的上传上
+        return None
+    return _owner_or_none(header.get("own_uid"))
 
 
 def _write_private_json(path: Path, doc: dict) -> None:

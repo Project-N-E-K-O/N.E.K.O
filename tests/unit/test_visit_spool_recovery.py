@@ -862,6 +862,26 @@ async def test_stream_header_without_owner_takes_the_visits_own_account(tmp_path
     assert visit_id == v and doc["own_visit_uid"] == other
 
 
+async def test_spool_header_of_another_visit_is_not_used_as_owner(tmp_path):
+    v = vid(53)
+    await make_visit(tmp_path, v, [ln(0)], own_uid="c" * 24, last_summary_done=True)
+    spool_dir = _spool_dir(tmp_path)
+    (spool_dir / f"{v}.state.json").unlink()
+    jsonl = spool_dir / f"{v}.jsonl"
+    lines = jsonl.read_text(encoding="utf-8").splitlines(keepends=True)
+    misplaced = json.loads(lines[0])
+    misplaced["visit_id"] = vid(54)                  # 错放 / 复制来的别的场次的转录
+    lines[0] = json.dumps(misplaced) + chr(10)
+    jsonl.write_text("".join(lines), encoding="utf-8", newline="")
+    header = _header(v)
+    header.pop("own_visit_uid")
+    _write_stream(tmp_path, v, [header])
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    assert visit_id == v and doc["own_visit_uid"] is None
+
+
 async def test_stream_header_without_owner_is_still_sealed_not_deleted(tmp_path):
     v = vid(50)
     header = _header(v)
