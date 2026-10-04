@@ -627,6 +627,12 @@ async def _summary_locked(
         roster = PeerRoster(spool.config_dir, own_uid=state["own_uid"])
     elif roster.own_uid != state["own_uid"]:
         raise ValueError("roster belongs to another community account than this visit")
+    existing = await roster.get_last_summary(state["peer_uid"], own_char)
+    if isinstance(existing, dict) and existing.get("visit_id") == spool.visit_id:
+        # 上次已把这场的摘要写进名册、只差记 done 就被杀：不再调一次 LLM（会重复计费，
+        # 同 ended_at 还会把已提交的摘要换成另一版），只补记 done
+        await _mark_summary_done(spool, own_char_uid)
+        return True
     block = await asyncio.to_thread(
         _record_block_within_budget, lines, lang, VISIT_LAST_SUMMARY_INPUT_MAX_TOKENS,
     )

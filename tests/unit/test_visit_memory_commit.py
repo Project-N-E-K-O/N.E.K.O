@@ -553,3 +553,23 @@ async def test_replayed_plan_over_the_current_wire_limit_does_not_raise(tmp_path
     result = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     # 不抛错卡住每次启动：记诊断、留着这一轮
     assert result.ok is False and result.skipped == "plan_exceeds_wire_limit"
+
+
+
+async def test_summary_already_in_the_roster_is_not_regenerated(tmp_path):
+    roster = await seed_roster(tmp_path)
+    v = vid(84)
+    spool = await make_visit(tmp_path, v, [ln(0, "晚饭吃什么")], finalized="wrap_up")
+    pair = derive_pair_id(OWN_A, PEER_X)
+    # 上次已写进名册、只差记 done 就被杀
+    await roster.set_last_summary(PEER_X, "A", visit_id=v, ended_at=1.0, text="已提交的摘要", pair_id=pair)
+    calls = {"n": 0}
+
+    async def llm(_prompt):
+        calls["n"] += 1
+        return "另一版摘要"
+
+    assert await commit_last_summary(spool, llm=llm, resolve_char_name=resolver()) is True
+    assert calls["n"] == 0
+    assert (await roster.get_last_summary(PEER_X, "A"))["text"] == "已提交的摘要"
+    assert (await spool.read_state())["last_summary_done"] is True

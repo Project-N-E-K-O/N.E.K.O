@@ -327,9 +327,12 @@ async def test_committing_diary_is_resumed_through_the_injected_writer(tmp_path)
     async def resume(spool_, state):
         resumed.append((spool_.visit_id, state["debrief_writes"]["cache"]))
 
-    await _recover(tmp_path, resume_diary_commit=resume)
+    chips = Chips(delivered=False)
+    await _recover(tmp_path, resume_diary_commit=resume, render_chips=chips)
     assert resumed == [(vid(17), False)]
-    assert (await spool.read_state())["debrief_chip_pending"] is False
+    # 两步写入可能还在退避等待：照常经 bind 重放预览块（显示「写入中」），新连接看得到进度
+    assert (await spool.read_state())["debrief_chip_pending"] is True
+    assert chips.calls == [(vid(17), "A", None)]
 
 
 async def test_flag_disappears_with_the_spool_after_seven_days(tmp_path):
@@ -1591,3 +1594,46 @@ async def test_is_live_must_be_given(tmp_path):
     # 补录在后台跑，漏接 is_live 会把在飞场次的流水提前封存、outbox 删掉：必须显式传入
     with pytest.raises(TypeError):
         await visit_spool_recovery(Chips(), None, config_dir=tmp_path)
+
+
+
+async def test_sealed_upload_with_out_of_order_lines_is_resealed(tmp_path):
+    v = vid(77)
+    line = {"kind": "line", "side": "host", "from": "own_cat", "ts": 1001.0, "truncated": False}
+    _write_stream(tmp_path, v, [_header(v), {**line, "lp": 0, "text": "a"}, {**line, "lp": 1, "text": "b"}])
+    doc = _sealed(v)
+    doc["request"]["lines"] = [
+        {"lp": 1, "side": "host", "from": "own_cat", "ts": 1001.0, "text": "b", "truncated": False},
+        {"lp": 0, "side": "host", "from": "own_cat", "ts": 1001.0, "text": "a", "truncated": False},
+    ]
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (_, uploaded), = uploads.calls
+    # 乱序的封存文件不能替掉流水：从流水重封，按 (lp, side) 排好
+    assert [entry["text"] for entry in uploaded["request"]["lines"]] == ["a", "b"]
+
+
+async def test_rename_reconciliation_holds_the_lifecycle_guard(tmp_path, monkeypatch):
+    import contextlib
+
+    await seed_roster(tmp_path)
+    _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    held = {"uids": None, "depth": 0}
+    real_rename = PeerRoster.rename_char
+
+    @contextlib.asynccontextmanager
+    async def guard(uids):
+        held["depth"] += 1
+        held["uids"] = list(uids)
+        yield
+        held["depth"] -= 1
+
+    async def rename(self, old, new):
+        assert held["depth"] == 1                              # 迁移发生在守卫里
+        return await real_rename(self, old, new)
+
+    monkeypatch.setattr(PeerRoster, "rename_char", rename)
+    report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A}, {CHAR_UID_A: "C"},
+                                       lifecycle_guard=guard)
+    assert report.renamed is True and held["uids"] == [CHAR_UID_A]

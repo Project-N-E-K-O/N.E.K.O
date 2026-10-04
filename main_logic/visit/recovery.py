@@ -299,6 +299,8 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
         and isinstance(request.get("lines"), list)
         # 逐行核对：转录行坏了的上传文件同样不能顶替完整的流水
         and all(isinstance(line, dict) and _valid_line(line) for line in request["lines"])
+        # 顺序也要与 build_upload_doc 排出来的一致：乱序的文件替掉流水会把乱序当成正本上传
+        and request["lines"] == sorted(request["lines"], key=line_order_key)
     )
 
 
@@ -364,6 +366,35 @@ async def _maybe_await(value: Any) -> Any:
 
 _ALL_NAMES = None
 """Sentinel of :func:`_reconcile_rename`: every name-dependent step must wait."""
+
+
+async def _reconcile_rename_guarded(
+    config_dir: Path, names: set[str], uid_of: dict[str, str] | None,
+    lifecycle_guard: LifecycleGuard | None,
+) -> frozenset[str] | None:
+    """:func:`_reconcile_rename` under the renamed character's lifecycle guard.
+
+    Recovery runs in the background: without the guard a live rename of the
+    same character could interleave between the roster and the spool
+    migrations and strand spools under an intermediate name.
+    """
+    if lifecycle_guard is None:
+        return await _reconcile_rename(config_dir, names, uid_of)
+    try:
+        marker = await read_roster_marker(config_dir, "pending_rename")
+    except RosterCorruptError:
+        return await _reconcile_rename(config_dir, names, uid_of)
+    if not isinstance(marker, dict):
+        return await _reconcile_rename(config_dir, names, uid_of)
+    uids = {marker["uid"]} if isinstance(marker.get("uid"), str) and marker.get("uid") else set()
+    for name in (marker.get("old"), marker.get("new")):
+        if uid_of is not None and isinstance(name, str) and name in uid_of:
+            uids.add(uid_of[name])
+    if not uids:
+        return await _reconcile_rename(config_dir, names, uid_of)
+    async with lifecycle_guard(sorted(uids)):
+        # 守卫内重读名单与标记（等守卫期间正常改名可能已完成并清掉标记）
+        return await _reconcile_rename(config_dir, names, uid_of)
 
 
 async def _reconcile_rename(
@@ -496,8 +527,9 @@ async def _recover_visit(
         show_chip = state["debrief_chip_pending"] or await _has_digestable_lines(spool, state)
     elif choice == "ask_later":
         show_chip = True
-    if choice in ("generating:diary", "preview:diary", "commit_failed:diary"):
-        # 生成预览时崩溃 / 已落盘的预览待确认 / 永久性写入失败：零 LLM、零写入，只经 bind 重放
+    if choice in ("generating:diary", "preview:diary", "committing:diary", "commit_failed:diary"):
+        # 生成预览时崩溃 / 已落盘的预览待确认 / 两步写入进行中（可能还在退避等待）/ 永久性
+        # 写入失败：零 LLM、零写入，经 bind 重放对应的块（committing 显示「写入中」）
         show_chip = True
     if show_chip and state["finalized"] == "crash":
         # 崩溃场次每次重放都带上「意外中断」，不只在第一次标崩溃时
@@ -762,7 +794,7 @@ async def visit_spool_recovery(
         await local_chars.ensure_characters_readable()
         uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
         names = set(await list_char_names()) if list_char_names is not None else set(uid_of)
-        unsettled = await _reconcile_rename(config_dir, names, uid_of)
+        unsettled = await _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard)
     except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
         logger.error("visit recovery: rename reconciliation failed: %r", exc)
         unsettled = _ALL_NAMES
