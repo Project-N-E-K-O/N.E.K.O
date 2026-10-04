@@ -629,11 +629,12 @@ async def _upload_pending(
             belongs = _sealed_doc_belongs(sealed_doc, visit_id)
             if belongs:
                 # 整份文件都要与从流水重封出来的一致（信封、转录行、用量、时间戳）：缺行 / 改过的
-                # 文件替掉完整的流水，删了流水就再也重封不回来。state 读不出（结束原因未知）时
-                # 沿用文件里记的结束原因，不因此把正常结束的场次重封成 crash
+                # 文件替掉完整的流水，删了流水就再也重封不回来。结束原因不比、沿用文件里记的：
+                # 正常收口写完上传文件后、写 state.finalized 前崩溃时，本轮补录已先把 state 标成
+                # crash，拿它比会把正常结束的场次重封成 crash 上传
                 expected = await asyncio.to_thread(
                     _stream_doc_sync, spool_dir, visit_id,
-                    reason or sealed_doc["request"]["finalized_reason"], owner,
+                    sealed_doc["request"]["finalized_reason"], owner,
                 )
                 belongs = expected is None or expected == sealed_doc
             if belongs:

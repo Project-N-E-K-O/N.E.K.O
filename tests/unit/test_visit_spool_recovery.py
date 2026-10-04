@@ -1931,3 +1931,22 @@ async def test_report_without_transcript_is_not_held_by_a_pending_upload(tmp_pat
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 转录上传失败：明确不附转录的举报照常提交，附转录（或没写明）的等转录
     assert [visit_id for visit_id, _ in reports.calls] == ([v] if include_transcript is False else [])
+
+
+async def test_sealed_normal_end_is_not_resealed_as_crash(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    await seed_roster(tmp_path)
+    v = vid(91)
+    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # state 还没写 finalized
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    # 正常收口已写出上传文件，删流水、写 state.finalized 之前崩溃
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 补录把 state 标成 crash，但上传文件里正常结束的原因原样上传，流水按残留删掉
+    assert uploaded == doc and uploaded["request"]["finalized_reason"] == "wrap_up"
+    assert not stream.exists()
