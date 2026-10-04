@@ -3808,7 +3808,10 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     }
     # 与 load_facts_full 同口径按 id 去重：归档先写 facts_archive.json、后改
     # facts.json，两步之间中断时同一条事实会暂时同时出现在两份文件里
-    facts_full = [fact for fact in active_facts if isinstance(fact, dict)] + [
+    active_rows = [fact for fact in active_facts if isinstance(fact, dict)]
+    # 活跃与否按来源文件判，不按 id：坏 id 的活跃事实也不能被当成「只剩归档」
+    active_row_refs = {id(fact) for fact in active_rows}
+    facts_full = active_rows + [
         fact for fact in archived_facts
         if isinstance(fact, dict)
         and (_fact_id(fact) is None or _fact_id(fact) not in active_fact_ids)
@@ -3851,7 +3854,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         if row is None:
             continue
         row["facts"] += 1
-        if _fact_id(fact) in active_fact_ids and not fact.get("subject_archived_at"):
+        if id(fact) in active_row_refs and not fact.get("subject_archived_at"):
             row["active_facts"] += 1
     for reflection in reflections:
         if not isinstance(reflection, dict):

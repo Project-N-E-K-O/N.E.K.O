@@ -257,3 +257,14 @@ async def test_unhashable_fact_ids_do_not_break_the_listing(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     part = next(row for row in result["subjects"] if row["subject_id"] == VISIT_PART.subject_id)
     assert part["facts"] == 4
+
+
+async def test_active_fact_with_a_bad_id_keeps_its_subject_active(env):
+    lone = MemorySubject.participant("neko_visit", "p_" + "9" * 24)
+    char_dir = env.root / NAME
+    active = json.loads((char_dir / "facts.json").read_text(encoding="utf-8"))
+    active.append({**_fact("x", lone, "2026-09-06T10:00:00"), "id": ["legacy"]})
+    _write(char_dir / "facts.json", active)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    row = next(r for r in result["subjects"] if r["subject_id"] == lone.subject_id)
+    assert row["facts"] == 1 and row["archived"] is False
