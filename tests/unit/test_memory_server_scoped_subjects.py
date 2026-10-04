@@ -232,3 +232,15 @@ async def test_listing_never_creates_the_character_directory(env):
     env.monkeypatch.setattr(memory, "ensure_character_dir", _forbidden)
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     assert result["subjects"]
+
+
+async def test_fact_present_in_both_files_is_counted_once(env):
+    """Archiving writes facts_archive.json first; a crash before facts.json is rewritten leaves both."""
+    char_dir = env.root / NAME
+    active = json.loads((char_dir / "facts.json").read_text(encoding="utf-8"))
+    archive = json.loads((char_dir / "facts_archive.json").read_text(encoding="utf-8"))
+    archive.append(next(f for f in active if f.get("id") == "f1"))
+    _write(char_dir / "facts_archive.json", archive)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    part = next(row for row in result["subjects"] if row["subject_id"] == VISIT_PART.subject_id)
+    assert part["facts"] == 2

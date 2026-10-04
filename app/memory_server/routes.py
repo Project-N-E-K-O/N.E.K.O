@@ -3793,12 +3793,17 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     archived_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
     )
-    facts_full = [fact for fact in active_facts + archived_facts if isinstance(fact, dict)]
     active_fact_ids = {
         fact.get("id")
         for fact in active_facts
         if isinstance(fact, dict) and fact.get("id") is not None
     }
+    # 与 load_facts_full 同口径按 id 去重：归档先写 facts_archive.json、后改
+    # facts.json，两步之间中断时同一条事实会暂时同时出现在两份文件里
+    facts_full = [fact for fact in active_facts if isinstance(fact, dict)] + [
+        fact for fact in archived_facts
+        if isinstance(fact, dict) and fact.get("id") not in active_fact_ids
+    ]
     reflections_path = os.path.join(character_dir, "reflections.json")
     reflections = PersistenceMixin._filter_reflections(
         await asyncio.to_thread(_read_json_list_for_listing, reflections_path),
