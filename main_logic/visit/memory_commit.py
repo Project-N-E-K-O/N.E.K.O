@@ -531,7 +531,9 @@ async def commit_last_summary(
     if state is None or state["last_summary_done"]:
         return True
     if not is_digestable(state) or state["peer_uid"] is None or state["pair_id"] is None:
-        await _mark_summary_done(spool, state["own_char_uid"])
+        if await _mark_summary_done(spool, state["own_char_uid"]):
+            # 「清除这个人」后补完的摘要也可能让这场刚好结清：与正常路径同一处回收转录
+            await spool.delete_if_settled()
         return True
     lock = peer_lock(state["own_char_uid"], state["peer_uid"])
     async with lock:

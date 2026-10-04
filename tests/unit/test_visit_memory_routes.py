@@ -291,3 +291,19 @@ def test_ipv4_mapped_loopback_is_local(env):
     assert not memory_routes._is_loopback("::ffff:192.168.1.20")
     mapped = TestClient(client.app, client=("::ffff:127.0.0.1", 5000))
     assert mapped.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).status_code == 200
+
+
+def test_peers_survive_a_damaged_cat_record(env):
+    import json
+
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    chars = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]["chars"]
+    chars[next(iter(chars))] = "broken"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    assert resp.status_code == 200
+    (row,) = resp.json()["peers"]
+    assert row["chars"][0]["display_name"] == ""

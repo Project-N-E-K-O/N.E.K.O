@@ -474,3 +474,15 @@ async def test_damaged_display_metadata_falls_back_to_generic_labels(tmp_path):
     assert (await _commit(spool, server)).ok
     segments = server.calls("scoped_history")[1]["segments"]
     assert all(isinstance(seg["speaker_label"], str) and seg["speaker_label"] for seg in segments)
+
+
+async def test_summary_skipped_after_forget_still_reclaims_the_transcript(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8), debrief_choice="forget")
+    server = FakeMemoryServer()
+    assert (await _commit(spool, server)).ok            # 串门区已整理完，只差上次摘要
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=server.client())
+    assert outcome.done and spool.jsonl_path.exists()
+    assert await _summarize(spool, FakeLLM())
+    assert not spool.jsonl_path.exists()

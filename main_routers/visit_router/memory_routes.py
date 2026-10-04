@@ -205,6 +205,8 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         subjects = [person] + [group_chat_subject(p) for p in pairs]
         char_rows = []
         for char_id, info in sorted(chars.items()):
+            # 名册里单只猫的记录坏了（不是对象）只影响装饰信息，不能让整个列表 500
+            info = info if isinstance(info, dict) else {}
             for pair_id in pairs:
                 subject = group_participant_subject(pair_id, char_id)
                 subjects.append(subject)

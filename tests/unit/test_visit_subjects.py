@@ -749,3 +749,17 @@ def test_recall_subjects_reject_a_char_id_that_disagrees_with_the_tag():
     # 数字 / 布尔之类的畸形 id 按坏输入处理，不静默改用 tag 推出的值
     for bad in (7, True, 0):
         assert resolve_visit_recall_subjects(dict(base, peer_char_id=bad)) == []
+
+
+async def test_rename_merge_keeps_visit_counters(tmp_path):
+    from main_logic.visit.subjects import PeerRoster as _Roster, derive_pair_id as _pair, derive_peer_char_id as _cid
+
+    own, peer, tag = "a" * 24, "1" * 24, "f" * 32
+    roster = _Roster(tmp_path, own_uid=own)
+    common = dict(pair_id=_pair(own, peer), peer_char_id=_cid(peer, tag), char_tag=tag)
+    await roster.upsert(peer, "Old", now=1.0, visit_id="v" * 22, **common)
+    await roster.upsert(peer, "Old", now=2.0, visit_id="w" * 22, **common)
+    await roster.upsert(peer, "New", now=3.0, visit_id="x" * 22, **common)
+    await roster.rename_char("Old", "New")
+    entry = await roster.get_char_entry(peer, "New")
+    assert entry["visits"] == 3 and entry["last_visit_id"] == "x" * 22

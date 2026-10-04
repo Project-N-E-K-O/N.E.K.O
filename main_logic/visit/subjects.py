@@ -351,6 +351,11 @@ def _pair_of(own_uid: Any, peer_uid: Any) -> str:
         raise RosterCorruptError("roster account / peer key is not a valid uid") from exc
 
 
+def _visit_count(entry: Mapping[str, Any]) -> int:
+    visits = entry.get("visits")
+    return visits if isinstance(visits, int) and not isinstance(visits, bool) and visits > 0 else 0
+
+
 def _merge_char_entries(target: dict, source: dict) -> dict:
     """Merge two ``by_char`` entries (used when a rename target already exists)."""
     merged = copy.deepcopy(target)
@@ -368,6 +373,18 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
         ):
             chars[char_id] = copy.deepcopy(info)
     merged["chars"] = chars
+    # 场次计数随条目合并：同一场（last_visit_id 相同）在两边各计过一次，只算一次
+    src_visits, dst_visits = _visit_count(source), _visit_count(merged)
+    if src_visits or dst_visits:
+        same_last = (
+            isinstance(source.get("last_visit_id"), str)
+            and source.get("last_visit_id") == merged.get("last_visit_id")
+        )
+        merged["visits"] = src_visits + dst_visits - (1 if same_last else 0)
+        if not isinstance(merged.get("last_visit_id"), str) and isinstance(
+            source.get("last_visit_id"), str
+        ):
+            merged["last_visit_id"] = source["last_visit_id"]
     src_summary = source.get("last_summary")
     dst_summary = merged.get("last_summary")
     if isinstance(src_summary, dict) and (
