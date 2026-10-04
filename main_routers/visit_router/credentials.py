@@ -338,7 +338,7 @@ def _reset_for_tests() -> None:
 def _body_json(resp: httpx.Response) -> Any:
     try:
         return resp.json()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):  # 深层嵌套的 JSON 同样按坏响应处理
         return None
 
 
@@ -585,6 +585,11 @@ def _short_str(value: Any, limit: int) -> bool:
     return isinstance(value, str) and 0 < len(value) <= limit
 
 
+def _token_str(value: Any, limit: int) -> bool:
+    """Vendor secrets are ASCII: then the char limit is the byte limit of the 8 KB downlink."""
+    return _short_str(value, limit) and value.isascii()
+
+
 def _grant_ttl_ok(value: Any) -> bool:
     return type(value) is int and 0 < value <= VISIT_VENDOR_GRANT_TTL_S
 
@@ -597,8 +602,8 @@ def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
     user_id = raw.get("user_id")
     _need(isinstance(user_id, str) and _TRTC_USER_ID_RE.fullmatch(user_id) is not None, "vendor.trtc.user_id")
     _need(user_id == vid, "vendor.trtc.user_id")
-    _need(_short_str(raw.get("user_sig"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.user_sig")
-    _need(_short_str(raw.get("private_map_key"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.private_map_key")
+    _need(_token_str(raw.get("user_sig"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.user_sig")
+    _need(_token_str(raw.get("private_map_key"), _TRTC_SIG_MAX_CHARS), "vendor.trtc.private_map_key")
     room = raw.get("str_room_id")
     _need(_short_str(room, _ROOM_ID_MAX_CHARS) and room == visit_id, "vendor.trtc.str_room_id")
     _need(_grant_ttl_ok(raw.get("expire")), "vendor.trtc.expire")
@@ -628,7 +633,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
     secure_ok = parsed.scheme == "wss" or (parsed.scheme == "ws" and host == _dev_livekit_host())
     if not secure_ok or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise VisitLivekitHostRejected("livekit_host_not_allowed")
-    _need(_short_str(raw.get("token"), _LIVEKIT_TOKEN_MAX_CHARS), "vendor.livekit.token")
+    _need(_token_str(raw.get("token"), _LIVEKIT_TOKEN_MAX_CHARS), "vendor.livekit.token")
     _need(_grant_ttl_ok(raw.get("ttl_s")), "vendor.livekit.ttl_s")
     return {"url": url, "token": raw["token"], "ttl_s": raw["ttl_s"]}
 
@@ -666,6 +671,8 @@ def _parse_credentials(
     # 相对时长与绝对到期要对得上：到期时刻不能比「现在 + 授权时长」更晚
     grant_ttl = vendor[transport]["expire" if transport == "trtc" else "ttl_s"]
     _need(vendor_expires_at - now <= grant_ttl + VISIT_TICKET_CLOCK_TOLERANCE_S, "vendor_expires_at")
+    # 续期按本机时钟排：本机比 Servers 慢时绝对到期会被高估，取「现在 + 授权时长」与它的较早者
+    local_vendor_expiry = min(float(vendor_expires_at), now + grant_ttl)
 
     ticket = payload.get("identity_ticket")
     _need(isinstance(ticket, str), "identity_ticket")
@@ -710,6 +717,7 @@ def _parse_credentials(
             # 邀请只活 10 min：更远的到期时刻是坏响应（取消重试的截止时刻以它为准）
             _need(invite_expires_at - now <= VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
                   "invite_expires_at")
+            _need(invite_expires_at + VISIT_TICKET_CLOCK_TOLERANCE_S > now, "invite_expires_at")
 
     cross_region = payload.get("cross_region", False)
     _need(isinstance(cross_region, bool), "cross_region")
@@ -724,7 +732,7 @@ def _parse_credentials(
         char_tag=char_tag,
         transport=transport,
         expires_at=float(expires_at),
-        vendor_expires_at=float(vendor_expires_at),
+        vendor_expires_at=local_vendor_expiry,
         vendor=vendor,
         identity_ticket=ticket,
         visit_uid=visit_uid,

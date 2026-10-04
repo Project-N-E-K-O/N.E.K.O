@@ -675,6 +675,63 @@ async def test_grant_ttl_must_match_the_absolute_vendor_expiry(servers, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_non_ascii_vendor_secret_is_rejected(servers):
+    original = servers._credentials
+
+    def _wide(body):
+        data = original(body).json()
+        data["vendor"]["trtc"]["user_sig"] = "签" * 100
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _wide
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+async def test_vendor_expiry_is_normalized_to_the_local_clock(servers):
+    # 本机时钟比 Servers 慢 200 s（在容差内）：到期按「本机现在 + 600」排续期，不晚于实际到期
+    original = servers._credentials
+
+    def _ahead(body):
+        data = original(body).json()
+        data["vendor_expires_at"] += 200
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _ahead
+    before = time.time()
+    creds = await _guest()
+    assert creds.vendor_expires_at <= time.time() + vs.VISIT_VENDOR_GRANT_TTL_S
+    assert creds.vendor_expires_at >= before + vs.VISIT_VENDOR_GRANT_TTL_S - 1
+
+
+@pytest.mark.asyncio
+async def test_already_expired_host_invite_is_rejected(servers):
+    original = servers._credentials
+
+    def _stale(body):
+        data = original(body).json()
+        data["invite_expires_at"] = time.time() - vs.VISIT_TICKET_CLOCK_TOLERANCE_S - 5
+        return httpx.Response(200, json=data)
+
+    servers._credentials = _stale
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_json_is_a_servers_error(servers, monkeypatch):
+    def _deep(request):
+        return httpx.Response(200, content=("[" * 100000 + "]" * 100000).encode(),
+                              headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(cr, "get_external_http_client",
+                        lambda: httpx.AsyncClient(transport=httpx.MockTransport(_deep)))
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+
+
+@pytest.mark.asyncio
 async def test_credentials_repr_and_logs_never_carry_secrets(servers, caplog):
     with caplog.at_level(logging.DEBUG):
         creds = await _host()
