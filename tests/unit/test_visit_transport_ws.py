@@ -2265,8 +2265,8 @@ def test_replacing_a_session_closes_its_socket_as_superseded():
         ws = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 4409 是终态：旧 iframe 不会重连进新 session
-    assert ws.closed_with == tw.CLOSE_SUPERSEDED
+    # 4404：终态且离房（4409 的 iframe 不离房，session 级替换没有同 vid 的新 iframe 把它顶下线）
+    assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
 
 
@@ -2335,3 +2335,24 @@ def test_retired_socket_is_not_reported_as_attached():
     finally:
         tw._reset_for_tests()
     assert attached is False
+
+
+
+def test_registering_the_same_session_again_keeps_its_socket():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        conn = tw._attach(link, _RecordingWS())
+        tw.register_transport_session(s)  # 幂等重试
+        await asyncio.sleep(0.05)
+        return link, conn
+
+    try:
+        link, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert link.conn is conn and not conn.retired and not conn.closed

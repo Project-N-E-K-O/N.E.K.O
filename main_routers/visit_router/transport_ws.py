@@ -25,8 +25,9 @@ only, each <= 16 KB (larger closes 1009). The vendor grant is sent on this
 socket and nowhere else, and never logged.
 
 Close codes the iframe acts on: terminal (do not reconnect; the parent page
-removes the iframe) -- 4403 unauthorized, 4404 unknown visit / page reload
-deadline passed, 4409 superseded; reconnect -- 1000 normal, 1011 a downlink
+removes the iframe) -- 4403 unauthorized, 4404 unknown or replaced visit /
+page reload deadline passed (leaves the vendor room), 4409 superseded by a
+newer iframe of the same ``vid`` (does not leave: the newcomer takes over); reconnect -- 1000 normal, 1011 a downlink
 could not be written (the page reloads through the normal grace); protocol
 errors -- 4400 bad request, 1003 binary frame, 1009 frame too large.
 
@@ -419,10 +420,14 @@ def register_transport_session(session: VisitTransportSession) -> None:
     """Make ``(session.visit_id, session.side)`` connectable (replaces an older session)."""
     key = (session.visit_id, session.side)
     old = _links.get(key)
+    if old is not None and old.session is session:
+        return  # 同一个 session 重复注册（幂等重试）：不能关掉它自己的正常连接
     _links[key] = _Link(session=session)
     if old is not None and old.conn is not None:
-        # 4409 是终态：旧 runtime 的 iframe 不能重连进新登记的 session、顶掉新 runtime 自己的连接
-        _spawn_close(old.conn, CLOSE_SUPERSEDED, "visit replaced")
+        # 4404：终态（旧 runtime 的 iframe 不能重连进新 session），且 socket 一关 iframe 即离房。
+        # 不用 4409：被顶掉的 iframe 不主动离房，靠同 vid 的新 iframe 入房把它顶下线（§4.3），
+        # session 级替换不保证有这样的新 iframe，旧的会一直留在房里
+        _spawn_close(old.conn, CLOSE_UNKNOWN_VISIT, "visit replaced")
 
 
 def unregister_transport_session(session: VisitTransportSession) -> None:
