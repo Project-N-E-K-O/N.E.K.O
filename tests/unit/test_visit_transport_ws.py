@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from typing import Any
@@ -823,7 +824,8 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
         async def receive(self):
             if self.inbox:
                 return self.inbox.pop(0)
-            await asyncio.Event().wait()
+            await asyncio.Event().wait()  # 之后不再有帧：一直挂到被取消
+            raise AssertionError("unreachable")
 
         async def close(self, code=1000, reason=""):
             # anyio 的取消是持续生效的：handler 收尾里的每个 await 都会再抛 CancelledError
@@ -837,10 +839,8 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
         while not tw.is_transport_attached(VISIT_ID, "guest"):
             await asyncio.sleep(0)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):  # 被取消正是本用例要的结局
             await task
-        except asyncio.CancelledError:
-            pass
         return s
 
     try:
