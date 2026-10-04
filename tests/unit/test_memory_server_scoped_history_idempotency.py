@@ -1938,7 +1938,8 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
     assert path.exists() and report["staging_removed"] == 0
 
 
-@pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object"])
+@pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object",
+                                    "applied_scalar_entry"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1958,6 +1959,8 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "applied_scalar_entry":
+        staging["applied"].append(7)                             # 已应用记录里混进一个标量
     elif damage == "items_empty_object":
         staging["items"] = {}                                    # 假值：不能经 `or []` 当成空列表放过
     else:
@@ -2169,3 +2172,42 @@ async def test_forgotten_locale_only_segment_gets_no_display_name_on_retry(env):
     # 被清除丢弃的段不补显示名：清除前的键不能把元数据盖到之后重建的 section 上
     assert (GP_KEY, "团子") not in env.persona.display_names
     assert (PART_KEY, "Mika") in env.persona.display_names
+
+
+async def test_damaged_forgotten_keys_do_not_block_the_erase(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+    ))
+
+    def damage(old):
+        return {**old, "forgotten_keys": [{"bad": 1}, "kept:key"]}   # 夹着对象的坏旧值
+
+    await env.idem.update_key(NAME, KEY_GROUP, damage)
+    lock = env.idem.key_lock(NAME, KEY_GROUP)
+    await lock.acquire()                                         # 同键请求正在生成、还没有暂存
+    try:
+        result = await _forget(env, GROUP)
+    finally:
+        lock.release()
+    # 坏的辅助状态不能让清除在擦除之前就 500：照常擦除，能用的旧键保留、补上这次的
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert record["forgotten_keys"] == sorted({"kept:key", GROUP_KEY})
+
+
+async def test_retry_after_a_failed_generation_reuses_the_reserved_locale_order(env):
+    env.llm.responses = [RuntimeError("LLM failed"), SINGLE_FACTS]
+    with pytest.raises(RuntimeError):
+        await _post(env, _single_body(language="zh"))
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    (first_order,) = record["locale_orders"]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    locale = next(item for item in staging["items"] if item["kind"] == "locale")
+    # 生成失败后的同键重试沿用第一次预留的序号，不拿更新的序号把旧请求往后排
+    assert locale["order"] == first_order

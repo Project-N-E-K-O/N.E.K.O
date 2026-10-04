@@ -3214,7 +3214,7 @@ async def _generate_keyed_facts(
 
 
 async def _reserve_keyed_locale_orders(
-    lanlan_name: str, language: str | None, contexts: list[dict],
+    lanlan_name: str, language: str | None, contexts: list[dict], key: str | None = None,
 ) -> list[int | None]:
     """Reserve one causal locale order per subject BEFORE the LLM call.
 
@@ -3224,19 +3224,44 @@ async def _reserve_keyed_locale_orders(
     also rejected by the locale store's own forget cutoff, independently of
     tombstones; and a newer unkeyed write keeps priority over a retried
     older digest.
+
+    With ``key``, the first reservation is kept on the pending key record
+    and reused by every later attempt of that key (a generation that failed
+    before staging must not move the old request forward in causal order).
     """
+    from . import idempotency
+
     if not is_supported_language_code(language):
         return [None] * len(contexts)
     subjects = [context["subject"] for context in contexts]
-    admission = locale_state.allocate_subject_prompt_locale_orders(
+    stored = None
+    if key is not None:
+        record = await idempotency.read_key(lanlan_name, key)
+        candidate = record.get("locale_orders") if isinstance(record, dict) else None
+        if (
+            isinstance(candidate, list) and len(candidate) == len(contexts)
+            and all(isinstance(order, int) and not isinstance(order, bool) and order > 0 for order in candidate)
+        ):
+            stored = candidate
+    admission = stored or locale_state.allocate_subject_prompt_locale_orders(
         lanlan_name, subjects,
     )
-    return list(await asyncio.to_thread(
+    orders = list(await asyncio.to_thread(
         locale_state.reserve_subject_prompt_locale_orders,
         lanlan_name,
         subjects,
         orders=admission,
     ))
+    if key is not None and stored is None:
+        # 生成失败、还没落暂存时，这批序号只记在这里：同键重试复用它们，而不是拿到更新的序号、
+        # 把旧请求排到期间别的请求写下的语言之后（覆盖掉较新的语言）
+        def _remember(old, orders=orders):
+            if old is None or old.get("state") != idempotency.KEY_STATE_PENDING or old.get("locale_orders"):
+                return None
+            return {**old, "locale_orders": orders}
+
+        await idempotency.update_key(lanlan_name, key, _remember)
+    return orders
 
 
 async def _build_keyed_staging(
@@ -3250,7 +3275,7 @@ async def _build_keyed_staging(
     from . import idempotency
 
     key = req.idempotency_key
-    orders = await _reserve_keyed_locale_orders(lanlan_name, req.language, contexts)
+    orders = await _reserve_keyed_locale_orders(lanlan_name, req.language, contexts, key)
     facts_per_context, dropped = await _generate_keyed_facts(
         lanlan_name, shape, contexts, prompt_segments,
     )
@@ -3993,6 +4018,7 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
     if (
         not isinstance(applied, list) or not isinstance(items, list)
         or not all(isinstance(item, dict) for item in items)
+        or not all(isinstance(entry, dict) for entry in applied)
     ):
         # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
         # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
@@ -4239,7 +4265,11 @@ async def _cancel_staged_writes_for_subjects(
             def _mark(old, touched=touched):
                 if old is None or old.get("state") != idempotency.KEY_STATE_PENDING:
                     return None
-                merged = sorted(set(old.get("forgotten_keys") or []) | touched)
+                # 记录里的旧值坏了（标量 / 夹着对象）只保留能用的键：辅助状态坏了不能让清除在
+                # 擦除之前就 500
+                prior = old.get("forgotten_keys")
+                usable = {k for k in prior if isinstance(k, str) and k} if isinstance(prior, list) else set()
+                merged = sorted(usable | touched)
                 return {**old, "forgotten_keys": merged}
 
             await idempotency.update_key(lanlan_name, key, _mark)
