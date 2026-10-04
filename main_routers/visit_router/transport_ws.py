@@ -83,6 +83,9 @@ CREDENTIALS_MAX_BYTES = 8 * 1024
 AUTH_TIMEOUT_S = 5.0
 """The ``auth`` frame must arrive within this long after ``accept``."""
 
+CLOSE_LOCK_WAIT_S = 2.0
+"""A close waits at most this long for an in-flight send before closing anyway."""
+
 CLOSE_BAD_REQUEST = 4400
 CLOSE_UNAUTHORIZED = 4403
 CLOSE_UNKNOWN_VISIT = 4404
@@ -292,7 +295,8 @@ class _Connection:
             logger.warning("visit transport: dropping oversize %s downlink (%d B)", msg.get("type"), size)
             return False
         async with self.send_lock:
-            if self.closed:
+            # 排队等锁期间可能已被顶掉或关闭：拿到锁后两样都要复查
+            if self.closed or self.retired:
                 return False
             try:
                 await self.websocket.send_text(text)
@@ -302,15 +306,25 @@ class _Connection:
         return True
 
     async def close(self, code: int, reason: str = "") -> None:
-        async with self.send_lock:
-            if self.closed:
-                return
-            self.closed = True
-            try:
-                if self.websocket.application_state != WebSocketState.DISCONNECTED:
-                    await self.websocket.close(code=code, reason=reason)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("visit transport: close failed: %s", type(exc).__name__)
+        """Close once. ``closed`` flips first so queued sends give up; waits at most
+        ``CLOSE_LOCK_WAIT_S`` for an in-flight send (a backpressured ``send_text``
+        may never return) and then closes anyway."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            await asyncio.wait_for(self.send_lock.acquire(), CLOSE_LOCK_WAIT_S)
+            locked = True
+        except asyncio.TimeoutError:
+            locked = False
+        try:
+            if self.websocket.application_state != WebSocketState.DISCONNECTED:
+                await self.websocket.close(code=code, reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("visit transport: close failed: %s", type(exc).__name__)
+        finally:
+            if locked:
+                self.send_lock.release()
 
 
 @dataclass(eq=False)

@@ -649,6 +649,55 @@ def test_takeover_does_not_wait_for_a_stuck_old_socket():
     assert sent is True and new.websocket.sent == [{"type": "media", "publish": False}]
 
 
+def test_send_queued_behind_the_lock_is_dropped_once_retired():
+    import asyncio
+
+    class _SlowWS(_RecordingWS):
+        def __init__(self):
+            super().__init__()
+            self.gate = asyncio.Event()
+
+        async def send_text(self, text):
+            await self.gate.wait()
+            await super().send_text(text)
+
+    async def scenario():
+        ws = _SlowWS()
+        conn = tw._Connection(websocket=ws, reattach=False)
+        first = asyncio.ensure_future(conn.send_json({"type": "media", "publish": True}))
+        await asyncio.sleep(0)
+        queued = asyncio.ensure_future(conn.send_json({"type": "media", "publish": False}))
+        await asyncio.sleep(0)
+        conn.retired = True  # 顶号发生在它排队等锁期间
+        ws.gate.set()
+        return await first, await queued, ws.sent
+
+    first, queued, sent = asyncio.run(scenario())
+    assert first is True and queued is False
+    assert sent == [{"type": "media", "publish": True}]
+
+
+def test_close_is_not_blocked_by_a_stuck_send(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(tw, "CLOSE_LOCK_WAIT_S", 0.05)
+
+    class _StuckWS(_RecordingWS):
+        async def send_text(self, text):
+            await asyncio.Event().wait()
+
+    async def scenario():
+        ws = _StuckWS()
+        conn = tw._Connection(websocket=ws, reattach=False)
+        stuck = asyncio.ensure_future(conn.send_json({"type": "media", "publish": True}))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(conn.close(tw.CLOSE_SUPERSEDED, "superseded"), 1)
+        stuck.cancel()
+        return ws.closed_with
+
+    assert asyncio.run(scenario()) == tw.CLOSE_SUPERSEDED
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 
