@@ -545,9 +545,11 @@ async def mark_tombstone_erased(
             data[subject_key] = {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}
             return True
         current = row.get("erased_epoch")
-        if isinstance(current, int) and not isinstance(current, bool) and current >= epoch:
+        # 完成标记只在合法且不超过围栏时才算数（与 erased_epoch() 同口径）：坏的 / 超出围栏的
+        # 标记不能挡住这次写入，否则接口回了成功、读端却仍不认它，之后的重放会再擦一遍
+        if _non_negative_int(current) and current <= fence and current >= epoch:
             return False
-        row["erased_epoch"] = epoch
+        row["erased_epoch"] = min(epoch, fence)
         return True
 
     await _update_json_object(lanlan_name, tombstones_path(lanlan_name), _mutate)

@@ -2800,6 +2800,7 @@ _KEYED_ITEM_FACTS = "facts"
 _KEYED_ITEM_DISPLAY_NAME = "display_name"
 # 清除时键文件读不出、取消记不进去：改记在暂存文档里，重试读到就补记 cancelled
 _KEYED_STAGING_CANCELLED = "cancelled_by_forget"
+_SEGMENT_DROPPED_BY_FORGET = "dropped_by_forget"
 
 
 def _reject_owner_signal_on_keyed_request(req: ScopedHistoryRequest) -> None:
@@ -3099,7 +3100,13 @@ def _restored_provenance_valid(provenance) -> bool:
     # 两条构造路径产出的 provenance 都带 label（段必填、单条请求无 label 时整个是 None），且已
     # 清洗成去首尾空白、不超过 64 字符的形式：缺了 label 的半截归属不能照样记成已应用
     label = provenance.get("speaker_label")
-    if not isinstance(label, str) or not label or label != label.strip() or len(label) > 64:
+    if not isinstance(label, str) or not label:
+        return False
+    from memory.facts import FactStore
+
+    # 两条请求路径都用同一个清洗器产出 label：不等于它的输出（夹着换行 / 方括号之类结构字符）
+    # 就是被改过的，持久化层只做截断、不会再清洗，坏 label 会原样进归属
+    if FactStore.sanitize_speaker_label(label) != label:
         return False
     if "speaker_trust" in provenance:
         trust = provenance["speaker_trust"]
@@ -3383,6 +3390,10 @@ def _restore_missing_display_items(staging: dict, display_names: dict[int, str |
         if isinstance(entry, dict) and any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
     }
     dropped_segments = {item.get("segment") for item in items if item.get("seq") in dropped_seqs}
+    dropped_segments |= {
+        index for index, segment in enumerate(staging.get("segments") or [])
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True
+    }
     present = {item.get("segment") for item in items if item.get("kind") == _KEYED_ITEM_DISPLAY_NAME}
     for index, name in sorted(display_names.items()):
         if name and index not in present and index not in dropped_segments:
@@ -3621,6 +3632,18 @@ async def _process_scoped_history_keyed(
             raise HTTPException(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
+            )
+        if (
+            staging is not None
+            and staging.get(_KEYED_STAGING_CANCELLED) is True
+            and not _is_cancelled_staging_marker(staging)
+        ):
+            # 带着取消标志、却不是清除写出的那种抹干净的形状：不能凭一个布尔值就把整个请求
+            # 记成取消、删掉产物，按坏暂存处理
+            logger.error(f"[scoped_history] {lanlan_name}: 暂存取消标记形状不符，拒绝处理")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
             )
         routed_on_record = record.get("routed_keys") if isinstance(record, dict) else None
         if (
@@ -3876,6 +3899,9 @@ def _mark_items_forgotten_during_generation(
             # 被清 subject 的抽取原文 / 显示名一并抹掉：之后请求若中断，暂存里也不留它们
             items[position] = _stripped_item(item)
             added = True
+    segments = staging.get("segments")
+    if isinstance(segments, list):
+        _mark_segments_dropped(segments, {index for index in changed if index < len(segments)})
     return added
 
 
@@ -3995,6 +4021,7 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
             applied.append({"seq": item.get("seq"), "dropped_forget": True})
         # 被清 subject 的抽取原文 / 显示名不能留在磁盘上
         items[position] = _stripped_item(item)
+    _mark_segments_dropped(segments, affected)
     return True
 
 
@@ -4025,6 +4052,15 @@ def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
             applied.append({"seq": item.get("seq"), "dropped_forget": True})
         if item.get("kind") != _KEYED_ITEM_LOCALE:
             items[position] = _stripped_item(item)
+    _mark_segments_dropped(segments, affected)
+
+
+def _mark_segments_dropped(segments: list, indexes: set[int]) -> None:
+    # 段级记下「被清除丢弃」：只剩语言项（不记丢弃）的段光看条目认不出来，恢复重试补显示名时
+    # 会把清除前的键的元数据盖到之后重建的 section 上
+    for index in indexes:
+        if isinstance(segments[index], dict):
+            segments[index][_SEGMENT_DROPPED_BY_FORGET] = True
 
 
 def _stripped_item(item: dict) -> dict:
@@ -4033,6 +4069,18 @@ def _stripped_item(item: dict) -> dict:
     if item.get("kind") == _KEYED_ITEM_FACTS:
         stripped["effect_keys"] = list(item.get("effect_keys") or [])
     return stripped
+
+
+def _is_cancelled_staging_marker(document: dict) -> bool:
+    """Whether ``document`` has exactly the stripped shape :func:`_cancelled_staging_marker` writes."""
+    segments = document.get("segments")
+    return (
+        document.get(_KEYED_STAGING_CANCELLED) is True
+        and document.get("items") == []
+        and document.get("applied") == []
+        and isinstance(segments, list)
+        and all(isinstance(segment, dict) and set(segment) == {"wire_key"} for segment in segments)
+    )
 
 
 def _cancelled_staging_marker(document: dict) -> dict:
@@ -4686,6 +4734,43 @@ def _read_locale_subjects_for_listing(path: str) -> list:
     return subjects
 
 
+def _read_correction_subjects_for_listing(path: str) -> list:
+    """Write-free read of the subjects owning a pending persona correction (one entry per row).
+
+    Same attribution as ``PersonaManager.aforget_subject``: the subject stamp,
+    or for older unstamped rows the ``@subject/<kind>:<id>`` entity.
+    """
+    from memory.scopes import SCOPED_PERSONA_PREFIX, MemoryScopeError, MemorySubject, subject_from_entry
+
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] persona_corrections.json 读取失败，按空处理: {exc}")
+        return []
+    subjects = []
+    for correction in data if isinstance(data, list) else []:
+        if not isinstance(correction, dict):
+            continue
+        subject = subject_from_entry(correction)
+        if subject is None:
+            entity_raw = correction.get("entity")
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ""
+            if not entity.startswith(SCOPED_PERSONA_PREFIX):
+                continue
+            body = entity[len(SCOPED_PERSONA_PREFIX):]
+            kind, _, subject_id = body.partition(":")
+            scope = correction.get("scope")
+            try:
+                subject = MemorySubject.create(kind, subject_id, scope=scope if isinstance(scope, str) and scope else body)
+            except MemoryScopeError:
+                continue
+        subjects.append(subject)
+    return subjects
+
+
 def _read_persona_for_listing(path: str) -> dict:
     """Strict, write-free persona read for the listing endpoint."""
     if not os.path.exists(path):
@@ -4801,6 +4886,10 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         _read_locale_subjects_for_listing,
         os.path.join(character_dir, "scoped_prompt_locales.json"),
     )
+    correction_subjects = await asyncio.to_thread(
+        _read_correction_subjects_for_listing,
+        os.path.join(character_dir, "persona_corrections.json"),
+    )
 
     rows: dict[tuple[str, str], dict] = {}
 
@@ -4819,6 +4908,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
                 "active_reflections": 0,
                 "persona": False,
                 "prompt_locale": False,
+                "corrections": 0,
             }
             rows[marker] = row
         return row
@@ -4879,6 +4969,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         row = _row(locale_subject)
         if row is not None:
             row["prompt_locale"] = True
+    # 待处理的人设纠正同在删除面上（resolve 时会把已删的条目写回 persona）：只剩它们的 subject
+    # 也要能被找到、被清除
+    for correction_subject in correction_subjects:
+        row = _row(correction_subject)
+        if row is not None:
+            row["corrections"] += 1
     last_writes, _no_timestamp = collect_subject_last_writes(
         [facts_full, reflections, persona_entries],
     )
@@ -4896,6 +4992,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             "reflections": row["reflections"],
             "persona": row["persona"],
             "prompt_locale": row["prompt_locale"],
+            "corrections": row["corrections"],
             "last_write_at": last[1].isoformat() if last is not None else None,
             # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
             # 已终结的反思（promoted / denied …）照样列出、计入 reflections，但不算活跃面

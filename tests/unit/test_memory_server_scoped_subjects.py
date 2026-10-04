@@ -149,6 +149,7 @@ async def test_platform_filter_uses_kind_and_platform_component(env):
         "reflections": 0,
         "persona": True,
         "prompt_locale": False,
+        "corrections": 0,
         "last_write_at": "2026-09-10T10:00:00",
         "archived": False,
     }
@@ -384,3 +385,19 @@ async def test_reflection_without_id_still_lists_its_subject(env):
     by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
     # 清除按 subject 删反思、不看 id：只剩这种行的 subject 同样要能被找到
     assert by_key[("participant", "neko_visit:u_no_id")]["reflections"] == 1
+
+
+async def test_correction_only_subjects_are_listed(env):
+    stamped = MemorySubject.participant("neko_visit", "u_corr")
+    legacy = MemorySubject.participant("neko_visit", "u_legacy")
+    _write(env.root / NAME / "persona_corrections.json", [
+        {"old_text": "a", "new_text": "b", **stamped.as_entry_fields()},
+        # 老版本没打 subject 戳、只在 entity 里记归属的待处理纠正
+        {"old_text": "c", "new_text": "d", "entity": f"{legacy.persona_section_key}"},
+        "garbage",
+    ])
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
+    # 待处理的人设纠正同在删除面上：只剩它们的 subject 也要能被找到
+    assert by_key[("participant", "neko_visit:u_corr")]["corrections"] == 1
+    assert by_key[("participant", "neko_visit:u_legacy")]["corrections"] == 1
