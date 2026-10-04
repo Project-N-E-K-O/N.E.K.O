@@ -24,6 +24,12 @@ otherwise close 4403 and nothing sent before it is processed. Text frames
 only, each <= 16 KB (larger closes 1009). The vendor grant is sent on this
 socket and nowhere else, and never logged.
 
+Close codes the iframe acts on: terminal (do not reconnect; the parent page
+removes the iframe) -- 4403 unauthorized, 4404 unknown visit / page reload
+deadline passed, 4409 superseded; reconnect -- 1000 normal, 1011 a downlink
+could not be written (the page reloads through the normal grace); protocol
+errors -- 4400 bad request, 1003 binary frame, 1009 frame too large.
+
 Upstream: ``auth`` (first), ``caps{stage:'preflight'}`` (once; written into
 the visit route state, then the first ``credentials`` when it passed),
 ``caps{stage:'sdk'}`` (once, after ``credentials``), ``state``, ``recv``,
@@ -345,6 +351,7 @@ class _Connection:
     media_pending: set[int] = field(default_factory=set)
     close_code: Optional[int] = None
     close_reason: str = ""
+    link: Optional["_Link"] = field(default=None, repr=False)
 
     async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
         """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
@@ -365,10 +372,12 @@ class _Connection:
             try:
                 await self.websocket.send_text(text)
             except Exception as exc:  # noqa: BLE001 - 断开中的 socket：当作未送达
-                logger.debug("visit transport: send failed: %s", type(exc).__name__)
-                # 写不出去的 socket 不能留着继续收帧：退役并关闭（1011，iframe 会重连），
-                # 接收循环随即结束、按掉页起期限——「已提交重入却没发出去」的状态因此不会留下
-                _spawn_close(self, CLOSE_SEND_FAILED, "send failed")
+                logger.warning("visit transport: %s downlink not written, dropping the socket: %s",
+                               msg.get("type"), type(exc).__name__)
+                # 写不出去的 socket 不能留着：stop 失败用终态 4404（iframe 不再重连、不再领凭证入房），
+                # 其它用 1011（iframe 重连，走正常的页面重载）
+                _abandon(self, CLOSE_UNKNOWN_VISIT if msg.get("type") == "stop" else CLOSE_SEND_FAILED,
+                         "send failed")
                 return False
         return True
 
@@ -440,10 +449,29 @@ def get_transport_session(visit_id: str, side: str) -> Optional[VisitTransportSe
 def is_transport_attached(visit_id: str, side: str) -> bool:
     """True while an authenticated socket serves ``(visit_id, side)``."""
     link = _links.get((visit_id, side))
-    return link is not None and link.conn is not None and not link.conn.closed
+    return link is not None and link.conn is not None and not link.conn.closed and not link.conn.retired
 
 
 _close_tasks: set[asyncio.Task] = set()
+
+
+def _abandon(conn: _Connection, code: int, reason: str) -> None:
+    """Retire and close a socket that can no longer be written, and treat it as a lost page now.
+
+    Synchronous unbind + ``on_page_lost``: a half-open socket may keep the
+    receive loop waiting until the server ping times out, and the reload
+    deadline must run meanwhile. The loop's own ``finally`` then sees the
+    link already unbound and does not start a second reload.
+    """
+    _spawn_close(conn, code, reason)
+    link = conn.link
+    if link is None or _links.get((link.session.visit_id, link.session.side)) is not link or link.conn is not conn:
+        return
+    link.conn = None
+    try:
+        link.session.on_page_lost(link.session.now())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("visit transport: on_page_lost failed: %s", type(exc).__name__)
 
 
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
@@ -618,7 +646,7 @@ def _attach(link: _Link, websocket: WebSocket) -> _Connection:
     Synchronous on purpose: taking over never waits on the replaced socket,
     which may be stuck in a backpressured ``send_text`` holding its send lock.
     """
-    conn = _Connection(websocket=websocket, reattach=link.connections_seen > 0)
+    conn = _Connection(websocket=websocket, reattach=link.connections_seen > 0, link=link)
     previous = link.conn
     link.conn = conn
     link.connections_seen += 1

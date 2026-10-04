@@ -2267,3 +2267,71 @@ def test_replacing_a_session_closes_its_socket_as_superseded():
         tw._reset_for_tests()
     # 4409 是终态：旧 iframe 不会重连进新 session
     assert ws.closed_with == tw.CLOSE_SUPERSEDED
+
+
+
+class _BrokenSendWS(_RecordingWS):
+    async def send_text(self, text):
+        raise RuntimeError("socket gone")
+
+
+def test_a_send_failure_unbinds_and_starts_the_reload_at_once():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        conn = tw._attach(link, _BrokenSendWS())
+        ok = await s.send({"type": "media", "publish": True})
+        # 同步解绑并起期限：不等接收循环（半断开的 socket 可能要等 ping 超时）
+        attached = tw.is_transport_attached(VISIT_ID, "guest")
+        await asyncio.sleep(0.05)
+        return s, conn, ok, attached
+
+    try:
+        s, conn, ok, attached = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert not ok and not attached
+    assert s.liveness.events.count("page_lost") == 1
+    assert conn.websocket.closed_with == tw.CLOSE_SEND_FAILED
+
+
+def test_a_failed_stop_closes_with_a_terminal_code():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        conn = tw._attach(tw._links[(VISIT_ID, "guest")], _BrokenSendWS())
+        await s.send({"type": "stop", "reason": "home"})
+        await asyncio.sleep(0.05)
+        return conn
+
+    try:
+        conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # 收尾的 stop 没发出去：iframe 不能再重连、领凭证、用同一个 vid 入房
+    assert conn.websocket.closed_with == tw.CLOSE_UNKNOWN_VISIT
+
+
+def test_retired_socket_is_not_reported_as_attached():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        conn = tw._attach(tw._links[(VISIT_ID, "guest")], _RecordingWS())
+        tw._spawn_close(conn, tw.CLOSE_SUPERSEDED, "x")
+        return tw.is_transport_attached(VISIT_ID, "guest")
+
+    try:
+        attached = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert attached is False
