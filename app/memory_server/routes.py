@@ -2798,6 +2798,8 @@ async def _process_scoped_history_segments(
 _KEYED_ITEM_LOCALE = "locale"
 _KEYED_ITEM_FACTS = "facts"
 _KEYED_ITEM_DISPLAY_NAME = "display_name"
+# 清除时键文件读不出、取消记不进去：改记在暂存文档里，重试读到就补记 cancelled
+_KEYED_STAGING_CANCELLED = "cancelled_by_forget"
 
 
 def _reject_owner_signal_on_keyed_request(req: ScopedHistoryRequest) -> None:
@@ -3347,6 +3349,26 @@ async def _process_scoped_history_keyed(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
             )
+        if staging is not None and staging.get(_KEYED_STAGING_CANCELLED) is True:
+            # 清除时键文件读不出、取消只记在了暂存里：补记 cancelled 再删暂存，绝不应用
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_CANCELLED, request=fingerprint,
+                    ),
+                )
+                await idempotency.delete_staging(lanlan_name, key)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 cancelled 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="idempotency state unreadable; retry later",
+                ) from exc
+            return _keyed_duplicate_response(shape, contexts)
         if staging is not None and stored is None:
             # 「暂存已写、键还没记成 pending」之间失败留下的孤儿暂存：先补一条带
             # 请求身份的 pending 记录再应用，否则之后的 done 记录没有身份可核对
@@ -3537,7 +3559,8 @@ async def _cancel_staged_writes_for_subjects(
         ):
             continue
         async with idempotency.key_lock(lanlan_name, key):
-            if await idempotency.read_staging(lanlan_name, key) is None:
+            current = await idempotency.read_staging(lanlan_name, key)
+            if current is None:
                 continue
             try:
                 await idempotency.update_key(
@@ -3551,12 +3574,17 @@ async def _cancel_staged_writes_for_subjects(
                     ),
                 )
             except idempotency.IdempotencyStateError as exc:
-                # 键文件读不出：辅助文件坏了不能挡住隐私清除。此时所有带键请求本身就
-                # fail closed（503），照样删掉这份暂存——留着它，键文件修好后的重试
-                # 会把已清除的产物写回去
+                # 键文件读不出：辅助文件坏了不能挡住隐私清除，但取消也记不进键文件。
+                # 删掉暂存的话，键文件修好后同键重试看到的是「pending、没暂存」，会按
+                # 清除之后的 generation 重新抽取写回（不带 forget_epoch 时也没有墓碑）。
+                # 改把取消记在暂存里留着：重试读到它就补记 cancelled、回 duplicate
                 logger.warning(
-                    f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，未记取消、直接删除暂存: {exc}"
+                    f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，取消改记在暂存里: {exc}"
                 )
+                current[_KEYED_STAGING_CANCELLED] = True
+                await idempotency.write_staging(lanlan_name, key, current)
+                cancelled += 1
+                continue
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
     # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。

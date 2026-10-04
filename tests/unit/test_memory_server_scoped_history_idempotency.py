@@ -1091,11 +1091,26 @@ async def test_staged_writes_are_cancelled_before_the_erase_starts(env):
 
 
 async def test_unreadable_key_file_does_not_block_a_forget_with_staging(env):
-    await env.idem.write_staging(NAME, KEY_GROUP, {"subjects": [GROUP_KEY], "created_at": time.time()})
-    Path(env.idem.keys_path(NAME)).write_text("{torn", encoding="utf-8")
-    result = await _forget(env, GROUP)
-    assert result["status"] == "forgotten"
-    assert not _staging_file(env, KEY_GROUP).exists()      # 可复活的暂存照样删掉
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=1)  # seq0 facts, seq1 display_name
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
+    keys_file = Path(env.idem.keys_path(NAME))
+    intact = keys_file.read_text(encoding="utf-8")
+    keys_file.write_text("{torn", encoding="utf-8")
+    result = await _forget(env, GROUP)                     # 不带 forget_epoch：没有墓碑
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    # 键文件读不出、取消记不进去：改记在暂存里，暂存留着
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    assert staging["cancelled_by_forget"] is True
+    keys_file.write_text(intact, encoding="utf-8")         # 键文件修好，记录仍是 pending
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    again = await _post(env, _single_body())
+    # 同键重试不会按清除之后的 generation 重新抽取写回
+    assert again["duplicate"] is True and _facts_of(env, GROUP) == []
+    assert env.llm.calls == 1
+    assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
 
 
 async def test_cleanup_keeps_unreadable_staging(env):
