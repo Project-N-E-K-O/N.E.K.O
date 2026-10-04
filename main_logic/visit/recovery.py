@@ -250,6 +250,14 @@ def build_upload_doc(
     }
 
 
+# 与 identity 里票据核验认的传输方式同一集合
+_UPLOAD_TRANSPORTS = frozenset({"trtc", "livekit"})
+
+
+def _envelope_valid(own_char_uid: Any, transport: Any) -> bool:
+    return isinstance(own_char_uid, str) and bool(own_char_uid) and transport in _UPLOAD_TRANSPORTS
+
+
 def _owner_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -281,6 +289,10 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     owner = doc.get("own_visit_uid")
     if owner is not None and (not isinstance(owner, str) or not owner):
         # 上传只在登录账号与它一致时进行：坏值会让这份文件永远传不出去
+        return False
+    if not _envelope_valid(doc.get("own_char_uid"), doc.get("transport")):
+        # 只剩上传文件时没有流水可比：角色 id 与传输方式也要在这里核对，坏信封交给上传回调
+        # 只会每次启动都失败到过期
         return False
     request = doc.get("request")
     usage = request.get("usage") if isinstance(request, dict) else None

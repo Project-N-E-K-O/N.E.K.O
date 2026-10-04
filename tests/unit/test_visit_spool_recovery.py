@@ -2014,3 +2014,17 @@ async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, mo
     await _recover(tmp_path, upload_transcript=uploads)
     # 流水在却读不出：比对做不了，两份都留着、这轮不上传，不能把缺行的文件当正本传上去
     assert uploads.calls == [] and stream.exists() and sealed.exists()
+
+
+@pytest.mark.parametrize("envelope", [{"own_char_uid": None}, {"own_char_uid": {"x": 1}}, {"transport": "other"}],
+                         ids=["char_null", "char_object", "transport_unknown"])
+async def test_sealed_upload_with_a_bad_envelope_and_no_stream_is_not_uploaded(tmp_path, envelope):
+    v = vid(95)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), **envelope}), encoding="utf-8")
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 只剩上传文件、没有流水可比：角色 id / 传输方式坏了同样按损坏处理，不交给上传回调
+    assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
+

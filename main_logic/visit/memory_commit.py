@@ -664,7 +664,9 @@ async def _summary_locked(
         memory_bridge.diag("last_summary_peer_ngram", visit_id=spool.visit_id)
         text = ""
     if text:
-        ended_at = max(float(line["ts"]) for line in contents.lines)
+        # 按规范顺序的最后一行取时间：墙钟中途被校正时取最大值会拿到某个跳到未来的时间戳，
+        # 名册按它排序，之后的场次就再也盖不掉这份旧摘要
+        ended_at = float(max(contents.lines, key=line_order_key)["ts"])
         await roster.set_last_summary(
             state["peer_uid"], own_char, visit_id=spool.visit_id, ended_at=ended_at,
             text=text, pair_id=state["pair_id"],

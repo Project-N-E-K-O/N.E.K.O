@@ -611,3 +611,13 @@ async def test_peer_ngram_scan_runs_off_the_event_loop(tmp_path, monkeypatch):
     assert await _summarize(spool, FakeLLM())
     # 全转录逐字扫描放到工作线程，不卡事件循环
     assert threads and threads[0] is not threading.main_thread()
+
+
+async def test_summary_orders_by_the_final_line_not_a_clock_spike(tmp_path):
+    roster = await seed_roster(tmp_path)
+    lines = [ln(i, f"line {i}", ("own_cat", "peer_cat", "peer_human", "own_human")[i % 4]) for i in range(8)]
+    lines[2]["ts"] = 9_999_999.0                            # 中途墙钟跳到未来、又被校正回来
+    spool = await make_visit(tmp_path, V1, lines)
+    assert await _summarize(spool, FakeLLM())
+    # 名册的排序键取规范顺序最后一行的时间，不取最大值：一次跳变不能把这份摘要钉住
+    assert (await roster.get_last_summary(PEER_X, "A"))["ended_at"] == lines[-1]["ts"]
