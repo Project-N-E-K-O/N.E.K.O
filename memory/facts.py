@@ -580,6 +580,49 @@ class FactStore:
     async def aload_facts_full(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.load_facts_full, name)
 
+    def _assert_active_facts_readable(self, name: str) -> int:
+        """Raise ``RuntimeError`` when ``facts.json`` exists but is not a readable JSON list.
+
+        Keyed scoped writes only: the lenient loader caches an unreadable
+        active pool as empty, and saving on top of that would erase it.
+        Returns the number of rows on disk (0 when the file is absent).
+        """
+        path = self._facts_path(name)
+        if not os.path.exists(path):
+            return 0
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            raise RuntimeError(f"facts of {name!r} unreadable: {e}") from e
+        if not isinstance(data, list):
+            raise RuntimeError(f"facts of {name!r} is not a list")
+        return len(data)
+
+    def _read_archived_effect_keys(self, name: str) -> set[str]:
+        """Effect keys stamped on archived rows (keyed scoped writes only).
+
+        Strict: an absent archive is an empty set, but an unreadable or
+        malformed one raises ``RuntimeError`` instead of reading as "no keys".
+        The effect key is what keeps a keyed retry from writing a fact twice;
+        guessing "absent" could duplicate a row that was archived meanwhile,
+        so the keyed apply fails and is retried with the same key.
+        """
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return set()
+        try:
+            with open(archive_path, encoding='utf-8') as f:
+                archived = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            raise RuntimeError(f"facts archive of {name!r} unreadable: {e}") from e
+        if not isinstance(archived, list):
+            raise RuntimeError(f"facts archive of {name!r} is not a list")
+        return {
+            row['effect_key'] for row in archived
+            if isinstance(row, dict) and isinstance(row.get('effect_key'), str)
+        }
+
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
         """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""
@@ -3377,6 +3420,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         expected_subject_generation: int | None = None,
         reconciled_facts: list[dict] | None = None,
+        effect_keys: list[str | None] | None = None,
     ) -> list[dict]:
         # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
         # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
@@ -3415,6 +3459,10 @@ class FactStore:
                 speaker_provenance=speaker_provenance,
                 reconciled_facts=reconciled_facts,
                 near_dup_pairs_out=near_dup_pairs,
+                **(
+                    {"effect_keys": effect_keys}
+                    if effect_keys is not None else {}
+                ),
             )
         if near_dup_pairs:
             await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
@@ -3454,6 +3502,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         near_dup_pairs_out: list | None = None,
+        effect_keys: list[str | None] | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3484,6 +3533,16 @@ class FactStore:
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this call reconciled, so callers can distinguish their own
         write from a concurrent provenance change.
+
+        ``effect_keys`` (keyed scoped_history only) is aligned index-for-index
+        with ``extracted``. A non-empty entry is stamped onto the created row
+        as ``effect_key`` in the same save, and a candidate whose effect key
+        already exists on any active or archived row is skipped. That closes
+        the "row written, journal not yet updated" crash window independently
+        of content dedup. It is a separate argument rather than a field on the
+        extracted dict on purpose: extracted dicts are model output, and a
+        model must never be able to mint or collide an effect key. ``None``
+        (every legacy caller) leaves this method's behaviour unchanged.
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -3626,6 +3685,12 @@ class FactStore:
                 f"existing_speaker={existing_speaker_id or '-'} "
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
+        if effect_keys is not None:
+            # 带键写入：先严格核对磁盘，再从磁盘出发。宽松加载器曾把读不出的文件缓存成
+            # 空列表；文件修好后缓存仍是空的，照它保存会把修好的事实整个覆盖掉
+            on_disk = await asyncio.to_thread(self._assert_active_facts_readable, lanlan_name)
+            if on_disk and not self._facts.get(lanlan_name):
+                self._facts.pop(lanlan_name, None)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3643,8 +3708,28 @@ class FactStore:
                 lanlan_name, existing_facts,
             )
 
-        for fact in extracted:
+        # 效果键集合（只有带幂等键的 scoped_history 才传 effect_keys）：活跃池
+        # + 归档里已出现过的 effect_key。不传时完全不读归档、不建集合。
+        existing_effect_keys: set[str] | None = None
+        if effect_keys is not None:
+            existing_effect_keys = {
+                f['effect_key'] for f in existing_facts
+                if isinstance(f, dict) and isinstance(f.get('effect_key'), str)
+            }
+            existing_effect_keys |= await asyncio.to_thread(
+                self._read_archived_effect_keys, lanlan_name,
+            )
+
+        for fact_index, fact in enumerate(extracted):
             if not isinstance(fact, dict):
+                continue
+            effect_key = None
+            if existing_effect_keys is not None and fact_index < len(effect_keys):
+                candidate_effect_key = effect_keys[fact_index]
+                if isinstance(candidate_effect_key, str) and candidate_effect_key:
+                    effect_key = candidate_effect_key
+            if effect_key is not None and effect_key in existing_effect_keys:
+                # 这条效果上一次已经落盘（崩在「事实已写、日志未记」之间）。
                 continue
             text = fact.get('text', '').strip()
             if not text:
@@ -3966,6 +4051,9 @@ class FactStore:
 
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
+            if effect_key is not None:
+                fact_entry['effect_key'] = effect_key
+                existing_effect_keys.add(effect_key)
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             facts_by_id[fact_entry['id']] = fact_entry
