@@ -3793,16 +3793,25 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     archived_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
     )
+    def _fact_id(fact: dict):
+        # 旧版本 / 手改文件里可能有列表、对象之类不可哈希的 id：只认字符串与整数，
+        # 其余当作没有 id，不能让一条坏数据把整个列表请求打成 500
+        fid = fact.get("id")
+        if isinstance(fid, bool) or not isinstance(fid, (str, int)):
+            return None
+        return fid
+
     active_fact_ids = {
-        fact.get("id")
+        _fact_id(fact)
         for fact in active_facts
-        if isinstance(fact, dict) and fact.get("id") is not None
+        if isinstance(fact, dict) and _fact_id(fact) is not None
     }
     # 与 load_facts_full 同口径按 id 去重：归档先写 facts_archive.json、后改
     # facts.json，两步之间中断时同一条事实会暂时同时出现在两份文件里
     facts_full = [fact for fact in active_facts if isinstance(fact, dict)] + [
         fact for fact in archived_facts
-        if isinstance(fact, dict) and fact.get("id") not in active_fact_ids
+        if isinstance(fact, dict)
+        and (_fact_id(fact) is None or _fact_id(fact) not in active_fact_ids)
     ]
     reflections_path = os.path.join(character_dir, "reflections.json")
     reflections = PersistenceMixin._filter_reflections(
@@ -3842,7 +3851,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         if row is None:
             continue
         row["facts"] += 1
-        if fact.get("id") in active_fact_ids and not fact.get("subject_archived_at"):
+        if _fact_id(fact) in active_fact_ids and not fact.get("subject_archived_at"):
             row["active_facts"] += 1
     for reflection in reflections:
         if not isinstance(reflection, dict):

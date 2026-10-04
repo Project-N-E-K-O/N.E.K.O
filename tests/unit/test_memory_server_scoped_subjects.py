@@ -244,3 +244,16 @@ async def test_fact_present_in_both_files_is_counted_once(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     part = next(row for row in result["subjects"] if row["subject_id"] == VISIT_PART.subject_id)
     assert part["facts"] == 2
+
+
+async def test_unhashable_fact_ids_do_not_break_the_listing(env):
+    char_dir = env.root / NAME
+    active = json.loads((char_dir / "facts.json").read_text(encoding="utf-8"))
+    active.append({**_fact("bad", VISIT_PART, "2026-09-06T10:00:00"), "id": ["legacy", 1]})
+    _write(char_dir / "facts.json", active)
+    archive = json.loads((char_dir / "facts_archive.json").read_text(encoding="utf-8"))
+    archive.append({**_fact("bad2", VISIT_PART, "2026-09-06T10:00:00"), "id": {"x": 1}})
+    _write(char_dir / "facts_archive.json", archive)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    part = next(row for row in result["subjects"] if row["subject_id"] == VISIT_PART.subject_id)
+    assert part["facts"] == 4
