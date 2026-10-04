@@ -694,3 +694,51 @@ def test_paths_stay_inside_the_test_root(env):
         env.idem.tombstones_path(NAME),
     ):
         assert os.path.commonpath([str(env.root), path]) == str(env.root)
+
+
+# ── review round 1 ────────────────────────────────────────────────────────
+
+async def test_forget_without_epoch_during_generation_still_drops_the_write(env):
+    """No staging to cancel and no tombstone: the pre-LLM generation must still win."""
+    env.llm.responses = [SINGLE_FACTS]
+    env.llm.gate = asyncio.Event()
+    env.llm.entered = asyncio.Event()
+    task = asyncio.create_task(_post(env, _single_body(display_name=None)))
+    await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
+    assert not _staging_file(env, KEY_GROUP).exists()
+    await _forget(env, GROUP)                      # 不带 forget_epoch：不写墓碑
+    assert not Path(env.idem.tombstones_path(NAME)).exists()
+    env.llm.gate.set()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result["created"] == 0
+    assert _facts_of(env, GROUP) == []
+    assert _key_state(env, KEY_GROUP) == "done"
+
+
+async def test_unreadable_archive_fails_the_keyed_apply_instead_of_guessing(env):
+    env.llm.responses = [SINGLE_FACTS]
+    archive = Path(env.fs._facts_archive_path(NAME))
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_text("{not json", encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None))
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GROUP) == []
+    assert _staging_file(env, KEY_GROUP).exists()      # 留着暂存，同键重试只补应用
+    archive.write_text("[]", encoding="utf-8")
+    result = await _post(env, _single_body(display_name=None))
+    assert result["created"] == 2 and env.llm.calls == 1
+
+
+def test_idle_key_locks_are_dropped_from_the_registry(env):
+    import gc
+
+    async def _check():
+        idem = env.idem
+        for i in range(50):
+            async with idem.key_lock(NAME, f"visit-digest:k{i}:0:group:0"):
+                pass
+        gc.collect()
+        return sum(1 for (_loop, name, _key) in list(idem._key_locks.keys()) if name == NAME)
+
+    assert asyncio.run(_check()) == 0

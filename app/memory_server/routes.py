@@ -3109,7 +3109,12 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
     return entry
 
 
-async def _apply_keyed_staging(lanlan_name: str, key: str, staging: dict) -> None:
+async def _apply_keyed_staging(
+    lanlan_name: str,
+    key: str,
+    staging: dict,
+    generations: dict[int, int] | None = None,
+) -> None:
     """Apply every item not yet in ``applied``; journal each one atomically.
 
     Tombstone rule, per item and by forget GENERATION only (never time, never
@@ -3121,6 +3126,14 @@ async def _apply_keyed_staging(lanlan_name: str, key: str, staging: dict) -> Non
     tombstone read and passed as ``expected_subject_generation``: a forget
     that starts after the tombstone check but before persistence bumps that
     generation and the fact store discards the write by itself.
+
+    ``generations`` (segment index -> generation) is given only on the
+    request that generated the staging: the values were captured BEFORE the
+    LLM call, so a forget landing while the model ran (a window with no
+    staging file to cancel and, without ``forget_epoch``, no tombstone)
+    still invalidates the write, as on the unkeyed path. A retry restored
+    from an existing staging file reads the current generation: a forget
+    since then would have cancelled that staging under the key lock.
     """
     from memory.scopes import coerce_subject
 
@@ -3139,9 +3152,12 @@ async def _apply_keyed_staging(lanlan_name: str, key: str, staging: dict) -> Non
         segment = segments[item["segment"]]
         generation = None
         if item.get("kind") == _KEYED_ITEM_FACTS:
-            generation = runtime.fact_store._subject_forget_generation(
-                lanlan_name, coerce_subject(segment["subject"]),
-            )
+            if generations is not None and item["segment"] in generations:
+                generation = generations[item["segment"]]
+            else:
+                generation = runtime.fact_store._subject_forget_generation(
+                    lanlan_name, coerce_subject(segment["subject"]),
+                )
         tombstones = await idempotency.read_tombstones(lanlan_name)
         tombstone_epoch = idempotency.tombstone_epoch(
             tombstones, segment.get("tombstone_keys") or [],
@@ -3262,7 +3278,18 @@ async def _process_scoped_history_keyed(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
             )
+        generations = None
         if staging is None:
+            # 与不带键路径（extract_facts）同一时机：在调 LLM 之前取各 subject 的
+            # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
+            # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
+            # 事实存储据此丢弃这次写入
+            generations = {
+                index: runtime.fact_store._subject_forget_generation(
+                    lanlan_name, context["subject"],
+                )
+                for index, context in enumerate(contexts)
+            }
             staging = await _build_keyed_staging(
                 lanlan_name,
                 req,
@@ -3289,7 +3316,7 @@ async def _process_scoped_history_keyed(
                     detail="scoped history staging failed; retry with the same key",
                 ) from exc
         try:
-            await _apply_keyed_staging(lanlan_name, key, staging)
+            await _apply_keyed_staging(lanlan_name, key, staging, generations)
         except (HTTPException, MaintenanceModeError):
             raise
         except Exception as exc:

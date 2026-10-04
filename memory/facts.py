@@ -583,8 +583,11 @@ class FactStore:
     def _read_archived_effect_keys(self, name: str) -> set[str]:
         """Effect keys stamped on archived rows (keyed scoped writes only).
 
-        Degrades to an empty set on a missing or unreadable archive, the same
-        best-effort contract as ``load_facts_full``.
+        Strict: an absent archive is an empty set, but an unreadable or
+        malformed one raises ``RuntimeError`` instead of reading as "no keys".
+        The effect key is what keeps a keyed retry from writing a fact twice;
+        guessing "absent" could duplicate a row that was archived meanwhile,
+        so the keyed apply fails and is retried with the same key.
         """
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
@@ -592,11 +595,10 @@ class FactStore:
         try:
             with open(archive_path, encoding='utf-8') as f:
                 archived = json.load(f)
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-            logger.warning(f"[FactStore] {name}: 读取 archive effect_key 失败，仅按活跃池判重: {e}")
-            return set()
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            raise RuntimeError(f"facts archive of {name!r} unreadable: {e}") from e
         if not isinstance(archived, list):
-            return set()
+            raise RuntimeError(f"facts archive of {name!r} is not a list")
         return {
             row['effect_key'] for row in archived
             if isinstance(row, dict) and isinstance(row.get('effect_key'), str)

@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import time
+import weakref
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -85,7 +86,11 @@ class IdempotencyStateError(RuntimeError):
 # keyed per running loop so a lock created under one loop (a previous test,
 # a restarted server loop) is never awaited from another.
 _character_locks: dict[tuple[int, str], asyncio.Lock] = {}
-_key_locks: dict[tuple[int, str, str], asyncio.Lock] = {}
+# 键级锁按弱引用登记：持有或等待它的协程都引用着它，空闲的键随即被回收，
+# 注册表不会随请求总数无限增长
+_key_locks: "weakref.WeakValueDictionary[tuple[int, str, str], asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _loop_id() -> int:
@@ -103,7 +108,12 @@ def idempotency_lock(lanlan_name: str) -> asyncio.Lock:
 
 
 def key_lock(lanlan_name: str, key: str) -> asyncio.Lock:
-    """Return the per-key lock (the same object for the same character and key)."""
+    """Return the per-key lock (the same object for the same character and key).
+
+    Registered weakly: callers keep the returned lock referenced while they
+    hold or wait on it (``async with key_lock(...)`` does), and an idle key's
+    lock is dropped.
+    """
     registry_key = (_loop_id(), lanlan_name, key)
     lock = _key_locks.get(registry_key)
     if lock is None:
