@@ -3265,16 +3265,18 @@ async def _process_scoped_history_keyed(
     async with idempotency.key_lock(lanlan_name, key):
         try:
             record = await idempotency.read_key(lanlan_name, key)
+            # 不论什么状态，记录里有请求身份就先核对：pending 键丢了暂存时也不能
+            # 让另一个请求借这个键重新生成、再把原来的身份覆盖掉
+            stored = record.get("request") if record is not None else None
+            if stored is not None and stored != fingerprint:
+                raise HTTPException(
+                    status_code=422,
+                    detail="idempotency_key was already used for a different request",
+                )
             if (
                 record is not None
                 and record.get("state") in idempotency.TERMINAL_KEY_STATES
             ):
-                stored = record.get("request")
-                if stored is not None and stored != fingerprint:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="idempotency_key was already used for a different request",
-                    )
                 return _keyed_duplicate_response(shape, contexts)
             staging = await idempotency.read_staging(lanlan_name, key)
         except idempotency.IdempotencyStateError as exc:
@@ -3290,6 +3292,27 @@ async def _process_scoped_history_keyed(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
             )
+        if staging is not None and stored is None:
+            # 「暂存已写、键还没记成 pending」之间失败留下的孤儿暂存：先补一条带
+            # 请求身份的 pending 记录再应用，否则之后的 done 记录没有身份可核对
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_PENDING,
+                        client_requested_at=req.client_requested_at,
+                        request=fingerprint,
+                    ),
+                )
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 pending 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
         generations = None
         if staging is None:
             # 与不带键路径（extract_facts）同一时机：在调 LLM 之前取各 subject 的

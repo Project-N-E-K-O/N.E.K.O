@@ -767,3 +767,39 @@ async def test_startup_cleanup_keeps_the_staging_of_a_pending_key(env):
     assert report["staging_removed"] == 1
     assert Path(idem.staging_path(NAME, "k-pending")).exists()
     assert not Path(idem.staging_path(NAME, "k-done")).exists()
+
+
+
+async def test_pending_key_without_staging_rejects_another_request(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    _staging_file(env, KEY_GROUP).unlink()
+    assert _key_state(env, KEY_GROUP) == "pending"
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None, subject=PART))
+    assert excinfo.value.status_code == 422
+    assert env.llm.calls == 1
+
+
+async def test_orphan_staging_gets_a_fingerprinted_record_before_apply(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real_update = env.idem.update_key
+    state = {"fail": True}
+
+    async def flaky_update(lanlan_name, key, fn):
+        if state["fail"]:
+            state["fail"] = False
+            raise OSError("injected: staging written, pending not recorded")
+        return await real_update(lanlan_name, key, fn)
+
+    env.monkeypatch.setattr(env.idem, "update_key", flaky_update)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(display_name=None))
+    assert _staging_file(env, KEY_GROUP).exists() and _key_state(env, KEY_GROUP) is None
+    result = await _post(env, _single_body(display_name=None))
+    assert result["status"] == "processed" and _key_state(env, KEY_GROUP) == "done"
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(display_name=None, subject=PART))
+    assert excinfo.value.status_code == 422
