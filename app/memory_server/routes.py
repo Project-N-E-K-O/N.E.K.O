@@ -21,9 +21,11 @@ with its flush loop.
 
 import asyncio
 import json
+import os
 import re
+import time
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
@@ -1280,6 +1282,7 @@ class ScopedFactsWriteRequest(BaseModel):
 #: correct — the two layers must NOT share a pattern string.
 _ACTIVITY_EVENT_ID_PATTERN = r"\A[A-Za-z0-9_.:-]+\z"
 _SPEAKER_CHANNEL_PATTERN = r"\A[a-z0-9_]{1,16}\z"
+_IDEMPOTENCY_KEY_PATTERN = r"\A[A-Za-z0-9_.:-]+\z"
 
 
 class ActivityEvent(BaseModel):
@@ -1379,6 +1382,22 @@ class ScopedHistoryRequest(BaseModel):
     # the group-digest paths keep using it unchanged.
     segments: list[ScopedHistorySegment] | None = None
     language: str | None = None
+    # Optional idempotency key (both shapes). Absent: the request behaves
+    # exactly as before and the two fields below are ignored. Present: the
+    # handler switches to the generate-then-apply journal (see
+    # ``_process_scoped_history_keyed``). Same anchoring rule as
+    # ``_ACTIVITY_EVENT_ID_PATTERN`` (Rust regex: ``\A...\z``).
+    idempotency_key: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        pattern=_IDEMPOTENCY_KEY_PATTERN,
+    )
+    # Diagnostics only. Never compared with anything: ordering against a
+    # forget is decided by ``subject_epochs`` alone, so neither side's clock
+    # (skew, rollback) can let a stale write through.
+    client_requested_at: float | None = None
+    # ``{MemorySubject.key: forget_epoch}`` captured by the caller when the
+    # round started; reused verbatim by every retry of the same key.
+    subject_epochs: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
 
 def _resolve_trust_source(
@@ -1980,6 +1999,8 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
+    if req.idempotency_key is not None:
+        _reject_owner_signal_on_keyed_request(req)
     if req.segments is not None:
         return await _process_scoped_history_segments(lanlan_name, req)
     if req.input_history is None or req.subject is None:
@@ -2059,6 +2080,29 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
     )
+    if req.idempotency_key is not None:
+        # 带键路径在任何写入之前分流：上面只有校验与纯计算（快照、路由），
+        # 语言状态 / 抽取 / 落盘全部交给「先生成、后应用」日志。
+        if speaker_label is None and subject.kind == "group_chat":
+            # 与下面不带键路径同一个缺省（函数体内另有同名局部 import，
+            # 这里也必须局部 import，否则是未绑定的局部名）。
+            from config.prompts.prompts_memory import get_group_digest_speaker_label
+            from utils.language_utils import get_global_language_full
+            speaker_label = get_group_digest_speaker_label(get_global_language_full())
+        return await _process_scoped_history_keyed(
+            lanlan_name,
+            req,
+            shape="single",
+            contexts=[{
+                "wire_subject": req.subject.to_domain(),
+                "subject": subject,
+                "display_name": display_name,
+                "speaker_provenance": speaker_provenance,
+                "speaker_label": speaker_label,
+                "messages": input_history,
+                "trust_state": trust_state,
+            }],
+        )
     locale_order = None
     if is_supported_language_code(req.language):
         locale_admission_order = (
@@ -2405,6 +2449,27 @@ async def _process_scoped_history_segments(
         _apply_canonical_write_routing(segment, trust_snapshot_for_request)
         _stamp_resolved_trust(segment, trust_snapshot_for_request)
 
+    if req.idempotency_key is not None:
+        # 与单 subject 形态同一分流点：此前没有任何写入。
+        return await _process_scoped_history_keyed(
+            lanlan_name,
+            req,
+            shape="segments",
+            contexts=[
+                {
+                    "wire_subject": segment["requested_subject"],
+                    "subject": segment["subject"],
+                    "display_name": segment.get("display_name"),
+                    "speaker_provenance": FactStore._speaker_provenance_of(
+                        segment,
+                    ),
+                    "trust_state": segment,
+                }
+                for segment in parsed
+            ],
+            prompt_segments=parsed,
+        )
+
     signal_facts = None
     if any(segment.get("speaker_is_owner") for segment in parsed):
         # Freeze the pre-batch view. After extraction we replay successful
@@ -2717,6 +2782,601 @@ async def _process_scoped_history_segments(
     }
 
 
+# ── keyed /scoped_history: generate first, apply later ─────────────────────
+#
+# 带 idempotency_key 的 scoped_history（单 subject 与 segments 两形态）不走
+# 上面「抽取即落盘」的一体路径，而是：
+#   1. 整次请求持键级锁（idempotency.key_lock）；键已 done / cancelled → duplicate；
+#   2. 有暂存 → 不调 LLM；无暂存 → 调 LLM 生成，产物完整才原子写入暂存并把
+#      键记成 pending（不完整一律 502、不写暂存——否则残缺结果被永久钉住）；
+#   3. 逐项应用（语言状态 / 事实批 / 显示名），每项应用后在暂存里追加 applied；
+#      应用前逐项查清除墓碑（只比代数）；
+#   4. 全部应用完、信赖池（如有）落盘 → 键标 done、删暂存。
+# 详见 docs/design/visit-infrastructure.md §4.6。
+
+_KEYED_ITEM_LOCALE = "locale"
+_KEYED_ITEM_FACTS = "facts"
+_KEYED_ITEM_DISPLAY_NAME = "display_name"
+
+
+def _reject_owner_signal_on_keyed_request(req: ScopedHistoryRequest) -> None:
+    """Keyed requests carry no owner trust signals (422 otherwise).
+
+    Owner signals produce trust events whose replay safety rests on the
+    request-scoped observation chain of the unkeyed path; journaling them
+    would need per-event effect keys. The only keyed caller (visit digests)
+    always sends ``speaker_tier="none"`` without owner bits, so the keyed
+    path rejects them instead of half-supporting them.
+    """
+    if req.speaker_is_owner or any(
+        segment.speaker_is_owner for segment in (req.segments or [])
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "idempotency_key does not support speaker_is_owner: owner "
+                "trust signals are not journaled; send owner batches without "
+                "an idempotency_key"
+            ),
+        )
+
+
+def _keyed_null_trust_block() -> dict:
+    """A trust block with every key ``_trust_response_block`` reports, persisted null."""
+    return {**_trust_response_block({}, None, None), "persisted": None}
+
+
+def _keyed_fact_identity(fact: dict) -> tuple:
+    from memory.facts import _speaker_trust_fact_identity
+
+    identity = _speaker_trust_fact_identity(fact)
+    if identity is not None:
+        return identity
+    return (
+        str(fact.get("id")), fact.get("subject_kind"),
+        fact.get("subject_id"), fact.get("scope"),
+    )
+
+
+def _keyed_duplicate_response(shape: str, contexts: list[dict]) -> dict:
+    if shape == "single":
+        return {
+            "status": "processed",
+            "duplicate": True,
+            "subject": contexts[0]["subject"].as_entry_fields(),
+            "created": 0,
+            "fact_ids": [],
+            "trust": _keyed_null_trust_block(),
+            "trust_events": [],
+        }
+    return {
+        "status": "processed",
+        "duplicate": True,
+        "segments": [
+            {
+                "subject": context["subject"].as_entry_fields(),
+                "trust": _keyed_null_trust_block(),
+                "status": "ok",
+                "created": 0,
+                "dropped": 0,
+                "fact_ids": [],
+                "fact_identities": [],
+                "created_fact_identities": [],
+                "reconciled": [],
+                "trust_events": [],
+            }
+            for context in contexts
+        ],
+    }
+
+
+def _keyed_staging_matches(staging: dict, shape: str, contexts: list[dict]) -> bool:
+    """Same key, same request: shape and per-position wire subjects agree."""
+    segments = staging.get("segments")
+    if staging.get("shape") != shape or not isinstance(segments, list):
+        return False
+    if len(segments) != len(contexts):
+        return False
+    return all(
+        isinstance(stored, dict)
+        and stored.get("wire_key") == context["wire_subject"].key
+        for stored, context in zip(segments, contexts)
+    )
+
+
+async def _generate_keyed_facts(
+    lanlan_name: str,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None,
+) -> tuple[list[list[dict]], list[int]]:
+    """Run the extraction LLM once; return ``(facts per context, dropped per context)``.
+
+    Fail-closed and stricter than the unkeyed path: ANY incomplete outcome
+    (terminal LLM failure, malformed / unplaceable / suspect entries, a
+    segment missing from the batch output) is a 502 and nothing is staged.
+    The unkeyed path can persist the recognised part and let the caller
+    retry the rest; here the staged result is final for the key, so a
+    partial one would be pinned forever.
+    """
+    fact_store = runtime.fact_store
+    failure = HTTPException(
+        status_code=502,
+        detail="scoped fact extraction failed; retry later",
+    )
+    if shape == "single":
+        context = contexts[0]
+        extracted = await fact_store._allm_extract_facts(
+            lanlan_name,
+            context["messages"],
+            treat_malformed_as_failure=True,
+            speaker_label=context.get("speaker_label"),
+        )
+        if extracted is None:
+            raise failure
+        if any(
+            not (
+                isinstance(fact, dict)
+                and isinstance(fact.get("text"), str)
+                and fact["text"].strip()
+            )
+            for fact in extracted
+        ):
+            raise failure
+        return [list(extracted)], [0]
+
+    extracted = await fact_store._allm_extract_facts_batch(
+        lanlan_name, prompt_segments,
+    )
+    if extracted is None:
+        raise failure
+    count = len(contexts)
+    per_segment: list[list[dict] | None] = [None] * count
+    dropped = [0] * count
+    for item in extracted:
+        index, facts, item_dropped, suspect = fact_store._parse_batch_segment_entry(
+            item, count,
+        )
+        if index is None or suspect:
+            raise failure
+        if per_segment[index] is None:
+            per_segment[index] = []
+        per_segment[index].extend(facts)
+        dropped[index] += item_dropped
+    if not extracted:
+        per_segment = [[] for _ in range(count)]
+    if any(facts is None for facts in per_segment):
+        raise failure
+    return [list(facts or []) for facts in per_segment], dropped
+
+
+async def _reserve_keyed_locale_orders(
+    lanlan_name: str, language: str | None, contexts: list[dict],
+) -> list[int | None]:
+    """Reserve one causal locale order per subject BEFORE the LLM call.
+
+    The order is stored in the staging document and reused by every apply
+    attempt. Because it is reserved before generation, a forget that lands
+    later always ends up with a cutoff >= this order, so the locale item is
+    also rejected by the locale store's own forget cutoff, independently of
+    tombstones; and a newer unkeyed write keeps priority over a retried
+    older digest.
+    """
+    if not is_supported_language_code(language):
+        return [None] * len(contexts)
+    subjects = [context["subject"] for context in contexts]
+    admission = locale_state.allocate_subject_prompt_locale_orders(
+        lanlan_name, subjects,
+    )
+    return list(await asyncio.to_thread(
+        locale_state.reserve_subject_prompt_locale_orders,
+        lanlan_name,
+        subjects,
+        orders=admission,
+    ))
+
+
+async def _build_keyed_staging(
+    lanlan_name: str,
+    req: ScopedHistoryRequest,
+    *,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None,
+) -> dict:
+    from . import idempotency
+
+    key = req.idempotency_key
+    orders = await _reserve_keyed_locale_orders(lanlan_name, req.language, contexts)
+    facts_per_context, dropped = await _generate_keyed_facts(
+        lanlan_name, shape, contexts, prompt_segments,
+    )
+    segments = []
+    items: list[dict] = []
+    subject_keys: set[str] = set()
+    effect_ordinal = 0
+    for index, context in enumerate(contexts):
+        wire_key = context["wire_subject"].key
+        routed_key = context["subject"].key
+        tombstone_keys = [wire_key] + ([routed_key] if routed_key != wire_key else [])
+        subject_keys.update(tombstone_keys)
+        segments.append({
+            "wire_key": wire_key,
+            "subject": context["subject"].as_entry_fields(),
+            "tombstone_keys": tombstone_keys,
+            "dropped": int(dropped[index]),
+        })
+        if orders[index] is not None:
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_LOCALE,
+                "segment": index,
+                "language": req.language,
+                "order": orders[index],
+            })
+        facts = facts_per_context[index]
+        if facts:
+            effect_keys = []
+            for _fact in facts:
+                effect_keys.append(idempotency.effect_key_for(key, effect_ordinal))
+                effect_ordinal += 1
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_FACTS,
+                "segment": index,
+                "facts": facts,
+                "effect_keys": effect_keys,
+                "speaker_provenance": context.get("speaker_provenance"),
+            })
+        if context.get("display_name"):
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_DISPLAY_NAME,
+                "segment": index,
+                "display_name": context["display_name"],
+            })
+    request_epochs = req.subject_epochs or {}
+    return {
+        "key": key,
+        "state": idempotency.STAGING_STATE_GENERATED,
+        "shape": shape,
+        "subjects": sorted(subject_keys),
+        "epochs": {
+            subject_key: int(request_epochs[subject_key])
+            for subject_key in sorted(subject_keys)
+            if subject_key in request_epochs
+        },
+        # 只记诊断，绝不参与任何比较。
+        "client_requested_at": req.client_requested_at,
+        "created_at": time.time(),
+        "segments": segments,
+        "items": items,
+        "applied": [],
+    }
+
+
+async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generation) -> dict:
+    from memory.scopes import coerce_subject
+
+    subject = coerce_subject(segment["subject"])
+    kind = item.get("kind")
+    entry: dict = {"seq": item["seq"]}
+    if kind == _KEYED_ITEM_FACTS:
+        reconciled: list[dict] = []
+        created = await runtime.fact_store._apersist_new_facts(
+            lanlan_name,
+            list(item.get("facts") or []),
+            subject=subject,
+            speaker_provenance=item.get("speaker_provenance"),
+            expected_subject_generation=generation,
+            reconciled_facts=reconciled,
+            effect_keys=list(item.get("effect_keys") or []),
+        )
+        entry["fact_ids"] = [fact.get("id") for fact in created if fact.get("id")]
+        entry["created_fact_identities"] = [
+            list(_keyed_fact_identity(fact))
+            for fact in created
+            if isinstance(fact, dict)
+            and fact.get("id") is not None
+            and all(_keyed_fact_identity(fact))
+        ]
+        entry["reconciled"] = [
+            fact.get("id") for fact in reconciled
+            if isinstance(fact, dict) and fact.get("id")
+        ]
+        entry["reconciled_fact_identities"] = [
+            list(_keyed_fact_identity(fact))
+            for fact in reconciled
+            if isinstance(fact, dict)
+            and fact.get("id")
+            and all(_keyed_fact_identity(fact))
+        ]
+    elif kind == _KEYED_ITEM_LOCALE:
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            item.get("language"),
+            order=item.get("order"),
+        )
+    elif kind == _KEYED_ITEM_DISPLAY_NAME:
+        # 「置为该值」天然幂等；只给已存在的 section 盖名字。
+        await _stamp_subject_display_name(
+            lanlan_name, subject, item.get("display_name"),
+        )
+    else:  # pragma: no cover - staging written by this module only
+        raise RuntimeError(f"unknown keyed item kind {kind!r}")
+    return entry
+
+
+async def _apply_keyed_staging(lanlan_name: str, key: str, staging: dict) -> None:
+    """Apply every item not yet in ``applied``; journal each one atomically.
+
+    Tombstone rule, per item and by forget GENERATION only (never time, never
+    arrival order): when any of the item's subject keys carries a tombstone
+    whose ``forget_epoch`` exceeds the epoch the request was started with,
+    the item is dropped and journaled as ``dropped_tombstone``.
+
+    For fact items the fact store's forget generation is captured BEFORE the
+    tombstone read and passed as ``expected_subject_generation``: a forget
+    that starts after the tombstone check but before persistence bumps that
+    generation and the fact store discards the write by itself.
+    """
+    from memory.scopes import coerce_subject
+
+    from . import idempotency
+
+    applied = list(staging.get("applied") or [])
+    done_seqs = {
+        entry.get("seq") for entry in applied if isinstance(entry, dict)
+    }
+    epochs = staging.get("epochs") or {}
+    segments = staging.get("segments") or []
+    for item in staging.get("items") or []:
+        seq = item.get("seq")
+        if seq in done_seqs:
+            continue
+        segment = segments[item["segment"]]
+        generation = None
+        if item.get("kind") == _KEYED_ITEM_FACTS:
+            generation = runtime.fact_store._subject_forget_generation(
+                lanlan_name, coerce_subject(segment["subject"]),
+            )
+        tombstones = await idempotency.read_tombstones(lanlan_name)
+        tombstone_epoch = idempotency.tombstone_epoch(
+            tombstones, segment.get("tombstone_keys") or [],
+        )
+        request_epoch = epochs.get(segment.get("wire_key"), 0)
+        if tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
+            entry = {"seq": seq, "dropped_tombstone": True}
+        else:
+            entry = await _apply_keyed_item(lanlan_name, item, segment, generation)
+        applied.append(entry)
+        done_seqs.add(seq)
+        staging["applied"] = applied
+        await idempotency.write_staging(lanlan_name, key, staging)
+
+
+def _keyed_response(
+    shape: str,
+    contexts: list[dict],
+    staging: dict,
+    trust_result,
+    trust_outcomes,
+) -> dict:
+    segment_of_seq = {
+        item.get("seq"): item.get("segment") for item in staging.get("items") or []
+    }
+    per_segment: list[dict] = [
+        {
+            "fact_ids": [],
+            "created_fact_identities": [],
+            "reconciled": [],
+            "reconciled_fact_identities": [],
+        }
+        for _ in contexts
+    ]
+    for entry in staging.get("applied") or []:
+        index = segment_of_seq.get(entry.get("seq"))
+        if index is None or not (0 <= index < len(per_segment)):
+            continue
+        for field in (
+            "fact_ids", "created_fact_identities", "reconciled",
+            "reconciled_fact_identities",
+        ):
+            per_segment[index][field].extend(entry.get(field) or [])
+    stored_segments = staging.get("segments") or []
+    if shape == "single":
+        context = contexts[0]
+        return {
+            "status": "processed",
+            "subject": context["subject"].as_entry_fields(),
+            "created": len(per_segment[0]["fact_ids"]),
+            "fact_ids": per_segment[0]["fact_ids"],
+            "trust": _trust_response_block(
+                context["trust_state"], trust_result, trust_outcomes[0],
+            ),
+            "trust_events": [],
+        }
+    return {
+        "status": "processed",
+        "segments": [
+            {
+                "subject": context["subject"].as_entry_fields(),
+                "trust": _trust_response_block(
+                    context["trust_state"], trust_result, outcome,
+                ),
+                "status": "ok",
+                "created": len(collected["fact_ids"]),
+                "dropped": int(
+                    (stored_segments[index] if index < len(stored_segments) else {})
+                    .get("dropped") or 0
+                ),
+                "fact_ids": collected["fact_ids"],
+                "fact_identities": (
+                    list(collected["created_fact_identities"])
+                    + list(collected["reconciled_fact_identities"])
+                ),
+                "created_fact_identities": list(collected["created_fact_identities"]),
+                "reconciled": [{"id": fid} for fid in collected["reconciled"]],
+                "trust_events": [],
+            }
+            for index, (context, collected, outcome) in enumerate(
+                zip(contexts, per_segment, trust_outcomes)
+            )
+        ],
+    }
+
+
+async def _process_scoped_history_keyed(
+    lanlan_name: str,
+    req: ScopedHistoryRequest,
+    *,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None = None,
+) -> dict:
+    """The keyed (journaled) form of /scoped_history, both shapes."""
+    from . import idempotency
+
+    key = req.idempotency_key
+    async with idempotency.key_lock(lanlan_name, key):
+        try:
+            record = await idempotency.read_key(lanlan_name, key)
+            if (
+                record is not None
+                and record.get("state") in idempotency.TERMINAL_KEY_STATES
+            ):
+                return _keyed_duplicate_response(shape, contexts)
+            staging = await idempotency.read_staging(lanlan_name, key)
+        except idempotency.IdempotencyStateError as exc:
+            logger.error(f"[scoped_history] {lanlan_name}: 幂等记录不可读: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            ) from exc
+        if staging is not None and not _keyed_staging_matches(
+            staging, shape, contexts,
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="idempotency_key was already used for a different request",
+            )
+        if staging is None:
+            staging = await _build_keyed_staging(
+                lanlan_name,
+                req,
+                shape=shape,
+                contexts=contexts,
+                prompt_segments=prompt_segments,
+            )
+            try:
+                await idempotency.write_staging(lanlan_name, key, staging)
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_PENDING,
+                        client_requested_at=req.client_requested_at,
+                    ),
+                )
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
+        try:
+            await _apply_keyed_staging(lanlan_name, key, staging)
+        except (HTTPException, MaintenanceModeError):
+            raise
+        except Exception as exc:
+            logger.error(
+                f"[scoped_history] {lanlan_name}: 暂存应用中断（保留暂存，"
+                f"同键重试只补剩余项）: {exc}"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="scoped history apply interrupted; retry with the same key",
+            ) from exc
+        # 带键路径没有 owner 信号（入口已 422），只可能有 activity / channel，
+        # 池内按 event id 幂等，所以每次尝试都可以照原样重放。
+        trust_states = [context["trust_state"] for context in contexts]
+        for state in trust_states:
+            state["trust_signal_events"] = ()
+        trust_result, trust_outcomes = await _apply_trust_for_segments(trust_states)
+        response = _keyed_response(
+            shape, contexts, staging, trust_result, trust_outcomes,
+        )
+        if trust_result is not None and not trust_result.persisted:
+            # 池未落盘：响应如实报 persisted=false 让调用方同键重试；键不标
+            # done、暂存保留——否则重试拿到 duplicate 就会丢掉这批 activity。
+            return response
+        try:
+            await idempotency.update_key(
+                lanlan_name,
+                key,
+                idempotency.transition(idempotency.KEY_STATE_DONE),
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.error(f"[scoped_history] {lanlan_name}: 键标 done 失败: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="scoped history finalize failed; retry with the same key",
+            ) from exc
+        try:
+            await idempotency.delete_staging(lanlan_name, key)
+        except Exception as exc:  # noqa: BLE001 - key is done; leftover is swept by TTL
+            logger.warning(
+                f"[scoped_history] {lanlan_name}: 删除暂存失败（键已 done，"
+                f"残留由启动清理回收）: {exc}"
+            )
+        return response
+
+
+async def _cancel_staged_writes_for_subjects(
+    lanlan_name: str, subject_keys: set[str],
+) -> int:
+    """Cancel every staged keyed write that touches one of ``subject_keys``.
+
+    Runs after the erase, holding no other lock: each affected key's lock is
+    taken on its own (an in-flight apply of the same key finishes first; an
+    in-flight GENERATION never has a staging file yet, so a forget is never
+    blocked behind an LLM call). The key is marked ``cancelled`` before its
+    staging file is removed, so a crash in between leaves a cancelled key
+    plus a leftover file the TTL sweep removes, never a revivable journal.
+    """
+    from . import idempotency
+
+    cancelled = 0
+    for _path, document, _mtime in await idempotency.list_staging(lanlan_name):
+        if not isinstance(document, dict):
+            continue
+        key = document.get("key")
+        staged_subjects = document.get("subjects")
+        if not isinstance(key, str) or not isinstance(staged_subjects, list):
+            continue
+        if not subject_keys.intersection(
+            str(subject_key) for subject_key in staged_subjects
+        ):
+            continue
+        async with idempotency.key_lock(lanlan_name, key):
+            if await idempotency.read_staging(lanlan_name, key) is None:
+                continue
+            await idempotency.update_key(
+                lanlan_name,
+                key,
+                idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+            )
+            await idempotency.delete_staging(lanlan_name, key)
+            cancelled += 1
+    return cancelled
+
+
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # Validate before the locale lookup: it keys per-character state files by
@@ -2811,6 +3471,11 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
 
 class ScopedForgetRequest(BaseModel):
     subject: MemorySubjectRequest
+    # Optional caller-side forget generation. When present, every erased
+    # subject gets a durable tombstone holding the largest epoch seen, and a
+    # keyed scoped_history whose ``subject_epochs`` for that subject is lower
+    # is dropped at apply time. Absent: no tombstone is written.
+    forget_epoch: int | None = Field(default=None, ge=0)
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_forget")
@@ -2856,6 +3521,25 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             ),
         )
     targets = _forget_fanout_targets(subject)
+    forgotten_subject_keys = {subject.key} | {target.key for target in targets}
+    if req.forget_epoch is not None:
+        # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
+        # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
+        # 被下面擦除推进的 forget generation 丢弃。
+        from . import idempotency
+
+        try:
+            await idempotency.record_tombstones(
+                lanlan_name, forgotten_subject_keys, req.forget_epoch,
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.error(f"[scoped_forget] {lanlan_name}: 墓碑落盘失败: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail="scoped forget failed; retry is safe and idempotent",
+            ) from exc
     stats: dict = {}
     fact_forget_started: list = []
     reflection_forget_started: list = []
@@ -2963,6 +3647,22 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             for lock in reversed(acquired_locks):
                 lock.release()
             runtime._reload_lock.release()
+    # 擦除完成、上面所有锁都已放开之后，才取消涉及这些 subject 的带键暂存。
+    # 取消要拿各键的键级锁；持键级锁的应用请求在落盘时会等事实池的持久化
+    # 锁（擦除期间被本 handler 占着）。若在持有擦除事务时去等键级锁，两边
+    # 就会互等；放到这里，本 handler 等键级锁时手上没有任何别的锁，不会成环。
+    try:
+        await _cancel_staged_writes_for_subjects(
+            lanlan_name, forgotten_subject_keys,
+        )
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 取消带键暂存失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
@@ -2971,6 +3671,166 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         ],
         **stats,
     }
+
+
+def _read_persona_for_listing(path: str) -> dict:
+    """Strict, write-free persona read for the listing endpoint."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        logger.warning(f"[scoped_subjects] persona 读取失败，按无 persona 处理: {exc}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@app.get("/internal/memory/{lanlan_name}/scoped_subjects")
+async def list_scoped_subjects(lanlan_name: str, platform: str):
+    """List the scoped subjects stored for one platform (read-only).
+
+    Filters on the platform component of ``subject_id`` (its first
+    ``:``-separated segment) for every subject kind, NOT on a raw key
+    prefix: a ``participant`` id ``neko_visit:<uid>`` and a ``group_chat``
+    id ``neko_visit:<pair>`` share their prefix, and ``neko_visit_x:...``
+    must not match ``neko_visit``. Read-only: persona is read straight from
+    disk instead of through ``aensure_persona`` (which recovers and saves a
+    malformed file), and a character without a directory answers an empty
+    list without creating one. Not part of the write fence (GET is never in
+    ``_CHARACTER_SCOPED_WRITE_OPS``).
+    """
+    from memory.scopes import (
+        SCOPED_PERSONA_PREFIX,
+        entry_matches_subject,
+        persona_subject_from_section,
+        subject_from_entry,
+    )
+    from memory.subject_archive import collect_subject_last_writes
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if (
+        runtime.fact_store is None
+        or runtime.persona_manager is None
+        or runtime.reflection_engine is None
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    platform = (platform or "").strip()
+    if not platform or ":" in platform or len(platform) > 64:
+        raise HTTPException(status_code=422, detail="invalid platform")
+    character_dir = os.path.join(
+        str(runtime._config_manager.memory_dir), lanlan_name,
+    )
+    if not await asyncio.to_thread(os.path.isdir, character_dir):
+        return {"subjects": []}
+
+    def _platform_of(subject) -> str:
+        return subject.subject_id.split(":", 1)[0]
+
+    facts_full = await runtime.fact_store.aload_facts_full(lanlan_name)
+    active_fact_ids = {
+        fact.get("id")
+        for fact in await runtime.fact_store.aload_facts(lanlan_name)
+        if isinstance(fact, dict) and fact.get("id") is not None
+    }
+    reflections = await runtime.reflection_engine.aload_reflections(lanlan_name)
+    persona = await asyncio.to_thread(
+        _read_persona_for_listing,
+        os.path.join(character_dir, "persona.json"),
+    )
+
+    rows: dict[tuple[str, str], dict] = {}
+
+    def _row(subject) -> dict | None:
+        if _platform_of(subject) != platform:
+            return None
+        marker = (subject.key, subject.scope)
+        row = rows.get(marker)
+        if row is None:
+            row = {
+                "subject": subject,
+                "display_name": None,
+                "facts": 0,
+                "active_facts": 0,
+                "reflections": 0,
+                "persona": False,
+            }
+            rows[marker] = row
+        return row
+
+    for fact in facts_full:
+        if not isinstance(fact, dict):
+            continue
+        subject = subject_from_entry(fact)
+        row = _row(subject) if subject is not None else None
+        if row is None:
+            continue
+        row["facts"] += 1
+        if fact.get("id") in active_fact_ids and not fact.get("subject_archived_at"):
+            row["active_facts"] += 1
+    for reflection in reflections:
+        if not isinstance(reflection, dict):
+            continue
+        subject = subject_from_entry(reflection)
+        row = _row(subject) if subject is not None else None
+        if row is not None:
+            row["reflections"] += 1
+    persona_entries: list[dict] = []
+    for section_key, section in persona.items():
+        if not isinstance(section, dict) or not str(section_key).startswith(
+            SCOPED_PERSONA_PREFIX,
+        ):
+            continue
+        section_subject = persona_subject_from_section(section_key, section)
+        entries = [
+            entry for entry in (section.get("facts") or [])
+            if isinstance(entry, dict)
+        ]
+        persona_entries.extend(entries)
+        if section_subject is None:
+            continue
+        has_entries = any(
+            entry_matches_subject(entry, section_subject) for entry in entries
+        )
+        display_name = section.get("display_name")
+        if not has_entries and not display_name:
+            continue
+        row = _row(section_subject)
+        if row is None:
+            continue
+        if has_entries:
+            row["persona"] = True
+        if isinstance(display_name, str) and display_name:
+            row["display_name"] = display_name
+    last_writes, _no_timestamp = collect_subject_last_writes(
+        [facts_full, reflections, persona_entries],
+    )
+    subjects = []
+    for marker in sorted(rows, key=lambda m: (rows[m]["subject"].kind, m)):
+        row = rows[marker]
+        subject = row["subject"]
+        last = last_writes.get(marker)
+        subjects.append({
+            "subject_kind": subject.kind,
+            "subject_id": subject.subject_id,
+            "scope": subject.scope,
+            "display_name": row["display_name"],
+            "facts": row["facts"],
+            "reflections": row["reflections"],
+            "persona": row["persona"],
+            "last_write_at": last[1].isoformat() if last is not None else None,
+            # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
+            "archived": (
+                row["facts"] > 0
+                and row["active_facts"] == 0
+                and row["reflections"] == 0
+                and not row["persona"]
+            ),
+        })
+    return {"subjects": subjects}
 
 
 # ── trust pool / identity endpoints ─────────────────────────────────────────
