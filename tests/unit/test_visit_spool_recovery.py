@@ -1765,3 +1765,64 @@ async def test_rename_guard_is_retaken_when_the_marker_changes_meanwhile(tmp_pat
     assert taken == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True
     by_char = json.loads(peers_path.read_text(encoding="utf-8"))["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
     assert "D" in by_char and "B" not in by_char
+
+
+def _schema_invalid_state(spool):
+    data = json.loads(spool.state_path.read_text(encoding="utf-8"))
+    data["field_from_a_newer_version"] = 1                      # 能解析、只是不合当前 schema
+    spool.state_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+async def test_schema_invalid_state_of_another_character_is_skipped_not_deleted(tmp_path):
+    await seed_roster(tmp_path)
+    other = await make_visit(tmp_path, vid(83), [], own_char="B", own_char_uid=CHAR_UID_B,
+                             memory_enabled=False)               # 只剩 state.json
+    _schema_invalid_state(other)
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 原始字段明确属于别的角色：不挡这次清除，也绝不删（别的版本还读得了它）
+    assert outcome.done and other.state_path.exists()
+
+
+async def test_schema_invalid_state_that_may_be_ours_blocks_and_is_kept(tmp_path):
+    await seed_roster(tmp_path)
+    mine = await make_visit(tmp_path, vid(84), [], memory_enabled=False)   # 角色 A、这一对，只剩 state
+    _schema_invalid_state(mine)
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    # 可能正是这个人的场次、却改写不了：不记完成，留着等下次（不删）
+    assert outcome.done is False and mine.state_path.exists()
+
+
+async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp_path, monkeypatch):
+    import contextlib
+
+    from main_logic.visit import local_chars
+
+    await seed_roster(tmp_path)
+    await seed_roster(tmp_path, own_char="B")
+    peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    taken = []
+    loads = {"n": 0}
+
+    async def load():
+        loads["n"] += 1
+        if loads["n"] == 2:
+            # 守卫内重读名单期间，标记被另一个角色（B → D）的改名换掉
+            data = json.loads(peers_path.read_text(encoding="utf-8"))
+            data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
+            peers_path.write_text(json.dumps(data), encoding="utf-8")
+        return {"C": CHAR_UID_A, "D": CHAR_UID_B}
+
+    @contextlib.asynccontextmanager
+    async def guard(uids):
+        taken.append(list(uids))
+        yield
+
+    monkeypatch.setattr(local_chars, "load_local_characters", load)
+    report = await visit_spool_recovery(
+        Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C", CHAR_UID_B: "D"}),
+        client=FakeMemoryServer().client(), is_live=lambda _v: False, lifecycle_guard=guard,
+    )
+    # 对账前按拿守卫时的标记再核一次：换了就按新标记重新拿 B 的守卫
+    assert taken[:2] == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True

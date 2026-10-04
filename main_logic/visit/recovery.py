@@ -408,14 +408,23 @@ async def _reconcile_rename_guarded(
             # 守卫内重读名单：等守卫期间角色可能又被改名或删除，拿守卫之前的快照会算错方向
             if reload is not None:
                 names, uid_of = await reload()
-            return await _reconcile_rename(config_dir, names, uid_of)
+            # 对账时再按拿守卫时的那份标记核一次（重读名单期间标记也可能被换掉）
+            result = await _reconcile_rename(config_dir, names, uid_of, expected=marker)
+            if result is _MARKER_CHANGED:
+                continue
+            return result
     logger.warning("visit recovery: pending_rename kept changing while waiting for its guard, deferred")
     return _ALL_NAMES
 
 
+_MARKER_CHANGED = object()
+"""Returned by :func:`_reconcile_rename` when the marker is not the one the caller guarded."""
+
+
 async def _reconcile_rename(
     config_dir: Path, names: set[str], uid_of: dict[str, str] | None = None,
-) -> frozenset[str] | None:
+    expected: Any = None,
+) -> Any:
     """Finish or roll back a pending character rename; return the names still unsettled.
 
     The marker is ``{old, new}`` plus, when the rename transaction wrote it,
@@ -432,6 +441,9 @@ async def _reconcile_rename(
     except RosterCorruptError as exc:
         logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
         return _ALL_NAMES
+    if expected is not None and marker != expected:
+        # 调用方是按另一份标记拿的守卫：这次读到的标记属于别的角色，不能拿着错的守卫去迁
+        return _MARKER_CHANGED
     if marker is None:
         return frozenset()
     old = marker.get("old") if isinstance(marker, dict) else None

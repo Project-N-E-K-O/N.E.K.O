@@ -674,6 +674,26 @@ def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
     return out
 
 
+def _raw_state_may_name(path: Path, own_char_uid: str, pair_ids: frozenset[str]) -> bool:
+    """Whether a parseable but schema-invalid ``state.json`` may belong to this (character, pair).
+
+    False only when its raw fields clearly name another character or another
+    pair; anything unclear counts as "may be ours" (fail closed).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return True
+    if not isinstance(raw, dict):
+        return True
+    char = raw.get("own_char_uid")
+    if isinstance(char, str) and char and char != own_char_uid:
+        return False
+    pair = raw.get("pair_id")
+    return not (isinstance(pair, str) and pair and pair not in pair_ids)
+
+
 def _read_state_file(path: Path) -> dict | None:
     # 文件名就是场次：state 里没有对得上的 visit_id 时（文件被换过 / 复制过）不能信它的归属，
     # 退役、清除、改名都会按它去动别的场次的文件
@@ -1440,8 +1460,17 @@ class VisitSpool:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
                 state = None
+            except SpoolStateError:
+                # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：别的版本还读得了，
+                # 不是「谁都用不了」，绝不删。按原始字段判断归属：明确属于别的角色 / 别的一对就跳过，
+                # 否则按读不出处理（下次重试）
+                if not _raw_state_may_name(visit_path(spool_dir, visit_id, STATE_SUFFIX),
+                                           own_char_uid, pair_ids):
+                    continue
+                state = None
+                state_unreadable = True
             except ValueError:
-                # 内容损坏：谁都用不了它（与 OSError 的一时读不出不同）
+                # JSON 本身坏了：谁都用不了它（与 OSError 的一时读不出不同）
                 state = None
                 state_unreadable = True
                 state_corrupt = True
@@ -1516,12 +1545,14 @@ class VisitSpool:
             # 与 state.json 的其他写入者同一把文件锁：不与并发的 update_state 交错
             with path_lock(path):
                 try:
-                    _read_state_file(path)
-                except ValueError:
-                    # 仍是坏的才删：期间被重写成好的就交给常规流程
-                    path.unlink(missing_ok=True)
+                    with open(path, "r", encoding="utf-8") as f:
+                        json.load(f)
                 except FileNotFoundError:
-                    pass
+                    # 已经不在了：没什么可删
+                    return
+                except (ValueError, RecursionError):
+                    # 仍是 JSON 本身坏了才删；能解析的（哪怕不合当前 schema）一律不动
+                    path.unlink(missing_ok=True)
 
         await asyncio.to_thread(drop)
 
