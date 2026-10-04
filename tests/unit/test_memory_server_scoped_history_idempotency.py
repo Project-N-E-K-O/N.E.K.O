@@ -1785,3 +1785,30 @@ async def test_more_journal_damage_fails_closed(env, damage):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, body)
     assert excinfo.value.status_code in (422, 503)
+
+
+@pytest.mark.parametrize("damage", ["orphan_foreign_destination", "provenance_scalar", "dropped_not_int"])
+async def test_yet_more_journal_damage_fails_closed(env, damage):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    if damage == "orphan_foreign_destination":
+        keys_path = Path(env.idem.keys_path(NAME))
+        records = json.loads(keys_path.read_text(encoding="utf-8"))
+        records.pop(KEY_GROUP)                                  # 孤儿暂存：键记录不在
+        keys_path.write_text(json.dumps(records), encoding="utf-8")
+        staging["segments"][0]["subject"] = PART               # 没有路由记录可对，目标被改到别处
+    elif damage == "provenance_scalar":
+        facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+        facts_item["speaker_provenance"] = "lost"
+    else:
+        staging["segments"][0]["dropped"] = "many"
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GROUP) == [] and _facts_of(env, PART) == []

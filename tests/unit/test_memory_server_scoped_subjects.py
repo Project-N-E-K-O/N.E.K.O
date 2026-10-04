@@ -339,3 +339,13 @@ async def test_terminal_reflections_do_not_make_an_archived_subject_active(env):
     row = next(r for r in result["subjects"] if r["subject_id"] == VISIT_ARCHIVED.subject_id)
     # 只剩归档事实与已终结反思：照样计入 reflections，但仍是归档状态
     assert row["reflections"] == 1 and row["archived"] is True
+
+
+async def test_unhashable_reflection_status_does_not_break_the_listing(env):
+    char_dir = env.root / NAME
+    reflections = json.loads((char_dir / "reflections.json").read_text(encoding="utf-8"))
+    reflections.append({"id": "r11", "text": "状态坏了", "status": ["promoted"],
+                        **VISIT_GROUP.as_entry_fields()})
+    _write(char_dir / "reflections.json", reflections)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])

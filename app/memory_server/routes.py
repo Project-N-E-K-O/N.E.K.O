@@ -2950,7 +2950,13 @@ def _keyed_staging_items_valid(
             return False
         if destination is None:
             return False
-        if allowed_routes is not None and destination.key not in allowed_routes | {segment.get("wire_key")}:
+        # 没有键记录（孤儿暂存）时没有可信的路由记录可对：目标只认这段自己的 wire subject
+        permitted = (allowed_routes if allowed_routes is not None else set()) | {segment.get("wire_key")}
+        if destination.key not in permitted:
+            return False
+        dropped = segment.get("dropped", 0)
+        if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0:
+            # 响应拼装会对它 int()：坏值会让每次同键重试都在收尾前 500
             return False
         if destination.scope != destination.key:
             # 带键写入只有默认 scope：被改了 scope 的目标会写进另一个隔离的记忆域
@@ -3021,6 +3027,10 @@ def _keyed_staging_items_valid(
         if kind == _KEYED_ITEM_FACTS:
             facts = item.get("facts")
             if not isinstance(facts, list) or len(facts) != len(item["effect_keys"]):
+                return False
+            provenance = item.get("speaker_provenance")
+            if provenance is not None and not isinstance(provenance, dict):
+                # 说话人来源被改成标量 / 列表会被持久化层静默忽略，事实就丢了归属却照样记成已应用
                 return False
             # 与生成后同一条要求：每条都是带非空正文的对象。坏掉的条目会被持久化静默跳过、
             # 却照样记成已应用，这条效果就永久丢了
@@ -4675,7 +4685,9 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         row = _row(subject) if subject is not None else None
         if row is not None:
             row["reflections"] += 1
-            if reflection.get("status") not in REFLECTION_TERMINAL_STATUSES:
+            status = reflection.get("status")
+            # 状态坏了（列表 / 对象等不可哈希值）按未终结处理，不让一条坏反思把整个列表打成 500
+            if not isinstance(status, str) or status not in REFLECTION_TERMINAL_STATUSES:
                 row["active_reflections"] += 1
     persona_entries: list[dict] = []
     for section_key, section in persona.items():
