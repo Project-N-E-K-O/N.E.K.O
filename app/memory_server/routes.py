@@ -3554,9 +3554,15 @@ async def _cancel_staged_writes_for_subjects(
     # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。
     # 按记录里的请求身份认领，同样标 cancelled，免得之后同键重试用清除之后的
     # generation 重新生成并写回
-    records = await asyncio.to_thread(
-        idempotency._read_json_object, idempotency.keys_path(lanlan_name),
-    )
+    try:
+        records = await asyncio.to_thread(
+            idempotency._read_json_object, idempotency.keys_path(lanlan_name),
+        )
+    except Exception as exc:  # noqa: BLE001 - 辅助文件坏了不能挡住隐私清除
+        # 键文件读不出时，所有带键请求本身就 fail closed（503），不会写入任何东西；
+        # 这里只记日志、跳过认领，清除照常进行
+        logger.warning(f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，跳过 pending 认领: {exc}")
+        records = {}
     for key, record in records.items():
         if not isinstance(record, dict) or record.get("state") != idempotency.KEY_STATE_PENDING:
             continue

@@ -1087,3 +1087,13 @@ async def test_staged_writes_are_cancelled_before_the_erase_starts(env):
     env.monkeypatch.setattr(env.fs, "aforget_subject", spy)
     await _forget(env, GROUP)
     assert seen["state_at_erase"] == "cancelled"
+
+
+
+async def test_unreadable_key_file_does_not_block_a_forget(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))       # 不带键写入两条事实
+    assert _facts_of(env, GROUP)
+    Path(env.idem.keys_path(NAME)).write_text("{torn", encoding="utf-8")
+    result = await _forget(env, GROUP)
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
