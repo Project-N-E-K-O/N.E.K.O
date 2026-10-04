@@ -281,6 +281,9 @@ test('active-owner preference rejection uses the actual localized error and rest
     const errorFunction = source.slice(source.indexOf('    function enrollmentErrorMessage('), source.indexOf('    function enrollmentVerification('));
     for (const language of ['en','ja','ko','zh-CN','zh-TW','ru','pt','es']) {
         const locale = JSON.parse(fs.readFileSync(path.join(__dirname, 'locales', language + '.json'), 'utf8'));
+        const errorMessage = locale.voiceIdentity?.errorStopMainMicrophone;
+        assert.equal(typeof errorMessage, 'string', language);
+        assert.ok(errorMessage.length > 0, language);
         const format = vm.runInNewContext(errorFunction + '\nenrollmentErrorMessage', { translate: key => key.split('.').reduce((value, part) => value?.[part], locale) });
         const h = harness({ errorFormatter: format, requestRouter: async url => {
             if (url === '/resources') return { resources: {}, wake_enabled: false };
@@ -289,7 +292,7 @@ test('active-owner preference rejection uses the actual localized error and rest
         await h.controller.refreshResources();
         h.elements.get('voice-identity-wake-enable').checked = true;
         await h.elements.get('voice-identity-wake-enable').emit('change');
-        assert.equal(h.elements.get('voice-identity-resource-message').textContent, locale.voiceIdentity.errorStopMainMicrophone, language);
+        assert.equal(h.elements.get('voice-identity-resource-message').textContent, errorMessage, language);
         assert.equal(h.elements.get('voice-identity-wake-enable').checked, false);
         assert.equal(h.stopped(), 0);
         assert.equal(h.calls.some(call => call.url.includes('/isolation')), false);

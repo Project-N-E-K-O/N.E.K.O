@@ -32,11 +32,11 @@ async def check_preference_worker(model_dir: Path | None = None) -> None:
                         raise ValueError("wake_preference_smoke_failed")
                     print(f"WAKE_WORD_PREFERENCE_SMOKE_READY enabled={enabled} elapsed={time.monotonic() - started:.3f}", flush=True)
                 if model_dir is not None:
-                    directory = root / "versions" / MODEL_SHA256
-                    await asyncio.to_thread(shutil.copytree, model_dir, directory)
+                    model_target = root / "versions" / MODEL_SHA256
+                    await asyncio.to_thread(shutil.copytree, model_dir, model_target)
                     started = time.monotonic()
                     result = await _run_worker("publish", False, str(root), MODEL_SHA256.encode("ascii"), timeout=5)
-                    if not result["installed"] or resolve_cached_model_dir(root) != directory:
+                    if not result["installed"] or resolve_cached_model_dir(root) != model_target:
                         raise ValueError("wake_publication_smoke_failed")
                     print(f"WAKE_WORD_PUBLICATION_SMOKE_READY elapsed={time.monotonic() - started:.3f}", flush=True)
             finally:
