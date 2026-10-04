@@ -255,7 +255,11 @@ _UPLOAD_TRANSPORTS = frozenset({"trtc", "livekit"})
 
 
 def _envelope_valid(own_char_uid: Any, transport: Any) -> bool:
-    return isinstance(own_char_uid, str) and bool(own_char_uid) and transport in _UPLOAD_TRANSPORTS
+    # 先判类型：对象 / 数组不可哈希，直接做集合成员判断会抛 TypeError、中断整轮补传
+    return (
+        isinstance(own_char_uid, str) and bool(own_char_uid)
+        and isinstance(transport, str) and transport in _UPLOAD_TRANSPORTS
+    )
 
 
 def _owner_or_none(value: Any) -> str | None:

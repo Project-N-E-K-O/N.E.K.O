@@ -2016,8 +2016,9 @@ async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, mo
     assert uploads.calls == [] and stream.exists() and sealed.exists()
 
 
-@pytest.mark.parametrize("envelope", [{"own_char_uid": None}, {"own_char_uid": {"x": 1}}, {"transport": "other"}],
-                         ids=["char_null", "char_object", "transport_unknown"])
+@pytest.mark.parametrize("envelope", [{"own_char_uid": None}, {"own_char_uid": {"x": 1}}, {"transport": "other"},
+                                      {"transport": {"x": 1}}, {"transport": ["trtc"]}],
+                         ids=["char_null", "char_object", "transport_unknown", "transport_object", "transport_list"])
 async def test_sealed_upload_with_a_bad_envelope_and_no_stream_is_not_uploaded(tmp_path, envelope):
     v = vid(95)
     d = _spool_dir(tmp_path)
