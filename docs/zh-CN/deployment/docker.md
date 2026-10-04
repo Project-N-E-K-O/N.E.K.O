@@ -1,5 +1,12 @@
 # Docker 部署
 
+社区 OAuth 的远程访问边界正在 #3289 中处理：当前代理模式的完成查询会返回 403，
+回调还使用浏览器所在机器的 `127.0.0.1`；不能把远程 Linux + Windows 的登录描述为
+已验证可用。Origin/CSRF 和 nginx 转发本身不提供用户身份认证。外置鉴权与项目自带
+实例授权的比较、账户保护及合并验收见
+[远程访问设计](/design/security/community-remote-access)。该设计尚未实施，
+本地桌面转发头兼容保持不变。
+
 维护中的 Compose 是 `docker/docker-compose.yml`。Nginx 前置，宿主 48911 为 HTTP、48912 为 HTTPS。
 
 ```bash

@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from main_routers.local_access import is_local_oauth_status_request as _loopback_request_source
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
@@ -491,6 +492,19 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     return path, C._read_json_dict(path) if path else None
 
 
+def _desktop_session_paths_for_host() -> tuple[str, list[str]]:
+    """Return the absolute write target and ordered fallback read paths.
+
+    Path discovery is optional metadata and must not interrupt status polling.
+    Deduplicate after absolutizing, since different relative paths can alias.
+    """
+    try:
+        resolved = list(dict.fromkeys(os.path.abspath(p) for p in C._social_session_paths()))
+    except (OSError, RuntimeError, ValueError):
+        return "", []
+    return (resolved[0] if resolved else ""), resolved
+
+
 def _persist_oauth_credentials(
     auth_payload: dict[str, Any],
     *,
@@ -716,7 +730,18 @@ async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    status = await resolve_saved_oauth_status()
+    # Protect the entire response, including account identity and local paths.
+    # This legacy desktop response is not a remote login-completion API. A
+    # remote replacement needs instance authorization and must omit paths; see
+    # docs/design/security/community-remote-access.md (PR #3289 merge gate).
+    if not _loopback_request_source(request):
+        return JSONResponse({"detail": "loopback_only"}, status_code=403)
+
+    (session_path, session_paths), status = await asyncio.gather(
+        asyncio.to_thread(_desktop_session_paths_for_host),
+        resolve_saved_oauth_status(),
+    )
+    session_fields = {"session_path": session_path, "session_paths": session_paths}
     snapshot = status["snapshot"]
     auth = status["auth"]
     if not status["logged_in"] or not snapshot:
@@ -725,6 +750,7 @@ async def oauth_status_endpoint(request: Request):
             "auth_source": None,
             "local_user_id": None,
             "user": None,
+            **session_fields,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
     # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
@@ -734,6 +760,7 @@ async def oauth_status_endpoint(request: Request):
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
+        **session_fields,
     }
 
 

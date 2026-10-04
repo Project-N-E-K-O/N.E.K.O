@@ -30,6 +30,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
+from utils.deployment import has_forwarding_metadata
 
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
@@ -184,6 +185,9 @@ def _require_local_bridge_token_access(request: Request) -> None:
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
     """
+
+    if has_forwarding_metadata(request.headers):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     host_header = request.headers.get("host", "")
     try:

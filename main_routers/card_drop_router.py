@@ -66,6 +66,8 @@ _native_delegates: dict[str, dict] = {}
 # 修改这两张表，整段持锁，否则并发增删会让迭代抛 RuntimeError 把请求变成 500。
 _native_sync_tickets_lock = threading.Lock()
 _native_delegates_lock = threading.Lock()
+_session_path_warning_lock = threading.Lock()
+_session_path_expand_warning_emitted = False
 
 
 class _ClientBindingConflict(Exception):
@@ -528,9 +530,18 @@ def _legacy_social_session_path() -> Path | None:
 
 def _social_session_path() -> Path | None:
     """Return the Electron-visible session path when the desktop host supplies it."""
+    global _session_path_expand_warning_emitted
     override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
     if override:
-        candidate = Path(override).expanduser()
+        try:
+            candidate = Path(override).expanduser()
+        except (OSError, RuntimeError, ValueError):
+            # All readers must share the fallback, including status resolution.
+            with _session_path_warning_lock:
+                if not _session_path_expand_warning_emitted:
+                    logger.warning("card_drop: cannot expand NEKO_USER_DATA_DIR; using legacy session path")
+                    _session_path_expand_warning_emitted = True
+            return _legacy_social_session_path()
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME
         logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")
@@ -1311,6 +1322,9 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint(request: Request):
+    # Source metadata blocks cross-site browsers; it is not instance identity.
+    # Remote account authorization must be shared with OAuth completion queries
+    # before PR #3289 merges; see community-remote-access.md in docs/design/security.
     if not _local_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},

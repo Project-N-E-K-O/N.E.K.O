@@ -1,5 +1,14 @@
 # Docker Deployment
 
+Remote community OAuth remains a merge blocker for #3289: completion polling
+currently returns 403 in proxy mode, and the callback targets `127.0.0.1` on
+the browser's machine. Linux backend + Windows client login has not passed
+end-to-end verification. Origin/CSRF checks and forwarding through nginx do
+not authenticate users. See the [remote access design](/design/security/community-remote-access)
+for the external gateway versus built-in instance authorization comparison
+and merge criteria. This design is not implemented yet; desktop forwarding
+header compatibility is preserved.
+
 The maintained Compose file is `docker/docker-compose.yml`. It runs N.E.K.O. behind Nginx and publishes HTTP on host port 48911 and HTTPS on 48912.
 
 ## Start a published image

@@ -31,3 +31,18 @@ def test_official_nginx_routes_token_to_plugin_and_preserves_public_origin(varia
     # Lifecycle paths and /ui must still reach that same plugin upstream.
     assert re.search(r"location ~ \^/\([^\n]*plugins\?[^\n]*\) \{\s*"
                      r"proxy_pass http://127\.0\.0\.1:48916;", branch)
+
+
+@pytest.mark.parametrize("variant", ["HTTP-only", "HTTP+HTTPS"])
+def test_official_proxy_routes_preserve_chain_except_token_bootstrap(variant):
+    entrypoint = Path(__file__).resolve().parents[4] / "docker" / "entrypoint.sh"
+    source = entrypoint.read_text(encoding="utf-8")
+    branch = source.split(f'echo "🌐 Generating {variant} configuration', 1)[1].split("\nEOF", 1)[0]
+    locations = re.findall(r"location[^\n]*\{(.*?)\n    \}", branch, re.DOTALL)
+    proxy_locations = [block for block in locations if "proxy_pass" in block]
+    assert len(proxy_locations) == 6
+    for block in proxy_locations:
+        if "proxy_set_header X-Real-IP" in block:
+            assert r"proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;" in block
+        else:
+            assert r"proxy_set_header X-Forwarded-For \$remote_addr;" in block
