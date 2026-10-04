@@ -62,12 +62,14 @@ from main_logic.visit.memory_commit import (
 )
 from main_logic.visit.spool import (
     OUTBOX_SUFFIX,
+    SPOOL_SUFFIX,
     STATE_SUFFIX,
     UPLOAD_JSON_SUFFIX,
     UPLOAD_JSONL_SUFFIX,
     VisitSpool,
     is_digestable,
     is_spool_open,
+    _read_header_strict,
 )
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -174,7 +176,13 @@ def _valid_line(record: dict) -> bool:
     )
 
 
-def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: str | None) -> dict | None:
+def build_upload_doc(
+    records: list[dict],
+    *,
+    visit_id: str,
+    finalized_reason: str | None,
+    fallback_own_visit_uid: str | None = None,
+) -> dict | None:
     """Build the ``.upload.json`` document of a crashed visit from its upload stream.
 
     ``records`` are the stream's JSON objects. The first must be the upload
@@ -184,7 +192,9 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
     one (the header's ``started_at`` when there is none), ``usage`` the sum of
     every usage delta, ``anomalies`` the number of anomaly records, ``lines``
     every line record in ``(lp, side_rank)`` order, and ``finalized_reason``
-    the given reason or ``'crash'``.
+    the given reason or ``'crash'``. A header without ``own_visit_uid`` (an
+    older header layout) takes ``fallback_own_visit_uid`` (the visit's own
+    ``state.json`` / spool header account) instead of being dropped.
     """
     if not records or records[0].get("kind") != "header":
         return None
@@ -230,15 +240,26 @@ def build_upload_doc(records: list[dict], *, visit_id: str, finalized_reason: st
     }
     return {
         "v": UPLOAD_DOC_VERSION,
-        # 设计稿较早的上传头定义没有这个字段：缺失或类型不对时记 None 照样封存（不删唯一
-        # 的流水副本），由上传回调按 None 处理账号核对
-        "own_visit_uid": (header.get("own_visit_uid")
-                          if isinstance(header.get("own_visit_uid"), str) and header.get("own_visit_uid")
-                          else None),
+        # 设计稿较早的上传头定义没有这个字段：缺失或类型不对时改用同场 state.json /
+        # 转录头行记的占房账号（上传只在登录账号与它一致时进行，记 None 就谁都传不了）；
+        # 两处都没有才记 None，照样封存，不删唯一的流水副本
+        "own_visit_uid": _owner_or_none(header.get("own_visit_uid")) or _owner_or_none(fallback_own_visit_uid),
         "own_char_uid": header.get("own_char_uid"),
         "transport": header.get("transport"),
         "request": request,
     }
+
+
+def _owner_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _spool_header_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
+    try:
+        header = _read_header_strict(visit_path(spool_dir, visit_id, SPOOL_SUFFIX), validate=False)
+    except (OSError, ValueError):
+        return None
+    return _owner_or_none(header.get("own_uid")) if header else None
 
 
 def _write_private_json(path: Path, doc: dict) -> None:
@@ -250,10 +271,15 @@ def _write_private_json(path: Path, doc: dict) -> None:
         logger.debug("visit recovery: chmod 0600 failed for %s: %s", path.name, exc)
 
 
-def _seal_stream_sync(spool_dir: Path, visit_id: str, finalized_reason: str | None) -> dict | None:
+def _seal_stream_sync(
+    spool_dir: Path, visit_id: str, finalized_reason: str | None, owner: str | None = None,
+) -> dict | None:
     stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
-    doc = build_upload_doc(_read_stream(stream), visit_id=visit_id, finalized_reason=finalized_reason)
+    if owner is None:
+        owner = _spool_header_owner_sync(spool_dir, visit_id)
+    doc = build_upload_doc(_read_stream(stream), visit_id=visit_id, finalized_reason=finalized_reason,
+                           fallback_own_visit_uid=owner)
     if doc is None:
         memory_bridge.diag("upload_stream_corrupt", visit_id=visit_id)
         stream.unlink(missing_ok=True)
@@ -461,8 +487,9 @@ async def _upload_pending(
         except (OSError, ValueError) as exc:
             logger.warning("visit recovery: state of %s unreadable, upload marked crash: %s", visit_id, exc)
         reason = state["finalized"] if state else None
+        owner = state["own_uid"] if state else None
         try:
-            doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason)
+            doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason, owner)
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)

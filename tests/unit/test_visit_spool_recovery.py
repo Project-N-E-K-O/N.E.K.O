@@ -538,10 +538,10 @@ async def test_one_unsealable_stream_does_not_block_the_others(tmp_path, monkeyp
     _write_stream(tmp_path, good, [_header(good)])
     real_seal = recovery._seal_stream_sync
 
-    def flaky(spool_dir, visit_id, reason):
+    def flaky(spool_dir, visit_id, reason, owner=None):
         if visit_id == bad:
             raise PermissionError("locked by antivirus")
-        return real_seal(spool_dir, visit_id, reason)
+        return real_seal(spool_dir, visit_id, reason, owner)
 
     monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
     uploads = Uploads()
@@ -699,10 +699,10 @@ async def test_seal_validation_errors_only_skip_that_visit(tmp_path, monkeypatch
     _write_stream(tmp_path, good, [_header(good)])
     real_seal = recovery._seal_stream_sync
 
-    def flaky(spool_dir, visit_id, reason):
+    def flaky(spool_dir, visit_id, reason, owner=None):
         if visit_id == bad:
             raise TypeError("'<' not supported between instances of 'NoneType' and 'int'")
-        return real_seal(spool_dir, visit_id, reason)
+        return real_seal(spool_dir, visit_id, reason, owner)
 
     monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
     uploads = Uploads()
@@ -841,6 +841,25 @@ async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, 
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
     assert [visit_id for visit_id, _ in reports.calls] == [v]           # 下一轮照样能重试
     assert not (reports_dir / f"{v}.json").exists()
+
+
+@pytest.mark.parametrize("source", ["state", "spool_header"])
+async def test_stream_header_without_owner_takes_the_visits_own_account(tmp_path, source):
+    v = vid(52)
+    other = "c" * 24
+    # 两种来源各自单独出现：state 那组不写转录，转录头行那组删掉 state.json
+    await make_visit(tmp_path, v, [ln(0)], own_uid=other, last_summary_done=True,
+                     write_jsonl=source == "spool_header")
+    if source == "spool_header":
+        (_spool_dir(tmp_path) / f"{v}.state.json").unlink()
+    header = _header(v)
+    header.pop("own_visit_uid")          # 设计稿较早的上传头定义没有这个字段
+    _write_stream(tmp_path, v, [header])
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    # 补回占房账号，上传回调才能在该账号登录时传上去
+    assert visit_id == v and doc["own_visit_uid"] == other
 
 
 async def test_stream_header_without_owner_is_still_sealed_not_deleted(tmp_path):
