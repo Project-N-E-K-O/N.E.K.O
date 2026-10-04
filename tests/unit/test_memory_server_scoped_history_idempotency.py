@@ -1840,3 +1840,20 @@ async def test_yet_more_journal_damage_fails_closed(env, damage):
         await _post(env, _single_body())
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GROUP) == [] and _facts_of(env, PART) == []
+
+
+async def test_tombstone_removed_during_the_erase_is_rebuilt_with_the_completion_marker(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+
+    async def tombstone_vanishes(*_args, **_kwargs):
+        # 擦除期间墓碑被清理移走（这里直接不落盘来模拟）
+        return {}
+
+    env.monkeypatch.setattr(env.idem, "record_tombstones", tombstone_vanishes)
+    result = await _forget(env, GROUP, forget_epoch=4)
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    tombstones = await env.idem.read_tombstones(NAME)
+    # 回成功就必须留下完成标记与墓碑：同代数的重放据此跳过，不再擦掉之后的新写入
+    assert env.idem.erased_epoch(tombstones, GROUP_KEY) == 4
+    assert env.idem.tombstone_epoch(tombstones, [GROUP_KEY]) == 4

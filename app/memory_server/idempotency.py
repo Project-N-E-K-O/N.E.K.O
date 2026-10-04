@@ -497,7 +497,11 @@ async def mark_tombstone_erased(lanlan_name: str, subject_key: str, forget_epoch
             # 墓碑修好为止，不能回成功——否则修好之后的重放会把修好后合法写入的记忆再擦一遍
             raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
         if not isinstance(row, dict):
-            return False
+            # 墓碑在擦除期间被移走了（比如启动清理把一条早已过期、本次未抬高的旧墓碑清掉）：
+            # 不能静默跳过——回成功而没有完成标记，之后同代数的重放会再擦一遍新写入的记忆。
+            # 按本次代数重建墓碑并记上完成
+            data[subject_key] = {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}
+            return True
         current = row.get("erased_epoch")
         if isinstance(current, int) and not isinstance(current, bool) and current >= epoch:
             return False
