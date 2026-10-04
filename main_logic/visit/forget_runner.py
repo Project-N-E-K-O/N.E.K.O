@@ -68,6 +68,8 @@ logger = get_module_logger(__name__, "Main")
 VoidPending = Callable[[dict], Awaitable[None]]
 AdmissionLock = Callable[[str], AsyncContextManager[Any]]
 IsVisitActive = Callable[[str], bool]
+LifecycleGuard = Callable[[list[str]], AsyncContextManager[Any]]
+"""``lifecycle_guard(own_char_uids)``: held for a whole clearing so the characters cannot be renamed / deleted."""
 
 
 class VisitActive(RuntimeError):
@@ -199,11 +201,9 @@ async def _open_logs_in_scope(
         if sentinel["scope"] == "person":
             peers = [sentinel["peer_uid"]]
         else:
-            peers = [
-                # 严格读：名册读不出不能当作「没有人」，否则清除全部会什么都不展开就结束
-                peer_uid for peer_uid, peer in (await roster.list_peers(strict=True)).items()
-                if isinstance(peer.get("by_char"), dict) and name in peer["by_char"]
-            ]
+            # 严格读：名册读不出、或某个人的条目结构坏了，都不能当作「没有这个人」，
+            # 否则清除全部会漏掉他、照样删哨兵报完成
+            peers = await roster.peers_of_char(name)
         for peer_uid in peers:
             rev_id = await open_person_log(
                 config_dir, own_uid=own_uid, own_char=name, own_char_uid=own_char_uid,
@@ -273,6 +273,7 @@ async def forget_person(
     void_pending: VoidPending | None = None,
     admission_lock: AdmissionLock | None = None,
     is_visit_active: IsVisitActive | None = None,
+    lifecycle_guard: LifecycleGuard | None = None,
 ) -> ForgetOutcome:
     """"Forget this person" under one local character (``scope='person'``).
 
@@ -280,9 +281,30 @@ async def forget_person(
     character) is held only while the sentinel is written, so a visit admitted
     before it is visible either already exists or sees the sentinel.
     ``is_visit_active(name)`` is checked again under that lock and raises
-    :class:`VisitActive` before anything is written.
+    :class:`VisitActive` before anything is written. ``lifecycle_guard``
+    (optional) is held for the whole operation, so the character cannot be
+    renamed or deleted while its name is used for the roster and memory_server.
     """
-    config_dir = Path(config_dir)
+    async with (lifecycle_guard([own_char_uid]) if lifecycle_guard else contextlib.nullcontext()):
+        return await _forget_person(
+            Path(config_dir), own_uid=own_uid, own_char=own_char, own_char_uid=own_char_uid,
+            peer_uid=peer_uid, client=client, void_pending=void_pending,
+            admission_lock=admission_lock, is_visit_active=is_visit_active,
+        )
+
+
+async def _forget_person(
+    config_dir: Path,
+    *,
+    own_uid: str,
+    own_char: str,
+    own_char_uid: str,
+    peer_uid: str,
+    client: ScopedMemoryClient | None,
+    void_pending: VoidPending | None,
+    admission_lock: AdmissionLock | None,
+    is_visit_active: IsVisitActive | None,
+) -> ForgetOutcome:
     stack = await _with_admission_locks(admission_lock, [own_char_uid])
     async with stack:
         _refuse_active(is_visit_active, [own_char])
@@ -306,16 +328,35 @@ async def forget_all(
     void_pending: VoidPending | None = None,
     admission_lock: AdmissionLock | None = None,
     is_visit_active: IsVisitActive | None = None,
+    lifecycle_guard: LifecycleGuard | None = None,
 ) -> ForgetOutcome:
     """"Forget everyone" under the local characters ``chars`` (``{name: character_uid}``).
 
     One sentinel (``scope='chars'``) names every character; the roster is
     expanded only after it is on disk, every person's log is written before
-    any is executed.
+    any is executed. ``lifecycle_guard`` is held for the whole operation.
     """
-    config_dir = Path(config_dir)
     if not chars:
         return ForgetOutcome(done=True)
+    async with (lifecycle_guard(sorted(chars.values())) if lifecycle_guard
+                else contextlib.nullcontext()):
+        return await _forget_all(
+            Path(config_dir), own_uid=own_uid, chars=chars, client=client,
+            void_pending=void_pending, admission_lock=admission_lock,
+            is_visit_active=is_visit_active,
+        )
+
+
+async def _forget_all(
+    config_dir: Path,
+    *,
+    own_uid: str,
+    chars: Mapping[str, str],
+    client: ScopedMemoryClient | None,
+    void_pending: VoidPending | None,
+    admission_lock: AdmissionLock | None,
+    is_visit_active: IsVisitActive | None,
+) -> ForgetOutcome:
     by_uid = {uid: name for name, uid in chars.items()}
     stack = await _with_admission_locks(admission_lock, by_uid)
     async with stack:

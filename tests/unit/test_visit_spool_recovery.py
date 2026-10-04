@@ -708,3 +708,46 @@ async def test_seal_validation_errors_only_skip_that_visit(tmp_path, monkeypatch
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
     assert [v for v, _ in uploads.calls] == [good]
+
+
+async def test_forget_all_keeps_the_sentinel_when_a_peer_record_is_damaged(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import forget_all
+    from main_logic.visit.subjects import RosterCorruptError
+
+    await seed_roster(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["accounts"][OWN_A]["peers"]["9" * 24] = {"display_name": "x", "by_char": "broken"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(RosterCorruptError):
+        await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                         client=FakeMemoryServer().client())
+    assert len(await ClearingSentinels(tmp_path).list_open()) == 1
+
+
+async def test_lifecycle_guard_is_held_for_the_whole_forget(tmp_path):
+    import contextlib
+
+    await seed_roster(tmp_path)
+    events = []
+    server = FakeMemoryServer()
+    real_handler = server.handler
+
+    async def handler(request):
+        events.append("request")
+        return await real_handler(request)
+
+    server.handler = handler
+
+    @contextlib.asynccontextmanager
+    async def guard(uids):
+        events.append(("enter", tuple(uids)))
+        yield
+        events.append("exit")
+
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=server.client(), lifecycle_guard=guard)
+    assert outcome.done
+    assert events[0] == ("enter", (CHAR_UID_A,)) and events[-1] == "exit"
+    assert "request" in events[1:-1]

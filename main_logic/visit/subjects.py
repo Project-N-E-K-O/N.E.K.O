@@ -708,6 +708,36 @@ class PeerRoster:
 
         return await asyncio.to_thread(self._read, fn)
 
+    async def peers_of_char(self, own_char: str) -> list[str]:
+        """Return the ``peer_uid`` of every person with a ``by_char[own_char]`` entry (strict).
+
+        For forget-all expansion: an unreadable roster, or a peer / ``by_char``
+        / entry of the wrong type, raises :class:`RosterCorruptError` instead
+        of being skipped, so a damaged record can never be left out of a clear.
+        """
+        _require_str(own_char, "own_char")
+
+        def fn(data: dict):
+            node: Any = data
+            for key in ("accounts", self.own_uid, "peers"):
+                if key not in node:
+                    return []
+                node = node[key]
+                if not isinstance(node, dict):
+                    raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
+            out = []
+            for peer_uid, peer in node.items():
+                if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
+                    raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
+                if own_char not in peer["by_char"]:
+                    continue
+                if not isinstance(peer["by_char"][own_char], dict):
+                    raise RosterCorruptError(f"{self.path.name}: by_char entry is not an object")
+                out.append(peer_uid)
+            return out
+
+        return await asyncio.to_thread(self._read, fn, True)
+
     async def list_peers(self, *, strict: bool = False) -> dict[str, dict]:
         """Return a deep copy of every peer entry of this account.
 

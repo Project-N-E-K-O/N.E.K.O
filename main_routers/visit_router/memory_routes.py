@@ -46,7 +46,13 @@ from fastapi.responses import JSONResponse
 
 from config.visit_settings import NEKO_VISIT_ALLOW_NONLOCAL, VISIT_MEMORY_PLATFORM
 from main_logic.visit import local_chars, memory_bridge
-from main_logic.visit.forget_runner import AdmissionLock, VisitActive, forget_all, forget_person
+from main_logic.visit.forget_runner import (
+    AdmissionLock,
+    LifecycleGuard,
+    VisitActive,
+    forget_all,
+    forget_person,
+)
 from main_logic.visit.limits import Blocklist, BlocklistUnavailable
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -76,6 +82,7 @@ class MemoryRouteHooks:
     own_visit_uid: Callable[[], Awaitable[str | None]]
     is_visit_active: Callable[[str], bool]
     admission_lock: AdmissionLock | None
+    lifecycle_guard: LifecycleGuard | None
     on_blocked: Callable[[str], Awaitable[Any]] | None
     config_dir: Callable[[], Path]
     client: Callable[[], ScopedMemoryClient]
@@ -95,6 +102,7 @@ _hooks = MemoryRouteHooks(
     own_visit_uid=_no_account,
     is_visit_active=lambda _name: False,
     admission_lock=None,
+    lifecycle_guard=None,
     on_blocked=None,
     config_dir=_default_config_dir,
     client=memory_bridge.default_client,
@@ -103,7 +111,12 @@ _hooks = MemoryRouteHooks(
 
 def configure_memory_routes(**hooks: Any) -> None:
     """Replace runtime hooks: ``own_visit_uid``, ``is_visit_active``, ``admission_lock``,
-    ``on_blocked``, ``config_dir``, ``client`` (unknown names raise ``TypeError``)."""
+    ``lifecycle_guard``, ``on_blocked``, ``config_dir``, ``client`` (unknown names raise ``TypeError``).
+
+    ``lifecycle_guard(own_char_uids)`` is held for a whole clearing; PR-09b wires
+    it to the per-character visit background-task registry, which makes rename /
+    delete answer 400 while it is held.
+    """
     for name, value in hooks.items():
         if not hasattr(_hooks, name):
             raise TypeError(f"unknown memory route hook {name!r}")
@@ -256,7 +269,7 @@ async def forget_memory_peer(request: Request):
         outcome = await forget_person(
             _hooks.config_dir(), own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
             peer_uid=peer_uid, client=_hooks.client(), admission_lock=_hooks.admission_lock,
-            is_visit_active=_hooks.is_visit_active,
+            is_visit_active=_hooks.is_visit_active, lifecycle_guard=_hooks.lifecycle_guard,
         )
     except VisitActive:
         return _error(409, "visit_active")
@@ -293,6 +306,7 @@ async def forget_all_memory(request: Request):
         outcome = await forget_all(
             _hooks.config_dir(), own_uid=own_uid, chars=chars, client=_hooks.client(),
             admission_lock=_hooks.admission_lock, is_visit_active=_hooks.is_visit_active,
+            lifecycle_guard=_hooks.lifecycle_guard,
         )
     except VisitActive:
         return _error(409, "visit_active")

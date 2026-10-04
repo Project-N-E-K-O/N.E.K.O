@@ -85,16 +85,17 @@ def is_mirror_event_memory_disabled(event: dict) -> bool:
     """Whether a mirror event's payload says it should be filtered from
     ordinary chat memory.
 
-    An explicit boolean ``memory_enabled`` wins over every other rule (visit
-    events always pass ``{'memory_enabled': False}``); without it, or with a
-    non-boolean value, the rules below apply unchanged.
+    An explicit ``memory_enabled: False`` wins over every other rule (visit
+    events always pass ``{'memory_enabled': False}``). The key can only turn
+    memory off: any other value, ``True`` included, falls through to the rules
+    below unchanged, so an event payload from an external controller cannot
+    opt a line into ordinary memory against the host's own policy.
     """
-    # 显式键优先：串门的所有 mirror event 都带 {'memory_enabled': False}，
-    # 不再依赖「无用户输入 → 过滤」的默认分支。只认真布尔值（与本函数其它
-    # 开关同口径）："false" / 0 之类不能被 bool() 翻成「记」
-    explicit = event.get("memory_enabled")
-    if isinstance(explicit, bool):
-        return not explicit
+    # 显式键只能「关」：串门的所有 mirror event 都带 {'memory_enabled': False}，
+    # 不再依赖「无用户输入 → 过滤」的默认分支。True 不能当「开」用——小游戏等
+    # 外部控制器的 event 会原样保留调用方给的键，借它就能绕过宿主自己的记忆策略
+    if event.get("memory_enabled") is False:
+        return True
     has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True
     if has_user_input:
         player_interaction_enabled = _payload_bool_from_keys(

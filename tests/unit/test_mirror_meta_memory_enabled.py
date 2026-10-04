@@ -79,11 +79,11 @@ def test_explicit_false_disables_memory_even_with_user_input():
 
 
 @pytest.mark.unit
-def test_explicit_true_enables_memory_even_without_user_input():
-    assert is_mirror_event_memory_disabled({"memory_enabled": True}) is False
-    assert is_mirror_event_memory_disabled({
-        "memory_enabled": True, "game_memory_enabled": False,
-    }) is False
+def test_explicit_true_cannot_opt_a_line_into_memory():
+    # 显式键只能「关」：外部控制器（小游戏）塞 True 绕不过宿主自己的记忆策略
+    game_off = {"hasUserSpeech": True, "game_memory_enabled": False}
+    assert is_mirror_event_memory_disabled({**game_off, "memory_enabled": True}) is True
+    assert is_mirror_event_memory_disabled({"memory_enabled": True}) is _frozen_is_mirror_event_memory_disabled({})
 
 
 @pytest.mark.unit
@@ -107,8 +107,8 @@ def test_visit_meta_filters_assistant_message_and_turn_end():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
-def test_non_boolean_explicit_value_falls_back_to_the_previous_rules(value):
+@pytest.mark.parametrize("value", [True, "false", "true", 0, 1, None, [], {}])
+def test_anything_but_false_falls_back_to_the_previous_rules(value):
     for base in ({}, {"hasUserSpeech": True}, {"game_memory_enabled": False}):
         event = {**base, "memory_enabled": value}
         assert is_mirror_event_memory_disabled(event) is _frozen_is_mirror_event_memory_disabled(base)
