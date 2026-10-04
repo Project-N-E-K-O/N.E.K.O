@@ -2445,3 +2445,85 @@ async def test_cleanup_protects_tombstones_named_only_by_segments(env):
     await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
     # 留下来的暂存仍引用这个 subject：它的墓碑不能先过期，否则之后被认领时清除前的事实会写回
     assert path.exists() and GROUP_KEY in json.loads(tombstones.read_text(encoding="utf-8"))
+
+
+async def test_locale_orders_are_recorded_before_the_reservation_is_durable(env):
+    from app.memory_server import locale_state
+
+    env.llm.responses = [SINGLE_FACTS]
+    real_reserve = locale_state.reserve_subject_prompt_locale_orders
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("killed between recording and reserving")
+
+    env.monkeypatch.setattr(locale_state, "reserve_subject_prompt_locale_orders", crash)
+    with pytest.raises(Exception):
+        await _post(env, _single_body(language="zh"))
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    (recorded,) = record["locale_orders"]                      # 预留落盘之前就已记在键上
+    env.monkeypatch.setattr(locale_state, "reserve_subject_prompt_locale_orders", real_reserve)
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    staging = json.loads(_staging_file(env, KEY_GROUP).read_text(encoding="utf-8"))
+    locale = next(item for item in staging["items"] if item["kind"] == "locale")
+    assert locale["order"] == recorded
+
+
+async def test_restored_retry_refreshes_an_already_written_display_name(env):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        if item["segment"] == 1 and item["kind"] == "facts":
+            raise RuntimeError("injected crash after the first segment's display name")
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    assert (GP_KEY, "团子") in env.persona.display_names       # 第一段的显示名已写过、已记进日志
+    retry = _segments_body()
+    retry["segments"][0]["display_name"] = "团子新名"           # 键停在 pending 期间改了名字
+    await _post(env, retry)
+    # 显示名不在请求身份里：恢复的重试按当前值再盖一次，不能带着旧名收尾
+    assert (GP_KEY, "团子新名") in env.persona.display_names
+    assert _key_state(env, KEY_SEGMENTS) == "done"
+
+
+async def test_restored_journal_missing_a_facts_item_fails_closed(env):
+    env.llm.responses = [BATCH_FACTS]
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    original = env.routes._apply_keyed_item
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    items = [item for item in staging["items"] if not (item["kind"] == "facts" and item["segment"] == 1)]
+    assert len(items) < len(staging["items"])
+    for position, item in enumerate(items):
+        item["seq"] = position                                   # 序号重排，其余逐项核对都过得去
+    staging["items"] = items
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _segments_body())
+    # 事实项整条丢了：不能按剩下的收尾、永久漏掉已生成的事实
+    assert excinfo.value.status_code == 503 and _key_state(env, KEY_SEGMENTS) == "pending"
+
+
+async def test_unrelated_subject_epochs_do_not_change_the_request_identity(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    # 重试多带了一个与本请求无关的 subject 的代数：效果完全相同，不能 422
+    result = await _post(env, _single_body(subject_epochs={GROUP_KEY: 0, "participant:neko_visit:other": 3}))
+    assert result["created"] == 2 and env.llm.calls == 1

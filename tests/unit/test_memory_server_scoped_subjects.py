@@ -150,6 +150,7 @@ async def test_platform_filter_uses_kind_and_platform_component(env):
         "persona": True,
         "prompt_locale": False,
         "corrections": 0,
+        "staged": False,
         "last_write_at": "2026-09-10T10:00:00",
         "archived": False,
     }
@@ -422,3 +423,15 @@ async def test_persona_entries_of_another_scope_in_a_shared_section_are_listed(e
     # 只剩 persona 的另一个 scope 同样要能被找到、被清除
     assert rows[("neko_visit:u_shared", "custom:other")]["persona"] is True
     assert rows[("neko_visit:u_shared", shared.scope)]["persona"] is True
+
+
+async def test_staging_only_subject_is_listed(env):
+    staged = MemorySubject.participant("neko_visit", "u_staged")
+    _write(env.root / NAME / "idempotency_staging" / ("a" * 32 + ".json"), {
+        "key": "k", "segments": [{"wire_key": staged.key, "subject": staged.as_entry_fields()}],
+        "items": [], "applied": [],
+    })
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
+    # 生成后、应用前崩溃留下的暂存可能是唯一的数据：同样要能被找到、被清除
+    assert by_key[("participant", "neko_visit:u_staged")]["staged"] is True

@@ -2918,7 +2918,15 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
             for source in sources
         ],
         "trust": [_trust(source) for source in sources],
-        "subject_epochs": req.subject_epochs or {},
+        # 只算本请求各 wire subject 的代数：应用与暂存校验只看它们，调用方多带 / 少带别的 subject
+        # 的代数不改变效果，不能让同键重试因此 422
+        "subject_epochs": {
+            wire_key: epoch for wire_key, epoch in (req.subject_epochs or {}).items()
+            if wire_key in {
+                source.subject.to_domain().key for source in sources
+                if getattr(source, "subject", None) is not None
+            }
+        },
         # 语言决定抽取语境与暂存里的语言状态项，同属会改变效果的字段
         "language": req.language,
     }
@@ -3083,6 +3091,15 @@ def _keyed_staging_items_valid(
                 return False
     # 语言在请求哈希里、开轮时按它给每段各预留一个语言项（受支持时），清除也只抹内容不删项：
     # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
+    manifest = staging.get("manifest")
+    if not (
+        isinstance(manifest, dict) and set(manifest) == {"facts", "effects"}
+        and all(isinstance(manifest[name], int) and not isinstance(manifest[name], bool) for name in manifest)
+        and manifest["facts"] == sum(1 for item in items if item.get("kind") == _KEYED_ITEM_FACTS)
+        and manifest["effects"] == ordinal
+    ):
+        # 事实项或效果数与生成时不符：某个事实项整条丢了，按剩下的收尾会永久漏掉它
+        return False
     expected_locale = 1 if is_supported_language_code(language) else 0
     if structural_only:
         expected_locale = None
@@ -3278,22 +3295,21 @@ async def _reserve_keyed_locale_orders(
     admission = stored or locale_state.allocate_subject_prompt_locale_orders(
         lanlan_name, subjects,
     )
-    orders = list(await asyncio.to_thread(
-        locale_state.reserve_subject_prompt_locale_orders,
-        lanlan_name,
-        subjects,
-        orders=admission,
-    ))
     if key is not None and stored is None:
-        # 生成失败、还没落暂存时，这批序号只记在这里：同键重试复用它们，而不是拿到更新的序号、
-        # 把旧请求排到期间别的请求写下的语言之后（覆盖掉较新的语言）
-        def _remember(old, orders=orders):
+        # 先把分到的序号记在键上、再让预留落盘：生成失败或在两步之间崩溃时，同键重试都复用这批
+        # 序号，而不是拿到更新的序号、把旧请求排到期间别的请求写下的语言之后（覆盖掉较新的语言）
+        def _remember(old, orders=list(admission)):
             if old is None or old.get("state") != idempotency.KEY_STATE_PENDING or old.get("locale_orders"):
                 return None
             return {**old, "locale_orders": orders}
 
         await idempotency.update_key(lanlan_name, key, _remember)
-    return orders
+    return list(await asyncio.to_thread(
+        locale_state.reserve_subject_prompt_locale_orders,
+        lanlan_name,
+        subjects,
+        orders=admission,
+    ))
 
 
 async def _build_keyed_staging(
@@ -3374,6 +3390,12 @@ async def _build_keyed_staging(
         "segments": segments,
         "items": items,
         "applied": [],
+        # 生成时定下的事实项数与效果数：恢复时据此认出整条丢失的事实项（逐项核对看不出缺了谁）。
+        # 语言项另按每段一项核对；显示名项缺了由重试按当前请求补回，不算在内
+        "manifest": {
+            "facts": sum(1 for item in items if item["kind"] == _KEYED_ITEM_FACTS),
+            "effects": effect_ordinal,
+        },
     }
 
 
@@ -3500,6 +3522,10 @@ async def _apply_keyed_staging(
     done_seqs = {
         entry.get("seq") for entry in applied if isinstance(entry, dict)
     }
+    journaled_before = {
+        entry.get("seq") for entry in applied
+        if isinstance(entry, dict) and not any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
+    }
     epochs = staging.get("epochs") or {}
     segments = staging.get("segments") or []
     for item in staging.get("items") or []:
@@ -3537,6 +3563,20 @@ async def _apply_keyed_staging(
         done_seqs.add(seq)
         staging["applied"] = applied
         await idempotency.write_staging(lanlan_name, key, staging)
+    if generations is None and display_names:
+        # 恢复的重试：之前尝试已写过的显示名项也按这次请求带来的当前值再盖一次（「置为该值」幂等）——
+        # 显示名不在请求身份里，键停在 pending 期间改了名字，不能就此带着旧名收尾。被清除挡下的段不盖
+        fenced = await _fenced_segments(lanlan_name, staging)
+        for item in staging.get("items") or []:
+            if (
+                item.get("kind") == _KEYED_ITEM_DISPLAY_NAME and item.get("seq") in journaled_before
+                and item.get("segment") not in fenced
+            ):
+                current = display_names.get(item["segment"])
+                if current:
+                    await _apply_keyed_item(
+                        lanlan_name, {**item, "display_name": current}, segments[item["segment"]], None,
+                    )
 
 
 def _keyed_response(
@@ -4917,6 +4957,25 @@ def _read_locale_subjects_for_listing(path: str) -> list:
     return subjects
 
 
+def _read_staged_subjects_for_listing(directory: str) -> list:
+    """Write-free read of the subjects named by pending keyed staging journals."""
+    from memory.scopes import subject_from_entry
+
+    from .idempotency import _list_staging_sync
+
+    subjects = []
+    for _path, document, _mtime in _list_staging_sync(directory):
+        if not isinstance(document, dict) or document.get(_KEYED_STAGING_CANCELLED) is True:
+            continue
+        segments = document.get("segments")
+        for segment in segments if isinstance(segments, list) else []:
+            raw = segment.get("subject") if isinstance(segment, dict) else None
+            subject = subject_from_entry(raw) if isinstance(raw, dict) else None
+            if subject is not None:
+                subjects.append(subject)
+    return subjects
+
+
 def _read_correction_subjects_for_listing(path: str) -> list:
     """Write-free read of the subjects owning a pending persona correction (one entry per row).
 
@@ -5073,6 +5132,11 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         _read_correction_subjects_for_listing,
         os.path.join(character_dir, "persona_corrections.json"),
     )
+    from .idempotency import STAGING_DIRNAME
+
+    staged_subjects = await asyncio.to_thread(
+        _read_staged_subjects_for_listing, os.path.join(character_dir, STAGING_DIRNAME),
+    )
 
     rows: dict[tuple[str, str], dict] = {}
 
@@ -5092,6 +5156,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
                 "persona": False,
                 "prompt_locale": False,
                 "corrections": 0,
+                "staged": False,
             }
             rows[marker] = row
         return row
@@ -5165,6 +5230,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
         row = _row(correction_subject)
         if row is not None:
             row["corrections"] += 1
+    # 带键请求生成后、应用第一项前崩溃留下的暂存，可能是这个 subject 唯一的数据：清除把它当删除面、
+    # 同键重试还会应用它，所以同样要能被找到
+    for staged_subject in staged_subjects:
+        row = _row(staged_subject)
+        if row is not None:
+            row["staged"] = True
     last_writes, _no_timestamp = collect_subject_last_writes(
         [facts_full, reflections, persona_entries],
     )
@@ -5183,6 +5254,7 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             "persona": row["persona"],
             "prompt_locale": row["prompt_locale"],
             "corrections": row["corrections"],
+            "staged": row["staged"],
             "last_write_at": last[1].isoformat() if last is not None else None,
             # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
             # 已终结的反思（promoted / denied …）照样列出、计入 reflections，但不算活跃面
