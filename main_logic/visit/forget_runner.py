@@ -271,7 +271,9 @@ async def _run_scope(
         return ForgetOutcome(done=False, forgotten=len(persons - unfinished), pending_logs=pending)
     store = ClearingSentinels(config_dir)
     await store.remove(sentinel["op_id"])
-    await _remove_covered_sentinels(config_dir, store, sentinel)
+    await _remove_covered_sentinels(
+        config_dir, store, sentinel, executed={(uid, peer) for _rev, _name, uid, peer in opened},
+    )
     return ForgetOutcome(done=True, forgotten=len(persons))
 
 
@@ -286,6 +288,7 @@ def _sentinel_within(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> bool
 
 async def _remove_covered_sentinels(
     config_dir: Path, store: ClearingSentinels, done: Mapping[str, Any],
+    *, executed: set[tuple[str, str]],
 ) -> None:
     # 上一次尝试留下的、范围落在这次已全部完成的范围之内的旧哨兵（比如两次尝试之间
     # 新建了角色，哨兵的角色集合变了、没能复用）：它们的日志已随这次一并跑完，不删就会
@@ -297,6 +300,12 @@ async def _remove_covered_sentinels(
         return
     for other in others:
         if other["op_id"] == done["op_id"] or not _sentinel_within(done, other):
+            continue
+        if other["scope"] == "person" and not all(
+            (uid, other.get("peer_uid")) in executed for uid in other["own_char_uids"]
+        ):
+            # 单人清除的那个人不在这次展开的名册里（这次没清他）：他的 participant 记忆不靠
+            # 名册也推得出来，必须由那个哨兵自己执行，不能顺手删掉
             continue
         if any(
             log["own_uid"] == other["own_uid"]
