@@ -455,10 +455,9 @@ async def _upload_pending(
         try:
             await asyncio.to_thread(path.unlink, True)
         except OSError as exc:
-            # 已传上去但本地删不掉：只记这一场（下次 duplicate 后再删），不挡其余场次
+            # 已传上去但本地删不掉：不挡其余场次，也不算「转录未上传」——Servers 已受理，
+            # 排队的举报照常提交；文件留到下次（届时 duplicate 后再删）
             logger.warning("visit recovery: uploaded %s but cannot delete it: %s", path.name, exc)
-            pending.add(visit_id)
-            continue
         # 该场转录上传成功后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending

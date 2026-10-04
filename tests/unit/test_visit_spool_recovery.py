@@ -615,11 +615,17 @@ async def test_failing_cleanup_after_upload_does_not_block_the_rest(tmp_path, mo
             raise PermissionError("read-only")
         return real_unlink(self, missing_ok=missing_ok)
 
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{stuck}.json").write_text(json.dumps({"visit_id": stuck}), encoding="utf-8")
     monkeypatch.setattr(Path, "unlink", unlink)
     uploads = Uploads()
-    await _recover(tmp_path, upload_transcript=uploads)
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
     assert sorted(v for v, _ in uploads.calls) == [stuck, other]
     assert not (d / f"{other}.upload.json").exists()
+    # 转录已被受理：本地删不掉上传文件也不挡它排队的举报
+    assert [v for v, _ in reports.calls] == [stuck]
 
 
 async def test_forget_rechecks_visit_activity_under_the_admission_lock(tmp_path):
