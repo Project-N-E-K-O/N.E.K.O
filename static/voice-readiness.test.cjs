@@ -114,6 +114,53 @@ test('a cancelled browser stop acknowledgement releases its own late token', asy
     assert.equal(h.calls.some(call=>call.url==='/audio/check'),false);assert.equal(h.controller.canStart(),false);
 });
 
+for (const rejected of [true, false]) {
+    for (const activeProducer of [true, false]) {
+        test(`desktop preparation fallback is server-checked (rejected=${rejected}, active=${activeProducer})`, async () => {
+            const h = harness({ requestRouter: async url => {
+                if (url === '/resources') return { can_enroll: true, resources: {} };
+                if (url === '/audio/check/isolation') {
+                    assert.equal(releases, 1);
+                    if (activeProducer) throw new Error('preview_owner_active');
+                    return { token: 'server-inactive-ticket', ttl_seconds: 30 };
+                }
+                if (url === '/audio/check') return { accepted: true, audio_contract: {} };
+                return {};
+            } });
+            let releases = 0;
+            h.root.nekoVoiceEnrollment = {
+                async prepare({ operationId }) {
+                    if (rejected) throw new Error('voice_capture_stop_failed');
+                    return { operationId, stopped: false, physicalStopped: true };
+                },
+                async release() { releases++; }
+            };
+            await h.controller.refreshResources();
+            await h.elements.get('voice-identity-test').emit('click');
+            assert.equal(h.controller.canStart(), !activeProducer);
+            assert.equal(h.calls.some(call => call.url === '/audio/check'), !activeProducer);
+            assert.equal(h.calls.some(call => call.url === '/audio/check/isolation/release'), !activeProducer);
+        });
+    }
+}
+
+test('audio checks retain the server body and worker budget while resource errors stay local', async () => {
+    const gate = deferred(); const h = harness({ checkGate: gate });
+    await h.controller.refreshResources();
+    const timers = new Map(); let next = 0;
+    h.root.setTimeout = (fn, delay) => { const id = ++next; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    const pending = h.elements.get('voice-identity-test').emit('click');
+    while (!h.calls.some(call => call.url === '/audio/check')) await new Promise(resolve => setImmediate(resolve));
+    assert.ok([...timers.values()].some(timer => timer.delay === 50000));
+    assert.equal([...timers.values()].some(timer => timer.delay === 15000), false);
+    gate.resolve(); await pending;
+    assert.equal(h.controller.canStart(), true);
+    const failed = harness({ requestRouter: async () => { throw new Error('audio_contract_changed'); } });
+    await assert.rejects(failed.controller.refreshResources(), /audio_contract_changed/);
+    assert.equal(failed.elements.get('voice-identity-resource-message').textContent, 'audio_contract_changed');
+});
+
 test('a timed-out opener acknowledgement cannot replace the server-proven inactive ticket', async () => {
     const capture=deferred();const h=harness({captureGate:capture});await h.controller.refreshResources();const messages=[];const timers=new Map();let next=0;
     h.root.setTimeout=(fn,delay)=>{const id=++next;timers.set(id,{fn,delay});return id;};h.root.clearTimeout=id=>timers.delete(id);

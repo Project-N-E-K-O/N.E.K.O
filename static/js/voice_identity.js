@@ -1825,7 +1825,10 @@
             state.initialized = true;
             state.initializationError = false;
             applyStatus(status);
-            if (readiness) await readiness.refreshResources();
+            if (readiness) {
+                // Resource diagnostics own their error display and retry flow.
+                try { await readiness.refreshResources(); } catch (_) {}
+            }
         } catch (error) {
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);

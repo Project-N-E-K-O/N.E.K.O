@@ -1510,6 +1510,17 @@ test('active enrollment can resume with readiness enabled without sending a null
     assert.equal(firstUpload.options.headers.get('x-voice-identity-segment'), '3');
 });
 
+test('resource diagnostics failure does not turn successful status initialization into connection failure', async () => {
+    const readinessController = {
+        isPending: () => false, canStart: () => false, controls() {},
+        async refreshResources() { throw new Error('audio_contract_changed'); }
+    };
+    const harness = createHarness({ readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+});
+
 test('a fresh enrollment still requires a passed trial when readiness is enabled', async () => {
     let required = 0;
     const readinessController = {

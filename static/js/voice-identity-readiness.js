@@ -4,14 +4,15 @@
         const originalRequest = hooks.request;
         hooks = { ...hooks, request: async function (path, options) {
             const config = options || {};
+            const { timeoutMs = 15000, ...requestConfig } = config;
             const controller = new AbortController();
             const abort = () => controller.abort();
             if (config.signal) { if (config.signal.aborted) abort(); else config.signal.addEventListener('abort', abort, { once: true }); }
             let timer;
             try {
                 return await Promise.race([
-                    originalRequest(path, { ...config, signal: controller.signal }),
-                    new Promise((_, reject) => { timer = root.setTimeout(() => { abort(); reject(new Error('request_timeout')); }, 15000); })
+                    originalRequest(path, { ...requestConfig, signal: controller.signal }),
+                    new Promise((_, reject) => { timer = root.setTimeout(() => { abort(); reject(new Error('request_timeout')); }, timeoutMs); })
                 ]);
             } finally { root.clearTimeout(timer); if (config.signal) config.signal.removeEventListener('abort', abort); }
         } };
@@ -31,6 +32,7 @@
         let trialActive = false;
         let isolationId = null;
         let isolationToken = null;
+        let isolationServerOwned = false;
         let requestAbort = null;
         let pollTimer = null;
         let pollResolve = null;
@@ -126,7 +128,10 @@
         async function refreshResources() {
             const at = epoch;
             const sequence = ++resourceSequence;
-            const payload = await hooks.request('/resources', { method: 'GET' });
+            const payload = await hooks.request('/resources', { method: 'GET' }).catch(error => {
+                if (at === epoch && sequence === resourceSequence) el['resource-message'].textContent = hooks.error(error);
+                throw error;
+            });
             if (at !== epoch || sequence !== resourceSequence) return;
             const previousContract = resources && resources.audio_contract;
             resources = payload;
@@ -142,18 +147,24 @@
         async function inactiveTicket(id, at) {
             const ticket = await hooks.request('/audio/check/isolation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: id }) });
             if (at !== epoch) { hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: ticket.token }) }).catch(() => {}); throw new Error('capture_cancelled'); }
-            isolationId = id; isolationToken = ticket.token;
+            isolationId = id; isolationToken = ticket.token; isolationServerOwned = true;
         }
         async function prepareIsolation(at) {
             const id = root.nekoMicrophoneInput.operationId();
             if (root.nekoVoiceEnrollment && typeof root.nekoVoiceEnrollment.prepare === 'function') {
-                const ack = await root.nekoVoiceEnrollment.prepare({ operationId: id });
-                if (at !== epoch || !ack || ack.operationId !== id || ack.stopped !== true) {
-                    if (ack && ack.token) root.nekoVoiceEnrollment.release({ operationId: id }).catch(() => {});
-                    throw new Error('capture_cancelled');
+                try {
+                    const ack = await root.nekoVoiceEnrollment.prepare({ operationId: id });
+                    if (at !== epoch || !ack || ack.operationId !== id || ack.stopped !== true || !ack.token) throw new Error('capture_cancelled');
+                    isolationId = id;
+                    isolationToken = ack.token;
+                    isolationServerOwned = false;
+                } catch (error) {
+                    await root.nekoVoiceEnrollment.release({ operationId: id });
+                    if (at !== epoch) throw error;
+                    // IPC failure is not proof of inactivity: the server must
+                    // check every producer before granting this fallback.
+                    await inactiveTicket(id, at);
                 }
-                isolationId = id;
-                isolationToken = ack.token;
                 return;
             }
             if (!root.opener || root.opener.closed) {
@@ -189,7 +200,7 @@
         async function releaseIsolation(owned) {
             if (!owned || !owned.token) return;
             if (isolationId === owned.id && isolationToken === owned.token) { isolationId = null; isolationToken = null; }
-            if (root.nekoVoiceEnrollment) await root.nekoVoiceEnrollment.release({ operationId: owned.id });
+            if (root.nekoVoiceEnrollment && !owned.serverOwned) await root.nekoVoiceEnrollment.release({ operationId: owned.id });
             else {
                 if (root.opener && !root.opener.closed) root.opener.postMessage({ type: 'neko-voice-enrollment-release', operationId: owned.id, token: owned.token }, root.location.origin);
                 await hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
@@ -208,7 +219,7 @@
             try {
                 await prepareIsolation(at);
                 if (at !== epoch) return;
-                ownedIsolation = { id: isolationId, token: isolationToken };
+                ownedIsolation = { id: isolationId, token: isolationToken, serverOwned: isolationServerOwned };
                 await hooks.microphone();
                 if (at !== epoch) return;
                 if (fallbackRequired) { fallbackRequired = false; message('voiceIdentity.inputFallback', 'Selected microphone unavailable. Repeat the input test using the displayed device.', true); return; }
@@ -218,6 +229,8 @@
                 if (at !== epoch || inputSnapshot !== snapshot()) return;
                 const payload = await hooks.request('/audio/check', {
                     method: 'POST', body: pcm,
+                    // Body read (15s) plus audio worker (30s), with IPC margin.
+                    timeoutMs: 50000,
                     signal: requestAbort.signal,
                     headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', 'X-Voice-Audio-Contract': 'owner-campplus-desktop-v1', 'X-Voice-Input-Check': isolationToken || '' }
                 });

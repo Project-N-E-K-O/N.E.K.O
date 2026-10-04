@@ -1016,8 +1016,8 @@ async def test_actual_retry_prepare_timeout_publishes_unavailable_and_retires_ca
     try:
         await value.set_voice_session_activation_factory(factory, activation_generation="profile", activation_required=True)
         result = await value._handle_voice_identity_control(retry_message(value), connection_id="producer-a")
-        assert result["reason"] == "voice_cleanup_timeout"
-        assert value._voice_session_activation_status[1:] == (ActivationState.UNAVAILABLE, "voice_cleanup_timeout")
+        assert result["reason"] == "prepare_failed"
+        assert value._voice_session_activation_status[1:] == (ActivationState.UNAVAILABLE, "prepare_failed")
         assert value._voice_session_activation_degraded is True
         assert value._voice_session_activation_runtime is None
         await asyncio.gather(*tuple(value._core_asr_cleanup_tasks), return_exceptions=True)

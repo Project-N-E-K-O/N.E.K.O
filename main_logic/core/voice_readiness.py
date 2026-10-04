@@ -135,6 +135,7 @@ class VoiceReadinessControl:
                     and manager._capture_voice_session_activation_generation() == generation)
 
         runtime = None
+        phase = "cleanup"
         try:
             async with asyncio.timeout(5.0):
                 if old is not None:
@@ -154,11 +155,12 @@ class VoiceReadinessControl:
                     runtime.set_capture_progress_provider(manager._voice_activation_capture_watermark)
                     manager._on_voice_session_activation_status(generation,
                         ActivationDecision(ActivationState.PREPARING, "preparing"))
+            phase = "prepare"
             async with asyncio.timeout(35.0):
                 await manager._prepare_voice_session_activation_runtime(runtime, generation)
         except BaseException as exc:
             if current():
-                reason = ("voice_cleanup_timeout" if isinstance(exc, TimeoutError) else
+                reason = (("voice_cleanup_timeout" if phase == "cleanup" else "prepare_failed") if isinstance(exc, TimeoutError) else
                           "runtime_creation_failed" if runtime is None else "prepare_failed")
                 manager._voice_session_activation_runtime = None
                 manager._voice_session_activation_degraded = True
@@ -171,6 +173,8 @@ class VoiceReadinessControl:
                     name="voice-activation-retry-unavailable")
             if runtime is not None:
                 manager._schedule_core_asr_cleanup(runtime.close(), name="voice-activation-retry-retire")
+            if isinstance(exc, TimeoutError) and phase == "prepare":
+                raise VoicePreviewIsolationError("prepare_failed") from exc
             if isinstance(exc, Exception) and not isinstance(exc, (VoicePreviewIsolationError, TimeoutError)):
                 return {**result, "reason": "runtime_creation_failed" if runtime is None else "prepare_failed"}
             raise
