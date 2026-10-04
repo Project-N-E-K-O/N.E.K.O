@@ -75,6 +75,10 @@ LifecycleGuard = Callable[[list[str]], AsyncContextManager[Any]]
 class VisitActive(RuntimeError):
     """A character named by the clearing is visiting right now (checked under its admission lock)."""
 
+
+class CharacterUnresolved(ValueError):
+    """A character named by a clearing has no current name (deleted, or its config unreadable)."""
+
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
 _VOIDABLE_CHOICES = (None, "ask_later", "generating:diary", "preview:diary")
@@ -197,7 +201,9 @@ async def _open_logs_in_scope(
     for own_char_uid in sentinel["own_char_uids"]:
         name = await resolve_char_name(own_char_uid)
         if not name:
-            continue
+            # 名字解析不出可能只是角色配置一时读不出（被替换成默认值）：当作「范围没展开」
+            # 留住哨兵，不能当作「这个角色没有要清的人」把哨兵删掉、清除永远不再执行
+            raise CharacterUnresolved(f"character {own_char_uid} of {sentinel['op_id']} has no name")
         if sentinel["scope"] == "person":
             peers = [sentinel["peer_uid"]]
         else:
@@ -222,6 +228,21 @@ async def _run_scope(
     void_pending: VoidPending | None,
 ) -> ForgetOutcome:
     opened = await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
+    # 名册只列还在的人：上一次尝试已做完 remove_char、却在之后的步骤失败的人不在名册里，
+    # 但他的日志还开着。把哨兵范围内已有的开着的日志一并续跑，否则重试会「全部完成」
+    # 删掉哨兵，残留的转录身份或预览要等下次启动才处理
+    seen = {rev_id for rev_id, *_rest in opened}
+    for record in await RevocationLog.list_all_open(config_dir):
+        if (
+            record["id"] in seen or record["own_uid"] != sentinel["own_uid"]
+            or not sentinel_covers(sentinel, record["own_char_uid"], record["peer_uid"])
+        ):
+            continue
+        name = await resolve_char_name(record["own_char_uid"])
+        if not name:
+            raise CharacterUnresolved(f"character of {record['id']} has no name")
+        opened.append((record["id"], name, record["own_char_uid"], record["peer_uid"]))
+        seen.add(record["id"])
     # 全部日志落盘之后才开始逐对执行：中途崩溃时还没轮到的人也已有日志可重放
     pending: list[str] = []
     for rev_id, name, own_char_uid, peer_uid in opened:
@@ -274,6 +295,7 @@ async def forget_person(
     admission_lock: AdmissionLock | None = None,
     is_visit_active: IsVisitActive | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
+    resolve_char_name: ResolveCharName | None = None,
 ) -> ForgetOutcome:
     """"Forget this person" under one local character (``scope='person'``).
 
@@ -284,8 +306,15 @@ async def forget_person(
     :class:`VisitActive` before anything is written. ``lifecycle_guard``
     (optional) is held for the whole operation, so the character cannot be
     renamed or deleted while its name is used for the roster and memory_server.
+    ``resolve_char_name`` (optional) re-reads the character's current name
+    once the guard is held (a rename may have landed before it was taken);
+    :class:`CharacterUnresolved` when the character is gone.
     """
     async with (lifecycle_guard([own_char_uid]) if lifecycle_guard else contextlib.nullcontext()):
+        if resolve_char_name is not None:
+            own_char = await resolve_char_name(own_char_uid)
+            if not own_char:
+                raise CharacterUnresolved(f"character {own_char_uid} has no name")
         return await _forget_person(
             Path(config_dir), own_uid=own_uid, own_char=own_char, own_char_uid=own_char_uid,
             peer_uid=peer_uid, client=client, void_pending=void_pending,
@@ -329,17 +358,29 @@ async def forget_all(
     admission_lock: AdmissionLock | None = None,
     is_visit_active: IsVisitActive | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
+    resolve_char_name: ResolveCharName | None = None,
 ) -> ForgetOutcome:
     """"Forget everyone" under the local characters ``chars`` (``{name: character_uid}``).
 
     One sentinel (``scope='chars'``) names every character; the roster is
     expanded only after it is on disk, every person's log is written before
-    any is executed. ``lifecycle_guard`` is held for the whole operation.
+    any is executed. ``lifecycle_guard`` is held for the whole operation;
+    ``resolve_char_name`` (optional) re-reads every current name under it
+    (characters gone by then are dropped from the scope).
     """
     if not chars:
         return ForgetOutcome(done=True)
     async with (lifecycle_guard(sorted(chars.values())) if lifecycle_guard
                 else contextlib.nullcontext()):
+        if resolve_char_name is not None:
+            current: dict[str, str] = {}
+            for uid in chars.values():
+                name = await resolve_char_name(uid)
+                if name:
+                    current[name] = uid
+            chars = current
+            if not chars:
+                return ForgetOutcome(done=True)
         return await _forget_all(
             Path(config_dir), own_uid=own_uid, chars=chars, client=client,
             void_pending=void_pending, admission_lock=admission_lock,

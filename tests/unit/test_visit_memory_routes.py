@@ -320,3 +320,44 @@ def test_unreadable_sentinel_answers_retryable_503(env):
         resp = client.post(path, json=body, headers=GOOD)
         assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
+    ("/api/visit/memory/forget_all", {"catgirl": "A"}),
+])
+def test_rename_landing_before_the_guard_is_taken_uses_the_new_name(env, monkeypatch, path, body):
+    import contextlib
+
+    client, server, tmp_path, _state = env
+    _seed(tmp_path, own_char="C")                    # 改名迁移已把名册条目搬到新名字 C
+    table = {"A": CHAR_UID_A}
+
+    async def chars():
+        return dict(table)
+
+    monkeypatch.setattr(local_chars, "load_local_characters", chars)
+
+    @contextlib.asynccontextmanager
+    async def guard(_uids):
+        table.clear()
+        table["C"] = CHAR_UID_A                      # 改名恰在路由解析之后、守卫生效之前提交
+        yield
+
+    names = set()
+    real_handler = server.handler
+
+    async def handler(request):
+        if request.url.path.endswith("/scoped_forget"):
+            names.add(request.url.path.rsplit("/", 2)[-2])
+        return await real_handler(request)
+
+    server.handler = handler
+    memory_routes.configure_memory_routes(lifecycle_guard=guard)
+    try:
+        resp = client.post(path, json=body, headers=GOOD)
+    finally:
+        memory_routes.configure_memory_routes(lifecycle_guard=None)
+    assert resp.status_code == 200
+    assert names == {"C"}
+    assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_X, "C")) is None

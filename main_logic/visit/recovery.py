@@ -504,6 +504,8 @@ async def _upload_pending(
                     # 就让这场的转录与排队举报永远交不上去
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                 continue
+            # 先从待上传集合里拿掉：重封失败时不能把这份坏的 / 别场的文件交给上传回调
+            sealed.discard(visit_id)
             logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建

@@ -31,6 +31,7 @@ from main_logic.visit.subjects import PeerRoster, derive_pair_id, derive_peer_ch
 from tests.unit.visit_memory_test_helpers import (
     CHAR_UID_A,
     OWN_A,
+    OWN_B,
     PEER_X,
     TAG_Y,
     FakeMemoryServer,
@@ -993,3 +994,122 @@ async def test_sealed_upload_with_broken_lines_is_resealed_from_the_stream(tmp_p
     (visit_id, doc), = uploads.calls
     # 转录行坏了的上传文件不算数：从完整的流水重新封存
     assert visit_id == v and [line["text"] for line in doc["request"]["lines"]] == ["a"]
+
+
+# ── 评审第十二轮 ──────────────────────────────────────────────────────
+
+
+async def test_sentinel_with_unresolvable_character_is_kept(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import replay_forgets
+
+    await seed_roster(tmp_path)
+    sentinel = await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars",
+                                                       own_char_uids=[CHAR_UID_A])
+
+    async def unresolved(_uid):
+        return None        # 角色配置一时读不出：被替换成默认值，uid 解析不出名字
+
+    clean = await replay_forgets(tmp_path, resolve_char_name=unresolved,
+                                 client=FakeMemoryServer().client())
+    assert clean is False
+    # 范围没展开就不能当作「没人要清」删掉哨兵
+    assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [sentinel["op_id"]]
+
+
+async def test_invalid_sealed_upload_is_not_uploaded_when_resealing_fails(tmp_path):
+    v = vid(58)
+    # 流水没有头行：重封得到 None（按损坏处理）
+    _write_stream(tmp_path, v, [{"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
+                                 "ts": 1001.0, "text": "a", "truncated": False}])
+    foreign = {"v": 1, "own_visit_uid": OWN_A, "request": {"visit_id": vid(59), "role": "host",
+                                                           "started_at": 1.0, "ended_at": 2.0,
+                                                           "usage": {}, "lines": []}}
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(foreign), encoding="utf-8")
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 已知是别场的文件不能交给上传回调
+    assert uploads.calls == []
+
+
+async def test_forget_all_retry_resumes_logs_of_people_already_removed_from_the_roster(tmp_path):
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    calls = {"n": 0}
+
+    async def flaky_void(_record):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("spool busy")     # remove_char 已做完，之后的 void_pending 失败
+
+    first = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                             client=server.client(), void_pending=flaky_void)
+    assert first.done is False
+    assert await PeerRoster(tmp_path, own_uid=OWN_A).peers_of_char("A") == []
+    retry = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                             client=server.client(), void_pending=flaky_void)
+    # 名册里已经没有这个人：重试照样续跑他那份开着的日志，跑完才算完成
+    assert retry.done is True and calls["n"] == 2
+    assert await RevocationLog.list_all_open(tmp_path) == []
+
+
+@pytest.mark.parametrize("record", ["sentinel", "log"])
+async def test_forget_in_progress_is_scoped_to_the_account(tmp_path, record):
+    from main_logic.visit import memory_bridge
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import open_person_log
+
+    if record == "sentinel":
+        await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
+    else:
+        await seed_roster(tmp_path)
+        await open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                              peer_uid=PEER_X)
+    assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
+    # 名册与记忆按账号分区：A 账号的清除不挡 B 账号同一角色下的同一对端
+    assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_B)
+
+
+@pytest.mark.parametrize("scope", ["person", "all"])
+async def test_forget_uses_the_name_resolved_under_the_lifecycle_guard(tmp_path, scope):
+    import contextlib
+
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path, own_char="B")          # 拿到守卫之前角色已从 A 改名为 B
+    held = {"in": False}
+
+    @contextlib.asynccontextmanager
+    async def guard(_uids):
+        held["in"] = True
+        yield
+        held["in"] = False
+
+    async def current_name(uid):
+        assert held["in"]                              # 在守卫里重新解析
+        return "B" if uid == CHAR_UID_A else None
+
+    server = FakeMemoryServer()
+    names = []
+    real_handler = server.handler
+
+    async def handler(request):
+        if request.url.path.endswith("/scoped_forget"):
+            names.append(request.url.path.rsplit("/", 2)[-2])
+        return await real_handler(request)
+
+    server.handler = handler
+    if scope == "person":
+        outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                      peer_uid=PEER_X, client=server.client(), lifecycle_guard=guard,
+                                      resolve_char_name=current_name)
+    else:
+        outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
+                                   client=server.client(), lifecycle_guard=guard,
+                                   resolve_char_name=current_name)
+    assert outcome.done
+    # 清的是改名后 B 名下的条目，而不是旧名 A 下的空条目
+    assert await PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_X, "B") is None
+    assert names and set(names) == {"B"}

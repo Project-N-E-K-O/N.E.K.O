@@ -48,6 +48,7 @@ from config.visit_settings import NEKO_VISIT_ALLOW_NONLOCAL, VISIT_MEMORY_PLATFO
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.forget_runner import (
     AdmissionLock,
+    CharacterUnresolved,
     LifecycleGuard,
     VisitActive,
     forget_all,
@@ -271,9 +272,13 @@ async def forget_memory_peer(request: Request):
             _hooks.config_dir(), own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
             peer_uid=peer_uid, client=_hooks.client(), admission_lock=_hooks.admission_lock,
             is_visit_active=_hooks.is_visit_active, lifecycle_guard=_hooks.lifecycle_guard,
+            resolve_char_name=local_chars.resolve_char_name,
         )
     except VisitActive:
         return _error(409, "visit_active")
+    except CharacterUnresolved:
+        # 拿到守卫时角色已被删除
+        return _error(404, "unknown_catgirl")
     except (RosterCorruptError, RevocationLogUnreadable, OSError, ValueError) as exc:
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
@@ -307,7 +312,7 @@ async def forget_all_memory(request: Request):
         outcome = await forget_all(
             _hooks.config_dir(), own_uid=own_uid, chars=chars, client=_hooks.client(),
             admission_lock=_hooks.admission_lock, is_visit_active=_hooks.is_visit_active,
-            lifecycle_guard=_hooks.lifecycle_guard,
+            lifecycle_guard=_hooks.lifecycle_guard, resolve_char_name=local_chars.resolve_char_name,
         )
     except VisitActive:
         return _error(409, "visit_active")

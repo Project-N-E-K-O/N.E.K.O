@@ -278,7 +278,8 @@ async def _commit_locked(
         return CommitResult(ok=True, skipped="memory_off")
     if state["peer_uid"] is None:
         return CommitResult(ok=True, skipped="peer_forgotten")
-    if await memory_bridge.forget_in_progress(spool.config_dir, state["own_char_uid"], state["peer_uid"]):
+    if await memory_bridge.forget_in_progress(spool.config_dir, state["own_char_uid"], state["peer_uid"],
+                                              own_uid=state["own_uid"]):
         # 清除做到一半（memory_server 不可用时日志留着待重放）：此时开轮会带上已加过的清除代数，
         # 服务端不会挡，已清掉的记忆就被写回。等清除完成（对端身份随之抹掉）再说
         return CommitResult(ok=False, skipped="forget_in_progress")
@@ -560,7 +561,8 @@ async def _summary_locked(
         # 等锁期间「清除这个人」已抹掉对端身份：不存
         await _mark_summary_done(spool, own_char_uid)
         return True
-    if await memory_bridge.forget_in_progress(spool.config_dir, own_char_uid, state["peer_uid"]):
+    if await memory_bridge.forget_in_progress(spool.config_dir, own_char_uid, state["peer_uid"],
+                                              own_uid=state["own_uid"]):
         # 清除未完成：现在写进名册的摘要会在 remove_char 之前出现、之后被一并删掉，
         # 但若 remove_char 已做完，就会把条目里的摘要写回。等清除结束再处理
         return False

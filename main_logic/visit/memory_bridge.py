@@ -154,11 +154,15 @@ def _default_peer_label(lang: str | None) -> str:
     return get_visit_speaker_header("peer_human", lang).strip("[] ")
 
 
-async def forget_in_progress(config_dir: str | Path, own_char_uid: str, peer_uid: str) -> bool:
-    """Whether a local forget covering ``(own_char_uid, peer_uid)`` is unfinished.
+async def forget_in_progress(
+    config_dir: str | Path, own_char_uid: str, peer_uid: str, *, own_uid: str,
+) -> bool:
+    """Whether a local forget of account ``own_uid`` covering ``(own_char_uid, peer_uid)`` is unfinished.
 
-    Counts open revocation logs (any account) and clearing sentinels whose
-    scope covers the pair; unreadable ones count as in progress (fail closed).
+    Counts that account's open revocation logs and clearing sentinels whose
+    scope covers the pair (rosters and memory subjects are partitioned by
+    account, so another account's clearing never touches this pair);
+    unreadable ones count as in progress (fail closed).
     """
     config_dir = Path(config_dir)
     try:
@@ -167,9 +171,14 @@ async def forget_in_progress(config_dir: str | Path, own_char_uid: str, peer_uid
     except RevocationLogUnreadable:
         # 读不出来的清除记录不能当作「没有在清除」
         return True
-    if any(log["own_char_uid"] == own_char_uid and log["peer_uid"] == peer_uid for log in logs):
+    if any(
+        log["own_uid"] == own_uid and log["own_char_uid"] == own_char_uid and log["peer_uid"] == peer_uid
+        for log in logs
+    ):
         return True
-    return any(sentinel_covers(doc, own_char_uid, peer_uid) for doc in sentinels)
+    return any(
+        doc["own_uid"] == own_uid and sentinel_covers(doc, own_char_uid, peer_uid) for doc in sentinels
+    )
 
 
 async def build_visit_memory_block(
@@ -223,7 +232,7 @@ async def build_visit_memory_block(
                  short_id=derive_short_code(peer_uid))
         except Exception as exc:  # noqa: BLE001 - 交接失败不挡开场，按现有那份开场
             diag("last_summary_handoff_failed", error=repr(exc))
-    if await forget_in_progress(config_dir, own_char_uid, peer_uid):
+    if await forget_in_progress(config_dir, own_char_uid, peer_uid, own_uid=own_uid):
         diag("memory_block_skipped_forget_in_progress", own_char_uid=own_char_uid,
              short_id=derive_short_code(peer_uid))
         return ""
