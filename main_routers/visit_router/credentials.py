@@ -916,13 +916,16 @@ class VisitGrant:
         """True when the vendor grant has less than the margin left (or expired).
 
         Reads ``time.time()`` itself: the grant expiry is Unix time, never the
-        transport's monotonic clock. False once a renewal came back with less
-        than the margin left: Servers capped the grant at the room's hard
-        deadline, and asking again would only return the same one.
+        transport's monotonic clock. While a renewal that came back with less
+        than the margin left is still valid, False: Servers capped the grant
+        at the room's hard deadline, and asking again would only return the
+        same one. Once it expired, True again (a later room deadline gives a
+        new grant, an ended room answers 410).
         """
-        if self._capped:
+        remaining = self._current.vendor_remaining_s(wall_now=wall_now)
+        if self._capped and remaining > 0:
             return False
-        return self._current.vendor_remaining_s(wall_now=wall_now) < self._margin
+        return remaining < self._margin
 
     async def renew(self, *, wall_now: float | None = None) -> VisitCredentials:
         """Fetch a fresh vendor grant; concurrent callers share one Servers call."""

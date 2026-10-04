@@ -1536,3 +1536,17 @@ async def test_normal_renewal_keeps_renewing(servers):
     wall[0] += 550
     assert await grant.ensure_fresh(wall_now=wall[0])
     assert len(calls) == 2
+
+
+
+@pytest.mark.asyncio
+async def test_capped_grant_is_renewed_again_once_it_expired(servers):
+    first = await _guest()
+    wall = [first.vendor_expires_at - 60]
+    grant, calls = _grant_with_renewals(first, [30, 600], wall)
+    assert await grant.ensure_fresh(wall_now=wall[0])
+    assert not grant.refresh_due(wall_now=wall[0] + 29)
+    # 截断的授权过期之后照常再续：房间期限后延时能拿到新期限，房间已结束时拿到 410
+    assert grant.refresh_due(wall_now=wall[0] + 30)
+    assert await grant.ensure_fresh(wall_now=wall[0] + 30)
+    assert len(calls) == 2 and not grant.refresh_due(wall_now=wall[0] + 30)

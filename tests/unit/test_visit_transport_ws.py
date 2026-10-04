@@ -1905,3 +1905,96 @@ def test_deadline_passing_before_preflight_issues_no_credentials():
     # 不为过期的页面去 Servers 领凭证（签发记录、配额都有副作用）
     assert s.issued == 0 and ws.sent == []
     assert conn.retired and ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
+
+
+
+def test_rejected_runtime_media_does_not_suppress_the_fallback_snapshot():
+    import asyncio
+
+    class _SnapshotGone(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def media_snapshot(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("snapshot unavailable")
+            return {"publish": True, "crop": "upper", "ladder": 0}
+
+    class _RejectedMediaDuringFrames(_RecordingWS):
+        def __init__(self, session):
+            super().__init__()
+            self.session = session
+
+        async def send_text(self, text):
+            await super().send_text(text)
+            if json.loads(text).get("type") == "send":
+                # runtime 发了一条发不出去的 media（序列化不了）：它没送达，不能挡掉兜底快照
+                asyncio.ensure_future(self.session.send({"type": "media", "bad": {1}}))
+                await asyncio.sleep(0)
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _SnapshotGone()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _RejectedMediaDuringFrames(s)
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        await asyncio.sleep(0.05)
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert [m for m in ws.sent if m.get("type") == "media"] == [
+        {"publish": True, "crop": "upper", "ladder": 0, "type": "media"}]
+
+
+def test_non_string_state_does_not_close_the_socket():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        conn = tw._attach(link, _RecordingWS())
+        conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": ["joined"]}, 10, VISIT_ID, "guest")
+        return conn
+
+    try:
+        conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert not conn.in_room and not conn.closed
+
+
+def test_rollback_restores_the_deadline_even_when_pausing_fails(app):
+    class _PauseFails(_Outbox):
+        def pause(self, now=None, reason="transport"):
+            if reason == PAUSE_PAGE_RELOAD and ("resend_hello",) in self.log:
+                raise RuntimeError("pause failed")
+            super().pause(now, reason)
+
+    class _ClearsThenFails(FakeSession):
+        def on_page_rejoin_committed(self, now):
+            super().on_page_rejoin_committed(now)
+            raise RuntimeError("commit failed after clearing")
+
+    s = _ClearsThenFails()
+    s.outbox = _PauseFails(s.log)
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+
+    def scenario(ws):
+        _joined(ws)
+        _barrier(ws, s)
+        assert s.liveness.events[-2:] == ["page_back", "page_restored"]
+
+    _reload_and_join(_client(app), s, scenario)

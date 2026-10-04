@@ -337,7 +337,9 @@ class _Connection:
     sdk_seen: bool = False
     in_room: bool = False
     rejoined: bool = False
-    media_queued: int = 0
+    media_seq: int = 0
+    media_last_ok: int = 0
+    media_pending: set[int] = field(default_factory=set)
 
     async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
         """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
@@ -467,9 +469,14 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
         if conn.stop_sent or conn.stop_reserved:
             return False
         conn.stop_reserved = True
+    media_seq = 0
     if kind == "media":
-        # 同步计数（排进发送锁之前）：重入兜底快照据此判断期间 runtime 是否发过更新的 media
-        conn.media_queued += 1
+        # 排进发送锁之前同步编号：重入兜底快照据此判断期间 runtime 是否有更新的 media
+        # 已发出或仍在排队（发送失败的不算）
+        conn.media_seq += 1
+        media_seq = conn.media_seq
+        conn.media_pending.add(media_seq)
+    ok = False
     try:
         ok = await conn.send_json(msg, text=text)
     finally:
@@ -477,11 +484,20 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
             conn.credentials_reserved = False
         if kind == "stop":
             conn.stop_reserved = False
+        if media_seq:
+            conn.media_pending.discard(media_seq)
+            if ok:
+                conn.media_last_ok = max(conn.media_last_ok, media_seq)
     if ok and first_credentials:
         conn.credentials_sent = True
     if ok and kind == "stop":
         conn.stop_sent = True
     return ok
+
+
+def _newer_media(conn: _Connection, mark: int) -> bool:
+    """True when a ``media`` queued after ``mark`` was sent or is still waiting to be sent."""
+    return conn.media_last_ok > mark or any(seq > mark for seq in conn.media_pending)
 
 
 def _reset_for_tests() -> None:
@@ -666,6 +682,8 @@ async def _handle_frame(
         return
     if kind == "state":
         state = msg.get("state")
+        if not isinstance(state, str):
+            state = None  # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线
         was_in_room = conn.in_room
         # 先当作不在房内：hook 失败时（runtime 没认这条上报，状态可能不一致）不能留着旧的
         # in_room 让后续 stats 去重入；iframe 不再报的话，这场按 fail-safe 到页面期限判 local_page_lost
@@ -746,15 +764,19 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     except Exception as exc:  # noqa: BLE001
         logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
         # 回滚：恢复了的 outbox 重新暂停、清掉的期限写回，下一次触发整套重做（hello 去重、resume 幂等）
+        # 两步各自兜底、先写回期限：暂停失败也不能留下「期限已清」的半提交状态
+        if saved is not None:
+            try:
+                session.liveness.restore_page_reload_state(saved)
+            except Exception as rollback_exc:  # noqa: BLE001
+                logger.warning("visit transport: rejoin rollback failed: %s", type(rollback_exc).__name__)
         try:
             session.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
-            if saved is not None:
-                session.liveness.restore_page_reload_state(saved)
         except Exception as rollback_exc:  # noqa: BLE001
             logger.warning("visit transport: rejoin rollback failed: %s", type(rollback_exc).__name__)
         return
     conn.rejoined = True
-    media_mark = conn.media_queued
+    media_mark = conn.media_seq
     for frame in frames:
         await _send_on(conn, frame.to_ws())
     if _is_current(link, conn):
@@ -766,7 +788,7 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
             # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
-            if conn.media_queued != media_mark:
+            if _newer_media(conn, media_mark):
                 return
         await _send_on(conn, media, text=media_text)
 
