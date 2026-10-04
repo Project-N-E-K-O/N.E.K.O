@@ -1449,24 +1449,69 @@ async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_ep
 
 
 
-async def test_generation_failing_after_a_forget_cancels_its_key(env):
+async def test_generation_failing_after_a_forget_keeps_the_forget_on_the_record(env):
     env.llm.responses = [RuntimeError("LLM failed")]
     env.llm.gate = asyncio.Event()
     env.llm.entered = asyncio.Event()
     task = asyncio.create_task(_post(env, _single_body()))
     await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
-    # 生成期间的清除：键锁被占着，它跳过这个键
+    # 生成期间的清除：键锁被占着，它不排队，只在记录上持久记下被清的 subject
     await _forget(env, GROUP)
-    assert _key_state(env, KEY_GROUP) == "pending"
     env.llm.gate.set()
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(task, timeout=5)
-    # 生成失败时它自己把键标成取消：清除之后同键重试不会重新抽取把旧内容写回
-    assert _key_state(env, KEY_GROUP) == "cancelled"
+    records = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
+    assert records[KEY_GROUP]["state"] == "pending" and records[KEY_GROUP]["forgotten_keys"] == [GROUP_KEY]
+    # 生成失败（或进程被杀）之后同键重试：重新生成但按这份记录丢弃被清的段，不写回旧内容
     env.llm.gate = None
     env.llm.responses = [SINGLE_FACTS]
     again = await _post(env, _single_body())
-    assert again["duplicate"] is True and _facts_of(env, GROUP) == []
+    assert again["created"] == 0 and _facts_of(env, GROUP) == []
+
+
+async def test_generation_failing_after_forgetting_one_segment_keeps_the_others(env):
+    env.llm.responses = [RuntimeError("LLM failed")]
+    env.llm.gate = asyncio.Event()
+    env.llm.entered = asyncio.Event()
+    task = asyncio.create_task(_post(env, _segments_body()))
+    await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
+    await _forget(env, GP)                                   # 只清其中一段的 subject
+    env.llm.gate.set()
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(task, timeout=5)
+    env.llm.gate = None
+    env.llm.responses = [BATCH_FACTS]
+    again = await _post(env, _segments_body())
+    # 只丢被清的那一段，另一段照常补写，而不是整键取消
+    assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
+    assert [seg["created"] for seg in again["segments"]] == [0, 2]
+
+
+async def test_terminal_key_record_without_request_identity_fails_closed(env):
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 记录坏了：没有请求身份
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503 and env.llm.calls == 0
+
+
+@pytest.mark.parametrize("damage", ["applied_seq_bool", "effect_key_foreign"])
+async def test_damaged_journal_markers_fail_closed(env, damage):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # 重试时应用本身不再出错
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+    if damage == "applied_seq_bool":
+        staging["applied"].append({"seq": True})            # True == 1：会把第 1 项当成已应用跳过
+    else:
+        facts_item["effect_keys"][0] = "0" * 32 + ":7"      # 形状合法、却不是这个键推出来的效果键
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
 
 
 async def test_forget_cancels_a_pending_key_whose_generation_failed_earlier(env):
@@ -1485,9 +1530,10 @@ async def test_forget_cancels_a_pending_key_whose_generation_failed_earlier(env)
 @pytest.mark.parametrize("damage", ["negative_segment", "segment_out_of_range", "seq_shuffled", "effect_keys_short"])
 async def test_damaged_staging_items_fail_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
-    _fail_on_item(env, failing_seq=0)
+    original = _fail_on_item(env, failing_seq=0)
     with pytest.raises(HTTPException):
         await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)    # 重试时应用本身不再出错
     path = _staging_file(env, KEY_GROUP)
     staging = json.loads(path.read_text(encoding="utf-8"))
     facts_item = next(item for item in staging["items"] if item["kind"] == "facts")

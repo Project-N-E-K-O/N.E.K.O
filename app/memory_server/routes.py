@@ -2924,14 +2924,26 @@ def _keyed_staging_items_valid(staging: dict) -> bool:
     still carry its payload (facts with one effect key each, or a display
     name). Items already applied / dropped may have been stripped by a forget.
     """
+    from . import idempotency
+
     segments = staging.get("segments")
     items = staging.get("items")
     applied = staging.get("applied")
     if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
         return False
-    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
     if any(not isinstance(entry, dict) for entry in applied):
         return False
+    seqs = [entry.get("seq") for entry in applied]
+    # 已应用记录的序号必须是范围内、互不重复的真整数：{"seq": true} 会被当成 1 跳过一项
+    if any(not isinstance(seq, int) or isinstance(seq, bool) or not 0 <= seq < len(items) for seq in seqs):
+        return False
+    if len(set(seqs)) != len(seqs):
+        return False
+    done = set(seqs)
+    key = staging.get("key")
+    if not isinstance(key, str) or not key:
+        return False
+    ordinal = 0
     for position, item in enumerate(items):
         if not isinstance(item, dict):
             return False
@@ -2942,15 +2954,20 @@ def _keyed_staging_items_valid(staging: dict) -> bool:
             return False
         if kind not in (_KEYED_ITEM_LOCALE, _KEYED_ITEM_FACTS, _KEYED_ITEM_DISPLAY_NAME):
             return False
+        if kind == _KEYED_ITEM_FACTS:
+            # 效果键由暂存的键与全局序号确定：逐个核对，不能只看形状——改成别的行已有的
+            # 效果键会让这条事实被当成重放跳过
+            effect_keys = item.get("effect_keys")
+            if not isinstance(effect_keys, list) or effect_keys != [
+                idempotency.effect_key_for(key, ordinal + offset) for offset in range(len(effect_keys))
+            ]:
+                return False
+            ordinal += len(effect_keys)
         if seq in done:
             continue
         if kind == _KEYED_ITEM_FACTS:
-            facts, effect_keys = item.get("facts"), item.get("effect_keys")
-            if (
-                not isinstance(facts, list) or not isinstance(effect_keys, list)
-                or len(facts) != len(effect_keys)
-                or not all(isinstance(k, str) and k for k in effect_keys)
-            ):
+            facts = item.get("facts")
+            if not isinstance(facts, list) or len(facts) != len(item["effect_keys"]):
                 return False
         elif kind == _KEYED_ITEM_DISPLAY_NAME:
             if item.get("display_name") is not None and not isinstance(item.get("display_name"), str):
@@ -3386,6 +3403,10 @@ async def _process_scoped_history_keyed(
                 record is not None
                 and record.get("state") in idempotency.TERMINAL_KEY_STATES
             ):
+                if stored is None:
+                    # 终态记录却没有请求身份：核对不了是不是同一个请求，不能把任意复用这个键的
+                    # 新请求当成 duplicate 吞掉
+                    raise idempotency.IdempotencyStateError("terminal key record has no request identity")
                 return _keyed_duplicate_response(shape, contexts)
             staging = await idempotency.read_staging(lanlan_name, key)
         except idempotency.IdempotencyStateError as exc:
@@ -3494,23 +3515,25 @@ async def _process_scoped_history_keyed(
                     prompt_segments=prompt_segments,
                 )
             except BaseException:
-                # 生成失败，而生成期间有清除推进了某个 subject 的 generation：清除那时
-                # 因为键锁被占着跳过了这个键。这里替它把键标成取消，否则同键重试会用清除
-                # 之后的 generation 重新抽取，把旧内容写回去
-                if any(
-                    runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
-                    != generations[index]
-                    for index, context in enumerate(contexts)
-                ):
-                    with contextlib.suppress(Exception):
-                        await idempotency.update_key(
-                            lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
-                        )
+                # 生成失败 / 被终止：生成期间到达的清除已把被清 subject 持久记在这个键的记录上
+                # （forgotten_keys），同键重试重新生成时据此丢弃那些段，不需要在这里补救
                 raise
             # 生成期间有清除推进了某个 subject 的 forget generation：它的产物从一开始就
             # 记为丢弃再落盘。否则「暂存已写、还没应用」之间崩溃后，重试只能读到清除之后
             # 的 generation，会把清除之前抽出的事实当成新的写回去
             _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
+            # 本次或之前某次生成期间到达的清除（键锁被占着、它只在记录上记下被清的 subject）：
+            # 那些段的产物同样记为丢弃。前一次生成失败 / 进程被杀、这次重试才走到这里时，
+            # generation 已是清除之后的，只能靠这份持久记录认出它们
+            try:
+                marked = await idempotency.read_key(lanlan_name, key)
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            forgotten_during = marked.get("forgotten_keys") if isinstance(marked, dict) else None
+            if isinstance(forgotten_during, list) and forgotten_during:
+                _drop_segments_for_keys(staging, {str(k) for k in forgotten_during})
             try:
                 await idempotency.write_staging(lanlan_name, key, staging)
                 # 暂存落盘之后再核一次：在上面两次写入期间完成的清除，取消扫描时
@@ -3701,9 +3724,37 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
             continue
         if item.get("seq") not in done:
             applied.append({"seq": item.get("seq"), "dropped_forget": True})
-        # 被清 subject 的抽取原文 / 显示名不能留在磁盘上；只留响应与跳过所需的序号
-        items[position] = {"seq": item.get("seq"), "kind": item.get("kind"), "segment": item.get("segment")}
+        # 被清 subject 的抽取原文 / 显示名不能留在磁盘上
+        items[position] = _stripped_item(item)
     return True
+
+
+def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
+    """Journal every unapplied non-locale item of segments touching ``subject_keys`` as dropped, stripped."""
+    segments = document.get("segments") or []
+    affected = {
+        index for index, segment in enumerate(segments)
+        if _segment_subject_keys(segment) & subject_keys
+    }
+    if not affected:
+        return
+    applied = document.setdefault("applied", [])
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    items = document.get("items") or []
+    for position, item in enumerate(items):
+        if item.get("segment") not in affected or item.get("kind") == _KEYED_ITEM_LOCALE:
+            continue
+        if item["seq"] not in done:
+            applied.append({"seq": item["seq"], "dropped_forget": True})
+        items[position] = _stripped_item(item)
+
+
+def _stripped_item(item: dict) -> dict:
+    # 只留响应与跳过所需的序号，以及效果键（不含内容；逐项校验靠它推算序号）
+    stripped = {"seq": item.get("seq"), "kind": item.get("kind"), "segment": item.get("segment")}
+    if item.get("kind") == _KEYED_ITEM_FACTS:
+        stripped["effect_keys"] = list(item.get("effect_keys") or [])
+    return stripped
 
 
 def _cancelled_staging_marker(document: dict) -> dict:
@@ -3844,8 +3895,19 @@ async def _cancel_staged_writes_for_subjects(
         if not subject_keys.intersection(peek_touched):
             continue
         if peek is None and not peek_unreadable and idempotency.key_lock(lanlan_name, key).locked():
-            # 还没有暂存、键锁被占着：持锁的请求正在调 LLM。不排在它后面——它在调 LLM 之前
-            # 取了 generation，产物由 generation 兜住；生成失败时它自己把键标成取消
+            # 还没有暂存、键锁被占着：持锁的请求正在调 LLM，不排在它后面。只在记录上持久记下
+            # 被清的 subject（字符锁下原子改一条记录）：它生成完落暂存前、或生成失败 / 进程被杀
+            # 之后同键重试重新生成时，都据此丢弃这些段，不会用清除之后的 generation 写回旧内容
+            touched = subject_keys.intersection(peek_touched)
+
+            def _mark(old, touched=touched):
+                if old is None or old.get("state") != idempotency.KEY_STATE_PENDING:
+                    return None
+                merged = sorted(set(old.get("forgotten_keys") or []) | touched)
+                return {**old, "forgotten_keys": merged}
+
+            await idempotency.update_key(lanlan_name, key, _mark)
+            cancelled += 1
             continue
         async with idempotency.key_lock(lanlan_name, key):
             unreadable = None
