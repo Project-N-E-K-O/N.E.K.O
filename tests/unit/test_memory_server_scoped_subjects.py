@@ -315,3 +315,15 @@ async def test_deeply_nested_persona_does_not_break_the_listing(env):
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     # 嵌套过深的 persona 按读不出处理：其余 subject 照常列出
     assert any(row["subject_id"] == VISIT_GROUP.subject_id for row in result["subjects"])
+
+
+async def test_subject_with_only_terminal_reflections_is_listed(env):
+    only_reflection = MemorySubject.participant("neko_visit", "u_only_reflection")
+    char_dir = env.root / NAME
+    reflections = json.loads((char_dir / "reflections.json").read_text(encoding="utf-8"))
+    reflections.append({"id": "r9", "text": "已晋升的反思", "status": "promoted",
+                        **only_reflection.as_entry_fields()})
+    _write(char_dir / "reflections.json", reflections)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    # 已终结的反思仍在文件里、仍在清除面上：只剩它的 subject 也要能被找到
+    assert any(row["subject_id"] == only_reflection.subject_id for row in result["subjects"])

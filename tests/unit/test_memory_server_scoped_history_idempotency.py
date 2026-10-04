@@ -1727,3 +1727,24 @@ def test_replaying_a_forgotten_marker_drops_locale_items_too(env):
     env.routes._drop_segments_for_keys(doc, {GROUP_KEY})
     # 清除之后才预留的语言序号证明不了请求早于清除：一并丢弃
     assert {entry["seq"] for entry in doc["applied"]} == {0, 1}
+
+
+@pytest.mark.parametrize("damage", ["foreign_destination", "malformed_fact"])
+async def test_restored_journal_destinations_and_facts_are_validated(env, damage):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    if damage == "foreign_destination":
+        staging["segments"][0]["subject"] = PART                # 写入目标被改成另一个合法 subject
+    else:
+        facts_item = next(item for item in staging["items"] if item["kind"] == "facts")
+        facts_item["facts"][0] = "not a fact"                  # 坏掉的事实会被静默跳过却记成已应用
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GROUP) == [] and _facts_of(env, PART) == []

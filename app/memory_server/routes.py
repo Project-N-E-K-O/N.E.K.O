@@ -2915,14 +2915,20 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _keyed_staging_items_valid(staging: dict) -> bool:
+def _keyed_staging_items_valid(staging: dict, routed_keys: list | None = None) -> bool:
     """Whether every journal item of a restored staging document is safe to apply.
+
+    Every segment's persisted destination (``subject``) must be a valid
+    subject that is either its own wire subject or one of ``routed_keys``
+    (the routed subjects recorded on the key when the journal was created).
 
     Items must be objects numbered ``seq == position`` with a known kind and a
     segment index inside ``segments``; an item not yet in ``applied`` must
     still carry its payload (facts with one effect key each, or a display
     name). Items already applied / dropped may have been stripped by a forget.
     """
+    from memory.scopes import MemoryScopeError, coerce_subject
+
     from . import idempotency
 
     segments = staging.get("segments")
@@ -2930,6 +2936,20 @@ def _keyed_staging_items_valid(staging: dict) -> bool:
     applied = staging.get("applied")
     if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
         return False
+    allowed_routes = {str(k) for k in routed_keys} if routed_keys is not None else None
+    for segment in segments:
+        # 写入目标要成形，且只能是这段自己的 wire subject 或开轮时记下的路由后 subject：
+        # 被改成别的合法 subject 的暂存会把事实写进一个不相干的记忆域
+        if not isinstance(segment, dict):
+            return False
+        try:
+            destination = coerce_subject(segment.get("subject"))
+        except (MemoryScopeError, TypeError, ValueError):
+            return False
+        if destination is None:
+            return False
+        if allowed_routes is not None and destination.key not in allowed_routes | {segment.get("wire_key")}:
+            return False
     if any(not isinstance(entry, dict) for entry in applied):
         return False
     seqs = [entry.get("seq") for entry in applied]
@@ -2984,6 +3004,13 @@ def _keyed_staging_items_valid(staging: dict) -> bool:
         if kind == _KEYED_ITEM_FACTS:
             facts = item.get("facts")
             if not isinstance(facts, list) or len(facts) != len(item["effect_keys"]):
+                return False
+            # 与生成后同一条要求：每条都是带非空正文的对象。坏掉的条目会被持久化静默跳过、
+            # 却照样记成已应用，这条效果就永久丢了
+            if not all(
+                isinstance(fact, dict) and isinstance(fact.get("text"), str) and fact["text"].strip()
+                for fact in facts
+            ):
                 return False
         elif kind == _KEYED_ITEM_DISPLAY_NAME:
             if item.get("display_name") is not None and not isinstance(item.get("display_name"), str):
@@ -3463,7 +3490,15 @@ async def _process_scoped_history_keyed(
                 status_code=422,
                 detail="idempotency_key was already used for a different request",
             )
-        if staging is not None and not _keyed_staging_items_valid(staging):
+        routed_on_record = record.get("routed_keys") if isinstance(record, dict) else None
+        if (
+            staging is not None
+            # 取消标记只留身份字段（原文已抹），由下面的分支补记 cancelled，不按条目校验
+            and staging.get(_KEYED_STAGING_CANCELLED) is not True
+            and not _keyed_staging_items_valid(
+                staging, routed_on_record if isinstance(routed_on_record, list) else None,
+            )
+        ):
             # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
             # 负的段号会把事实写到另一个 subject 上
             logger.error(f"[scoped_history] {lanlan_name}: 暂存条目结构损坏，拒绝应用")
@@ -4554,7 +4589,9 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     reflections_path = os.path.join(character_dir, "reflections.json")
     reflections = PersistenceMixin._filter_reflections(
         await asyncio.to_thread(_read_json_list_for_listing, reflections_path),
-        False,
+        # 全部已存的反思都列：已终结（promoted / denied / merged …）的仍留在文件里、仍在
+        # scoped_forget 的删除面上，只剩这类数据的 subject 也得能被找到、被清除
+        True,
         reflections_path,
     )
     persona = await asyncio.to_thread(
