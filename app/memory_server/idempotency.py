@@ -549,7 +549,12 @@ async def mark_tombstone_erased(
         # 标记不能挡住这次写入，否则接口回了成功、读端却仍不认它，之后的重放会再擦一遍
         if _non_negative_int(current) and current <= fence and current >= epoch:
             return False
-        row["erased_epoch"] = min(epoch, fence)
+        if epoch > fence:
+            # 擦除期间旧墓碑被清理移走、又被一次较低代数的清除重建：这次擦除完成的是更高的代数，
+            # 围栏要抬回去（单调），否则完成标记被截断，较高代数的重放会再擦一遍
+            row["forget_epoch"] = epoch
+            row["forgotten_at"] = time.time()
+        row["erased_epoch"] = epoch
         return True
 
     await _update_json_object(lanlan_name, tombstones_path(lanlan_name), _mutate)

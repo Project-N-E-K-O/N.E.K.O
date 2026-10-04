@@ -2920,7 +2920,7 @@ def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
 
 def _keyed_staging_items_valid(
     staging: dict, routed_keys: list | None = None, request_epochs: dict | None = None,
-    language: str | None = None,
+    language: str | None = None, routed_positions: list | None = None,
 ) -> bool:
     """Whether every journal item of a restored staging document is safe to apply.
 
@@ -2943,7 +2943,12 @@ def _keyed_staging_items_valid(
     if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
         return False
     allowed_routes = {str(k) for k in routed_keys} if routed_keys is not None else None
-    for segment in segments:
+    if not (
+        isinstance(routed_positions, list) and len(routed_positions) == len(segments)
+        and all(isinstance(k, str) for k in routed_positions)
+    ):
+        routed_positions = None
+    for position, segment in enumerate(segments):
         # 写入目标要成形，且只能是这段自己的 wire subject 或开轮时记下的路由后 subject：
         # 被改成别的合法 subject 的暂存会把事实写进一个不相干的记忆域
         if not isinstance(segment, dict):
@@ -2956,6 +2961,9 @@ def _keyed_staging_items_valid(
             return False
         # 没有键记录（孤儿暂存）时没有可信的路由记录可对：目标只认这段自己的 wire subject
         permitted = (allowed_routes if allowed_routes is not None else set()) | {segment.get("wire_key")}
+        if routed_positions is not None:
+            # 按位置核对：只看整批的路由集合，两段的目标互换后仍各自「在集合里」，事实会写进彼此的记忆域
+            permitted = {routed_positions[position], segment.get("wire_key")}
         if destination.key not in permitted:
             return False
         dropped = segment.get("dropped", 0)
@@ -3052,6 +3060,9 @@ def _keyed_staging_items_valid(
             # 只认受支持的语言码：不受支持的会被语言存储转成 None 落盘，清掉这个 subject
             # 原本有效的语言，却照样记成已应用
             if not is_supported_language_code(item.get("language")):
+                return False
+            if language is not None and item.get("language") != language:
+                # 另一个受支持的语言码同样不行：语言在请求哈希里，暂存只会记下这次请求的语言
                 return False
             # 序号是开轮时预留的正的因果时间戳：0 / 负数会被语言存储静默忽略，却照样记成已应用
             if not isinstance(order, int) or isinstance(order, bool) or order <= 0:
@@ -3623,6 +3634,8 @@ async def _process_scoped_history_keyed(
     # 路由后实际写入的 subject 单独记在 pending 记录上（不进请求身份：路由关系在重试
     # 之间可能变化）。暂存还没写成时，清除只能靠它认出经路由写到被清 subject 的键
     routed_keys = sorted({context["subject"].key for context in contexts})
+    # 每个位置各自路由到的 subject：恢复时按位置核对目标，集合核对挡不住两段目标互换
+    routed_positions = [context["subject"].key for context in contexts]
     # 请求带的清除代数也记在 pending 记录上：暂存还没写成时，清除据此认出「清除之后才发起」
     # 的合法请求，不把它取消（与有暂存时的 _staged_after_forget 同口径）
     request_epochs = {
@@ -3677,6 +3690,7 @@ async def _process_scoped_history_keyed(
                 detail="idempotency state unreadable; retry later",
             )
         routed_on_record = record.get("routed_keys") if isinstance(record, dict) else None
+        positions_on_record = record.get("routed_positions") if isinstance(record, dict) else None
         if (
             staging is not None
             # 取消标记只留身份字段（原文已抹），由下面的分支补记 cancelled，不按条目校验
@@ -3684,6 +3698,7 @@ async def _process_scoped_history_keyed(
             and not _keyed_staging_items_valid(
                 staging, routed_on_record if isinstance(routed_on_record, list) else None,
                 dict(req.subject_epochs or {}), req.language,
+                positions_on_record if isinstance(positions_on_record, list) else None,
             )
         ):
             # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
@@ -3734,6 +3749,7 @@ async def _process_scoped_history_keyed(
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
                         routed_keys=routed_keys,
+                        routed_positions=routed_positions,
                         epochs=request_epochs,
                     ),
                 )
@@ -3759,6 +3775,7 @@ async def _process_scoped_history_keyed(
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
                         routed_keys=routed_keys,
+                        routed_positions=routed_positions,
                         epochs=request_epochs,
                     ),
                 )
@@ -4052,6 +4069,21 @@ def _segment_subject_keys(segment: object) -> set[str]:
     return keys
 
 
+def _items_shape_valid(items: list, segments: list) -> bool:
+    """Items numbered ``seq == position`` with a known kind and an in-range segment; every segment an object."""
+    if not all(isinstance(segment, dict) for segment in segments):
+        return False
+    for position, item in enumerate(items):
+        seq, segment = item.get("seq"), item.get("segment")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq != position:
+            return False
+        if not isinstance(segment, int) or isinstance(segment, bool) or not 0 <= segment < len(segments):
+            return False
+        if item.get("kind") not in (_KEYED_ITEM_LOCALE, _KEYED_ITEM_FACTS, _KEYED_ITEM_DISPLAY_NAME):
+            return False
+    return True
+
+
 def _applied_seqs_valid(applied: list, item_count: int) -> bool:
     """Every applied entry is an object whose ``seq`` is a distinct in-range integer (as replay requires)."""
     seqs = [entry.get("seq") if isinstance(entry, dict) else None for entry in applied]
@@ -4086,6 +4118,7 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
         not isinstance(applied, list) or not isinstance(items, list)
         or not all(isinstance(item, dict) for item in items)
         or not _applied_seqs_valid(applied, len(items))
+        or not _items_shape_valid(items, segments)
     ):
         # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
         # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
@@ -4550,6 +4583,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         # scope 被当成「已擦过」跳过（漏删）。带代数的清除只用于默认 scope
         raise HTTPException(status_code=422, detail="forget_epoch requires the default subject scope")
     fence_at_start = None
+    effective_fence = req.forget_epoch
     if req.forget_epoch is not None:
         # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
         # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
@@ -4567,6 +4601,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             # 在它之后进行，完成时一并记为已擦到这个代数
             fence_row = recorded.get(subject.key) if isinstance(recorded, dict) else None
             fence_at_start = fence_row.get("forget_epoch") if isinstance(fence_row, dict) else None
+            if isinstance(fence_at_start, int) and not isinstance(fence_at_start, bool) and fence_at_start > effective_fence:
+                # 取消暂存按已在位的有效围栏比，不按这次（可能是陈旧重放的）较低代数：早于围栏的
+                # 暂存都该取消
+                effective_fence = fence_at_start
         except MaintenanceModeError:
             raise
         except idempotency.IdempotencyStateError as exc:
@@ -4587,7 +4625,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             try:
                 await _cancel_staged_writes_for_subjects(
                     lanlan_name, forgotten_subject_keys,
-                    request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+                    request_subject_key=subject.key, forget_epoch=effective_fence,
                 )
             except MaintenanceModeError:
                 raise
@@ -4606,7 +4644,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             # 带键写入只有默认 scope：清的是别的 scope 时与它们无关，不能按 kind:id 误取消
             await _cancel_staged_writes_for_subjects(
                 lanlan_name, forgotten_subject_keys,
-                request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+                request_subject_key=subject.key, forget_epoch=effective_fence,
             )
     except MaintenanceModeError:
         raise
@@ -4737,7 +4775,7 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         if default_scope:
             await _cancel_staged_writes_for_subjects(
                 lanlan_name, forgotten_subject_keys,
-                request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+                request_subject_key=subject.key, forget_epoch=effective_fence,
             )
     except MaintenanceModeError:
         raise

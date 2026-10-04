@@ -1772,7 +1772,7 @@ async def test_restored_journal_destinations_and_facts_are_validated(env, damage
     "destination_scope", "tombstone_keys_emptied", "epochs_raised", "request_hash_removed",
     "applied_facts_without_evidence", "applied_facts_drop_marker_typo", "applied_facts_empty_ids",
     "locale_order_string",
-    "locale_language_unsupported",
+    "locale_language_unsupported", "locale_language_other",
 ])
 async def test_more_journal_damage_fails_closed(env, damage):
     env.llm.responses = [SINGLE_FACTS]
@@ -1816,6 +1816,8 @@ async def test_more_journal_damage_fails_closed(env, damage):
             pytest.skip("no locale item reserved for this request")
         if damage == "locale_order_string":
             locale["order"] = "1"
+        elif damage == "locale_language_other":
+            locale["language"] = "en"                           # 另一个受支持的语言码，与请求不符
         else:
             locale["language"] = "invalid"                    # 会被语言存储转成 None、清掉原有语言
     path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
@@ -1946,7 +1948,7 @@ async def test_cleanup_waits_for_a_retry_claiming_an_orphan_staging(env):
 
 
 @pytest.mark.parametrize("damage", ["applied_object", "items_scalar", "item_scalar", "items_empty_object",
-                                    "applied_scalar_entry", "applied_bad_seq"])
+                                    "applied_scalar_entry", "applied_bad_seq", "item_bad_kind"])
 async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env, damage):
     env.llm.responses = [BATCH_FACTS]
     original = env.routes._apply_keyed_item
@@ -1966,6 +1968,8 @@ async def test_malformed_partly_forgotten_journal_does_not_block_the_forget(env,
         staging["applied"] = {}
     elif damage == "items_scalar":
         staging["items"] = 1
+    elif damage == "item_bad_kind":
+        staging["items"][0]["kind"] = "bogus"                   # 条目是对象，但类型坏了
     elif damage == "applied_bad_seq":
         staging["applied"].append({"seq": "bad"})               # 对象，但序号坏了
     elif damage == "applied_scalar_entry":
@@ -2276,3 +2280,57 @@ async def test_duplicate_forget_still_cancels_a_late_pre_forget_staging(env):
     # 不再擦存储（duplicate），但残留的明文暂存照常取消，不会被 TTL 清理永久保护
     assert result.get("duplicate") is True
     assert _key_state(env, KEY_GROUP) == "cancelled" and not _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_erase_completion_restores_a_fence_lowered_meanwhile(env):
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 擦除期间旧的高围栏被清理移走、又被一次较低代数的清除重建成 3
+    path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": 3, "forgotten_at": 1.0}}), encoding="utf-8")
+    await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 3, covered_epoch=8)
+    row = json.loads(path.read_text(encoding="utf-8"))[GROUP_KEY]
+    # 完成的是更高的代数：围栏抬回去、完成标记记 8，较高代数的重放据此跳过
+    assert row["forget_epoch"] == 8 and row["erased_epoch"] == 8
+    assert env.idem.erased_epoch({GROUP_KEY: row}, GROUP_KEY) == 8
+
+
+async def test_swapped_segment_destinations_fail_closed(env):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _flaky(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _flaky)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    first, second = staging["segments"]
+    first["subject"], second["subject"] = second["subject"], first["subject"]   # 两段目标互换
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _segments_body())
+    # 两个目标都在整批的路由集合里，但不在各自的位置上：不能按它写进彼此的记忆域
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
+
+
+async def test_stale_duplicate_forget_cancels_against_the_effective_fence(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _forget(env, GROUP, forget_epoch=10)                  # 围栏与完成标记都是 10
+    real_apply = env.routes._apply_keyed_staging
+
+    async def crash(*_args, **_kwargs):
+        raise RuntimeError("process killed before applying")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body(subject_epochs={GROUP_KEY: 7}))   # 早于围栏的迟到请求
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", real_apply)
+    result = await _forget(env, GROUP, forget_epoch=5)          # 陈旧的清除重放
+    # 按有效围栏 10 比：代数 7 的暂存早于它，照常取消，不因 7 > 5 被当成合法新写入留下
+    assert result.get("duplicate") is True
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+    assert not _staging_file(env, KEY_GROUP).exists()
