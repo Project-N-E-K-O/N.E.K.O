@@ -147,7 +147,7 @@ filled; the sender keeps retransmitting for the same window."""
 VISIT_PEER_REJOIN_GRACE_S = 35
 """An explicit vendor-level leave of the peer is tentative for this long.
 
-Must exceed ``VISIT_LOCAL_PAGE_GRACE_S`` plus a 15 s SDK reload budget (design
+Must be at least ``VISIT_LOCAL_PAGE_GRACE_S`` plus a 15 s SDK reload budget (design
 invariant ``REJOIN >= LOCAL_PAGE + 15``). The reload itself is bounded by the
 absolute deadline of ``VISIT_PAGE_REJOIN_SAFETY_S``; the capability gate's
 ``VISIT_CAPS_SDK_TIMEOUT_S`` is a separate timer, also capped by what is left

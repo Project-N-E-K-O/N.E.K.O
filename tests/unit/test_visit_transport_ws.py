@@ -60,9 +60,17 @@ class _Liveness:
         self.events.append("page_armed")
 
     expired = False
+    reload_state = ("departed", "deadline", False)
 
     def page_expired(self, now: float) -> bool:
         return self.expired
+
+    def page_reload_state(self):
+        return self.reload_state
+
+    def restore_page_reload_state(self, state) -> None:
+        self.events.append("page_restored")
+        self.reload_state = state
 
 
 class _Outbox:
@@ -1406,13 +1414,19 @@ def test_transport_does_not_re_enter_after_the_deadline():
         conn = tw._attach(link, ws)
         conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        assert conn.ending  # 同步标记：之后的帧不再处理
+        await tw._handle_frame(link, conn, {"type": "recv", "from_vid": PEER_VID, "cmd": 2,
+                                            "payload": {"t": "text"}}, 10, VISIT_ID, "guest")
+        assert s.recvs == []
+        await asyncio.sleep(0.05)  # stop + 关闭在后台
         return s, ws, conn
 
     try:
         s, ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 不重入，但已回到房里的迟到 iframe 要被叫走：只发 stop，连接退役
+    # 不重入，但已回到房里的迟到 iframe 要被叫走：只发 stop，连接退役并关闭
+    assert ws.closed_with == tw.CLOSE_NORMAL
     assert ws.sent == [{"type": "stop"}] and not conn.rejoined and conn.retired
     assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
 
@@ -1445,9 +1459,9 @@ def test_failed_replay_preparation_rolls_the_rejoin_back(app):
         ws.receive_text()
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)
-        # 失败时：outbox 重新暂停、页面期限仍在（没有 page_back），不留半恢复状态
+        # 失败时：outbox 重新暂停、清掉的页面期限写回（due() 在最后，失败前期限已清），不留半恢复状态
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
-        assert "page_back" not in s.liveness.events
+        assert s.liveness.events[-2:] == ["page_back", "page_restored"]
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
         assert json.loads(ws.receive_text())["type"] == "send"
         assert json.loads(ws.receive_text())["type"] == "media"
@@ -1554,7 +1568,9 @@ def test_failed_commit_rolls_the_rejoin_back_and_is_retried(app):
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
         _sync(ws)  # 下一条 stats 整套重做
         _barrier(ws, s)  # 先断言再收：回归时直接失败，不挂在 receive_text 上
-        assert ("resend_hello",) in s.log
+        # 第一次的 resend_hello 在 commit 失败前就记下了：要看到第二次，且期限已清
+        assert s.log.count(("resend_hello",)) == 2
+        assert s.liveness.events[-1] == "page_back"
         hello, media = json.loads(ws.receive_text()), json.loads(ws.receive_text())
         _barrier(ws, s)
         assert s.liveness.events[-1] == "page_back"
@@ -1627,3 +1643,220 @@ def test_late_iframe_is_stopped_and_disconnected(app, session):
     _reload_and_join(_client(app), session, scenario)
     assert ("resend_hello",) not in session.log
     assert PAUSE_PAGE_RELOAD in session.outbox.paused
+
+
+
+def test_failed_commit_restores_the_page_deadline_and_keeps_the_outbox_frames(app):
+    # runtime 覆盖 commit：先清期限（super）再抛异常——期限要写回，due() 还没被调用（帧没被取走）
+    class _ClearsThenFails(FakeSession):
+        def on_page_rejoin_committed(self, now):
+            super().on_page_rejoin_committed(now)
+            raise RuntimeError("commit failed after clearing")
+
+    s = _ClearsThenFails()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+
+    def scenario(ws):
+        _joined(ws)
+        _barrier(ws, s)
+        assert s.liveness.events[-2:] == ["page_back", "page_restored"]
+        assert s.outbox.hello_pending  # due() 没被调用：一次性的 hello 重发还在
+        assert PAUSE_PAGE_RELOAD in s.outbox.paused
+
+    _reload_and_join(_client(app), s, scenario)
+
+
+def test_failed_hook_or_ambiguous_state_does_not_leave_a_stale_in_room():
+    import asyncio
+
+    class _BrokenOnReconnecting(FakeSession):
+        async def on_state(self, msg):
+            if msg.get("state") == "reconnecting":
+                raise RuntimeError("state hook failed")
+            await super().on_state(msg)
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _BrokenOnReconnecting()
+        s.snapshot = {"publish": True, "bad": {1}}  # 第一次重入准备失败、回滚
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        conn = tw._attach(link, _RecordingWS())
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        assert conn.in_room and not conn.rejoined
+        # error 不是进出房状态：保持在房内，stats 仍会重试
+        await tw._handle_frame(link, conn, {"type": "state", "state": "error", "error_code": "x"}, 10,
+                               VISIT_ID, "guest")
+        in_room_after_error = conn.in_room
+        # reconnecting 的 hook 失败：不能停在旧的 in_room=True，否则 stats 会往不在房里的 iframe 重入
+        await tw._handle_frame(link, conn, {"type": "state", "state": "reconnecting"}, 10, VISIT_ID, "guest")
+        s.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
+        await tw._handle_frame(link, conn, {"type": "stats"}, 10, VISIT_ID, "guest")
+        return s, conn, in_room_after_error
+
+    try:
+        s, conn, in_room_after_error = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert in_room_after_error
+    assert not conn.in_room and not conn.rejoined
+    assert ("resend_hello",) not in s.log
+
+
+def test_rejoin_fallback_snapshot_never_overrides_a_runtime_media():
+    import asyncio
+
+    class _SnapshotGone(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def media_snapshot(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("snapshot unavailable")
+            return {"publish": True, "crop": "upper", "ladder": 0}
+
+    class _SendsMediaDuringFrames(_RecordingWS):
+        def __init__(self, session):
+            super().__init__()
+            self.session = session
+
+        async def send_text(self, text):
+            import asyncio as _aio
+
+            await super().send_text(text)
+            if json.loads(text).get("type") == "send":
+                # hello 发送期间 runtime 关掉了摄像头（这时发送锁被占着：runtime 的 media 排在锁后面）
+                _aio.ensure_future(self.session.send({"type": "media", "publish": False}))
+                await _aio.sleep(0)
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _SnapshotGone()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _SendsMediaDuringFrames(s)
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        await asyncio.sleep(0.05)  # 让排在锁后面的 runtime media 发完
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    media = [m for m in ws.sent if m.get("type") == "media"]
+    assert media == [{"type": "media", "publish": False}]
+
+
+def test_rejoin_fallback_snapshot_is_sent_when_nothing_newer_went_out():
+    import asyncio
+
+    class _SnapshotGone(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def media_snapshot(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("snapshot unavailable")
+            return {"publish": True, "crop": "upper", "ladder": 0}
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _SnapshotGone()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _RecordingWS()
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        return ws
+
+    try:
+        ws = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert [m for m in ws.sent if m.get("type") == "media"] == [
+        {"publish": True, "crop": "upper", "ladder": 0, "type": "media"}]
+
+
+def test_pre_encoded_text_is_still_size_checked():
+    import asyncio
+
+    async def scenario():
+        conn = tw._Connection(websocket=_RecordingWS(), reattach=False)
+        # 合法 JSON：去掉大小检查时 _RecordingWS 能正常收下，测试才会变红
+        big = json.dumps({"type": "media", "pad": "x" * tw.FRAME_MAX_BYTES})
+        return await conn.send_json({"type": "media"}, text=big), conn
+
+    ok, conn = asyncio.run(scenario())
+    assert not ok and conn.websocket.sent == []
+
+
+def test_stats_does_not_end_the_socket_when_the_rejoin_check_raises():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+
+        def _boom(now):
+            raise RuntimeError("liveness broken")
+
+        s.liveness.page_expired = _boom
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        conn = tw._attach(link, _RecordingWS())
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.in_room = True
+        await tw._handle_frame(link, conn, {"type": "stats"}, 10, VISIT_ID, "guest")
+        return conn
+
+    try:
+        conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert not conn.rejoined and not conn.closed
+
+
+
+def test_backpressured_stop_does_not_block_closing_the_late_iframe(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(tw, "CLOSE_LOCK_WAIT_S", 0.05)
+
+    class _StuckWS(_RecordingWS):
+        async def send_text(self, text):
+            await asyncio.Event().wait()  # 背压：永远写不出去
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        s.liveness.expired = True
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        ws = _StuckWS()
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await asyncio.wait_for(
+            tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest"), 1)
+        await asyncio.sleep(0.3)
+        return ws, conn
+
+    try:
+        ws, conn = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    # stop 发不出去，关闭照样发生
+    assert conn.closed and ws.closed_with == tw.CLOSE_NORMAL

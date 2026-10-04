@@ -107,6 +107,7 @@ DOWNLINK_TYPES = frozenset({"credentials", "media", "send", "stop"})
 PREFLIGHT_REASONS = frozenset({"insecure_context", "foreign_websocket", "no_webrtc"})
 SDK_REASONS = frozenset({"sdk_unsupported", "sdk_load_failed", "no_encoder"})
 REJOINED_STATES = frozenset({"joined", "connected"})
+OUT_OF_ROOM_STATES = frozenset({"joining", "reconnecting", "left", "kicked"})
 CODECS = ("vp9", "vp8", "h264")
 CROPS = ("upper", "full")
 
@@ -334,16 +335,21 @@ class _Connection:
     sdk_seen: bool = False
     in_room: bool = False
     rejoined: bool = False
+    media_queued: int = 0
+    ending: bool = False
 
     async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
         """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
-        if text is None:
-            try:
+        try:
+            if text is None:
                 text = _encode_downlink(msg)
-            except _DownlinkRejected as exc:
-                # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
-                logger.warning("visit transport: dropping %s downlink: %s", msg.get("type"), exc)
-                return False
+            else:
+                # 预编码的文本同样受大小上限约束（它与 msg 是否一致由 _media_frame 保证）
+                _check_downlink_size(msg, len(text.encode("utf-8")))
+        except _DownlinkRejected as exc:
+            # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
+            logger.warning("visit transport: dropping %s downlink: %s", msg.get("type"), exc)
+            return False
         async with self.send_lock:
             # 排队等锁期间可能已被顶掉或关闭：拿到锁后两样都要复查
             if self.closed or self.retired:
@@ -424,6 +430,17 @@ def is_transport_attached(visit_id: str, side: str) -> bool:
 _close_tasks: set[asyncio.Task] = set()
 
 
+async def _stop_then_close(conn: _Connection, reason: str) -> None:
+    # stop 最多等 CLOSE_LOCK_WAIT_S（发送可能被背压卡住）；无论发没发出去都关闭，
+    # 关闭事件本身也会让 iframe 离房
+    try:
+        await asyncio.wait_for(_send_on(conn, {"type": "stop"}), CLOSE_LOCK_WAIT_S)
+    except asyncio.TimeoutError:
+        logger.debug("visit transport: stop not sent before closing")
+    conn.retired = True
+    await conn.close(CLOSE_NORMAL, reason)
+
+
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
     # 先同步退役：关闭任务真正跑起来之前，仍卡在 await 里的 handler 恢复后也发不出任何下行
     conn.retired = True
@@ -460,6 +477,9 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
         if conn.stop_sent or conn.stop_reserved:
             return False
         conn.stop_reserved = True
+    if kind == "media":
+        # 同步计数（排进发送锁之前）：重入兜底快照据此判断期间 runtime 是否发过更新的 media
+        conn.media_queued += 1
     try:
         ok = await conn.send_json(msg, text=text)
     finally:
@@ -536,10 +556,14 @@ def _encode_downlink(msg: Mapping[str, Any]) -> str:
         size = len(text.encode("utf-8"))
     except (TypeError, ValueError) as exc:
         raise _DownlinkRejected(f"unserializable ({type(exc).__name__})") from None
+    _check_downlink_size(msg, size)
+    return text
+
+
+def _check_downlink_size(msg: Mapping[str, Any], size: int) -> None:
     limit = CREDENTIALS_MAX_BYTES if msg.get("type") == "credentials" else FRAME_MAX_BYTES
     if size > limit:
         raise _DownlinkRejected(f"oversize ({size} B)")
-    return text
 
 
 def _media_frame(snapshot: Any) -> tuple[dict[str, Any], str]:
@@ -588,7 +612,7 @@ def _attach(link: _Link, websocket: WebSocket) -> _Connection:
 def _is_current(link: _Link, conn: _Connection) -> bool:
     return (
         _links.get((link.session.visit_id, link.session.side)) is link
-        and link.conn is conn and not conn.closed and not conn.retired
+        and link.conn is conn and not conn.closed and not conn.retired and not conn.ending
     )
 
 
@@ -631,12 +655,19 @@ async def _handle_frame(
             await _call(session, "on_sdk_caps", _sdk_caps(msg))
         return
     if kind == "state":
-        # runtime 没能处理这条上报（状态可能不一致）就不做重入，也不记入房：runtime 都没认这次入房，
-        # 不能替它恢复 outbox；iframe 之后不会再报，这场按 fail-safe 到页面期限判 local_page_lost
+        state = msg.get("state")
+        was_in_room = conn.in_room
+        # 先当作不在房内：hook 失败时（runtime 没认这条上报，状态可能不一致）不能留着旧的
+        # in_room 让后续 stats 去重入；iframe 不再报的话，这场按 fail-safe 到页面期限判 local_page_lost
+        conn.in_room = False
         if await _call(session, "on_state", msg) is _HOOK_FAILED:
             return
-        # 入房只认「本连接已拿到首发凭证」之后的上报：否则会绕过预检提前恢复 outbox
-        conn.in_room = conn.credentials_sent and msg.get("state") in REJOINED_STATES
+        # 只有明确的进出房状态才改它（error 等保持原样）；入房只认「本连接已拿到首发凭证」之后的上报，
+        # 否则会绕过预检提前恢复 outbox
+        if state in REJOINED_STATES:
+            conn.in_room = conn.credentials_sent
+        elif state not in OUT_OF_ROOM_STATES:
+            conn.in_room = was_in_room
         await _try_rejoin(link, conn, session)
         return
     if kind == "recv":
@@ -679,32 +710,46 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
     if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
         return
-    now = session.now()
+    try:
+        now = session.now()
+        expired = session.liveness.page_expired(now)
+    except Exception as exc:  # noqa: BLE001 - 普通的 stats 帧也会走到这里，不能因此结束接收循环
+        logger.warning("visit transport: rejoin check failed: %s", type(exc).__name__)
+        return
     # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
     # 新 iframe 已经用同一个 vid 回到房里，不能留着：对端会因此取消 peer_left 宽限，
     # 本侧却已判死，两侧结果不一致。发 stop 让它离房，再关掉这条 socket（之后的帧一概不处理）
-    if session.liveness.page_expired(now):
+    if expired:
         logger.warning("visit transport: page reload deadline passed, stopping the late iframe")
-        await _send_on(conn, {"type": "stop"})
-        _spawn_close(conn, CLOSE_NORMAL, "page reload deadline passed")
+        # 同步标记收尾（之后的帧一概不处理），stop + 关闭放后台：关闭不依赖 stop 发送完成
+        conn.ending = True
+        task = asyncio.ensure_future(_stop_then_close(conn, "page reload deadline passed"))
+        _close_tasks.add(task)
+        task.add_done_callback(_close_tasks.discard)
         return
+    saved = None
     try:
         # 快照最先，且按实际下发的那条（含 type、大小上限）检查：它失败时 outbox 仍保持
         # page_reload 暂停，不会出现「已恢复、重入却没完成」，也不会置位后才发现发不出去
         media, media_text = _media_frame(session.media_snapshot())
+        saved = session.liveness.page_reload_state()
         session.on_page_rejoined(now)
-        frames = list(session.outbox.due(now))
-        # 清期限也在置位之前：它失败时整套回滚，不会留下「已重入、期限却永远不清」
+        # 清期限在 due() 之前：due() 会取走一次性的 hello 重发、标记首发、扣令牌，是唯一撤不回的一步，
+        # 放最后；它之前任何一步失败都能整套回滚（期限按原样写回）
         session.on_page_rejoin_committed(now)
+        frames = list(session.outbox.due(now))
     except Exception as exc:  # noqa: BLE001
         logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
-        # 回滚：恢复了的 outbox 重新暂停（期限仍在跑），下一次触发整套重做（hello 去重、resume 幂等）
+        # 回滚：恢复了的 outbox 重新暂停、清掉的期限写回，下一次触发整套重做（hello 去重、resume 幂等）
         try:
             session.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
-        except Exception as pause_exc:  # noqa: BLE001
-            logger.warning("visit transport: rejoin rollback failed: %s", type(pause_exc).__name__)
+            if saved is not None:
+                session.liveness.restore_page_reload_state(saved)
+        except Exception as rollback_exc:  # noqa: BLE001
+            logger.warning("visit transport: rejoin rollback failed: %s", type(rollback_exc).__name__)
         return
     conn.rejoined = True
+    media_mark = conn.media_queued
     for frame in frames:
         await _send_on(conn, frame.to_ws())
     if _is_current(link, conn):
@@ -713,8 +758,11 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         # 取到即同步入发送锁队列，不会再被更早的状态盖掉
         try:
             media, media_text = _media_frame(session.media_snapshot())
-        except Exception as exc:  # noqa: BLE001 - 取不到 / 发不出就用前面那份
+        except Exception as exc:  # noqa: BLE001
             logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
+            # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
+            if conn.media_queued != media_mark:
+                return
         await _send_on(conn, media, text=media_text)
 
 

@@ -1438,5 +1438,101 @@ async def test_refresh_sent_before_the_issue_is_followed_by_a_fresh_one(servers,
 async def test_refresh_not_yet_sent_is_joined_after_the_issue(servers):
     queued = cr._kick_pubkeys_refresh()  # 还没开始跑：请求一定在此之后才发出
     assert cr._kick_pubkeys_refresh(after_now=True) is queued
-    await queued
+    assert await queued is None
     assert servers.count("/pubkeys") == 1
+    assert cr._pubkeys_requested_by is None  # 结束后不再持有已完成的任务
+
+
+
+@pytest.mark.asyncio
+async def test_forced_refresh_queues_behind_an_already_sent_request(servers, monkeypatch):
+    import asyncio
+
+    gate = asyncio.Event()
+    sent = asyncio.Event()
+    original = servers.handler
+    calls = 0
+
+    async def _handler(request):
+        nonlocal calls
+        if request.url.path == "/api/visit/pubkeys":
+            calls += 1
+            if calls == 1:
+                sent.set()
+                await gate.wait()
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    early = cr._kick_pubkeys_refresh()
+    await sent.wait()
+    # 核验遇到未知 kid 强制刷新：不能只加入那次已发出的旧请求
+    forced = asyncio.ensure_future(cr.fetch_pubkeys(force_refresh=True))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert cr._pubkeys_inflight is not early
+    gate.set()
+    await forced
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_valid_cache_does_not_wait_for_a_background_refresh(servers, monkeypatch):
+    import asyncio
+
+    await cr.fetch_pubkeys()  # 先有一份有效缓存
+    gate = asyncio.Event()
+    original = servers.handler
+
+    async def _handler(request):
+        if request.url.path == "/api/visit/pubkeys":
+            await gate.wait()
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    stuck = cr._kick_pubkeys_refresh()
+    keys = await asyncio.wait_for(cr.fetch_pubkeys(), 1)
+    assert KID in keys.keys and not keys.stale
+    gate.set()
+    await stuck
+
+
+def _grant_with_renewals(first, lifetimes, wall):
+    """A grant whose renewals return grants living ``lifetimes[i]`` seconds from ``wall[0]``."""
+    import dataclasses
+
+    calls = []
+
+    async def _fetch(**kwargs):
+        calls.append(kwargs)
+        return dataclasses.replace(first, vendor_expires_at=wall[0] + lifetimes[len(calls) - 1])
+
+    return cr.VisitGrant(first, invite_code=INVITE, fetch=_fetch), calls
+
+
+@pytest.mark.asyncio
+async def test_renewal_capped_by_the_room_deadline_is_not_repeated(servers):
+    first = await _guest()
+    wall = [first.vendor_expires_at - 60]
+    # Servers 把授权截到房间硬期限：续出来只剩 30 s，不够一个续期余量
+    grant, calls = _grant_with_renewals(first, [30, 600], wall)
+    assert grant.refresh_due(wall_now=wall[0])
+    assert await grant.ensure_fresh(wall_now=wall[0])
+    # 再续也只会拿到同一个期限：不再续（否则每次轮询都 POST 一次）
+    assert not grant.refresh_due(wall_now=wall[0])
+    assert not await grant.ensure_fresh(wall_now=wall[0])
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_normal_renewal_keeps_renewing(servers):
+    first = await _guest()
+    wall = [first.vendor_expires_at - 60]
+    grant, calls = _grant_with_renewals(first, [600, 600], wall)
+    assert await grant.ensure_fresh(wall_now=wall[0])
+    assert not grant.refresh_due(wall_now=wall[0])
+    # 正常续出 10 min 的授权，快到期时照常再续
+    wall[0] += 550
+    assert await grant.ensure_fresh(wall_now=wall[0])
+    assert len(calls) == 2

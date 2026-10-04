@@ -240,6 +240,14 @@ class VisitLiveness:
         death = self._peer_death_deadline()
         return deadline if death is None else min(deadline, death)
 
+    def page_reload_state(self) -> tuple[Optional[float], Optional[float], bool]:
+        """Opaque copy of the page reload fields, for :meth:`restore_page_reload_state`."""
+        return (self.page_departed_at, self.page_deadline, self.page_socket_back)
+
+    def restore_page_reload_state(self, state: tuple[Optional[float], Optional[float], bool]) -> None:
+        """Put back a :meth:`page_reload_state` copy (a re-entry that failed after clearing it)."""
+        self.page_departed_at, self.page_deadline, self.page_socket_back = state
+
     def page_expired(self, now: float) -> bool:
         """True once the running page reload missed its deadline (whether or not ``tick`` ran yet)."""
         return self.page_deadline is not None and now >= self.page_deadline

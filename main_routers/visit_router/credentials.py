@@ -905,6 +905,7 @@ class VisitGrant:
         self._margin = float(refresh_margin_s)
         self._fetch = fetch or fetch_visit_credentials
         self._renewing: asyncio.Task | None = None
+        self._capped = False
 
     @property
     def current(self) -> VisitCredentials:
@@ -915,19 +916,23 @@ class VisitGrant:
         """True when the vendor grant has less than the margin left (or expired).
 
         Reads ``time.time()`` itself: the grant expiry is Unix time, never the
-        transport's monotonic clock.
+        transport's monotonic clock. False once a renewal came back with less
+        than the margin left: Servers capped the grant at the room's hard
+        deadline, and asking again would only return the same one.
         """
+        if self._capped:
+            return False
         return self._current.vendor_remaining_s(wall_now=wall_now) < self._margin
 
-    async def renew(self) -> VisitCredentials:
+    async def renew(self, *, wall_now: float | None = None) -> VisitCredentials:
         """Fetch a fresh vendor grant; concurrent callers share one Servers call."""
         task = self._renewing
         if task is None or task.done():
-            task = asyncio.ensure_future(self._renew_once())
+            task = asyncio.ensure_future(self._renew_once(wall_now=wall_now))
             self._renewing = task
         return await asyncio.shield(task)
 
-    async def _renew_once(self) -> VisitCredentials:
+    async def _renew_once(self, *, wall_now: float | None = None) -> VisitCredentials:
         cur = self._current
         fresh = await self._fetch(
             role=cur.role,
@@ -941,6 +946,9 @@ class VisitGrant:
         if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):
             logger.warning("visit servers credentials: renewal changed the room binding")
             raise VisitServersUnreachable("renewal_mismatch")
+        # Servers 把授权截到房间硬期限时，续出来的剩余时间仍不足余量：之后不再续，
+        # 否则每次轮询都会再 POST 一次、拿回同一个期限
+        self._capped = fresh.vendor_remaining_s(wall_now=wall_now) < self._margin
         self._current = cur.with_renewed_vendor(fresh)
         return self._current
 
@@ -948,7 +956,7 @@ class VisitGrant:
         """Renew when due (wall clock); return True when a renewal happened."""
         if not self.refresh_due(wall_now=wall_now):
             return False
-        await self.renew()
+        await self.renew(wall_now=wall_now)
         return True
 
 
@@ -1043,9 +1051,19 @@ def _pubkeys_cache_valid(now: float) -> bool:
 
 
 async def _refresh_pubkeys() -> None:
-    global _pubkeys_fetched, _pubkeys_failed_at, _pubkeys_requested_by
-    base = social_base_url().strip().rstrip("/")
+    global _pubkeys_requested_by
     _pubkeys_requested_by = asyncio.current_task()
+    try:
+        await _request_pubkeys()
+    finally:
+        # 结束后不再引用这个任务（连同它异常里的 traceback / httpx 对象）
+        if _pubkeys_requested_by is asyncio.current_task():
+            _pubkeys_requested_by = None
+
+
+async def _request_pubkeys() -> None:
+    global _pubkeys_fetched, _pubkeys_failed_at
+    base = social_base_url().strip().rstrip("/")
     try:
         resp = await _send("GET", f"{base}/api/visit/pubkeys", op="pubkeys", timeout=_PUBKEYS_TIMEOUT_S)
     except VisitServersUnreachable:
@@ -1114,11 +1132,18 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     """
     now = time.time()
     recently_failed = _pubkeys_failed_at is not None and now - _pubkeys_failed_at < _PUBKEYS_RETRY_MIN_S
+    cache_valid = _pubkeys_cache_valid(now)
     task = _pubkeys_inflight
     if task is not None and (task.done() or task.get_loop() is not asyncio.get_running_loop()):
         task = None
-    if task is None and (force_refresh or (not _pubkeys_cache_valid(now) and not recently_failed)):
+    if force_refresh:
+        # 遇到未知 kid 才强制刷新：已在签发 / 轮换之前发出的那次可能带回旧表，要排在它后面再拉一次
+        task = _kick_pubkeys_refresh(after_now=True)
+    elif task is None and not cache_valid and not recently_failed:
         task = _kick_pubkeys_refresh()
+    elif cache_valid:
+        # 缓存有效就不等后台刷新（串起来最多两次请求），核验不该被它拖住
+        task = None
     if task is not None:
         # 失败抑制期内也要等已经在进行的刷新：它可能正好带回新的吊销名单
         await asyncio.shield(task)
