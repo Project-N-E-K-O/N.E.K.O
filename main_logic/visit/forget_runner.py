@@ -269,8 +269,42 @@ async def _run_scope(
     unfinished = {peer for rev_id, *_rest, peer in opened if rev_id in pending}
     if pending:
         return ForgetOutcome(done=False, forgotten=len(persons - unfinished), pending_logs=pending)
-    await ClearingSentinels(config_dir).remove(sentinel["op_id"])
+    store = ClearingSentinels(config_dir)
+    await store.remove(sentinel["op_id"])
+    await _remove_covered_sentinels(config_dir, store, sentinel)
     return ForgetOutcome(done=True, forgotten=len(persons))
+
+
+def _sentinel_within(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> bool:
+    """Whether ``inner``'s whole scope lies inside ``outer``'s (same account)."""
+    if inner["own_uid"] != outer["own_uid"] or not set(inner["own_char_uids"]) <= set(outer["own_char_uids"]):
+        return False
+    return outer["scope"] == "chars" or (
+        inner["scope"] == "person" and inner.get("peer_uid") == outer.get("peer_uid")
+    )
+
+
+async def _remove_covered_sentinels(
+    config_dir: Path, store: ClearingSentinels, done: Mapping[str, Any],
+) -> None:
+    # 上一次尝试留下的、范围落在这次已全部完成的范围之内的旧哨兵（比如两次尝试之间
+    # 新建了角色，哨兵的角色集合变了、没能复用）：它们的日志已随这次一并跑完，不删就会
+    # 一直挡着准入与记忆装配直到下次启动。尽力而为：读不出就留给启动重放
+    try:
+        others = await store.list_open()
+        remaining = await RevocationLog.list_all_open(config_dir)
+    except RevocationLogUnreadable:
+        return
+    for other in others:
+        if other["op_id"] == done["op_id"] or not _sentinel_within(done, other):
+            continue
+        if any(
+            log["own_uid"] == other["own_uid"]
+            and sentinel_covers(other, log["own_char_uid"], log["peer_uid"])
+            for log in remaining
+        ):
+            continue
+        await store.remove(other["op_id"])
 
 
 async def _with_admission_locks(
@@ -466,6 +500,8 @@ async def replay_forgets(
     for sentinel in sentinels:
         try:
             async with guarded(sentinel["own_char_uids"]):
+                # 补录开头对过一次改名，但之后、拿到守卫之前可能又有改名崩在半路：守卫内再查
+                await _refuse_pending_rename(config_dir)
                 await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
         except _STEP_ERRORS as exc:
             logger.warning("visit forget replay: cannot expand %s: %r", sentinel["op_id"], exc)
@@ -481,6 +517,13 @@ async def replay_forgets(
         # 与端点同一把生命周期守卫：从按 uid 解析名字到重放结束都持有，期间角色
         # 改不了名、删不掉，不会把清除发到已经迁走的旧名字上又把日志当完成关掉
         async with guarded([record["own_char_uid"]]):
+            try:
+                await _refuse_pending_rename(config_dir)
+            except (RenamePending, RosterCorruptError) as exc:
+                # 改名没对账完：按新名重放会对着空条目把日志关掉，留到下次启动
+                logger.warning("visit forget replay: %s deferred: %r", record["id"], exc)
+                clean = False
+                continue
             name = await resolve_char_name(record["own_char_uid"])
             if not name:
                 # 角色已删：它的数据由删除事务的退役步骤处理，这份日志留给退役对账

@@ -30,6 +30,7 @@ from main_logic.visit.recovery import visit_spool_recovery
 from main_logic.visit.subjects import PeerRoster, derive_pair_id, derive_peer_char_id
 from tests.unit.visit_memory_test_helpers import (
     CHAR_UID_A,
+    CHAR_UID_B,
     OWN_A,
     OWN_B,
     PEER_X,
@@ -1287,3 +1288,55 @@ async def test_rename_is_not_reconciled_from_a_partially_readable_character_conf
     # 配置有坏条目就不对账：不把数据迁回旧名、标记留着等下次
     assert report.renamed is False
     assert json.loads(peers_path.read_text(encoding="utf-8"))["pending_rename"] == {"old": "A", "new": "C"}
+
+
+async def test_forget_all_retry_with_a_new_character_removes_the_earlier_sentinel(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+    from main_logic.visit.forget_runner import forget_all
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    first = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=server.client())
+    assert first.done is False and len(await ClearingSentinels(tmp_path).list_open()) == 1
+    server.fail_always.clear()
+    # 两次尝试之间新建了角色 B：哨兵的角色集合变了，没能复用上一次的那个
+    retry = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A, "B": CHAR_UID_B},
+                             client=server.client())
+    assert retry.done is True
+    # 上一次留下的、范围被这次完全覆盖的旧哨兵一并删掉，不再挡准入
+    assert await ClearingSentinels(tmp_path).list_open() == []
+
+
+async def test_replay_defers_logs_while_a_rename_is_pending(tmp_path):
+    from main_logic.visit.forget_runner import replay_forgets
+
+    await seed_roster(tmp_path)
+    server = FakeMemoryServer()
+    server.fail_always.add("scoped_forget")
+    await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                        peer_uid=PEER_X, client=server.client())
+    server.fail_always.clear()
+    server.requests.clear()
+    peers_path = tmp_path / "visit_peers.json"
+    data = json.loads(peers_path.read_text(encoding="utf-8"))
+    data["pending_rename"] = {"old": "A", "new": "C"}     # 补录对账之后又有改名崩在半路
+    peers_path.write_text(json.dumps(data), encoding="utf-8")
+    clean = await replay_forgets(tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C"}),
+                                 client=server.client())
+    # 守卫内看到未对账的改名：不按新名重放、不关日志，留到下次
+    assert clean is False and server.calls("scoped_forget") == []
+    assert len(await RevocationLog.list_all_open(tmp_path)) == 1
+
+
+async def test_person_forget_keeps_an_unexpanded_chars_sentinel_of_the_same_character(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+
+    await seed_roster(tmp_path)
+    # 同角色的「清除全部」崩在展开之前：还没有任何日志，它的范围比单人清除大
+    pending_all = await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars",
+                                                          own_char_uids=[CHAR_UID_A])
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=FakeMemoryServer().client())
+    assert outcome.done
+    assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [pending_all["op_id"]]
