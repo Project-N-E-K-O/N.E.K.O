@@ -89,7 +89,7 @@ class _Outbox:
 
 def _creds(side: str = "guest") -> VisitCredentials:
     return VisitCredentials(
-        role=side, visit_id=VISIT_ID, char_tag="c" * 32, transport="trtc",
+        role=side, visit_id=VISIT_ID, char_tag="c" * 32, transport="trtc", tier="sd600",
         expires_at=2_000_000_000.0, vendor_expires_at=1_999_999_000.0,
         vendor={"trtc": {"sdk_app_id": 1400000001, "user_id": OWN_VID, "user_sig": USER_SIG,
                          "private_map_key": "pmk", "str_room_id": VISIT_ID, "expire": 600}},
@@ -157,7 +157,7 @@ def app(monkeypatch):
 def session():
     s = FakeSession()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     return s
 
 
@@ -345,7 +345,7 @@ def test_failed_preflight_hook_does_not_fetch_credentials(app):
 
     s = _Broken()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
@@ -354,7 +354,7 @@ def test_failed_preflight_hook_does_not_fetch_credentials(app):
 
 
 def test_preflight_is_not_written_into_another_visits_slot(app, session):
-    vrs.activate_visit_route(LANLAN)["visit_id"] = "ZZZZZZZZZZZZZZZZZZZZZZ"  # 同角色已开了下一场
+    vrs.activate_visit_route(LANLAN, visit_id="ZZZZZZZZZZZZZZZZZZZZZZ")  # 同角色已开了下一场
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws, ok=False, reason="no_webrtc")
@@ -373,8 +373,8 @@ def test_credentials_are_sent_once_per_connection(app, session):
         _sync(ws)
         assert session.issued == 1
         # 运行时再塞一条首发：拒；续期：放行
-        assert not _run(ws, tw.send_downlink, VISIT_ID, "guest", first)
-        assert _run(ws, tw.send_downlink, VISIT_ID, "guest", {**first, "refresh": True})
+        assert not _run(ws, session.send, first)
+        assert _run(ws, session.send, {**first, "refresh": True})
         refreshed = json.loads(ws.receive_text())
     assert refreshed["type"] == "credentials" and refreshed["refresh"] is True
     assert first["vendor"] == {"trtc": _creds().vendor["trtc"]}
@@ -477,8 +477,9 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
     assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
     assert msgs[1]["payload"]["t"] == "hello"
     assert msgs[2] == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
-    _wait_page_lost(session, 2)
-    assert session.liveness.events == ["page_lost", "page_back", "page_lost"]
+    _wait_page_lost(session, 3)
+    # attach 时宽限不清（第二个 page_lost 是幂等的「保持」），重入成功才 page_back
+    assert session.liveness.events == ["page_lost", "page_lost", "page_back", "page_lost"]
     assert ("resume", PAUSE_PAGE_RELOAD) in session.log
 
 
@@ -486,7 +487,7 @@ def test_reload_snapshot_is_taken_from_the_runtime_not_hardcoded(app):
     host = FakeSession(side="host")
     host.snapshot = {"subscribe": False, "peer_vid": "g_" + "2" * 24}
     tw.register_transport_session(host)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     url = f"/api/visit/transport/ws?visit_id={VISIT_ID}&side=host"
     client = _client(app)
     with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
@@ -519,7 +520,7 @@ def test_second_connection_supersedes_the_first_with_4409(app, session):
             _expect_close(old, tw.CLOSE_SUPERSEDED)
             assert tw.is_transport_attached(VISIT_ID, "guest")
             # 被顶掉的旧连接断开不算掉页
-            assert session.liveness.events == ["page_back"]
+            assert session.liveness.events == ["page_lost"]
 
 
 def test_stop_is_sent_once_and_unregister_closes(app, session):
@@ -681,7 +682,7 @@ def test_takeover_does_not_wait_for_a_stuck_old_socket():
         await asyncio.sleep(0)
         new = tw._attach(link, _RecordingWS())  # 同步完成，不等旧连接的发送锁
         refused = await asyncio.wait_for(tw._send_on(old, {"type": "media", "publish": False}), 1)
-        sent = await asyncio.wait_for(tw.send_downlink(VISIT_ID, "guest", {"type": "media", "publish": False}), 1)
+        sent = await asyncio.wait_for(s.send({"type": "media", "publish": False}), 1)
         stuck.cancel()
         return old, new, refused, sent
 
@@ -802,7 +803,7 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
 
     s = _Flaky()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     client = _client(app)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
@@ -958,7 +959,7 @@ def test_failed_state_hook_or_snapshot_retries_the_whole_rejoin(app, broken):
 
     s = _Flaky()
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     client = _client(app)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
@@ -1045,15 +1046,15 @@ def test_failed_first_credentials_send_does_not_burn_the_slot(app):
     s = GatedSession()
     s.oversize_first = True
     tw.register_transport_session(s)
-    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
         _sync(ws)
         msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
-        assert _run(ws, tw.send_downlink, VISIT_ID, "guest", msg)
+        assert _run(ws, s.send, msg)
         assert json.loads(ws.receive_text())["type"] == "credentials"
-        assert not _run(ws, tw.send_downlink, VISIT_ID, "guest", msg)
+        assert not _run(ws, s.send, msg)
 
 
 # ── 本机来源判定 ───────────────────────────────────────────────────────
@@ -1077,3 +1078,174 @@ async def _unregister(s):
 def _run(ws, fn, *args):
     """Run an async runtime call on the app's event loop (the TestClient portal)."""
     return ws.portal.call(fn, *args)
+
+
+# ── 评审（wehos，593d997）补的用例 ─────────────────────────────────────
+
+
+class _SlowWS(_RecordingWS):
+    """send_text yields to the loop before recording (lets runtime sends interleave)."""
+
+    def __init__(self, on_first_send=None):
+        super().__init__()
+        self.on_first_send = on_first_send
+
+    async def send_text(self, text):
+        import asyncio
+
+        if self.on_first_send is not None:
+            hook, self.on_first_send = self.on_first_send, None
+            hook()
+        await asyncio.sleep(0.01)
+        await super().send_text(text)
+
+
+def test_rejoin_snapshot_never_overrides_a_newer_media_state():
+    # 复现：发 hello 期间用户关了摄像头，runtime 发 media{publish:false}；旧快照不能最后到、把推流打开
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1  # 这是一条重载后的连接
+        tasks = []
+
+        def _camera_off():
+            s.snapshot = {"publish": False, "crop": "upper", "ladder": 0}
+            tasks.append(asyncio.ensure_future(s.send({"type": "media", "publish": False, "crop": "upper", "ladder": 0})))
+
+        ws = _SlowWS(on_first_send=_camera_off)
+        conn = tw._attach(link, ws)
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        await asyncio.gather(*tasks)
+        return ws.sent
+
+    try:
+        sent = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    medias = [m for m in sent if m["type"] == "media"]
+    assert sent[0]["type"] == "send"
+    assert medias and medias[-1]["publish"] is False
+
+
+def test_unserializable_downlink_is_dropped_not_a_disconnect():
+    import asyncio
+
+    async def scenario():
+        conn = tw._Connection(websocket=_RecordingWS(), reattach=False)
+        bad_set = await conn.send_json({"type": "media", "publish": True, "x": {1, 2}})
+        bad_nan = await conn.send_json({"type": "media", "publish": True, "x": float("nan")})
+        bad_text = await conn.send_json({"type": "media", "publish": True, "x": "\ud800"})
+        ok = await conn.send_json({"type": "media", "publish": True})
+        return bad_set, bad_nan, bad_text, ok, conn
+
+    bad_set, bad_nan, bad_text, ok, conn = asyncio.run(scenario())
+    assert (bad_set, bad_nan, bad_text, ok) == (False, False, False, True)
+    assert not conn.closed and conn.websocket.sent == [{"type": "media", "publish": True}]
+
+
+def test_unserializable_snapshot_keeps_the_socket_open(app, session):
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(session, 1)
+    session.snapshot = {"publish": True, "crop": "upper", "ladder": 0, "bad": {1}}
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        assert json.loads(ws.receive_text())["type"] == "send"
+        _barrier(ws, session)
+        # 快照发不出去只是这一条丢了：socket 仍是当前连接，没有被当成断线
+        assert tw.is_transport_attached(VISIT_ID, "guest")
+        assert session.liveness.events.count("page_lost") == 2  # 第一条断开 + 第二条 attach，没有第三次
+        assert _run(ws, session.send, {"type": "stop", "reason": "home"})
+        assert json.loads(ws.receive_text()) == {"type": "stop", "reason": "home"}
+
+
+def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
+    from main_logic.visit.liveness import VisitLiveness
+
+    s = FakeSession()
+    s.liveness = VisitLiveness("guest", 0.0)
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_until(lambda: s.liveness.page_lost_at is not None)
+    lost_at = s.liveness.page_lost_at
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws, ok=False, reason="no_webrtc")  # 新 iframe 预检失败：永远不会重入
+        _barrier(ws, s)
+        # 宽限没有被 auth 清掉，起点也没被重置
+        assert s.liveness.page_lost_at == lost_at
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        ws.receive_text()
+        ws.receive_text()
+        _barrier(ws, s)
+        assert s.liveness.page_lost_at is None  # 重入成功才清
+
+
+def test_superseding_a_live_socket_starts_the_page_grace(app):
+    from main_logic.visit.liveness import VisitLiveness
+
+    s = FakeSession()
+    s.liveness = VisitLiveness("guest", 0.0)
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+        _auth(old)
+        _barrier(old, s)
+        assert s.liveness.page_lost_at is None
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+            _auth(new)
+            _barrier(new, s)
+            # 旧 iframe 已被顶掉、新的还没入房：要有截止时间
+            assert s.liveness.page_lost_at is not None
+
+
+def test_failed_preflight_blocks_a_runtime_first_issue(app, session):
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws, ok=False, reason="no_webrtc")
+        _barrier(ws, session)
+        msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+        assert not _run(ws, session.send, msg)
+        assert _run(ws, session.send, {"type": "stop", "reason": "unsupported"})
+        assert json.loads(ws.receive_text())["type"] == "stop"
+
+
+def test_module_has_no_key_routed_downlink_entry():
+    # 下行唯一入口是 session.send（绑定到登记中的 session）
+    assert not hasattr(tw, "send_downlink")
+
+
+def test_credentials_message_tier_comes_from_the_credentials():
+    import dataclasses
+
+    creds = dataclasses.replace(_creds(), tier="hd900")
+    assert tw.build_credentials_message(creds, side="guest", crop="upper", codec="vp9")["tier"] == "hd900"
+
+
+def _wait_until(pred, timeout: float = 5.0) -> None:
+    import time as _t
+
+    deadline = _t.monotonic() + timeout
+    while not pred():
+        if _t.monotonic() > deadline:
+            raise AssertionError("condition never became true")
+        _t.sleep(0.01)

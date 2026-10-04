@@ -36,10 +36,13 @@ The visit runtime (PR-09a) plugs in by registering a
 closes 4404. A second connection for the same pair replaces the first
 (the old one gets 4409 and must not reconnect). When the current connection
 drops: ``liveness.on_page_lost`` + ``outbox.pause(PAUSE_PAGE_RELOAD)``. A
-replacement connection calls ``liveness.on_page_back``; once its iframe is
-back in the vendor room (first ``state`` joined / connected) the session
-resends ``hello`` and resumes the outbox, then exactly one full ``media``
-snapshot from ``session.media_snapshot()`` follows.
+replacement connection keeps (or starts) the 20 s page grace and the pause;
+only once its iframe is back in the vendor room (first ``state`` joined /
+connected, after its own preflight and credentials) does the session clear
+the grace (``liveness.on_page_back``), resend ``hello`` and resume the
+outbox, then exactly one full ``media`` snapshot from
+``session.media_snapshot()`` follows. Downlink goes only through
+:meth:`VisitTransportSession.send` (bound to the registered session).
 """
 
 from __future__ import annotations
@@ -143,7 +146,7 @@ def build_credentials_message(
         "own_vid": creds.vid,
         "peer_vid": creds.peer_vid if side == "guest" else peer_vid,
         "allowed_hosts": sorted(allowed_livekit_hosts()),
-        "tier": "sd600",
+        "tier": creds.tier,
         "crop": crop,
         "publish": {
             "codec": codec,
@@ -240,22 +243,28 @@ class VisitTransportSession(ABC):
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_attached(self, now: float) -> None:
-        """A replacement socket authenticated within the grace.
+        """A replacement socket authenticated: the page is NOT back yet.
 
-        The outbox stays paused until this socket's iframe is back in the
-        vendor room (it may replace a live socket, which never paused it).
+        The 20 s page grace keeps running from the original loss -- or starts
+        now when this socket replaced a live one (``on_page_lost`` keeps the
+        earliest start) -- and the outbox stays paused. Only a completed
+        re-entry (:meth:`on_page_rejoined`) clears it, so a page that
+        authenticates but never gets back into the vendor room (failed
+        preflight, no credentials, SDK never joins) or keeps reconnecting
+        still runs into ``local_page_lost``.
         """
-        self.liveness.on_page_back(now)
+        self.liveness.on_page_lost(now)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_rejoined(self, now: float) -> None:
-        """The replacement iframe is back in the vendor room: queue ``hello`` first, resume.
+        """The replacement iframe is back in the vendor room: clear the grace, queue ``hello`` first, resume.
 
         Synchronous on purpose: the transport calls it only while the socket
         is still the current one and sends what the outbox releases right
         after it on that same socket, so a socket replaced meanwhile can never
         resume the outbox or flush into its successor.
         """
+        self.liveness.on_page_back(now)
         self.outbox.resend_hello(now)
         self.outbox.resume(now, reason=PAUSE_PAGE_RELOAD)
 
@@ -294,12 +303,20 @@ class _Connection:
     stop_sent: bool = False
     stop_reserved: bool = False
     preflight_seen: bool = False
+    preflight_ok: bool = False
     sdk_seen: bool = False
     rejoined: bool = False
 
     async def send_json(self, msg: Mapping[str, Any]) -> bool:
-        text = json.dumps(msg, ensure_ascii=False, separators=(",", ":"))
-        size = len(text.encode("utf-8"))
+        try:
+            # allow_nan=False：NaN / Infinity 不是合法 JSON；序列化不了的值（set / bytes / 孤立代理字符…）
+            # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
+            text = json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            size = len(text.encode("utf-8"))
+        except (TypeError, ValueError) as exc:
+            logger.warning("visit transport: dropping unserializable %s downlink: %s",
+                           msg.get("type"), type(exc).__name__)
+            return False
         limit = CREDENTIALS_MAX_BYTES if msg.get("type") == "credentials" else FRAME_MAX_BYTES
         if size > limit:
             logger.warning("visit transport: dropping oversize %s downlink (%d B)", msg.get("type"), size)
@@ -392,25 +409,12 @@ def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
     task.add_done_callback(_close_tasks.discard)
 
 
-async def send_downlink(visit_id: str, side: str, msg: Mapping[str, Any]) -> bool:
-    """Send one downlink message to the current socket of ``(visit_id, side)``.
-
-    Only ``credentials / media / send / stop``. A first-issue ``credentials``
-    (no ``refresh``) is accepted once per connection, and only after the
-    preflight; ``stop`` once per connection. Returns False when nothing was
-    sent (no socket, rule violation, oversize, socket closing).
-    """
-    if msg.get("type") not in DOWNLINK_TYPES:
-        raise ValueError("unknown downlink type")
-    link = _links.get((visit_id, side))
-    conn = link.conn if link is not None else None
-    if conn is None:
-        return False
-    return await _send_on(conn, msg)
-
-
 async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
     """Send on one specific connection, enforcing the per-connection downlink rules.
+
+    A first-issue ``credentials`` (no ``refresh``) needs a passed preflight on
+    this connection and goes out once; ``stop`` goes out once. Returns False
+    when nothing was sent (rule violation, oversize, unserializable, closing).
 
     The once-only slots (first ``credentials``, ``stop``) are reserved while
     the send is in flight and consumed only when it succeeded, so a failed
@@ -421,8 +425,9 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
     kind = msg.get("type")
     first_credentials = kind == "credentials" and not msg.get("refresh")
     if first_credentials:
-        if conn.credentials_sent or conn.credentials_reserved or not conn.preflight_seen:
-            logger.warning("visit transport: refusing a second first-issue credentials")
+        # 首发只在本连接预检通过之后（§4.3）：runtime 出错时也不能绕过
+        if conn.credentials_sent or conn.credentials_reserved or not conn.preflight_ok:
+            logger.warning("visit transport: refusing a first-issue credentials (duplicate or no passed preflight)")
             return False
         conn.credentials_reserved = True
     elif kind == "credentials" and not conn.credentials_sent:
@@ -546,6 +551,7 @@ async def _handle_frame(
                 return
             conn.preflight_seen = True
             ok = msg.get("preflight_ok") is True
+            conn.preflight_ok = ok
             caps = _record_preflight(session, msg, ok)
             # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证
             if await _call(session, "on_preflight", caps) is _HOOK_FAILED or not ok:
@@ -594,6 +600,15 @@ async def _handle_frame(
             for frame in frames:
                 await _send_on(conn, frame.to_ws())
             if _is_current(link, conn):
+                # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
+                # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
+                # 取到即同步入发送锁队列，不会再被更早的状态盖掉
+                try:
+                    latest = session.media_snapshot()
+                    if isinstance(latest, Mapping):
+                        snapshot = latest
+                except Exception as exc:  # noqa: BLE001 - 取不到就用前面那份
+                    logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
                 await _send_on(conn, {**snapshot, "type": "media"})
         return
     if kind == "recv":

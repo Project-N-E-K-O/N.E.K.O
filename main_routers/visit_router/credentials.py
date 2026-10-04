@@ -34,6 +34,12 @@ log line). The bearer, the vendor grant, the identity ticket and invite codes
 never reach a log line or ``repr``; the bearer never leaves the backend.
 The region hint only reads ``ConfigManager._region_cache`` (after at most a
 1.5 s wait for an in-flight probe); ``_check_non_mainland()`` is never called.
+
+Clocks: every expiry here (``expires_at``, ``vendor_expires_at``,
+``invite_expires_at``) is Unix wall time, and the expiry helpers read
+``time.time()`` themselves (optional keyword ``wall_now`` only for tests).
+The transport's ``VisitTransportSession.now()`` is monotonic and must never
+be passed in.
 """
 
 from __future__ import annotations
@@ -543,6 +549,7 @@ class VisitCredentials:
     visit_id: str
     char_tag: str
     transport: str
+    tier: str
     expires_at: float
     vendor_expires_at: float
     vendor: Mapping[str, Mapping[str, Any]] = field(repr=False)
@@ -557,13 +564,13 @@ class VisitCredentials:
     account: str = ""
     """Community ``local_user_id`` that fetched these credentials (owns the room side)."""
 
-    def vendor_remaining_s(self, now: float) -> float:
-        """Seconds left on the vendor grant (negative once expired)."""
-        return self.vendor_expires_at - now
+    def vendor_remaining_s(self, *, wall_now: float | None = None) -> float:
+        """Seconds left on the vendor grant (negative once expired); Unix wall time."""
+        return self.vendor_expires_at - (time.time() if wall_now is None else wall_now)
 
-    def ticket_expired(self, now: float) -> bool:
-        """True once the identity ticket ``expires_at`` passed (no new first ``credentials``)."""
-        return now > self.expires_at
+    def ticket_expired(self, *, wall_now: float | None = None) -> bool:
+        """True once the identity ticket ``expires_at`` passed (no new first ``credentials``); wall time."""
+        return (time.time() if wall_now is None else wall_now) > self.expires_at
 
     def with_renewed_vendor(self, renewed: "VisitCredentials") -> "VisitCredentials":
         """Take the vendor grant of ``renewed``; keep the identity ticket and invite fields.
@@ -652,6 +659,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
 
 def _parse_credentials(
     payload: Any, *, role: str, visit_id: str, char_tag: str, now: float, account: str = "",
+    tier: str = VISIT_VIDEO_TIER_DEFAULT,
 ) -> VisitCredentials:
     _need(isinstance(payload, Mapping), "body")
     transport = payload.get("transport")
@@ -747,6 +755,7 @@ def _parse_credentials(
         visit_id=visit_id,
         char_tag=char_tag,
         transport=transport,
+        tier=tier,
         expires_at=float(expires_at),
         vendor_expires_at=local_vendor_expiry,
         vendor=vendor,
@@ -776,7 +785,7 @@ async def fetch_visit_credentials(
     ``char_tag`` is the character's stable ``character_uid`` (see
     :func:`resolve_char_tag`), never derived from the name. A guest must pass
     ``invite_code`` (format-checked before any network); a host must not.
-    Also refreshes the pubkey cache (``force_refresh=True``) alongside.
+    Also starts a background pubkey refresh (not awaited).
     Raises a :class:`VisitServersError` subclass on every failure.
     """
     if role not in ROLES:
@@ -805,28 +814,23 @@ async def fetch_visit_credentials(
     if invite_code is not None:
         body["invite_code"] = invite_code
 
-    # 每次领凭证顺带刷新公钥与吊销名单（此时必然连得上 Servers）；刷新失败不影响凭证
-    post, _ = await asyncio.gather(
-        _send(
-            "POST",
-            f"{session.base_url}/api/visit/credentials",
-            op="credentials",
-            headers=session.headers(),
-            json_body=body,
-            timeout=_CREDENTIALS_TIMEOUT_S,
-        ),
-        fetch_pubkeys(force_refresh=True),
-        return_exceptions=True,
+    # 每次领凭证顺带刷新公钥与吊销名单（此时必然连得上 Servers）。后台进行、不等它：
+    # 刷新卡住时不能拖慢建房 / 续期（挤占能力门超时与重连窗口），刷新失败本就忽略
+    _kick_pubkeys_refresh()
+    resp = await _send(
+        "POST",
+        f"{session.base_url}/api/visit/credentials",
+        op="credentials",
+        headers=session.headers(),
+        json_body=body,
+        timeout=_CREDENTIALS_TIMEOUT_S,
     )
-    if isinstance(post, BaseException):
-        raise post
-    resp = post
     if not 200 <= resp.status_code < 300:
         raise _map_error(resp, CREDENTIALS_ERROR_CONTRACT, op="credentials", account=session.account)
     try:
         return _parse_credentials(
             _body_json(resp), role=role, visit_id=visit_id, char_tag=char_tag, now=time.time(),
-            account=session.account,
+            account=session.account, tier=tier,
         )
     except _BadResponse as exc:
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
@@ -874,14 +878,14 @@ class VisitGrant:
         self,
         credentials: VisitCredentials,
         *,
-        tier: str = VISIT_VIDEO_TIER_DEFAULT,
+        tier: str | None = None,
         display_name: str | None = None,
         invite_code: str | None = None,
         refresh_margin_s: float = VISIT_VENDOR_REFRESH_MARGIN_S,
         fetch: Callable[..., Awaitable[VisitCredentials]] | None = None,
     ) -> None:
         self._current = credentials
-        self._tier = tier
+        self._tier = credentials.tier if tier is None else tier
         self._display_name = display_name
         self._invite_code = invite_code if credentials.role == "guest" else None
         self._margin = float(refresh_margin_s)
@@ -893,9 +897,13 @@ class VisitGrant:
         """The credentials in force (identity ticket of the first issue, latest vendor grant)."""
         return self._current
 
-    def refresh_due(self, now: float) -> bool:
-        """True when the vendor grant has less than the margin left (or expired)."""
-        return self._current.vendor_remaining_s(now) < self._margin
+    def refresh_due(self, *, wall_now: float | None = None) -> bool:
+        """True when the vendor grant has less than the margin left (or expired).
+
+        Reads ``time.time()`` itself: the grant expiry is Unix time, never the
+        transport's monotonic clock.
+        """
+        return self._current.vendor_remaining_s(wall_now=wall_now) < self._margin
 
     async def renew(self) -> VisitCredentials:
         """Fetch a fresh vendor grant; concurrent callers share one Servers call."""
@@ -921,9 +929,9 @@ class VisitGrant:
         self._current = cur.with_renewed_vendor(fresh)
         return self._current
 
-    async def ensure_fresh(self, now: float) -> bool:
-        """Renew when due; return True when a renewal happened."""
-        if not self.refresh_due(now):
+    async def ensure_fresh(self, *, wall_now: float | None = None) -> bool:
+        """Renew when due (wall clock); return True when a renewal happened."""
+        if not self.refresh_due(wall_now=wall_now):
             return False
         await self.renew()
         return True
@@ -1039,6 +1047,29 @@ async def _refresh_pubkeys() -> None:
     _pubkeys_failed_at = None
 
 
+def _log_refresh_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("visit servers pubkeys: background refresh failed: %s", type(exc).__name__)
+
+
+def _kick_pubkeys_refresh() -> asyncio.Task:
+    """Start a pubkey refresh in the background (or join the one in flight) without awaiting it.
+
+    The task is kept in ``_pubkeys_inflight`` (so it is not garbage-collected
+    and concurrent callers share it); its failure is logged, never raised.
+    """
+    global _pubkeys_inflight
+    task = _pubkeys_inflight
+    if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+        task = asyncio.ensure_future(_refresh_pubkeys())
+        task.add_done_callback(_log_refresh_failure)
+        _pubkeys_inflight = task
+    return task
+
+
 async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     """Return the verification keys: built-in table + last fetch + dev key, minus ``revoked``.
 
@@ -1049,15 +1080,13 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     unknown revocation list means no kid is trusted, built-in ones included).
     Never raises for network errors.
     """
-    global _pubkeys_inflight
     now = time.time()
     recently_failed = _pubkeys_failed_at is not None and now - _pubkeys_failed_at < _PUBKEYS_RETRY_MIN_S
     task = _pubkeys_inflight
     if task is not None and (task.done() or task.get_loop() is not asyncio.get_running_loop()):
         task = None
     if task is None and (force_refresh or (not _pubkeys_cache_valid(now) and not recently_failed)):
-        task = asyncio.ensure_future(_refresh_pubkeys())
-        _pubkeys_inflight = task
+        task = _kick_pubkeys_refresh()
     if task is not None:
         # 失败抑制期内也要等已经在进行的刷新：它可能正好带回新的吊销名单
         await asyncio.shield(task)

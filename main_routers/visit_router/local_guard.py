@@ -33,13 +33,11 @@ Used by the transport WS here; PR-09a reuses it for ``/api/visit/*`` HTTP and
 from __future__ import annotations
 
 import ipaddress
-import os
-import secrets
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
 import config.visit_settings as visit_settings
 from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
+from utils import local_ws_guard
 
 PROXY_HEADERS: tuple[str, ...] = ("forwarded", "x-forwarded-for", "x-real-ip")
 """Request headers whose mere presence rejects a visit request."""
@@ -49,8 +47,8 @@ UNAUTHORIZED_CODE = "VISIT_E_UNAUTHORIZED"
 
 
 def behind_proxy() -> bool:
-    """True when the server runs with ``NEKO_BEHIND_PROXY`` (read per call, like the entry point)."""
-    return os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
+    """True when the server runs with ``NEKO_BEHIND_PROXY`` (read per call)."""
+    return local_ws_guard.behind_proxy_enabled()
 
 
 def allow_nonlocal() -> bool:
@@ -91,35 +89,11 @@ def local_peer_allowed(client_host: Any, headers: Mapping[str, str]) -> bool:
 def websocket_origin_allowed(origin: str, request_host: str | None) -> bool:
     """Second layer for WebSockets: Origin host equals the server host or an allowed local host.
 
-    Same rule as ``vmc_router._websocket_has_allowed_origin``.
+    Shared implementation with ``/api/vmc/ws`` (``utils.local_ws_guard``).
     """
-    try:
-        parsed_origin = urlsplit(origin or "")
-    except ValueError:
-        return False
-    if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
-        return False
-    origin_host = parsed_origin.hostname.lower()
-    if request_host and origin_host == request_host.lower():
-        return True
-    for allowed_origin in AUTOSTART_ALLOWED_ORIGINS:
-        try:
-            allowed_host = urlsplit(allowed_origin).hostname
-        except (TypeError, ValueError):
-            continue
-        if allowed_host and allowed_host.lower() == origin_host:
-            return True
-    return False
+    return local_ws_guard.websocket_origin_allowed(origin, request_host, AUTOSTART_ALLOWED_ORIGINS)
 
 
 def valid_auth_frame(message: Any) -> bool:
-    """First-frame check ``{type:'auth', csrf_token}`` (same as ``vmc_router._valid_websocket_auth``)."""
-    if not isinstance(message, dict) or message.get("type") != "auth":
-        return False
-    token = message.get("csrf_token")
-    return bool(
-        isinstance(token, str)
-        and token
-        and AUTOSTART_CSRF_TOKEN
-        and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN)
-    )
+    """First-frame check ``{type:'auth', csrf_token}`` (shared with ``/api/vmc/ws``)."""
+    return local_ws_guard.valid_auth_frame(message, AUTOSTART_CSRF_TOKEN)

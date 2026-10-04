@@ -61,3 +61,13 @@ def test_a_replaced_slot_is_marked_inactive():
     assert old["visit_route_active"] is False
     assert get_visit_route_state("ReplaceNeko") is new and new["visit_route_active"] is True
     finalize_visit_route_state("ReplaceNeko")
+
+
+def test_slot_records_the_owning_visit_id():
+    vrs._reset_for_tests()
+    try:
+        assert vrs.activate_visit_route("A")["visit_id"] is None
+        assert vrs.activate_visit_route("A", visit_id="AbCdEfGhIjKlMnOpQrStUv")["visit_id"] == "AbCdEfGhIjKlMnOpQrStUv"
+        assert vrs.get_visit_route_state("A")["visit_id"] == "AbCdEfGhIjKlMnOpQrStUv"
+    finally:
+        vrs._reset_for_tests()

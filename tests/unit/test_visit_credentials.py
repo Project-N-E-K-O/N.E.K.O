@@ -256,6 +256,7 @@ async def test_host_request_body_and_headers(servers):
     assert body["app_version"].count(".") == 1
     assert creds.invite_code == INVITE and creds.peer_vid is None
     assert creds.vid == HOST_VID and creds.visit_uid == HOST_UID
+    assert creds.tier == "sd600"
 
 
 class _CharsCM:
@@ -915,10 +916,10 @@ async def test_grant_renews_vendor_and_keeps_identity_ticket(servers):
     first = await _guest()
     grant = cr.VisitGrant(first, invite_code=INVITE)
     now = time.time()
-    assert not grant.refresh_due(now)
-    assert grant.refresh_due(first.vendor_expires_at - 119)
-    assert not await grant.ensure_fresh(now)
-    assert await grant.ensure_fresh(first.vendor_expires_at - 60)
+    assert not grant.refresh_due(wall_now=now)
+    assert grant.refresh_due(wall_now=first.vendor_expires_at - 119)
+    assert not await grant.ensure_fresh(wall_now=now)
+    assert await grant.ensure_fresh(wall_now=first.vendor_expires_at - 60)
     renewed = grant.current
     assert renewed.identity_ticket == first.identity_ticket
     assert renewed.expires_at == first.expires_at
@@ -1146,7 +1147,9 @@ async def test_pubkeys_are_cached_for_a_day(servers, monkeypatch):
 @pytest.mark.asyncio
 async def test_credentials_fetch_refreshes_pubkeys(servers):
     await _host()
+    await cr._pubkeys_inflight
     await _guest()
+    await cr._pubkeys_inflight
     assert servers.count("/pubkeys") == 2
 
 
@@ -1297,3 +1300,44 @@ async def test_preview_error_mapping(servers, status, code):
     assert (local_status, local_body["code"]) == expected
     if status == 429:
         assert local_body["retry_after_s"] == 42
+
+
+# ── 评审（wehos，593d997）补的用例 ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_grant_expiry_runs_on_the_wall_clock_only(servers, monkeypatch):
+    first = await _guest()
+    grant = cr.VisitGrant(first, invite_code=INVITE)
+    assert not grant.refresh_due()
+    real = time.time()
+    patch_module_clock(monkeypatch, cr, time=lambda: real + vs.VISIT_VENDOR_GRANT_TTL_S - 60)
+    # 不传时钟时自己读墙钟：快到期就要续
+    assert grant.refresh_due()
+    assert not first.ticket_expired()
+    # 单调钟读数不能被当成「现在」位置参数传进来
+    with pytest.raises(TypeError):
+        grant.refresh_due(12345.0)
+    with pytest.raises(TypeError):
+        first.vendor_remaining_s(12345.0)
+
+
+@pytest.mark.asyncio
+async def test_credentials_do_not_wait_for_a_stuck_pubkey_refresh(servers, monkeypatch):
+    import asyncio
+
+    gate = asyncio.Event()
+    original = servers.handler
+
+    async def _handler(request):
+        if request.url.path == "/api/visit/pubkeys":
+            await gate.wait()
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    creds = await asyncio.wait_for(_host(), 1)
+    assert creds.vid == HOST_VID
+    assert cr._pubkeys_inflight is not None and not cr._pubkeys_inflight.done()
+    gate.set()
+    await cr._pubkeys_inflight
