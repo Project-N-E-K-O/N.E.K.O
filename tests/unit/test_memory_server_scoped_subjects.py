@@ -401,3 +401,24 @@ async def test_correction_only_subjects_are_listed(env):
     # 待处理的人设纠正同在删除面上：只剩它们的 subject 也要能被找到
     assert by_key[("participant", "neko_visit:u_corr")]["corrections"] == 1
     assert by_key[("participant", "neko_visit:u_legacy")]["corrections"] == 1
+
+
+async def test_persona_entries_of_another_scope_in_a_shared_section_are_listed(env):
+    shared = MemorySubject.participant("neko_visit", "u_shared")
+    other_scope = MemorySubject.create("participant", "neko_visit:u_shared", scope="custom:other")
+    path = env.root / NAME / "persona.json"
+    persona = json.loads(path.read_text(encoding="utf-8"))
+    # section key 不含 scope：两个 scope 的条目住在同一个 section 里，元数据只记了默认 scope
+    persona[shared.persona_section_key] = {
+        **shared.as_entry_fields(),
+        "facts": [
+            {"id": "p_default", "text": "a", **shared.as_entry_fields()},
+            {"id": "p_other", "text": "b", **other_scope.as_entry_fields()},
+        ],
+    }
+    _write(path, persona)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    rows = {(row["subject_id"], row["scope"]): row for row in result["subjects"]}
+    # 只剩 persona 的另一个 scope 同样要能被找到、被清除
+    assert rows[("neko_visit:u_shared", "custom:other")]["persona"] is True
+    assert rows[("neko_visit:u_shared", shared.scope)]["persona"] is True

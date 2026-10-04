@@ -745,5 +745,24 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
 
 
 def _staged_subjects(document: Any) -> set[str]:
-    subjects = document.get("subjects") if isinstance(document, dict) else None
-    return {str(s) for s in subjects} if isinstance(subjects, list) else set()
+    """Every subject key a staging document references: the ``subjects`` index plus each segment.
+
+    The index alone is not enough: a document whose index is missing or
+    damaged still names its subjects segment by segment (wire key and routed
+    destination), and recovery replays it from those, so their tombstones
+    must outlive it too (same reading as the forget-side cancellation scan).
+    """
+    if not isinstance(document, dict):
+        return set()
+    subjects = document.get("subjects")
+    keys = {str(s) for s in subjects} if isinstance(subjects, list) else set()
+    segments = document.get("segments")
+    for segment in segments if isinstance(segments, list) else []:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("wire_key"):
+            keys.add(str(segment["wire_key"]))
+        subject = segment.get("subject")
+        if isinstance(subject, dict) and subject.get("subject_kind") and subject.get("subject_id"):
+            keys.add(f"{subject['subject_kind']}:{subject['subject_id']}")
+    return keys

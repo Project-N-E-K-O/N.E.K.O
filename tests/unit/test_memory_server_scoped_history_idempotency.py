@@ -2426,3 +2426,20 @@ async def test_keyed_display_name_write_runs_strict(env):
     await _post(env, _single_body())
     # 带键日志路径要求读不出 persona 时抛出（返回 False 分不清是失败还是正常空操作）
     assert seen == [True]
+
+
+async def test_cleanup_protects_tombstones_named_only_by_segments(env):
+    idem = env.idem
+    now = time.time()
+    path = Path(idem.staging_path(NAME, "orphan-seg"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 索引丢了，各段仍指认 GROUP；它还是新的（未过期），会被留下
+    path.write_text(json.dumps({
+        "key": "orphan-seg", "created_at": now,
+        "segments": [{"wire_key": GROUP_KEY, "subject": GROUP}],
+    }), encoding="utf-8")
+    tombstones = Path(idem.tombstones_path(NAME))
+    tombstones.write_text(json.dumps({GROUP_KEY: {"forget_epoch": 1, "forgotten_at": now - 500}}), encoding="utf-8")
+    await idem.cleanup_expired([NAME], ttl_s=100.0, now=now)
+    # 留下来的暂存仍引用这个 subject：它的墓碑不能先过期，否则之后被认领时清除前的事实会写回
+    assert path.exists() and GROUP_KEY in json.loads(tombstones.read_text(encoding="utf-8"))

@@ -5132,6 +5132,13 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
             if isinstance(entry, dict)
         ]
         persona_entries.extend(entries)
+        # section key 不含 scope：同 kind:id 的不同 scope 条目可能住在同一个 section 里，section
+        # 元数据只记最近的写者。逐条按条目自己的 subject 戳记行，否则只剩 persona 的别的 scope 列不出来
+        for entry in entries:
+            entry_subject = subject_from_entry(entry)
+            entry_row = _row(entry_subject) if entry_subject is not None else None
+            if entry_row is not None:
+                entry_row["persona"] = True
         if section_subject is None:
             continue
         has_entries = any(
