@@ -1739,3 +1739,29 @@ async def test_rename_reconciliation_reloads_names_under_the_guard(tmp_path, mon
     assert report.renamed is True
     after = json.loads((tmp_path / "visit_peers.json").read_text(encoding="utf-8"))
     assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
+
+
+async def test_rename_guard_is_retaken_when_the_marker_changes_meanwhile(tmp_path, monkeypatch):
+    import contextlib
+
+    await seed_roster(tmp_path)
+    await seed_roster(tmp_path, own_char="B")
+    peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
+    taken = []
+
+    @contextlib.asynccontextmanager
+    async def guard(uids):
+        taken.append(list(uids))
+        if len(taken) == 1:
+            # 等守卫期间，标记被另一个角色（B → D）的改名换掉
+            data = json.loads(peers_path.read_text(encoding="utf-8"))
+            data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
+            peers_path.write_text(json.dumps(data), encoding="utf-8")
+        yield
+
+    report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A, "D": CHAR_UID_B},
+                                       {CHAR_UID_A: "C", CHAR_UID_B: "D"}, lifecycle_guard=guard)
+    # 按新标记重新拿了 B 的守卫再对账（不是拿着 A 的守卫去迁 B）
+    assert taken == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True
+    by_char = json.loads(peers_path.read_text(encoding="utf-8"))["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
+    assert "D" in by_char and "B" not in by_char

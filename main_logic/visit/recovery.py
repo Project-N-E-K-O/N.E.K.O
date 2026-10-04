@@ -381,24 +381,36 @@ async def _reconcile_rename_guarded(
     """
     if lifecycle_guard is None:
         return await _reconcile_rename(config_dir, names, uid_of)
-    try:
-        marker = await read_roster_marker(config_dir, "pending_rename")
-    except RosterCorruptError:
-        return await _reconcile_rename(config_dir, names, uid_of)
-    if not isinstance(marker, dict):
-        return await _reconcile_rename(config_dir, names, uid_of)
-    uids = {marker["uid"]} if isinstance(marker.get("uid"), str) and marker.get("uid") else set()
-    for name in (marker.get("old"), marker.get("new")):
-        if uid_of is not None and isinstance(name, str) and name in uid_of:
-            uids.add(uid_of[name])
-    if not uids:
-        return await _reconcile_rename(config_dir, names, uid_of)
-    async with lifecycle_guard(sorted(uids)):
-        # 守卫内重读名单与标记：等守卫期间角色可能又被改名或删除，拿守卫之前的快照会算错
-        # 方向；标记由 _reconcile_rename 自己重读
-        if reload is not None:
-            names, uid_of = await reload()
-        return await _reconcile_rename(config_dir, names, uid_of)
+    for _attempt in range(3):
+        try:
+            marker = await read_roster_marker(config_dir, "pending_rename")
+        except RosterCorruptError:
+            return await _reconcile_rename(config_dir, names, uid_of)
+        if not isinstance(marker, dict):
+            return await _reconcile_rename(config_dir, names, uid_of)
+        uids = {marker["uid"]} if isinstance(marker.get("uid"), str) and marker.get("uid") else set()
+        for name in (marker.get("old"), marker.get("new")):
+            if uid_of is not None and isinstance(name, str) and name in uid_of:
+                uids.add(uid_of[name])
+        if not uids:
+            return await _reconcile_rename(config_dir, names, uid_of)
+        async with lifecycle_guard(sorted(uids)):
+            # 等守卫期间标记可能已被另一个角色的改名换掉：守卫是按旧标记拿的，锁的不是
+            # 新标记的角色。标记变了就放开，按新标记重新拿守卫
+            try:
+                current = await read_roster_marker(config_dir, "pending_rename")
+            except RosterCorruptError:
+                return _ALL_NAMES
+            if current != marker:
+                if reload is not None:
+                    names, uid_of = await reload()
+                continue
+            # 守卫内重读名单：等守卫期间角色可能又被改名或删除，拿守卫之前的快照会算错方向
+            if reload is not None:
+                names, uid_of = await reload()
+            return await _reconcile_rename(config_dir, names, uid_of)
+    logger.warning("visit recovery: pending_rename kept changing while waiting for its guard, deferred")
+    return _ALL_NAMES
 
 
 async def _reconcile_rename(
