@@ -1570,3 +1570,51 @@ async def test_client_key_named_like_the_forget_fence_does_not_deadlock(env):
     # 栅栏用独立的登记表：与它同名的客户端键不会让清除自己等自己
     result = await asyncio.wait_for(_forget(env, GROUP, forget_epoch=1), timeout=5)
     assert result["status"] == "forgotten" and _key_state(env, clash) == "cancelled"
+
+
+async def test_keyed_write_requires_the_default_scope(env):
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body(subject={**GROUP, "scope": "another_scope"}))
+    # 墓碑 / 取消 / 已擦代数都按 kind:id 记：带键写入只接受默认 scope
+    assert excinfo.value.status_code == 422 and env.llm.calls == 0
+
+
+async def test_epoch_forget_requires_the_default_scope(env):
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, {**GROUP, "scope": "another_scope"}, forget_epoch=3)
+    assert excinfo.value.status_code == 422
+
+
+async def test_forgetting_another_scope_does_not_cancel_default_scope_writes(env):
+    env.llm.responses = [SINGLE_FACTS]
+    _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    assert _key_state(env, KEY_GROUP) == "pending"
+    result = await _forget(env, {**GROUP, "scope": "another_scope"})
+    # 清的是同一 kind:id 的另一个 scope：默认 scope 的带键写入与它无关，不取消
+    assert result["status"] == "forgotten"
+    assert _key_state(env, KEY_GROUP) == "pending" and _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_pending_key_issued_after_the_forget_is_not_cancelled_without_staging(env):
+    env.llm.responses = [RuntimeError("LLM failed")]
+    with pytest.raises(RuntimeError):
+        await _post(env, _single_body(subject_epochs={GROUP_KEY: 5}))   # 知道代数 5 的清除之后才发起
+    assert _key_state(env, KEY_GROUP) == "pending"
+    await _forget(env, GROUP, forget_epoch=5)
+    # 没有暂存，但记录里的请求代数 >= 清除代数：合法的新写入，不取消
+    assert _key_state(env, KEY_GROUP) == "pending"
+    env.llm.responses = [SINGLE_FACTS]
+    again = await _post(env, _single_body(subject_epochs={GROUP_KEY: 5}))
+    assert again["created"] == 2
+
+
+async def test_corrupt_tombstone_file_does_not_block_an_epoch_forget(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    path = Path(env.idem.tombstones_path(NAME))
+    path.write_text("{torn", encoding="utf-8")                 # 整个墓碑文件读不出
+    result = await _forget(env, GROUP, forget_epoch=2)
+    # 辅助文件坏了不挡隐私清除：照常擦除
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []

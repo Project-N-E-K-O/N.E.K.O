@@ -179,10 +179,19 @@ async def test_listing_writes_nothing(env):
 async def test_uninitialized_runtime_answers_503(env):
     from fastapi import HTTPException
 
-    env.monkeypatch.setattr(env.runtime, "fact_store", None)
+    env.monkeypatch.setattr(env.runtime, "_config_manager", None)
     with pytest.raises(HTTPException) as excinfo:
         await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     assert excinfo.value.status_code == 503
+
+
+async def test_listing_does_not_need_the_write_side_components(env):
+    # 只读接口直接读盘：受限模式下 persona / reflection 组件没起来也照常列出
+    env.monkeypatch.setattr(env.runtime, "persona_manager", None)
+    env.monkeypatch.setattr(env.runtime, "reflection_engine", None)
+    env.monkeypatch.setattr(env.runtime, "fact_store", None)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    assert result["subjects"]
 
 
 @pytest.mark.parametrize("platform", ["", "neko_visit:x", "x" * 65])

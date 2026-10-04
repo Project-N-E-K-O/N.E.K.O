@@ -3378,6 +3378,13 @@ async def _process_scoped_history_keyed(
     from . import idempotency
 
     key = req.idempotency_key
+    if any(context["wire_subject"].scope != context["wire_subject"].key for context in contexts):
+        # 墓碑、取消匹配、已擦代数都按 MemorySubject.key（kind:id）记，不含 scope：只有默认
+        # scope 下一个 key 才唯一对应一个记忆域。唯一的调用方（串门 digest）只用默认 scope
+        raise HTTPException(
+            status_code=422,
+            detail="idempotency_key requires the default subject scope",
+        )
     # 请求身份（形态 + 各位置 wire subject）：随键记录永久保留，终态键被另一个
     # 请求复用时不能把它当成「已处理过」吞掉
     fingerprint = {
@@ -3388,6 +3395,13 @@ async def _process_scoped_history_keyed(
     # 路由后实际写入的 subject 单独记在 pending 记录上（不进请求身份：路由关系在重试
     # 之间可能变化）。暂存还没写成时，清除只能靠它认出经路由写到被清 subject 的键
     routed_keys = sorted({context["subject"].key for context in contexts})
+    # 请求带的清除代数也记在 pending 记录上：暂存还没写成时，清除据此认出「清除之后才发起」
+    # 的合法请求，不把它取消（与有暂存时的 _staged_after_forget 同口径）
+    request_epochs = {
+        wire_key: int(req.subject_epochs[wire_key])
+        for wire_key in sorted({context["wire_subject"].key for context in contexts})
+        if req.subject_epochs and wire_key in req.subject_epochs
+    }
     async with idempotency.key_lock(lanlan_name, key):
         try:
             record = await idempotency.read_key(lanlan_name, key)
@@ -3462,6 +3476,7 @@ async def _process_scoped_history_keyed(
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
                         routed_keys=routed_keys,
+                        epochs=request_epochs,
                     ),
                 )
             except MaintenanceModeError:
@@ -3486,6 +3501,7 @@ async def _process_scoped_history_keyed(
                         client_requested_at=req.client_requested_at,
                         request=fingerprint,
                         routed_keys=routed_keys,
+                        epochs=request_epochs,
                     ),
                 )
             except MaintenanceModeError:
@@ -3894,6 +3910,12 @@ async def _cancel_staged_writes_for_subjects(
         peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
         if not subject_keys.intersection(peek_touched):
             continue
+        if peek is None and _staged_after_forget(
+            {"subjects": sorted(peek_touched), "epochs": record.get("epochs") or {}, "segments": []},
+            subject_keys, request_subject_key, forget_epoch,
+        ):
+            # 还没有暂存、但记录里的请求代数说明它是知道这次清除之后才发起的：合法的新写入
+            continue
         if peek is None and not peek_unreadable and idempotency.key_lock(lanlan_name, key).locked():
             # 还没有暂存、键锁被占着：持锁的请求正在调 LLM，不排在它后面。只在记录上持久记下
             # 被清的 subject（字符锁下原子改一条记录）：它生成完落暂存前、或生成失败 / 进程被杀
@@ -4111,6 +4133,11 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         )
     targets = _forget_fanout_targets(subject)
     forgotten_subject_keys = {subject.key} | {target.key for target in targets}
+    default_scope = subject.scope == subject.key
+    if req.forget_epoch is not None and not default_scope:
+        # 代数、墓碑、已擦标记都按 kind:id 记：非默认 scope 带代数会让同一 key 的另一个
+        # scope 被当成「已擦过」跳过（漏删）。带代数的清除只用于默认 scope
+        raise HTTPException(status_code=422, detail="forget_epoch requires the default subject scope")
     if req.forget_epoch is not None:
         # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
         # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
@@ -4126,6 +4153,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             )
         except MaintenanceModeError:
             raise
+        except idempotency.IdempotencyStateError as exc:
+            # 墓碑文件整体读不出：辅助文件坏了不能挡住隐私清除，照常擦除。此时所有带键
+            # 写入读墓碑同样 fail closed（503），不会有旧请求借机写回；文件修好前也不记完成标记
+            logger.warning(f"[scoped_forget] {lanlan_name}: 墓碑文件不可读，跳过墓碑照常擦除: {exc}")
         except Exception as exc:
             logger.error(f"[scoped_forget] {lanlan_name}: 墓碑落盘失败: {exc}")
             raise HTTPException(
@@ -4140,10 +4171,12 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
     # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
     try:
-        await _cancel_staged_writes_for_subjects(
-            lanlan_name, forgotten_subject_keys,
-            request_subject_key=subject.key, forget_epoch=req.forget_epoch,
-        )
+        if default_scope:
+            # 带键写入只有默认 scope：清的是别的 scope 时与它们无关，不能按 kind:id 误取消
+            await _cancel_staged_writes_for_subjects(
+                lanlan_name, forgotten_subject_keys,
+                request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+            )
     except MaintenanceModeError:
         raise
     except Exception as exc:
@@ -4270,10 +4303,11 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     # 锁（擦除期间被本 handler 占着）。若在持有擦除事务时去等键级锁，两边
     # 就会互等；放到这里，本 handler 等键级锁时手上没有任何别的锁，不会成环。
     try:
-        await _cancel_staged_writes_for_subjects(
-            lanlan_name, forgotten_subject_keys,
-            request_subject_key=subject.key, forget_epoch=req.forget_epoch,
-        )
+        if default_scope:
+            await _cancel_staged_writes_for_subjects(
+                lanlan_name, forgotten_subject_keys,
+                request_subject_key=subject.key, forget_epoch=req.forget_epoch,
+            )
     except MaintenanceModeError:
         raise
     except Exception as exc:
@@ -4372,11 +4406,8 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     from memory.subject_archive import collect_subject_last_writes
 
     lanlan_name = validate_lanlan_name(lanlan_name)
-    if (
-        runtime.fact_store is None
-        or runtime.persona_manager is None
-        or runtime.reflection_engine is None
-    ):
+    if runtime._config_manager is None:
+        # 列表只直接读盘（facts / reflections / persona），只依赖配置管理器
         raise HTTPException(
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
