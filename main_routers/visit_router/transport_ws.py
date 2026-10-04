@@ -568,7 +568,9 @@ async def _handle_frame(
             await _call(session, "on_sdk_caps", _sdk_caps(msg))
         return
     if kind == "state":
-        await _call(session, "on_state", msg)
+        # runtime 没能处理这条上报（状态可能不一致）就不做重入，下一条 joined / connected 再试
+        if await _call(session, "on_state", msg) is _HOOK_FAILED:
+            return
         # 重入只认「本连接已拿到首发凭证、且仍是当前连接」之后的入房上报：
         # 否则会绕过预检提前恢复 outbox，或让已被顶掉的旧连接替新连接恢复
         if (
@@ -576,23 +578,21 @@ async def _handle_frame(
             and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
         ):
             now = session.now()
+            # 全部同步备好（快照先于 due()，失败时不白白消耗 outbox 的帧）再置 rejoined；
+            # 任何一步失败都不置位，下一条 joined / connected 整套重做（hello 去重、resume 幂等）
             try:
                 session.on_page_rejoined(now)
+                snapshot = session.media_snapshot()
+                if not isinstance(snapshot, Mapping):
+                    raise TypeError("media_snapshot must return a mapping")
                 frames = list(session.outbox.due(now))
-            except Exception as exc:  # noqa: BLE001 - 不置 rejoined：下一条 joined / connected 再试
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
                 return
             conn.rejoined = True
             for frame in frames:
                 await _send_on(conn, frame.to_ws())
-            if not _is_current(link, conn):
-                return
-            snapshot = None
-            try:
-                snapshot = session.media_snapshot()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
-            if isinstance(snapshot, Mapping):
+            if _is_current(link, conn):
                 await _send_on(conn, {**snapshot, "type": "media"})
         return
     if kind == "recv":

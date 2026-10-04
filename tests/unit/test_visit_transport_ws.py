@@ -923,6 +923,49 @@ def test_unregistered_session_never_delivers_late_credentials():
     assert ws.sent == []
 
 
+@pytest.mark.parametrize("broken", ["on_state", "media_snapshot"])
+def test_failed_state_hook_or_snapshot_retries_the_whole_rejoin(app, broken):
+    class _Flaky(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        async def on_state(self, msg):
+            if broken == "on_state" and self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("transient")
+            await super().on_state(msg)
+
+        def media_snapshot(self):
+            if broken == "media_snapshot" and self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("transient")
+            return super().media_snapshot()
+
+    s = _Flaky()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN)["visit_id"] = VISIT_ID
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(s, 1)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _sync(ws)
+        if broken == "on_state":
+            # runtime 没处理好这条上报：这一拍不能开始重入
+            assert not any(e[0] == "resend_hello" for e in s.log)
+        ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
+                                 "remote_video": False}))
+        hello = json.loads(ws.receive_text())
+        media = json.loads(ws.receive_text())
+    assert hello["type"] == "send" and media == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 

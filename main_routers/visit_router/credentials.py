@@ -631,7 +631,8 @@ def _parse_trtc(raw: Any, *, vid: str, visit_id: str) -> dict[str, Any]:
 def _parse_livekit(raw: Any) -> dict[str, Any]:
     _need(isinstance(raw, Mapping), "vendor.livekit")
     url = raw.get("url")
-    _need(_short_str(url, 512), "vendor.livekit.url")
+    # URL 只收 ASCII（国际化域名应是 punycode）：含孤立代理字符等的串下发时编码会抛错
+    _need(_short_str(url, 512) and url.isascii(), "vendor.livekit.url")
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()

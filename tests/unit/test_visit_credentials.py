@@ -179,7 +179,9 @@ class FakeServers:
         else:
             out["invite_code"] = INVITE
             out["invite_expires_at"] = iat + 600
-        return httpx.Response(200, json=out)
+        # 自己序列化（ensure_ascii）：httpx 的 json= 按 UTF-8 直写，带孤立代理字符的畸形值会编不出来
+        return httpx.Response(200, content=json.dumps(out).encode("ascii"),
+                              headers={"content-type": "application/json"})
 
     def bodies(self, path: str) -> list[dict]:
         return [json.loads(r.content) for r in self.requests if r.url.path == path and r.content]
@@ -606,6 +608,10 @@ async def test_livekit_url_host_must_be_allowlisted(servers, monkeypatch):
     creds = await _host()
     assert creds.vendor == {"livekit": {"url": servers.livekit_url, "token": LIVEKIT_TOKEN, "ttl_s": 600}}
     servers.livekit_url = f"wss://{LIVEKIT_HOST}:bad/rtc"
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+    # 含孤立代理字符：下发 credentials 时编码会抛错，领取时就当坏响应
+    servers.livekit_url = f"wss://{LIVEKIT_HOST}/rtc" + chr(0xD800)
     with pytest.raises(cr.VisitServersUnreachable):
         await _host()
     for url in ("wss://evil.test/rtc", f"ws://{LIVEKIT_HOST}/rtc", f"wss://{LIVEKIT_HOST}.evil.test/",
