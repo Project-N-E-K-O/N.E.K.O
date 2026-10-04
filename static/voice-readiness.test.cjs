@@ -116,7 +116,8 @@ test('a cancelled browser stop acknowledgement releases its own late token', asy
 
 for (const rejected of [true, false]) {
     for (const activeProducer of [true, false]) {
-        test(`desktop preparation fallback is server-checked (rejected=${rejected}, active=${activeProducer})`, async () => {
+      for (const releaseRejected of [true, false]) {
+        test(`desktop preparation fallback is server-checked (rejected=${rejected}, active=${activeProducer}, releaseRejected=${releaseRejected})`, async () => {
             const h = harness({ requestRouter: async url => {
                 if (url === '/resources') return { can_enroll: true, resources: {} };
                 if (url === '/audio/check/isolation') {
@@ -133,7 +134,7 @@ for (const rejected of [true, false]) {
                     if (rejected) throw new Error('voice_capture_stop_failed');
                     return { operationId, stopped: false, physicalStopped: true };
                 },
-                async release() { releases++; }
+                async release() { releases++; if (releaseRejected) throw new Error('ipc_disconnected'); }
             };
             await h.controller.refreshResources();
             await h.elements.get('voice-identity-test').emit('click');
@@ -141,6 +142,7 @@ for (const rejected of [true, false]) {
             assert.equal(h.calls.some(call => call.url === '/audio/check'), !activeProducer);
             assert.equal(h.calls.some(call => call.url === '/audio/check/isolation/release'), !activeProducer);
         });
+      }
     }
 }
 

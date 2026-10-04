@@ -159,7 +159,7 @@
                     isolationToken = ack.token;
                     isolationServerOwned = false;
                 } catch (error) {
-                    await root.nekoVoiceEnrollment.release({ operationId: id });
+                    try { await root.nekoVoiceEnrollment.release({ operationId: id }); } catch (_) {}
                     if (at !== epoch) throw error;
                     // IPC failure is not proof of inactivity: the server must
                     // check every producer before granting this fallback.
