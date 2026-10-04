@@ -685,3 +685,21 @@ async def test_resumed_run_detects_shifted_batch_boundaries(tmp_path, monkeypatc
     # 批数没变也要认出成员变了：不拿别的句子用旧键重发，已确认的批次也不会漏掉挪进来的句子
     assert again.ok is False and again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
+
+
+async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
+    lines = [ln(i, f"对端第{i}句", "peer_human") for i in range(6)]
+    spool = await make_visit(tmp_path, vid(84), lines, finalized="wrap_up")
+    monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 2)
+    server = FakeMemoryServer()
+    server.fail_always.add(memory_commit.digest_key(vid(84), 0, "group", 1))
+    assert (await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())).ok is False
+    data = spool.jsonl_path.read_bytes()
+    assert "对端第3句".encode() in data
+    spool.jsonl_path.write_bytes(data.replace("对端第3句".encode(), "改过的话".encode()))   # 行还合法，正文变了
+    server.fail_always.clear()
+    sent = len(server.requests)
+    again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    # 待发批次的内容变了：不能拿旧键发出不同的内容
+    assert again.ok is False and again.skipped == "batches_mismatch"
+    assert len(server.requests) == sent

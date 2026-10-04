@@ -95,16 +95,18 @@ RenderChips = Callable[..., Awaitable[bool]]
 return value is only whether it reached a connected display; the pending
 flag in ``state.json`` stays until the user decides either way."""
 
-UploadTranscript = Callable[[str, dict], Awaitable[bool]]
-"""``upload_transcript(visit_id, upload_doc) -> bool``: upload one pending transcript.
+UploadTranscript = Callable[[str, dict], Awaitable["bool | str"]]
+"""``upload_transcript(visit_id, upload_doc) -> bool | str``: upload one pending transcript.
 
 ``upload_doc`` is the ``.upload.json`` document (``{v, own_visit_uid,
 own_char_uid, transport, request}``; ``request`` is the Servers wire body).
-Returns True when the local file may go (accepted, duplicate or a terminal
-rejection); False keeps it for a later retry (network error, 429, account
-mismatch: uploads happen only while the signed-in account is
-``own_visit_uid``). The callback may rewrite the file with its chunk
-progress."""
+Returns True when the local file may go because Servers has the transcript
+(accepted, duplicate); a non-empty reason string (e.g. the Servers error
+code) when it may go after a terminal rejection, so the queued report
+records ``transcript_unavailable`` with that reason; False keeps it for a
+later retry (network error, 429, account mismatch: uploads happen only
+while the signed-in account is ``own_visit_uid``). The callback may
+rewrite the file with its chunk progress."""
 
 SubmitReport = Callable[[str, dict], Awaitable[bool]]
 """``submit_report(visit_id, report_doc) -> bool``: True once Servers accepted the queued report."""
@@ -726,8 +728,13 @@ async def _upload_pending(
         if upload_transcript is None:
             pending.add(visit_id)
             continue
+        terminal_reason = None
         try:
-            ok = bool(await upload_transcript(visit_id, doc))
+            outcome = await upload_transcript(visit_id, doc)
+            ok = bool(outcome)
+            if isinstance(outcome, str) and outcome:
+                # 终态拒收：本地文件照样可以删，但这场的转录再也到不了 Servers
+                terminal_reason = outcome
         except Exception as exc:  # noqa: BLE001 - 任何失败都留文件下次再试
             logger.warning("visit recovery: upload of %s failed: %r", visit_id, exc)
             ok = False
@@ -741,6 +748,9 @@ async def _upload_pending(
             # 已传上去但本地删不掉：不挡其余场次，也不算「转录未上传」——Servers 已受理，
             # 排队的举报照常提交；文件留到下次（届时 duplicate 后再删）
             logger.warning("visit recovery: uploaded %s but cannot delete it: %s", path.name, exc)
+        if terminal_reason is not None:
+            # 先在排队的举报里记下转录为何不可用，再放它提交（设计 §4.7）
+            await _mark_report_transcript_unavailable(config_dir, visit_id, terminal_reason)
         # 该场转录上传成功后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
@@ -783,6 +793,11 @@ async def _submit_report(
         logger.warning("visit recovery: queued report %s unreadable: %s", path.name, exc)
         return
     if doc is None:
+        return
+    if not isinstance(doc, dict) or doc.get("visit_id") != visit_id:
+        # 内容与文件名不是同一场（被复制 / 改过）：交上去会举报错的场次，受理后还会删掉这份
+        # 原本要交的举报。不交也不删
+        logger.warning("visit recovery: queued report %s does not belong to its visit, left alone", path.name)
         return
     if transcript_gated and not (isinstance(doc, dict) and doc.get("include_transcript") is False):
         # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸

@@ -172,8 +172,9 @@ def plan_digest_batches(
 
 
 def _batch_fingerprint(batch: Sequence[Mapping[str, Any]]) -> str:
-    """Short digest of which lines (``lp``, ``side``, speaker) a batch holds."""
-    identity = [[line["lp"], line["side"], line["from"]] for line in batch]
+    """Short digest of which lines a batch holds and what they say (``lp``, ``side``, speaker, text)."""
+    # 正文也算进去：开轮后某行被改了内容，续跑就不能沿用旧计划、拿旧键发出不同的内容
+    identity = [[line["lp"], line["side"], line["from"], line.get("text")] for line in batch]
     return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
 

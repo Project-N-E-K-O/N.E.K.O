@@ -2098,3 +2098,34 @@ async def test_corrupt_upload_marks_its_queued_report_transcript_unavailable(tmp
     # 转录损坏、再也传不上去：举报照常提交，并记下转录不可用的原因
     (visit_id, doc), = reports.calls
     assert doc["transcript_unavailable"] == "corrupt" and not list(d.glob(f"{v}.upload*"))
+
+
+async def test_queued_report_of_another_visit_is_neither_submitted_nor_deleted(tmp_path):
+    v, other = vid(101), vid(102)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    path = reports_dir / f"{v}.json"
+    path.write_text(json.dumps({"visit_id": other, "include_transcript": False}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, submit_report=reports)
+    # 内容是别的场次：交上去会举报错的人，受理后还会删掉原本要交的这份
+    assert reports.calls == [] and path.exists()
+
+
+async def test_terminal_upload_rejection_marks_the_queued_report(tmp_path):
+    v = vid(103)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"                              # 终态拒收：文件可以删，但转录到不了 Servers
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    (visit_id, doc), = reports.calls
+    assert not sealed.exists() and doc["transcript_unavailable"] == "parts_out_of_range"
