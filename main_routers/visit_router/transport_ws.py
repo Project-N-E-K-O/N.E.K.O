@@ -43,7 +43,9 @@ deadline of design §4.8); only once its iframe is back in the vendor room
 credentials, before the deadline) does the session resend ``hello``, resume
 the outbox and clear the deadline (``liveness.on_page_back``), then exactly
 one full ``media`` snapshot from
-``session.media_snapshot()`` follows. Downlink goes only through
+``session.media_snapshot()`` follows. A re-entry whose preparation failed is
+retried on the next ``joined`` / ``connected`` report or 5 s ``stats`` frame
+of that connection while it is in the room. Downlink goes only through
 :meth:`VisitTransportSession.send` (bound to the registered session).
 """
 
@@ -262,7 +264,7 @@ class VisitTransportSession(ABC):
         ``VISIT_CAPS_SDK_TIMEOUT_S`` (``min(20 s, absolute remaining)``) is
         the runtime's timer.
         A socket that replaced a live one starts the reload now. The outbox
-        stays paused; only :meth:`on_page_rejoined` clears the deadline, so a
+        stays paused; only :meth:`on_page_rejoin_committed` clears the deadline, so a
         page that never re-enters (failed preflight, no credentials, SDK never
         joins) or keeps reconnecting still ends in ``local_page_lost``.
         """
@@ -328,22 +330,18 @@ class _Connection:
     preflight_seen: bool = False
     preflight_ok: bool = False
     sdk_seen: bool = False
+    in_room: bool = False
     rejoined: bool = False
 
-    async def send_json(self, msg: Mapping[str, Any]) -> bool:
-        try:
-            # allow_nan=False：NaN / Infinity 不是合法 JSON；序列化不了的值（set / bytes / 孤立代理字符…）
-            # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
-            text = json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-            size = len(text.encode("utf-8"))
-        except (TypeError, ValueError) as exc:
-            logger.warning("visit transport: dropping unserializable %s downlink: %s",
-                           msg.get("type"), type(exc).__name__)
-            return False
-        limit = CREDENTIALS_MAX_BYTES if msg.get("type") == "credentials" else FRAME_MAX_BYTES
-        if size > limit:
-            logger.warning("visit transport: dropping oversize %s downlink (%d B)", msg.get("type"), size)
-            return False
+    async def send_json(self, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
+        """Send one downlink; ``text`` is ``_encode_downlink(msg)`` when the caller already has it."""
+        if text is None:
+            try:
+                text = _encode_downlink(msg)
+            except _DownlinkRejected as exc:
+                # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
+                logger.warning("visit transport: dropping %s downlink: %s", msg.get("type"), exc)
+                return False
         async with self.send_lock:
             # 排队等锁期间可能已被顶掉或关闭：拿到锁后两样都要复查
             if self.closed or self.retired:
@@ -432,7 +430,7 @@ def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
     task.add_done_callback(_close_tasks.discard)
 
 
-async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
+async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[str] = None) -> bool:
     """Send on one specific connection, enforcing the per-connection downlink rules.
 
     A first-issue ``credentials`` (no ``refresh``) needs a passed preflight on
@@ -461,7 +459,7 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any]) -> bool:
             return False
         conn.stop_reserved = True
     try:
-        ok = await conn.send_json(msg)
+        ok = await conn.send_json(msg, text=text)
     finally:
         if first_credentials:
             conn.credentials_reserved = False
@@ -520,15 +518,37 @@ def _sdk_caps(msg: dict[str, Any]) -> dict[str, Any]:
 _HOOK_FAILED = object()
 
 
-def _serializable_mapping(value: Any) -> bool:
-    """A mapping that ``send_json`` can encode (same ``json.dumps`` options)."""
-    if not isinstance(value, Mapping):
-        return False
+class _DownlinkRejected(ValueError):
+    """A downlink that cannot go out: unserializable or over its size limit."""
+
+
+def _encode_downlink(msg: Mapping[str, Any]) -> str:
+    """The exact text a downlink goes out as; raises ``_DownlinkRejected``.
+
+    The only place that decides what can be sent: ``send_json`` and the
+    re-entry snapshot check both use it, so they never disagree.
+    """
     try:
-        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError):
-        return False
-    return True
+        # allow_nan=False：NaN / Infinity 不是合法 JSON；set / bytes / 孤立代理字符等同样发不出去
+        text = json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        size = len(text.encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise _DownlinkRejected(f"unserializable ({type(exc).__name__})") from None
+    limit = CREDENTIALS_MAX_BYTES if msg.get("type") == "credentials" else FRAME_MAX_BYTES
+    if size > limit:
+        raise _DownlinkRejected(f"oversize ({size} B)")
+    return text
+
+
+def _media_frame(snapshot: Any) -> tuple[dict[str, Any], str]:
+    """The ``media`` downlink built from a ``media_snapshot()`` result, and its encoded text.
+
+    Raises ``TypeError`` / ``_DownlinkRejected`` when it could not go out.
+    """
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("media_snapshot must return a mapping")
+    msg = {**snapshot, "type": "media"}
+    return msg, _encode_downlink(msg)
 
 
 async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs: Any) -> Any:
@@ -609,56 +629,13 @@ async def _handle_frame(
             await _call(session, "on_sdk_caps", _sdk_caps(msg))
         return
     if kind == "state":
-        # runtime 没能处理这条上报（状态可能不一致）就不做重入，下一条 joined / connected 再试
+        # runtime 没能处理这条上报（状态可能不一致）就不做重入，也不记入房：runtime 都没认这次入房，
+        # 不能替它恢复 outbox；iframe 之后不会再报，这场按 fail-safe 到页面期限判 local_page_lost
         if await _call(session, "on_state", msg) is _HOOK_FAILED:
             return
-        # 重入只认「本连接已拿到首发凭证、且仍是当前连接」之后的入房上报：
-        # 否则会绕过预检提前恢复 outbox，或让已被顶掉的旧连接替新连接恢复
-        if (
-            conn.reattach and not conn.rejoined and conn.credentials_sent
-            and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
-        ):
-            now = session.now()
-            # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost
-            if session.page_reload_expired(now):
-                logger.warning("visit transport: page reload deadline passed, not re-entering")
-                return
-            # 全部同步备好（快照先于恢复与 due()，失败时不恢复、也不白白消耗 outbox 的帧）再置 rejoined；
-            # 任何一步失败都不置位，下一条 joined / connected 整套重做（hello 去重、resume 幂等）
-            try:
-                # 快照最先、且要能序列化：它失败时 outbox 仍保持 page_reload 暂停，
-                # 不会出现「已恢复、重入却没完成」，也不会置位后才发现快照发不出去
-                snapshot = session.media_snapshot()
-                if not _serializable_mapping(snapshot):
-                    raise TypeError("media_snapshot must return a JSON-serializable mapping")
-                session.on_page_rejoined(now)
-                frames = list(session.outbox.due(now))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
-                # 回滚：恢复了的 outbox 重新暂停（宽限从没清过），下一条 joined / connected 整套重做
-                try:
-                    session.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
-                except Exception as pause_exc:  # noqa: BLE001
-                    logger.warning("visit transport: rejoin rollback failed: %s", type(pause_exc).__name__)
-                return
-            conn.rejoined = True
-            try:
-                session.on_page_rejoin_committed(now)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit transport: rejoin commit failed: %s", type(exc).__name__)
-            for frame in frames:
-                await _send_on(conn, frame.to_ws())
-            if _is_current(link, conn):
-                # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
-                # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
-                # 取到即同步入发送锁队列，不会再被更早的状态盖掉
-                try:
-                    latest = session.media_snapshot()
-                    if _serializable_mapping(latest):
-                        snapshot = latest
-                except Exception as exc:  # noqa: BLE001 - 取不到就用前面那份
-                    logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
-                await _send_on(conn, {**snapshot, "type": "media"})
+        # 入房只认「本连接已拿到首发凭证」之后的上报：否则会绕过预检提前恢复 outbox
+        conn.in_room = conn.credentials_sent and msg.get("state") in REJOINED_STATES
+        await _try_rejoin(link, conn, session)
         return
     if kind == "recv":
         from_vid = msg.get("from_vid")
@@ -675,6 +652,9 @@ async def _handle_frame(
         return
     if kind == "stats":
         await _call(session, "on_stats", msg)
+        # 已在房内、重入却没做成（准备失败回滚了）：iframe 一次入房只报一次 joined，
+        # 靠 5 s 一次的 stats 再试，不然只能等到页面期限
+        await _try_rejoin(link, conn, session)
         return
     if kind == "tx_backpressure":
         await _call(session, "on_backpressure", msg)
@@ -682,6 +662,54 @@ async def _handle_frame(
     if kind == "auth":
         return
     logger.debug("visit transport: unknown upstream type ignored")
+
+
+async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSession) -> None:
+    """Re-enter after a page reload once the new iframe is in the vendor room; all or nothing.
+
+    Runs only for a replacement connection that is still current, got its
+    first credentials and reported ``joined`` / ``connected``. Everything is
+    prepared synchronously (snapshot that can actually be sent, ``hello`` +
+    resume, the frames the outbox releases, the deadline cleared) before
+    ``rejoined`` is set; any failure pauses the outbox again and leaves the
+    deadline running, and the next trigger redoes the whole thing.
+    """
+    # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
+    if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
+        return
+    now = session.now()
+    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost
+    if session.page_reload_expired(now):
+        logger.warning("visit transport: page reload deadline passed, not re-entering")
+        return
+    try:
+        # 快照最先，且按实际下发的那条（含 type、大小上限）检查：它失败时 outbox 仍保持
+        # page_reload 暂停，不会出现「已恢复、重入却没完成」，也不会置位后才发现发不出去
+        media, media_text = _media_frame(session.media_snapshot())
+        session.on_page_rejoined(now)
+        frames = list(session.outbox.due(now))
+        # 清期限也在置位之前：它失败时整套回滚，不会留下「已重入、期限却永远不清」
+        session.on_page_rejoin_committed(now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
+        # 回滚：恢复了的 outbox 重新暂停（期限仍在跑），下一次触发整套重做（hello 去重、resume 幂等）
+        try:
+            session.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
+        except Exception as pause_exc:  # noqa: BLE001
+            logger.warning("visit transport: rejoin rollback failed: %s", type(pause_exc).__name__)
+        return
+    conn.rejoined = True
+    for frame in frames:
+        await _send_on(conn, frame.to_ws())
+    if _is_current(link, conn):
+        # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
+        # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
+        # 取到即同步入发送锁队列，不会再被更早的状态盖掉
+        try:
+            media, media_text = _media_frame(session.media_snapshot())
+        except Exception as exc:  # noqa: BLE001 - 取不到 / 发不出就用前面那份
+            logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
+        await _send_on(conn, media, text=media_text)
 
 
 async def _receive_text(websocket: WebSocket) -> Optional[str]:

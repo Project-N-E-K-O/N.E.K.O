@@ -821,7 +821,8 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
         _preflight(ws)
         ws.receive_text()
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
-        _sync(ws)
+        _barrier(ws, s)  # 不用 _sync：stats 本身也会触发重试，这里要验的是下一条 connected
+        assert not s.fail_once and ("resend_hello",) not in s.log
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
                                  "remote_video": False}))
         hello = json.loads(ws.receive_text())
@@ -1465,3 +1466,148 @@ def test_failed_preflight_hook_does_not_open_the_credentials_gate(app):
         _barrier(ws, s)
         msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
         assert not _run(ws, s.send, msg)
+
+
+# ── 重入：快照按实际下发检查、提交失败回滚、stats 触发重试（wehos 第四轮） ──
+
+
+def _reload_and_join(client, s, ws_fn):
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(s, 1)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()  # credentials
+        return ws_fn(ws)
+
+
+def _joined(ws, state: str = "joined") -> None:
+    ws.send_text(json.dumps({"type": "state", "state": state, "peer_present": True, "remote_video": False}))
+
+
+def test_rejoin_accepts_a_read_only_mapping_snapshot(app):
+    import types
+
+    class _Proxy(FakeSession):
+        def media_snapshot(self):
+            # json.dumps(MappingProxyType) 会抛 TypeError，但 {**proxy, "type": "media"} 能正常下发
+            return types.MappingProxyType(dict(self.snapshot))
+
+    s = _Proxy()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+
+    def scenario(ws):
+        _joined(ws)
+        hello, media = json.loads(ws.receive_text()), json.loads(ws.receive_text())
+        _barrier(ws, s)
+        assert s.liveness.events[-1] == "page_back"
+        return hello, media
+
+    hello, media = _reload_and_join(_client(app), s, scenario)
+    assert hello["type"] == "send"
+    assert media == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
+
+
+def test_oversize_snapshot_does_not_commit_the_rejoin(app, session):
+    # 编码后超过 16 KB 的快照发不出去：不能先置 rejoined、清期限，再被 send_json 丢掉
+    session.snapshot = {"publish": True, "crop": "upper", "ladder": 0, "pad": "x" * tw.FRAME_MAX_BYTES}
+
+    def scenario(ws):
+        _joined(ws)
+        _barrier(ws, session)
+        assert ("resend_hello",) not in session.log
+        assert PAUSE_PAGE_RELOAD in session.outbox.paused
+        assert "page_back" not in session.liveness.events
+        assert not tw._links[(VISIT_ID, "guest")].conn.rejoined
+
+    _reload_and_join(_client(app), session, scenario)
+
+
+def test_failed_commit_rolls_the_rejoin_back_and_is_retried(app):
+    class _FlakyCommit(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def on_page_rejoin_committed(self, now):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("commit failed")
+            super().on_page_rejoin_committed(now)
+
+    s = _FlakyCommit()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+
+    def scenario(ws):
+        _joined(ws)
+        _barrier(ws, s)
+        # 清期限失败：不置 rejoined、outbox 重新暂停，否则之后的上报全被 rejoined 拦住、期限永远不清
+        assert not s.fail_once
+        assert not tw._links[(VISIT_ID, "guest")].conn.rejoined
+        assert PAUSE_PAGE_RELOAD in s.outbox.paused
+        _sync(ws)  # 下一条 stats 整套重做
+        _barrier(ws, s)  # 先断言再收：回归时直接失败，不挂在 receive_text 上
+        assert ("resend_hello",) in s.log
+        hello, media = json.loads(ws.receive_text()), json.loads(ws.receive_text())
+        _barrier(ws, s)
+        assert s.liveness.events[-1] == "page_back"
+        return hello, media
+
+    hello, media = _reload_and_join(_client(app), s, scenario)
+    assert hello["type"] == "send" and media["type"] == "media"
+
+
+def test_stats_retries_a_rolled_back_rejoin_while_in_the_room(app, session):
+    # iframe 一次入房只报一次 joined：准备失败回滚后，靠下一条 5 s stats 再试
+    session.snapshot = {"publish": True, "bad": {1}}
+
+    def scenario(ws):
+        _joined(ws)
+        _barrier(ws, session)
+        assert ("resend_hello",) not in session.log
+        session.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
+        _sync(ws)
+        _barrier(ws, session)  # 先断言再收：回归时直接失败，不挂在 receive_text 上
+        assert ("resend_hello",) in session.log
+        return json.loads(ws.receive_text()), json.loads(ws.receive_text())
+
+    hello, media = _reload_and_join(_client(app), session, scenario)
+    assert hello["type"] == "send"
+    assert media == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
+
+
+def test_stats_does_not_rejoin_a_connection_that_is_not_in_the_room(app, session):
+    def scenario(ws):
+        # 还没报过入房：stats 不触发重入
+        _sync(ws)
+        _barrier(ws, session)
+        assert ("resend_hello",) not in session.log
+        # 入房但准备失败，随后 SDK 又掉线（reconnecting）：不在房内就不靠 stats 重试
+        session.snapshot = {"publish": True, "bad": {1}}
+        _joined(ws)
+        _joined(ws, "reconnecting")
+        session.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
+        _sync(ws)
+        _barrier(ws, session)
+        assert ("resend_hello",) not in session.log
+        assert PAUSE_PAGE_RELOAD in session.outbox.paused
+        # 重新入房的上报照常完成重入
+        _joined(ws, "connected")
+        return json.loads(ws.receive_text()), json.loads(ws.receive_text())
+
+    hello, media = _reload_and_join(_client(app), session, scenario)
+    assert hello["type"] == "send" and media["type"] == "media"
+
+
+def test_send_json_and_the_snapshot_check_share_one_encoder():
+    big = {"type": "media", "pad": "x" * tw.FRAME_MAX_BYTES}
+    with pytest.raises(tw._DownlinkRejected):
+        tw._encode_downlink(big)
+    with pytest.raises(tw._DownlinkRejected):
+        tw._media_frame({"pad": "x" * tw.FRAME_MAX_BYTES})
+    msg, text = tw._media_frame({"publish": False})
+    assert msg == {"publish": False, "type": "media"} and json.loads(text) == msg

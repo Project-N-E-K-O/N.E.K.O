@@ -337,11 +337,12 @@ def banned_recently(account: str) -> bool:
 
 def _reset_for_tests() -> None:
     """Clear module caches (unit tests only)."""
-    global _banned_until, _pubkeys_fetched, _pubkeys_failed_at, _pubkeys_inflight
+    global _banned_until, _pubkeys_fetched, _pubkeys_failed_at, _pubkeys_inflight, _pubkeys_requested_by
     _banned_until = {}
     _pubkeys_fetched = None
     _pubkeys_failed_at = None
     _pubkeys_inflight = None
+    _pubkeys_requested_by = None
 
 
 def _body_json(resp: httpx.Response) -> Any:
@@ -846,8 +847,9 @@ async def fetch_visit_credentials(
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
         raise VisitServersUnreachable("invalid_response") from None
     # 签发之后再刷新公钥与吊销名单（后台、不等）：签名钥匙轮换时，先拉公钥再签发
-    # 可能拿到旧的钥匙表、却收到新 kid 签的票，旧表还会被当成新鲜缓存 24 h
-    _kick_pubkeys_refresh()
+    # 可能拿到旧的钥匙表、却收到新 kid 签的票，旧表还会被当成新鲜缓存 24 h；
+    # 签发前就已发出的那次刷新同理不算数，要排在它后面再拉一次
+    _kick_pubkeys_refresh(after_now=True)
     return creds
 
 
@@ -935,7 +937,8 @@ class VisitGrant:
             display_name=self._display_name,
             invite_code=self._invite_code,
         )
-        if (fresh.vid, fresh.visit_uid, fresh.transport, fresh.tier) != (cur.vid, cur.visit_uid, cur.transport, cur.tier):
+        # tier 取自请求参数（续期传的就是 cur.tier），回复里没有可比的字段，不在这里比
+        if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):
             logger.warning("visit servers credentials: renewal changed the room binding")
             raise VisitServersUnreachable("renewal_mismatch")
         self._current = cur.with_renewed_vendor(fresh)
@@ -1028,6 +1031,8 @@ async def cancel_visit_room(
 _pubkeys_fetched: FetchedPubkeys | None = None
 _pubkeys_failed_at: float | None = None
 _pubkeys_inflight: asyncio.Task | None = None
+# 已经把 GET 发出去的那个刷新任务；_pubkeys_inflight 不是它时，在飞的刷新还没发请求
+_pubkeys_requested_by: asyncio.Task | None = None
 
 
 def _pubkeys_cache_valid(now: float) -> bool:
@@ -1038,8 +1043,9 @@ def _pubkeys_cache_valid(now: float) -> bool:
 
 
 async def _refresh_pubkeys() -> None:
-    global _pubkeys_fetched, _pubkeys_failed_at
+    global _pubkeys_fetched, _pubkeys_failed_at, _pubkeys_requested_by
     base = social_base_url().strip().rstrip("/")
+    _pubkeys_requested_by = asyncio.current_task()
     try:
         resp = await _send("GET", f"{base}/api/visit/pubkeys", op="pubkeys", timeout=_PUBKEYS_TIMEOUT_S)
     except VisitServersUnreachable:
@@ -1067,18 +1073,31 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
         logger.warning("visit servers pubkeys: background refresh failed: %s", type(exc).__name__)
 
 
-def _kick_pubkeys_refresh() -> asyncio.Task:
+async def _refresh_pubkeys_after(previous: asyncio.Task) -> None:
+    # 前一次的结果（含失败）由它自己的回调记日志，这里只等它结束
+    await asyncio.wait([previous])
+    await _refresh_pubkeys()
+
+
+def _kick_pubkeys_refresh(*, after_now: bool = False) -> asyncio.Task:
     """Start a pubkey refresh in the background (or join the one in flight) without awaiting it.
 
     The task is kept in ``_pubkeys_inflight`` (so it is not garbage-collected
     and concurrent callers share it); its failure is logged, never raised.
+    ``after_now``: the joined refresh must send its request after this call
+    -- one already sent may return a key table older than a ticket just
+    issued, so a fresh one is queued behind it instead.
     """
     global _pubkeys_inflight
     task = _pubkeys_inflight
     if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
         task = asyncio.ensure_future(_refresh_pubkeys())
-        task.add_done_callback(_log_refresh_failure)
-        _pubkeys_inflight = task
+    elif after_now and _pubkeys_requested_by is task:
+        task = asyncio.ensure_future(_refresh_pubkeys_after(task))
+    else:
+        return task
+    task.add_done_callback(_log_refresh_failure)
+    _pubkeys_inflight = task
     return task
 
 
@@ -1086,7 +1105,8 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     """Return the verification keys: built-in table + last fetch + dev key, minus ``revoked``.
 
     ``GET /api/visit/pubkeys`` is cached ``min(ttl_s, VISIT_PUBKEYS_CACHE_S)``;
-    ``force_refresh`` (every credentials fetch) refetches regardless. When
+    ``force_refresh`` refetches regardless (a credentials fetch kicks its own
+    background refresh after the issue). When
     the cache expired and the refresh fails the result is ``stale`` (the
     keys stay filled but ``identity.verify_identity_ticket`` fails closed: an
     unknown revocation list means no kid is trusted, built-in ones included).

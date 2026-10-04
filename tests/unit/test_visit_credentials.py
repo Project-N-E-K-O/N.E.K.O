@@ -1379,7 +1379,7 @@ async def test_pubkeys_refresh_starts_after_the_credentials_issue(servers, monke
     # 先签发、后拉公钥：钥匙轮换时不会拿到比票更旧的钥匙表
     assert servers.count("/pubkeys") == 0
     gate.set()
-    await task
+    assert (await task).vid == HOST_VID
     await cr._pubkeys_inflight
     assert servers.count("/pubkeys") == 1
 
@@ -1398,5 +1398,45 @@ async def test_grant_renews_with_the_tier_it_was_issued_for(servers):
     grant = cr.VisitGrant(first, invite_code=INVITE)
     renewed = await grant.renew()
     assert servers.bodies("/api/visit/credentials")[-1]["tier"] == first.tier == renewed.tier
+    # tier 参数已删除（续期只用签发时的 tier）：传了就是调用方写错
+    removed = {"tier": "hd1200"}
     with pytest.raises(TypeError):
-        cr.VisitGrant(first, tier="hd1200")
+        cr.VisitGrant(first, **removed)
+
+
+@pytest.mark.asyncio
+async def test_refresh_sent_before_the_issue_is_followed_by_a_fresh_one(servers, monkeypatch):
+    import asyncio
+
+    gate = asyncio.Event()
+    sent = asyncio.Event()
+    original = servers.handler
+    calls = 0
+
+    async def _handler(request):
+        nonlocal calls
+        if request.url.path == "/api/visit/pubkeys":
+            calls += 1
+            if calls == 1:
+                sent.set()
+                await gate.wait()  # 签发之前就已发出、还没回来的那次刷新
+        return original(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
+    early = cr._kick_pubkeys_refresh()
+    await sent.wait()
+    await _host()
+    # 不能只加入那次旧刷新：它可能带回比刚签的票更旧的钥匙表
+    assert cr._pubkeys_inflight is not early
+    gate.set()
+    await cr._pubkeys_inflight
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_not_yet_sent_is_joined_after_the_issue(servers):
+    queued = cr._kick_pubkeys_refresh()  # 还没开始跑：请求一定在此之后才发出
+    assert cr._kick_pubkeys_refresh(after_now=True) is queued
+    await queued
+    assert servers.count("/pubkeys") == 1
