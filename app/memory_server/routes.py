@@ -3093,21 +3093,32 @@ def _keyed_staging_items_valid(
     # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
     manifest = staging.get("manifest")
     if not (
-        isinstance(manifest, dict) and set(manifest) == {"facts", "effects"}
-        and all(isinstance(manifest[name], int) and not isinstance(manifest[name], bool) for name in manifest)
+        isinstance(manifest, dict) and set(manifest) == {"facts", "effects", "language"}
+        and all(
+            isinstance(manifest[name], int) and not isinstance(manifest[name], bool)
+            for name in ("facts", "effects")
+        )
         and manifest["facts"] == sum(1 for item in items if item.get("kind") == _KEYED_ITEM_FACTS)
         and manifest["effects"] == ordinal
+        and (manifest["language"] is None or is_supported_language_code(manifest["language"]))
     ):
         # 事实项或效果数与生成时不符：某个事实项整条丢了，按剩下的收尾会永久漏掉它
         return False
-    expected_locale = 1 if is_supported_language_code(language) else 0
-    if structural_only:
-        expected_locale = None
+    # 语言项按清单里定下的语言核对（与重试请求无关，清除做局部改写前也能核）：每个没被清的段恰好
+    # 一项、语言一致；完整校验时清单语言还须等于这次请求的语言
+    staged_language = manifest["language"]
+    if not structural_only and staged_language != (language if is_supported_language_code(language) else None):
+        return False
+    if any(
+        item.get("kind") == _KEYED_ITEM_LOCALE and item.get("language") != staged_language for item in items
+    ):
+        return False
+    expected_locale = 1 if staged_language is not None else 0
     locale_per_segment = [0] * len(segments)
     for item in items:
         if item.get("kind") == _KEYED_ITEM_LOCALE:
             locale_per_segment[item["segment"]] += 1
-    if expected_locale is not None and any(
+    if any(
         count != expected_locale
         # 已被清除丢弃的段可以没有语言项（重试时不再给它预留，免得把被清 subject 写回语言存储）
         and not (count == 0 and isinstance(segments[index], dict)
@@ -3203,6 +3214,8 @@ async def _generate_keyed_facts(
     shape: str,
     contexts: list[dict],
     prompt_segments: list[dict] | None,
+    *,
+    skip: set[int] = frozenset(),
 ) -> tuple[list[list[dict]], list[int]]:
     """Run the extraction LLM once; return ``(facts per context, dropped per context)``.
 
@@ -3218,6 +3231,9 @@ async def _generate_keyed_facts(
         status_code=502,
         detail="scoped fact extraction failed; retry later",
     )
+    if len(skip) >= len(contexts):
+        # 全部段都被清除过：一个字都不送（调用方通常已在更早处按取消收尾）
+        return [[] for _ in contexts], [0] * len(contexts)
     if shape == "single":
         context = contexts[0]
         extracted = await fact_store._allm_extract_facts(
@@ -3239,14 +3255,16 @@ async def _generate_keyed_facts(
             raise failure
         return [list(extracted)], [0]
 
+    # 只送没被清除的段，结果按位置映射回原来的段号；被清的段产物为空
+    live = [index for index in range(len(contexts)) if index not in skip]
     extracted = await fact_store._allm_extract_facts_batch(
-        lanlan_name, prompt_segments,
+        lanlan_name, [prompt_segments[index] for index in live],
     )
     if extracted is None:
         raise failure
-    count = len(contexts)
+    count = len(live)
     per_segment: list[list[dict] | None] = [None] * count
-    dropped = [0] * count
+    dropped_live = [0] * count
     for item in extracted:
         index, facts, item_dropped, suspect = fact_store._parse_batch_segment_entry(
             item, count,
@@ -3256,12 +3274,17 @@ async def _generate_keyed_facts(
         if per_segment[index] is None:
             per_segment[index] = []
         per_segment[index].extend(facts)
-        dropped[index] += item_dropped
+        dropped_live[index] += item_dropped
     if not extracted:
         per_segment = [[] for _ in range(count)]
     if any(facts is None for facts in per_segment):
         raise failure
-    return [list(facts or []) for facts in per_segment], dropped
+    facts_all: list[list[dict]] = [[] for _ in contexts]
+    dropped = [0] * len(contexts)
+    for position, index in enumerate(live):
+        facts_all[index] = list(per_segment[position] or [])
+        dropped[index] = dropped_live[position]
+    return facts_all, dropped
 
 
 async def _reserve_keyed_locale_orders(
@@ -3350,8 +3373,17 @@ async def _build_keyed_staging(
 
     key = req.idempotency_key
     orders = await _reserve_keyed_locale_orders(lanlan_name, req.language, contexts, key)
+    # 之前某次尝试期间已被清除的段（记录里的 forgotten_keys）不再送去抽取：它们的产物注定丢弃，
+    # 再把被清参与者保留的原文发给抽取模型就是又一次外送
+    record = await idempotency.read_key(lanlan_name, key)
+    marked = record.get("forgotten_keys") if isinstance(record, dict) else None
+    forgotten = {k for k in marked if isinstance(k, str)} if isinstance(marked, list) else set()
+    skip = {
+        index for index, context in enumerate(contexts)
+        if {context["wire_subject"].key, context["subject"].key} & forgotten
+    }
     facts_per_context, dropped = await _generate_keyed_facts(
-        lanlan_name, shape, contexts, prompt_segments,
+        lanlan_name, shape, contexts, prompt_segments, skip=skip,
     )
     segments = []
     items: list[dict] = []
@@ -3421,6 +3453,7 @@ async def _build_keyed_staging(
         "manifest": {
             "facts": sum(1 for item in items if item["kind"] == _KEYED_ITEM_FACTS),
             "effects": effect_ordinal,
+            "language": req.language if is_supported_language_code(req.language) else None,
         },
     }
 

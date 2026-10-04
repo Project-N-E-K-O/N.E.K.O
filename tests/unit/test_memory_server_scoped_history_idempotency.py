@@ -198,6 +198,14 @@ SINGLE_FACTS = [
     {"text": "家里阳台种着猫薄荷", "importance": 6},
     {"text": "下次会带团子来玩", "importance": 5},
 ]
+# 第一段被清除后只送第二段去抽取：模型看到的是唯一的一段（段号 1）
+PART_ONLY_BATCH_FACTS = [
+    {"segment": 1, "facts": [
+        {"text": "Mika 的猫下午在窗台睡觉", "importance": 6},
+        {"text": "Mika 想再来玩", "importance": 5},
+    ]},
+]
+
 BATCH_FACTS = [
     {"segment": 1, "facts": [{"text": "团子喜欢晒太阳", "importance": 6}]},
     {"segment": 2, "facts": [
@@ -1498,11 +1506,21 @@ async def test_generation_failing_after_forgetting_one_segment_keeps_the_others(
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(task, timeout=5)
     env.llm.gate = None
-    env.llm.responses = [BATCH_FACTS]
+    env.llm.responses = [PART_ONLY_BATCH_FACTS]
+    prompts = []
+    real_llm = env.fs._allm_call_with_retries
+
+    async def recording(prompt, lanlan_name, **kwargs):
+        prompts.append(str(prompt))
+        return await real_llm(prompt, lanlan_name, **kwargs)
+
+    env.fs._allm_call_with_retries = recording
     again = await _post(env, _segments_body())
     # 只丢被清的那一段，另一段照常补写，而不是整键取消
     assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
     assert [seg["created"] for seg in again["segments"]] == [0, 2]
+    # 被清参与者的原文不再送去抽取
+    assert prompts and all("我最喜欢晒太阳了" not in prompt for prompt in prompts)
 
 
 async def test_terminal_key_record_without_request_identity_fails_closed(env):
@@ -2534,7 +2552,7 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
 
     from app.memory_server import locale_state
 
-    env.llm.responses = [RuntimeError("LLM failed"), BATCH_FACTS]
+    env.llm.responses = [RuntimeError("LLM failed"), PART_ONLY_BATCH_FACTS]
     with pytest.raises(RuntimeError):
         await _post(env, _segments_body(language="zh"))
 
@@ -2586,3 +2604,30 @@ async def test_listing_skips_a_forgotten_staging_segment(env):
     staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
     # 被清的段已抹掉内容：不能作为「待应用的暂存」让已清除的对象又冒出来
     assert GP["subject_id"] not in staged and PART["subject_id"] in staged
+
+
+@pytest.mark.parametrize("damage", ["kept_locale_removed", "kept_locale_other_language"])
+async def test_partial_forget_cancels_a_journal_with_a_broken_kept_locale(env, damage):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body(language="zh"))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    part_locale = next(item for item in staging["items"] if item["kind"] == "locale" and item["segment"] == 1)
+    if damage == "kept_locale_removed":
+        staging["items"] = [item for item in staging["items"] if item is not part_locale]
+        for position, item in enumerate(staging["items"]):
+            item["seq"] = position
+    else:
+        part_locale["language"] = "en"
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    await _forget(env, GP)
+    # 留下来的段语言项坏了：之后的重试只会 503，不能只丢被清段留着它，整键取消
+    assert _key_state(env, KEY_SEGMENTS) == "cancelled"
