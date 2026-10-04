@@ -41,6 +41,8 @@ local forget takes, so a forget never interleaves with them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -167,6 +169,12 @@ def plan_digest_batches(
     """
     peer = [line for line in selected if line["from"] in _PEER_SPEAKERS]
     return split_batches(selected, size), split_batches(peer, size)
+
+
+def _batch_fingerprint(batch: Sequence[Mapping[str, Any]]) -> str:
+    """Short digest of which lines (``lp``, ``side``, speaker) a batch holds."""
+    identity = [[line["lp"], line["side"], line["from"]] for line in batch]
+    return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
 
 def digest_key(visit_id: str, run: int, part: str, batch: int) -> str:
@@ -351,8 +359,18 @@ async def _commit_locked(
     selected, dropped = select_digest_lines(run_lines, max_lines)
     group_batches, segment_batches = plan_digest_batches(selected, batch_size)
     subjects = _visit_subjects(state)
+    membership = {
+        "group": [_batch_fingerprint(batch) for batch in group_batches],
+        "segments": [_batch_fingerprint(batch) for batch in segment_batches],
+    }
     if resume:
-        if len(record["group"]) != len(group_batches) or len(record["segments"]) != len(segment_batches):
+        recorded = record.get("membership")
+        if (
+            len(record["group"]) != len(group_batches) or len(record["segments"]) != len(segment_batches)
+            # 批数相同、边界却挪了（开轮后某行读不出被丢弃）：已确认的批次就会漏掉挪进来的句子，
+            # 待发的批次也会拿别的句子用旧键重发。逐批核对开轮时的成员指纹
+            or (recorded is not None and recorded != membership)
+        ):
             # 切批只由 through_lp 与句序决定；对不上说明转录被改动过，不能拿别的句子用旧键重发
             memory_bridge.diag("digest_batches_mismatch", visit_id=spool.visit_id, run=run)
             return CommitResult(ok=False, skipped="batches_mismatch", run=run)
@@ -369,6 +387,7 @@ async def _commit_locked(
             "segments": {str(b): False for b in range(len(segment_batches))},
             "epochs": epochs,
             "plan": {"max_lines": max_lines, "batch_size": batch_size},
+            "membership": membership,
         }
         runs[str(run)] = record
         # 先落盘本轮 through_lp / requested_at / 全部批号 / 清除代数，再发第一个请求：重试沿用它们

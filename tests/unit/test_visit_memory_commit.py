@@ -665,3 +665,23 @@ async def test_digest_sends_the_recorded_transcript_language(tmp_path):
     group, segments = server.calls("scoped_history")[:2]
     # 抽取语境与语言状态按转录记录时定格的语言，而不是补录时的当前界面语言
     assert group["language"] == lang and segments["language"] == lang
+
+
+async def test_resumed_run_detects_shifted_batch_boundaries(tmp_path, monkeypatch):
+    lines = [ln(i, f"对端第{i}句", "peer_human") for i in range(6)]
+    spool = await make_visit(tmp_path, vid(83), lines, finalized="wrap_up")
+    monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 2)
+    server = FakeMemoryServer()
+    server.fail_always.add(memory_commit.digest_key(vid(83), 0, "group", 1))
+    first = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    assert first.ok is False                                    # 第 0 批已确认，第 1 批没发成
+    raw = spool.jsonl_path.read_bytes().splitlines(keepends=True)
+    raw[1] = b"{broken" + raw[1][-1:]                          # 开轮后第一句变得读不出、被丢弃
+    spool.jsonl_path.write_bytes(b"".join(raw))
+    assert len((await spool.read_back()).lines) == 5            # 仍是 3 批，但每批的边界都挪了
+    server.fail_always.clear()
+    sent = len(server.requests)
+    again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    # 批数没变也要认出成员变了：不拿别的句子用旧键重发，已确认的批次也不会漏掉挪进来的句子
+    assert again.ok is False and again.skipped == "batches_mismatch"
+    assert len(server.requests) == sent

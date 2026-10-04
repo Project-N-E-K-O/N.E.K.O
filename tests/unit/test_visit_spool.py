@@ -1791,3 +1791,23 @@ async def test_read_back_parses_off_the_event_loop(tmp_path, monkeypatch):
     await sp.read_back()
     # 长转录的逐行解码与校验不能放在事件循环线程上
     assert threads and threads[0] is not threading.main_thread()
+
+
+@pytest.mark.parametrize("membership,ok", [
+    ({"group": ["a1"], "segments": ["b1"]}, True),
+    ({"group": ["a1", "a2"], "segments": ["b1"]}, False),        # 批数对不上
+    ({"group": ["a1"]}, False),                                  # 缺一部分
+    ({"group": [""], "segments": ["b1"]}, False),                # 空指纹
+    ("x", False),
+])
+def test_digest_membership_must_match_the_batches(membership, ok):
+    from main_logic.visit.spool import validate_state
+
+    state = settled(state_for())
+    record = dict(state["digest_writes"]["0"], membership=membership)
+    damaged = dict(state, digest_writes={"0": record})
+    if ok:
+        validate_state(damaged)
+    else:
+        with pytest.raises(SpoolStateError):
+            validate_state(damaged)

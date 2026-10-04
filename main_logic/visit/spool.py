@@ -498,11 +498,25 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     if state["digest_runs"] not in (len(runs), len(runs) - 1):
         raise SpoolStateError("digest_runs does not match the registered digest_writes runs")
     for run, record in runs.items():
-        if not isinstance(record, Mapping) or set(record) - {"epochs", "plan"} != {
+        if not isinstance(record, Mapping) or set(record) - {"epochs", "plan", "membership"} != {
             "requested_at", "through_lp", "group", "segments",
         }:
             raise SpoolStateError(
-                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs, plan]}}"
+                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs, plan, membership]}}"
+            )
+        membership = record.get("membership")
+        # 开轮时每个批次的成员指纹：续跑逐批核对，批数相同而边界挪了（中间某行后来读不出）也认得出
+        if membership is not None and not (
+            isinstance(membership, Mapping) and set(membership) == {"group", "segments"}
+            and all(
+                isinstance(membership[part], list)
+                and isinstance(record[part], Mapping) and len(membership[part]) == len(record[part])
+                and all(isinstance(value, str) and value for value in membership[part])
+                for part in ("group", "segments")
+            )
+        ):
+            raise SpoolStateError(
+                f"digest_writes[{run}].membership must be {{group, segments}} lists matching the batch counts"
             )
         plan = record.get("plan", {})
         # 开轮时的切批参数（句数上限、每批句数）：升级改了常量之后续跑仍按原计划切批
