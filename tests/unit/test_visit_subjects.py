@@ -763,3 +763,18 @@ async def test_rename_merge_keeps_visit_counters(tmp_path):
     await roster.rename_char("Old", "New")
     entry = await roster.get_char_entry(peer, "New")
     assert entry["visits"] == 3 and entry["last_visit_id"] == "x" * 22
+
+
+
+async def test_rename_merge_keeps_the_newer_last_visit_id(tmp_path):
+    from main_logic.visit.subjects import PeerRoster as _Roster, derive_pair_id as _pair, derive_peer_char_id as _cid
+
+    own, peer, tag = "a" * 24, "1" * 24, "f" * 32
+    roster = _Roster(tmp_path, own_uid=own)
+    common = dict(pair_id=_pair(own, peer), peer_char_id=_cid(peer, tag), char_tag=tag)
+    await roster.upsert(peer, "New", now=1.0, visit_id="v" * 22, **common)
+    await roster.upsert(peer, "Old", now=5.0, visit_id="w" * 22, **common)
+    await roster.rename_char("Old", "New")
+    await roster.upsert(peer, "New", now=6.0, visit_id="w" * 22, **common)    # 同一场再次登记
+    entry = await roster.get_char_entry(peer, "New")
+    assert entry["last_visit_id"] == "w" * 22 and entry["visits"] == 2

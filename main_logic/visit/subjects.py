@@ -351,6 +351,15 @@ def _pair_of(own_uid: Any, peer_uid: Any) -> str:
         raise RosterCorruptError("roster account / peer key is not a valid uid") from exc
 
 
+def _latest_seen(entry: Mapping[str, Any]) -> float:
+    chars = entry.get("chars")
+    stamps = [
+        info.get("last_seen") for info in (chars.values() if isinstance(chars, dict) else [])
+        if isinstance(info, dict) and _is_finite_number(info.get("last_seen"))
+    ]
+    return max(stamps, default=0.0)
+
+
 def _visit_count(entry: Mapping[str, Any]) -> int:
     visits = entry.get("visits")
     return visits if isinstance(visits, int) and not isinstance(visits, bool) and visits > 0 else 0
@@ -381,8 +390,10 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
             and source.get("last_visit_id") == merged.get("last_visit_id")
         )
         merged["visits"] = src_visits + dst_visits - (1 if same_last else 0)
-        if not isinstance(merged.get("last_visit_id"), str) and isinstance(
-            source.get("last_visit_id"), str
+        # last_visit_id 取较新的一边：保留旧的那个会让较新那场再次 upsert 时被当成新场次
+        if isinstance(source.get("last_visit_id"), str) and (
+            not isinstance(merged.get("last_visit_id"), str)
+            or _latest_seen(source) > _latest_seen(target)
         ):
             merged["last_visit_id"] = source["last_visit_id"]
     src_summary = source.get("last_summary")
