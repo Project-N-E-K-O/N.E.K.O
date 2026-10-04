@@ -154,8 +154,12 @@ async def test_cancelled_end_caller_keeps_retirement_owned():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('slow_worker', [False, True])
-async def test_full_audio_to_text_start(monkeypatch, slow_worker):
+@pytest.mark.parametrize(
+    'slow_worker,delayed_config',
+    [(False, False), (True, False), (True, True)],
+    ids=['False', 'True', 'True-delayed-config'],
+)
+async def test_full_audio_to_text_start(monkeypatch, slow_worker, delayed_config):
     manager, created, clients = await make_full_manager(monkeypatch)
     manager._config_manager.core['DISABLE_TTS'] = False
     monkeypatch.setattr(manager, '_resolve_session_use_tts', lambda *args: True)
@@ -188,12 +192,29 @@ async def test_full_audio_to_text_start(monkeypatch, slow_worker):
 
     monkeypatch.setattr(lifecycle, 'OmniOfflineClient', OfflineService)
     tasks = []
-    blocked = False
+    configuration_entered = asyncio.Event()
+    configuration_release = asyncio.Event()
+    configuration_timer = None
     try:
         starting, client = await _start_connected(manager, created)
         tasks.append(starting)
         runtime = manager._tts_runtime
         generation = manager._session_generation
+        if delayed_config:
+            original_config_read = manager._config_manager.aget_core_config
+            config_reads = 0
+
+            async def controlled_config_read(**kwargs):
+                nonlocal config_reads
+                config_reads += 1
+                if config_reads == 2:
+                    # Hold the fresh configuration response during actual LLM
+                    # preparation, after the new startup owns its generation.
+                    configuration_entered.set()
+                    await configuration_release.wait()
+                return await original_config_read(**kwargs)
+
+            monkeypatch.setattr(manager._config_manager, 'aget_core_config', controlled_config_read)
         handoff = asyncio.create_task(manager._rebuild_offline_session_for_text_input('text'))
         tasks.append(handoff)
         async with asyncio.timeout(3):
@@ -206,21 +227,29 @@ async def test_full_audio_to_text_start(monkeypatch, slow_worker):
         assert manager._tts_capacity_limit() == MAX_LIVE_TTS_RUNTIMES
         if not slow_worker:
             release_old.set()
-        try:
-            await asyncio.wait_for(offline_created.wait(), 3)
-        except TimeoutError:
-            blocked = True
-            assert manager._session_generation == generation, 'New startup budget has not begun'
-            assert manager._starting_session_count == 1
-        if slow_worker and not blocked:
+        if delayed_config:
+            await asyncio.wait_for(configuration_entered.wait(), lifecycle.FRONTEND_START_SESSION_TIMEOUT_SECONDS)
+            assert manager._session_generation == generation + 1
+            # A supported external response may exceed the old three-second
+            # probe without requiring the retired worker's physical exit.
+            configuration_timer = asyncio.get_running_loop().call_later(3.2, configuration_release.set)
+        await asyncio.wait_for(offline_created.wait(), lifecycle.FRONTEND_START_SESSION_TIMEOUT_SECONDS)
+        assert manager._session_generation == generation + 1
+        if slow_worker:
+            assert not release_old.is_set()
+            assert runtime.retired
             assert runtime.thread.is_alive()
             assert not runtime.cleanup_complete.is_set()
             assert runtime in manager._tts_runtimes
+            assert manager._live_tts_runtime_count() <= MAX_LIVE_TTS_RUNTIMES
         release_old.set()
         assert await asyncio.wait_for(asyncio.shield(handoff), 3)
         assert isinstance(manager.session, OfflineService) and manager.is_active and manager.tts_ready
-        assert not blocked, 'Full text startup succeeds only after physical TTS exit, despite safe handoff and free capacity'
+        assert manager._session_generation == generation + 1
     finally:
+        configuration_release.set()
+        if configuration_timer is not None:
+            configuration_timer.cancel()
         release_old.set()
         await asyncio.wait_for(drain_manager(manager, clients, *tasks), 5)
         await asyncio.wait_for(asyncio.gather(*manager._tts_cleanup_tasks), 3)

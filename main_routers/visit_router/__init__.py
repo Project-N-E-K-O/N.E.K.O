@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit HTTP / WebSocket routes (docs/design/visit-infrastructure.md section 4.6).
+"""Catgirl visit HTTP / WebSocket routers (docs/design/visit-infrastructure.md §4.6, §5 PR-07 / PR-08 / PR-09a).
 
-Sub-routers declare paths relative to ``/api/visit``; the package router that
-adds the prefix and its inclusion into the web app land with PR-09a / PR-09b,
-so nothing here is reachable yet.
+Sub-modules declare ``APIRouter()`` without a prefix and decorate RELATIVE
+paths; the package router (``prefix='/api/visit'``) that includes them is
+added by PR-09a. Until then nothing here is mounted on the app.
 """

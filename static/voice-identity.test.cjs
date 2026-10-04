@@ -156,6 +156,7 @@ function createHarness({
     cancelCsrfFailureOnce = false,
     startGates = {},
     runtimeMode = 'enforce',
+    readinessController = null,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -616,6 +617,7 @@ function createHarness({
     window.Headers = MockHeaders;
     window.AudioWorkletNode = MockAudioWorkletNode;
     window.performance = context.performance;
+    if (readinessController) window.createVoiceIdentityReadiness = () => readinessController;
 
     vm.runInNewContext(source, context, { filename: 'voice_identity.js' });
 
@@ -1487,6 +1489,64 @@ test('resumed enrollment shows the canonical segment prompt before microphone se
     await harness.emit('voice-identity-start');
     const firstUpload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.equal(firstUpload.options.headers.get('x-voice-identity-segment'), '3');
+});
+
+test('active enrollment can resume with readiness enabled without sending a null trial contract', async () => {
+    let required = 0;
+    const readinessController = {
+        isPending: () => false, canStart: () => false, audioContract: () => null,
+        async refreshResources() {}, controls() {}, receivedStream() {}, updateMeter() {},
+        requireTest() { required++; }
+    };
+    const harness = createHarness({ initialEnrollmentNextSegment: 3, autoAdvance: true, readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    await harness.emit('voice-identity-start');
+    const request = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/start`);
+    assert.ok(request);
+    assert.equal(request.options.body, undefined);
+    assert.equal(required, 0);
+    const firstUpload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(firstUpload.options.headers.get('x-voice-identity-segment'), '3');
+});
+
+test('resource diagnostics failure does not turn successful status initialization into connection failure', async () => {
+    const readinessController = {
+        isPending: () => false, canStart: () => false, controls() {},
+        async refreshResources() { throw new Error('audio_contract_changed'); }
+    };
+    const harness = createHarness({ readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-retry').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+});
+
+test('a fresh enrollment still requires a passed trial when readiness is enabled', async () => {
+    let required = 0;
+    const readinessController = {
+        isPending: () => false, canStart: () => false, audioContract: () => null,
+        async refreshResources() {}, controls() {}, requireTest() { required++; }
+    };
+    const harness = createHarness({ readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    await harness.emit('voice-identity-start');
+    assert.equal(required, 1);
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start`), false);
+});
+
+test('changed input prevents continuing an existing enrollment without cancelling it implicitly', async () => {
+    let changed = 0;
+    const readinessController = {
+        isPending: () => false, canStart: () => false, canResume: () => false,
+        async refreshResources() {}, controls() {}, contractChanged() { changed++; }
+    };
+    const harness = createHarness({ initialEnrollmentNextSegment: 3, readinessController });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    await harness.emit('voice-identity-start');
+    assert.equal(changed, 1);
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start` || call.url === `${API_ROOT}/enrollment/cancel`), false);
 });
 
 test('failed fourth verification stays in the session and retries the holdout', async () => {

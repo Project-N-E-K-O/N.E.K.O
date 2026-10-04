@@ -31,6 +31,8 @@ from main_logic.voice_identity_service.registry import (
 )
 from main_logic.voice_identity_service.service import VoiceIdentityService
 from main_logic.voice_input.suppression import VoiceInputSuppressionController
+from main_logic.voice_input.wake_word.resources import WakeWordResources
+from main_logic.voice_identity_service.wake_resources import resolve_wake_word_resources
 from main_routers.config_router.preferences import (
     configure_voice_identity_audio_contract_callbacks,
 )
@@ -49,6 +51,7 @@ class _OwnerActivation:
     enforce: bool
     required: bool
     noise_reduction_enabled: bool | None
+    wake_resources: WakeWordResources | None = None
 
     @classmethod
     def from_borrowed(
@@ -59,6 +62,7 @@ class _OwnerActivation:
         enforce: bool,
         required: bool,
         noise_reduction_enabled: bool | None,
+        wake_resources: WakeWordResources | None = None,
     ) -> "_OwnerActivation":
         return cls(
             copy.copy(profile),
@@ -66,6 +70,7 @@ class _OwnerActivation:
             enforce,
             required,
             noise_reduction_enabled,
+            wake_resources,
         )
 
     def factory_for(self, manager) -> OwnerVoiceSessionActivationFactory:
@@ -75,6 +80,7 @@ class _OwnerActivation:
             activation_generation=self.generation,
             enforce=self.enforce,
             noise_reduction_enabled=self.noise_reduction_enabled,
+            wake_resources=self.wake_resources,
         )
 
     def close(self) -> None:
@@ -447,6 +453,11 @@ class OwnerVoiceRuntimeRegistry:
         async with self._activation_request_lock(request_revision):
             if self._closed:
                 return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+            wake_resources = None
+            if profile is not None and self._enforce:
+                wake_resources = await asyncio.to_thread(resolve_wake_word_resources)
+                if self._closed or request_revision != self._authority_request_revision:
+                    return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             try:
                 next_activation = (
                     None
@@ -457,6 +468,7 @@ class OwnerVoiceRuntimeRegistry:
                         enforce=self._enforce,
                         required=required,
                         noise_reduction_enabled=noise_reduction_enabled,
+                        wake_resources=wake_resources,
                     )
                 )
             except Exception:

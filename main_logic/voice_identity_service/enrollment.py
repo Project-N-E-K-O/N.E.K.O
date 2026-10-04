@@ -39,8 +39,9 @@ ENROLLMENT_SIMILARITY_THRESHOLD = 0.40
 class EnrollmentAudioError(ValueError):
     """A stable, UI-safe rejection reason for enrollment PCM."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, diagnostics: dict[str, float] | None = None) -> None:
         self.code = code
+        self.diagnostics = diagnostics
         super().__init__(code)
 
 
@@ -183,6 +184,25 @@ class SileroEnrollmentSpeechValidator:
             self._vad.close()
 
 
+def enrollment_audio_diagnostics(pcm16: bytes) -> dict[str, float]:
+    """Aggregate evidence in the processed 16 kHz domain; never retain audio."""
+    samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
+    try:
+        clipped = float(np.count_nonzero(np.abs(samples) >= 32760)) / max(1, samples.size)
+        samples /= 32768.0
+        complete = samples.size - samples.size % _FRAME_SAMPLES
+        frames = samples[:complete].reshape(-1, _FRAME_SAMPLES)
+        rms = np.sqrt(np.mean(frames * frames, axis=1)) if frames.size else np.empty(0)
+        return {
+            "duration_seconds": samples.size / ENROLLMENT_SAMPLE_RATE_HZ,
+            "active_seconds": int(np.count_nonzero(rms >= _ACTIVE_FRAME_RMS)) * _FRAME_SAMPLES / ENROLLMENT_SAMPLE_RATE_HZ,
+            "rms": float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0,
+            "clipping_ratio": clipped,
+        }
+    finally:
+        samples.fill(0)
+
+
 def validate_enrollment_pcm16(
     pcm16: bytes,
     *,
@@ -224,7 +244,7 @@ def validate_enrollment_pcm16(
             / (_FRAME_SAMPLES * 1_000 / ENROLLMENT_SAMPLE_RATE_HZ)
         )
         if active_frames < required_frames:
-            raise EnrollmentAudioError("volume_too_low")
+            raise EnrollmentAudioError("volume_too_low", diagnostics=enrollment_audio_diagnostics(pcm16))
     finally:
         if frames is not None:
             frames.fill(0.0)

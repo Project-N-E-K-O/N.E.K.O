@@ -90,6 +90,7 @@
         cancelPending: false,
         cancelReleaseWhenIdle: false,
         statusEpoch: 0,
+        microphoneSetupGeneration: 0,
         statusRefreshSequence: 0,
         statusRefreshAppliedSequence: 0,
         filterPending: false,
@@ -116,6 +117,7 @@
     };
 
     const elements = {};
+    let readiness = null;
 
     function translate(key, fallback, options) {
         if (typeof window.t === 'function') {
@@ -431,6 +433,13 @@
 
     function enrollmentErrorMessage(error) {
         const code = error && (error.message || error.code);
+        const diagnostics = error && error.payload && error.payload.diagnostics;
+        if (code === 'preview_owner_active') return translate('voiceIdentity.errorStopMainMicrophone', '主会话麦克风仍在使用，请先关闭主会话麦克风，再重试此操作。');
+        if (code === 'audio_contract_changed') return translate('voiceIdentity.inputChanged', '输入已变化，请重新试录并开始录入。');
+        if (code === 'volume_too_low' && diagnostics && diagnostics.rms >= ACTIVE_FRAME_RMS && diagnostics.active_seconds < MINIMUM_RECORDING_MS / 1000) return translate('voiceIdentity.errorSpeechTooShort', '没有检测到足够的语音，请重新说一句完整的话。');
+        if (code === 'microphone_unavailable' || (error && ['NotFoundError', 'NotReadableError'].includes(error.name))) return translate('voiceIdentity.inputReason_microphone_unavailable', '麦克风已断开或不可用，请重新选择或连接设备。');
+        if (error && error.name === 'NotAllowedError') return translate('voiceIdentity.inputReason_permission_denied', '麦克风权限被拒绝，请允许访问后重试。');
+        if (code === 'input_test_required' || code === 'capture_owner_unavailable') return translate('voiceIdentity.inputTestRequired', '请先完成试录，再开始录入。');
         const configured = code && ENROLLMENT_ERROR_MESSAGES[code];
         if (configured) return translate(configured[0], configured[1]);
         if (['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected', 'incomplete_capture'].includes(code)) return translate('voiceIdentity.qualityCheckFailed', '声音质量未达标，请重录当前段。');
@@ -532,13 +541,13 @@
         elements.profileStatus.textContent = reasonMessage();
 
         const pending = !state.initialized || state.busy
-            || state.cancelPending || state.filterPending;
+            || state.cancelPending || state.filterPending || Boolean(readiness && readiness.isPending());
         const enrollmentUnavailable = state.runtimeDisabled
-            || ['secure_storage_unavailable', 'model_unavailable']
-                .includes(state.effectiveReason);
+            || state.effectiveReason === 'secure_storage_unavailable'
+            || (!readiness && state.effectiveReason === 'model_unavailable');
         elements.start.hidden = state.busy || state.cancelPending
             || (state.profileAvailable && !state.enrollmentId);
-        elements.start.disabled = pending || enrollmentUnavailable;
+        elements.start.disabled = pending || enrollmentUnavailable || Boolean(readiness && (state.enrollmentId ? readiness.canResume && !readiness.canResume() : !readiness.canStart()));
         elements.start.textContent = state.enrollmentId
             ? translate('voiceIdentity.continueEnrollment', '继续录入')
             : translate('voiceIdentity.startEnrollment', '开始录入');
@@ -547,7 +556,7 @@
             && !state.startSettled
             && !state.segmentIndex;
         elements.cancel.disabled = state.cancelPending;
-        elements.reenroll.disabled = pending || enrollmentUnavailable;
+        elements.reenroll.disabled = pending || enrollmentUnavailable || Boolean(readiness && !readiness.canStart());
         elements.delete.disabled = pending;
         if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
         elements.filter.disabled = pending
@@ -650,16 +659,21 @@
     function render() {
         renderProfile();
         renderEnrollment();
+        if (readiness) readiness.controls();
     }
 
     async function ensureMicrophone() {
         const setupEpoch = state.statusEpoch;
-        const isStale = function () {
-            return setupEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted;
-        };
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new Error('media_devices_unavailable');
         }
+        if (state.mediaStream && window.nekoMicrophoneInput && !window.nekoMicrophoneInput.liveTrack(state.mediaStream)) {
+            stopMicrophone('microphone_unavailable');
+        }
+        const setupGeneration = state.microphoneSetupGeneration;
+        const isStale = function () {
+            return setupEpoch !== state.statusEpoch || setupGeneration !== state.microphoneSetupGeneration || state.cancelPending || state.closeStarted;
+        };
         if (!state.mediaStream) {
             let selectedMicrophoneId = null;
             try { selectedMicrophoneId = localStorage.getItem('neko_selected_microphone'); } catch (_) {}
@@ -671,7 +685,16 @@
             };
             const selectedConstraints = selectedMicrophoneId
                 ? { ...constraints, deviceId: { exact: selectedMicrophoneId } } : constraints;
-            try {
+            if (window.nekoMicrophoneInput) {
+                const info = await window.nekoMicrophoneInput.open(navigator.mediaDevices, selectedMicrophoneId, () => !isStale());
+                state.mediaStream = info.stream;
+                if (readiness) readiness.receivedStream(info);
+                if (info.track && typeof info.track.addEventListener === 'function') info.track.addEventListener('ended', function () {
+                    if (state.mediaStream !== info.stream) return;
+                    stopMicrophone('microphone_unavailable');
+                    if (readiness) readiness.deviceLost();
+                }, { once: true });
+            } else try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
                 if (isStale()) {
                     stream.getTracks().forEach(function (track) { track.stop(); });
@@ -736,6 +759,7 @@
             sumSquares += sample * sample;
         }
         const rms = Math.sqrt(sumSquares / chunk.length);
+        if (readiness) readiness.updateMeter(rms);
         const active = rms >= ACTIVE_FRAME_RMS;
         const now = performance.now();
         if (active) {
@@ -946,6 +970,7 @@
     }
 
     function stopMicrophone(reason) {
+        state.microphoneSetupGeneration += 1;
         const startAbort = state.startAbort;
         state.startAbort = null;
         if (startAbort) {
@@ -1133,6 +1158,8 @@
 
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
+        if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) { readiness.contractChanged(); return; }
+        if (readiness && !state.enrollmentId && !readiness.canStart()) { readiness.requireTest(); return; }
         state.statusEpoch += 1;
         const operationEpoch = state.statusEpoch;
         const isStale = function () {
@@ -1173,6 +1200,8 @@
             ownedMediaStream = state.mediaStream;
             ownedAudioContext = state.audioContext;
             if (isStale()) return;
+            if (readiness && state.enrollmentId && readiness.canResume && !readiness.canResume()) throw new Error('audio_contract_changed');
+            if (readiness && !state.enrollmentId && !readiness.canStart()) throw new Error('input_test_required');
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
             const startController = typeof AbortController === 'function'
@@ -1214,8 +1243,11 @@
             }
             let started;
             try {
+                if (readiness && !state.enrollmentId && !readiness.canStart()) throw new Error('input_test_required');
+                const previewContract = readiness && !state.enrollmentId ? readiness.audioContract() : null;
                 started = await apiRequest('/enrollment/start', {
                     method: 'POST',
+                    ...(previewContract ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_audio_contract: previewContract }) } : {}),
                     signal: startController ? startController.signal : undefined
                 });
             } catch (error) {
@@ -1454,6 +1486,7 @@
         } catch (error) {
             stopOwnedMicrophone();
             if (isStale()) return;
+            if (readiness && error && error.message === 'audio_contract_changed') readiness.contractChanged();
             const reconciled = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
             const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
             const profileCommitConfirmed = replacementConfirmed
@@ -1637,6 +1670,7 @@
         const refreshVisibleStatus = function () {
             if (state.busy || state.filterPending || state.cancelPending || state.closeStarted || document.visibilityState === 'hidden') return;
             reconcileStatus().catch(function () {});
+            if (readiness && !readiness.isPending()) readiness.refreshResources().catch(function () {});
         };
         window.addEventListener('focus', refreshVisibleStatus);
         document.addEventListener('visibilitychange', refreshVisibleStatus);
@@ -1773,6 +1807,15 @@
 
     async function initialize() {
         cacheElements();
+        if (typeof window.createVoiceIdentityReadiness === 'function') readiness = window.createVoiceIdentityReadiness({
+            translate, request: apiRequest, status: reconcileStatus, render,
+            error: enrollmentErrorMessage,
+            stream: () => state.mediaStream,
+            enrolling: () => state.busy || state.enrollmentId || state.cancelPending,
+            microphone: ensureMicrophone, capture: capturePcm16,
+            pause: pauseMicrophone, stop: stopMicrophone,
+            cancel: () => cancelEnrollment({ silent: true }).catch(function () {})
+        });
         bindEvents();
         state.busy = true;
         render();
@@ -1782,6 +1825,10 @@
             state.initialized = true;
             state.initializationError = false;
             applyStatus(status);
+            if (readiness) {
+                // Resource diagnostics own their error display and retry flow.
+                try { await readiness.refreshResources(); } catch (_) {}
+            }
         } catch (error) {
             state.initializationError = true;
             setMessage(enrollmentErrorMessage(error), true);

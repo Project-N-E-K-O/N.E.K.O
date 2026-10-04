@@ -1109,7 +1109,8 @@ class VisitSpool:
         return (
             self._fd is not None
             and self._dirty
-            and now - self._last_fsync >= VISIT_SPOOL_FSYNC_S
+            # 写成「now >= 起点 + 间隔」：now - last 在浮点下可能是 29.999…，恰好到点时 fsync 会推迟一拍
+            and now >= self._last_fsync + VISIT_SPOOL_FSYNC_S
         )
 
     async def fsync(self, now: float) -> None:

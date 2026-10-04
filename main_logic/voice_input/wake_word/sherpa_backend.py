@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from main_logic.voice_input.activation.contracts import AudioFrame, WakeWordBatchResult, WakeWordDetection
 from .diagnostics import WakeWordDiagnostics
+from .errors import safe_wake_word_reason
 
 
 SUPPORTED_RUNTIME_VERSION = "1.13.8+neko.kws2"
@@ -232,14 +233,24 @@ def _worker(connection: Connection, config: SherpaWakeWordConfig) -> None:
             connection.send((True, WakeWordBatchResult(consumed, detection)))
     except (EOFError, BrokenPipeError):
         pass
-    except Exception:
+    except Exception as exc:
         diagnostics.emit("failed")
         try:
-            connection.send((False, "WAKE_WORD_WORKER_FAILED"))
+            connection.send((False, safe_wake_word_reason(exc)))
         except (OSError, EOFError):
             pass
     finally:
         connection.close()
+
+
+def validate_wake_word_resources(config: SherpaWakeWordConfig) -> None:
+    """Load native assets in the caller's disposable process, then release.
+
+    Resource preparation, provisioning and frozen release checks share this
+    entry. The caller owns the process timeout; no nested worker is spawned.
+    """
+    spotter = _StreamingSpotter(config)
+    del spotter
 
 
 class SherpaWakeWordDetector:
@@ -297,7 +308,7 @@ class SherpaWakeWordDetector:
             raise WakeWordBackendError("WAKE_WORD_TIMEOUT")
         ok, result = connection.recv()
         if not ok:
-            raise WakeWordBackendError("WAKE_WORD_WORKER_FAILED")
+            raise WakeWordBackendError(safe_wake_word_reason(result))
         if self._closed.is_set():
             raise WakeWordBackendError("WAKE_WORD_CLOSED")
         return result

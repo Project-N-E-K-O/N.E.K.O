@@ -43,15 +43,26 @@ def _key(lanlan_name: str) -> str:
     return str(lanlan_name or "")
 
 
-def activate_visit_route(lanlan_name: str, *, phase: str = "pending") -> dict:
+def activate_visit_route(
+    lanlan_name: str, *, phase: str = "pending", visit_id: Optional[str] = None,
+) -> dict:
     """Create (or replace) the visit-route slot of a character and return it.
 
     The returned dict is the live state object; the runtime mutates it in
     place (``phase`` moves through ``pending`` → ... → ``ending``). A replaced
     slot's dict is marked ``visit_route_active=False``, exactly like
     :func:`finalize_visit_route_state`, so tasks still holding it see the flip.
+    ``visit_id`` identifies the visit owning the slot (the slot is keyed by
+    character only); writers that act on behalf of one visit -- e.g. the
+    transport WS caching ``caps_preflight`` -- only touch a slot whose
+    ``visit_id`` matches theirs.
     """
-    state = {"visit_route_active": True, "lanlan_name": _key(lanlan_name), "phase": phase}
+    state = {
+        "visit_route_active": True,
+        "lanlan_name": _key(lanlan_name),
+        "phase": phase,
+        "visit_id": visit_id,
+    }
     previous = _visit_route_states.get(_key(lanlan_name))
     if previous is not None:
         previous["visit_route_active"] = False

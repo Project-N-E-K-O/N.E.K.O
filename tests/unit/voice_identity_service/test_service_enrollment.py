@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -320,13 +321,20 @@ async def test_segment_progress_is_server_owned_idempotent_and_profile_bound(
     assert first.enrollment.next_segment_index == 2
     assert model.inference_count == 1
 
+    # A retry preserves enrollment progress and deadline, while its countdown
+    # reflects elapsed time rather than the original response snapshot.
+    await asyncio.sleep(0.02)
     retry = await service.submit_enrollment_segment(
         enrollment.enrollment_id,
         "profile-a",
         1,
         _pcm(),
     )
-    assert retry.enrollment == first.enrollment
+    assert retry.enrollment is not None
+    assert 0 < retry.enrollment.remaining_seconds <= first.enrollment.remaining_seconds
+    assert replace(
+        retry.enrollment, remaining_seconds=first.enrollment.remaining_seconds
+    ) == first.enrollment
     assert model.inference_count == 1
     with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
         await service.submit_enrollment_segment(

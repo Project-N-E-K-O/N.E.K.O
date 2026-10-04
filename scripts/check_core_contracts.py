@@ -146,6 +146,8 @@ OWNER_SUBMODULES = {
     "notices",
     "session_records",
     "tts_records",
+    # Producer control is owned by the ASR bridge, outside the mixin MRO.
+    "voice_readiness",
 }
 MIXIN_SUPPORT_CLASSES = {
     "asr_runtime": {

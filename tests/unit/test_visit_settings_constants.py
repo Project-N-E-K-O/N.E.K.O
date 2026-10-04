@@ -122,6 +122,13 @@ def test_invariant_checker_rejects_a_broken_relation(monkeypatch):
         vs._check_invariants()
 
 
+def test_page_reload_deadline_must_outlast_the_socket_grace(monkeypatch):
+    # 调小重入宽限或调大安全余量，绝对期限会悄悄短于 transport WS 的 20 s
+    monkeypatch.setattr(vs, "VISIT_PAGE_REJOIN_SAFETY_S", 15)
+    with pytest.raises(ValueError, match="absolute page reload deadline"):
+        vs._check_invariants()
+
+
 def test_debrief_commit_backoff_caps_at_one_hour():
     # 暂时性写入失败的退避：30 s / 2 min / 10 min / 1 h，之后一直取最后一项（owner 2026-10-02）
     assert vs.VISIT_DEBRIEF_COMMIT_BACKOFF_S == (30, 120, 600, 3600)
@@ -132,3 +139,10 @@ def test_every_visit_constant_is_re_exported_from_config():
     names = {n for n in dir(vs) if n.startswith("VISIT_")}
     assert names <= set(config.__all__)
     assert all(getattr(config, n) == getattr(vs, n) for n in names)
+
+
+def test_page_reload_safety_margin_must_be_positive(monkeypatch):
+    # 本侧要比对端的重入宽限早收口，靠的就是这个余量大于 0
+    monkeypatch.setattr(vs, "VISIT_PAGE_REJOIN_SAFETY_S", 0)
+    with pytest.raises(ValueError, match="positive safety margin"):
+        vs._check_invariants()

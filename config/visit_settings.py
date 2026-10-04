@@ -147,7 +147,17 @@ filled; the sender keeps retransmitting for the same window."""
 VISIT_PEER_REJOIN_GRACE_S = 35
 """An explicit vendor-level leave of the peer is tentative for this long.
 
-Must exceed ``VISIT_LOCAL_PAGE_GRACE_S`` plus a 15 s SDK reload budget."""
+Must be at least ``VISIT_LOCAL_PAGE_GRACE_S`` plus a 15 s SDK reload budget (design
+invariant ``REJOIN >= LOCAL_PAGE + 15``). The reload itself is bounded by the
+absolute deadline of ``VISIT_PAGE_REJOIN_SAFETY_S``; the capability gate's
+``VISIT_CAPS_SDK_TIMEOUT_S`` is a separate timer, also capped by what is left
+of that deadline."""
+
+VISIT_PAGE_REJOIN_SAFETY_S = 5
+"""A reloaded page must be back in the vendor room this long before the peer's rejoin grace ends.
+
+Absolute reload deadline = ``min(left + VISIT_PEER_REJOIN_GRACE_S - this,
+last successful send + VISIT_PEER_LOST_S - VISIT_RECONNECT_MARGIN_S)``."""
 
 VISIT_CAPS_PREFLIGHT_TIMEOUT_S = 15
 """Wait limit for capability gates 1-2 (before credentials)."""
@@ -346,6 +356,12 @@ VISIT_HOST_CREDENTIAL_TTL_S = 3000
 
 VISIT_VENDOR_GRANT_TTL_S = 600
 """Vendor room grant lifetime (TRTC UserSig / LiveKit JWT); renewed before reconnects."""
+
+VISIT_VENDOR_REFRESH_MARGIN_S = 120
+"""Renew the vendor grant (``credentials{refresh:true}``) once less than this remains."""
+
+VISIT_BANNED_CACHE_S = 60
+"""A Servers ``403 banned`` is remembered this long; new rooms / joins answer 403 locally."""
 
 VISIT_SHORT_ID_LEN = 6
 """UI shows only ``visit_uid[:6].upper()``."""
@@ -657,6 +673,10 @@ def _check_invariants() -> None:
          "page grace must end a heartbeat before self reconnect")
     need(VISIT_PEER_REJOIN_GRACE_S >= VISIT_LOCAL_PAGE_GRACE_S + 15,
          "rejoin grace must cover page grace plus SDK reload budget")
+    need(VISIT_PAGE_REJOIN_SAFETY_S > 0,
+         "the page reload must end before the peer's rejoin grace (positive safety margin)")
+    need(VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S > VISIT_LOCAL_PAGE_GRACE_S,
+         "absolute page reload deadline must outlast the transport WS grace")
     need(VISIT_INVITE_WAIT_S == VISIT_INVITE_CODE_TTL_S,
          "host wait must equal the invite code lifetime")
     guest_ready_wait = (VISIT_ACCEPT_TIMEOUT_S + VISIT_ACTIVATION_ALLOWANCE_S
@@ -680,6 +700,8 @@ def _check_invariants() -> None:
          "host ticket must cover invite wait, max duration and margin")
     need(VISIT_CREDENTIAL_TTL_S > VISIT_MAX_DURATION_S,
          "guest ticket must outlive one visit")
+    need(0 < VISIT_VENDOR_REFRESH_MARGIN_S < VISIT_VENDOR_GRANT_TTL_S,
+         "vendor grant renewal margin must fall inside the grant lifetime")
     need(VISIT_MAX_DURATION_S - VISIT_TIME_UP_WRAP_UP_S + VISIT_WRAP_UP_MAX_S
          < VISIT_MAX_DURATION_S,
          "time-up wrap-up must finish before the hard cap")

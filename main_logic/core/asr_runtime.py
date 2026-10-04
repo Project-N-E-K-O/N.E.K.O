@@ -49,6 +49,8 @@ from main_logic.voice_input.activation import (
     AudioFrame,
     OutputCommit,
 )
+from main_logic.voice_input.preview import preview_isolation_registry
+from .voice_readiness import VoiceReadinessControl
 from main_logic.voice_input.wake_word.transcript import (
     _WakeNameCorrection,
     correct_wake_name_prefix,
@@ -443,6 +445,7 @@ class AsrRuntimeMixin:
             capture_ingress_token=self._capture_ingress_token,
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
+        preview_isolation_registry.register(self)
 
     def _init_voice_input_registry(self) -> None:
         """Install the manager-lifetime built-ins exactly once."""
@@ -1469,6 +1472,8 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
+        if preview_isolation_registry.is_manager_isolated(self):
+            return False
         owner = self._voice_lease_owner
         active_identity = self._voice_input_registry.active_identity
         owner_has_target = bool(
@@ -1491,6 +1496,10 @@ class AsrRuntimeMixin:
             and not self._voice_input_suppressed
             and not getattr(self, "_voice_input_external_suppressions", set())
         )
+
+    async def _handle_voice_identity_control(self, message: dict, *, connection_id: str) -> dict:
+        self._ensure_asr_runtime_state()
+        return await VoiceReadinessControl.handle(self, message, connection_id=connection_id)
 
     async def set_voice_input_suppressed(
         self,
@@ -2476,6 +2485,10 @@ class AsrRuntimeMixin:
         (Codex P2).
         """
         self._ensure_asr_runtime_state()
+        if input_mode == "audio" and preview_isolation_registry.is_manager_isolated(self):
+            await self._send_voice_control_status(json.dumps({
+                "code": "VOICE_INPUT_PREVIEW_BUSY", "details": {"reason": "preview_busy"}}))
+            return
         operation_generation = self._begin_asr_route_operation()
         await self._close_independent_asr(
             next_route_mode="blocked",
@@ -4067,6 +4080,8 @@ class AsrRuntimeMixin:
         received_at: float | None = None,
         captured_at: float | None = None,
     ) -> bool:
+        if preview_isolation_registry.is_manager_isolated(self):
+            return True
         if os.environ.get("NEKO_VOICE_REGRESSION_TRACE") == "1":
             self._voice_regression_trace_frames = (
                 getattr(self, "_voice_regression_trace_frames", 0) + 1
@@ -4304,7 +4319,8 @@ class AsrRuntimeMixin:
         generation: ActivationGeneration,
     ) -> OutputCommit:
         if (
-            frame.generation != generation
+            preview_isolation_registry.is_manager_isolated(self)
+            or frame.generation != generation
             or self._capture_voice_session_activation_generation() != generation
             or self._voice_session_activation_degraded
         ):
