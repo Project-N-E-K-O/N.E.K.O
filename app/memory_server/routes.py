@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -1905,8 +1906,9 @@ async def _stamp_subject_display_name(
     if not display_name or runtime.persona_manager is None:
         return
     try:
+        # strict 时 persona 文件读不出会抛出（返回 False 的是没有 section / 没变化这类正常的空操作）
         await runtime.persona_manager.aupdate_subject_display_name(
-            lanlan_name, subject, display_name,
+            lanlan_name, subject, display_name, **({"strict": True} if strict else {}),
         )
     except Exception as exc:
         if strict:
@@ -4126,8 +4128,9 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
     }
     if not affected or len(affected) == len(segments):
         return False
-    applied = document.setdefault("applied", [])
     # 先看原值再补缺省：{} / "" 之类假值经 `or []` 会被当成空列表放过，坏日志就被原样写回
+    raw_applied = document.get("applied")
+    applied = [] if raw_applied is None else raw_applied
     items = document.get("items")
     items = [] if items is None else items
     if (
@@ -4135,13 +4138,25 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
         or not all(isinstance(item, dict) for item in items)
         or not _applied_seqs_valid(applied, len(items))
         or not _items_shape_valid(items, segments)
-        # 留下来的段必须仍能被重试按条目重放：载荷坏了（效果键是标量……）的日志留着只会让
-        # 没被清的段永远 503，整键取消
-        or not _keyed_staging_items_valid(document, structural_only=True)
     ):
         # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
         # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
         return False
+    # 在副本上改写，改完再核对：被清段的载荷坏了没关系（它会被抹掉），只有留下来的段仍能被
+    # 重试按条目重放，才保留这份日志；否则（效果键是标量……）留着只会让没被清的段永远 503，整键取消
+    rewritten = copy.deepcopy(document)
+    _rewrite_forgotten_segments(rewritten, affected)
+    if not _keyed_staging_items_valid(rewritten, structural_only=True):
+        return False
+    document.clear()
+    document.update(rewritten)
+    return True
+
+
+def _rewrite_forgotten_segments(document: dict, affected: set[int]) -> None:
+    segments = document["segments"]
+    applied = document.setdefault("applied", [])
+    items = document.get("items") or []
     forgotten_seqs = {
         item.get("seq") for item in items
         if isinstance(item, dict) and item.get("segment") in affected
@@ -4167,7 +4182,6 @@ def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
         # 被清 subject 的抽取原文 / 显示名不能留在磁盘上
         items[position] = _stripped_item(item)
     _mark_segments_dropped(segments, affected)
-    return True
 
 
 def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
@@ -4212,7 +4226,8 @@ def _stripped_item(item: dict) -> dict:
     # 只留响应与跳过所需的序号，以及效果键（不含内容；逐项校验靠它推算序号）
     stripped = {"seq": item.get("seq"), "kind": item.get("kind"), "segment": item.get("segment")}
     if item.get("kind") == _KEYED_ITEM_FACTS:
-        stripped["effect_keys"] = list(item.get("effect_keys") or [])
+        effect_keys = item.get("effect_keys")
+        stripped["effect_keys"] = list(effect_keys) if isinstance(effect_keys, list) else []
     return stripped
 
 

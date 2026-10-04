@@ -87,7 +87,7 @@ class FakePersona:
     def __init__(self):
         self.display_names: list[tuple[str, str]] = []
 
-    async def aupdate_subject_display_name(self, name, subject, display_name):
+    async def aupdate_subject_display_name(self, name, subject, display_name, *, strict=False):
         self.display_names.append((subject.key, display_name))
         return True
 
@@ -2388,3 +2388,41 @@ async def test_failed_display_name_write_is_retried_not_marked_done(env):
     assert (GROUP_KEY, "串门群") not in env.persona.display_names
     await _post(env, _single_body())
     assert _key_state(env, KEY_GROUP) == "done" and (GROUP_KEY, "串门群") in env.persona.display_names
+
+
+async def test_corrupt_payload_in_the_forgotten_segment_keeps_the_other_segment(env):
+    env.llm.responses = [BATCH_FACTS]
+    original = env.routes._apply_keyed_item
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    gp_display = next(item for item in staging["items"] if item["kind"] == "display_name" and item["segment"] == 0)
+    gp_display["display_name"] = 5                              # 坏在要被清除的那段
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    await _forget(env, GP)
+    # 被清段的载荷本来就要抹掉：不因它取消整个键，没被清的段照常重试补写
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    await _post(env, _segments_body())
+    assert len(_facts_of(env, PART)) == 2 and _facts_of(env, GP) == []
+    assert _key_state(env, KEY_SEGMENTS) == "done"
+
+
+async def test_keyed_display_name_write_runs_strict(env):
+    env.llm.responses = [SINGLE_FACTS]
+    seen = []
+
+    async def record(name, subject, display_name, **kwargs):
+        seen.append(kwargs.get("strict"))
+        return True
+
+    env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", record)
+    await _post(env, _single_body())
+    # 带键日志路径要求读不出 persona 时抛出（返回 False 分不清是失败还是正常空操作）
+    assert seen == [True]
