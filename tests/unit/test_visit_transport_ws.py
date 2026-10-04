@@ -851,6 +851,41 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
     assert ("pause", PAUSE_PAGE_RELOAD) in s.log
 
 
+def test_replaced_during_preflight_does_not_fetch_credentials():
+    import asyncio
+
+    class _SlowPreflight(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.gate = None
+
+        async def on_preflight(self, caps):
+            self.gate = asyncio.Event()
+            await self.gate.wait()
+            await super().on_preflight(caps)
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = _SlowPreflight()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        old = tw._attach(link, _RecordingWS())
+        preflight = {"type": "caps", "stage": "preflight", "preflight_ok": True}
+        task = asyncio.ensure_future(tw._handle_frame(link, old, preflight, 10, VISIT_ID, "guest"))
+        while s.gate is None:
+            await asyncio.sleep(0)
+        tw._attach(link, _RecordingWS())  # 页面重载，新连接接管
+        s.gate.set()
+        await task
+        return s
+
+    try:
+        s = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert s.issued == 0
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 

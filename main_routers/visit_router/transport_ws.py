@@ -546,6 +546,9 @@ async def _handle_frame(
             # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证
             if await _call(session, "on_preflight", caps) is _HOOK_FAILED or not ok:
                 return
+            # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
+            if not _is_current(link, conn):
+                return
             creds = await _call(session, "issue_credentials")
             if creds is None or creds is _HOOK_FAILED:
                 return
