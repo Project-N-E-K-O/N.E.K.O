@@ -580,9 +580,10 @@ class PeerRoster:
         ``pair_id`` to ``pairs`` and ``peer_char_id`` to ``chars``, and bumps
         ``last_seen``. ``display_name`` (the person) is only replaced when
         given; ``short_code`` is derived from ``peer_uid``. With ``visit_id``
-        the entry's ``visits`` counter counts each distinct visit once
-        (``last_visit_id`` remembers the latest), so repeated upserts of one
-        visit do not inflate it.
+        the entry's ``visits`` counter is bumped unless ``visit_id`` equals
+        ``last_visit_id`` (the latest one): repeated upserts of the visit in
+        progress do not inflate it. Callers upsert visits in order and never
+        replay an older one, so only the latest id needs remembering.
         """
         if not _is_finite_number(now):
             # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
