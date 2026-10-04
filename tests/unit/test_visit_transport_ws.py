@@ -184,6 +184,22 @@ def _sync(ws) -> None:
     ws.send_text(json.dumps({"type": "stats", "rx_fps": 30}))
 
 
+def _wait_page_lost(session, count: int) -> None:
+    """Wait until the server finished tearing down ``count`` sockets of ``session``.
+
+    Leaving a ``with websocket_connect`` block does not wait for the server
+    handler's ``finally``; opening the next socket before it ran would turn
+    the old socket into a replaced one (no page grace) instead of a lost one.
+    """
+    import time as _t
+
+    deadline = _t.monotonic() + 5
+    while session.liveness.events.count("page_lost") < count:
+        if _t.monotonic() > deadline:
+            raise AssertionError(f"page_lost #{count} never happened: {session.liveness.events}")
+        _t.sleep(0.01)
+
+
 def _expect_close(ws, code: int) -> None:
     with pytest.raises(WebSocketDisconnect) as exc:
         ws.receive_text()
@@ -400,6 +416,7 @@ def test_disconnect_starts_the_page_grace(app, session):
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _sync(ws)
+    _wait_page_lost(session, 1)
     assert session.liveness.events == ["page_lost"]
     assert ("pause", PAUSE_PAGE_RELOAD) in session.log
     assert not tw.is_transport_attached(VISIT_ID, "guest")
@@ -428,6 +445,7 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
         ws.receive_text()
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _sync(ws)
+    _wait_page_lost(session, 1)
     session.log.clear()
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         msgs = _rejoin(ws)
@@ -435,6 +453,7 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
     assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
     assert msgs[1]["payload"]["t"] == "hello"
     assert msgs[2] == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
+    _wait_page_lost(session, 2)
     assert session.liveness.events == ["page_lost", "page_back", "page_lost"]
     assert ("resume", PAUSE_PAGE_RELOAD) in session.log
 
@@ -449,6 +468,7 @@ def test_reload_snapshot_is_taken_from_the_runtime_not_hardcoded(app):
     with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _sync(ws)
+    _wait_page_lost(host, 1)
     with client.websocket_connect(url, headers={"origin": ORIGIN}) as ws:
         msgs = _rejoin(ws)
     assert msgs[2] == {"type": "media", "subscribe": False, "peer_vid": "g_" + "2" * 24}
@@ -721,6 +741,116 @@ def test_close_task_ends_even_if_the_close_frame_never_drains(monkeypatch):
     assert asyncio.run(scenario()) is True
 
 
+def test_replaced_session_cannot_send_into_its_successor():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        stale, fresh = FakeSession(), FakeSession()
+        tw.register_transport_session(stale)
+        tw.register_transport_session(fresh)  # 同 (visit_id, side) 换了一个 runtime
+        ws = _RecordingWS()
+        conn = tw._attach(tw._links[(VISIT_ID, "guest")], ws)
+        conn.preflight_seen = True
+        late = await stale.send({"type": "media", "publish": True})
+        ok = await fresh.send({"type": "media", "publish": False})
+        return late, ok, ws.sent
+
+    try:
+        late, ok, sent = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert late is False and ok is True
+    assert sent == [{"type": "media", "publish": False}]
+
+
+def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
+    class _Flaky(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def on_page_rejoined(self, now):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("transient")
+            super().on_page_rejoined(now)
+
+    s = _Flaky()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN)
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(s, 1)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()
+        ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
+        _sync(ws)
+        ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
+                                 "remote_video": False}))
+        hello = json.loads(ws.receive_text())
+        media = json.loads(ws.receive_text())
+    assert hello["type"] == "send" and media["type"] == "media"
+
+
+def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
+    # 服务端关停 / ASGI 层取消 handler 时，finally 里第一个 await 就会抛 CancelledError：
+    # 掉页处理必须排在任何 await 之前
+    import asyncio
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(local_guard, "AUTOSTART_CSRF_TOKEN", TOKEN)
+    monkeypatch.setattr(vs, "NEKO_VISIT_ALLOW_NONLOCAL", False)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+
+    class _HandlerWS(_RecordingWS):
+        client = SimpleNamespace(host="127.0.0.1")
+        headers = {"origin": ORIGIN}
+        url = SimpleNamespace(hostname="testserver")
+        query_params = {"visit_id": VISIT_ID, "side": "guest"}
+
+        def __init__(self):
+            super().__init__()
+            self.inbox = [{"type": "websocket.receive", "text": json.dumps({"type": "auth", "csrf_token": TOKEN})}]
+
+        async def accept(self):
+            return None
+
+        async def receive(self):
+            if self.inbox:
+                return self.inbox.pop(0)
+            await asyncio.Event().wait()
+
+        async def close(self, code=1000, reason=""):
+            # anyio 的取消是持续生效的：handler 收尾里的每个 await 都会再抛 CancelledError
+            raise asyncio.CancelledError()
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        task = asyncio.ensure_future(tw.visit_transport_ws(_HandlerWS()))
+        while not tw.is_transport_attached(VISIT_ID, "guest"):
+            await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return s
+
+    try:
+        s = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert s.liveness.events == ["page_lost"]
+    assert ("pause", PAUSE_PAGE_RELOAD) in s.log
+
+
 def test_frames_of_a_replaced_connection_never_reach_the_runtime():
     import asyncio
 
@@ -771,6 +901,7 @@ def test_reload_state_before_credentials_does_not_rejoin(app, session):
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _sync(ws)
+    _wait_page_lost(session, 1)
     session.log.clear()
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)

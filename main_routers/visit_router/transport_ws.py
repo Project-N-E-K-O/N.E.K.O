@@ -265,8 +265,17 @@ class VisitTransportSession(ABC):
     # —— 下行 ——
 
     async def send(self, msg: Mapping[str, Any]) -> bool:
-        """Send a downlink message on the current socket; False when none is attached."""
-        return await send_downlink(self.visit_id, self.side, msg)
+        """Send a downlink message on the current socket of THIS session.
+
+        False when no socket is attached, or when this session was replaced
+        or unregistered (a stale runtime never writes into its successor).
+        """
+        if msg.get("type") not in DOWNLINK_TYPES:
+            raise ValueError("unknown downlink type")
+        link = _links.get((self.visit_id, self.side))
+        if link is None or link.session is not self or link.conn is None:
+            return False
+        return await _send_on(link.conn, msg)
 
 
 # ── 连接登记 ───────────────────────────────────────────────────────────
@@ -559,14 +568,14 @@ async def _handle_frame(
             conn.reattach and not conn.rejoined and conn.credentials_sent
             and msg.get("state") in REJOINED_STATES and _is_current(link, conn)
         ):
-            conn.rejoined = True
             now = session.now()
             try:
                 session.on_page_rejoined(now)
                 frames = list(session.outbox.due(now))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 不置 rejoined：下一条 joined / connected 再试
                 logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
                 return
+            conn.rejoined = True
             for frame in frames:
                 await _send_on(conn, frame.to_ws())
             if not _is_current(link, conn):
@@ -686,7 +695,8 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
     except Exception as exc:  # noqa: BLE001 - 断开 / 运行时异常都按断线收尾
         logger.debug("visit transport: receive loop ended: %s", type(exc).__name__)
     finally:
-        await conn.close(close_code, close_reason)
+        # 先同步解绑并起宽限，再 await 关闭：handler 被取消（关停 / ASGI 层取消）时
+        # await 会立刻抛 CancelledError，放在它后面的掉页处理就永远执行不到。
         # 被顶掉（4409）或 session 已注销的连接不算掉页：只有仍是当前连接时才起宽限
         if _links.get((visit_id, side)) is link and link.conn is conn:
             link.conn = None
@@ -694,3 +704,4 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
                 link.session.on_page_lost(link.session.now())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_page_lost failed: %s", type(exc).__name__)
+        await conn.close(close_code, close_reason)
