@@ -57,7 +57,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 from ._shared import logger
 
@@ -191,8 +191,9 @@ def tombstones_path(lanlan_name: str) -> str:
 def _read_json_object(path: str) -> dict:
     """Read a dict-rooted JSON file; missing means empty, anything else raises."""
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        # 其他键正用 os.replace 改写同一文件：Windows 上替换窗口里的共享冲突先退避重试，
+        # 不能直接当成「状态读不出」让带键写入 503、清除 500
+        data = read_json_tolerating_replace(path)
     except FileNotFoundError:
         return {}
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
@@ -311,8 +312,7 @@ def transition(state: str, **extra: Any) -> Callable[[dict | None], dict | None]
 
 def _read_staging_sync(path: str, key: str) -> dict | None:
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        data = read_json_tolerating_replace(path)
     except FileNotFoundError:
         return None
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
@@ -354,8 +354,7 @@ def is_staging_path_of(lanlan_name: str, key: str, path: str) -> bool:
 def _read_staging_file(path: str) -> tuple[bool, Any]:
     """``(missing, document_or_None)`` of one staging file read by path."""
     try:
-        with open(path, encoding="utf-8") as handle:
-            return False, json.load(handle)
+        return False, read_json_tolerating_replace(path)
     except FileNotFoundError:
         return True, None
     except (OSError, ValueError, RecursionError):
@@ -410,8 +409,7 @@ def _list_staging_sync(directory: str) -> list[tuple[str, dict | None, float]]:
         except OSError:
             continue
         try:
-            with open(entry.path, encoding="utf-8") as handle:
-                data = json.load(handle)
+            data = read_json_tolerating_replace(entry.path)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError):
             data = None
         rows.append((entry.path, data if isinstance(data, dict) else None, mtime))

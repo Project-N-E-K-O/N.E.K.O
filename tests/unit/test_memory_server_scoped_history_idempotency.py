@@ -160,6 +160,8 @@ def _single_body(key: str | None = KEY_GROUP, **extra) -> dict:
     }
     if key is not None:
         body["idempotency_key"] = key
+        # 带键请求必须为每个 wire subject 给出清除代数（缺了不能当成 0）
+        body["subject_epochs"] = {GROUP_KEY: 0}
     body.update(extra)
     return body
 
@@ -187,6 +189,7 @@ def _segments_body(key: str | None = KEY_SEGMENTS, **extra) -> dict:
     }
     if key is not None:
         body["idempotency_key"] = key
+        body["subject_epochs"] = {GP_KEY: 0, PART_KEY: 0}
     body.update(extra)
     return body
 
@@ -1621,3 +1624,106 @@ async def test_corrupt_tombstone_file_does_not_block_an_epoch_forget(env):
     result = await _forget(env, GROUP, forget_epoch=2)
     # 辅助文件坏了不挡隐私清除：照常擦除
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+
+
+async def test_keyed_request_without_epochs_is_rejected(env):
+    body = _single_body()
+    body.pop("subject_epochs")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, body)
+    # 缺了的代数不能当成 0（否则被带代数清除过的 subject 之后的写入会全部被静默丢弃）
+    assert excinfo.value.status_code == 422 and env.llm.calls == 0
+
+
+async def test_retry_whose_every_segment_was_forgotten_skips_the_llm(env):
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+    ))
+
+    def mark(old):
+        return {**old, "forgotten_keys": [GROUP_KEY]}
+
+    await env.idem.update_key(NAME, KEY_GROUP, mark)
+    env.monkeypatch.setattr(env.routes, "_keyed_request_hash", lambda _req: "h")
+    result = await _post(env, _single_body())
+    # 产物注定全部丢弃：不再持键锁跑一遍抽取，直接按取消收尾
+    assert result["duplicate"] is True and env.llm.calls == 0
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+
+
+async def test_key_file_read_rides_out_a_concurrent_replace(env, monkeypatch):
+    from utils import file_utils
+
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("pending"))
+    real_read = file_utils.read_json
+    state = {"busy": True}
+
+    def busy_once(path, **kwargs):
+        if state["busy"]:
+            state["busy"] = False
+            exc = PermissionError(13, "sharing violation")
+            exc.winerror = 32                                  # Windows：别的写入正在 os.replace
+            raise exc
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(file_utils, "read_json", busy_once)
+    # 替换窗口里的瞬时共享冲突退避重试，不当成「状态读不出」
+    assert (await env.idem.read_key(NAME, KEY_GROUP))["state"] == "pending"
+
+
+async def test_forget_fails_when_the_completion_marker_cannot_be_written(env):
+    async def broken(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    env.monkeypatch.setattr(env.idem, "mark_tombstone_erased", broken)
+    with pytest.raises(HTTPException) as excinfo:
+        await _forget(env, GROUP, forget_epoch=1)
+    # 「这个代数已擦完」没落盘就不回成功：调用方重试到它落盘
+    assert excinfo.value.status_code == 500
+
+
+async def test_damaged_applied_result_fields_fail_closed(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=1)               # seq0 已应用，seq1 中断
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    staging["applied"][0]["fact_ids"] = 1                      # 结果字段坏了
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    assert excinfo.value.status_code == 503
+
+
+async def test_fresh_write_routed_into_the_fanout_is_not_cancelled(env):
+    idem = env.idem
+    routed = {"subject_kind": "participant", "subject_id": "neko_visit:canonical", "scope": "participant:neko_visit:canonical"}
+    await idem.update_key(NAME, KEY_GROUP, idem.transition("pending"))
+    await idem.write_staging(NAME, KEY_GROUP, {
+        "shape": "single", "subjects": [GROUP_KEY], "epochs": {GROUP_KEY: 3}, "created_at": time.time(),
+        "segments": [{"wire_key": GROUP_KEY, "subject": routed, "tombstone_keys": [GROUP_KEY]}],
+        "items": [], "applied": [],
+    })
+    # 清除 GROUP 扇出到它路由后的 canonical：交集是两个 key，但这段的 wire 就是请求 subject、
+    # 代数够新，它是清除之后的合法写入
+    cancelled = await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {GROUP_KEY, "participant:neko_visit:canonical"},
+        request_subject_key=GROUP_KEY, forget_epoch=3,
+    )
+    assert cancelled == 0 and _key_state(env, KEY_GROUP) == "pending"
+
+
+def test_replaying_a_forgotten_marker_drops_locale_items_too(env):
+    doc = {
+        "segments": [{"wire_key": GROUP_KEY, "subject": GROUP}],
+        "items": [
+            {"seq": 0, "kind": "locale", "segment": 0, "language": "zh", "order": 1},
+            {"seq": 1, "kind": "facts", "segment": 0, "facts": SINGLE_FACTS, "effect_keys": ["a:0", "a:1"]},
+        ],
+        "applied": [],
+    }
+    env.routes._drop_segments_for_keys(doc, {GROUP_KEY})
+    # 清除之后才预留的语言序号证明不了请求早于清除：一并丢弃
+    assert {entry["seq"] for entry in doc["applied"]} == {0, 1}
