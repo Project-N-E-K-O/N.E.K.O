@@ -36,10 +36,11 @@ The visit runtime (PR-09a) plugs in by registering a
 closes 4404. A second connection for the same pair replaces the first
 (the old one gets 4409 and must not reconnect). When the current connection
 drops: ``liveness.on_page_lost`` + ``outbox.pause(PAUSE_PAGE_RELOAD)``. A
-replacement connection keeps (or starts) the 20 s page grace and the pause;
-only once its iframe is back in the vendor room (first ``state`` joined /
-connected, after its own preflight and credentials) does the session clear
-the grace (``liveness.on_page_back``), resend ``hello`` and resume the
+replacement connection keeps the pause and moves the page deadline to the
+absolute reload deadline (design §4.8: start + 30 s, capped by last send +
+27 s); only once its iframe is back in the vendor room (first ``state``
+joined / connected, after its own preflight and credentials) does the
+session clear it (``liveness.on_page_back``), resend ``hello`` and resume the
 outbox, then exactly one full ``media`` snapshot from
 ``session.media_snapshot()`` follows. Downlink goes only through
 :meth:`VisitTransportSession.send` (bound to the registered session).
@@ -185,6 +186,8 @@ class VisitTransportSession(ABC):
         self.lanlan_name = lanlan_name
         self.liveness = liveness
         self.outbox = outbox
+        # 本次页面重载的起点（旧 iframe 离开 vendor 房的时刻）；重入成功清空
+        self._page_departed_at: float | None = None
 
     # —— 上行回调（runtime 实现）——
 
@@ -238,22 +241,31 @@ class VisitTransportSession(ABC):
     # —— 页面生命周期（默认实现即 §4.3 的规则）——
 
     def on_page_lost(self, now: float) -> None:
-        """The current transport socket dropped: 20 s grace starts, delivery timers pause."""
-        self.liveness.on_page_lost(now)
+        """The current transport socket dropped: page grace armed, delivery timers pause.
+
+        The iframe leaves the vendor room as soon as its socket closes, so
+        this is the start of the reload. While no socket is back the limit is
+        ``min(start + 20 s, absolute)`` (``VisitLiveness.arm_page_reload``).
+        """
+        if self._page_departed_at is None:
+            self._page_departed_at = now
+        self.liveness.arm_page_reload(self._page_departed_at, socket_back=False)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_attached(self, now: float) -> None:
-        """A replacement socket authenticated: the page is NOT back yet.
+        """A replacement socket authenticated: the page is NOT back in the room yet.
 
-        The 20 s page grace keeps running from the original loss -- or starts
-        now when this socket replaced a live one (``on_page_lost`` keeps the
-        earliest start) -- and the outbox stays paused. Only a completed
-        re-entry (:meth:`on_page_rejoined`) clears it, so a page that
-        authenticates but never gets back into the vendor room (failed
-        preflight, no credentials, SDK never joins) or keeps reconnecting
-        still runs into ``local_page_lost``.
+        The SDK reload and re-entry get what remains of the absolute reload
+        deadline (design §4.8: ``min(start + 30 s, last send + 27 s)``) --
+        not a fresh 20 s, and not only what is left of the socket's 20 s.
+        A socket that replaced a live one starts the reload now. The outbox
+        stays paused; only :meth:`on_page_rejoined` clears the deadline, so a
+        page that never re-enters (failed preflight, no credentials, SDK never
+        joins) or keeps reconnecting still ends in ``local_page_lost``.
         """
-        self.liveness.on_page_lost(now)
+        if self._page_departed_at is None:
+            self._page_departed_at = now
+        self.liveness.arm_page_reload(self._page_departed_at, socket_back=True)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
 
     def on_page_rejoined(self, now: float) -> None:
@@ -264,6 +276,7 @@ class VisitTransportSession(ABC):
         after it on that same socket, so a socket replaced meanwhile can never
         resume the outbox or flush into its successor.
         """
+        self._page_departed_at = None
         self.liveness.on_page_back(now)
         self.outbox.resend_hello(now)
         self.outbox.resume(now, reason=PAUSE_PAGE_RELOAD)

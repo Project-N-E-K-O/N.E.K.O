@@ -59,6 +59,9 @@ from config.visit_settings import (
     VISIT_SELF_RECONNECT_S,
 )
 
+# 绝对期限比对端的 35 s 重入宽限早 5 s 收口（§4.8），本侧先于对端判定，两侧结果一致
+_PAGE_REJOIN_SAFETY_S = 5
+
 Side = Literal["host", "guest"]
 LivenessVerdict = Literal[
     "invite_expired", "peer_lost", "declined", "relay_lost", "local_page_lost", "peer_left",
@@ -206,8 +209,37 @@ class VisitLiveness:
             self.page_lost_at = now
 
     def on_page_back(self, now: float) -> None:
-        """A new page reattached the transport WS within the grace."""
+        """The reloaded page is back in the vendor room: clear the page grace."""
         self.page_lost_at = None
+
+    def page_reload_deadline(self, departed_at: float) -> float:
+        """Absolute deadline by which a reloaded page must be back in the vendor room.
+
+        ``min(departed + VISIT_PEER_REJOIN_GRACE_S - 5, last successful send +
+        VISIT_PEER_LOST_S - VISIT_RECONNECT_MARGIN_S)`` (design §4.8, rejoin
+        grace row): the peer gives a departed ``vid`` 35 s, or judges us dead
+        30 s after our last message when the vendor reported no explicit
+        leave; ``departed_at`` is when the old iframe left the vendor room.
+        """
+        deadline = departed_at + self._rejoin_grace_s - _PAGE_REJOIN_SAFETY_S
+        if self.last_sent_at is not None:
+            deadline = min(deadline, self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s)
+        return deadline
+
+    def arm_page_reload(self, departed_at: float, *, socket_back: bool) -> None:
+        """(Re)arm the page-loss verdict of a page reload that started at ``departed_at``.
+
+        While the transport WS is down the limit is ``min(departed + 20 s,
+        absolute)``; once a new socket is back (``socket_back``) the SDK
+        reload and room re-entry may use what remains of the absolute
+        deadline (:meth:`page_reload_deadline`) -- never a fresh 20 s, so a
+        page that keeps reconnecting without re-entering still ends there.
+        Cleared by :meth:`on_page_back`.
+        """
+        deadline = self.page_reload_deadline(departed_at)
+        if not socket_back:
+            deadline = min(deadline, departed_at + self._page_grace_s)
+        self.page_lost_at = deadline - self._page_grace_s
 
     # ------------------------------------------------------------------
     # 对端离开

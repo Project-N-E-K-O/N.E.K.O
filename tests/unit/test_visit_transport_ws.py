@@ -55,6 +55,10 @@ class _Liveness:
     def on_page_back(self, now: float) -> None:
         self.events.append("page_back")
 
+    def arm_page_reload(self, departed_at: float, *, socket_back: bool) -> None:
+        # 断线记 page_lost（起宽限），新 socket 连回记 page_armed（改用绝对期限）
+        self.events.append("page_armed" if socket_back else "page_lost")
+
 
 class _Outbox:
     def __init__(self, log: list) -> None:
@@ -477,9 +481,9 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
     assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
     assert msgs[1]["payload"]["t"] == "hello"
     assert msgs[2] == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
-    _wait_page_lost(session, 3)
-    # attach 时宽限不清（第二个 page_lost 是幂等的「保持」），重入成功才 page_back
-    assert session.liveness.events == ["page_lost", "page_lost", "page_back", "page_lost"]
+    _wait_page_lost(session, 2)
+    # 连回只把期限改成绝对期限（page_armed），重入成功才 page_back
+    assert session.liveness.events == ["page_lost", "page_armed", "page_back", "page_lost"]
     assert ("resume", PAUSE_PAGE_RELOAD) in session.log
 
 
@@ -520,7 +524,7 @@ def test_second_connection_supersedes_the_first_with_4409(app, session):
             _expect_close(old, tw.CLOSE_SUPERSEDED)
             assert tw.is_transport_attached(VISIT_ID, "guest")
             # 被顶掉的旧连接断开不算掉页
-            assert session.liveness.events == ["page_lost"]
+            assert session.liveness.events == ["page_armed"]
 
 
 def test_stop_is_sent_once_and_unregister_closes(app, session):
@@ -654,7 +658,7 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
 
 def test_lifecycle_callbacks_run_on_the_monotonic_clock(app, session, monkeypatch):
     seen: list[float] = []
-    session.liveness.on_page_lost = lambda now: seen.append(now)
+    session.liveness.arm_page_reload = lambda departed_at, *, socket_back: seen.append(departed_at)
     from tests.fake_clock import patch_module_clock
 
     # 墙钟与单调钟故意差很远：回调必须拿到单调钟
@@ -1164,7 +1168,7 @@ def test_unserializable_snapshot_keeps_the_socket_open(app, session):
         _barrier(ws, session)
         # 快照发不出去只是这一条丢了：socket 仍是当前连接，没有被当成断线
         assert tw.is_transport_attached(VISIT_ID, "guest")
-        assert session.liveness.events.count("page_lost") == 2  # 第一条断开 + 第二条 attach，没有第三次
+        assert session.liveness.events.count("page_lost") == 1  # 只有第一条断开，第二条没被当成断线
         assert _run(ws, session.send, {"type": "stop", "reason": "home"})
         assert json.loads(ws.receive_text()) == {"type": "stop", "reason": "home"}
 
@@ -1186,8 +1190,8 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
         _auth(ws)
         _preflight(ws, ok=False, reason="no_webrtc")  # 新 iframe 预检失败：永远不会重入
         _barrier(ws, s)
-        # 宽限没有被 auth 清掉，起点也没被重置
-        assert s.liveness.page_lost_at == lost_at
+        # auth 不清宽限，也不重起 20 s：期限移到绝对期限（离开 + 30 s，即 page_lost_at = 离开 + 10）
+        assert s.liveness.page_lost_at == pytest.approx(lost_at + 10)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws)
@@ -1249,3 +1253,74 @@ def _wait_until(pred, timeout: float = 5.0) -> None:
         if _t.monotonic() > deadline:
             raise AssertionError("condition never became true")
         _t.sleep(0.01)
+
+
+# ── 页面重载的绝对期限（设计稿 §4.8 VISIT_PEER_REJOIN_GRACE_S 一行）──────
+
+
+def _reload_session():
+    from main_logic.visit.liveness import VisitLiveness
+
+    s = FakeSession()
+    s.liveness = VisitLiveness("guest", -1000.0)
+    s.liveness.on_peer_verified(-1000.0)  # 已在会话中：不再处于等对端的阶段
+    return s
+
+
+def _tick(s, t: float):
+    # 对端始终在线：只看本侧页面期限，不让对端心跳判死抢先
+    s.liveness.on_peer_message(t)
+    return s.liveness.tick(t)
+
+
+def test_reload_ws_back_at_19s_sdk_at_31s_ends_at_30s():
+    # 设计稿验收：WS 第 19 s 连回、SDK 拖到第 31 s → 本侧第 30 s local_page_lost（对端 35 s 判 peer_left，两侧一致）
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(19.0)
+    assert _tick(s, 29.9) is None
+    assert _tick(s, 30.0) == "local_page_lost"
+
+
+def test_reload_ws_back_at_19s_sdk_at_21s_survives():
+    # WS 第 19 s 连回、SDK 第 21 s 入房：不能沿用断线起算的 20 s
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(19.0)
+    assert _tick(s, 20.5) is None
+    s.on_page_rejoined(21.0)
+    assert s.liveness.page_lost_at is None
+    assert _tick(s, 25.0) is None
+
+
+def test_reload_socket_phase_keeps_its_own_20s():
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    assert _tick(s, 19.9) is None
+    assert _tick(s, 20.0) == "local_page_lost"
+
+
+def test_reload_deadline_respects_the_peers_heartbeat_clock():
+    # 最后一次成功发出在 -10 s：对端约在 +20 s 判死，本侧必须在 -10 + 27 = 17 s 前回来
+    s = _reload_session()
+    s.liveness.on_message_sent(-10.0)
+    s.on_page_lost(0.0)
+    assert _tick(s, 16.9) is None
+    assert _tick(s, 17.0) == "local_page_lost"
+
+
+def test_flapping_page_never_extends_past_the_absolute_deadline():
+    s = _reload_session()
+    s.on_page_lost(0.0)
+    s.on_page_attached(5.0)
+    s.on_page_lost(6.0)  # 又断：起点仍是 0
+    s.on_page_attached(15.0)
+    assert _tick(s, 29.9) is None
+    assert _tick(s, 30.0) == "local_page_lost"
+
+
+def test_superseding_a_live_socket_starts_the_reload_now():
+    s = _reload_session()
+    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算
+    assert _tick(s, 129.9) is None
+    assert _tick(s, 130.0) == "local_page_lost"
