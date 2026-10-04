@@ -283,3 +283,81 @@ def test_rejoin_after_a_timeout_disconnect_restarts_the_heartbeat_clock():
     assert lv.tick(51.0) is None
     assert lv.tick(79.0) is None
     assert lv.tick(80.0) == "peer_lost"
+
+
+# ── page reload deadline (design §4.8) ─────────────────────────────────
+
+
+def test_page_reload_absolute_deadline_takes_the_earlier_term():
+    lv = verified("guest", 0.0)
+    feed(lv, 0.0, 200.0)  # 对端一直在线：只看本侧页面期限
+    lv.on_message_sent(100.0)
+    lv.on_page_lost(110.0)
+    # 离开 + 35 − 5 = 140；最后发出 + 30 − 3 = 127：取较早的 127，WS 阶段 min(130, 127)
+    assert lv.page_reload_deadline() == 127.0
+    assert lv.page_deadline == 127.0
+    lv.on_page_socket_back(115.0)
+    assert lv.page_deadline == 127.0
+    assert lv.tick(126.9) is None
+    assert lv.tick(127.0) == "local_page_lost"
+
+
+def test_page_second_drop_counts_its_own_socket_budget():
+    lv = verified("guest", 0.0)
+    lv.on_page_lost(0.0)
+    lv.on_page_socket_back(5.0)
+    assert lv.page_deadline == 30.0
+    lv.on_page_lost(8.0)
+    # 本次断线 + 20 = 28，没超过绝对期限 30
+    assert lv.page_deadline == 28.0
+    assert lv.page_departed_at == 0.0
+
+
+def test_page_lost_is_idempotent_within_the_socket_stage():
+    lv = verified("guest", 0.0)
+    lv.on_page_lost(0.0)
+    lv.on_page_lost(15.0)  # 没有连回就再报一次：不能把 20 推到 35
+    assert lv.page_deadline == 20.0
+    assert lv.tick(20.0) == "local_page_lost"
+
+
+def test_late_socket_and_late_rejoin_cannot_revive_the_page():
+    lv = verified("guest", 0.0)
+    lv.on_page_lost(0.0)
+    assert lv.page_expired(20.0) and not lv.page_expired(19.9)
+    lv.on_page_socket_back(20.2)
+    assert lv.page_deadline == 20.0
+    lv.on_page_back(20.3)
+    assert lv.page_deadline == 20.0
+    assert lv.tick(20.5) == "local_page_lost"
+
+
+def test_page_back_clears_the_reload():
+    lv = verified("guest", 0.0)
+    lv.on_page_lost(0.0)
+    lv.on_page_socket_back(3.0)
+    lv.on_page_back(10.0)
+    assert (lv.page_departed_at, lv.page_deadline, lv.page_socket_back) == (None, None, False)
+    assert lv.page_reload_deadline() is None and not lv.page_expired(100.0)
+
+
+def test_last_send_term_waits_for_the_peer_hello_exchange():
+    # host 发过一条消息后仍在等对端：对端的心跳时钟还没开始算我们，旧的发出时刻不能让期限一设下就过期
+    lv = VisitLiveness("host", 0.0)
+    lv.on_message_sent(0.0)
+    lv.on_page_lost(60.0)
+    assert lv.page_deadline == 80.0
+    assert lv.tick(60.0) is None
+    lv.on_self_disconnected(70.0)
+    assert lv.self_deadline() == 95.0
+    # 核验通过之后才套上这一项
+    lv.on_peer_verified(75.0)
+    assert lv.self_deadline() == 27.0
+
+
+def test_page_rejoin_safety_margin_is_injectable():
+    lv = VisitLiveness("guest", 0.0, rejoin_grace_s=12.0, page_grace_s=5.0, page_rejoin_safety_s=2.0)
+    lv.on_peer_verified(0.0)
+    lv.on_page_lost(0.0)
+    lv.on_page_socket_back(1.0)
+    assert lv.page_deadline == 10.0

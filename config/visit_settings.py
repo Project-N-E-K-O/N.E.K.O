@@ -670,6 +670,8 @@ def _check_invariants() -> None:
          "page grace must end a heartbeat before self reconnect")
     need(VISIT_PEER_REJOIN_GRACE_S >= VISIT_LOCAL_PAGE_GRACE_S + 15,
          "rejoin grace must cover page grace plus SDK reload budget")
+    need(VISIT_PAGE_REJOIN_SAFETY_S > 0,
+         "the page reload must end before the peer's rejoin grace (positive safety margin)")
     need(VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S > VISIT_LOCAL_PAGE_GRACE_S,
          "absolute page reload deadline must outlast the transport WS grace")
     need(VISIT_INVITE_WAIT_S == VISIT_INVITE_CODE_TTL_S,

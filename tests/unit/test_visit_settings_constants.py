@@ -139,3 +139,10 @@ def test_every_visit_constant_is_re_exported_from_config():
     names = {n for n in dir(vs) if n.startswith("VISIT_")}
     assert names <= set(config.__all__)
     assert all(getattr(config, n) == getattr(vs, n) for n in names)
+
+
+def test_page_reload_safety_margin_must_be_positive(monkeypatch):
+    # 本侧要比对端的重入宽限早收口，靠的就是这个余量大于 0
+    monkeypatch.setattr(vs, "VISIT_PAGE_REJOIN_SAFETY_S", 0)
+    with pytest.raises(ValueError, match="positive safety margin"):
+        vs._check_invariants()

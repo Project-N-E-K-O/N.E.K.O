@@ -59,8 +59,10 @@ class _Liveness:
         # 新 socket 连回：期限改为页面重载的绝对期限
         self.events.append("page_armed")
 
+    expired = False
+
     def page_expired(self, now: float) -> bool:
-        return False
+        return self.expired
 
 
 class _Outbox:
@@ -1384,7 +1386,7 @@ def test_rejoin_after_the_deadline_is_refused():
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(19.0)
-    assert s.page_reload_expired(31.0)
+    assert s.liveness.page_expired(31.0)
     s.on_page_rejoin_committed(31.0)
     assert s.liveness.page_deadline is not None
     assert _tick(s, 31.0) == "local_page_lost"
@@ -1396,7 +1398,7 @@ def test_transport_does_not_re_enter_after_the_deadline():
     async def scenario():
         tw._reset_for_tests()
         s = FakeSession()
-        s.page_reload_expired = lambda now: True
+        s.liveness.expired = True
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
@@ -1410,7 +1412,8 @@ def test_transport_does_not_re_enter_after_the_deadline():
         s, ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    assert ws.sent == [] and not conn.rejoined
+    # 不重入，但已回到房里的迟到 iframe 要被叫走：只发 stop，连接退役
+    assert ws.sent == [{"type": "stop"}] and not conn.rejoined and conn.retired
     assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
 
 
@@ -1611,3 +1614,16 @@ def test_send_json_and_the_snapshot_check_share_one_encoder():
         tw._media_frame({"pad": "x" * tw.FRAME_MAX_BYTES})
     msg, text = tw._media_frame({"publish": False})
     assert msg == {"publish": False, "type": "media"} and json.loads(text) == msg
+
+
+def test_late_iframe_is_stopped_and_disconnected(app, session):
+    def scenario(ws):
+        session.liveness.expired = True
+        _joined(ws)
+        assert json.loads(ws.receive_text()) == {"type": "stop"}
+        # 轮询而不是阻塞等关闭帧：回归时直接失败，不会挂住
+        _wait_until(lambda: not tw.is_transport_attached(VISIT_ID, "guest"))
+
+    _reload_and_join(_client(app), session, scenario)
+    assert ("resend_hello",) not in session.log
+    assert PAUSE_PAGE_RELOAD in session.outbox.paused

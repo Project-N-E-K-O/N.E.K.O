@@ -36,7 +36,9 @@ and polls ``tick(now)``, which returns the first verdict reached (sticky) or
   absolute)``; once a new socket is back, the absolute deadline
   ``min(left + VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S, last
   successful send + 30 s - VISIT_RECONNECT_MARGIN_S)`` for the SDK reload
-  and room re-entry. A deadline that already passed is never moved.
+  and room re-entry. A deadline that already passed is never moved. The
+  last-send term (also in ``relay_lost``) applies only once the peer is
+  verified: before that no heartbeat clock of the peer runs on us.
 * ``peer_left``: authenticated ``leave`` (after the ``seq`` gap is filled or
   ``VISIT_LEAVE_GAP_GRACE_S`` expires), or a vendor-level leave not undone
   within ``VISIT_PEER_REJOIN_GRACE_S``.
@@ -92,6 +94,7 @@ class VisitLiveness:
         leave_gap_grace_s: float = VISIT_LEAVE_GAP_GRACE_S,
         rejoin_grace_s: float = VISIT_PEER_REJOIN_GRACE_S,
         heartbeat_s: float = VISIT_HEARTBEAT_S,
+        page_rejoin_safety_s: float = VISIT_PAGE_REJOIN_SAFETY_S,
     ) -> None:
         """Start in the "waiting for the peer" state.
 
@@ -111,6 +114,7 @@ class VisitLiveness:
         self._leave_gap_grace_s = float(leave_gap_grace_s)
         self._rejoin_grace_s = float(rejoin_grace_s)
         self._heartbeat_s = float(heartbeat_s)
+        self._page_rejoin_safety_s = float(page_rejoin_safety_s)
 
         self.waiting = True
         wait = float(invite_wait_s) if side == "host" else self._peer_lost_s
@@ -122,6 +126,7 @@ class VisitLiveness:
         self.self_disconnected_at: Optional[float] = None
         self.page_departed_at: Optional[float] = None
         self.page_deadline: Optional[float] = None
+        self.page_socket_back = False
         self.leave_received_at: Optional[float] = None
         self.peer_departed_at: Optional[float] = None
         self.vendor_timeout_events = 0
@@ -209,9 +214,13 @@ class VisitLiveness:
         """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
 
         Shared by the own-reconnect deadline and the page reload deadline
-        (design §4.8 calls them "the same formula").
+        (design §4.8 calls them "the same formula"). ``None`` while still
+        waiting for the peer: its heartbeat clock on us only runs once the
+        ``hello`` exchange is done (host: from verification; the guest's own
+        30 s wait is its wait deadline), so an old send must not end a reload
+        or a reconnect before it could matter.
         """
-        if self.last_sent_at is None:
+        if self.waiting or self.last_sent_at is None:
             return None
         return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
 
@@ -227,7 +236,7 @@ class VisitLiveness:
         """
         if self.page_departed_at is None:
             return None
-        deadline = self.page_departed_at + self._rejoin_grace_s - VISIT_PAGE_REJOIN_SAFETY_S
+        deadline = self.page_departed_at + self._rejoin_grace_s - self._page_rejoin_safety_s
         death = self._peer_death_deadline()
         return deadline if death is None else min(deadline, death)
 
@@ -242,12 +251,17 @@ class VisitLiveness:
         vendor room when its socket closes). This socket stage ends at
         ``min(now + 20 s, absolute)`` -- counted from THIS drop, so a page
         that came back and dropped again still gets its socket budget, capped
-        by the absolute deadline. A deadline that already passed is kept.
+        by the absolute deadline. A deadline that already passed is kept,
+        and so is a socket-stage deadline that no new socket ended yet (a
+        repeated call does not extend it).
         """
         if self.page_expired(now):
             return
+        if self.page_deadline is not None and not self.page_socket_back:
+            return
         if self.page_departed_at is None:
             self.page_departed_at = now
+        self.page_socket_back = False
         self.page_deadline = min(now + self._page_grace_s, self.page_reload_deadline())
 
     def on_page_socket_back(self, now: float) -> None:
@@ -263,6 +277,7 @@ class VisitLiveness:
             return
         if self.page_departed_at is None:
             self.page_departed_at = now
+        self.page_socket_back = True
         self.page_deadline = self.page_reload_deadline()
 
     def on_page_back(self, now: float) -> None:
@@ -275,6 +290,7 @@ class VisitLiveness:
             return
         self.page_departed_at = None
         self.page_deadline = None
+        self.page_socket_back = False
 
     # ------------------------------------------------------------------
     # 对端离开

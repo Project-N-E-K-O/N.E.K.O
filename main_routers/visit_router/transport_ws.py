@@ -40,7 +40,9 @@ replacement connection keeps the pause and calls
 ``liveness.on_page_socket_back`` (the SDK reload gets the absolute reload
 deadline of design §4.8); only once its iframe is back in the vendor room
 (first ``state`` joined / connected, after its own preflight and
-credentials, before the deadline) does the session resend ``hello``, resume
+credentials, before the deadline; an iframe that only gets there after the
+deadline is sent ``stop`` and closed, it must not stay in the room) does the
+session resend ``hello``, resume
 the outbox and clear the deadline (``liveness.on_page_back``), then exactly
 one full ``media`` snapshot from
 ``session.media_snapshot()`` follows. A re-entry whose preparation failed is
@@ -249,7 +251,11 @@ class VisitTransportSession(ABC):
         """The current transport socket dropped: the reload deadline runs, delivery timers pause.
 
         The timing lives in ``VisitLiveness.on_page_lost`` (socket stage:
-        ``min(this drop + 20 s, absolute)``).
+        ``min(this drop + 20 s, absolute)``). When ``tick`` later reports
+        ``local_page_lost`` the page is not in the vendor room (the transport
+        stops an iframe that re-enters too late), so no data-channel ``leave``
+        can go out; the peer sees the vendor-level leave and ends within its
+        rejoin grace / heartbeat clock.
         """
         self.liveness.on_page_lost(now)
         self.outbox.pause(now, reason=PAUSE_PAGE_RELOAD)
@@ -288,10 +294,6 @@ class VisitTransportSession(ABC):
     def on_page_rejoin_committed(self, now: float) -> None:
         """The whole re-entry was prepared: the reload is over, clear the page deadline."""
         self.liveness.on_page_back(now)
-
-    def page_reload_expired(self, now: float) -> bool:
-        """True when the running page reload already missed its deadline (re-entry refused)."""
-        return bool(self.liveness.page_expired(now))
 
     def now(self) -> float:
         """Clock of the lifecycle callbacks: the one ``liveness`` / ``outbox`` run on (monotonic)."""
@@ -678,9 +680,13 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
         return
     now = session.now()
-    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost
-    if session.page_reload_expired(now):
-        logger.warning("visit transport: page reload deadline passed, not re-entering")
+    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
+    # 新 iframe 已经用同一个 vid 回到房里，不能留着：对端会因此取消 peer_left 宽限，
+    # 本侧却已判死，两侧结果不一致。发 stop 让它离房，再关掉这条 socket（之后的帧一概不处理）
+    if session.liveness.page_expired(now):
+        logger.warning("visit transport: page reload deadline passed, stopping the late iframe")
+        await _send_on(conn, {"type": "stop"})
+        _spawn_close(conn, CLOSE_NORMAL, "page reload deadline passed")
         return
     try:
         # 快照最先，且按实际下发的那条（含 type、大小上限）检查：它失败时 outbox 仍保持
