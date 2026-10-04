@@ -2079,3 +2079,22 @@ async def test_report_is_not_marked_unavailable_while_another_upload_copy_remain
     # 封存文件本轮照常传上去：举报不能带着「转录不可用」的诊断
     (visit_id, doc), = reports.calls
     assert not stream.exists() and "transcript_unavailable" not in doc
+
+
+@pytest.mark.parametrize("damage", ["sealed_only", "stream_only"])
+async def test_corrupt_upload_marks_its_queued_report_transcript_unavailable(tmp_path, damage):
+    v = vid(100)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    if damage == "sealed_only":
+        (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # 只剩坏掉的封存文件
+    else:
+        _write_stream(tmp_path, v, [{"kind": "line"}])                       # 流水没有头行：损坏
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 转录损坏、再也传不上去：举报照常提交，并记下转录不可用的原因
+    (visit_id, doc), = reports.calls
+    assert doc["transcript_unavailable"] == "corrupt" and not list(d.glob(f"{v}.upload*"))

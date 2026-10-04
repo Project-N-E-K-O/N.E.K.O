@@ -696,6 +696,9 @@ async def _upload_pending(
         elif not await _drop_corrupt_sealed(spool_dir, visit_id):
             # 流水坏了、旁边那份上传文件也不是本场的有效文件：它删不掉就先挡住举报
             pending.add(visit_id)
+        else:
+            # 流水坏了、也没有有效的封存文件：这场转录再也传不上去，排队的举报记下原因
+            await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
     for visit_id in sorted(sealed):
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
@@ -717,6 +720,8 @@ async def _upload_pending(
             # 删掉它（不交给上传回调），排队的举报随后照常提交
             if not await _drop_corrupt_sealed(spool_dir, visit_id):
                 pending.add(visit_id)
+            else:
+                await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
             continue
         if upload_transcript is None:
             pending.add(visit_id)
