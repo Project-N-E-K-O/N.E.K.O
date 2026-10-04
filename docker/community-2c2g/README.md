@@ -223,7 +223,7 @@ sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实
 ```bash
 sudo rm -f /etc/cron.d/neko-watchdog
 sudo rm -f /opt/neko/watchdog.sh
-
+```
 ---
 
 ## 赞助与支持（求赞助区）
