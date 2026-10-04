@@ -307,6 +307,21 @@ def test_failed_preflight_is_recorded_and_no_credentials_are_sent(app, session):
     assert session.unsupported == ["preflight"]
 
 
+def test_failed_preflight_hook_does_not_fetch_credentials(app):
+    class _Broken(FakeSession):
+        async def on_preflight(self, caps):
+            raise RuntimeError("state update failed")
+
+    s = _Broken()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN)
+    with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        _sync(ws)
+    assert s.issued == 0
+
+
 def test_credentials_are_sent_once_per_connection(app, session):
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)

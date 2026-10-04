@@ -609,7 +609,10 @@ async def test_livekit_url_host_must_be_allowlisted(servers, monkeypatch):
     monkeypatch.setattr(vs, "VISIT_LIVEKIT_HOSTS", frozenset({LIVEKIT_HOST}))
     creds = await _host()
     assert creds.vendor == {"livekit": {"url": servers.livekit_url, "token": LIVEKIT_TOKEN, "ttl_s": 600}}
-    for url in (f"wss://evil.test/rtc", f"ws://{LIVEKIT_HOST}/rtc", f"wss://{LIVEKIT_HOST}.evil.test/"):
+    servers.livekit_url = f"wss://{LIVEKIT_HOST}:bad/rtc"
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _host()
+    for url in ("wss://evil.test/rtc", f"ws://{LIVEKIT_HOST}/rtc", f"wss://{LIVEKIT_HOST}.evil.test/"):
         servers.livekit_url = url
         with pytest.raises(cr.VisitLivekitHostRejected):
             await _host()
@@ -659,6 +662,17 @@ async def test_each_vendor_lifetime_field_is_checked_on_its_own(servers, grant_t
     # vendor.trtc.expire 与 vendor_expires_at 各自校验：只改其中一个也要拒
     servers.vendor_ttl = grant_ttl
     servers.vendor_expires_ttl = expires_ttl
+    with pytest.raises(cr.VisitServersUnreachable):
+        await _guest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["trtc", "livekit"])
+async def test_grant_ttl_must_match_the_absolute_vendor_expiry(servers, monkeypatch, transport):
+    monkeypatch.setattr(vs, "VISIT_LIVEKIT_HOSTS", frozenset({LIVEKIT_HOST}))
+    servers.transport = transport
+    servers.vendor_ttl = 1
+    servers.vendor_expires_ttl = 600
     with pytest.raises(cr.VisitServersUnreachable):
         await _guest()
 

@@ -455,12 +455,16 @@ def _sdk_caps(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_HOOK_FAILED = object()
+
+
 async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs: Any) -> Any:
+    """Await a runtime hook; an exception is logged and returns ``_HOOK_FAILED``."""
     try:
         return await getattr(session, hook)(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - runtime 回调出错不能拖垮这条 socket
         logger.warning("visit transport: %s hook failed: %s", hook, type(exc).__name__)
-        return None
+        return _HOOK_FAILED
 
 
 def _is_current(link: _Link, conn: _Connection) -> bool:
@@ -480,11 +484,11 @@ async def _handle_frame(
             conn.preflight_seen = True
             ok = msg.get("preflight_ok") is True
             caps = _record_preflight(session, msg, ok)
-            await _call(session, "on_preflight", caps)
-            if not ok:
+            # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证
+            if await _call(session, "on_preflight", caps) is _HOOK_FAILED or not ok:
                 return
             creds = await _call(session, "issue_credentials")
-            if creds is None:
+            if creds is None or creds is _HOOK_FAILED:
                 return
             if not isinstance(creds, Mapping) or creds.get("type") != "credentials" or creds.get("refresh"):
                 logger.warning("visit transport: issue_credentials returned a non-credentials message")

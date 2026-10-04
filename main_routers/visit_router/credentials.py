@@ -615,6 +615,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
+        _ = parsed.port  # 非法端口（wss://host:bad）在这里抛 ValueError
     except ValueError:
         raise _BadResponse("vendor.livekit.url") from None
     allowed = allowed_livekit_hosts()
@@ -658,6 +659,9 @@ def _parse_credentials(
         vendor = {"trtc": _parse_trtc(vendor_raw.get("trtc"), vid=vid, visit_id=visit_id)}
     else:
         vendor = {"livekit": _parse_livekit(vendor_raw.get("livekit"))}
+    # 相对时长与绝对到期要对得上：到期时刻不能比「现在 + 授权时长」更晚
+    grant_ttl = vendor[transport]["expire" if transport == "trtc" else "ttl_s"]
+    _need(vendor_expires_at - now <= grant_ttl + VISIT_TICKET_CLOCK_TOLERANCE_S, "vendor_expires_at")
 
     ticket = payload.get("identity_ticket")
     _need(isinstance(ticket, str), "identity_ticket")
