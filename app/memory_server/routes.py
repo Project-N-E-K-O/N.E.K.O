@@ -2874,19 +2874,31 @@ def _keyed_duplicate_response(shape: str, contexts: list[dict]) -> dict:
 def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
     """Canonical hash of what a keyed request asks to be extracted.
 
-    Covers every ``input_history`` (by position), ``subject_epochs`` and
-    ``language``: the fields that decide which facts and locale state are
-    produced and whether they may land.
+    Covers every ``input_history`` (by position), ``subject_epochs``,
+    ``language`` and the trust inputs (``speaker_id``, tier / base trust,
+    activity events, channel): the fields that decide which facts, locale
+    state and trust mutations are produced and whether they may land.
     Display names / speaker labels are left out on purpose: they are
     cosmetic set-to-value data a caller may legitimately refresh between
     retries of the same batch.
     """
-    histories = (
-        [req.input_history] if req.segments is None
-        else [segment.input_history for segment in req.segments]
-    )
+    sources = [req] if req.segments is None else list(req.segments)
+    histories = [source.input_history for source in sources]
+
+    def _trust(source) -> dict:
+        events = getattr(source, "speaker_activity_events", None) or []
+        return {
+            "speaker_id": getattr(source, "speaker_id", None),
+            "speaker_tier": getattr(source, "speaker_tier", None),
+            "speaker_base_trust": getattr(source, "speaker_base_trust", None),
+            "speaker_trust": getattr(source, "speaker_trust", None),
+            "speaker_channel": getattr(source, "speaker_channel", None),
+            "activity": [[event.id, event.count] for event in events],
+        }
+
     payload = {
         "histories": histories,
+        "trust": [_trust(source) for source in sources],
         "subject_epochs": req.subject_epochs or {},
         # 语言决定抽取语境与暂存里的语言状态项，同属会改变效果的字段
         "language": req.language,
@@ -3374,8 +3386,12 @@ async def _process_scoped_history_keyed(
                 contexts=contexts,
                 prompt_segments=prompt_segments,
             )
+            # 生成期间有清除推进了某个 subject 的 forget generation：它的产物从一开始就
+            # 记为丢弃再落盘。否则「暂存已写、还没应用」之间崩溃后，重试只能读到清除之后
+            # 的 generation，会把清除之前抽出的事实当成新的写回去
+            _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
             try:
-                await idempotency.write_staging(lanlan_name, key, staging)
+                # 先记带请求身份的 pending、再写暂存：不会出现没有身份记录的孤儿暂存
                 await idempotency.update_key(
                     lanlan_name,
                     key,
@@ -3385,6 +3401,7 @@ async def _process_scoped_history_keyed(
                         request=fingerprint,
                     ),
                 )
+                await idempotency.write_staging(lanlan_name, key, staging)
             except MaintenanceModeError:
                 raise
             except Exception as exc:
@@ -3446,6 +3463,36 @@ async def _process_scoped_history_keyed(
         return response
 
 
+def _mark_items_forgotten_during_generation(
+    lanlan_name: str, staging: dict, contexts: list[dict], generations: dict[int, int] | None,
+) -> None:
+    if not generations:
+        return
+    changed = {
+        index for index, context in enumerate(contexts)
+        if index in generations
+        and runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
+        != generations[index]
+    }
+    if not changed:
+        return
+    applied = staging.setdefault("applied", [])
+    for item in staging.get("items") or []:
+        if item.get("segment") in changed and item.get("kind") != _KEYED_ITEM_LOCALE:
+            applied.append({"seq": item["seq"], "dropped_forget_during_generation": True})
+
+
+def _fingerprint_of_staging(document: dict) -> dict | None:
+    segments = document.get("segments")
+    if not isinstance(segments, list) or not isinstance(document.get("shape"), str):
+        return None
+    return {
+        "shape": document["shape"],
+        "wire_keys": [seg.get("wire_key") for seg in segments if isinstance(seg, dict)],
+        "content_hash": document.get("request_hash"),
+    }
+
+
 async def _cancel_staged_writes_for_subjects(
     lanlan_name: str, subject_keys: set[str],
 ) -> int:
@@ -3478,7 +3525,12 @@ async def _cancel_staged_writes_for_subjects(
             await idempotency.update_key(
                 lanlan_name,
                 key,
-                idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+                # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的
+                # cancelled 记录会让别的请求借这个键拿到 duplicate
+                idempotency.transition(
+                    idempotency.KEY_STATE_CANCELLED,
+                    request=_fingerprint_of_staging(document),
+                ),
             )
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1

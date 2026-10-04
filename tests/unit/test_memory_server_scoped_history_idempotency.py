@@ -424,7 +424,11 @@ async def test_forget_while_generation_in_flight_drops_every_item(env):
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
     final_journal = journals[-1]
     assert final_journal["applied"]
-    assert all(entry.get("dropped_tombstone") for entry in final_journal["applied"])
+    # 生成期间清除推进了 generation：产物在落暂存时就记为丢弃（墓碑是第二道）
+    assert all(
+        entry.get("dropped_tombstone") or entry.get("dropped_forget_during_generation")
+        for entry in final_journal["applied"]
+    )
     assert env.persona.display_names == []
     tombstones = json.loads(
         Path(env.idem.tombstones_path(NAME)).read_text(encoding="utf-8")
@@ -786,25 +790,72 @@ async def test_pending_key_without_staging_rejects_another_request(env):
     assert env.llm.calls == 1
 
 
-async def test_orphan_staging_gets_a_fingerprinted_record_before_apply(env):
-    env.llm.responses = [SINGLE_FACTS]
-    real_update = env.idem.update_key
+async def test_pending_record_is_written_before_staging(env):
+    """Failing between the two writes leaves a fingerprinted pending key, never an orphan staging file."""
+    env.llm.responses = [SINGLE_FACTS, SINGLE_FACTS]
+    real_write = env.idem.write_staging
     state = {"fail": True}
 
-    async def flaky_update(lanlan_name, key, fn):
+    async def flaky_write(lanlan_name, key, document):
         if state["fail"]:
             state["fail"] = False
-            raise OSError("injected: staging written, pending not recorded")
-        return await real_update(lanlan_name, key, fn)
+            raise OSError("injected: pending recorded, staging not written")
+        return await real_write(lanlan_name, key, document)
 
-    env.monkeypatch.setattr(env.idem, "update_key", flaky_update)
+    env.monkeypatch.setattr(env.idem, "write_staging", flaky_write)
     with pytest.raises(HTTPException):
         await _post(env, _single_body(display_name=None))
-    assert _staging_file(env, KEY_GROUP).exists() and _key_state(env, KEY_GROUP) is None
-    result = await _post(env, _single_body(display_name=None))
-    assert result["status"] == "processed" and _key_state(env, KEY_GROUP) == "done"
+    assert not _staging_file(env, KEY_GROUP).exists() and _key_state(env, KEY_GROUP) == "pending"
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body(display_name=None, subject=PART))
+    assert excinfo.value.status_code == 422
+    result = await _post(env, _single_body(display_name=None))
+    assert result["status"] == "processed" and _key_state(env, KEY_GROUP) == "done"
+
+
+async def test_cancelling_staging_without_a_record_keeps_its_identity(env):
+    idem = env.idem
+    staging = {"key": KEY_GROUP, "shape": "single", "subjects": [GROUP_KEY],
+               "segments": [{"wire_key": GROUP_KEY}], "request_hash": "h1", "items": [], "applied": []}
+    await idem.write_staging(NAME, KEY_GROUP, staging)
+    await env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY})
+    record = await idem.read_key(NAME, KEY_GROUP)
+    assert record["state"] == "cancelled"
+    assert record["request"] == {"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h1"}
+
+
+async def test_forget_during_generation_survives_a_crash_before_apply(env):
+    env.llm.responses = [SINGLE_FACTS]
+    env.llm.gate = asyncio.Event()
+    env.llm.entered = asyncio.Event()
+    real_apply = env.routes._apply_keyed_staging
+    crash = {"armed": True}
+
+    async def crash_before_apply(*args, **kwargs):
+        if crash["armed"]:
+            crash["armed"] = False
+            raise RuntimeError("killed after staging, before apply")
+        return await real_apply(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_staging", crash_before_apply)
+    task = asyncio.create_task(_post(env, _single_body(display_name=None)))
+    await asyncio.wait_for(env.llm.entered.wait(), timeout=5)
+    await _forget(env, GROUP)                      # 不带代数的清除落在生成期间
+    env.llm.gate.set()
+    with pytest.raises(HTTPException):
+        await asyncio.wait_for(task, timeout=5)
+    env.llm.gate = None
+    result = await _post(env, _single_body(display_name=None))     # 重试读到的是清除之后的 generation
+    assert result["created"] == 0 and _facts_of(env, GROUP) == []
+
+
+async def test_trust_inputs_are_part_of_the_request_identity(env):
+    env.llm.responses = [BATCH_FACTS]
+    await _post(env, _segments_body())
+    changed = _segments_body()
+    changed["segments"][0]["speaker_id"] = "neko_visit:c_other0000000000000000000"
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, changed)
     assert excinfo.value.status_code == 422
 
 
