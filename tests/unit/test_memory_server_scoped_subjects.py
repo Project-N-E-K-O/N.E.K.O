@@ -479,7 +479,7 @@ async def test_staging_of_a_key_with_an_unknown_state_is_still_listed(env):
         "key": "k-odd", "segments": [{"wire_key": subject.key, "subject": subject.as_entry_fields()}],
         "items": [], "applied": [],
     })
-    _write(env.root / NAME / "idempotency_keys.json", {"k-odd": {"request": "x"}})
+    _write(env.root / NAME / "idempotency_keys.json", {"k-odd": {"request": "x"}, "k-list": {"state": ["done"]}})
     result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
     staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
     # 只有明确终结（done / cancelled）的键才跳过：状态缺失 / 坏了时暂存可能是唯一的明文，照常列出

@@ -5263,7 +5263,8 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
     if isinstance(records, dict):
         for key, record in records.items():
             # 只认明确的终态：状态缺失 / 坏了的记录写路径会 fail closed，暂存可能是唯一的明文，照常列出
-            if isinstance(key, str) and key and isinstance(record, dict) and record.get("state") in TERMINAL_KEY_STATES:
+            state = record.get("state") if isinstance(record, dict) else None
+            if isinstance(key, str) and key and isinstance(state, str) and state in TERMINAL_KEY_STATES:
                 terminal_files.add(f"{key_digest(key)}.json")
     subjects = []
     for path, document, _mtime in _list_staging_sync(directory):
