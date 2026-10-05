@@ -1052,3 +1052,20 @@ def test_outer_tls_hint_repeats_after_an_hour(monkeypatch, caplog):
             middleware._warn_unlabelled_tls()
     # An early (even unauthenticated) trigger cannot silence it for good.
     assert len([r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]) == 2
+
+
+@pytest.mark.parametrize("base,host,origin", [
+    ("http://neko.example", "neko.example:80", "http://neko.example"),
+    ("https://neko.example", "neko.example:443", "https://neko.example"),
+    ("http://neko.example", "neko.example", "http://neko.example:80"),
+])
+def test_same_origin_treats_explicit_default_port_as_omitted(remote_app, base, host, origin):
+    """A proxy may forward Host ":80"/":443" while browsers omit default ports."""
+    page = remote_app.get(base + "/", headers={"Accept": "text/html", "Host": host})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post(base + "/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": origin, "Host": host}, follow_redirects=False)
+    assert response.status_code == 303
+    assert remote_app.post(base + "/private", headers={"Origin": origin, "Host": host}).status_code == 200
+    other_port = origin.split("://")[0] + "://neko.example:8080"
+    assert remote_app.post(base + "/private", headers={"Origin": other_port, "Host": host}).status_code == 403

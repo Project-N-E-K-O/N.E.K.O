@@ -285,21 +285,35 @@ def _same_origin(request: Request) -> bool:
     origin = request.headers.get("origin", "").rstrip("/")
     if not origin:
         return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
-    own = _own_origin(request)
-    pinned = _pinned_origin()
-    if origin == own or (pinned and origin == pinned):
+    page = _origin_key(origin)
+    if page is None:
+        return False
+    own = _origin_key(_own_origin(request))
+    pinned = _origin_key(_pinned_origin())
+    if any(entry and entry[:3] == page[:3] for entry in (own, pinned)):
         return True
     # TLS ended at an outer gateway that forwards no trusted X-Forwarded-Proto:
     # the page is https:// on this very Host, which is not a foreign origin.
-    # Ports compare as effective HTTPS ports, so Host ":443" equals no port.
-    if not (is_behind_proxy() and own.startswith("http://") and origin.startswith("https://")):
-        return False
+    # A portless Host counts as the gateway's default 443.
+    return bool(is_behind_proxy() and own and own[0] == "http" and page[0] == "https" and page[1] == own[1]
+                and page[2] == (own[3] or 443))
+
+
+def _origin_key(value: str) -> tuple[str, str, int, int | None] | None:
+    """(scheme, host, effective port, explicit port) of a bare origin, else None.
+
+    Browsers omit default ports from Origin while proxies may forward them in
+    Host (":80"/":443"), so origins compare by effective port, not by string.
+    """
     try:
-        page, entry = urlsplit(origin), urlsplit(own)
-        return (page.username is None and not page.path and not entry.path
-                and page.hostname == entry.hostname and (page.port or 443) == (entry.port or 443))
+        parsed = urlsplit(value)
+        port = parsed.port
     except ValueError:
-        return False
+        return None
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+        return None
+    return parsed.scheme, parsed.hostname, port or (443 if parsed.scheme == "https" else 80), port
 
 
 @lru_cache(maxsize=8)
