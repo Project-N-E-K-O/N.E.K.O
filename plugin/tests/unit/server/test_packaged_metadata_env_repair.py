@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -131,6 +132,116 @@ def _cache_path(plugin_dir: Path) -> Path:
     path = packaged_metadata.local_packaged_metadata_path(plugin_dir)
     assert path is not None
     return path
+
+
+def test_package_updates_bound_the_host_cache_and_preserve_current_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(packaged_metadata, "_LOCAL_METADATA_CACHE_MAX_FILES", 2)
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    paths = []
+    for release in range(5):
+        package = _read_json(plugin_dir / _META)
+        package["release"] = release
+        packaged_bytes = json.dumps(package).encode("utf-8")
+        (plugin_dir / _META).write_bytes(packaged_bytes)
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        paths.append(_cache_path(plugin_dir))
+        timestamp = (release + 1) * 1_000_000_000
+        os.utime(paths[-1], ns=(timestamp, timestamp))
+        assert (plugin_dir / _META).read_bytes() == packaged_bytes
+
+    assert set(paths[-1].parent.glob("*.json")) == set(paths[-2:])
+    assert packaged_metadata.read_packaged_metadata(
+        plugin_dir
+    ).built_in_this_environment
+
+
+def test_cache_retention_preserves_business_files_and_directories(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(packaged_metadata, "_LOCAL_METADATA_CACHE_MAX_FILES", 1)
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    current = _cache_path(plugin_dir)
+    current.parent.mkdir(parents=True)
+    business = current.parent / "notes.json"
+    business.write_text("business data", encoding="utf-8")
+    directory = current.parent / ("a" * 64 + ".json")
+    directory.mkdir()
+    (directory / "keep.txt").write_text("nested data", encoding="utf-8")
+    obsolete = current.parent / ("b" * 64 + ".json")
+    obsolete.write_text("old generated cache", encoding="utf-8")
+
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    assert current.is_file()
+    assert not obsolete.exists()
+    assert business.read_text(encoding="utf-8") == "business data"
+    assert (directory / "keep.txt").read_text(encoding="utf-8") == "nested data"
+
+
+def test_cache_prune_failure_does_not_fail_a_successful_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(packaged_metadata, "_LOCAL_METADATA_CACHE_MAX_FILES", 1)
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    current = _cache_path(plugin_dir)
+    current.parent.mkdir(parents=True)
+    obsolete = current.parent / ("c" * 64 + ".json")
+    obsolete.write_text("old generated cache", encoding="utf-8")
+    original_unlink = Path.unlink
+    attempted = []
+
+    def deny_obsolete(path, *args, **kwargs):
+        if path == obsolete:
+            attempted.append(path)
+            raise PermissionError("cache is temporarily held open")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_obsolete)
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    assert attempted == [obsolete]
+    assert obsolete.exists()
+    assert packaged_metadata.read_packaged_metadata(
+        plugin_dir
+    ).built_in_this_environment
+
+
+def test_cache_retention_does_not_delete_a_concurrently_refreshed_file(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(packaged_metadata, "_LOCAL_METADATA_CACHE_MAX_FILES", 1)
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    current = _cache_path(plugin_dir)
+    current.parent.mkdir(parents=True)
+    obsolete = current.parent / ("d" * 64 + ".json")
+    obsolete.write_text("old", encoding="utf-8")
+    os.utime(obsolete, ns=(1, 1))
+    original_stat = Path.stat
+
+    def refresh_before_recheck(path, *args, **kwargs):
+        if path == obsolete:
+            path.write_text("refreshed by another writer", encoding="utf-8")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", refresh_before_recheck)
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    assert obsolete.read_text(encoding="utf-8") == "refreshed by another writer"
 
 
 # ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────

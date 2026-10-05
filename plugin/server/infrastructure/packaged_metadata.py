@@ -80,6 +80,53 @@ from utils.file_utils import atomic_write_bytes
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 PACKAGED_METADATA_CACHE_DIRECTORY = ".neko-plugin-metadata"
+_LOCAL_METADATA_CACHE_MAX_FILES = 128
+_local_metadata_cache_cleanup_lock = threading.Lock()
+
+
+def _prune_local_metadata_cache(target: Path) -> None:
+    """Bound generated host caches without touching installed or business files."""
+    with _local_metadata_cache_cleanup_lock:
+        try:
+            candidates: list[tuple[int, Path, os.stat_result]] = []
+            with os.scandir(target.parent) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if (
+                        len(name) != 69
+                        or not name.endswith(".json")
+                        or any(char not in "0123456789abcdef" for char in name[:-5])
+                        or name == target.name
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    # DirEntry.stat() can omit the inode on Windows; use the
+                    # same stat API as the replacement check below.
+                    info = os.stat(entry.path, follow_symlinks=False)
+                    candidates.append((info.st_mtime_ns, Path(entry.path), info))
+            candidates.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+            for _mtime, path, scanned in candidates[
+                _LOCAL_METADATA_CACHE_MAX_FILES - 1 :
+            ]:
+                try:
+                    current = path.stat(follow_symlinks=False)
+                    # Another writer may have refreshed this cache since the scan.
+                    if (
+                        current.st_ino == scanned.st_ino
+                        and current.st_mtime_ns == scanned.st_mtime_ns
+                        and current.st_size == scanned.st_size
+                        and stat.S_ISREG(current.st_mode)
+                    ):
+                        path.unlink()
+                except OSError as exc:
+                    logger.debug(
+                        "could not prune host metadata cache {}: {}", path, exc
+                    )
+        except OSError as exc:
+            # Cache retention is optional; a successful write remains usable.
+            logger.debug(
+                "could not scan host metadata cache {}: {}", target.parent, exc
+            )
 
 
 def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
@@ -634,7 +681,9 @@ def write_local_packaged_metadata(
 
     Installed files are never modified. The caller verifies the manifest id
     and effective entry declarations; the shared writer verifies the source
-    tree stayed unchanged during the scan.
+    tree stayed unchanged during the scan. After a successful write, keep at
+    most 128 generated cache files, retaining the current file and the newest
+    remaining files. Cleanup failures leave the successful cache usable.
     """
     if before_scan is None:
         return False
@@ -657,6 +706,7 @@ def write_local_packaged_metadata(
         subject="host packaged metadata cache",
     ):
         return False
+    _prune_local_metadata_cache(target)
     logger.info(
         "host packaged metadata cache written for this environment "
         "(build_env={}); the packaged file is left untouched: path={}",
