@@ -617,8 +617,10 @@ def _mark_tombstone_erased_sync(path: str, mutate: Callable[[dict], bool]) -> No
         try:
             shutil.copy2(path, quarantine)
             logger.error(f"[Idempotency] 墓碑文件不可读，已留底为 {os.path.basename(quarantine)} 并重建")
-        except FileNotFoundError:
-            pass
+        except OSError as exc:
+            # 留底只是排查用：复制不了（空间不够、文件已不在）不能挡住记下这次擦除已完成——
+            # 否则接口回 500，同代数重试认不出上次已擦过，会再擦一遍
+            logger.error(f"[Idempotency] 墓碑文件不可读，留底失败（{exc}），直接重建")
         data = {}
     if mutate(data):
         _write_json_object(path, data)

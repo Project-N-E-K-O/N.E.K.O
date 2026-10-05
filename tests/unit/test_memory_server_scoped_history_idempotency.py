@@ -3044,6 +3044,22 @@ async def test_concurrent_erase_marks_on_a_corrupt_tombstone_file_keep_both_rows
     assert env.idem.erased_epoch(tombstones, "A") == 3 and env.idem.erased_epoch(tombstones, "B") == 4
 
 
+async def test_failed_backup_copy_does_not_block_the_rebuild(env):
+    import shutil
+
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    def no_space(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    env.monkeypatch.setattr(shutil, "copy2", no_space)
+    await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
+    # 留底只是排查用：复制不了也照样记下擦除已完成，否则同代数重试会再擦一遍
+    assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 2
+
+
 async def test_failed_rebuild_of_a_corrupt_tombstone_file_leaves_it_in_place(env):
     path = Path(env.idem.tombstones_path(NAME))
     path.parent.mkdir(parents=True, exist_ok=True)
