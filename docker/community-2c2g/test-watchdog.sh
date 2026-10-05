@@ -236,7 +236,8 @@ sh "$ROOT/install.sh"
 grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800 "$ROOT/cron/neko-watchdog"
 cp "$ROOT/cron/neko-watchdog" "$ROOT/cron-before"
 printf 'NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m\n' >> "$ROOT/cron/neko-watchdog"
-if sh "$ROOT/install.sh"; then exit 1; fi
+if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+grep -q 'duplicate startup grace settings' "$ROOT/install-error"
 grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m "$ROOT/cron/neko-watchdog"
 cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
 # A failed second mktemp and TERM during copying must leave no temporary files.
