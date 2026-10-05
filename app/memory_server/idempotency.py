@@ -51,6 +51,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import time
 import weakref
 from collections.abc import Callable, Iterable
@@ -605,15 +606,17 @@ def _mark_tombstone_erased_sync(path: str, mutate: Callable[[dict], bool]) -> No
     try:
         data = _read_json_object(path)
     except IdempotencyCorruptError:
-        # 整份墓碑文件内容坏了：改名隔离（留着排查），以本次清除重建这一行。别的 subject 的围栏随
+        # 整份墓碑文件内容坏了：复制一份留底（排查用），以本次清除重建这一行。别的 subject 的围栏随
         # 之丢失，但永久 503 更糟——撤销流程永远完成不了，也没有任何东西会把文件修好。
         # 读失败（OSError）不走这里：完好的文件不能因为一次共享冲突被当成损坏隔离掉
-        # 改名前先过 cloudsave 闸：只读 / 快照导入期间改了名却写不回去，磁盘上就一份墓碑都没有了
+        # 先过 cloudsave 闸：只读 / 快照导入期间不动 memory 目录
         assert_cloudsave_writable(_config_manager(), operation="save", target=_cloudsave_target(path))
-        quarantine = f"{path}.corrupt-{int(time.time())}"
+        # 复制而不是改名，重建内容再原子覆盖原路径：覆盖失败（磁盘满）时原路径上仍是那份坏文件、
+        # 读路径照旧 fail closed，不会变成「没有墓碑」让所有围栏一起失效
+        quarantine = f"{path}.corrupt-{time.time_ns() // 1_000_000}-{os.getpid()}"
         try:
-            os.replace(path, quarantine)
-            logger.error(f"[Idempotency] 墓碑文件不可读，已隔离为 {os.path.basename(quarantine)} 并重建")
+            shutil.copy2(path, quarantine)
+            logger.error(f"[Idempotency] 墓碑文件不可读，已留底为 {os.path.basename(quarantine)} 并重建")
         except FileNotFoundError:
             pass
         data = {}

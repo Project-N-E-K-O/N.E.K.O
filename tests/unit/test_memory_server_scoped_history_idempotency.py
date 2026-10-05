@@ -3044,6 +3044,23 @@ async def test_concurrent_erase_marks_on_a_corrupt_tombstone_file_keep_both_rows
     assert env.idem.erased_epoch(tombstones, "A") == 3 and env.idem.erased_epoch(tombstones, "B") == 4
 
 
+async def test_failed_rebuild_of_a_corrupt_tombstone_file_leaves_it_in_place(env):
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    def disk_full(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    env.monkeypatch.setattr(env.idem, "atomic_write_json", disk_full)
+    with pytest.raises(OSError):
+        await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
+    # 重建写不回去：原路径上仍是那份坏文件（读路径照旧 fail closed），不能变成「没有墓碑」
+    assert path.read_text(encoding="utf-8") == "{not json"
+    with pytest.raises(env.idem.IdempotencyStateError):
+        await env.idem.read_tombstones(NAME)
+
+
 async def test_tombstone_read_failure_is_not_treated_as_corruption(env):
     path = Path(env.idem.tombstones_path(NAME))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3099,14 +3116,17 @@ async def test_display_name_after_a_segment_dropped_during_apply_is_not_written(
     assert env.routes._KEYED_ITEM_DISPLAY_NAME not in kinds and "facts" in kinds
 
 
-async def test_given_up_display_name_is_not_refreshed_on_the_recovery_retry(env):
+async def test_given_up_display_name_is_written_once_persona_recovers(env):
     env.llm.responses = [SINGLE_FACTS]
-
-    attempts = {"n": 0}
+    real_update = env.persona.aupdate_subject_display_name
+    written = []
 
     async def always_fail(*args, **kwargs):
-        attempts["n"] += 1
         raise OSError("persona.json is read-only")
+
+    async def record(*args, **kwargs):
+        written.append(args)
+        return await real_update(*args, **kwargs)
 
     env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", always_fail)
     for _ in range(2):
@@ -3121,10 +3141,10 @@ async def test_given_up_display_name_is_not_refreshed_on_the_recovery_retry(env)
     with pytest.raises(Exception):
         await _post(env, _single_body())                          # 第 3 次放弃显示名，但信赖池落盘失败
     env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", real_trust)
-    before = attempts["n"]
+    env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", record)
     await _post(env, _single_body())
-    # 放弃过的显示名项不在末尾刷新里重试：否则 persona 一直写不进时键永远到不了 done
-    assert _key_state(env, KEY_GROUP) == "done" and attempts["n"] == before
+    # 放弃过的显示名项在末尾刷新里照样试：persona 恢复可写后，键收尾前的重试把名字补上
+    assert _key_state(env, KEY_GROUP) == "done" and len(written) == 1
 
 
 async def test_failing_display_name_refresh_does_not_block_the_recovery_retry(env):

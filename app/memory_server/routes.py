@@ -3681,14 +3681,10 @@ async def _apply_keyed_staging(
         # 恢复的重试：之前尝试已写过的显示名项也按这次请求带来的当前值再盖一次（「置为该值」幂等）——
         # 显示名不在请求身份里，键停在 pending 期间改了名字，不能就此带着旧名收尾。被清除挡下的段不盖
         fenced = await _fenced_segments(lanlan_name, staging)
-        gave_up = {
-            entry.get("seq") for entry in applied
-            if isinstance(entry, dict) and entry.get("display_name_gave_up") is True
-        }
         for item in staging.get("items") or []:
             if (
                 item.get("kind") == _KEYED_ITEM_DISPLAY_NAME and item.get("seq") in journaled_before
-                and item.get("seq") not in gave_up and item.get("segment") not in fenced
+                and item.get("segment") not in fenced
             ):
                 current = display_names.get(item["segment"])
                 if not current:
@@ -3700,7 +3696,8 @@ async def _apply_keyed_staging(
                 except MaintenanceModeError:
                     raise
                 except Exception as exc:
-                    # 这里只是刷新成当前值，尽力而为：persona 一直写不进时不能让键永远到不了 done
+                    # 这里只是刷新成当前值，尽力而为：persona 一直写不进时不能让键永远到不了 done。
+                    # 之前放弃过的显示名项也照样试：persona 恢复可写后，键收尾前的重试顺手把名字补上
                     logger.warning(f"[scoped_history] {lanlan_name}: 恢复重试刷新显示名失败，跳过: {exc}")
 
 
