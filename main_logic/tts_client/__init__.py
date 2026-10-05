@@ -204,6 +204,10 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     """
     if not voice_id:
         return None
+    from .remote_voice import active_imported_voice
+    imported = active_imported_voice.get()
+    if imported and imported.get('remote_voice_id') == voice_id:
+        return imported
     try:
         cm = get_config_manager()
         voices = cm.get_voices_for_current_api()
@@ -299,6 +303,9 @@ def get_tts_worker(
           None when native TTS is unsupported
     """
     cm = get_config_manager()
+    from utils.config_manager.imported_voices import is_imported_voice_ref
+    from .remote_voice import bind_imported_voice_worker, unavailable_imported_voice_worker
+
     try:
         core_cfg = cm.get_core_config() or {}
     except Exception:
@@ -308,6 +315,25 @@ def get_tts_worker(
         logger.info("TTS disabled; using dummy TTS worker")
         return dummy_tts_worker, None, None
 
+    imported_voice = None
+    dispatch_manager = cm
+    if is_imported_voice_ref(voice_id):
+        try:
+            imported_voice = cm.get_imported_voice(voice_id)
+            if imported_voice:
+                from utils.voice_management.providers import get_adapter
+                from utils.voice_management.runtime_snapshot import VoiceRuntimeSnapshot
+                imported_runtime = get_adapter(imported_voice['provider']).resolve_runtime(cm)
+                if imported_runtime.scope_id != imported_voice.get('scope_id') or not imported_runtime.api_key:
+                    imported_voice = None
+                else:
+                    dispatch_manager = VoiceRuntimeSnapshot(cm, imported_runtime)
+        except Exception:
+            imported_voice = None
+        if not imported_voice:
+            legacy_metadata = _get_voice_meta(voice_id)
+            if not legacy_metadata or legacy_metadata.get('origin') == 'import':
+                return unavailable_imported_voice_worker, '', None
     tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
@@ -325,10 +351,10 @@ def get_tts_worker(
     # 改为按需惰性加载。
     _dispatch_ctx = _tts_providers.DispatchContext(
         core_config=core_cfg,
-        cm=cm,
-        voice_id=voice_id or '',
+        cm=dispatch_manager,
+        voice_id=(imported_voice['remote_voice_id'] if imported_voice else voice_id) or '',
         has_custom_voice=bool(has_custom_voice),
-        voice_meta_loader=lambda: _get_voice_meta(voice_id),
+        voice_meta_loader=lambda: imported_voice or _get_voice_meta(voice_id),
     )
     # Runtime fallback passes only the failed provider key here; all remaining
     # providers keep their established priority and selection behavior.
@@ -339,7 +365,15 @@ def get_tts_worker(
     )
     if special is not None:
         logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
+        if imported_voice:
+            return (
+                bind_imported_voice_worker(special[0], voice_id, imported_voice),
+                special[1], special[2],
+            )
         return special
+
+    if imported_voice:
+        return unavailable_imported_voice_worker, '', None
 
     # 克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）已折入
     # tts_provider_registry（priority 30/40/50，按 voice_meta.provider 选中），

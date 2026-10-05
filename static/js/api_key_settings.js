@@ -1034,7 +1034,51 @@ function renderKeyBook(registry, providers) {
         row.appendChild(input);
 
         container.appendChild(row);
+        if (providerKey === 'doubao_tts') {
+            container.appendChild(createDoubaoVoiceManagementSettings());
+        }
     });
+}
+
+const DOUBAO_VOICE_MANAGEMENT_FIELDS = [
+    ['doubaoVoiceManagementAccessKey', 'managementAccessKey', true],
+    ['doubaoVoiceManagementSecretKey', 'managementSecretKey', true],
+    ['doubaoVoiceManagementAppId', 'managementAppId', false],
+    ['doubaoVoiceManagementProjectName', 'managementProjectName', false],
+];
+
+function createDoubaoVoiceManagementSettings() {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'doubao-voice-management-settings';
+    fieldset.style.cssText = 'margin: 8px 0 18px; padding: 12px; border: 1px solid #cbe6f2; border-radius: 10px;';
+    const legend = document.createElement('legend');
+    legend.textContent = window.t ? window.t('voice.remote.managementTitle') : 'Doubao voice management';
+    fieldset.appendChild(legend);
+    const hint = document.createElement('p');
+    hint.textContent = window.t ? window.t('voice.remote.managementHint') : 'List queries require management credentials, plus ProjectName (new API) or AppId (legacy API). Manual import uses existing synthesis settings.';
+    fieldset.appendChild(hint);
+    for (const [field, labelKey, secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const row = document.createElement('div');
+        row.className = 'key-book-row';
+        const label = document.createElement('label');
+        label.htmlFor = field;
+        label.textContent = window.t ? window.t('voice.remote.' + labelKey) : labelKey;
+        const input = document.createElement('input');
+        input.type = 'text'; input.id = field; input.autocomplete = 'off';
+        if (secret) attachMaskBehavior(input);
+        row.append(label, input);
+        fieldset.appendChild(row);
+    }
+    return fieldset;
+}
+
+function doubaoVoiceManagementSettingsPayload() {
+    const payload = {};
+    for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const input = document.getElementById(field);
+        if (input) payload[field] = secret ? getRealKey(input) : input.value.trim();
+    }
+    return payload;
 }
 
 /**
@@ -2686,6 +2730,15 @@ async function loadCurrentApiKey() {
 
             // Load all assist API keys into Key Book inputs
             // Use api_key_registry as single source of truth for field mapping
+            for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+                const input = document.getElementById(field);
+                if (!input) continue;
+                if (secret) {
+                    attachMaskBehavior(input);
+                    setMaskedInput(input, data[field] || '', data[field + '_display'] || '');
+                }
+                else input.value = data[field] || '';
+            }
             Object.keys(_apiKeyRegistry).forEach(providerKey => {
                 if (providerKey === 'free') return;
                 // 当前核心 provider 对应的管理簿位置在上面已经用 data.api_key
@@ -3542,6 +3595,7 @@ async function save_button_down(e) {
     const payload = {
         apiKey: apiKeyForSave, coreApi, assistApi,
         ...bookPayload,
+        ...doubaoVoiceManagementSettingsPayload(),
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
         summaryModelUrl, summaryModelId, summaryModelApiKey,

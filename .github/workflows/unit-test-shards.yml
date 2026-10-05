@@ -142,6 +142,7 @@ jobs:
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
+          node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/api_key_secret_masking.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
           node tests/frontend/test_storage_error_messages_runtime.js

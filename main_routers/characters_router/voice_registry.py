@@ -411,7 +411,7 @@ async def delete_voice(voice_id: str):
     """Delete the specified voice."""
     try:
         _config_manager = get_config_manager()
-        deleted = _config_manager.delete_voice_for_current_api(voice_id)
+        deleted = await asyncio.to_thread(_config_manager.delete_voice_for_current_api, voice_id)
 
         if deleted:
             # 清理所有角色中使用该音色的引用

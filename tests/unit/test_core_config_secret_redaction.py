@@ -32,6 +32,8 @@ _CONFIG_SECRET_FIELDS = (
     *_ASSIST_API_KEY_FIELDS,
     'mcpToken',
     *_MODEL_API_KEY_FIELDS,
+    'doubaoVoiceManagementAccessKey',
+    'doubaoVoiceManagementSecretKey',
 )
 
 

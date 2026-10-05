@@ -2473,7 +2473,9 @@ async function playPreview(voiceId, btn, options = {}) {
 }
 
 // 加载音色列表
+let voiceListLoadGeneration = 0;
 async function loadVoices() {
+    const generation = ++voiceListLoadGeneration;
     const container = document.getElementById('voice-list-container');
     const refreshBtn = document.getElementById('refresh-voices-btn');
 
@@ -2499,8 +2501,10 @@ async function loadVoices() {
             console.warn('获取当前角色音色失败:', error);
             return '';
         });
+        if (generation !== voiceListLoadGeneration) return;
         const response = await fetchVoiceCloneLoaderResponse('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
+        if (generation !== voiceListLoadGeneration) return;
         if (!response.ok) {
             if (data && (data.error || data.detail)) {
                 throw new Error(data.error || data.detail);
@@ -2605,16 +2609,16 @@ async function loadVoices() {
         });
 
         // 创建音色列表项
-        voicesArray.forEach(({ voiceId, prefix, created_at, source, provider }) => {
+        voicesArray.forEach(({ voiceId, prefix, display_name, remote_voice_id, created_at, source, provider, can_overwrite, availability, overwrite_status }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
             item.dataset.voiceId = voiceId;
             item.tabIndex = 0;
             item.setAttribute('role', 'button');
-            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: prefix || voiceId }) : `应用音色 ${prefix || voiceId}`);
+            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: display_name || prefix || remote_voice_id || voiceId }) : `应用音色 ${display_name || prefix || remote_voice_id || voiceId}`);
             markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
-            const voiceName = prefix || voiceId;
+            const voiceName = display_name || prefix || remote_voice_id || voiceId;
             const displayName = voiceName.length > 30 ? voiceName.substring(0, 30) + '...' : voiceName;
 
             let dateStr = '';
@@ -2668,6 +2672,34 @@ async function loadVoices() {
             voiceActions.appendChild(previewBtn);
             voiceActions.appendChild(deleteBtn);
 
+            const available = !availability || availability === 'available';
+            if (!available) {
+                previewBtn.disabled = true;
+                item.setAttribute('aria-disabled', 'true');
+            }
+            const updatePending = overwrite_status === 'processing' || overwrite_status === 'unknown';
+            if (can_overwrite === true && availability === 'available' && !updatePending && window.RemoteVoiceManager) {
+                const overwriteBtn = document.createElement('button');
+                overwriteBtn.type = 'button';
+                overwriteBtn.className = 'voice-preview-btn';
+                overwriteBtn.textContent = window.t ? window.t('voice.remote.overwrite') : 'Overwrite voice';
+                overwriteBtn.onclick = event => {
+                    event.stopPropagation();
+                    window.RemoteVoiceManager.openOverwrite(voiceId, { provider, remote_voice_id });
+                };
+                voiceActions.appendChild(overwriteBtn);
+            }
+            if (updatePending && availability === 'available' && window.RemoteVoiceManager) {
+                const statusBtn = document.createElement('button');
+                statusBtn.type = 'button'; statusBtn.className = 'voice-preview-btn';
+                statusBtn.textContent = window.t ? window.t('voice.remote.refreshStatus') : 'Refresh update status';
+                statusBtn.onclick = event => {
+                    event.stopPropagation();
+                    window.RemoteVoiceManager.openStatus(voiceId, { provider, remote_voice_id });
+                };
+                voiceActions.appendChild(statusBtn);
+            }
+
             const infoDiv = document.createElement('div');
             infoDiv.className = 'voice-info';
 
@@ -2678,8 +2710,15 @@ async function loadVoices() {
 
             const idDiv = document.createElement('div');
             idDiv.className = 'voice-id';
-            idDiv.textContent = `ID: ${voiceId}`;
+            idDiv.textContent = `ID: ${remote_voice_id || voiceId}`;
             infoDiv.appendChild(idDiv);
+
+            if (!available) {
+                const unavailableDiv = document.createElement('div');
+                unavailableDiv.className = 'remote-voice-warning';
+                unavailableDiv.textContent = window.t ? window.t('voice.remote.unavailable') : 'Unavailable with the current configuration';
+                infoDiv.appendChild(unavailableDiv);
+            }
 
             if (dateStr) {
                 const dateDiv = document.createElement('div');
@@ -2690,12 +2729,12 @@ async function loadVoices() {
 
             item.appendChild(infoDiv);
             item.appendChild(voiceActions);
-            item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+            item.addEventListener('click', () => { if (available) applyVoiceToCurrentCharacter(voiceId, displayName, item); });
             item.addEventListener('keydown', (event) => {
                 if (event.target !== item) return;
                 if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                    if (available) applyVoiceToCurrentCharacter(voiceId, displayName, item);
                 }
             });
 
@@ -2863,6 +2902,7 @@ async function loadVoices() {
         }
 
     } catch (error) {
+        if (generation !== voiceListLoadGeneration) return;
         console.error('加载音色列表失败:', error);
         const loadErrorText = window.t ? window.t('voice.loadError') : '加载失败，请稍后重试';
         container.textContent = '';
@@ -2874,7 +2914,7 @@ async function loadVoices() {
         errorDiv.appendChild(errorSpan);
         container.appendChild(errorDiv);
     } finally {
-        if (refreshBtn) refreshBtn.disabled = false;
+        if (refreshBtn && generation === voiceListLoadGeneration) refreshBtn.disabled = false;
     }
 }
 

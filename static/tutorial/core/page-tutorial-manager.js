@@ -904,6 +904,7 @@
             if (!this.shouldManageCurrentPage()) return false;
             if (this.isTutorialRunning || window.isInTutorial) return false;
             if (this.hasActiveYuiHandoff()) return false;
+            if (this.deferUntilModalCloses()) return false;
 
             this.captureMemoryBrowserTutorialUiState();
             this.prepareMemoryBrowserTutorialUi();
@@ -960,6 +961,31 @@
                     source: this.currentTutorialStartSource
                 }
             }));
+            return true;
+        }
+
+        deferUntilModalCloses() {
+            const hasModal = () => Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+                .some(element => element.getClientRects().length > 0);
+            if (!hasModal()) return false;
+            if (this._modalTutorialWaitCleanup) return true;
+            const cleanup = () => {
+                observer.disconnect();
+                window.removeEventListener('pagehide', cleanup);
+                document.removeEventListener('visibilitychange', resume);
+                if (this._modalTutorialWaitCleanup === cleanup) this._modalTutorialWaitCleanup = null;
+            };
+            const resume = () => {
+                if (this._modalTutorialWaitCleanup !== cleanup || hasModal() || document.visibilityState !== 'visible') return;
+                cleanup();
+                this.startTutorial();
+            };
+            const observer = new MutationObserver(resume);
+            this._modalTutorialWaitCleanup = cleanup;
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+                attributeFilter: ['hidden', 'style', 'class', 'role', 'aria-modal'] });
+            window.addEventListener('pagehide', cleanup, { once: true });
+            document.addEventListener('visibilitychange', resume);
             return true;
         }
 
