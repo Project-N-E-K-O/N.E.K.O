@@ -410,12 +410,10 @@ class ServerLifecycleService:
             logger.warning("no autostart plugins discovered at startup; plugins may need manual start")
             return
 
-        # 整批只持锁一次、锁内并发拉起子进程。原来是一个个 await start_plugin：12 个
-        # 插件实测 14871ms，占冷启动的 79%（sum/max≈10.4 → 零重叠）。插件子进程是
-        # **独立进程**，不受 GIL 约束，可真并行——16 逻辑核实测 12 个并发冷启动整组
-        # 1430ms（串行等效 8007ms，5.6x），单个只慢 1.92x。
-        # 并发上限见 settings.PLUGIN_AUTOSTART_CONCURRENCY（默认按核数推导）；设成 1
-        # 就是回退开关，完全恢复原来的串行行为。
+        # Independent plugins start in bounded concurrent waves. Each wave
+        # releases the operation lock after its starts finish, so queued
+        # management requests can run before the next wave. Dependents retain
+        # serial starts. Setting concurrency to 1 restores per-plugin locking.
         result = await self._plugin_lifecycle_service.start_plugins_batch(
             independent_ids,
             ordered_ids,

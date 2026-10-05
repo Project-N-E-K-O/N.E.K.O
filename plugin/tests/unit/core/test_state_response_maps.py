@@ -236,3 +236,26 @@ def test_real_platform_agrees_with_the_helper() -> None:
     if sys.platform == "win32":
         assert method == "spawn", f"Windows 上的 start method 变成了 {method}"
         assert state_module._start_method_inherits_manager_proxies() is False
+
+
+def test_local_response_state_is_reset_for_the_next_server_run(monkeypatch):
+    monkeypatch.setattr(state_module, "_start_method_inherits_manager_proxies", lambda: False)
+    s = GlobalState()
+    s.set_plugin_response("previous-run", {"old": True})
+    old_map = s.plugin_response_map
+    old_event = s._get_or_create_response_event("pending")
+    old_notify = s.plugin_response_notify_event
+    assert old_notify.is_set()
+
+    s.close_plugin_resources()
+    s.close_plugin_resources()  # Shutdown remains idempotent.
+
+    assert s._response_maps_are_local is False
+    assert s._plugin_response_map is None
+    assert s._plugin_response_event_map is None
+    assert s._plugin_response_notify_event is None
+    assert s.get_plugin_response("previous-run") is None
+    assert s.plugin_response_map is not old_map
+    assert s._get_or_create_response_event("pending") is not old_event
+    assert s.plugin_response_notify_event is not old_notify
+    assert not s.plugin_response_notify_event.is_set()

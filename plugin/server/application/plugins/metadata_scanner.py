@@ -18,7 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
@@ -26,6 +26,10 @@ import psutil
 
 from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
+from plugin._types.isolated_metadata import (
+    IsolatedPluginMetadata,
+    handler_key_belongs_to_plugin as _handler_key_belongs_to_plugin,
+)
 from plugin.core import registry as registry_module
 from plugin.core.state import state
 
@@ -71,10 +75,6 @@ def _metadata_worker_command() -> list[str]:
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
         return [sys.executable, "--neko-plugin-metadata-worker"]
     return [sys.executable, "-c", _WORKER_BOOTSTRAP]
-
-
-def _handler_key_belongs_to_plugin(key: str, plugin_id: str) -> bool:
-    return key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
 
 
 def _terminate_processes(processes: list[psutil.Process]) -> None:
@@ -296,13 +296,6 @@ class PluginMetadataScanError(RuntimeError):
     def __init__(self, error_type: str, message: str) -> None:
         super().__init__(message)
         self.error_type = error_type
-
-
-@dataclass(slots=True)
-class IsolatedPluginMetadata:
-    entries_preview: list[dict[str, object]]
-    handlers: dict[str, dict[str, object]]
-    entry_methods: dict[str, str]
 
 
 def _json_safe(value: Any) -> Any:

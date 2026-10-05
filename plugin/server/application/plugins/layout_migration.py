@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+
 from plugin.settings import (
     PLUGIN_EXEC_STATE_ROOT_COLLISION,
     PluginExecStateRootCollisionError,
@@ -566,6 +567,34 @@ def _migrate_legacy_plugin_layout_sync(
     )
 
 
+def _migrate_configured_layout_sync(
+    *,
+    state_root: Path | None = None,
+    exec_root: Path | None = None,
+    ledger_path: Path | None = None,
+    profiles_root: Path | None = None,
+    builtin_root: Path | None = None,
+) -> LayoutMigrationResult:
+    """Resolve one coherent root set, then migrate with fresh ownership checks."""
+
+    default_state = get_plugin_state_root() if (state_root is None or
+        (exec_root is None and not os.getenv("PLUGIN_CONFIG_ROOT"))) else None
+    resolved_state = state_root if state_root is not None else default_state
+    resolved_exec = exec_root or get_user_plugin_exec_root(state_root=default_state)
+    resolved_ledger = ledger_path or (resolved_state.parent / LAYOUT_LEDGER_FILENAME)
+    resolved_builtin = builtin_root or get_builtin_plugin_config_root()
+    resolved_profiles = profiles_root
+    if resolved_profiles is None and state_root is None and exec_root is None:
+        resolved_profiles = get_user_package_profiles_root(state_root=default_state)
+    return _migrate_legacy_plugin_layout_sync(
+        state_root=resolved_state,
+        exec_root=resolved_exec,
+        ledger_path=resolved_ledger,
+        profiles_root=resolved_profiles,
+        builtin_root=resolved_builtin,
+    )
+
+
 async def migrate_legacy_plugin_layout(
     *,
     state_root: Path | None = None,
@@ -574,22 +603,15 @@ async def migrate_legacy_plugin_layout(
     profiles_root: Path | None = None,
     builtin_root: Path | None = None,
 ) -> LayoutMigrationResult:
-    """Migrate legacy user plugin code without blocking the event loop."""
+    """Resolve storage roots and migrate without blocking the event loop."""
 
-    resolved_state = state_root or get_plugin_state_root()
-    resolved_exec = exec_root or get_user_plugin_exec_root()
-    resolved_ledger = ledger_path or (resolved_state.parent / LAYOUT_LEDGER_FILENAME)
-    resolved_builtin = builtin_root or get_builtin_plugin_config_root()
-    resolved_profiles = profiles_root
-    if resolved_profiles is None and state_root is None and exec_root is None:
-        resolved_profiles = get_user_package_profiles_root()
     return await asyncio.to_thread(
-        _migrate_legacy_plugin_layout_sync,
-        state_root=resolved_state,
-        exec_root=resolved_exec,
-        ledger_path=resolved_ledger,
-        profiles_root=resolved_profiles,
-        builtin_root=resolved_builtin,
+        _migrate_configured_layout_sync,
+        state_root=state_root,
+        exec_root=exec_root,
+        ledger_path=ledger_path,
+        profiles_root=profiles_root,
+        builtin_root=builtin_root,
     )
 
 

@@ -21,9 +21,9 @@ get its module-level code run, and starting one plugin imported every other.
 
 The derivation now happens once, on the author's machine, at packaging time
 (see ``neko_plugin_cli.core.metadata_probe``), and the result ships inside the
-package as ``plugin.meta.json``. The host reads that file; the one thing it
-writes back is an upgrade of a file whose schema fell behind, and only from a
-scan the start path already had to run (see :func:`refresh_stale_packaged_metadata`).
+package as ``plugin.meta.json``. The host reads that file and can reuse a scan
+the start path already needed to refresh stale schemas or write a local cache
+for a different build environment.
 Nothing in this module imports, executes, or subprocesses plugin code.
 
 Entries whose schema is not available statically get
@@ -39,140 +39,47 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import stat
-import sys
+import tempfile
+import threading
 import time
-import unicodedata
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from plugin._types.version import SDK_VERSION
+from plugin._types.packaged_metadata import (
+    PACKAGED_METADATA_FILENAME,
+)
+from plugin.core.packaged_metadata import (
+    MAX_PACKAGED_METADATA_BYTES,
+    PACKAGED_METADATA_SCHEMA_VERSION,
+    PLACEHOLDER_INPUT_SCHEMA,
+    PackagedMetadataError,
+    PackagedPluginMetadata,
+    SOURCE_IGNORED_DIRS,
+    SOURCE_UNFINGERPRINTABLE_DIRS,
+    SourceStatSummary,
+    SourceTreeSnapshot,
+    TEXT_SUFFIXES_FOR_HASHING,
+    _CR,
+    _CRLF,
+    _GENERATED_METADATA_NAMES,
+    _LF,
+    _iter_source_files,
+    build_environment,
+    compute_source_sha256,
+    empty_source_directories,
+    entries_config_digest,
+    source_directory_names,
+    source_file_names,
+    source_stat_summary,
+    unicode_renamed_source_files,
+)
 from plugin.logging_config import get_logger
 from utils.file_utils import atomic_write_bytes
 
 logger = get_logger("server.infrastructure.packaged_metadata")
-
-
-PACKAGED_METADATA_FILENAME = "plugin.meta.json"
-# 本机旁挂元数据（sidecar）。
-#
-# 为什么需要它：``plugin.meta.json`` 是**发行产物**，里面记着作者机器的
-# ``build_env``（os / python 小版本 / arch），而市场安装只是把它逐字节解出来
-# （``neko_plugin_cli/core/install.py`` 的 ``extract_member`` = ``shutil.copyfileobj``），
-# 既不校验也不重写。读取方按 build_env 精确比对，于是用户换了 Python 小版本之后，
-# 这份包**没坏**、只是"答案不是本机的"，却要在每次启动付一个 2.5–4.2s 的隔离
-# metadata worker，而且没有任何路径能修——``refresh_stale_packaged_metadata`` 只认
-# schema 过期。
-#
-# 修法不是改写发行产物（那会动到已安装包的字节，进而动到 manual takeover 的树哈希、
-# 以及"包内容等于市场发布内容"这个可核对性），而是把**本机扫描的结果**写在旁边，
-# 读取时优先用它、通不过任何一道校验就静默回落到包内那份。
-#
-# ⚠️ 它必须和 ``PACKAGED_METADATA_FILENAME`` 一样被排除在源树指纹之外（见
-# ``_iter_source_files``）：否则写出这个文件本身就改变了 ``source_files`` 清单和
-# ``source_sha256``，**反过来让包内那份 plugin.meta.json 判定失配而失效**——修一个
-# 慢路径却弄坏了另一个快路径。
-LOCAL_PACKAGED_METADATA_FILENAME = "plugin.meta.local.json"
-# 插件目录**根部**这两份是生成物，不参与源树指纹（见 _iter_source_files 里的注释：
-# 只排除根部那一份，插件自己带的 data/plugin.meta.json 之类仍算源文件）。
-_GENERATED_METADATA_NAMES = frozenset(
-    {PACKAGED_METADATA_FILENAME, LOCAL_PACKAGED_METADATA_FILENAME}
-)
-# 2：加入了必需的 source_files。留在 1 而对缺字段的元数据"跳过检查"是错的——
-# schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
-# 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
-# manifest 声明的 entries，重新打包即可恢复。
-# 4: handlers retain the complete entry contract, including slotted SDK fields.
-# 3 serialized slotted SDK metadata through a ten-field fallback and lost
-# timeout / result fields, so a v3 handler table describes an entry the host
-# would call with the wrong budget and read the wrong result from. Schema 3 was
-# only ever on nightly, so it is refused like any other stale schema and the
-# plugin takes the worker path until it is repackaged.
-PACKAGED_METADATA_SCHEMA_VERSION = 4
-
-# 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
-# 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
-# （codex）。1 MiB 对元数据是很宽的余量：本机 16 个内置插件里最大的一份 47 KB。
-MAX_PACKAGED_METADATA_BYTES = 1024 * 1024
-
-# 用字节码点写，避免这几个常量本身在编辑/移植途中被行尾转换动过。
-_CR = bytes([13])
-_LF = bytes([10])
-_CRLF = _CR + _LF
-
-# 指纹盯插件目录下的**所有**文件，不筛后缀。
-#
-# 原本只看 .py/.toml/.json，但插件的模块级代码经常从同目录的数据文件派生条目
-# （metadata.yaml、csv、模板……）：改了那些文件而指纹不变，宿主就会一直端着按旧
-# 数据推出来的 schema，而注册的元数据和运行时行为对不上是最难查的一类不一致
-# （codex，也是旧扫描缓存键当年选择全量的同一个理由）。
-
-# 下降之前就剪掉。node_modules 不在旧的扫描键忽略集里，带 vendor 树的插件会让
-# 每一次遍历都陪着走一遍。
-# 只有这些后缀会在摘要前做行尾归一化。二进制资源里 CR 是有意义的字节，把它换掉会
-# 让两份不同的文件算出同一个摘要（codex）；而归一化本身是为了让 Windows 打的包到
-# Linux 上还认得出来，那个问题只存在于文本。
-TEXT_SUFFIXES_FOR_HASHING = frozenset(
-    {".py", ".pyi", ".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".txt", ".md",
-     ".csv", ".xml", ".html", ".css", ".js", ".ts", ".sql"}
-)
-
-# 开发产物，打包规则本来就不会把它们放进包里，所以不进指纹也不影响"元数据和
-# 包内容一致"这个契约。
-SOURCE_IGNORED_DIRS = frozenset(
-    {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", ".venv"}
-)
-
-# 会进包、但大到不该每次刷新都遍历的目录。
-#
-# node_modules 没有被任何一套打包规则默认排除，所以它是**跟着包一起发出去的**。
-# 既跳过它又照常发布元数据，等于契约上开了个洞：插件在注册入口时读了 bundle 里
-# 的某个 JS 或 package.json，改了它这边一点都看不见，宿主继续端着旧 schema
-# （codex）。反过来把它算进指纹，每次刷新都要在持锁状态下 stat 一整棵 npm 树，
-# 那正是这套机制要省掉的开销。
-#
-# 所以两头都不选：看见它就把整棵树判成不可信，这个插件回落到 manifest + 按需
-# 扫描——也就是本 PR 之前的原样，而且只影响真的捆了 node_modules 的插件。
-SOURCE_UNFINGERPRINTABLE_DIRS = frozenset({"node_modules"})
-
-# 未知参数结构时给的占位。
-#
-# ⚠️ 不能带 "properties" 键，哪怕是空对象。前端 EntryList 判"有没有 schema"用的是
-# `!!(schema?.properties && typeof schema.properties === 'object')`，而 JS 里
-# `!!{}` 为真——带一个空 properties 会让它渲染出零字段的表单，提交时参数恒为 {}，
-# 用户连退回去手填 JSON 的入口都没有，比什么都不给更糟。
-#
-# additionalProperties 为真是同一个意思的另一面：这份 schema 只用来描述，任何时候
-# 都不能拿它去拒绝调用。真正的参数校验在插件进程里用真模型做。
-PLACEHOLDER_INPUT_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "additionalProperties": True,
-}
-
-
-class PackagedMetadataError(ValueError):
-    """The packaged metadata file exists but cannot be used."""
-
-
-@dataclass(slots=True)
-class PackagedPluginMetadata:
-    """Validated contents of one plugin's ``plugin.meta.json``."""
-
-    entries: list[dict[str, object]] = field(default_factory=list)
-    # 打包时那份 plugin.toml 声明的 entries 表的摘要，用来判断用户的配置覆盖
-    # 有没有动过它。
-    entries_config_sha256: str = ""
-    # 注册进 state.event_handlers 的那份元数据，以及 entry_id -> 方法名。
-    # 启动一个插件本来要为这两样再 import 它一次——插件进程自己已经 import 过，
-    # 那一次纯属重复（codex）。带上之后 start_plugin 只剩宿主进程那一次导入。
-    handlers: dict[str, dict[str, object]] = field(default_factory=dict)
-    entry_methods: dict[str, str] = field(default_factory=dict)
-    sdk_version: str = ""
-    source_sha256: str = ""
-    # 打包机和这台机器是不是同一套 (os, python, arch)。
-    built_in_this_environment: bool = False
+PACKAGED_METADATA_CACHE_DIRECTORY = ".neko-plugin-metadata"
 
 
 def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
@@ -203,20 +110,6 @@ def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
         )
 
 
-def build_environment() -> dict[str, str]:
-    """The parts of the environment that can change what a plugin registers.
-
-    A plugin is free to register different entries under different operating
-    systems or Python versions — an optional import that only resolves on
-    Windows, an entry gated on ``sys.version_info``. Packaged metadata is one
-    machine's answer, so anything that treats it as *the* set of callable
-    entries has to know whether it was produced here (codex).
-    """
-    return {
-        "os": sys.platform,
-        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        "arch": platform.machine(),
-    }
 
 
 def _environment_matches(raw: object) -> bool:
@@ -226,232 +119,20 @@ def _environment_matches(raw: object) -> bool:
     return all(str(raw.get(key) or "") == value for key, value in current.items())
 
 
-def _iter_source_files(
-    plugin_dir: Path,
-) -> tuple[list[tuple[str, os.stat_result]], bool, list[str]]:
-    # 手写 scandir 下降而不是 rglob：忽略目录必须在下降**之前**剪掉，否则一个带
-    # 大 object database 的开发目录每次都要先枚举完才轮到忽略判断。
-    #
-    # 软链不跟进去，但要留痕：跟进去可能撞上 site-packages 那种巨树或者成环，而
-    # 只是跳过的话，把软链重指到另一份代码不会引起任何可见变化。留痕的做法是让
-    # 调用方直接把整棵树判成"不可信"。
-    # saw_symlink 是"这棵树不可信"的旗子，软链只是最常见的那个来源：读不了的目录、
-    # 以及 FIFO/socket/设备节点这类非普通文件也会把它立起来。
-    files: list[tuple[str, os.stat_result]] = []
-    dirs: list[str] = [str(plugin_dir)]
-    saw_symlink = os.path.islink(str(plugin_dir))
-    stack = [str(plugin_dir)]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as scan:
-                children = list(scan)
-        except OSError:
-            saw_symlink = True
-            continue
-        for entry in children:
-            try:
-                if entry.is_symlink():
-                    saw_symlink = True
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    if entry.name in SOURCE_UNFINGERPRINTABLE_DIRS:
-                        saw_symlink = True
-                        continue
-                    if entry.name not in SOURCE_IGNORED_DIRS:
-                        stack.append(entry.path)
-                        # 目录自己的 mtime 也要看。删掉一个文件不会让任何**幸存**
-                        # 文件变新，于是纯看文件 mtime 的快路径会放过"源码少了一
-                        # 块"这种改动，宿主继续端着按删除前推出来的 schema
-                        # （codex）。增删条目都会更新父目录的 mtime。
-                        dirs.append(entry.path)
-                    continue
-                if (
-                    entry.name in _GENERATED_METADATA_NAMES
-                    and current == str(plugin_dir)
-                ):
-                    # 生成物不参与它自己的新鲜度判定——但只有根部那两份是生成物。
-                    # 按文件名一刀切会把插件自己带的 data/plugin.meta.json 这种运行
-                    # 时文件也排除掉，而打包管线照样把它放进包里：改它的内容不会让
-                    # 任何指纹变化（codex）。
-                    #
-                    # sidecar 同样必须排除，而且理由更硬：它是我们**自己**在启动路径
-                    # 上写出来的，不排除的话写出它就改变了 source_files 清单和
-                    # source_sha256 —— 包内那份 plugin.meta.json 会立刻判定失配而失效，
-                    # 等于修好一条慢路径的同时弄坏了另一条快路径。
-                    continue
-                if not entry.is_file(follow_symlinks=False):
-                    # ⚠️ 只收普通文件。FIFO、socket、设备节点都能通过 stat()，而摘要
-                    # 那一步是 read_bytes()——没有写端的 FIFO 上它会永久阻塞，而刷新
-                    # 现在整段握着 _REGISTRY_REFRESH_LOCK，一个命名管道就能把整个插件
-                    # 注册表焊死（coderabbit）。和软链同样处理：留痕，让整棵树不可信。
-                    saw_symlink = True
-                    continue
-                stat_result = entry.stat(follow_symlinks=False)
-            except OSError:
-                saw_symlink = True
-                continue
-            rel_path = os.path.relpath(entry.path, str(plugin_dir)).replace(
-                os.sep, "/"
-            )
-            # 记录用 NFC 拼写，读盘用文件系统给的那个。打包器写进包里的档案名已经
-            # 是 NFC（normalize_relative_posix），而 macOS 交出来的常常是分解形式：
-            # 不归一化的话，同一个文件名在两边算出两份清单和两份摘要，元数据条条
-            # 被判过时（codex）。反过来，用归一化后的名字去 open() 在保留原拼写的
-            # 文件系统上会直接找不到文件，所以两个拼写都要留着。
-            files.append(
-                (unicodedata.normalize("NFC", rel_path), rel_path, stat_result)
-            )
-    files.sort(key=lambda item: item[0])
-    return files, saw_symlink, dirs
 
 
-@dataclass(frozen=True)
-class SourceStatSummary:
-    """Everything the cheap freshness checks need, from one stat walk.
-
-    The names, the newest timestamp and the total size used to cost a separate
-    descent each. They come from the same ``scandir`` walk, and the refresh path
-    holds the registry lock while it runs them.
-    """
-
-    names: list[str] = field(default_factory=list)
-    newest_mtime_ns: int = 0
-    total_bytes: int = 0
-    untrustworthy: bool = False
 
 
-def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
-    """Names, newest mtime and total size of the files the fingerprint covers.
-
-    Sizes sit next to the timestamps because timestamps alone miss a source
-    replaced without advancing its mtime — a restore that preserves metadata,
-    an edit inside one tick of a coarse filesystem clock (codex). Sizes catch
-    the overwhelming majority of those. What neither catches is a same-size,
-    same-mtime rewrite; the only thing that would is hashing every plugin's
-    whole tree on every refresh, which is the cost this file exists to avoid.
-
-    Directory mtimes count too: deleting a source file leaves every surviving
-    file untouched, so a file-only check cannot see that the tree lost a piece.
-    """
-    files, untrustworthy, dirs = _iter_source_files(plugin_dir)
-    newest = 0
-    total = 0
-    for _key, _real, stat_result in files:
-        newest = max(newest, stat_result.st_mtime_ns)
-        total += stat_result.st_size
-    for dir_path in dirs:
-        try:
-            newest = max(newest, os.stat(dir_path).st_mtime_ns)
-        except OSError:
-            untrustworthy = True
-    return SourceStatSummary(
-        names=[key for key, _real, _stat in files],
-        newest_mtime_ns=newest,
-        total_bytes=total,
-        untrustworthy=untrustworthy,
-    )
 
 
-def source_directory_names(plugin_dir: Path) -> list[str]:
-    """Sorted relative paths of every directory the walk descends into.
-
-    The content digest covers files, so it cannot see a directory appear or
-    vanish on its own. Packaging compares this across the probe: module-level
-    code can create an entry from a marker directory's presence and then delete
-    it, leaving both digests identical (codex).
-    """
-    _files, _untrustworthy, dirs = _iter_source_files(plugin_dir)
-    root = str(plugin_dir)
-    return sorted(
-        os.path.relpath(path, root).replace(os.sep, "/")
-        for path in dirs
-        if path != root
-    )
 
 
-def empty_source_directories(plugin_dir: Path) -> list[str]:
-    """Directories in the tree that hold no fingerprinted file, at any depth.
-
-    Both exporters write files only, so a directory with nothing in it never
-    reaches the installed tree — and the fingerprint covers files, so the
-    installed tree still matches. A plugin that registers entries depending on a
-    directory's presence would be probed with it and run without it (codex).
-    """
-    files, _untrustworthy, dirs = _iter_source_files(plugin_dir)
-    root = str(plugin_dir)
-    holding: set[str] = set()
-    for _key, real_rel, _stat in files:
-        parent = os.path.dirname(os.path.join(root, real_rel.replace("/", os.sep)))
-        while len(parent) >= len(root):
-            holding.add(parent)
-            if parent == root:
-                break
-            parent = os.path.dirname(parent)
-    return sorted(
-        os.path.relpath(path, root).replace(os.sep, "/")
-        for path in dirs
-        if path != root and path not in holding
-    )
 
 
-def unicode_renamed_source_files(plugin_dir: Path) -> list[str]:
-    """Staged files whose recorded name differs from their spelling on disk.
-
-    The fingerprint records NFC, and so does the archive writer; the probe
-    imports whatever the filesystem hands back. When those differ, a plugin that
-    opens a decomposed literal registers fine here and breaks after extraction
-    onto a spelling-preserving filesystem — while both trees fingerprint the
-    same, so the host trusts the metadata anyway (codex).
-
-    Compares the two spellings directly. Asking whether the NFC path *exists* is
-    useless on exactly the filesystems this targets: macOS resolves canonically
-    equivalent names, so the normalized name is always found (codex).
-    """
-    files, _untrustworthy, _dirs = _iter_source_files(plugin_dir)
-    return [key for key, real_rel, _stat in files if key != real_rel]
 
 
-def source_file_names(plugin_dir: Path) -> tuple[list[str], bool]:
-    """Sorted relative paths of the files the fingerprint covers."""
-    summary = source_stat_summary(plugin_dir)
-    return summary.names, summary.untrustworthy
 
 
-def compute_source_sha256(plugin_dir: Path) -> str:
-    """Content digest of a plugin's source files, stable across packaging.
-
-    Stamped into the metadata at packaging time. On the refresh path it is only
-    reached when mtimes already suggest the sources moved: hashing every plugin
-    file costs hundreds of milliseconds against tens for a stat walk, so the
-    cheap check runs first and this one decides.
-    """
-    files, saw_symlink, _dirs = _iter_source_files(plugin_dir)
-    digest = hashlib.sha256()
-    if saw_symlink:
-        digest.update(b"<symlink-or-unreadable>\0")
-    for key, real_rel, _stat_result in files:
-        digest.update(key.encode("utf-8"))
-        digest.update(b"\0")
-        try:
-            # 行尾归一化之后再摘要。这个仓库用 .gitattributes 把文本钉成 LF，但哈希
-            # 不该依赖那份配置：作者在 Windows 上打的包一旦带着 CRLF 算出来的摘要，
-            # 到 Linux 用户机器上就会条条判成"源码变了"，全部退化成占位。
-            #
-            # ⚠️ 只折 CRLF，不折裸 CR。把 CR 也当 LF 会让"把每个 LF 换成 CR"这种
-            # 改动和原文摘要相同——路径、字节数、内容哈希全对得上，慢路径也拦不住
-            # （codex）。而 git 的行尾翻译只在 LF↔CRLF 之间发生，从不产生裸 CR，
-            # 所以少折这一层不影响它本来要解决的问题。
-            raw = (plugin_dir / real_rel).read_bytes()
-            if Path(real_rel).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
-                raw = raw.replace(_CRLF, _LF)
-            digest.update(raw)
-        except OSError as exc:
-            raise PackagedMetadataError(
-                f"cannot read plugin source file for hashing: {real_rel}: {exc}"
-            ) from exc
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _major_of(version: str) -> str:
@@ -485,27 +166,6 @@ def _coerce_entry_methods(raw: object) -> dict[str, str]:
     }
 
 
-def entries_config_digest(conf: object, pdata: object) -> str:
-    """Digest of the ``entries`` table the effective configuration declares.
-
-    Packaging records this for the staged ``plugin.toml``; the host computes it
-    from the configuration a plugin would actually run under. Equal means no
-    overlay touched ``entries`` and the packaged metadata still describes this
-    machine.
-
-    Comparing digests rather than asking "does a table exist" fixes two mirror
-    errors (codex). A plugin that declares ``entries`` in its own manifest was
-    being treated as user-overridden, so it never got its build-time schemas and
-    re-imported on every start. And an overlay that sets ``entries = []`` to
-    remove them is a real override that a truthiness test reads as absence.
-    """
-    for table in (conf, pdata):
-        if isinstance(table, Mapping) and "entries" in table:
-            payload = json.dumps(
-                table["entries"], sort_keys=True, ensure_ascii=False, default=str
-            )
-            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return ""
 
 
 def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
@@ -543,6 +203,48 @@ def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
     return all(isinstance(item, Mapping) for item in entries)
 
 
+def _read_metadata_json(
+    meta_path: Path, *, warn: bool = False
+) -> tuple[Mapping[str, object], os.stat_result] | None:
+    """Read one regular metadata file with a bounded allocation and JSON depth.
+
+    Recheck the opened descriptor and use nonblocking open where available so
+    replacing a regular file with a FIFO between stat and open cannot hang.
+    Reading one extra byte also detects a file that grew after the size check.
+    """
+    try:
+        meta_stat = meta_path.stat()
+        if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+            if warn:
+                logger.warning("packaged metadata is not a size-capped regular file: path={}", meta_path)
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(meta_path, flags), "rb") as handle:
+            meta_stat = os.fstat(handle.fileno())
+            if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+                return None
+            encoded = handle.read(MAX_PACKAGED_METADATA_BYTES + 1)
+        if len(encoded) > MAX_PACKAGED_METADATA_BYTES:
+            return None
+        raw: Any = json.loads(encoded.decode("utf-8"))
+    except FileNotFoundError:
+        # The local cache is optional. Its absence is the normal first read.
+        return None
+    except (OSError, ValueError, RecursionError) as exc:
+        if warn:
+            logger.warning(
+                "packaged plugin metadata unreadable, falling back to manifest: "
+                "path={}, err_type={}, err={}",
+                meta_path, type(exc).__name__, str(exc),
+            )
+        return None
+    if not isinstance(raw, Mapping):
+        if warn:
+            logger.warning("packaged plugin metadata is not an object: path={}", meta_path)
+        return None
+    return raw, meta_stat
+
+
 def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     """The schema version of a real but outdated ``plugin.meta.json``, else ``None``.
 
@@ -553,38 +255,16 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     newer host, so rewriting it here would be a downgrade that throws away
     fields this host does not know about (greptile).
     """
-    meta_path = plugin_dir / PACKAGED_METADATA_FILENAME
-    try:
-        meta_stat = meta_path.stat()
-    except OSError:
+    loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
+    if loaded is None:
         return None
-    if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
-        return None
-    try:
-        raw: Any = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
-    if not isinstance(raw, Mapping):
-        return None
+    raw, _meta_stat = loaded
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return None
     return version if version < PACKAGED_METADATA_SCHEMA_VERSION else None
 
 
-@dataclass(frozen=True, slots=True)
-class SourceTreeSnapshot:
-    """What a tree looked like before the plugin was imported.
-
-    The packager takes the same snapshot before its probe and refuses to write
-    metadata when the import changed the tree: handlers derived during the
-    import and a fingerprint taken after it can describe two different trees
-    (codex). ``None`` from :func:`snapshot_source_tree` means the tree could
-    not be read, which also refuses the upgrade.
-    """
-
-    sha256: str
-    directories: tuple[str, ...]
 
 
 def snapshot_source_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
@@ -598,25 +278,11 @@ def snapshot_source_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
 
 
 def packaged_metadata_env_mismatched(plugin_dir: Path) -> bool:
-    """``plugin.meta.json`` 在、也能读，但它是**别的环境**里 import 出来的。
-
-    故意做得便宜：只读那一个 JSON，不做 stat walk、不做哈希。它唯一的用途是让启动
-    路径决定"扫描之前要不要先给这棵树拍指纹"，好在扫描之后按本机环境把文件重写
-    （见 :func:`refresh_stale_packaged_metadata`）。
-
-    ⚠️ 这里**不**放宽比对精度。:func:`build_environment` 的 docstring 说明了原因：
-    插件完全可以按 ``sys.version_info`` 决定注册哪些 entry，而 Python 小版本之间
-    C 扩展 ABI 也不兼容——把 ``3.11`` 的元数据当成 ``3.13`` 的权威答案，等于让插件
-    在本机暴露一批它在本机根本不会注册的入口。要消除的是"永远修不好"，不是"判得严"。
-    """
-    path = plugin_dir / PACKAGED_METADATA_FILENAME
-    try:
-        raw = json.loads(path.read_bytes())
-    except (OSError, ValueError):
-        # 文件不在 / 读不了 / 不是合法 JSON —— 都不是"环境不匹配"，交给各自的既有路径。
+    """Check a current-schema package's build environment without hashing sources."""
+    loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
+    if loaded is None:
         return False
-    if not isinstance(raw, dict):
-        return False
+    raw, _meta_stat = loaded
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return False
@@ -627,27 +293,139 @@ def packaged_metadata_env_mismatched(plugin_dir: Path) -> bool:
 
 
 def packaged_metadata_needs_rebuild(plugin_dir: Path) -> bool:
-    """这份 ``plugin.meta.json`` 值不值得在下次扫描之后按本机重写。
+    """Whether a fresh scan could repair this package's schema or environment."""
+    loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
+    if loaded is None:
+        return False
+    raw, _meta_stat = loaded
+    version = raw.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return False
+    return version < PACKAGED_METADATA_SCHEMA_VERSION or (
+        version == PACKAGED_METADATA_SCHEMA_VERSION and not _environment_matches(raw.get("build_env"))
+    )
 
-    下面两种情况都会让插件**每次启动**白付一次隔离 metadata worker（实测 2.5–4.2s
-    的一次性子进程），而启动路径刚刚已经把这棵树完整 import 过一遍——它学到的正是
-    打包器当初会写下的东西：
 
-    * **schema 过期**：作者不再维护的插件就永远停在旧 schema；
-    * **build_env 不是本机的**：市场分发的包带着**作者机器**的 build_env，而安装只是
-      逐字节把它解出来（``neko_plugin_cli/core/install.py`` 的 ``extract_member`` 就是
-      ``shutil.copyfileobj``），既不校验也不重写。用户换了 Python 小版本之后，这个插件
-      就永久走慢路径——而且没有任何东西会红：注册表**发现**接受 env 不匹配的 entries
-      做 UI 预览（``registry_service`` 从不检查 ``built_in_this_environment``），只有
-      **启动**拒绝它，于是插件在列表里看起来完全正常。
+def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
+    """Locate a host cache bound to this installation, package and environment.
 
-    重写之后 ``build_env`` 就是本机的，下次启动走快路径，本判定自动变回 False ——
-    所以它是自愈的，不会每次启动都去拍指纹。（拍不成也退化不到更糟：只读安装原本
-    就在每次启动付那次扫描。）
+    Binding the package contents also invalidates caches after replacement at
+    the same path. No file in the installed directory is claimed as a cache.
     """
-    if stale_packaged_schema_version(plugin_dir) is not None:
+    loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
+    if loaded is None:
+        return None
+    raw, _stat = loaded
+    try:
+        from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
+
+        installed = os.path.normcase(str(plugin_dir.resolve()))
+        installation_key = hashlib.sha256(installed.encode("utf-8", errors="surrogatepass")).hexdigest()
+        environment_key = hashlib.sha256(
+            json.dumps(build_environment(), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        package_key = hashlib.sha256(
+            json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        cache_key = hashlib.sha256(
+            f"{installation_key}:{environment_key}:{package_key}".encode("ascii")
+        ).hexdigest()
+        cache_path = resolve_runtime_data_root() / PACKAGED_METADATA_CACHE_DIRECTORY / f"{cache_key}.json"
+        spelling = str(cache_path)
+        if os.name == "nt" and len(spelling) >= 240 and not spelling.startswith("\\\\?\\"):
+            spelling = "\\\\?\\UNC\\" + spelling[2:] if spelling.startswith("\\\\") else "\\\\?\\" + spelling
+            cache_path = Path(spelling)
+        return cache_path
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+_REBUILD_FAILURE_LIMIT = 128
+_REBUILD_FAILURE_RETRY_SECONDS = 30.0
+_rebuild_failures: dict[Path, tuple[tuple[object, ...], float]] = {}
+_rebuild_failures_lock = threading.Lock()
+
+
+def _rebuild_identity(target: Path, summary: SourceStatSummary) -> tuple[object, ...]:
+    def stamp(path: Path, *, directory: bool = False) -> tuple[int, ...] | None:
+        try:
+            result = path.stat()
+        except OSError:
+            return None
+        identity = (result.st_ino, result.st_mode, getattr(result, "st_file_attributes", 0))
+        # Other plugins write into the same cache directory. Their writes must
+        # not clear a failed target's short backoff.
+        return identity if directory else (*identity, result.st_mtime_ns, result.st_ctime_ns)
+
+    return (
+        stamp(target), stamp(target.parent, directory=True), summary.newest_mtime_ns,
+        summary.total_bytes, hash(tuple(summary.names)),
+    )
+
+
+def _recent_rebuild_failure(target: Path, summary: SourceStatSummary) -> bool:
+    identity = _rebuild_identity(target, summary)
+    with _rebuild_failures_lock:
+        previous = _rebuild_failures.get(target)
+        if previous is None:
+            return False
+        if previous[0] == identity and time.monotonic() - previous[1] < _REBUILD_FAILURE_RETRY_SECONDS:
+            return True
+        _rebuild_failures.pop(target, None)
+    return False
+
+
+def _record_rebuild_failure(target: Path, summary: SourceStatSummary) -> None:
+    identity = _rebuild_identity(target, summary)
+    with _rebuild_failures_lock:
+        if target not in _rebuild_failures and len(_rebuild_failures) >= _REBUILD_FAILURE_LIMIT:
+            _rebuild_failures.pop(next(iter(_rebuild_failures)))
+        _rebuild_failures[target] = (identity, time.monotonic())
+
+
+def _probe_metadata_target(target: Path) -> bool:
+    """Exercise real creation, writing and replacement before hashing sources."""
+    probe: Path | None = None
+    replacement: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=".metadata_probe_", dir=target.parent)
+        probe = Path(name)
+        replacement = probe.with_suffix(".ready")
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(b"\0")
+        os.replace(probe, replacement)
         return True
-    return packaged_metadata_env_mismatched(plugin_dir)
+    except OSError:
+        return False
+    finally:
+        for path in (probe, replacement):
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def snapshot_packaged_metadata_rebuild_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
+    """Snapshot only trees that have a usable destination and can be cached."""
+    target = (
+        plugin_dir / PACKAGED_METADATA_FILENAME
+        if stale_packaged_schema_version(plugin_dir) is not None
+        else local_packaged_metadata_path(plugin_dir)
+    )
+    if target is None:
+        return None
+    summary = source_stat_summary(plugin_dir)
+    if (
+        summary.untrustworthy
+        or empty_source_directories(plugin_dir)
+        or unicode_renamed_source_files(plugin_dir)
+        or _recent_rebuild_failure(target, summary)
+        or not _probe_metadata_target(target)
+    ):
+        return None
+    return snapshot_source_tree(plugin_dir)
 
 
 def refresh_stale_packaged_metadata(
@@ -673,7 +451,7 @@ def refresh_stale_packaged_metadata(
     here. Its ``plugin.meta.json`` is a distributed artifact and stays
     byte-identical — rewriting it would change the bytes of an installed package,
     which feeds the manual-takeover tree hash and the "what is on disk is what
-    the market published" property. That case gets a machine-local sidecar
+    the market published" property. That case gets a host runtime cache
     instead: :func:`write_local_packaged_metadata`.
 
     The same refusals the packager applies (``metadata_probe``) apply here: a
@@ -729,7 +507,7 @@ def _write_scanned_packaged_metadata(
     """把一次扫描的结果按打包器的格式写到 ``target``。返回是否真的写了。
 
     两条写路径共用这一段——改写包内那份 schema 过期的（:func:`refresh_stale_packaged_metadata`），
-    以及写本机 sidecar（:func:`write_local_packaged_metadata`）。**拒绝理由必须共用**：
+    以及写宿主运行时缓存（:func:`write_local_packaged_metadata`）。**拒绝理由必须共用**：
     读取方对两份文件跑的是同一套校验，一边写得出去另一边读不进来，就等于白写。
 
     与打包器 ``metadata_probe`` 同样的拒绝：带软链、空目录、或名字在 NFC 下会变的树
@@ -741,8 +519,11 @@ def _write_scanned_packaged_metadata(
     文件也照样起来了。超过读取方尺寸上限的也不写：那样它会"schema 当前且超大"，
     之后没有任何路径能再修它（codex）。
     """
+    summary: SourceStatSummary | None = None
     try:
         summary = source_stat_summary(plugin_dir)
+        if _recent_rebuild_failure(target, summary) or not _probe_metadata_target(target):
+            return False
         if (
             summary.untrustworthy
             or empty_source_directories(plugin_dir)
@@ -790,6 +571,8 @@ def _write_scanned_packaged_metadata(
             return False
         atomic_write_bytes(target, encoded)
     except (OSError, PackagedMetadataError) as exc:
+        if summary is not None:
+            _record_rebuild_failure(target, summary)
         # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
         # ValueError); an optional optimisation must not turn that into a
         # failed start (greptile).
@@ -803,6 +586,8 @@ def _write_scanned_packaged_metadata(
             str(exc),
         )
         return False
+    with _rebuild_failures_lock:
+        _rebuild_failures.pop(target, None)
     return True
 
 
@@ -816,27 +601,11 @@ def write_local_packaged_metadata(
     conf: object,
     pdata: object,
 ) -> bool:
-    """为**异环境打包**的插件写一份本机 sidecar，让它下次启动走快路径。
+    """Cache a foreign-environment scan in writable host runtime storage.
 
-    只处理这一种情况：``plugin.meta.json`` 在、schema 是当前版、树指纹也对得上，
-    但 ``build_env`` 不是本机的——典型来源是市场分发的包带着**作者机器**的
-    os/python 小版本/arch，而安装只是逐字节解出、不校验也不重写。这种包没坏，
-    只是"答案不是本机的"，然而读取方据此拒绝它，于是每次启动都要付一个
-    2.5–4.2s 的隔离 metadata worker，而且原本没有任何路径能修。
-
-    为什么不直接改写包内那份：它是**发行产物**。改写会动到已安装包的字节，进而动到
-    manual takeover 的树哈希复核，以及"盘上这份就是市场发布的那份"这个可核对性。
-    写在旁边、读取时优先，两全其美（见 :func:`read_packaged_metadata`）。
-
-    前置条件由调用方保证（``_upgrade_stale_packaged_metadata``）：生效的 ``entries``
-    表就是 manifest 自己那份、运行时 id 与 manifest id 一致。
-
-    自愈：写成功之后 ``build_env`` 就是本机的，下次启动 ``read_packaged_metadata``
-    直接命中 sidecar → 不再扫描 → 也就不会再走到这里。写不成功则退化回原样（每次
-    启动扫一次），不会更糟。
-
-    ``plugin.meta.json`` 根本不存在时**不写**：手工放入或 dev 模式的插件从来没有过
-    这份文件，不该因为启动了一次就长出一份来。
+    Installed files are never modified. The caller verifies the manifest id
+    and effective entry declarations; the shared writer verifies the source
+    tree stayed unchanged during the scan.
     """
     if before_scan is None:
         return False
@@ -844,8 +613,11 @@ def write_local_packaged_metadata(
         # 不是"异环境"这一种情况就不归这里管：schema 过期走
         # refresh_stale_packaged_metadata，本机包压根不需要写，缺文件则见上。
         return False
+    target = local_packaged_metadata_path(plugin_dir)
+    if target is None:
+        return False
     if not _write_scanned_packaged_metadata(
-        plugin_dir / LOCAL_PACKAGED_METADATA_FILENAME,
+        target,
         plugin_dir,
         before_scan=before_scan,
         entries=entries,
@@ -853,11 +625,11 @@ def write_local_packaged_metadata(
         entry_methods=entry_methods,
         conf=conf,
         pdata=pdata,
-        subject="local packaged metadata sidecar",
+        subject="host packaged metadata cache",
     ):
         return False
     logger.info(
-        "local packaged metadata sidecar written for this environment "
+        "host packaged metadata cache written for this environment "
         "(build_env={}); the packaged file is left untouched: path={}",
         build_environment(),
         plugin_dir,
@@ -866,24 +638,13 @@ def write_local_packaged_metadata(
 
 
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
-    """Load and validate the packaged metadata for ``plugin_dir``, or ``None``.
+    """Prefer a validated host cache, otherwise read the shipped metadata.
 
-    先试本机 sidecar（``plugin.meta.local.json``），再回落到包内那份
-    ``plugin.meta.json``。sidecar 只有在**它自己**通过全部校验（schema / SDK 大版本 /
-    表结构 / 树可信度 / 摘要 / 文件清单 / 时间戳 / entries 摘要）、并且 ``build_env``
-    确实是本机的时候才会被采用；否则静默回落，行为与"没有 sidecar"完全一致。
-
-    sidecar 存在的唯一理由，是救"包是在别的 Python 小版本 / OS / arch 上打的"这种
-    情况：那种包没坏，只是答案不是本机的，而**发行产物不该被改写**（理由见
-    ``LOCAL_PACKAGED_METADATA_FILENAME`` 的注释）。
-
-    ``None`` means "fall back to whatever the manifest declares statically, and
-    placeholder the rest". Every rejection path logs why, because a silently
-    ignored metadata file looks exactly like a plugin that declares no entries.
+    Both use the same schema, SDK, environment and source freshness checks.
+    Files named plugin.meta.local.json inside installed code are plugin data.
     """
-    local = _read_packaged_metadata_from(
-        plugin_dir / LOCAL_PACKAGED_METADATA_FILENAME, plugin_dir
-    )
+    target = local_packaged_metadata_path(plugin_dir)
+    local = _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
     if local is not None and local.built_in_this_environment:
         return local
     return _read_packaged_metadata_from(
@@ -895,53 +656,15 @@ def _read_packaged_metadata_from(
     meta_path: Path,
     plugin_dir: Path,
 ) -> PackagedPluginMetadata | None:
-    """Load and validate one metadata file — the packaged copy or the local sidecar.
+    """Load and validate one metadata file — the package or the host cache.
 
     与拆分前逐字相同的校验链，只是文件路径变成了参数。``meta_path`` 不存在时安静
-    返回 ``None``（sidecar 是可选的，绝大多数插件没有它，不该为"没有"刷日志）。
+    返回 ``None``（本机缓存是可选的，绝大多数插件没有它，不该为"没有"刷日志）。
     """
-    try:
-        meta_stat = meta_path.stat()
-    except OSError:
+    loaded = _read_metadata_json(meta_path, warn=True)
+    if loaded is None:
         return None
-    if not stat.S_ISREG(meta_stat.st_mode):
-        # ⚠️ 元数据文件自己也可能不是普通文件。前面那道"只收普通文件"的闸设在遍历
-        # 里，而 plugin.meta.json 恰恰被排除在遍历之外（生成物不参与自己的新鲜度
-        # 判定），所以它一直没被检查过。stat() 在 FIFO 上照样成功，而下面的
-        # read_text() 会在没有写端时永久阻塞——刷新整段持锁（coderabbit）。
-        logger.warning(
-            "packaged plugin metadata is not a regular file, ignoring it: path={}",
-            meta_path,
-        )
-        return None
-
-    if meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
-        logger.warning(
-            "packaged plugin metadata is too large to parse, falling back to "
-            "manifest: path={}, size={}, limit={}",
-            meta_path,
-            meta_stat.st_size,
-            MAX_PACKAGED_METADATA_BYTES,
-        )
-        return None
-
-    try:
-        raw: Any = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError) as exc:
-        # RecursionError 不是 ValueError：一份嵌套够深的 JSON 能在体积限制之内把
-        # json.loads 打爆，而这份文件来自第三方包。漏掉它，发现流程会把整个插件
-        # 记成失败，而不是走本该走的 manifest 回落（codex）。
-        logger.warning(
-            "packaged plugin metadata unreadable, falling back to manifest: path={}, err_type={}, err={}",
-            meta_path,
-            type(exc).__name__,
-            str(exc),
-        )
-        return None
-
-    if not isinstance(raw, Mapping):
-        logger.warning("packaged plugin metadata is not an object: path={}", meta_path)
-        return None
+    raw, meta_stat = loaded
 
     schema_version = raw.get("schema_version")
     if schema_version != PACKAGED_METADATA_SCHEMA_VERSION:

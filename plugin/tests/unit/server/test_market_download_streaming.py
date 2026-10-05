@@ -25,16 +25,21 @@
 
 from __future__ import annotations
 
+from plugin.utils.http_imports import load_httpx
+
 import asyncio
 import hashlib
 import http.server
+import io
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from plugin.server.routes import market_bridge as module
+from plugin.server.infrastructure import package_download as download_io
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -114,7 +119,7 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
     http_server, isolated_download_root
 ) -> None:
     """攒批写不能改变落盘字节，也不能丢进度上报。"""
-    payload = bytes((i * 7 + 13) % 256 for i in range(3 * 1024 * 1024))  # 3 MB > flush 阈值
+    payload = bytes((i * 7 + 13) % 256 for i in range(3 * module._DOWNLOAD_FLUSH_BYTES))
     srv = http_server(payload, chunk=65536)
     task: dict = {"progress": 0.0, "message": ""}
 
@@ -143,7 +148,7 @@ async def test_every_write_happens_off_the_event_loop(
 
     钉的是"写盘在别的线程上"，不是"下载能成功"——后者换回同步写也照样过。
     """
-    payload = bytes(range(256)) * (12 * 1024)  # 3 MB
+    payload = bytes(range(256)) * (3 * module._DOWNLOAD_FLUSH_BYTES // 256)
     srv = http_server(payload, chunk=65536)
 
     loop_thread = threading.current_thread().name
@@ -165,13 +170,86 @@ async def test_every_write_happens_off_the_event_loop(
         assert loop_thread not in write_threads, (
             f"有 {write_threads.count(loop_thread)} 次写发生在事件循环线程 {loop_thread} 上"
         )
-        # 3MB / 1MB flush = 3 次；攒批的意义就是次数远小于 3200
+        # Three writes plus one open and close, rather than one worker per chunk.
         assert len(write_threads) <= 8, (
             f"线程往返 {len(write_threads)} 次，攒批没生效（每块都跨一次线程）"
         )
         assert path.read_bytes() == payload
     finally:
         path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_download_preserves_bytes_with_one_file_handle(
+    http_server, isolated_download_root, monkeypatch,
+):
+    payload = b"x" * (3 * module._DOWNLOAD_FLUSH_BYTES + 19)
+    srv = http_server(payload)
+    handles = []
+    open_threads = []
+    real_open = Path.open
+    loop_thread = threading.get_ident()
+
+    def open_file(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if mode in {"ab", "wb"} and path.suffix == ".neko-plugin":
+            handles.append(handle)
+            open_threads.append(threading.get_ident())
+        return handle
+
+    monkeypatch.setattr(Path, "open", open_file)
+    path = await module._download_package_once(_url(srv), {})
+    try:
+        assert path.read_bytes() == payload
+        assert len(handles) == 1, "Every buffered write reopened the package"
+        assert handles[0].closed
+        assert loop_thread not in open_threads
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_file_open_is_closed_before_download_cleanup(
+    http_server, isolated_download_root, monkeypatch,
+):
+    srv = http_server(b"x")
+    loop = asyncio.get_running_loop()
+    opened = asyncio.Event()
+    release = threading.Event()
+    handles = []
+    real_open = Path.open
+
+    def open_file(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if mode == "wb" and path.suffix == ".neko-plugin":
+            handles.append(handle)
+            loop.call_soon_threadsafe(opened.set)
+            if not release.wait(2):
+                handle.close()
+                raise TimeoutError("test did not release open worker")
+        return handle
+
+    monkeypatch.setattr(Path, "open", open_file)
+    fallback = threading.Timer(1.5, release.set)
+    fallback.start()
+    operation = asyncio.create_task(module._download_package_once(_url(srv), {}))
+    try:
+        await asyncio.wait_for(opened.wait(), 1)
+        operation.cancel()
+        await asyncio.sleep(0)
+        operation.cancel()
+        await asyncio.sleep(0.05)
+        assert not operation.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(operation, 1)
+        assert handles and all(handle.closed for handle in handles)
+        assert list((isolated_download_root / ".downloads").iterdir()) == []
+    finally:
+        release.set()
+        fallback.cancel()
+        await asyncio.gather(operation, return_exceptions=True)
+        await asyncio.to_thread(fallback.join)
 
 
 @pytest.mark.asyncio
@@ -206,7 +284,7 @@ async def test_total_timeout_is_not_confused_with_the_httpx_one(
     变异：删掉 ``except TimeoutError`` 分支 —— 那它会落到最后的 ``except Exception``
     裸抛，既拿不到 GitHub 直连回退，也不是 ``_DownloadAttemptError``。
     """
-    assert not issubclass(module.httpx.TimeoutException, TimeoutError), (
+    assert not issubclass(load_httpx().TimeoutException, TimeoutError), (
         "前提变了：httpx 的超时类成了内建 TimeoutError 的子类，两条 except 会互相遮蔽"
     )
     assert asyncio.TimeoutError is TimeoutError, "asyncio.timeout 抛的不再是内建 TimeoutError"
@@ -236,3 +314,111 @@ async def test_the_size_cap_is_still_enforced(
     with pytest.raises(module._DownloadAttemptError) as excinfo:
         await module._download_package_once(_url(srv), {"progress": 0.0})
     assert "过大" in str(excinfo.value) or "限制" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_stage", ["write", "close"])
+@pytest.mark.parametrize("cancellation", ["timeout", "caller"])
+async def test_slow_file_io_drains_without_blocking_the_loop(
+    isolated_download_root, monkeypatch, blocked_stage, cancellation,
+):
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    loop_thread = threading.get_ident()
+    cleanup_threads = []
+
+    def pause():
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(2):
+            raise TimeoutError("test did not release the file worker")
+
+    class SlowRaw(io.RawIOBase):
+        def writable(self):
+            return True
+
+        def write(self, data):
+            if blocked_stage == "write":
+                pause()
+            return len(data)
+
+        def close(self):
+            if blocked_stage == "close" and not self.closed:
+                pause()
+            super().close()
+
+    raw = SlowRaw()
+    handle = io.BufferedWriter(raw)
+    real_open = Path.open
+
+    def open_file(path, mode="r", *args, **kwargs):
+        if mode in {"ab", "wb"} and path.suffix == ".neko-plugin":
+            return handle
+        return real_open(path, mode, *args, **kwargs)
+
+    class Response:
+        headers = {"content-length": str(1024 * 1024)}
+
+        def raise_for_status(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def aiter_bytes(self, chunk_size):
+            for _ in range(16):
+                yield b"x" * chunk_size
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        def stream(self, *_args):
+            return Response()
+
+    real_cleanup = download_io.cleanup_download_file
+
+    def cleanup(path):
+        assert handle.closed, "Cleanup raced the file worker"
+        cleanup_threads.append(threading.get_ident())
+        real_cleanup(path)
+
+    monkeypatch.setattr(Path, "open", open_file)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
+    monkeypatch.setattr(download_io, "cleanup_download_file", cleanup)
+    monkeypatch.setattr(module, "_DOWNLOAD_TOTAL_TIMEOUT", 0.05 if cancellation == "timeout" else 10)
+    # A regressed synchronous close must fail within a bounded time, not hang pytest.
+    fallback_release = threading.Timer(1.5, release.set)
+    fallback_release.start()
+    download = asyncio.create_task(module._download_package_once("https://example.invalid/pkg", {}))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if cancellation == "caller":
+            download.cancel()
+            await asyncio.sleep(0)
+            download.cancel()
+        tick_started = time.perf_counter()
+        await asyncio.sleep(0.1)
+        assert time.perf_counter() - tick_started < 0.5, "File cleanup blocked the event loop"
+        assert not download.done()
+        assert cleanup_threads == []
+        release.set()
+        expected = module._DownloadAttemptError if cancellation == "timeout" else asyncio.CancelledError
+        with pytest.raises(expected):
+            await asyncio.wait_for(download, 1)
+        assert cleanup_threads and loop_thread not in cleanup_threads
+        assert list((isolated_download_root / ".downloads").iterdir()) == []
+    finally:
+        release.set()
+        fallback_release.cancel()
+        await asyncio.gather(download, return_exceptions=True)
+        await asyncio.to_thread(fallback_release.join)

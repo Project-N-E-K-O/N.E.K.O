@@ -19,10 +19,7 @@ from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
 from plugin.neko_plugin_cli.public import (
-    analyze_bundle_plugins,
     inspect_package,
-    build_bundle,
-    build_plugin,
     install_package,
 )
 from plugin.server.application.install_source import (
@@ -87,7 +84,6 @@ _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
 plugin_registry_service = PluginRegistryService()
-
 
 async def _refresh_committed_market_install(plugin_id: str) -> str | None:
     """Refresh a fresh Market install without rolling back committed files.
@@ -1964,6 +1960,8 @@ class PluginCliService:
         allow_development: bool = True,
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
+        from plugin.neko_plugin_cli.core.build import build_bundle, build_plugin
+
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
@@ -2519,6 +2517,8 @@ class PluginCliService:
         plugin_refs: list[dict[str, Any]] | None,
         current_sdk_version: str | None,
     ) -> dict[str, object]:
+        from plugin.neko_plugin_cli.core.bundle_analysis import analyze_bundle_plugins
+
         try:
             plugin_dirs = [
                 source.plugin_dir

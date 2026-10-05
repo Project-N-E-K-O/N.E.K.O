@@ -1,49 +1,9 @@
-"""异环境打包的元数据：写一份本机 sidecar，**发行产物一个字节都不动**。
+"""Foreign-environment metadata is cached outside installed plugin files.
 
-背景（实测）：``neko-plugin build`` 把**作者机器**的 ``build_env``（os / python 小版本 /
-arch）写进 ``plugin.meta.json``；市场安装只是把那个文件逐字节解出来
-（``neko_plugin_cli/core/install.py`` 的 ``extract_member`` = ``shutil.copyfileobj``），
-既不校验也不重写。实测过：build 产出 ``build_env={'os':'win32','python':'3.11',
-'arch':'AMD64'}``，``install_package`` 之后盘上那份一模一样。
-
-于是用户换了 Python 小版本之后：``read_packaged_metadata`` 仍返回对象、只是
-``built_in_this_environment=False`` → ``_read_packaged_isolated_metadata`` 拒绝它 →
-每次启动付一个 2.5–4.2s 的隔离 metadata worker；而重写路径
-``refresh_stale_packaged_metadata`` 只认 **schema 过期**，schema 是当前版就什么都不做
-→ **永久**，且 INFO 以上什么都不记（注册表*发现*还接受同一份文件做 UI 预览，所以
-插件在列表里看起来完全正常）。
-
-**为什么是 sidecar 而不是就地改写**：``plugin.meta.json`` 是发行产物。改写它会动到
-已安装包的字节，进而动到 manual takeover 的树哈希复核
-（``manual_takeover._replaceable_content_sha256`` 无排除清单、全树逐文件哈希），以及
-"盘上这份就是市场发布的那份"这个可核对性。既有测试
-``test_plugins_lifecycle_service.py::test_a_scan_does_not_write_metadata_it_has_no_business_writing[current_schema]``
-正是钉这一条的（它的 docstring 写着 "a foreign build environment … is not fixed by a
-rewrite"，断言 ``plugin.meta.json`` 字节不变）。写在旁边、读取时优先，那条测试**一行
-不改就仍然通过**。
-
-这里钉住的不变量：
-
-1. **发行产物字节不变**，sidecar 单独落在 ``plugin.meta.local.json``。
-2. **sidecar 必须被排除在源树指纹之外**——否则写出它就改变了 ``source_files`` 与
-   ``source_sha256``，**反过来让包内那份 plugin.meta.json 判定失配而失效**：修好一条
-   慢路径，同时弄坏另一条快路径。这是本方案最容易踩的坑。
-3. **自愈**：sidecar 写成功后 ``read_packaged_metadata`` 直接命中它 → 不再扫描 →
-   也就不会再走到写这一步。
-4. **不越权**：schema 比本机新的包不写（那是降级）；``plugin.meta.json`` 根本不存在的
-   插件不写（手工放入/dev 模式的插件从来没有过这份文件，不该因为启动一次就长出一份）；
-   没有新扫描结果不写；schema 过期仍然走**既有的**就地改写路径。
-5. **不放宽环境比对**：``build_environment`` 的 docstring 说明插件可以按
-   ``sys.version_info`` 决定注册哪些 entry，小版本之间 C 扩展 ABI 也不兼容。要消除的
-   是"永远修不好"，不是"判得严"。
-
-变异清单（每条都应有测试变红）：
-* 把 ``_GENERATED_METADATA_NAMES`` 改回只含 ``PACKAGED_METADATA_FILENAME`` → 2 红
-* ``read_packaged_metadata`` 里去掉 sidecar 优先 → 1、3 红
-* ``packaged_metadata_needs_rebuild`` 里删掉 env 分支 → 6 红
-* ``_snapshot_package_tree_for_rebuild`` 换回 schema-only 判据 → 7 红
-* 分派改成"env 优先于 schema" → 8 红（改变了既有 schema 路径的行为）
-* ``build_environment`` 的 python 放宽到 major → 5 红
+The host cache is isolated by installation, package contents and environment.
+Root plugin.meta.local.json remains plugin-owned data, including during builds.
+Cache failures and unfingerprintable trees must be rejected before source
+hashing. Existing schema upgrades and all metadata validation remain intact.
 """
 
 from __future__ import annotations
@@ -61,7 +21,7 @@ from plugin.server.infrastructure import packaged_metadata
 pytestmark = pytest.mark.plugin_unit
 
 _META = packaged_metadata.PACKAGED_METADATA_FILENAME
-_LOCAL = packaged_metadata.LOCAL_PACKAGED_METADATA_FILENAME
+_LOCAL = "plugin.meta.local.json"
 _SCHEMA = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
 
 
@@ -79,7 +39,7 @@ def _write_plugin(
     """
     plugin_dir = tmp_path / name
     plugin_dir.mkdir(parents=True)
-    # 必须是 [plugin] 段：_upgrade_stale_packaged_metadata 会校验 manifest 里的 id
+    # 必须是 [plugin] 段：_refresh_scanned_packaged_metadata 会校验 manifest 里的 id
     # 与运行时 id 一致（handler 键里嵌着 id，写错归属就再也对不上）。
     (plugin_dir / "plugin.toml").write_text(f"[plugin]\nid = '{name}'\n", encoding="utf-8")
     (plugin_dir / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -122,6 +82,12 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_bytes().decode("utf-8"))
 
 
+def _cache_path(plugin_dir: Path) -> Path:
+    path = packaged_metadata.local_packaged_metadata_path(plugin_dir)
+    assert path is not None
+    return path
+
+
 # ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────
 
 
@@ -150,9 +116,11 @@ def test_an_env_mismatched_package_gets_a_sidecar_and_the_package_is_untouched(t
     assert (plugin_dir / _META).read_bytes() == shipped_before, (
         "发行产物被改写了——sidecar 方案的全部意义就在于不动它"
     )
-    # 2) sidecar 落在旁边，内容是**本机**的答案
-    assert (plugin_dir / _LOCAL).exists()
-    local = _read_json(plugin_dir / _LOCAL)
+    # 2) 缓存落在宿主运行时目录，内容是**本机**的答案
+    assert _cache_path(plugin_dir).exists()
+    assert not (plugin_dir / _LOCAL).exists()
+    assert not _cache_path(plugin_dir).is_relative_to(plugin_dir)
+    local = _read_json(_cache_path(plugin_dir))
     assert local["build_env"] == packaged_metadata.build_environment()
     assert local["schema_version"] == _SCHEMA
     assert local["handlers"]["demo.go"]["name"] == "Scanned", "写进去的不是这次扫描的结果"
@@ -165,13 +133,8 @@ def test_an_env_mismatched_package_gets_a_sidecar_and_the_package_is_untouched(t
     assert after.handlers["demo.go"]["name"] == "Scanned"
 
 
-def test_the_sidecar_is_excluded_from_the_source_fingerprint(tmp_path) -> None:
-    """变异：把 ``_GENERATED_METADATA_NAMES`` 改回只含 ``PACKAGED_METADATA_FILENAME``。
-
-    这是本方案最容易踩的坑，也是最静默的：sidecar 一旦参与指纹，写出它本身就改变了
-    ``source_files`` 清单与 ``source_sha256`` —— 包内那份 ``plugin.meta.json`` 会立刻
-    判定失配而失效。修好一条慢路径，同时弄坏了另一条快路径，而且没有任何东西会红。
-    """
+def test_host_cache_does_not_change_the_installed_source_fingerprint(tmp_path) -> None:
+    """Cache writes leave both the original metadata and source tree intact."""
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
     sha_before = packaged_metadata.compute_source_sha256(plugin_dir)
     names_before = packaged_metadata.source_file_names(plugin_dir)[0]
@@ -182,7 +145,8 @@ def test_the_sidecar_is_excluded_from_the_source_fingerprint(tmp_path) -> None:
         before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
         **_SCAN_KWARGS,
     )
-    assert (plugin_dir / _LOCAL).exists(), "前提没成立：sidecar 没写出来"
+    assert _cache_path(plugin_dir).exists(), "前提没成立：本机缓存没写出来"
+    assert not (plugin_dir / _LOCAL).exists()
 
     assert _LOCAL not in packaged_metadata.source_file_names(plugin_dir)[0], (
         "sidecar 进了源文件清单 —— 它会让包内那份 plugin.meta.json 判定失配而失效"
@@ -220,7 +184,9 @@ def test_an_unusable_sidecar_falls_back_to_the_package_file(tmp_path) -> None:
     stale["build_env"] = packaged_metadata.build_environment()
     stale["source_files"] = list(shipped["source_files"]) + ["no_longer_here.py"]
     stale["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go", "name": "StaleSidecar"}}
-    (plugin_dir / _LOCAL).write_text(json.dumps(stale), encoding="utf-8")
+    cache_path = _cache_path(plugin_dir)
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text(json.dumps(stale), encoding="utf-8")
 
     got = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert got is not None, "sidecar 失效后返回了 None —— 应该回落到包内那份"
@@ -242,7 +208,7 @@ def test_a_sidecar_from_another_environment_is_not_used(tmp_path) -> None:
         before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
         **_SCAN_KWARGS,
     )
-    local_path = plugin_dir / _LOCAL
+    local_path = _cache_path(plugin_dir)
     assert packaged_metadata.read_packaged_metadata(plugin_dir).built_in_this_environment is True
 
     # 模拟"写完 sidecar 之后又换了 Python"：把 sidecar 的 build_env 也改成异环境
@@ -412,7 +378,7 @@ def test_the_dispatch_keeps_the_existing_schema_path_and_only_adds_the_sidecar(t
     """
     from plugin.server.application.plugins import lifecycle_service
 
-    source = inspect.getsource(lifecycle_service._upgrade_stale_packaged_metadata)
+    source = inspect.getsource(lifecycle_service._refresh_scanned_packaged_metadata)
     schema_at = source.index("refresh_stale_packaged_metadata(")
     local_at = source.index("write_local_packaged_metadata(")
     gate_at = source.index("stale_packaged_schema_version(plugin_dir) is not None")
@@ -432,13 +398,14 @@ def test_the_dispatch_keeps_the_existing_schema_path_and_only_adds_the_sidecar(t
     shipped_before = (env_dir / _META).read_bytes()
     _upgrade(env_dir, scanned)
     assert (env_dir / _META).read_bytes() == shipped_before, "env 路径改写了发行产物"
-    assert (env_dir / _LOCAL).exists(), "env 路径没有写 sidecar"
+    assert _cache_path(env_dir).exists(), "env 路径没有写宿主缓存"
+    assert not (env_dir / _LOCAL).exists()
 
 
 def _upgrade(plugin_dir: Path, scanned) -> None:
     """走真实的分派函数，并把 manifest 原样当作生效配置传进去。
 
-    传 manifest 本身是为了让 ``_upgrade_stale_packaged_metadata`` 的两道前置守卫都通过
+    传 manifest 本身是为了让 ``_refresh_scanned_packaged_metadata`` 的两道前置守卫都通过
     （manifest id 与运行时 id 一致、生效 entries 表就是 manifest 自己那份，摘要相等）。
     本测试要验的是"写到哪"，不是那两道守卫——它们由 test_plugins_lifecycle_service 里
     既有的用例覆盖。
@@ -450,7 +417,7 @@ def _upgrade(plugin_dir: Path, scanned) -> None:
     config_path = plugin_dir / "plugin.toml"
     manifest = tomllib.loads(config_path.read_text(encoding="utf-8"))
     pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
-    lifecycle_service._upgrade_stale_packaged_metadata(
+    lifecycle_service._refresh_scanned_packaged_metadata(
         config_path,
         "demo",
         scanned,
@@ -468,6 +435,160 @@ def _fake_scanned():
         handlers=_SCAN_KWARGS["handlers"],
         entry_methods=_SCAN_KWARGS["entry_methods"],
     )
+
+
+def test_existing_root_local_json_is_preserved_and_remains_source_data(tmp_path):
+    from plugin.server.application.plugins.metadata_scanner import scan_plugin_metadata_isolated
+
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    business_file = plugin_dir / _LOCAL
+    business_file.write_text('{"business_data":"Original entry"}', encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "import json\nfrom pathlib import Path\n"
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "LABEL = json.loads((Path(__file__).parent / 'plugin.meta.local.json').read_text())['business_data']\n"
+        "class Plugin:\n"
+        "    @plugin_entry(id='go', name=LABEL)\n"
+        "    def go(self): return LABEL\n", encoding="utf-8",
+    )
+    # Model an existing package produced before the host cache was introduced.
+    payload = _read_json(plugin_dir / _META)
+    payload["source_sha256"] = packaged_metadata.compute_source_sha256(plugin_dir)
+    summary = packaged_metadata.source_stat_summary(plugin_dir)
+    payload["source_files"] = summary.names
+    payload["source_bytes"] = summary.total_bytes
+    (plugin_dir / _META).write_text(json.dumps(payload), encoding="utf-8")
+    saved_business = business_file.read_bytes()
+    saved_sources = packaged_metadata.snapshot_source_tree(plugin_dir)
+    from plugin.server.application.plugins.installation_transactions.manual_takeover import _replaceable_content_sha256
+    saved_content = _replaceable_content_sha256(plugin_dir)
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    scan_kwargs = dict(
+        plugin_id="demo", module_path="plugins.demo", class_name="Plugin",
+        config_path=plugin_dir / "plugin.toml", conf={}, pdata={}, source_only=True,
+    )
+    scanned = scan_plugin_metadata_isolated(**scan_kwargs)
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir, before_scan=before, entries=scanned.entries_preview,
+        handlers=scanned.handlers, entry_methods=scanned.entry_methods, conf={}, pdata={},
+    )
+    assert business_file.read_bytes() == saved_business
+    assert packaged_metadata.snapshot_source_tree(plugin_dir) == saved_sources
+    assert _replaceable_content_sha256(plugin_dir) == saved_content
+    assert _LOCAL in packaged_metadata.source_file_names(plugin_dir)[0]
+    assert scan_plugin_metadata_isolated(**scan_kwargs).handlers["demo.go"]["name"] == "Original entry"
+    assert packaged_metadata.read_packaged_metadata(plugin_dir).built_in_this_environment
+
+
+def test_unwritable_cache_skips_hashing_and_recovers_after_write_access_returns(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    real_mkstemp = packaged_metadata.tempfile.mkstemp
+    real_hash = packaged_metadata.compute_source_sha256
+    hashes = []
+
+    def count_hash(path):
+        hashes.append(path)
+        return real_hash(path)
+
+    def unavailable_cache(*args, **kwargs):
+        raise PermissionError("runtime cache is read-only")
+
+    monkeypatch.setattr(packaged_metadata, "compute_source_sha256", count_hash)
+    monkeypatch.setattr(packaged_metadata.tempfile, "mkstemp", unavailable_cache)
+    for _ in range(2):
+        assert lifecycle_service._snapshot_package_tree_for_rebuild(plugin_dir / "plugin.toml") is None
+    assert hashes == []
+    monkeypatch.setattr(packaged_metadata.tempfile, "mkstemp", real_mkstemp)
+    before = lifecycle_service._snapshot_package_tree_for_rebuild(plugin_dir / "plugin.toml")
+    assert before is not None
+    assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+
+
+def test_read_only_installed_code_uses_writable_runtime_cache(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    real_mkstemp = packaged_metadata.tempfile.mkstemp
+    attempts = []
+
+    def reject_installed_writes(*args, **kwargs):
+        destination = Path(kwargs["dir"])
+        attempts.append(destination)
+        if destination.is_relative_to(plugin_dir):
+            raise PermissionError("installed code is read-only")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(packaged_metadata.tempfile, "mkstemp", reject_installed_writes)
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    assert before is not None
+    assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+    assert attempts and all(not path.is_relative_to(plugin_dir) for path in attempts)
+    assert packaged_metadata.read_packaged_metadata(plugin_dir).built_in_this_environment
+    assert not (plugin_dir / _LOCAL).exists()
+
+
+@pytest.mark.parametrize("refusal", ["untrustworthy", "empty", "unicode"])
+def test_uncacheable_tree_is_rejected_before_hashing(tmp_path, monkeypatch, refusal):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    if refusal == "untrustworthy":
+        monkeypatch.setattr(packaged_metadata, "source_stat_summary", lambda _: packaged_metadata.SourceStatSummary(untrustworthy=True))
+    elif refusal == "empty":
+        monkeypatch.setattr(packaged_metadata, "empty_source_directories", lambda _: ["empty"])
+    else:
+        monkeypatch.setattr(packaged_metadata, "unicode_renamed_source_files", lambda _: ["renamed"])
+    monkeypatch.setattr(packaged_metadata, "compute_source_sha256", lambda _: pytest.fail("Rejected tree must not be hashed"))
+    assert packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir) is None
+
+
+def test_final_write_failure_does_not_repeat_hashes_and_new_cache_root_recovers(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    real_hash = packaged_metadata.compute_source_sha256
+    real_write = packaged_metadata.atomic_write_bytes
+    hashes = []
+
+    def count_hash(path):
+        hashes.append(path)
+        return real_hash(path)
+
+    def fail_write(*args, **kwargs):
+        raise PermissionError("cache target cannot be replaced")
+
+    monkeypatch.setattr(packaged_metadata, "compute_source_sha256", count_hash)
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", fail_write)
+    assert not packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+    assert len(hashes) == 2
+    assert packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir) is None
+    assert len(hashes) == 2
+    monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", real_write)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "other_runtime"))
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    assert before is not None
+    assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+
+
+def test_cache_identity_changes_with_installation_environment_and_package(tmp_path, monkeypatch):
+    first = _write_plugin(tmp_path / "a", build_env=_foreign_env(python="3.9"))
+    second = _write_plugin(tmp_path / "b", build_env=_foreign_env(python="3.9"))
+    original = _cache_path(first)
+    assert _cache_path(second) != original
+    real_environment = packaged_metadata.build_environment
+    monkeypatch.setattr(packaged_metadata, "build_environment", lambda: {**real_environment(), "python": "other"})
+    assert _cache_path(first) != original
+    monkeypatch.setattr(packaged_metadata, "build_environment", real_environment)
+    payload = _read_json(first / _META)
+    payload["handlers"]["demo.go"]["name"] = "New package"
+    (first / _META).write_text(json.dumps(payload), encoding="utf-8")
+    assert _cache_path(first) != original
+
+
+def test_long_runtime_cache_path_can_be_written(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / ("runtime_" + "r" * 100)))
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    assert before is not None
+    assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+    assert packaged_metadata.read_packaged_metadata(plugin_dir).built_in_this_environment
 
 
 def test_the_two_write_paths_share_one_set_of_refusals() -> None:
@@ -496,3 +617,123 @@ def test_the_two_write_paths_share_one_set_of_refusals() -> None:
             assert duplicated not in called, (
                 f"{fn.__name__} 自己又做了一遍 {duplicated}——应该只在共用体里做一次"
             )
+
+
+@pytest.mark.parametrize("invalid", ["oversized", "deep_json", "invalid_utf8", "directory"])
+def test_every_metadata_read_path_rejects_unsafe_input(tmp_path, monkeypatch, invalid):
+    meta_path = tmp_path / _META
+    if invalid == "directory":
+        meta_path.mkdir()
+    elif invalid == "oversized":
+        meta_path.write_bytes(b" " * (packaged_metadata.MAX_PACKAGED_METADATA_BYTES + 1))
+    elif invalid == "deep_json":
+        meta_path.write_bytes(b'{"schema_version":4,"nested":' + b"[" * 1500 + b"0" + b"]" * 1500 + b"}")
+    else:
+        meta_path.write_bytes(b"\xff")
+    if invalid in {"directory", "oversized"}:
+        original_open = Path.open
+
+        def unexpected_open(path, *args, **kwargs):
+            if path == meta_path:
+                pytest.fail("Rejected metadata must not be opened")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", unexpected_open)
+    assert packaged_metadata.read_packaged_metadata(tmp_path) is None
+    assert packaged_metadata.stale_packaged_schema_version(tmp_path) is None
+    assert packaged_metadata.packaged_metadata_env_mismatched(tmp_path) is False
+    assert packaged_metadata.packaged_metadata_needs_rebuild(tmp_path) is False
+
+
+def test_metadata_size_is_checked_after_open_as_well(tmp_path, monkeypatch):
+    meta_path = tmp_path / _META
+    meta_path.write_text('{"schema_version":4}', encoding="utf-8")
+    original_open = packaged_metadata.os.open
+
+    def grow_before_open(path, flags, *args, **kwargs):
+        meta_path.write_bytes(b" " * (packaged_metadata.MAX_PACKAGED_METADATA_BYTES + 1))
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(packaged_metadata.os, "open", grow_before_open)
+    assert packaged_metadata._read_metadata_json(meta_path) is None
+
+
+def test_metadata_read_is_bounded_even_if_stat_reports_a_smaller_file(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import stat
+
+    meta_path = tmp_path / _META
+    meta_path.write_bytes(b" " * (packaged_metadata.MAX_PACKAGED_METADATA_BYTES + 100))
+    original_stat = Path.stat
+    original_fdopen = packaged_metadata.os.fdopen
+    small_stat = SimpleNamespace(st_mode=stat.S_IFREG, st_size=1)
+    monkeypatch.setattr(Path, "stat", lambda path, **kw: small_stat if path == meta_path else original_stat(path, **kw))
+    monkeypatch.setattr(packaged_metadata.os, "fstat", lambda _fd: small_stat)
+    read_limits = []
+
+    class BoundedFile:
+        def __init__(self, fd, mode):
+            self.handle = original_fdopen(fd, mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def read(self, limit):
+            read_limits.append(limit)
+            assert limit == packaged_metadata.MAX_PACKAGED_METADATA_BYTES + 1
+            return self.handle.read(limit)
+
+    monkeypatch.setattr(packaged_metadata.os, "fdopen", BoundedFile)
+    assert packaged_metadata._read_metadata_json(meta_path) is None
+    assert read_limits == [packaged_metadata.MAX_PACKAGED_METADATA_BYTES + 1]
+
+
+@pytest.mark.parametrize("ineligible", ["runtime_id", "entries_override"])
+def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, ineligible):
+    import tomllib
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    conf = dict(manifest)
+    if ineligible == "entries_override":
+        conf["entries"] = [{"id": "profile-only"}]
+
+    def unexpected_snapshot(*_args):
+        pytest.fail("An ineligible rebuild must not hash the source tree")
+
+    monkeypatch.setattr(lifecycle_service, "snapshot_packaged_metadata_rebuild_tree", unexpected_snapshot)
+    assert lifecycle_service._snapshot_package_tree_for_rebuild(
+        plugin_dir / "plugin.toml",
+        plugin_id="renamed" if ineligible == "runtime_id" else "demo",
+        conf=conf,
+        pdata=manifest["plugin"],
+    ) is None
+
+
+@pytest.mark.parametrize("probe_succeeds", [False, True])
+def test_direct_probe_preserves_local_metadata_named_business_data(tmp_path, monkeypatch, probe_succeeds):
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    plugin_dir = _write_plugin(tmp_path)
+    local = plugin_dir / _LOCAL
+    local.write_bytes((plugin_dir / _META).read_bytes())
+    saved_data = local.read_bytes()
+    payload = _read_json(plugin_dir / _META)
+
+    def probe(*_args, **_kwargs):
+        if not probe_succeeds:
+            raise metadata_probe.MetadataProbeError("optional dependency missing")
+        return payload
+
+    monkeypatch.setattr(metadata_probe, "derive_plugin_metadata", probe)
+    written = metadata_probe.write_packaged_metadata(source_dir=tmp_path, target_dir=plugin_dir)
+    assert local.read_bytes() == saved_data
+    assert (written is not None) == probe_succeeds
+    assert (plugin_dir / _META).exists() == probe_succeeds

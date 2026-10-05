@@ -51,6 +51,7 @@ from plugin.logging_config import get_logger
 from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
+    _DEFAULT_METADATA_SCAN_TIMEOUT as _DEFAULT_SCAN_TIMEOUT_SECONDS,
     _resolve_registered_config_path_sync,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
@@ -58,9 +59,6 @@ from plugin.server.application.plugins.lifecycle_service import (
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     bounded_operation_wait,
-)
-from plugin.server.application.plugins.metadata_scanner import (
-    _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event

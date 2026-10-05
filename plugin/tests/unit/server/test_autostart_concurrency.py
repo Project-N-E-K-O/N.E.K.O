@@ -1,14 +1,14 @@
-"""自启动批次：整批只持锁一次、锁内并发，且依赖方不与它的提供者同时启动。
+"""自启动按波次持锁并发，依赖方随后串行，波次之间让排队操作执行。
 
 串行自启动 12 个插件实测 14871ms，占冷启动的 79%（``service.start_plugin`` 的
 sum/max≈10.4 → 零重叠）。插件子进程是**独立进程**，不受 GIL 约束，16 逻辑核实测
 12 个并发冷启动整组 1430ms（串行等效 8007ms，5.6x），单个只慢 1.92x。
 
-实现是「整批只持锁一次 + 锁内 ``asyncio.gather`` 跑未加装饰的 ``_start_plugin_inner``」。
+每波锁内 ``asyncio.gather`` 跑未加装饰的 ``_start_plugin_under_lock``；串行使用公开入口。
 这里钉住四件在后续重构里很容易被悄悄丢掉、而丢掉之后**不是变慢而是挂死或静默失败**
 的事：
 
-1. ``_start_plugin_inner`` 体内不得再取锁。批次是在 gather 的**子任务**里跑它的，而
+1. ``_start_plugin_under_lock`` 体内不得再取锁。批次是在 gather 的**子任务**里跑它的，而
    ``serialized_plugin_operation`` 的重入判定按 ``asyncio.current_task()`` 认
    （``operation_lock.py`` 的 ``_OPERATION_OWNER``）：子任务里 current_task 是子任务
    自己、owner 是父任务，判定必然失败 → 去抢一把已被父任务持有的锁 → 整批挂死。
@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from plugin.server.application.plugins import lifecycle_service as module
+from plugin.server.application.plugins import operation_lock as locks
 from plugin.server.application.plugins import registry_service as registry_module
 
 pytestmark = pytest.mark.plugin_unit
@@ -52,8 +53,8 @@ def _lock_decorated_names() -> set[str]:
     return names
 
 
-def test_start_plugin_inner_never_reacquires_the_lock() -> None:
-    """变异：在 _start_plugin_inner 里加一句 self.stop_plugin(...) 或 hold()。
+def test_start_plugin_under_lock_never_reacquires_the_lock() -> None:
+    """变异：在 _start_plugin_under_lock 里加一句 self.stop_plugin(...) 或 hold()。
 
     批次在 gather 的子任务里跑它，重入判定认的是父任务 → 子任务会去抢一把已被
     持有的锁 → 整个启动挂死。这个失败不会在单插件测试里出现（那时没有父任务持锁），
@@ -71,7 +72,7 @@ def test_start_plugin_inner_never_reacquires_the_lock() -> None:
         node
         for node in cls.body
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
-        and node.name == "_start_plugin_inner"
+        and node.name == "_start_plugin_under_lock"
     )
 
     decorated = _lock_decorated_names()
@@ -91,9 +92,9 @@ def test_start_plugin_inner_never_reacquires_the_lock() -> None:
             offenders.append(f"{func.id}() @line {node.lineno}")
 
     assert not offenders, (
-        "_start_plugin_inner 体内取锁了：" + ", ".join(offenders) +
+        "_start_plugin_under_lock 体内取锁了：" + ", ".join(offenders) +
         "——批次在 gather 子任务里跑它，重入判定按 current_task 认，子任务会去抢"
-        "父任务已持有的锁，整个自启动批次挂死。要串行化就调 _start_plugin_inner，"
+        "父任务已持有的锁，整个自启动批次挂死。要串行化就调 _start_plugin_under_lock，"
         "别调被装饰的那个。"
     )
 
@@ -107,8 +108,8 @@ def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
     assert getattr(module.PluginLifecycleService.start_plugin, "__wrapped__", None) is not None, (
         "start_plugin 不再被 @serialized_plugin_operation 装饰——其余调用方就此失去互斥"
     )
-    assert getattr(module.PluginLifecycleService._start_plugin_inner, "__wrapped__", None) is None, (
-        "_start_plugin_inner 被装饰了：批次会在子任务里抢父任务的锁，挂死"
+    assert getattr(module.PluginLifecycleService._start_plugin_under_lock, "__wrapped__", None) is None, (
+        "_start_plugin_under_lock 被装饰了：批次会在子任务里抢父任务的锁，挂死"
     )
     # 公开签名一字不变（8 个调用方按名字/关键字传参）。结构化比对而不是比字符串：
     # 本模块有 from __future__ import annotations，str(signature) 会把注解渲染成
@@ -130,7 +131,7 @@ def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
 
 
 class _LockHoldCounter:
-    """替身：记录 hold() 被进入了几次，并让批次真的处在"锁已持有"状态。"""
+    """Count entries only; ownership and exclusion use the real-lock test below."""
 
     def __init__(self) -> None:
         self.entered = 0
@@ -141,6 +142,7 @@ class _LockHoldCounter:
         class _Held:
             async def __aenter__(self):
                 counter.entered += 1
+                return self
 
             async def __aexit__(self, *exc):
                 return False
@@ -149,7 +151,7 @@ class _LockHoldCounter:
 
 
 def _service_with_recorder(monkeypatch, *, delay=0.0, fail_ids=()):
-    """造一个只记录并发度的 service；_start_plugin_inner 被换成替身。"""
+    """造一个只记录并发度的 service；_start_plugin_under_lock 被换成替身。"""
     service = module.PluginLifecycleService()
     state = {"live": 0, "peak": 0, "order": [], "finished": []}
 
@@ -167,21 +169,22 @@ def _service_with_recorder(monkeypatch, *, delay=0.0, fail_ids=()):
             state["finished"].append(plugin_id)
             state["order"].append(("end", plugin_id))
 
-    monkeypatch.setattr(service, "_start_plugin_inner", _fake_inner)
+    monkeypatch.setattr(service, "_start_plugin_under_lock", _fake_inner)
     counter = _LockHoldCounter()
     monkeypatch.setattr(module, "plugin_operation_lock", counter)
+    monkeypatch.setattr(locks, "plugin_operation_lock", counter)
     return service, state, counter
 
 
 @pytest.mark.asyncio
-async def test_batch_holds_the_lock_once_and_overlaps_the_independent_group(monkeypatch) -> None:
+async def test_batch_overlaps_one_independent_wave(monkeypatch) -> None:
     """变异：把 hold() 挪进 _start_one，或把 gather 换回 for 循环。"""
     service, state, counter = _service_with_recorder(monkeypatch, delay=0.05)
 
     result = await service.start_plugins_batch(["a", "b", "c", "d"], concurrency=4)
 
     assert counter.entered == 1, (
-        f"整批应该只持锁一次，实际 {counter.entered} 次——每个插件各自持锁就退回串行了"
+        f"同一波应该只持锁一次，实际 {counter.entered} 次——每个插件各自持锁就退回串行了"
     )
     assert state["peak"] > 1, "并发组没有真的重叠（peak=%d）" % state["peak"]
     assert sorted(result["started"]) == ["a", "b", "c", "d"]
@@ -197,7 +200,7 @@ async def test_concurrency_one_is_a_full_rollback_to_serial(monkeypatch) -> None
 
     assert state["peak"] == 1, f"concurrency=1 却出现了重叠（peak={state['peak']}）"
     assert [p for _, p in state["order"] if _ == "start"] == ["a", "b", "c"]
-    assert counter.entered == 1
+    assert counter.entered == 3
 
 
 @pytest.mark.asyncio
@@ -257,6 +260,169 @@ async def test_one_failure_does_not_take_down_the_batch(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "independent, ordered, concurrency",
+    [
+        (["bad", "good"], [], 1),
+        (["bad"], ["good"], 4),
+        ([], ["bad", "good"], 4),
+        (["provider1", "provider2"], ["bad", "good"], 2),
+    ],
+)
+async def test_serial_paths_isolate_start_failures(monkeypatch, independent, ordered, concurrency):
+    service, state, _ = _service_with_recorder(monkeypatch, fail_ids={"bad"})
+    result = await service.start_plugins_batch(independent, ordered, concurrency=concurrency)
+    assert result["failed"] == ["bad"]
+    assert "good" in result["started"]
+    assert state["finished"] == independent + ordered
+
+
+@pytest.mark.asyncio
+async def test_cancelled_batch_keeps_the_real_lock_until_starts_finish(monkeypatch, tmp_path):
+    from plugin.server.application.plugins import operation_lock as locks
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(locks, "_reload_install_source_manager_sync", lambda: None)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    attempted = asyncio.Event()
+    outsider_entered = asyncio.Event()
+    completed = []
+    service = module.PluginLifecycleService()
+
+    async def start(plugin_id, **_kwargs):
+        if plugin_id == "b":
+            entered.set()
+        await release.wait()
+        completed.append(plugin_id)
+
+    monkeypatch.setattr(service, "_start_plugin_under_lock", start)
+
+    async def outsider():
+        attempted.set()
+        async with locks.plugin_operation_lock.hold():
+            outsider_entered.set()
+
+    batch = asyncio.create_task(service.start_plugins_batch(["a", "b"], concurrency=2))
+    competing = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        competing = asyncio.create_task(outsider())
+        await attempted.wait()
+        batch.cancel()
+        await asyncio.sleep(0)
+        batch.cancel()
+        await asyncio.sleep(0)
+        assert not batch.done()
+        assert not outsider_entered.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(batch, 2)
+        await asyncio.wait_for(competing, 2)
+        assert sorted(completed) == ["a", "b"]
+        assert outsider_entered.is_set()
+    finally:
+        release.set()
+        await asyncio.gather(batch, *([competing] if competing else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency,dependent", [(1, False), (2, False), (3, True)])
+@pytest.mark.parametrize("cancel_pending", [False, True])
+async def test_queued_mutation_runs_before_the_next_start_group(
+    monkeypatch, tmp_path, concurrency, dependent, cancel_pending
+):
+    """Management requests must get the lock between waves or serial starts."""
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(locks, "_reload_install_source_manager_sync", lambda: None)
+    service = module.PluginLifecycleService()
+    first_size = 1 if dependent else concurrency
+    plugin_ids = [f"p{i}" for i in range(first_size + 1)]
+    first_started = asyncio.Event()
+    finish_first = asyncio.Event()
+    attempted = asyncio.Event()
+    mutation_entered = asyncio.Event()
+    finish_mutation = asyncio.Event()
+    transcript = []
+
+    async def start(plugin_id, restore_state=False, **_kwargs):
+        transcript.append(plugin_id)
+        if plugin_id in plugin_ids[:first_size]:
+            if len(transcript) == first_size:
+                first_started.set()
+            await finish_first.wait()
+
+    async def mutation():
+        attempted.set()
+        with locks.bounded_operation_wait(2):
+            async with locks.plugin_operation_lock.hold():
+                transcript.append("mutation")
+                mutation_entered.set()
+                await finish_mutation.wait()
+
+    monkeypatch.setattr(service, "_start_plugin_under_lock", start)
+    batch = asyncio.create_task(service.start_plugins_batch(
+        [] if dependent else plugin_ids,
+        plugin_ids if dependent else [],
+        concurrency=concurrency,
+    ))
+    competing = None
+    try:
+        await asyncio.wait_for(first_started.wait(), 2)
+        competing = asyncio.create_task(mutation())
+        await attempted.wait()
+        finish_first.set()
+        await asyncio.wait_for(mutation_entered.wait(), 2)
+        assert transcript == plugin_ids[:first_size] + ["mutation"]
+        if cancel_pending:
+            batch.cancel()
+            await asyncio.sleep(0)
+            batch.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(batch, 2)
+            assert transcript == plugin_ids[:first_size] + ["mutation"]
+        finish_mutation.set()
+        if cancel_pending:
+            await asyncio.wait_for(competing, 2)
+        else:
+            await asyncio.wait_for(asyncio.gather(batch, competing), 2)
+            assert transcript == plugin_ids[:first_size] + ["mutation", plugin_ids[-1]]
+    finally:
+        finish_first.set()
+        finish_mutation.set()
+        await asyncio.gather(batch, *([competing] if competing else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 2])
+async def test_cancelling_a_batch_waiting_for_the_lock_starts_nothing(
+    monkeypatch, tmp_path, concurrency
+):
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(locks, "_reload_install_source_manager_sync", lambda: None)
+    service = module.PluginLifecycleService()
+    started = []
+
+    async def start(plugin_id, restore_state=False, **_kwargs):
+        started.append(plugin_id)
+
+    monkeypatch.setattr(service, "_start_plugin_under_lock", start)
+    async with locks.plugin_operation_lock.hold():
+        batch = asyncio.create_task(service.start_plugins_batch(["a", "b"], concurrency=concurrency))
+        await asyncio.sleep(0)
+        assert not batch.done()
+        batch.cancel()
+        await asyncio.sleep(0)
+        batch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(batch, 2)
+        assert started == []
+
+    async with locks.plugin_operation_lock.hold():
+        assert started == []
+
+
+@pytest.mark.asyncio
 async def test_empty_batch_is_a_noop_that_still_does_not_explode(monkeypatch) -> None:
     service, state, counter = _service_with_recorder(monkeypatch)
 
@@ -264,14 +430,30 @@ async def test_empty_batch_is_a_noop_that_still_does_not_explode(monkeypatch) ->
 
     assert result == {"started": [], "failed": []}
     assert state["peak"] == 0
-    assert counter.entered == 1, "空批次也应该正常进出锁一次（而不是绕过它）"
+    assert counter.entered == 0
+
+
+async def test_internal_start_requires_lock_ownership():
+    service = module.PluginLifecycleService()
+    with pytest.raises(RuntimeError, match="requires the operation lock"):
+        await service._start_plugin_under_lock("unstarted")
+
+
+async def test_borrowed_scope_cannot_be_reused_after_release(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(locks, "_reload_install_source_manager_sync", lambda: None)
+    async with locks.plugin_operation_lock.hold() as scope:
+        scope.require_active()
+    service = module.PluginLifecycleService()
+    with pytest.raises(RuntimeError, match="active operation scope"):
+        await service._start_plugin_under_lock("unstarted", operation_scope=scope)
 
 
 @pytest.mark.asyncio
 async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> None:
     """变异：把 _start_one 里的 asyncio.shield 去掉，直接 await。
 
-    ``_start_plugin_inner`` 的 except 分支只接 Exception 类族（ServerDomainError /
+    ``_start_plugin_under_lock`` 的 except 分支只接 Exception 类族（ServerDomainError /
     HTTPException / PluginError / ImportError / RUNTIME_ERRORS），而 CancelledError
     是 BaseException，一个都接不住。从中间掐断就会留下一个已经 spawn、却还没走到
     ``_register_or_replace_host_sync`` 的 host 进程——落在 host 快照之后，成为没人
@@ -284,7 +466,7 @@ async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> N
         await asyncio.sleep(0.25)
         completed.append(plugin_id)  # 只有真的跑完才会到这里
 
-    monkeypatch.setattr(service, "_start_plugin_inner", _slow_inner)
+    monkeypatch.setattr(service, "_start_plugin_under_lock", _slow_inner)
     counter = _LockHoldCounter()
     monkeypatch.setattr(module, "plugin_operation_lock", counter)
 
@@ -305,11 +487,7 @@ async def test_cancelling_the_batch_never_cuts_a_start_in_half(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_a_failing_sibling_does_not_cancel_the_rest(monkeypatch) -> None:
-    """变异：把 gather 的 return_exceptions=True 去掉。
-
-    没有它，第一个抛出的异常会让 gather 取消其余兄弟任务——把"某个插件起不来"
-    放大成"半批插件被从中间掐断"（接着就是上一个测试防的那种孤儿）。
-    """
+    """A normal startup failure must not stop the batch from awaiting siblings."""
     service, state, _ = _service_with_recorder(monkeypatch, delay=0.08, fail_ids={"bad"})
 
     result = await service.start_plugins_batch(
@@ -401,3 +579,59 @@ def test_autostart_ids_are_already_topologically_ordered() -> None:
         f"自启动列表不再是拓扑序了（return {last}）——并发分组的前提就此失效："
         "依赖检查要求提供者已注册完 handler，只有拓扑序能保证它排在前面"
     )
+
+
+def test_empty_autostart_selection_does_not_read_plugin_configuration(monkeypatch):
+    def unexpected_read(*_args):
+        pytest.fail("An empty selection must not read plugin configurations")
+
+    monkeypatch.setattr(registry_module, "_collect_plugin_contexts_from_roots_sync", unexpected_read)
+    assert registry_module._build_ordered_plugin_ids_sync(set()) == []
+
+
+@pytest.mark.asyncio
+async def test_renamed_plugin_keeps_its_own_dependency_declarations(monkeypatch, tmp_path):
+    """Use real discovery: duplicate manifest IDs may have different dependencies."""
+    root = tmp_path / "plugins"
+    for directory, declared_id, dependencies in (
+        ("a_provider", "a_provider", []),
+        ("demo", "demo", []),
+        ("demo_1", "demo", ["a_provider"]),
+    ):
+        folder = root / directory
+        folder.mkdir(parents=True)
+        dependency_line = f"dependencies = {dependencies!r}\n" if dependencies else ""
+        (folder / "plugin.toml").write_text(
+            f"[plugin]\nid = {declared_id!r}\nname = {directory!r}\n"
+            f"type = 'plugin'\nentry = '{directory}:Plugin'\nversion = '1.0.0'\n"
+            f"{dependency_line}[plugin_runtime]\nenabled = true\nauto_start = true\n",
+            encoding="utf-8",
+        )
+
+    # Discovery's ID dependency check reads the registered provider, just as a
+    # refresh with an existing registry does. It must preserve both demo sources.
+    monkeypatch.setattr(registry_module.state, "plugins", {
+        "a_provider": {
+            "id": "a_provider",
+            "version": "1.0.0",
+            "runtime_enabled": True,
+            "config_path": str(root / "a_provider" / "plugin.toml"),
+        },
+    })
+    monkeypatch.setattr(registry_module.state, "plugin_hosts", {})
+    monkeypatch.setattr(registry_module, "PLUGIN_CONFIG_ROOTS", (root,))
+    monkeypatch.setattr(registry_module, "is_autostart_approved", lambda _pid: True)
+    result = await registry_module.PluginRegistryService().refresh_registry()
+    assert result["success"], result
+    assert set(registry_module.state.plugins) == {"a_provider", "demo", "demo_1"}
+    independent, dependent = await registry_module.PluginRegistryService().list_autostart_plugin_groups()
+    assert independent == ["a_provider", "demo"]
+    assert dependent == ["demo_1"]
+
+
+def test_dependency_classification_accepts_legacy_metadata_without_dependencies(monkeypatch):
+    monkeypatch.setattr(registry_module, "_get_registered_plugin_snapshot_sync", lambda: {
+        "legacy": {}, "empty": {"dependencies": []},
+        "renamed": {"dependencies": [{"id": "provider"}]},
+    })
+    assert registry_module._dependency_declaring_runtime_plugin_ids() == {"renamed"}

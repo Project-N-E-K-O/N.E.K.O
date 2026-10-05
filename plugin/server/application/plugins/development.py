@@ -18,11 +18,17 @@ from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch, normalize_plugin_entry_point,
 )
 from plugin.core.state import state
-from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
 from plugin.server.domain.errors import ServerDomainError
 from plugin import settings
 
 development_registry_lock = threading.RLock()
+
+
+def load_plugin_source(plugin_dir: str | Path):
+    """Load packaging metadata only when registering or validating a directory."""
+    from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source as read_source
+
+    return read_source(plugin_dir)
 
 
 @dataclass(frozen=True)

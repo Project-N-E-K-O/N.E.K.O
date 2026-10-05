@@ -269,3 +269,71 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
 
     assert [item["source"] for item in payload["warnings"]] == ["schema", "semantic"]
     assert [item["message"] for item in payload["warnings"]] == ["schema-first", "semantic-second"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("seed", ["manifest", "example", "existing"])
+def test_discovery_config_matches_initialized_config_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: str
+) -> None:
+    from plugin.core.plugin_layout import resolve_plugin_layout
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    installed = tmp_path / "demo"
+    installed.mkdir()
+    manifest = installed / "plugin.toml"
+    manifest.write_text(
+        "[plugin]\nid='demo'\nname='Demo'\nentry='demo:Plugin'\n"
+        "[plugin.config_profiles]\nactive='dev'\n"
+        "[plugin.config_profiles.files]\ndev='profiles/dev.toml'\n"
+        "[runtime]\nlevel=1\nregion='manifest'\n", encoding="utf-8"
+    )
+    (installed / "profiles").mkdir()
+    (installed / "profiles/dev.toml").write_text("[runtime]\nlevel=9\n", encoding="utf-8")
+    layout = resolve_plugin_layout("demo", installed)
+    if seed == "example":
+        (installed / "config.example.toml").write_text(
+            "[runtime]\nregion='example'\n", encoding="utf-8"
+        )
+    elif seed == "existing":
+        layout.config_path.parent.mkdir(parents=True)
+        layout.config_path.write_text("[runtime]\nregion='existing'\n", encoding="utf-8")
+
+    discovered = module.resolve_plugin_config_from_path(
+        "demo", config_path=manifest, materialize_runtime_config=False
+    )
+    assert layout.config_path.exists() == (seed == "existing")
+    assert discovered["config_path"] == str(layout.config_path)
+    assert discovered["effective_config"]["runtime"] == {"level": 9, "region": seed}
+
+    initialized = module.resolve_plugin_config_from_path("demo", config_path=manifest)
+    assert layout.config_path.is_file()
+    for key in ("base_config", "effective_config", "profiles_state", "warnings", "schema_validation_errors"):
+        assert discovered[key] == initialized[key]
+
+    # Discovery always rereads user edits; defaults are not a persistent cache.
+    layout.config_path.write_text("[runtime]\nregion='edited'\n", encoding="utf-8")
+    edited = module.resolve_plugin_config_from_path(
+        "demo", config_path=manifest, materialize_runtime_config=False
+    )
+    assert edited["effective_config"]["runtime"]["region"] == "edited"
+
+
+@pytest.mark.plugin_unit
+def test_discovery_config_rejects_non_file_runtime_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+    from plugin.core.plugin_layout import resolve_plugin_layout
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    installed = tmp_path / "demo"
+    installed.mkdir()
+    manifest = installed / "plugin.toml"
+    manifest.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    layout = resolve_plugin_layout("demo", installed)
+    layout.config_path.mkdir(parents=True)
+    with pytest.raises(HTTPException, match="runtime config path is not a file"):
+        module.resolve_plugin_config_from_path(
+            "demo", config_path=manifest, materialize_runtime_config=False
+        )

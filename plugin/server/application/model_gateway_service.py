@@ -12,7 +12,10 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import anyio
-import httpx
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
 
 from plugin.server.domain.model_config import ModelSlot
 from plugin.server.model_gateway import anthropic, openai
@@ -21,6 +24,9 @@ from plugin.server.model_gateway.observation import AttemptObservation
 from plugin.server.model_gateway.request import prepare_chat_request
 from plugin.server.model_gateway.transport import decode_object, encode_sse, iter_sse_data, read_json_response
 from utils.http_client import ensure_user_agent
+from plugin.utils.http_imports import ensure_httpx, load_httpx
+
+
 
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_ERROR_USAGE_BYTES = 64 * 1024
@@ -56,6 +62,7 @@ def _check_status(response: httpx.Response) -> None:
 
 async def _observe_error_usage(response: httpx.Response, slot: ModelSlot, observation: AttemptObservation) -> None:
     """Best-effort diagnostics must not replace the original HTTP status error."""
+    httpx = await ensure_httpx()
     try:
         # Error bodies are optional diagnostics: bound both their bytes and the
         # wait, while preserving cancellation from the enclosing request policy.
@@ -88,6 +95,7 @@ def _prepare(
     slot: ModelSlot, body: object, *, streaming: bool, inject_stream_usage: bool = True,
 ) -> tuple[str, bytes, dict, bool]:
     """Validate, convert and encode once, off the HTTP event loop."""
+    httpx = load_httpx()
     request = prepare_chat_request(slot, body)
     try:
         httpx.URL(_endpoint(slot))
@@ -121,6 +129,7 @@ class ModelGatewayService:
 
     @staticmethod
     def _make_client(slot: ModelSlot) -> httpx.AsyncClient:
+        httpx = load_httpx()
         # HTTP-level inactivity guard. A total request deadline is owned by the
         # execution policy, not by httpx's connect/read/write/pool timeouts.
         return httpx.AsyncClient(timeout=slot.timeout_seconds, follow_redirects=False)
@@ -149,6 +158,7 @@ class ModelGatewayService:
                     await client.aclose()
 
     async def complete(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> dict:
+        httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
         try:
@@ -164,6 +174,7 @@ class ModelGatewayService:
             raise ModelGatewayError("upstream_connection_error", "Could not complete the model provider request", 502) from exc
 
     async def stream(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> AsyncIterator[bytes]:
+        httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         endpoint = _endpoint(slot)
         options_unsupported = endpoint in self._stream_options_unsupported

@@ -98,12 +98,12 @@ class InstallSourceError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _shared_state_lock_path() -> Path:
+def _shared_state_lock_path(*, state_root: Path | None = None) -> Path:
     """Return the pre-scoping install-source path in the shared state root."""
 
     from plugin.settings import get_plugin_state_root
 
-    return (get_plugin_state_root().parent / "plugins.lock.json").resolve()
+    return ((state_root if state_root is not None else get_plugin_state_root()).parent / "plugins.lock.json").resolve()
 
 
 def _filesystem_is_case_insensitive(path: Path) -> bool:
@@ -153,7 +153,7 @@ def _execution_root_scope(config_root: str) -> str:
     return hashlib.sha256(comparable.encode("utf-8")).hexdigest()[:16]
 
 
-def resolve_lock_path() -> Path:
+def resolve_lock_path(*, state_root: Path | None = None) -> Path:
     """Resolve the absolute path of ``plugins.lock.json``.
 
     Resolution order (design §4.1 / Req 1.1–1.2):
@@ -175,7 +175,7 @@ def resolve_lock_path() -> Path:
     if env_val:
         return Path(env_val).expanduser().resolve()
 
-    shared_path = _shared_state_lock_path()
+    shared_path = _shared_state_lock_path(state_root=state_root)
     execution_root = os.environ.get("PLUGIN_CONFIG_ROOT", "").strip()
     if not execution_root:
         return shared_path

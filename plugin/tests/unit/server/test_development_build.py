@@ -151,7 +151,7 @@ async def test_remote_all_without_development_sources_keeps_ordinary_builds(work
     ordinary = register(workspace, "ordinary_demo")
     dev.remove_registration_sync(ordinary)
     shutil.copytree(ordinary.source_dir, workspace / "installed" / "ordinary_demo")
-    original = route.service.build
+    original = (await route.get_plugin_cli_service()).build
 
     async def dispatch(**kwargs):
         assert kwargs["allow_development"] is False
@@ -159,7 +159,7 @@ async def test_remote_all_without_development_sources_keeps_ordinary_builds(work
             register(workspace, "late_development")
         return await original(**kwargs)
 
-    monkeypatch.setattr(route.service, "build", dispatch)
+    monkeypatch.setattr((await route.get_plugin_cli_service()), "build", dispatch)
     app = FastAPI()
     app.include_router(route.router)
     async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
@@ -205,7 +205,7 @@ async def test_corrupt_store_all_builds_only_managed_sources(workspace, monkeypa
     store_path = dev._store_path()
     healthy_store = store_path.read_bytes()
     store_path.write_bytes(b'{')
-    original = route.service.build
+    original = (await route.get_plugin_cli_service()).build
 
     async def dispatch(**kwargs):
         assert kwargs["allow_development"] is False
@@ -213,7 +213,7 @@ async def test_corrupt_store_all_builds_only_managed_sources(workspace, monkeypa
             store_path.write_bytes(healthy_store)
         return await original(**kwargs)
 
-    monkeypatch.setattr(route.service, "build", dispatch)
+    monkeypatch.setattr((await route.get_plugin_cli_service()), "build", dispatch)
     app = FastAPI()
     app.include_router(route.router)
     async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
@@ -267,7 +267,7 @@ async def test_all_probe_does_not_swallow_other_domain_errors(workspace, monkeyp
 
     monkeypatch.setattr(build, "resolve_development_sources", conflicting_sources)
     dispatch = AsyncMock()
-    monkeypatch.setattr(route.service, "build", dispatch)
+    monkeypatch.setattr((await route.get_plugin_cli_service()), "build", dispatch)
     app = FastAPI()
     app.include_router(route.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:

@@ -17,6 +17,8 @@ network mocks except a Market catalogue populated from the served packages.
 
 from __future__ import annotations
 
+from plugin.utils.http_imports import load_httpx
+
 import asyncio
 import contextlib
 import hashlib
@@ -544,7 +546,7 @@ async def test_market_catalog_plugins_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(
         market_bridge_module,
         "MARKET_API_URL",
@@ -598,7 +600,7 @@ async def test_market_catalog_latest_versions_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -642,7 +644,7 @@ async def test_market_catalog_readme_uses_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -684,7 +686,7 @@ async def test_market_catalog_comments_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -726,7 +728,7 @@ async def test_market_catalog_bridge_rejects_upstream_redirects(
             seen_urls.append(url)
             return RedirectResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RedirectClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RedirectClient)
     monkeypatch.setattr(
         market_bridge_module,
         "MARKET_API_URL",
@@ -1054,7 +1056,7 @@ async def test_authenticated_market_install_reports_usage(
     from plugin.server.routes import market_bridge as market_bridge_module
 
     reports: list[dict[str, Any]] = []
-    real_async_client = market_bridge_module.httpx.AsyncClient
+    real_async_client = load_httpx().AsyncClient
 
     class _RecordingAsyncClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1095,7 +1097,7 @@ async def test_authenticated_market_install_reports_usage(
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
     monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         _RecordingAsyncClient,
     )
@@ -1313,7 +1315,7 @@ async def test_fetch_auth_userinfo_marks_rejected_tokens(
         async def get(self, *args: Any, **kwargs: Any) -> RejectingResponse:
             return RejectingResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RejectingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RejectingClient)
 
     with pytest.raises(market_bridge_module._OAuthAccessTokenRejected):
         await market_bridge_module._fetch_auth_userinfo("rejected-access-token")
@@ -1351,7 +1353,7 @@ async def test_fetch_market_user_logs_safe_http_failure_without_secrets(
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RejectingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RejectingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1402,7 +1404,7 @@ async def test_fetch_market_user_logs_safe_network_failure_without_exception_tex
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", FailingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", FailingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1462,7 +1464,7 @@ async def test_auth_token_lifecycle_logs_are_safe(
         def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", TokenClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", TokenClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1550,7 +1552,7 @@ async def test_download_package_logs_safe_network_failure_without_signed_url(
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", FailingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", FailingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
 
     with pytest.raises(ValueError, match=r"^下载网络错误$"):
@@ -1624,7 +1626,7 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1697,7 +1699,7 @@ async def test_download_package_retries_oversized_allowlisted_proxy_via_github_d
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1767,7 +1769,7 @@ async def test_direct_download_hash_mismatch_does_not_retry_github_again(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1864,7 +1866,7 @@ async def test_download_cancellation_removes_temporary_package(
             assert method == "GET"
             return Stream()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -2058,7 +2060,7 @@ async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -2349,7 +2351,7 @@ async def test_oauth_account_summary_keeps_auth_token_when_market_rejects_it(
 
     monkeypatch.setattr(market_bridge_module, "_fetch_auth_userinfo", fetch_auth)
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         MarketRejectedClient,
     )
@@ -2521,7 +2523,7 @@ async def test_oauth_status_refreshes_stale_cached_market_user(
             return FreshMarketResponse()
 
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         FreshMarketClient,
     )
@@ -2956,7 +2958,7 @@ async def test_oauth_status_keeps_auth_login_for_invalid_market_response(
             captured_logs.append(message.format(*args))
 
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         SubjectlessClient,
     )
@@ -3035,7 +3037,7 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
                 return AuthUserResponse()
             return MarketUnavailableResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", BoundaryClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", BoundaryClient)
 
     token_file: Path = bridge_e2e_env["oauth_token_file"]
     token_file.write_text(
@@ -3501,7 +3503,7 @@ async def test_oauth_complete_keeps_auth_login_when_market_is_not_ready(
         "_fetch_auth_userinfo",
         fetch_auth_userinfo,
     )
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", MarketClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", MarketClient)
 
     pending_file: Path = bridge_e2e_env["oauth_pending_file"]
     callback_file: Path = bridge_e2e_env["oauth_callback_file"]
@@ -3593,7 +3595,7 @@ async def test_oauth_complete_keeps_token_when_auth_userinfo_is_unavailable(
             return MarketUnavailableResponse()
 
     monkeypatch.setattr(market_bridge_module, "_exchange_oauth_code", exchange_oauth_code)
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", BoundaryClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", BoundaryClient)
 
     pending_file: Path = bridge_e2e_env["oauth_pending_file"]
     callback_file: Path = bridge_e2e_env["oauth_callback_file"]
@@ -3724,7 +3726,7 @@ async def test_oauth_complete_keeps_pending_identity_when_auth_subject_is_missin
         fetch_auth_userinfo,
     )
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         MarketUnavailableClient,
     )

@@ -316,17 +316,22 @@ async def test_startup_reconciles_existing_install_source_after_migration_before
                 )
             return {"success": True, "added": ["auto_plugin"], "updated": [], "removed": [], "failed": []}
 
-        async def _start_plugin(plugin_id: str, restore_state: bool = False, *, refresh_registry: bool = True) -> dict[str, object]:
-            _ = restore_state
+        async def _start_plugin(
+            plugin_id: str, restore_state: bool = False, *,
+            refresh_registry: bool = True, persist_user_intent: bool = False,
+            start_deadline: float | None = None,
+        ) -> dict[str, object]:
+            assert restore_state is False
+            assert persist_user_intent is False
+            assert start_deadline is None
             calls.append(("start", f"{plugin_id}:{refresh_registry}"))
             return {"success": True, "plugin_id": plugin_id}
 
         monkeypatch.setattr(service._plugin_registry_service, "refresh_registry", _refresh_registry)
-        # 打在 _start_plugin_inner 而不是 start_plugin：自启动现在走
-        # start_plugins_batch（整批只持锁一次、锁内并发），它调的是未加装饰的
-        # 内部实现。可观测效果不变——每个自启动插件各被启动一次、
-        # refresh_registry=False，所以下面的 calls 断言一字不改。
-        monkeypatch.setattr(service._plugin_lifecycle_service, "_start_plugin_inner", _start_plugin)
+        # Capture the shared implementation: waves call it directly, while
+        # serial starts reach it through the public per-plugin lock. Autostart
+        # must not persist manual user intent in either path.
+        monkeypatch.setattr(service._plugin_lifecycle_service, "_start_plugin_under_lock", _start_plugin)
 
         await service.startup()
 

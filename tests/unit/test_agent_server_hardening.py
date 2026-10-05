@@ -179,3 +179,51 @@ async def test_mcp_dispatch_failure_logs_metadata_not_raw_error(
     assert "error_len" in logged
     # Raw text still reaches the local print fallback.
     assert "SECRET user text" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_embedded_plugin_server_ready_after_startup_and_stops(monkeypatch):
+    import threading
+    from app.agent_server import plugin_host, _shared
+
+    modules = _shared.Modules
+    fields = ("user_plugin_http_server", "user_plugin_http_task", "user_plugin_app", "_plugin_server_loop")
+    saved = {name: getattr(modules, name) for name in fields}
+    modules.user_plugin_http_server = None
+    modules.user_plugin_http_task = None
+    modules.user_plugin_app = MagicMock()
+    exit_event = threading.Event()
+
+    class FakeServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        async def startup(self, sockets=None):
+            # This represents lifespan completion and socket binding.
+            self.started = True
+
+        async def serve(self):
+            await self.startup()
+            await asyncio.to_thread(exit_event.wait, 5.0)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(
+        Config=lambda *a, **k: SimpleNamespace(), Server=FakeServer
+    ))
+    thread = None
+    try:
+        await plugin_host._start_embedded_user_plugin_server()
+        thread = modules.user_plugin_http_task
+        assert modules.user_plugin_http_server.started
+        assert thread.is_alive()
+        exit_event.set()
+        await plugin_host._stop_embedded_user_plugin_server()
+        assert not thread.is_alive()
+        assert modules.user_plugin_http_task is None
+        assert modules.user_plugin_http_server is None
+    finally:
+        exit_event.set()
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 5.0)
+        for name, value in saved.items():
+            setattr(modules, name, value)

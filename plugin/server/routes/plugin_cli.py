@@ -8,15 +8,14 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
+from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
-from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.plugin_cli")
-service = PluginCliService()
 
 
 class PluginCliPluginRef(BaseModel):
@@ -275,7 +274,7 @@ class PluginCliUploadAndInstallResponse(BaseModel):
 @router.get("/plugin-cli/plugins", response_model=PluginCliPluginListResponse)
 async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
     try:
-        return await service.list_local_plugins()
+        return await (await get_plugin_cli_service()).list_local_plugins()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -283,7 +282,7 @@ async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
 @router.get("/plugin-cli/packages", response_model=PluginCliPackageListResponse)
 async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
     try:
-        return await service.list_local_packages()
+        return await (await get_plugin_cli_service()).list_local_packages()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -311,7 +310,7 @@ async def plugin_cli_build(
                 development_unavailable = True
         if allow_development:
             require_development_access(request)
-        result = await service.build(
+        result = await (await get_plugin_cli_service()).build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
@@ -345,7 +344,7 @@ async def plugin_cli_inspect(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.inspect(package=payload.package)
+        return await (await get_plugin_cli_service()).inspect( package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -356,7 +355,7 @@ async def plugin_cli_verify(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.verify(package=payload.package)
+        return await (await get_plugin_cli_service()).verify( package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -367,7 +366,7 @@ async def plugin_cli_install(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.install(
+        return await (await get_plugin_cli_service()).install(
             package=payload.package,
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
@@ -390,7 +389,7 @@ async def plugin_cli_install_plan(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.plan_install(
+        return await (await get_plugin_cli_service()).plan_install(
             package=payload.package,
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
@@ -405,7 +404,7 @@ async def plugin_cli_analyze(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.analyze(
+        return await (await get_plugin_cli_service()).analyze(
             plugins=payload.plugins,
             plugin_refs=[item.model_dump() for item in payload.plugin_refs],
             current_sdk_version=payload.current_sdk_version,
@@ -429,7 +428,7 @@ async def plugin_cli_upload(
     """
     try:
         await file.seek(0)
-        return await service.save_uploaded_file(
+        return await (await get_plugin_cli_service()).save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
             source_file=file.file,
         )
@@ -447,7 +446,7 @@ async def plugin_cli_discard_upload(
 ) -> dict[str, object]:
     """Discard one package uploaded by an abandoned local import workflow."""
     try:
-        return await service.discard_uploaded_package(package=package)
+        return await (await get_plugin_cli_service()).discard_uploaded_package( package=package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -464,11 +463,11 @@ async def plugin_cli_upload_and_install(
     """
     try:
         await file.seek(0)
-        uploaded = await service.save_uploaded_file(
+        uploaded = await (await get_plugin_cli_service()).save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
             source_file=file.file,
         )
-        return await service.upload_and_install(
+        return await (await get_plugin_cli_service()).upload_and_install(
             filename=str(uploaded["name"]),
             package_path=str(uploaded["path"]),
             on_conflict=on_conflict,
@@ -487,7 +486,7 @@ async def plugin_cli_download(
 ) -> FileResponse:
     """Download a plugin package file from the server."""
     try:
-        resolved = service.resolve_download_path(package)
+        resolved = await asyncio.to_thread((await get_plugin_cli_service()).resolve_download_path, package)
         return FileResponse(
             str(resolved),
             filename=resolved.name,

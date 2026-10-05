@@ -17,6 +17,7 @@ import time
 import hashlib
 import types
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Type, TYPE_CHECKING
 
@@ -37,16 +38,8 @@ from plugin.core.context import PluginContext
 from plugin.core.communication import PluginCommunicationResourceManager, STARTUP_RESULT_REQ_ID
 
 if TYPE_CHECKING:
-    # 只为 health_check() 的返回注解而导入。本模块第 1 行有
-    # ``from __future__ import annotations``，注解是字符串、运行时不求值，所以放进
-    # TYPE_CHECKING 不影响任何调用方；真正的构造在 health_check() 内部按需导入。
-    #
-    # 为什么值得这么做：``plugin._types.models`` 是服务端的 pydantic API 模型模块，
-    # 在模块级导入它会把 pydantic 整条链拖进**每一个插件子进程**——实测 self 70.9ms、
-    # cuml 416.5ms，占子进程框架 import 闭包（1696ms / 451 模块）的 24.6%，而子进程
-    # 只在 health_check() 里用到这一个名字。已验证 host.py:38 是该模块在子进程闭包里的
-    # **唯一**入口（core.dependency / core.ui_manifest / core.registry / config.schema
-    # 都不在闭包内），所以摘掉它才真的摘得掉。做法与 #3242 一致。
+    # Keep server API models out of the child startup import path. The SDK
+    # still uses pydantic; health_check constructs this API response on demand.
     from plugin._types.models import HealthCheckResponse
 
 from plugin._types.exceptions import (
@@ -2101,6 +2094,25 @@ def _plugin_process_runner(
         raise  # 重新抛出，让进程退出
 
 
+_PLUGIN_HOSTS: weakref.WeakSet[PluginHost] = weakref.WeakSet()
+_FORKING_HOST = threading.local()
+
+
+def _scrub_inherited_host_credentials() -> None:
+    current = getattr(_FORKING_HOST, "host", None)
+    for host in tuple(_PLUGIN_HOSTS):
+        host.clear_inherited_credentials(keep_launch_options=host is current)
+    _PLUGIN_HOSTS.clear()
+    state.clear_inherited_plugin_references()
+
+
+_HOST_CREDENTIAL_FORK_HOOK_REGISTERED = False
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_scrub_inherited_host_credentials)
+    _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = True
+
+
+
 class PluginHost:
     """
     插件进程宿主
@@ -2111,6 +2123,7 @@ class PluginHost:
     """
 
     def __init__(self, plugin_id: str, entry_point: str, config_path: Path, *, source_only: bool = False):
+        _PLUGIN_HOSTS.add(self)
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
@@ -2178,6 +2191,22 @@ class PluginHost:
             transport=self.transport,
         )
     
+    def clear_inherited_credentials(self, *, keep_launch_options: bool = False) -> None:
+        """Erase copied host secrets while retaining this child's launch arguments."""
+        self._model_gateway_token = ""
+        options = getattr(self, "_model_gateway_options", None)
+        if not keep_launch_options and options is not None:
+            options.clear()
+
+    def _start_process(self) -> None:
+        # The fork hook must retain this child's own launch options while
+        # clearing credentials of every other host, including in-flight starts.
+        _FORKING_HOST.host = self
+        try:
+            self.process.start()
+        finally:
+            del _FORKING_HOST.host
+
     async def start(
         self,
         message_target_queue=None,
@@ -2223,7 +2252,7 @@ class PluginHost:
                 "token": self._model_gateway_token,
             })
             _refresh_child_storage_layout_env(self.logger)
-            start_task = asyncio.create_task(asyncio.to_thread(self.process.start))
+            start_task = asyncio.create_task(asyncio.to_thread(self._start_process))
             await asyncio.shield(start_task)
         except asyncio.CancelledError:
             self._revoke_model_gateway_access()
@@ -2551,10 +2580,6 @@ class PluginHost:
     
     def health_check(self) -> HealthCheckResponse:
         """执行健康检查，返回详细状态"""
-        # 按需导入，理由见文件头 TYPE_CHECKING 块的注释：模块级导入会让每个插件子
-        # 进程白付 pydantic 整条链（实测 cuml 416.5ms，占子进程框架 import 的 24.6%），
-        # 而 health_check() 是低频调用。首次调用之后模块已在 sys.modules 里，
-        # 后续只是一次字典查找。
         from plugin._types.models import HealthCheckResponse
 
         alive = self.is_alive()

@@ -370,7 +370,7 @@ async def test_the_refresh_lock_covers_reading_disk_not_just_publishing(
     """
     held: list[bool] = []
 
-    def _discover(roots):
+    def _discover(roots, *, read_cache=None):
         held.append(module._REGISTRY_REFRESH_LOCK._is_owned())
         return module.PluginDiscoverySnapshot(
             records=[], failures=[], config_paths=set(), shadowed=[]
@@ -1702,3 +1702,40 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
         entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
     ) is False
     assert meta_path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_registration_does_not_repeat_manifest_path_resolution(tmp_path, monkeypatch):
+    from collections import Counter
+    import copy
+    root = tmp_path / "installed"
+    manifests = set()
+    for index in range(3):
+        plugin_id = f"cached_{index}"
+        folder = root / plugin_id
+        folder.mkdir(parents=True)
+        manifest = folder / "plugin.toml"
+        manifest.write_text(
+            f"[plugin]\nid='{plugin_id}'\nname='{plugin_id}'\ntype='plugin'\n"
+            f"entry='plugins.{plugin_id}:Plugin'\nversion='1.0.0'\n",
+            encoding="utf-8",
+        )
+        manifests.add(manifest)
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+    monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(module.state, "plugins", {})
+    monkeypatch.setattr(module.state, "plugin_hosts", {})
+    monkeypatch.setattr(module.state, "_snapshot_cache", copy.deepcopy(module.state._snapshot_cache))
+    monkeypatch.setattr(module.state, "_snapshot_cache_gen", dict(module.state._snapshot_cache_gen))
+    service = module.PluginRegistryService()
+    assert (await service.refresh_registry())["success"]
+    calls = Counter()
+    original = Path.resolve
+    def counted(path, *, strict=False):
+        if path in manifests:
+            calls[path] += 1
+        return original(path, strict=strict)
+    monkeypatch.setattr(Path, "resolve", counted)
+    assert (await service.refresh_registry())["success"]
+    # Discovery resolves each identity once; the missing-source check remains fresh.
+    assert all(calls[path] <= 2 for path in manifests), calls

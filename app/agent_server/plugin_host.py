@@ -170,11 +170,18 @@ async def _start_embedded_user_plugin_server() -> None:
         proxy_headers=True,
         forwarded_allow_ips="*",
     )
-    server = uvicorn.Server(config)
+    ready = threading.Event()
+
+    class _EmbeddedPluginServer(uvicorn.Server):
+        async def startup(self, sockets=None) -> None:
+            await super().startup(sockets=sockets)
+            if self.started:
+                ready.set()
+
+    server = _EmbeddedPluginServer(config)
     server.install_signal_handlers = lambda: None
     _shared.Modules.user_plugin_http_server = server
 
-    ready = threading.Event()
     startup_error: list[BaseException] = []
 
     def _run_in_thread() -> None:
@@ -182,16 +189,8 @@ async def _start_embedded_user_plugin_server() -> None:
         asyncio.set_event_loop(loop)
         _shared.Modules._plugin_server_loop = loop
 
-        async def _serve_and_signal():
-            task = asyncio.ensure_future(server.serve())
-            while not getattr(server, "started", False) and not task.done():
-                await asyncio.sleep(0.05)
-            if getattr(server, "started", False):
-                ready.set()
-            await task
-
         try:
-            loop.run_until_complete(_serve_and_signal())
+            loop.run_until_complete(server.serve())
         except Exception as exc:
             startup_error.append(exc)
             logger.warning("[Agent] Embedded plugin server thread exited: %s", exc)

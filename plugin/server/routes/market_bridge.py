@@ -18,22 +18,26 @@ import hmac
 import json
 import os
 import secrets
-import tempfile
 import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, get_args
+from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
+from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
-from plugin.neko_plugin_cli.public import inspect_package
+from plugin.utils.http_imports import ensure_httpx, load_httpx
+from plugin.server.infrastructure.package_download import (
+    PackageSizeExceeded, cleanup_download_file as _cleanup_download_file, download_package_file,
+)
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -43,7 +47,6 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
-from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.installation_transactions import (
@@ -65,7 +68,11 @@ from plugin.settings import (
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
 
-_cli_service = PluginCliService()
+def _inspect_package_sync(package_path: Path):
+    from plugin.neko_plugin_cli.public import inspect_package
+
+    return inspect_package(package_path)
+
 
 # ─── Bridge Token（本地安全令牌）───────────────────────────────────
 # 每次服务启动时生成，防止恶意网页未经授权调用本地 API。
@@ -109,9 +116,9 @@ _DOWNLOAD_TIMEOUT = 120.0  # 秒
 # bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
 # 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
-# 攒够这么多字节才交给线程写一次。迭代粒度仍是 64KiB（取消检查与进度上报的密度不
-# 变），但 200MB 的包只产生约 200 次线程往返，而不是 3200 次。
-_DOWNLOAD_FLUSH_BYTES = 1024 * 1024
+# Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
+# checked every 64 KiB, while a 200 MiB package needs only 50 worker writes.
+_DOWNLOAD_FLUSH_BYTES = 4 * 1024 * 1024
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 
 # GitHub Release download mirrors exposed by the local plugin-manager UI.
@@ -587,6 +594,7 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
             },
         )
 
+    httpx = await ensure_httpx()
     upstream_url = f"{base_url}/api/v1{upstream_path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
@@ -733,7 +741,8 @@ async def market_status():
     返回 market_url 供前端知道 Market 地址。
     """
     try:
-        plugins_result = await _cli_service.list_local_plugins()
+        cli_service = await get_plugin_cli_service()
+        plugins_result = await cli_service.list_local_plugins()
         count = plugins_result.get("count", 0)
     except Exception:
         count = 0
@@ -757,6 +766,7 @@ _GITHUB_PROXY_PROBE_TOTAL_BUDGET = env_seconds("NEKO_MARKET_PROXY_PROBE_TOTAL_BU
 async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     """Measure the fixed proxy list with a bounded number of outbound probes."""
 
+    httpx = await ensure_httpx()
     semaphore = asyncio.Semaphore(_GITHUB_PROXY_PROBE_CONCURRENCY)
 
     async def probe(source_id: str, base_url: str) -> dict[str, object]:
@@ -861,6 +871,7 @@ def _market_release_request_error(payload: MarketInstallRequest) -> str | None:
 
 
 def _market_catalog_client() -> httpx.AsyncClient:
+    httpx = load_httpx()
     return httpx.AsyncClient(
         timeout=httpx.Timeout(_MARKET_RELEASE_CHECK_TIMEOUT, connect=3.0),
         follow_redirects=False,
@@ -913,6 +924,7 @@ async def _fetch_market_release(payload: MarketInstallRequest) -> dict[str, Any]
     params = {"include_yanked": "false"}
     if channel is not None:
         params["channel"] = channel
+    httpx = await ensure_httpx()
     url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
     unavailable = _MarketCatalogError(
         "market_catalog_unavailable", "暂时无法核对市场发布信息，请稍后重试",
@@ -2293,6 +2305,7 @@ def _market_auth_http_failure_category(status_code: int) -> str:
 
 
 def _market_auth_network_failure_category(exc: httpx.HTTPError) -> str:
+    httpx = load_httpx()
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, httpx.ConnectError):
@@ -2720,6 +2733,7 @@ async def _exchange_oauth_code(
     code_verifier: str,
     redirect_uri: str,
 ) -> dict[str, Any]:
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
@@ -2768,6 +2782,7 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(refresh_token, str) or not refresh_token:
         raise HTTPException(status_code=401, detail="缺少 refresh token")
 
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
@@ -2832,6 +2847,7 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _revoke_oauth_token_best_effort(token_data: dict[str, Any]) -> None:
+    httpx = await ensure_httpx()
     tokens = [
         ("refresh_token", token_data.get("refresh_token")),
         ("access_token", token_data.get("access_token")),
@@ -2958,6 +2974,7 @@ def _market_oauth_state_message(state: MarketOAuthState) -> str:
 async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
     if not isinstance(access_token, str) or not access_token:
         return None
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
@@ -3110,6 +3127,7 @@ def _log_invalid_market_user_response(response: Any, started_at: float) -> None:
 async def _probe_market_user(access_token: Any) -> _MarketUserProbe:
     if not isinstance(access_token, str) or not access_token:
         return _MarketUserProbe(state="invalid_response")
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
@@ -3211,6 +3229,7 @@ async def _report_market_install_best_effort(
     if not isinstance(install, dict):
         install = {}
 
+    httpx = await ensure_httpx()
     report_payload = {
         "plugin_id": market_plugin_id,
         "version": payload.version,
@@ -3647,7 +3666,8 @@ async def _do_install(
         market_override = _build_market_override(payload, mode=operation)
 
         try:
-            result = await _cli_service.upload_and_install(
+            cli_service = await get_plugin_cli_service()
+            result = await cli_service.upload_and_install(
                 filename=filename,
                 package_path=str(package_path),
                 on_conflict=payload.on_conflict,
@@ -3937,7 +3957,7 @@ async def _do_upgrade(
         _raise_if_task_cancel_requested(task)
 
         try:
-            inspected = await asyncio.to_thread(inspect_package, package_path)
+            inspected = await asyncio.to_thread(_inspect_package_sync, package_path)
         except Exception as exc:
             raise _TaskError(code="install_failed", message=str(exc)) from exc
         _raise_if_task_cancel_requested(task)
@@ -4013,7 +4033,8 @@ async def _do_upgrade(
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted
             source_write_attempted = True
-            return await _cli_service.upload_and_install(
+            cli_service = await get_plugin_cli_service()
+            return await cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
                 profiles_root=str(profile_dir.parent),
@@ -4430,99 +4451,31 @@ async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
-    """Download one package URL to a temp file with progress updates."""
-
     _raise_if_task_cancel_requested(task)
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
-    download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    fd, raw_path = tempfile.mkstemp(
-        prefix="neko-market-",
-        suffix=".neko-plugin",
-        dir=download_dir,
-    )
-    os.close(fd)
-    package_path = Path(raw_path)
+    directory = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
+
+    def progress(received: int, total: int | None) -> None:
+        task["downloaded_bytes"] = received
+        task["total_bytes"] = total
+        if received == 0:
+            return
+        if total:
+            task["progress"] = 0.1 + received / total * 0.6
+            task["message"] = f"正在下载: {_format_bytes(received)} / {_format_bytes(total)}"
+        else:
+            task["progress"] = min(0.65, task.get("progress", 0.1) + 0.01)
+            task["message"] = f"正在下载: {_format_bytes(received)}"
+
     try:
-        # 总时长兜底：httpx 的 Timeout(120.0) 是每阶段的，滴流式响应永远不触发它。
-        async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT):
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
-                follow_redirects=True,
-                max_redirects=5,
-            ) as client:
-                async with client.stream("GET", url) as response:
-                    response.raise_for_status()
-
-                    content_length = response.headers.get("content-length")
-                    if content_length and int(content_length) > _DOWNLOAD_MAX_BYTES:
-                        raise ValueError(
-                            f"包文件过大: {int(content_length)} bytes "
-                            f"(最大 {_DOWNLOAD_MAX_BYTES} bytes)"
-                        )
-
-                    downloaded = 0
-                    total_bytes = int(content_length) if content_length else None
-                    task["total_bytes"] = total_bytes
-                    task["downloaded_bytes"] = 0
-
-                    # open/close 保持同步（各一次 syscall），但**每一次 write 都不再
-                    # 落在事件循环上**。原来是每 64KiB 直接 handle.write()：200MB 的包
-                    # 要和 loop 交织 3200 次阻塞写，而 Windows 上 Defender 扫一个刚创建
-                    # 的 .neko-plugin 会让每次写都可能卡顿——这期间插件服务器的**所有**
-                    # 路由（/plugins、/plugin_cli、/runs、/websocket、插件 UI 流）都停摆。
-                    # 同一个函数里的哈希早就是 to_thread 的（_verify_sha256_file 的调用
-                    # 点），写循环只是漏了。
-                    #
-                    # 不在 finally 里 await close：超时/取消时 finally 里有 CancelledError
-                    # 在飞，那个 await 会再次抛出，句柄就漏了。with 的同步 close 没这个
-                    # 问题，而它只有一次 flush。
-                    with package_path.open("wb") as handle:
-                        pending = bytearray()
-
-                        async def _flush_pending() -> None:
-                            if pending:
-                                await asyncio.to_thread(handle.write, bytes(pending))
-                                pending.clear()
-
-                        async for chunk in response.aiter_bytes(chunk_size=65536):
-                            _raise_if_task_cancel_requested(task)
-                            pending += chunk
-                            downloaded += len(chunk)
-                            task["downloaded_bytes"] = downloaded
-
-                            if downloaded > _DOWNLOAD_MAX_BYTES:
-                                raise ValueError(
-                                    f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
-                                )
-
-                            if len(pending) >= _DOWNLOAD_FLUSH_BYTES:
-                                await _flush_pending()
-
-                            if total_bytes:
-                                dl_progress = downloaded / total_bytes
-                                task["progress"] = 0.1 + dl_progress * 0.6
-                                task["message"] = (
-                                    f"正在下载: {_format_bytes(downloaded)}"
-                                    f" / {_format_bytes(total_bytes)}"
-                                )
-                            else:
-                                task["progress"] = min(
-                                    0.65,
-                                    task.get("progress", 0.1) + 0.01,
-                                )
-                                task["message"] = (
-                                    f"正在下载: {_format_bytes(downloaded)}"
-                                )
-
-                        await _flush_pending()
-
-        return package_path
-    except asyncio.CancelledError:
-        _cleanup_download_file(package_path)
-        raise
+        return await download_package_file(
+            url, directory, maximum_bytes=_DOWNLOAD_MAX_BYTES,
+            phase_timeout=_DOWNLOAD_TIMEOUT, total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
+            flush_bytes=_DOWNLOAD_FLUSH_BYTES, report_progress=progress,
+            check_cancelled=lambda: _raise_if_task_cancel_requested(task),
+        )
     except httpx.HTTPStatusError as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4535,7 +4488,6 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
     except httpx.TimeoutException as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4546,7 +4498,6 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError("下载超时") from exc
     except httpx.RequestError as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4562,7 +4513,6 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
         # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception
         # 裸抛出去——既拿不到 GitHub 直连的回退重试，用户看到的也不是"下载超时"。
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4572,21 +4522,10 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
         )
         raise _DownloadAttemptError("下载超时") from exc
+    except PackageSizeExceeded as exc:
+        raise _DownloadAttemptError(f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)") from exc
     except ValueError as exc:
-        _cleanup_download_file(package_path)
         raise _DownloadAttemptError(str(exc)) from exc
-    except Exception:
-        _cleanup_download_file(package_path)
-        raise
-
-
-def _cleanup_download_file(path: Path | None) -> None:
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        logger.warning("failed to remove downloaded package {}: {}", path, exc)
 
 
 def _format_bytes(value: int) -> str:

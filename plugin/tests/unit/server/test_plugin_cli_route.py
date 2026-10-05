@@ -254,11 +254,11 @@ async def test_discard_uploaded_package_route_removes_only_requested_upload(
 ) -> None:
     packages_root = tmp_path / "packages"
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
-    selected = await plugin_cli_routes.service.save_uploaded_file(
+    selected = await (await plugin_cli_routes.get_plugin_cli_service()).save_uploaded_file(
         filename="selected.neko-plugin",
         source_file=BytesIO(b"selected"),
     )
-    preserved = await plugin_cli_routes.service.save_uploaded_file(
+    preserved = await (await plugin_cli_routes.get_plugin_cli_service()).save_uploaded_file(
         filename="preserved.neko-plugin",
         source_file=BytesIO(b"preserved"),
     )
@@ -1100,7 +1100,7 @@ async def test_plugin_cli_install_returns_structured_rollback_details(
             details={"stage": "install", "rollback_status": "completed"},
         )
 
-    monkeypatch.setattr(plugin_cli_routes.service, "install", fail_install)
+    monkeypatch.setattr((await plugin_cli_routes.get_plugin_cli_service()), "install", fail_install)
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
@@ -1201,7 +1201,7 @@ async def test_plugin_cli_install_remains_successful_when_import_hashing_fails(
     def _hash_failure(_path: Path) -> str:
         raise OSError("package archive disappeared")
 
-    monkeypatch.setattr(plugin_cli_routes.service, "_sha256_file", _hash_failure)
+    monkeypatch.setattr((await plugin_cli_routes.get_plugin_cli_service()), "_sha256_file", _hash_failure)
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(

@@ -67,17 +67,28 @@ def _coerce_string_key_mapping(value: object, *, context: str) -> dict[str, obje
     return normalized
 
 
-def load_toml_from_file(path: Path) -> dict[str, object]:
-    reader = require_toml_reader()
+def read_toml_file(path: Path) -> dict[str, object]:
+    """Read configuration without translating filesystem errors into HTTP errors."""
+    reader = _toml_reader
+    if reader is None:
+        raise RuntimeError("TOML library not available")
     try:
         with path.open("rb") as file_obj:
             raw = reader.load(file_obj)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load config from {path}: {str(exc)}",
-        ) from exc
-    return _coerce_string_key_mapping(raw, context=f"{path}")
+        raise OSError(f"Failed to load config from {path}: {exc}") from exc
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{path} must be a TOML table at the root")
+    return {key: value for key, value in raw.items() if isinstance(key, str)}
+
+
+def load_toml_from_file(path: Path) -> dict[str, object]:
+    try:
+        return read_toml_file(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def load_toml_from_stream(stream: BinaryIO, *, context: str) -> dict[str, object]:
