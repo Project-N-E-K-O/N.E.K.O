@@ -31,7 +31,7 @@ STARTUP_GRACE_SECONDS=$((10#$STARTUP_GRACE_SECONDS))
 for dependency in docker curl timeout flock; do
     command -v "$dependency" >/dev/null || early_fail "Missing $dependency"
 done
-for file in watchdog.lock fail-count restart-count exhaustion-reported watchdog.log; do
+for file in watchdog.lock fail-count restart-count exhaustion-reported stopped-reported watchdog.log; do
     [[ ! -L "$STATE_DIR/$file" ]] || early_fail "Unsafe state file: $file"
 done
 exec 9>"$STATE_DIR/watchdog.lock"
@@ -41,6 +41,7 @@ fail() { log "$*"; exit 1; }
 COUNT_FILE="$STATE_DIR/fail-count"
 RESTART_FILE="$STATE_DIR/restart-count"
 EXHAUSTED_FILE="$STATE_DIR/exhaustion-reported"
+STOPPED_FILE="$STATE_DIR/stopped-reported"
 METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.StartedAt}}'
 
 # Do not transfer recovery authority to an unrelated container with the same name.
@@ -61,6 +62,15 @@ if [[ "$enabled" == enabled && "$service" == neko-main && "$running" == false &&
     read -r restart_id restart_count extra <<< "$previous" || fail "Invalid restart budget"
     [[ "$restart_count" =~ ^[0-3]$ && -z "$extra" ]] || fail "Invalid restart budget"
     if [[ "$restart_id" == "$container_id" && "$restart_count" != 0 ]]; then
+        reported=
+        if [[ -e "$STOPPED_FILE" ]]; then
+            reported=$(cat "$STOPPED_FILE") || fail "Cannot read stopped notification"
+        fi
+        [[ "$reported" != "$container_id $started_at" ]] || exit 1
+        temporary=$(mktemp "$STATE_DIR/.stopped-reported.XXXXXX") || fail "Cannot create stopped notification"
+        trap 'rm -f "$temporary"' EXIT
+        printf '%s %s\n' "$container_id" "$started_at" > "$temporary" || fail "Cannot write stopped notification"
+        mv -f "$temporary" "$STOPPED_FILE" || fail "Cannot publish stopped notification"
         fail "Container stopped after recorded automatic recovery; inspect startup failure or intentional stop; no start attempted (use disabled for maintenance)"
     fi
 fi
@@ -68,6 +78,7 @@ if [[ "$enabled" != enabled || "$service" != neko-main || "$running" != true || 
     rm -f "$COUNT_FILE"
     exit 0
 fi
+rm -f "$STOPPED_FILE"
 started_epoch=$(date -d "$started_at" +%s) || fail "Invalid container start time"
 now=$(date +%s)
 if (( now - started_epoch < STARTUP_GRACE_SECONDS )); then
@@ -76,14 +87,26 @@ if (( now - started_epoch < STARTUP_GRACE_SECONDS )); then
 fi
 
 healthy=false
-# Nginx /health can route to the plugin service; probe root AND real main service.
-# A complete anonymous 401 is normal under #3289; curl failure must never pass.
+probe_failure='host HTTP status unavailable'
+# Log only phase/status/exit code; never response bodies or raw error output.
 if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/); then
     if [[ "$code" == 200 || "$code" == 401 ]]; then
-        if timeout 15 docker exec "$container_id" curl --noproxy '*' -fsS --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/health >/dev/null; then
+        # Expand the configured backend port in the container, not on the host.
+        if timeout 15 docker exec "$container_id" sh -c '
+            port=${NEKO_MAIN_SERVER_PORT:-48911}
+            case "$port" in ""|*[!0-9]*) exit 64 ;; esac
+            [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || exit 64
+            exec curl --noproxy "*" -fsS --connect-timeout 5 --max-time 10 "http://127.0.0.1:$port/health"
+        ' >/dev/null; then
             healthy=true
+        else
+            probe_failure="main-service probe exit $? (64=invalid port, 124=timeout)"
         fi
+    elif [[ "$code" =~ ^[0-9]{3}$ ]]; then
+        probe_failure="host HTTP status $code"
     fi
+else
+    probe_failure="host curl exit $?"
 fi
 if [[ "$healthy" == true ]]; then
     rm -f "$COUNT_FILE" "$RESTART_FILE" "$EXHAUSTED_FILE"
@@ -107,7 +130,7 @@ temporary=$(mktemp "$STATE_DIR/.fail-count.XXXXXX") || fail "Cannot create failu
 trap 'rm -f "$temporary"' EXIT
 printf '%s %s %s\n' "$container_id" "$count" "$started_at" > "$temporary" || fail "Cannot write failure counter"
 mv -f "$temporary" "$COUNT_FILE" || fail "Cannot publish failure counter"
-if (( count != old_count )); then log "Health probe failed ($count/2)"; fi
+if (( count != old_count )); then log "Health probe failed ($count/2): $probe_failure"; fi
 if (( count >= 2 )); then
     # Maintenance must hold this same lock while setting disabled (see README).
     [[ ! -e "$STATE_DIR/disabled" ]] || exit 0

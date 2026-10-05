@@ -32,8 +32,8 @@ case "$1" in
     ps) [[ ${INSPECT_FAIL:-0} == 0 ]] || exit 1
         [[ ${CONTAINER_ABSENT:-0} == 1 ]] || echo id-1 ;;
     exec)
-        [[ "$3 $4 $5 $6" == "curl --noproxy * -fsS" ]] || exit 99
-        exit "${BACKEND_EXIT:-0}" ;;
+        [[ "$3 $4" == 'sh -c' ]] || exit 99
+        BACKEND_PROBE=1 /bin/sh -c "$5" ;;
     restart)
         [[ "$2 $3" == '-t 30' ]] || exit 99
         echo "$4" >> "$TEST_ROOT/restarts"
@@ -49,6 +49,10 @@ EOF
 cat > "$ROOT/bin/curl" <<'EOF'
 #!/bin/bash
 [[ "$1 $2" == '--noproxy *' ]] || exit 99
+if [[ ${BACKEND_PROBE:-0} == 1 ]]; then
+    printf '%s\n' "${@: -1}" > "$TEST_ROOT/backend-url"
+    exit "${BACKEND_EXIT:-0}"
+fi
 printf '%s' "${HTTP_CODE:-401}"
 exit "${CURL_EXIT:-0}"
 EOF
@@ -61,9 +65,28 @@ bash -n "$SOURCE/watchdog.sh"
 sh -n "$SOURCE/install-watchdog.sh"
 run() { bash "$ROOT/watchdog.sh"; }
 no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
-reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/state/exhaustion-reported" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
+reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/state/exhaustion-reported" "$ROOT/state/stopped-reported" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
+NEKO_MAIN_SERVER_PORT=50001 run; no_restart
+[[ $(cat "$ROOT/backend-url") == http://127.0.0.1:50001/health ]]
+for port in invalid 0 65536 '48911/path'; do
+    reset
+    rm -f "$ROOT/backend-url"
+    NEKO_MAIN_SERVER_PORT="$port" run; no_restart
+    [[ ! -e "$ROOT/backend-url" ]]
+    grep -q 'main-service probe exit 64' "$ROOT/state/watchdog.log"
+done
+reset
+HTTP_CODE=502 run; no_restart
+grep -q 'host HTTP status 502' "$ROOT/state/watchdog.log"
+reset
+CURL_EXIT=28 run; no_restart
+grep -q 'host curl exit 28' "$ROOT/state/watchdog.log"
+reset
+BACKEND_EXIT=22 run; no_restart
+grep -q 'main-service probe exit 22' "$ROOT/state/watchdog.log"
+reset
 http_proxy=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1 run
 no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 CURL_EXIT=28 run; no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
@@ -241,6 +264,8 @@ if RUNNING=false run; then exit 1; fi
 no_restart; grep -q 'Container stopped after recorded automatic recovery' "$ROOT/state/watchdog.log"
 grep -qx 'id-1 1' "$ROOT/state/restart-count"
 log_size=$(stat -c %s "$ROOT/state/watchdog.log")
+if RUNNING=false run; then exit 1; fi
+[[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
 touch "$ROOT/state/disabled"
 RUNNING=false run; no_restart
 [[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
