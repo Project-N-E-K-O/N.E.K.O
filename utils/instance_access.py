@@ -186,10 +186,13 @@ def _transport_allowed(request: Request) -> bool:
 def _same_origin(request: Request) -> bool:
     """Authenticate cookies without permitting cross-site mutations."""
     origin = request.headers.get("origin", "").rstrip("/")
-    expected = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/")
-    expected = expected or str(request.base_url).rstrip("/").replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+    own = str(request.base_url).rstrip("/").replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+    # A pinned TLS gateway origin is accepted in addition to the request's own
+    # origin, so the deployment's direct HTTP entry (LAN IP, second port) keeps
+    # working. Browsers set Origin; a foreign page cannot claim either value.
+    pinned = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/")
     if origin:
-        return origin == expected
+        return origin == own or bool(pinned) and origin == pinned
     return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
 
 

@@ -866,3 +866,14 @@ def test_market_callback_cross_site_requires_instance_auth_and_valid_state(monke
     assert not market._OAUTH_CALLBACK_FILE.exists()
     assert client.get(path, headers=headers).status_code == 200
     assert market._read_json_file(market._OAUTH_CALLBACK_FILE)["code"] == "once"
+
+
+@pytest.mark.parametrize("origin", ["http://192.168.1.10:48911", "http://neko.example:48911"])
+def test_http_pairing_works_alongside_pinned_https_public_origin(remote_app, monkeypatch, origin):
+    """A pinned TLS gateway origin must not reject the deployment's own HTTP entry."""
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example:48912")
+    _page, response = _http_pair(remote_app, origin)
+    assert response.status_code == 303
+    assert remote_app.post(origin + "/private", headers={"Origin": origin}).status_code == 200
+    # Cross-site writes stay rejected on the HTTP entry.
+    assert remote_app.post(origin + "/private", headers={"Origin": "http://evil.example"}).status_code == 403
