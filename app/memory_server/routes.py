@@ -3633,7 +3633,11 @@ async def _apply_keyed_staging(
             tombstones, segment.get("tombstone_keys") or [],
         )
         request_epoch = epochs.get(segment.get("wire_key"), 0)
-        if tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True:
+            # 这段已被标成清除丢弃（比如本段事实项刚应用时 generation 变了）：同段后面的项
+            # （显示名排在事实项之后）不再写，否则会把清除刚擦掉的显示名写回去
+            entry = {"seq": seq, "dropped_forget": True}
+        elif tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
             entry = {"seq": seq, "dropped_tombstone": True}
         elif item.get("kind") == _KEYED_ITEM_DISPLAY_NAME:
             if generations is None:
@@ -3677,16 +3681,27 @@ async def _apply_keyed_staging(
         # 恢复的重试：之前尝试已写过的显示名项也按这次请求带来的当前值再盖一次（「置为该值」幂等）——
         # 显示名不在请求身份里，键停在 pending 期间改了名字，不能就此带着旧名收尾。被清除挡下的段不盖
         fenced = await _fenced_segments(lanlan_name, staging)
+        gave_up = {
+            entry.get("seq") for entry in applied
+            if isinstance(entry, dict) and entry.get("display_name_gave_up") is True
+        }
         for item in staging.get("items") or []:
             if (
                 item.get("kind") == _KEYED_ITEM_DISPLAY_NAME and item.get("seq") in journaled_before
-                and item.get("segment") not in fenced
+                and item.get("seq") not in gave_up and item.get("segment") not in fenced
             ):
                 current = display_names.get(item["segment"])
-                if current:
+                if not current:
+                    continue
+                try:
                     await _apply_keyed_item(
                         lanlan_name, {**item, "display_name": current}, segments[item["segment"]], None,
                     )
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    # 这里只是刷新成当前值，尽力而为：persona 一直写不进时不能让键永远到不了 done
+                    logger.warning(f"[scoped_history] {lanlan_name}: 恢复重试刷新显示名失败，跳过: {exc}")
 
 
 def _keyed_response(
@@ -4657,8 +4672,13 @@ async def _cancel_staged_writes_for_subjects(
                     # 旧标记坏了：它是「生成期间被清过」的唯一持久证据，不能丢掉了事。保守地把这个键
                     # 记录里的全部 wire / 路由后 subject 都记上（等于当作全部被清过）
                     request = old.get("request") if isinstance(old.get("request"), dict) else {}
-                    every = list(request.get("wire_keys") or []) + list(old.get("routed_keys") or [])
-                    usable = {str(k) for k in every if isinstance(k, str) and k}
+                    every = [
+                        value
+                        for source in (request.get("wire_keys"), old.get("routed_keys"))
+                        if isinstance(source, list)
+                        for value in source
+                    ]
+                    usable = {k for k in every if isinstance(k, str) and k}
                 merged = sorted(usable | touched)
                 return {**old, "forgotten_keys": merged}
 

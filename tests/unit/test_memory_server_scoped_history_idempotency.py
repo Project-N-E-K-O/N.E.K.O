@@ -3027,3 +3027,141 @@ async def test_cancellation_marker_inside_a_real_journal_fails_closed(env):
         await _post(env, _single_body())
     # 只认不含别的字段的占位：标记混进一份正常日志是损坏，不能借它把键当成已取消、丢掉未应用的效果
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
+
+
+async def test_concurrent_erase_marks_on_a_corrupt_tombstone_file_keep_both_rows(env):
+    import asyncio
+
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    await asyncio.gather(
+        env.idem.mark_tombstone_erased(NAME, "A", 3),
+        env.idem.mark_tombstone_erased(NAME, "B", 4),
+    )
+    tombstones = await env.idem.read_tombstones(NAME)
+    # 两次清除并发完成：后到的那个不能读到前者重建的文件就跳过自己那一行（回成功却没有围栏与完成标记）
+    assert env.idem.erased_epoch(tombstones, "A") == 3 and env.idem.erased_epoch(tombstones, "B") == 4
+
+
+async def test_tombstone_read_failure_is_not_treated_as_corruption(env):
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"other": {"forgotten_at": 1.0, "forget_epoch": 9}}), encoding="utf-8")
+    real_read = env.idem.read_json_tolerating_replace
+
+    def locked(target, *args, **kwargs):
+        if Path(target) == path:
+            raise PermissionError("sharing violation")
+        return real_read(target, *args, **kwargs)
+
+    env.monkeypatch.setattr(env.idem, "read_json_tolerating_replace", locked)
+    with pytest.raises(env.idem.IdempotencyStateError):
+        await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
+    # 读失败不等于内容坏了：完好的墓碑文件不能被隔离掉、丢掉别的 subject 的围栏
+    assert not list(path.parent.glob(path.name + ".corrupt-*"))
+    assert json.loads(path.read_text(encoding="utf-8"))["other"]["forget_epoch"] == 9
+
+
+async def test_corrupt_tombstone_file_is_not_renamed_while_writes_are_fenced(env):
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    path = Path(env.idem.tombstones_path(NAME))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    def fenced(*args, **kwargs):
+        raise MaintenanceModeError("snapshot_import")
+
+    env.monkeypatch.setattr(env.idem, "assert_cloudsave_writable", fenced)
+    with pytest.raises(MaintenanceModeError):
+        await env.idem.mark_tombstone_erased(NAME, GROUP_KEY, 2)
+    # 只读 / 快照导入期间改了名却写不回去，磁盘上就一份墓碑都没有了：先过闸再改名
+    assert path.exists() and not list(path.parent.glob(path.name + ".corrupt-*"))
+
+
+async def test_display_name_after_a_segment_dropped_during_apply_is_not_written(env):
+    from memory.scopes import coerce_subject
+
+    env.llm.responses = [SINGLE_FACTS]
+    original = env.routes._apply_keyed_item
+    kinds = []
+
+    async def forget_meanwhile(lanlan_name, item, segment, generation):
+        kinds.append(item["kind"])
+        if item["kind"] == "facts":
+            env.fs._bump_subject_forget_generation(NAME, coerce_subject(GROUP))   # 不带代数的清除到达
+        return await original(lanlan_name, item, segment, generation)
+
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", forget_meanwhile)
+    await _post(env, _single_body())
+    # 段刚被标成清除丢弃：同段排在事实项之后的显示名不能再写，否则把清除刚擦掉的名字写回去
+    assert env.routes._KEYED_ITEM_DISPLAY_NAME not in kinds and "facts" in kinds
+
+
+async def test_given_up_display_name_is_not_refreshed_on_the_recovery_retry(env):
+    env.llm.responses = [SINGLE_FACTS]
+
+    attempts = {"n": 0}
+
+    async def always_fail(*args, **kwargs):
+        attempts["n"] += 1
+        raise OSError("persona.json is read-only")
+
+    env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", always_fail)
+    for _ in range(2):
+        with pytest.raises(HTTPException):
+            await _post(env, _single_body())
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def trust_crash(_states):
+        raise RuntimeError("trust pool write failed")
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    with pytest.raises(Exception):
+        await _post(env, _single_body())                          # 第 3 次放弃显示名，但信赖池落盘失败
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", real_trust)
+    before = attempts["n"]
+    await _post(env, _single_body())
+    # 放弃过的显示名项不在末尾刷新里重试：否则 persona 一直写不进时键永远到不了 done
+    assert _key_state(env, KEY_GROUP) == "done" and attempts["n"] == before
+
+
+async def test_failing_display_name_refresh_does_not_block_the_recovery_retry(env):
+    env.llm.responses = [SINGLE_FACTS]
+    real_trust = env.routes._apply_trust_for_segments
+
+    async def trust_crash(_states):
+        raise RuntimeError("trust pool write failed")
+
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", trust_crash)
+    with pytest.raises(Exception):
+        await _post(env, _single_body())                          # 显示名已写过，信赖池落盘失败
+    env.monkeypatch.setattr(env.routes, "_apply_trust_for_segments", real_trust)
+
+    async def always_fail(*args, **kwargs):
+        raise OSError("persona.json is read-only")
+
+    env.monkeypatch.setattr(env.persona, "aupdate_subject_display_name", always_fail)
+    await _post(env, _single_body(display_name="新名字"))
+    # 末尾那段只是刷新成当前值，尽力而为：写不进就记日志，键照常收尾
+    assert _key_state(env, KEY_GROUP) == "done"
+
+
+async def test_scalar_wire_keys_do_not_break_the_conservative_forgotten_merge(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition(
+        "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
+        routed_keys="pq",                                          # 列表坏成了字符串
+    ))
+    await env.idem.update_key(NAME, KEY_GROUP, lambda old: {**old, "forgotten_keys": [{"bad": 1}]})
+    lock = env.idem.key_lock(NAME, KEY_GROUP)
+    await lock.acquire()
+    try:
+        result = await _forget(env, GROUP)
+    finally:
+        lock.release()
+    # 记录里的列表坏成标量：不能 TypeError 让清除 500，也不能把字符串拆成单个字符
+    record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert result["status"] == "forgotten" and record["forgotten_keys"] == [GROUP_KEY]

@@ -85,6 +85,10 @@ class IdempotencyStateError(RuntimeError):
     """
 
 
+class IdempotencyCorruptError(IdempotencyStateError):
+    """The bookkeeping file was read but its content is damaged (not a read failure)."""
+
+
 # ── locks ────────────────────────────────────────────────────────────────
 # asyncio.Lock binds to the loop that first contends on it. Registries are
 # keyed per running loop so a lock created under one loop (a previous test,
@@ -198,10 +202,13 @@ def _read_json_object(path: str) -> dict:
         data = read_json_tolerating_replace(path)
     except FileNotFoundError:
         return {}
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+    except OSError as exc:
+        # 读失败（共享冲突退避用完、权限等）不等于内容坏了：调用方按状态读不出处理、可重试
         raise IdempotencyStateError(f"{os.path.basename(path)} unreadable: {exc}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise IdempotencyCorruptError(f"{os.path.basename(path)} unreadable: {exc}") from exc
     if not isinstance(data, dict):
-        raise IdempotencyStateError(f"{os.path.basename(path)} is not an object")
+        raise IdempotencyCorruptError(f"{os.path.basename(path)} is not an object")
     return data
 
 
@@ -588,29 +595,30 @@ async def mark_tombstone_erased(
         return True
 
     path = tombstones_path(lanlan_name)
-    try:
-        await _update_json_object(lanlan_name, path, _mutate)
-    except IdempotencyStateError:
-        # 整份墓碑文件读不出：改名隔离（留着排查），以本次清除重建这一行。别的 subject 的围栏随
-        # 之丢失，但永久 503 更糟——撤销流程永远完成不了，也没有任何东西会把文件修好
-        async with idempotency_lock(lanlan_name):
-            await asyncio.to_thread(_quarantine_tombstones_and_rebuild, path, subject_key, epoch)
+    # 读、隔离、重建都在同一把锁里：并发的两次清除不会一个重建了文件、另一个读到重建结果就
+    # 跳过自己那一行（接口回成功却既没有围栏也没有完成标记）
+    async with idempotency_lock(lanlan_name):
+        await asyncio.to_thread(_mark_tombstone_erased_sync, path, _mutate)
 
 
-def _quarantine_tombstones_and_rebuild(path: str, subject_key: str, epoch: int) -> None:
+def _mark_tombstone_erased_sync(path: str, mutate: Callable[[dict], bool]) -> None:
     try:
-        _read_json_object(path)
-        return  # 等锁期间已被别的清除重建：不再动它
-    except IdempotencyStateError:
-        # 仍读不出：继续往下隔离并重建
-        pass
-    quarantine = f"{path}.corrupt-{int(time.time())}"
-    try:
-        os.replace(path, quarantine)
-        logger.error(f"[Idempotency] 墓碑文件不可读，已隔离为 {os.path.basename(quarantine)} 并重建")
-    except FileNotFoundError:
-        pass
-    _write_json_object(path, {subject_key: {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}})
+        data = _read_json_object(path)
+    except IdempotencyCorruptError:
+        # 整份墓碑文件内容坏了：改名隔离（留着排查），以本次清除重建这一行。别的 subject 的围栏随
+        # 之丢失，但永久 503 更糟——撤销流程永远完成不了，也没有任何东西会把文件修好。
+        # 读失败（OSError）不走这里：完好的文件不能因为一次共享冲突被当成损坏隔离掉
+        # 改名前先过 cloudsave 闸：只读 / 快照导入期间改了名却写不回去，磁盘上就一份墓碑都没有了
+        assert_cloudsave_writable(_config_manager(), operation="save", target=_cloudsave_target(path))
+        quarantine = f"{path}.corrupt-{int(time.time())}"
+        try:
+            os.replace(path, quarantine)
+            logger.error(f"[Idempotency] 墓碑文件不可读，已隔离为 {os.path.basename(quarantine)} 并重建")
+        except FileNotFoundError:
+            pass
+        data = {}
+    if mutate(data):
+        _write_json_object(path, data)
 
 
 def _non_negative_int(value) -> bool:
