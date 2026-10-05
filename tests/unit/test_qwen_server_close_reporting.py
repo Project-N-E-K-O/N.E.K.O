@@ -357,4 +357,3 @@ async def test_handler_shows_close_code_not_provider_text(monkeypatch):
     detail = notices[0]["details"]["msg"]
     assert detail == "WebSocket close code 4004", detail
     assert "Not Found" not in json.dumps(notices[0])
-

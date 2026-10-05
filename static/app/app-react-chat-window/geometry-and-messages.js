@@ -755,6 +755,7 @@
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
                 && !element.classList.contains('neko-idle-cat1-compact-mirror')
+                && !element.classList.contains('modal-dialog-theater')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
@@ -1566,6 +1567,8 @@
             onComposerScreenshot: I.handleComposerScreenshot,
             onComposerRemoveAttachment: I.handleComposerRemoveAttachment,
             onComposerSubmit: I.handleComposerSubmit,
+            onTheaterSubmit: typeof I.state.onTheaterSubmit === 'function'
+                ? I.handleTheaterSubmit : undefined,
             onAvatarInteraction: I.handleAvatarInteraction,
             onAvatarToolStateChange: I.handleAvatarToolStateChange,
             onJukeboxClick: I.handleJukeboxClick,
@@ -1574,6 +1577,9 @@
             onTranslateToggle: I.handleTranslateToggle,
             onGalgameModeToggle: I.handleGalgameModeToggle,
             onGalgameOptionSelect: I.handleGalgameOptionSelect,
+            onTheaterSuggestedInputSelect: typeof I.state.onTheaterSuggestedInputSelect === 'function'
+                ? I.handleTheaterSuggestedInputSelect : undefined,
+            onTheaterEnd: I.handleTheaterEnd,
             onChoiceSelect: I.handleChoiceSelect,
             onCompactChatStateChange: I.handleCompactChatStateChange,
             onCompactMinimizeRequest: I.handleCompactMinimizeRequest,

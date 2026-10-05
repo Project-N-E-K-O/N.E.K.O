@@ -1223,14 +1223,14 @@ def test_a_run_still_in_progress_is_not_settled():
 
 async def test_open_requires_the_callers_clock(tmp_path):
     # 不传 now 时用墙钟 started_at 做起点，单调时钟驱动会整场不 fsync
-    import time as _time
-
     sp = VisitSpool(tmp_path, vid(27))
     with pytest.raises(TypeError):
         await sp.open(header(vid(27)))                          # type: ignore[call-arg]
-    mono = _time.monotonic()
+    # 固定且可精确表示的时钟，避免真实 monotonic 在到期边界的浮点舍入。
+    mono = 12345.0
     await sp.open(header(vid(27)), now=mono)
     await sp.append(line(1))
+    assert not sp.fsync_due(mono + visit_settings.VISIT_SPOOL_FSYNC_S - 0.5)
     # 恰好到点也要到期：(mono + 30) - mono 在浮点下可能是 29.999…，比较必须写成 now >= last + 30
     assert sp.fsync_due(mono + visit_settings.VISIT_SPOOL_FSYNC_S)
     await sp.close()
@@ -1766,3 +1766,268 @@ async def test_close_errors_still_unregister_the_spool(tmp_path, monkeypatch, fs
     assert ei.value.errno == (28 if fsync_fails else 5)      # fsync 先失败时抛的是它
     assert not is_spool_open(sp.jsonl_path)
     await VisitSpool(tmp_path, vid(63)).delete_peer_fields()  # 不再 SpoolBusy
+
+
+async def test_sweep_never_touches_a_live_visit_without_a_memory_spool(tmp_path):
+    from main_logic.visit.spool import UPLOAD_JSONL_SUFFIX, visit_path
+
+    live = vid(61)
+    stream = visit_path(tmp_path / "visit_spool", live, UPLOAD_JSONL_SUFFIX)
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_bytes(b'{"kind":"header"}' + bytes([10]))           # 一行头行（以换行结尾）
+    _age(stream, 8)                                   # 墙钟往前跳过 7 天：看起来已过期
+    deleted = await VisitSpool.sweep(tmp_path, NOW, is_live=lambda visit_id: visit_id == live)
+    # 关了记忆的在飞场次只有上传流水、没有登记的 spool：靠调用方的在飞判断兜住
+    assert deleted == [] and stream.exists()
+    assert await VisitSpool.sweep(tmp_path, NOW) == [stream]
+
+
+async def test_read_back_parses_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from main_logic.visit import spool as spool_module
+
+    sp = VisitSpool(tmp_path, vid(62))
+    await sp.write_state(state_for())
+    real = spool_module._parse_spool_bytes
+    threads = []
+
+    def parse(data, visit_id):
+        threads.append(threading.current_thread())
+        return real(data, visit_id)
+
+    monkeypatch.setattr(spool_module, "_parse_spool_bytes", parse)
+    sp.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    sp.jsonl_path.write_bytes(b"")
+    await sp.read_back()
+    # 长转录的逐行解码与校验不能放在事件循环线程上
+    assert threads and threads[0] is not threading.main_thread()
+
+
+@pytest.mark.parametrize("membership,ok", [
+    ({"group": ["a1"], "segments": ["b1"]}, True),
+    ({"group": ["a1", "a2"], "segments": ["b1"]}, False),        # 批数对不上
+    ({"group": ["a1"]}, False),                                  # 缺一部分
+    ({"group": [""], "segments": ["b1"]}, False),                # 空指纹
+    ("x", False),
+])
+def test_digest_membership_must_match_the_batches(membership, ok):
+    from main_logic.visit.spool import validate_state
+
+    state = settled(state_for())
+    record = dict(state["digest_writes"]["0"], membership=membership)
+    damaged = dict(state, digest_writes={"0": record})
+    if ok:
+        validate_state(damaged)
+    else:
+        with pytest.raises(SpoolStateError):
+            validate_state(damaged)
+
+
+@pytest.mark.parametrize("suffix", [".upload.jsonl", ".upload.json"])
+async def test_cap_sweep_keeps_a_visit_with_a_pending_upload(tmp_path, monkeypatch, suffix):
+    from main_logic.visit import spool as spool_mod
+
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    sp = VisitSpool(tmp_path, vid(64))
+    await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    sp.jsonl_path.write_bytes(b"x" * 1024)
+    pending = sp.jsonl_path.with_name(f"{vid(64)}{suffix}")
+    pending.write_text(json.dumps({"kind": "header", "visit_id": vid(64)}) + "\n", encoding="utf-8")
+    await VisitSpool.sweep(tmp_path, NOW)
+    # 还有待传文件：封存要从 state.json / 记忆 spool 补账号，只剩上传文件时要拿 state.json 核对身份，
+    # 容量回收不能先删掉它们
+    assert sp.state_path.exists() and sp.jsonl_path.exists() and pending.exists()
+
+
+# ── 清除这个人：state 读不出 / 不合 schema 的口径（PR #3293 评审）──
+
+
+def _schema_invalid(sp: VisitSpool, **changes) -> dict:
+    # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）
+    raw = json.loads(sp.state_path.read_text(encoding="utf-8"))
+    raw["field_from_a_newer_version"] = {"kept": True}
+    raw.update(changes)
+    sp.state_path.write_text(json.dumps(raw), encoding="utf-8")
+    return raw
+
+
+def _wipe_header(sp: VisitSpool) -> None:
+    def clear(header: dict) -> bool:
+        for name in ("peer_uid", "pair_id", "peer_char_id", "peer_char_tag"):
+            header[name] = None
+        return True
+
+    assert spool_mod._rewrite_header(sp.jsonl_path, clear, strict=True)
+
+
+async def test_drop_corrupt_state_only_deletes_content_no_version_can_use(tmp_path):
+    torn, listed, newer = (VisitSpool(tmp_path, vid(n)) for n in (90, 91, 92))
+    for sp in (torn, listed, newer):
+        await sp.write_state(state_for())
+    torn.state_path.write_text("{torn", encoding="utf-8")
+    listed.state_path.write_text("[1, 2]", encoding="utf-8")     # 能解析，但顶层不是对象
+    _schema_invalid(newer)
+    for sp in (torn, listed, newer):
+        await VisitSpool.drop_corrupt_state(tmp_path, sp.visit_id)
+    # 不是 JSON / 不是对象：谁都用不了，删；只是 schema 不认识的：别的版本读得了，绝不删
+    assert not torn.state_path.exists() and not listed.state_path.exists()
+    assert newer.state_path.exists()
+
+
+async def test_a_lone_non_object_state_counts_as_corrupt(tmp_path):
+    sp = VisitSpool(tmp_path, vid(93))
+    await sp.write_state(state_for())
+    sp.state_path.write_text("[1, 2]", encoding="utf-8")
+    wiped: list[str] = []
+    found = await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1], corrupt_wiped=wiped)
+    # 顶层不是对象与 JSON 坏了同一口径：报给清除路径删，不挡清除
+    assert found == [] and wiped == [vid(93)]
+
+
+async def test_a_lone_schema_invalid_state_that_cannot_be_attributed_is_skipped(tmp_path):
+    sp = VisitSpool(tmp_path, vid(94))
+    await sp.write_state(state_for())
+    raw = _schema_invalid(sp)
+    del raw["pair_id"]                                           # 原始字段认不出是哪一对
+    sp.state_path.write_text(json.dumps(raw), encoding="utf-8")
+    wiped: list[str] = []
+    found = await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1], corrupt_wiped=wiped)
+    # 没有头行、又认不出是谁的：不删（别的版本读得了）也不挡（否则本机每次清除都卡住）
+    assert found == [] and wiped == [] and sp.state_path.exists()
+
+
+async def test_wipe_rewrites_a_schema_invalid_state_from_its_raw_object(tmp_path):
+    sp = await open_spool(tmp_path, vid(95))
+    await sp.close()
+    await sp.write_state(state_for())
+    _schema_invalid(sp)
+    # 头行指认这一对、state 是新版本写的：查得到，抹身份不再报错（以前先抹了头行再抛错）
+    assert await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1]) == [vid(95)]
+    await sp.delete_peer_fields()
+    raw = json.loads(sp.state_path.read_text(encoding="utf-8"))
+    assert raw["peer_uid"] is None and raw["pair_id"] is None and raw["peer_char_id"] is None
+    # 只抹对端身份，新版本才有的字段原样保留
+    assert raw["field_from_a_newer_version"] == {"kept": True} and raw["own_char_uid"] == "uid_a"
+    assert (await sp.read_back()).header["pair_id"] is None
+    # 之后的清除（这个人 / 别的人）都不再被它挡住
+    assert await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1, PAIR2]) == []
+
+
+async def test_replay_finishes_a_schema_invalid_state_left_behind_a_wiped_header(tmp_path):
+    sp = await open_spool(tmp_path, vid(96))
+    await sp.close()
+    await sp.write_state(state_for())
+    _schema_invalid(sp)
+    _wipe_header(sp)                                             # 抹完头行、改写 state 前崩了
+    # 头行已抹、state 原始字段仍指认这一对：交给抹身份步骤按原始对象改写，不按读不出永远卡住
+    assert await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1]) == [vid(96)]
+    await sp.delete_peer_fields()
+    assert json.loads(sp.state_path.read_text(encoding="utf-8"))["pair_id"] is None
+    assert await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1]) == []
+
+
+async def test_wipe_deletes_a_corrupt_state_in_the_same_pass(tmp_path):
+    sp = await open_spool(tmp_path, vid(97))
+    await sp.close()
+    await sp.write_state(state_for())
+    sp.state_path.write_text("{torn", encoding="utf-8")
+    assert await VisitSpool.find_visits_for_pairs(tmp_path, "uid_a", [PAIR1]) == [vid(97)]
+    await sp.delete_peer_fields()
+    # JSON 本身坏了：谁都用不了，第一次清除就连同可能残留的对端字段删掉，不用等下一次重放
+    assert not sp.state_path.exists()
+    assert (await sp.read_back()).header["pair_id"] is None
+
+
+@pytest.mark.parametrize("schema_invalid", [False, True], ids=["valid", "schema-invalid"])
+async def test_wipe_leaves_no_pair_or_person_id_in_the_state(tmp_path, schema_invalid):
+    from main_logic.visit.forget import subject_key
+    from main_logic.visit.subjects import (
+        derive_person_id,
+        group_chat_subject,
+        group_participant_subject,
+        participant_subject,
+    )
+
+    sp = VisitSpool(tmp_path, vid(98))
+    state = settled(state_for())
+    person = derive_person_id("own_a", "peer1")
+    subjects = [group_chat_subject(PAIR1), group_participant_subject(PAIR1, state["peer_char_id"]),
+                participant_subject(person)]
+    state["digest_writes"]["0"]["epochs"] = {subject_key(s): 3 for s in subjects}
+    state["digest_writes"]["0"]["plan"] = {"displays": {"peer_cat": "MikaCatName", "peer_human": "BobHumanName"}}
+    await sp.write_state(state)
+    if schema_invalid:
+        _schema_invalid(sp)
+    await sp.delete_peer_fields()
+    text = sp.state_path.read_text(encoding="utf-8")
+    # digest_writes[*].epochs 的键里带着 pair_id 与 person_id、plan.displays 里是对端自报的名字：
+    # 清除报完成后都不能还留在 state.json
+    assert PAIR1 not in text and person not in text and "peer1" not in text
+    assert "MikaCatName" not in text and "BobHumanName" not in text
+    if not schema_invalid:
+        assert (await sp.read_state())["digest_writes"]["0"]["group"] == {"0": True}
+
+
+async def test_sweep_asks_is_live_on_the_event_loop_only(tmp_path):
+    import threading
+
+    sp = VisitSpool(tmp_path, vid(99))
+    await sp.write_state(state_for())
+    _age(sp.state_path, 8)
+    threads = []
+
+    def is_live(visit_id):
+        threads.append(threading.current_thread())
+        return False
+
+    deleted = await VisitSpool.sweep(tmp_path, NOW, is_live=is_live)
+    # is_live 读的是事件循环持有的注册表：只在事件循环线程上问，不能进清扫的工作线程
+    assert threads and all(t is threading.main_thread() for t in threads)
+    assert deleted == [sp.state_path]
+
+
+async def test_a_failing_is_live_keeps_that_visit_and_the_sweep_goes_on(tmp_path):
+    flaky, other = VisitSpool(tmp_path, vid(100)), VisitSpool(tmp_path, vid(101))
+    for sp in (flaky, other):
+        await sp.write_state(state_for())
+        _age(sp.state_path, 8)
+
+    def is_live(visit_id):
+        if visit_id == flaky.visit_id:
+            raise RuntimeError("dictionary changed size during iteration")
+        return False
+
+    deleted = await VisitSpool.sweep(tmp_path, NOW, is_live=is_live)
+    # 判不了就按在飞处理（保守地不删），别的场次照常回收、整轮不中断
+    assert deleted == [other.state_path] and flaky.state_path.exists()
+
+
+@pytest.mark.parametrize("field", ["pair_id", "peer_uid", "peer_char_id"])
+def test_new_state_requires_a_bound_peer(field):
+    kwargs = dict(own_uid="own_a", own_char="A", own_char_uid="uid_a", pair_id=PAIR1, peer_uid="peer1",
+                  peer_char_id=derive_peer_char_id("peer1", "f" * 32), memory_enabled=True)
+    new_state(**kwargs)
+    kwargs[field] = None
+    # 盘上对端字段为 None 只能意味着被清除抹掉：新建的 state 不能是未绑定对端的
+    with pytest.raises(SpoolStateError):
+        new_state(**kwargs)
+
+
+async def test_sweep_modes_split_pending_uploads_from_the_rest(tmp_path):
+    sp = VisitSpool(tmp_path, vid(65))
+    await sp.write_state(state_for())
+    sp.jsonl_path.write_bytes(b"x" * 16)
+    upload = sp.jsonl_path.with_name(f"{vid(65)}.upload.json")
+    upload.write_text("{}", encoding="utf-8")
+    old = NOW - 8 * 86400
+    for path in (sp.state_path, sp.jsonl_path, upload):
+        os.utime(path, (old, old))
+    # defer：待传文件留给调用方补传一次再说，其余过期文件照常回收
+    await VisitSpool.sweep(tmp_path, NOW, uploads="defer")
+    assert upload.exists() and not sp.jsonl_path.exists()
+    sp.jsonl_path.write_bytes(b"x" * 16)
+    os.utime(sp.jsonl_path, (old, old))
+    # only：只回收过期的待传文件，别的文件不动
+    deleted = await VisitSpool.sweep(tmp_path, NOW, uploads="only")
+    assert [path.name for path in deleted] == [upload.name] and sp.jsonl_path.exists()

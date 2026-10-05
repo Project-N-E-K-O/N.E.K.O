@@ -25,8 +25,10 @@ from main_logic.proactive_chat import service as proactive_service
 from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_ERROR_INTERNAL,
     PROACTIVE_REASON_ERROR_TIMEOUT,
+    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
     ProactiveChatCommand,
     _proactive_error_body,
+    _proactive_pass_body,
 )
 from main_logic.proactive_chat.decisions import build_proactive_response
 from main_logic.proactive_chat.mini_game_invite import (
@@ -36,6 +38,7 @@ from main_logic.proactive_chat.mini_game_invite import (
 from main_logic.proactive_chat.music_recommendation import (
     _record_music_played_through,
 )
+from utils.theater_activity import is_theater_active
 
 from ..shared_state import get_config_manager, get_session_manager
 from ._shared import _validate_local_mutation_request, logger, router
@@ -172,6 +175,17 @@ async def proactive_chat(request: Request):
         )
         payload = await request.json()
         command = ProactiveChatCommand.from_payload(payload)
+        lanlan_name = command.lanlan_name or her_name_current
+        if is_theater_active(lanlan_name):
+            # Server-side backstop for the frontend theater suppression: a
+            # performance owns the character, so ordinary proactive chat passes.
+            logger.info("[%s] 主动搭话本轮未发起：小剧场演绎中", lanlan_name)
+            return JSONResponse(
+                _proactive_pass_body(
+                    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+                    message="theater session active; ordinary proactive skipped",
+                )
+            )
         result = await proactive_service.handle_proactive_chat(
             command,
             config_manager=config_manager,

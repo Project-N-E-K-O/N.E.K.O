@@ -513,6 +513,67 @@ def test_show_confirm_implicit_dismiss_returns_false():
 
 
 @pytest.mark.unit
+def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const state = {
+      geometryRefreshes: 0,
+      resolved: [],
+      overlayClasses: '',
+      dialogClasses: '',
+      geometryOwner: '',
+      geometryItem: '',
+      dialogTabIndex: null,
+      resolveCallbacks: [],
+    };
+    window.addEventListener('neko:compact-interaction-geometry-refresh', () => {
+      state.geometryRefreshes += 1;
+    });
+
+    window.showConfirm('End the current performance?', 'End performance', {
+      okText: 'Confirm',
+      cancelText: 'Cancel',
+      danger: true,
+      skin: 'theater',
+      onResolve(value) {
+        state.resolveCallbacks.push(value);
+      },
+    }).then((value) => {
+      state.resolved.push(value);
+    });
+
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const dialog = overlay.querySelector('.modal-dialog');
+    state.overlayClasses = overlay.className;
+    state.dialogClasses = dialog.className;
+    state.geometryOwner = dialog.attributes['data-compact-geometry-owner'];
+    state.geometryItem = dialog.attributes['data-compact-geometry-item'];
+    state.dialogTabIndex = dialog.tabIndex;
+
+    const buttons = overlay.querySelectorAll('.modal-btn');
+    buttons[0].onclick();
+    await wait(250);
+
+    assert.strictEqual(overlayCount(), 0);
+    assert.deepStrictEqual(state.resolved, [false]);
+    assert.strictEqual(state.geometryRefreshes, 2);
+    assert.deepStrictEqual(state.resolveCallbacks, [false]);
+    return state;
+        """
+    )
+
+    assert "modal-overlay-theater" in result["overlayClasses"].split()
+    assert "modal-dialog-theater" in result["dialogClasses"].split()
+    assert result["geometryOwner"] == "surface"
+    assert result["geometryItem"] == "theaterModal"
+    assert result["dialogTabIndex"] == -1
+    assert result["geometryRefreshes"] == 2
+    assert result["resolveCallbacks"] == [False]
+    assert result["resolved"] == [False]
+
+
+@pytest.mark.unit
 def test_show_decision_prompt_blocks_implicit_dismiss_by_default():
     result = _run_common_dialogs_node_scenario(
         """

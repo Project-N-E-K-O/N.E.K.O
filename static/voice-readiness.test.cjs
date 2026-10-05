@@ -577,6 +577,14 @@ test('device fallback during existing enrollment persistently blocks continuatio
     assert.equal(fresh.controller.canResume(), true);
 });
 
+test('selected device change during paused enrollment also fences continuation', () => {
+    const h = harness({ enrolling: () => true });
+    const device = h.elements.get('voice-identity-microphone');
+    device.value = 'another-device';
+    device.emit('change');
+    assert.equal(h.controller.canResume(), false);
+});
+
 test('a download still running after 120 seconds is allowed to finish within the backend budget', async () => {
     let now = 0; let queries = 0;
     const h = harness({ clock: { now: () => now }, requestRouter: async url => {

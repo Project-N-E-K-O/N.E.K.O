@@ -60,6 +60,8 @@ from utils.external_route_registry import (
     route_external_start_session,
     route_external_stream_message,
 )
+from utils.theater_activity import is_theater_active
+from utils.external_route_registry import is_external_route_active
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -291,6 +293,90 @@ def _apply_session_language_message(manager, message: dict) -> str | None:
             render_language_setter(render_language)
 
     return render_language
+
+
+async def _decline_ordinary_input_for_theater(websocket, lanlan_name: str, input_type: str) -> None:
+    """Tell the client an ordinary text/image/avatar turn was dropped because a theater is running.
+
+    Server-side backstop for the frontend guards: another window (the Electron
+    Pet window, a concurrent ``/chat_full`` window) whose own theater runtime
+    is inactive could otherwise start an ordinary turn mid-performance, mixing
+    its TTS with the theater dialogue and writing to the hidden ordinary
+    history. Theater requests use their own HTTP routes and never reach here.
+    """
+    logger.info("[%s] theater session active: declining ordinary %s input", lanlan_name, input_type)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "message": json.dumps({
+                "code": "THEATER_SESSION_ACTIVE",
+                "details": {"reason": "theater_session_active", "input_type": input_type},
+            }),
+        }))
+    except Exception as exc:
+        logger.debug("[%s] theater input decline notice failed: %s", lanlan_name, exc)
+
+
+# lanlan_name -> in-flight task ending an ordinary voice session because PCM
+# kept arriving mid-theater; the frames that follow in the same burst must not
+# schedule a second teardown.
+_theater_voice_end_tasks: dict[str, asyncio.Task] = {}
+
+
+def _drop_ordinary_audio_for_theater(websocket, manager, lanlan_name: str) -> None:
+    """Drop one ordinary PCM frame while a theater runs, ending a live voice session once.
+
+    Server-side backstop for the frontend theater voice guard: a microphone
+    opened before the performance in another window (the Electron Pet floating
+    mic) keeps streaming after the theater starts, and those frames would
+    still produce ordinary turns and TTS interleaved with the theater lines.
+    The frame is dropped before it claims the voice connection or counts as
+    engagement. If an ordinary audio session is still live it is ended the
+    same way other server-side terminations end it, so the recorder that holds
+    the microphone tears it down and the user sees the theater voice notice.
+    The theater never sends PCM over this socket, so its own path is untouched.
+    """
+    pending = _theater_voice_end_tasks.get(lanlan_name)
+    if pending is not None and not pending.done():
+        return
+    if getattr(manager, "is_active", False) is not True or getattr(manager, "input_mode", None) != "audio":
+        return
+    logger.info("[%s] theater session active: ending ordinary voice session still streaming audio", lanlan_name)
+    expected_session = getattr(manager, "session", None)
+
+    async def _end() -> None:
+        try:
+            # The task runs after the frame handler returns, so the session may
+            # have been ended or replaced meanwhile. session_ended_by_server is not
+            # scoped to a session and would make the client drop whatever session
+            # is current, so notify only while the one seen above is still the live
+            # ordinary voice session; no await separates this check from the send.
+            if (
+                getattr(manager, "session", None) is not expected_session
+                or getattr(manager, "is_active", False) is not True
+                or getattr(manager, "input_mode", None) != "audio"
+            ):
+                logger.info("[%s] ordinary voice session changed before the theater teardown; leaving it", lanlan_name)
+            else:
+                notify_session_ended = getattr(manager, "send_session_ended_by_server", None)
+                if callable(notify_session_ended):
+                    await notify_session_ended()
+                if expected_session is None:
+                    await manager.end_session(by_server=True)
+                else:
+                    await manager.end_session(by_server=True, expected_session=expected_session)
+        except Exception as exc:
+            logger.warning("[%s] ending ordinary voice for theater failed: %s", lanlan_name, exc)
+        await _decline_ordinary_input_for_theater(websocket, lanlan_name, "audio")
+
+    task = _fire_task(_end())
+    _theater_voice_end_tasks[lanlan_name] = task
+
+    def _forget(done: asyncio.Task) -> None:
+        if _theater_voice_end_tasks.get(lanlan_name) is done:
+            _theater_voice_end_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_forget)
 
 
 def _reserve_avatar_interaction_ingress(
@@ -1104,6 +1190,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                    if mode == "audio" and is_theater_active(lanlan_name):
+                        # Server-side backstop for the frontend theater voice guard:
+                        # decline before claiming the voice lease, then fail the
+                        # pending start on this socket so the client does not wait
+                        # for its start timeout.
+                        logger.info("[%s] theater session active: declining ordinary voice start", lanlan_name)
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "session_failed",
+                                "input_mode": "audio",
+                            }))
+                            await websocket.send_text(json.dumps({
+                                "type": "status",
+                                "message": json.dumps({
+                                    "code": "THEATER_SESSION_ACTIVE",
+                                    "details": {"reason": "theater_session_active"},
+                                }),
+                            }))
+                        except Exception as exc:
+                            logger.debug("[%s] theater voice decline notice failed: %s", lanlan_name, exc)
+                        continue
                     if mode == "audio":
                         _claim_voice_input_connection()
                         ensure_voice_input_authorized = getattr(
@@ -1158,6 +1265,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                if (
+                    input_type in _TEXT_SESSION_INPUT_TYPES
+                    and is_theater_active(lanlan_name)
+                    and not is_external_route_active(lanlan_name)
+                ):
+                    # Decline before stamping ingress so a dropped turn never
+                    # counts as user engagement.
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, input_type)
+                    continue
+                if (
+                    input_type == "audio"
+                    and is_theater_active(lanlan_name)
+                    and not is_external_route_active(lanlan_name)
+                ):
+                    # External routes own their own voice and are offered input
+                    # before ordinary chat; only ordinary PCM is dropped here.
+                    _drop_ordinary_audio_for_theater(websocket, session_manager[lanlan_name], lanlan_name)
+                    continue
                 if input_type == "audio":
                     # PCM (JSON or decoded binary frame) is a voice engagement:
                     # first audio frame on this socket claims the voice input
@@ -1227,6 +1352,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             )
 
             elif action == "avatar_interaction":
+                if is_theater_active(lanlan_name):
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, "avatar_interaction")
+                    continue
                 message = _stamp_user_input_ingress(message)
                 avatar_mgr = session_manager[lanlan_name]
                 # Validate and expose genuine engagement synchronously, before

@@ -459,6 +459,23 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
 
 
+def recent_sidecar_path(path: Any, filename: str) -> str:
+    """Return a sidecar file that lives next to (and moves with) this recent.json."""
+    return os.path.join(os.path.dirname(os.fspath(path)), filename)
+
+
+def write_recent_sidecar_unlocked(path: Any, filename: str, payload: Any) -> None:
+    """Atomically replace a recent.json sidecar. The caller MUST already hold the lock.
+
+    Sidecars (such as theater retraction tombstones) are serialized with the
+    recent.json critical section so a check-then-write against the history file
+    sees a consistent sidecar. They do not bump the recent content version.
+    """
+    atomic_write_json(
+        recent_sidecar_path(path, filename), payload, indent=2, ensure_ascii=False,
+    )
+
+
 def write_recent_payload(
     path: Any,
     payload: Any,

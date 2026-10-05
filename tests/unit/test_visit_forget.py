@@ -398,8 +398,10 @@ async def test_forget_planning_refuses_an_unreadable_roster(tmp_path):
         await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A)
 
 
-async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path):
-    # 已结清的场次常只剩 state.json：它读不出来时 wipe_spool 不能记完成
+async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path, monkeypatch):
+    # 已结清的场次常只剩 state.json：它一时读不出（被占用）时 wipe_spool 不能记完成。
+    # 内容损坏的那种谁都用不了，由清除直接删掉（见 test_visit_spool_recovery）
+    from main_logic.visit import spool as spool_module
     from main_logic.visit.spool import SpoolStateUnreadable
 
     roster = PeerRoster(tmp_path, own_uid=OWN_A)
@@ -408,9 +410,16 @@ async def test_wipe_spool_stays_pending_when_a_state_file_is_unreadable(tmp_path
     await sp.write_state(new_state(own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                    pair_id=pair_a, peer_uid=PEER_X, peer_char_id=cid,
                                    memory_enabled=True))
-    sp.state_path.write_text("{broken", encoding="utf-8")
     log = RevocationLog(tmp_path, own_uid=OWN_A)
     rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    real_read = spool_module._read_state_file
+
+    def locked(path):
+        if path == sp.state_path:
+            raise PermissionError("locked by another process")
+        return real_read(path)
+
+    monkeypatch.setattr(spool_module, "_read_state_file", locked)
     with pytest.raises(SpoolStateUnreadable):
         await run_revocation(log, rev_id, roster=roster,
                              forget_subject=FakeMemoryServer().forget, void_pending=_no_void, own_char="A")
@@ -756,3 +765,218 @@ async def test_deep_or_wrong_version_logs_fail_closed(tmp_path, body):
         await log.list_open()
     with pytest.raises(RevocationLogUnreadable):
         await RevocationLog.list_all_open(tmp_path)
+
+
+# ── 清除代数与清除意图哨兵（PR-08）────────────────────────────────────
+
+
+async def test_forget_epoch_is_bumped_and_persisted_before_each_scoped_forget(tmp_path):
+    from main_logic.visit.forget import ForgetEpochs
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    seen = []
+
+    async def forget(subject):
+        seen.append((await ForgetEpochs(tmp_path).get([subject]))[f"{subject['subject_kind']}:{subject['subject_id']}"])
+        return True
+
+    assert await run_revocation(log, rev_id, roster=roster, forget_subject=forget,
+                                void_pending=_no_void, own_char="A")
+    assert seen == [1, 1, 1]
+
+
+async def test_unreadable_epochs_file_fails_the_step_and_keeps_the_log(tmp_path):
+    from main_logic.visit.forget import ForgetEpochsUnreadable
+
+    roster = PeerRoster(tmp_path, own_uid=OWN_A)
+    await seed(roster, PEER_X, "A", TAG_X)
+    (tmp_path / "visit_forget_epochs.json").write_text("{not json", encoding="utf-8")
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    rev_id = await log.open_plan(await plan_forget_person(roster, PEER_X, "A", CHAR_UID_A))
+    server = FakeMemoryServer()
+    with pytest.raises(ForgetEpochsUnreadable):
+        await run_revocation(log, rev_id, roster=roster, forget_subject=server.forget,
+                             void_pending=_no_void, own_char="A")
+    assert server.calls == []
+    assert await log.load(rev_id) is not None
+
+
+async def test_clearing_sentinels_roundtrip_and_fail_closed(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels, RevocationLogUnreadable, sentinel_covers
+
+    store = ClearingSentinels(tmp_path)
+    person = await store.create(own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A], peer_uid=PEER_X)
+    chars = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_B, CHAR_UID_A])
+    listed = await store.list_open()
+    assert {d["op_id"] for d in listed} == {person["op_id"], chars["op_id"]}
+    assert sentinel_covers(person, CHAR_UID_A, PEER_X) and not sentinel_covers(person, CHAR_UID_A, PEER_Y)
+    assert sentinel_covers(chars, CHAR_UID_B, PEER_Y) and not sentinel_covers(person, CHAR_UID_B)
+    # 撤销日志的列表不把哨兵当日志
+    assert await RevocationLog.list_all_open(tmp_path) == []
+    removed = await store.remove(person["op_id"])
+    removed_again = await store.remove(person["op_id"])
+    assert removed is True and removed_again is False
+    (tmp_path / "visit_revocations" / f"clearing-{'0' * 32}.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(RevocationLogUnreadable):
+        await store.list_open()
+    with pytest.raises(ValueError):
+        await store.create(own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A])
+
+
+async def test_forget_after_a_local_epoch_reset_goes_above_the_server_fence(tmp_path):
+    from main_logic.visit.forget import subject_key
+    from main_logic.visit.forget_runner import forget_person
+    from tests.unit.visit_memory_test_helpers import FakeMemoryServer, OWN_A, PEER_X, CHAR_UID_A, seed_roster
+
+    await seed_roster(tmp_path)
+    roster_subjects = await PeerRoster(tmp_path, own_uid=OWN_A).expand_subjects(PEER_X, "A")
+    person = next(s for s in roster_subjects if s["subject_kind"] == "participant")
+    server = FakeMemoryServer()
+    server.tombstones = {subject_key(person): 5}         # 本地代数被重置，服务端墓碑还在 5
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=server.client())
+    assert outcome.done
+    sent = [body for body in server.calls("scoped_forget") if body["subject"]["subject_kind"] == "participant"]
+    # 先抬到服务端围栏再加 1：发出的代数高于已有墓碑，不会被当成已擦过的重放跳过
+    assert sent and sent[0]["forget_epoch"] == 6
+
+
+# ── 作废步骤：读不出 / 不合 schema 的 state 与抹身份查找同一口径（PR #3293 评审）──
+
+
+def _void_record(pairs) -> dict:
+    return {"own_uid": OWN_A, "own_char_uid": CHAR_UID_A, "pair_ids": list(pairs)}
+
+
+async def _visit(tmp_path, n: int, *, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer=PEER_X,
+                 header: bool = False) -> VisitSpool:
+    sp = VisitSpool(tmp_path, f"visit{n:017d}")
+    pair = derive_pair_id(own_uid, peer)
+    cid = derive_peer_char_id(peer, TAG_X)
+    if header:
+        await sp.open({
+            "v": 1, "visit_id": sp.visit_id, "role": "host", "own_uid": own_uid, "own_char": "A",
+            "own_char_uid": own_char_uid, "pair_id": pair, "peer_uid": peer, "peer_char_id": cid,
+            "peer_char_tag": TAG_X, "started_at": 100.0, "lang": "zh-CN",
+        }, now=100.0)
+        await sp.close()
+    state = new_state(own_uid=own_uid, own_char="A", own_char_uid=own_char_uid, pair_id=pair,
+                      peer_uid=peer, peer_char_id=cid, memory_enabled=True)
+    await sp.write_state(dict(state, debrief_choice="ask_later"))
+    return sp
+
+
+def _make_schema_invalid(sp: VisitSpool, **changes) -> None:
+    raw = json.loads(sp.state_path.read_text(encoding="utf-8"))
+    raw["field_from_a_newer_version"] = 1                       # 能解析、只是不合当前 schema
+    raw.update(changes)
+    sp.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _lock_state(monkeypatch, sp: VisitSpool) -> None:
+    from main_logic.visit import spool as spool_module
+
+    real_read = spool_module._read_state_file
+
+    def locked(path):
+        if path == sp.state_path:
+            raise PermissionError("locked by another process")
+        return real_read(path)
+
+    monkeypatch.setattr(spool_module, "_read_state_file", locked)
+
+
+async def test_void_skips_a_locked_state_whose_header_belongs_to_another_character(tmp_path, monkeypatch):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    other = await _visit(tmp_path, 1, own_char_uid=CHAR_UID_B, header=True)
+    _lock_state(monkeypatch, other)
+    # 别的角色的一场 state 长期读不出（被杀毒软件占用）：头行明确属于别人，不挡这次清除
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+@pytest.mark.parametrize("header", [False, True], ids=["state-only", "header-names-pair"])
+async def test_void_stays_pending_on_a_locked_state_it_cannot_attribute(tmp_path, monkeypatch, header):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = await _visit(tmp_path, 2, header=header)
+    _lock_state(monkeypatch, mine)
+    with pytest.raises(SpoolStateUnreadable):
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+@pytest.mark.parametrize("changes", [
+    {},                                                          # 仍指认这一对
+    {"pair_id": None, "peer_uid": None, "peer_char_id": None},   # 身份已被抹掉
+], ids=["names-pair", "wiped"])
+async def test_void_stays_pending_on_a_schema_invalid_state_that_may_be_this_persons(tmp_path, changes):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = await _visit(tmp_path, 3)
+    _make_schema_invalid(mine, **changes)
+    before = mine.state_path.read_bytes()
+    # 降级后读到新版本写的 state、debrief 还没写：不能当坏文件跳过（升级回去后仍能「记成日记」），
+    # 作废不了就先不结清这份日志
+    with pytest.raises(SpoolStateUnreadable):
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+    assert mine.state_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kw,changes", [
+    ({"own_char_uid": CHAR_UID_B}, {}),
+    ({"own_uid": OWN_B}, {}),
+    ({"peer": PEER_Y}, {}),
+    ({}, {"debrief_choice": "forget"}),                         # 已有最终结果：没什么可作废
+], ids=["other-char", "other-account", "other-pair", "final-choice"])
+async def test_void_skips_a_schema_invalid_state_that_is_clearly_not_voidable(tmp_path, kw, changes):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    sp = await _visit(tmp_path, 4, **kw)
+    _make_schema_invalid(sp, **changes)
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+async def test_void_skips_a_corrupt_state(tmp_path):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    sp = await _visit(tmp_path, 5)
+    sp.state_path.write_text("[1, 2]", encoding="utf-8")         # 能解析但不是对象：谁都用不了
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+async def test_void_finishes_readable_visits_before_reporting_an_unreadable_one(tmp_path, monkeypatch):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    locked = await _visit(tmp_path, 6)
+    readable = await _visit(tmp_path, 7)
+    _lock_state(monkeypatch, locked)
+    with pytest.raises(SpoolStateUnreadable) as ei:
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+    assert ei.value.visit_ids == [locked.visit_id]
+    # 读得出的场次照常作废，不因为排在后面而等到下一次重放
+    assert (await readable.read_state())["debrief_choice"] == "forget"
+
+
+async def test_replay_goes_on_past_an_unreadable_revocation_log(tmp_path):
+    from main_logic.visit.forget_runner import open_person_log, replay_forgets
+    from tests.unit.visit_memory_test_helpers import (
+        CHAR_UID_A, OWN_A, PEER_X, FakeMemoryServer, resolver, seed_roster,
+    )
+
+    await seed_roster(tmp_path)
+    rev_id = await open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                   peer_uid=PEER_X)
+    broken = tmp_path / "visit_revocations" / ("f" * 32 + ".json")
+    broken.write_text("{torn", encoding="utf-8")                    # 别的一对的日志坏了
+    server = FakeMemoryServer()
+    clean = await replay_forgets(tmp_path, resolve_char_name=resolver(), client=server.client())
+    # 坏的那份留着、记为未完成；读得出的日志照常重放完，不能被它一起卡住
+    assert clean is False and broken.exists()
+    assert not (tmp_path / "visit_revocations" / f"{rev_id}.json").exists()
+    assert server.calls("scoped_forget")

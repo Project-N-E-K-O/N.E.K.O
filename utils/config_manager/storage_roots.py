@@ -181,11 +181,16 @@ class StorageRootsMixin:
         self._workshop_config_lock = threading.RLock()
 
         self._characters_cache: dict | None = None
-        self._characters_cache_mtime: float | None = None
+        # (st_mtime_ns, st_size) of the file the cache was loaded from; see
+        # characters._characters_file_signature.
+        self._characters_cache_mtime: tuple[int, int] | None = None
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
+        # Write-back backoff of a dirty cache; see CharactersMixin.load_characters.
+        self._characters_dirty_retry_at: float | None = None
+        self._characters_dirty_retry_delay: float = 0.0
         self._characters_cache_lock = threading.Lock()
-        self._characters_reload_lock = threading.Lock()
+        self._characters_reload_lock = threading.RLock()
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
