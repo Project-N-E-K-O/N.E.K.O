@@ -1,6 +1,6 @@
 # Project N.E.K.O. - 社区 2C2G 部署方案
 # Author: 烨儿不会飞 (GitHub: @csy-11)
-# Compose V2 only. 使用包含 #3289 的镜像后才可开放远程入口。
+# Compose >= 2.24.4；继承同一仓库的官方服务配置。
 services:
   neko-init:
     image: alpine:3.20
@@ -8,41 +8,31 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        # 不接受顶层符号链接，也不递归修改目录中的宿主资源。
-        test ! -L /host-dir/neko-home && test ! -L /host-dir/logs
+        # 每条检查独立失败退出；不递归修改目录中的宿主资源。
+        test ! -L /host-dir/neko-home
+        test ! -L /host-dir/logs
         mkdir -p /host-dir/neko-home /host-dir/logs
-        chown 1000:1000 /host-dir/neko-home /host-dir/logs
+        chown -h 1000:1000 /host-dir/neko-home /host-dir/logs
     volumes:
       - .:/host-dir
 
   neko-main:
-    # 首次部署可以用 latest-full；对外开放前核对版本，并用 NEKO_IMAGE 固定 tag/digest。
+    extends:
+      file: ../docker-compose.yml
+      service: neko-main
+    # 对外使用前核验镜像包含 #3289/#3299，并固定经验证的 tag/digest。
     image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full}
-    container_name: neko
-    restart: unless-stopped
     labels:
       org.neko.community-2c2g.watchdog: enabled
     depends_on:
       neko-init:
         condition: service_completed_successfully
     environment:
-      - TZ=${TZ:-Asia/Shanghai}
-      - XDG_DATA_HOME=/home/neko/.local/share
-      - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
-      - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
-      - NEKO_INSTANCE_ACCESS_KEY=${NEKO_INSTANCE_ACCESS_KEY:-}
-      - NEKO_INSTANCE_PUBLIC_ORIGIN=${NEKO_INSTANCE_PUBLIC_ORIGIN:-}
-      - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
-      - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
       - SSL_DOMAIN=${SSL_DOMAIN:-localhost}
       - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-}
       - NEKO_TRUSTED_ORIGINS=${NEKO_TRUSTED_ORIGINS:-}
-    ports:
-      # HTTP 仅供本机探测/私有 TLS 网关。不得直接开放到公网。
-      - "127.0.0.1:48911:80"
-      # 默认私有；验证镜像与 TLS 后可显式设置 NEKO_HTTPS_BIND_IP=0.0.0.0。
-      - "${NEKO_HTTPS_BIND_IP:-127.0.0.1}:48912:443"
-    volumes:
+    # 覆盖继承服务的相对路径，数据留在 community-2c2g/。
+    volumes: !override
       - ./neko-home:/home/neko
       - ./logs:/app/logs
     logging:
@@ -50,10 +40,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks:
-      - neko-network
 
-  # 显式启用 watchdog profile 才安装宿主 root cron；卸载见 README。
   neko-cron-install:
     profiles: [watchdog]
     image: alpine:3.20

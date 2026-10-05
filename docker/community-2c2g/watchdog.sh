@@ -5,23 +5,41 @@ umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 STATE_DIR=/opt/neko
 CONTAINER=neko
+# Report pre-lock failures without writing through unsafe paths.
+early_fail() {
+    local message="watchdog: $*"
+    printf '%s\n' "$message" >&2
+    if [[ ! -L "$STATE_DIR" && -d "$STATE_DIR" ]] &&
+       [[ $(stat -c '%u:%g:%a' "$STATE_DIR" 2>/dev/null) == 0:0:700 ]] &&
+       [[ ! -L "$STATE_DIR/watchdog.log" ]] &&
+       { [[ ! -e "$STATE_DIR/watchdog.log" ]] ||
+         { [[ -f "$STATE_DIR/watchdog.log" ]] &&
+           [[ $(stat -c '%u:%g:%a' "$STATE_DIR/watchdog.log") == 0:0:600 ]]; }; }; then
+        printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" >> "$STATE_DIR/watchdog.log" || true
+    fi
+    if command -v logger >/dev/null; then
+        logger -t neko-watchdog -- "$message" || true
+    fi
+    exit 1
+}
 STARTUP_GRACE_SECONDS=${NEKO_WATCHDOG_STARTUP_GRACE_SECONDS:-900}
-[[ "$STARTUP_GRACE_SECONDS" =~ ^[0-9]{1,6}$ ]] || exit 1
+[[ "$STARTUP_GRACE_SECONDS" =~ ^[0-9]{1,6}$ ]] || early_fail "Invalid startup grace: use integer seconds"
 STARTUP_GRACE_SECONDS=$((10#$STARTUP_GRACE_SECONDS))
-[[ ! -L "$STATE_DIR" && -d "$STATE_DIR" ]] || exit 1
-[[ $(stat -c '%u:%g:%a' "$STATE_DIR") == 0:0:700 ]] || exit 1
+[[ ! -L "$STATE_DIR" && -d "$STATE_DIR" ]] || early_fail "Unsafe state directory"
+[[ $(stat -c '%u:%g:%a' "$STATE_DIR") == 0:0:700 ]] || early_fail "State directory must be root:root 0700"
 [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
 for dependency in docker curl timeout flock; do
-    command -v "$dependency" >/dev/null || { echo "Missing $dependency" >&2; exit 1; }
+    command -v "$dependency" >/dev/null || early_fail "Missing $dependency"
 done
-for file in watchdog.lock fail-count watchdog.log; do
-    [[ ! -L "$STATE_DIR/$file" ]] || { echo "Unsafe state file: $file" >&2; exit 1; }
+for file in watchdog.lock fail-count restart-count watchdog.log; do
+    [[ ! -L "$STATE_DIR/$file" ]] || early_fail "Unsafe state file: $file"
 done
 exec 9>"$STATE_DIR/watchdog.lock"
 flock -n 9 || exit 0
 log() { printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$STATE_DIR/watchdog.log"; }
 fail() { log "$*"; exit 1; }
 COUNT_FILE="$STATE_DIR/fail-count"
+RESTART_FILE="$STATE_DIR/restart-count"
 METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.StartedAt}}'
 
 # Do not transfer recovery authority to an unrelated container with the same name.
@@ -56,7 +74,7 @@ if code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time
     fi
 fi
 if [[ "$healthy" == true ]]; then
-    rm -f "$COUNT_FILE"
+    rm -f "$COUNT_FILE" "$RESTART_FILE"
     exit 0
 fi
 
@@ -82,6 +100,18 @@ if (( count >= 2 )); then
     [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
     current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id") || fail "Cannot recheck container"
     [[ "$current" == "$metadata" ]] || { rm -f "$COUNT_FILE"; exit 0; }
+    # Persist attempts across startup grace and StartedAt changes.
+    restart_count=0
+    if [[ -e "$RESTART_FILE" ]]; then
+        previous=$(cat "$RESTART_FILE") || fail "Cannot read restart budget"
+        read -r restart_id restart_count extra <<< "$previous" || fail "Invalid restart budget"
+        [[ "$restart_count" =~ ^[0-3]$ && -z "$extra" ]] || fail "Invalid restart budget"
+        [[ "$restart_id" == "$container_id" ]] || restart_count=0
+    fi
+    (( restart_count < 3 )) || fail "Automatic recovery exhausted (3 attempts); inspect service and clear restart-count under maintenance lock"
+    temporary=$(mktemp "$STATE_DIR/.restart-count.XXXXXX") || fail "Cannot create restart budget"
+    printf '%s %s\n' "$container_id" "$((restart_count + 1))" > "$temporary" || fail "Cannot write restart budget"
+    mv -f "$temporary" "$RESTART_FILE" || fail "Cannot publish restart budget"
     if timeout 120 docker restart --time 30 "$container_id" >> "$STATE_DIR/watchdog.log" 2>&1; then
         rm -f "$COUNT_FILE"
         log "Restart succeeded"

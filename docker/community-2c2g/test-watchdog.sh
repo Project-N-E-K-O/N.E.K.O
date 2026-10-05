@@ -58,7 +58,7 @@ bash -n "$SOURCE/watchdog.sh"
 sh -n "$SOURCE/install-watchdog.sh"
 run() { bash "$ROOT/watchdog.sh"; }
 no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
-reset() { rm -f "$ROOT/state/fail-count" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
+reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
 CURL_EXIT=28 run; no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
@@ -172,6 +172,54 @@ wait "$watchdog_pid"; wait "$maintenance_pid"
 HTTP_CODE=500 run; [[ $(wc -l < "$ROOT/restarts") == 1 ]]
 rm "$ROOT/state/disabled"
 reset
+# Budget survives lifecycle changes and grace; health resets it.
+reset
+for cycle in 1 2 3; do
+    STARTED_AT="2000-01-0${cycle}T00:00:00Z" HTTP_CODE=500 run
+    STARTED_AT="2000-01-0${cycle}T00:00:00Z" HTTP_CODE=500 run
+done
+[[ $(wc -l < "$ROOT/restarts") == 3 ]]
+STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+grep -q 'id-1 3' "$ROOT/state/restart-count"
+HTTP_CODE=500 run
+if HTTP_CODE=500 run; then exit 1; fi
+[[ $(wc -l < "$ROOT/restarts") == 3 ]]
+grep -q 'Automatic recovery exhausted' "$ROOT/state/watchdog.log"
+run; [[ ! -e "$ROOT/state/restart-count" ]]
+reset
+printf 'id-old 3\n' > "$ROOT/state/restart-count"
+HTTP_CODE=500 run; HTTP_CODE=500 run
+[[ $(wc -l < "$ROOT/restarts") == 1 ]]
+reset
+if NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m run; then exit 1; fi
+grep -q 'Invalid startup grace' "$ROOT/state/watchdog.log"
+cat > "$ROOT/bin/logger" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_ROOT/syslog"
+EOF
+chmod 700 "$ROOT/bin/logger"
+log_size=$(stat -c %s "$ROOT/state/watchdog.log")
+chmod 755 "$ROOT/state"
+if run; then exit 1; fi
+[[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
+grep -q 'State directory must' "$ROOT/syslog"
+chmod 700 "$ROOT/state"
+mv "$ROOT/bin/docker" "$ROOT/bin/docker.hidden"
+if run; then exit 1; fi
+grep -q 'Missing docker' "$ROOT/state/watchdog.log"
+mv "$ROOT/bin/docker.hidden" "$ROOT/bin/docker"
+reset
+HTTP_CODE=500 run
+for attempt in 1 2 3 4; do
+    if RESTART_EXIT=1 HTTP_CODE=500 run; then exit 1; fi
+done
+[[ $(wc -l < "$ROOT/restarts") == 3 ]]
+reset
+printf 'id-1 invalid\n' > "$ROOT/state/restart-count"
+HTTP_CODE=500 run
+if HTTP_CODE=500 run; then exit 1; fi
+no_restart
+reset
 # Run the actual installer against disposable host directories.
 sed -e "s|/host-opt|$ROOT/opt|g" -e "s|/host-cron.d|$ROOT/cron|g" \
     -e "s|/source/watchdog.sh|$SOURCE/watchdog.sh|g" \
@@ -181,9 +229,16 @@ sh "$ROOT/install.sh"
 [[ $(stat -c '%u:%g:%a' "$ROOT/opt/neko/watchdog.sh") == 0:0:700 ]]
 [[ $(stat -c '%u:%g:%a' "$ROOT/cron/neko-watchdog") == 0:0:644 ]]
 cmp "$SOURCE/watchdog.sh" "$ROOT/opt/neko/watchdog.sh"
+sed -i '3iNEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800' "$ROOT/cron/neko-watchdog"
 touch "$ROOT/opt/neko/disabled"
 sh "$ROOT/install.sh"
 [[ -e "$ROOT/opt/neko/disabled" ]]
+grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800 "$ROOT/cron/neko-watchdog"
+cp "$ROOT/cron/neko-watchdog" "$ROOT/cron-before"
+printf 'NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m\n' >> "$ROOT/cron/neko-watchdog"
+if sh "$ROOT/install.sh"; then exit 1; fi
+grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m "$ROOT/cron/neko-watchdog"
+cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
 # A failed second mktemp and TERM during copying must leave no temporary files.
 rm "$ROOT/opt/neko/watchdog.sh" "$ROOT/cron/neko-watchdog"
 cat > "$ROOT/bin/mktemp" <<'EOF'

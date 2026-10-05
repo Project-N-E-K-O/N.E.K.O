@@ -23,6 +23,18 @@ mkdir -p /host-opt/neko
 chmod 700 /host-opt/neko
 [ ! -L /host-cron.d/neko-watchdog ] || fail "symlink at cron destination"
 [ ! -L /host-opt/neko/watchdog.sh ] || fail "symlink at watchdog destination"
+# Preserve only the documented setting, never arbitrary cron commands.
+grace=
+if [ -e /host-cron.d/neko-watchdog ]; then
+    [ -f /host-cron.d/neko-watchdog ] || fail "cron destination is not a regular file"
+    [ "$(stat -c '%u:%g:%a' /host-cron.d/neko-watchdog)" = 0:0:644 ] || fail "unsafe existing cron permissions"
+    grace=$(sed -n 's/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=//p' /host-cron.d/neko-watchdog)
+    case "$grace" in
+        '') ;;
+        *[!0-9]*) fail "invalid existing startup grace" ;;
+        *) [ "${#grace}" -le 6 ] || fail "invalid existing startup grace" ;;
+    esac
+fi
 script=
 cron=
 trap 'rm -f "$script" "$cron"' EXIT
@@ -35,6 +47,7 @@ chmod 700 "$script"
 mv -f "$script" /host-opt/neko/watchdog.sh
 printf '%s\n' 'SHELL=/bin/bash' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
     '*/5 * * * * root /opt/neko/watchdog.sh' > "$cron"
+[ -z "$grace" ] || sed -i "3iNEKO_WATCHDOG_STARTUP_GRACE_SECONDS=$grace" "$cron"
 chown 0:0 "$cron"
 chmod 644 "$cron"
 mv -f "$cron" /host-cron.d/neko-watchdog
