@@ -684,6 +684,12 @@ pointer-events: none;
     cursor: default;
 }
 
+.model-id-picker-option-name {
+    margin-left: 8px;
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
 .api-key-info h3 {
 margin-top: 0;
 margin-bottom: 16px;

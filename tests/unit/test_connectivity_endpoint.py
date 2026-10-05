@@ -373,6 +373,34 @@ class TestSchemaValidation:
         assert result["success"] is False
         assert result["error_code"] == "missing_params"
 
+    async def test_builtin_mimo_assist_rejects_plain_http_token_plan_url(self):
+        """A Token Plan host over plain HTTP is not a valid override."""
+        fake_config = {
+            "assist_api_providers": {
+                "mimo": {
+                    "name": "MiMo",
+                    "openrouter_url": "https://api.xiaomimimo.com/v1",
+                    "conversation_model": "mimo-v2.5",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_http:
+            req = ConnectivityTestRequest(
+                provider_key="mimo",
+                provider_scope="assist",
+                url="http://token-plan-sgp.xiaomimimo.com/v1",
+                api_key="tp-token-plan",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        mock_http.assert_not_awaited()
+        assert result["success"] is False
+        assert result["error_code"] == "missing_params"
+
     async def test_builtin_core_accepts_any_successful_candidate_url(self):
         """内置核心 provider 若配置多个候选 URL，任一通过即返回可用 URL。"""
         calls = []

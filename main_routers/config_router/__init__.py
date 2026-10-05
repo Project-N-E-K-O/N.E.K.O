@@ -102,3 +102,7 @@ from .connectivity import (  # noqa: F401
     _identify_provider_label,
     _redact_url_for_log,
 )
+from .model_catalog import (  # noqa: F401
+    ModelListRequest,
+    list_models,
+)

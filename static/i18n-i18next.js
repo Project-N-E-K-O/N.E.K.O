@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并剧场与主分支空气投篮、点击引导等语言包，刷新网页与 Electron 的缓存。
-    const LOCALE_VERSION = '2026-10-03-theater-air-basketball-main-merge';
+    // 合并剧场与主分支模型选择器语言包，刷新网页与 Electron 的缓存。
+    const LOCALE_VERSION = '2026-10-05-theater-model-picker-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

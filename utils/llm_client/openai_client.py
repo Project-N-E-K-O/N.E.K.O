@@ -456,6 +456,24 @@ class ChatOpenAI:
             ))
         return out
 
+    # --- model catalog ---
+
+    async def alist_models(self, *, limit: int) -> list[dict[str, str]]:
+        """List the endpoint's models via ``GET /models``, at most ``limit`` entries.
+
+        Each entry carries ``id`` and, when the endpoint reports one, ``name``.
+        """
+        models: list[dict[str, str]] = []
+        async for item in self._aclient.models.list():
+            extra = getattr(item, "model_extra", None) or {}
+            models.append({
+                "id": str(getattr(item, "id", "") or ""),
+                "name": str(extra.get("name") or ""),
+            })
+            if len(models) >= limit:
+                break
+        return models
+
     # --- resource management ---
 
     async def aclose(self) -> None:

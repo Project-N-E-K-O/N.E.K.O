@@ -1341,6 +1341,30 @@
         "assistApiSelectLabel": "輔助API服務商",
         "assistApiKeyLabel": "輔助API Key",
         "assistApiAutoFillHint": "留空時自動使用管理簿中的Key，手動輸入則獨立保存",
+        "modelIdCurrentPlaceholder": "目前使用：{{model}}",
+        "modelIdFreePlaceholder": "免費版使用固定模型",
+        "modelPicker": {
+            "fetch": "拉取模型",
+            "fetchTooltip": "從服務商拉取可用的模型列表",
+            "loading": "正在拉取模型列表…",
+            "noMatch": "沒有符合的模型",
+            "more": "還有 {{count}} 個模型，輸入關鍵字可篩選",
+            "unavailable": {
+                "noProvider": "請先選擇服務商",
+                "fixed": "該服務商使用固定模型，無需選擇",
+                "follow": "目前模式下模型由跟隨的配置決定，無需選擇",
+                "missingUrl": "請先填寫 API URL"
+            },
+            "error": {
+                "urlHint": "請檢查 API URL 是否缺少 /v1 等路徑前綴。",
+                "unsupported": "該端點不提供模型列表，請手動填寫模型ID",
+                "key_required": "已儲存的 Key 只能用於儲存時的位址，請重新填寫 API Key",
+                "core_key_required": "核心服務商已變更，請重新填寫 API Key",
+                "rate_limited": "請求過於頻繁，請稍後再試",
+                "empty": "服務商沒有回傳任何模型",
+                "timeout": "拉取逾時，請檢查網路後重試"
+            }
+        },
         "disableTts": "禁用TTS",
         "disableTtsHint": "開啟後不會調用任何語音合成服務",
         "keyBookTitle": "API 管理簿",
