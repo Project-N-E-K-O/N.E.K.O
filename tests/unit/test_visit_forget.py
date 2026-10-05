@@ -961,3 +961,22 @@ async def test_void_finishes_readable_visits_before_reporting_an_unreadable_one(
     assert ei.value.visit_ids == [locked.visit_id]
     # 读得出的场次照常作废，不因为排在后面而等到下一次重放
     assert (await readable.read_state())["debrief_choice"] == "forget"
+
+
+async def test_replay_goes_on_past_an_unreadable_revocation_log(tmp_path):
+    from main_logic.visit.forget_runner import open_person_log, replay_forgets
+    from tests.unit.visit_memory_test_helpers import (
+        CHAR_UID_A, OWN_A, PEER_X, FakeMemoryServer, resolver, seed_roster,
+    )
+
+    await seed_roster(tmp_path)
+    rev_id = await open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                   peer_uid=PEER_X)
+    broken = tmp_path / "visit_revocations" / ("f" * 32 + ".json")
+    broken.write_text("{torn", encoding="utf-8")                    # 别的一对的日志坏了
+    server = FakeMemoryServer()
+    clean = await replay_forgets(tmp_path, resolve_char_name=resolver(), client=server.client())
+    # 坏的那份留着、记为未完成；读得出的日志照常重放完，不能被它一起卡住
+    assert clean is False and broken.exists()
+    assert not (tmp_path / "visit_revocations" / f"{rev_id}.json").exists()
+    assert server.calls("scoped_forget")

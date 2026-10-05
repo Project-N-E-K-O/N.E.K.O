@@ -434,7 +434,9 @@ class RevocationLog:
                 return False
 
     @staticmethod
-    def _list_dir_sync(directory: Path, own_uid: str | None) -> list[dict]:
+    def _list_dir_sync(
+        directory: Path, own_uid: str | None, unreadable_out: list[str] | None = None,
+    ) -> list[dict]:
         out = []
         unreadable: list[str] = []
         try:
@@ -457,7 +459,9 @@ class RevocationLog:
                 continue
             if own_uid is None or record["own_uid"] == own_uid:
                 out.append(record)
-        if unreadable:
+        if unreadable_out is not None:
+            unreadable_out.extend(unreadable)
+        elif unreadable:
             # 读不出来的日志不能当作「没有未完成的清除」：补录与建房闸都靠这份列表，
             # 跳过它等于放任新记忆写进正在清除的范围。属于哪个账号也读不出，一律上抛
             raise RevocationLogUnreadable(unreadable)
@@ -557,6 +561,19 @@ class RevocationLog:
         """
         directory = Path(config_dir) / VISIT_REVOCATIONS_DIRNAME
         return await asyncio.to_thread(cls._list_dir_sync, directory, None)
+
+    @classmethod
+    async def list_all_open_with_unreadable(cls, config_dir: str | Path) -> tuple[list[dict], list[str]]:
+        """Return ``(readable unfinished logs of every account, ids of unreadable logs)`` without raising.
+
+        For the startup replay: one damaged log must not keep every other
+        clearing from being replayed. Callers still treat the unreadable ids
+        as unfinished (fail closed).
+        """
+        directory = Path(config_dir) / VISIT_REVOCATIONS_DIRNAME
+        unreadable: list[str] = []
+        logs = await asyncio.to_thread(cls._list_dir_sync, directory, None, unreadable)
+        return logs, unreadable
 
 
 # ── 清除代数（forget epoch）────────────────────────────────────────────

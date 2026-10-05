@@ -638,11 +638,12 @@ async def replay_forgets(
             # 范围没展开成功（名册读不出等）：哨兵是这次清除唯一的记录，必须留到下次
             unexpanded.add(sentinel["op_id"])
             clean = False
-    try:
-        logs = await RevocationLog.list_all_open(config_dir)
-    except RevocationLogUnreadable as exc:
-        logger.error("visit forget replay: unreadable revocation logs %s", exc.ids)
-        return False
+    logs, unreadable_logs = await RevocationLog.list_all_open_with_unreadable(config_dir)
+    if unreadable_logs:
+        # 读不出的日志留着、记为未完成（准入与记忆装配按它的文件名只挡那一对）；其余读得出的
+        # 照常重放，不能让一份坏文件把所有清除一直卡着
+        logger.error("visit forget replay: unreadable revocation logs %s", unreadable_logs)
+        clean = False
     for record in logs:
         # 与端点同一把生命周期守卫：从按 uid 解析名字到重放结束都持有，期间角色
         # 改不了名、删不掉，不会把清除发到已经迁走的旧名字上又把日志当完成关掉
