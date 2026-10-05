@@ -392,6 +392,9 @@ async def block_contact(request: Request):
     blocked = payload.get("blocked")
     if peer_uid is None or not isinstance(blocked, bool):
         return _error(400, "invalid_request")
+    # 与黑名单同一口径（大小写不敏感，按小写记）：名册查显示名、结束在飞串门都用规范形，
+    # 否则传大写变体时黑名单记上了、在飞的那场却按原值找不到、结束不了
+    peer_uid = peer_uid.lower()
     config_dir = _hooks.config_dir()
     try:
         blocklist = await Blocklist.aload(config_dir)

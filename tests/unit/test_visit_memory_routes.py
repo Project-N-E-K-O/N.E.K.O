@@ -605,3 +605,14 @@ def test_malformed_rename_marker_blocks_forget_without_500(env, marker):
     # 认不出涉及哪两个名字：不能当作无关放行，也不能抛 TypeError 让接口 500；回可重试的 503
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.calls("scoped_forget") == []
+
+
+def test_block_ends_the_live_visit_by_the_canonical_uid(env):
+    client, _server, tmp_path, state = env
+    peer = "abcdef012345abcdef012345"                          # 带字母的 uid，大小写变体才有区别
+    _seed(tmp_path, peer_uid=peer)
+    resp = client.post("/api/visit/contacts/block", json={"peer_uid": peer.upper(), "blocked": True}, headers=GOOD)
+    assert resp.status_code == 200 and resp.json()["changed"] is True
+    # 黑名单按小写记；结束在飞串门也要用同一个规范形，否则找不到那场
+    assert state["blocked_calls"] == [peer]
+    assert Blocklist.load(tmp_path).get(peer).display_name_at_block == "Xiaoming"
