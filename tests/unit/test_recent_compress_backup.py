@@ -391,6 +391,8 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
         # 串门记忆浏览器的只读枚举（OD-18）：不写盘，设计稿明确「不进围栏」。
         ("/internal/memory/{lanlan_name}/scoped_subjects", "GET"),
+        # 带键写入的清除代数只读查询：只读墓碑文件，不写盘
+        ("/internal/memory/{lanlan_name}/forget_epochs", "GET"),
         # 用户主动触发的本机重复表达分析：只读历史 + 纯计算，不写任何角色
         # 文件。角色正在删除/改名时，只读引擎准入检查已经会拒绝，围栏住只会
         # 让一次用户点击白白失败。

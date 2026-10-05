@@ -742,3 +742,26 @@ async def test_keyed_batch_with_an_unsettled_trust_write_fails_as_a_whole():
     assert keyed.failed_positions == (0, 1)
     # 不带键时仍按位置报：只有信赖池没落盘的那一位失败
     assert plain.failed_positions == (1,)
+
+
+@pytest.mark.asyncio
+async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
+    def responder(request):
+        assert request.url.params.get_list("subject") == ["participant:qq:1", "group_chat:qq:2"]
+        return httpx.Response(200, json={"epochs": {"participant:qq:1": 7}})
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        assert await client.get_forget_epochs("Lanlan", ["participant:qq:1", "group_chat:qq:2"]) == {
+            "participant:qq:1": 7,
+        }
+        assert await client.get_forget_epochs("Lanlan", []) == {}
+
+    def broken(_request):
+        return httpx.Response(200, json={"epochs": {"participant:qq:1": "7"}})
+
+    client, http = _client(_Recorder(broken))
+    async with http:
+        # 认不出的代数不能当成「没有墓碑」
+        with pytest.raises(ScopedMemoryError):
+            await client.get_forget_epochs("Lanlan", ["participant:qq:1"])

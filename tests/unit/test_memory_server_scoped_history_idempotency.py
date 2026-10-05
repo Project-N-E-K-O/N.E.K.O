@@ -2631,3 +2631,15 @@ async def test_partial_forget_cancels_a_journal_with_a_broken_kept_locale(env, d
     await _forget(env, GP)
     # 留下来的段语言项坏了：之后的重试只会 503，不能只丢被清段留着它，整键取消
     assert _key_state(env, KEY_SEGMENTS) == "cancelled"
+
+
+async def test_forget_epochs_endpoint_reports_the_current_fence(env):
+    await _forget(env, GROUP, forget_epoch=6)
+    result = await env.routes.get_forget_epochs(NAME, subject=[GROUP_KEY, PART_KEY])
+    # 有墓碑的 key 报当前围栏，没有的不出现
+    assert result == {"epochs": {GROUP_KEY: 6}}
+    Path(env.idem.tombstones_path(NAME)).write_text(json.dumps({GROUP_KEY: {"forget_epoch": "bad"}}), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.get_forget_epochs(NAME, subject=[GROUP_KEY])
+    # 认不出的围栏不能当成「没有围栏」
+    assert excinfo.value.status_code == 503

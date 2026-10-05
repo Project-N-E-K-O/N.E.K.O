@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -5086,6 +5086,44 @@ def _read_persona_for_listing(path: str) -> dict:
         logger.warning(f"[scoped_subjects] persona 读取失败，按无 persona 处理: {exc}")
         return {}
     return data if isinstance(data, dict) else {}
+
+
+_FORGET_EPOCHS_MAX_SUBJECTS = 64
+
+
+@app.get("/internal/memory/{lanlan_name}/forget_epochs")
+async def get_forget_epochs(lanlan_name: str, subject: list[str] = Query(default=[])):
+    """Current forget-epoch fence of each requested subject key (read-only).
+
+    Answers ``{"epochs": {subject_key: forget_epoch}}`` for the keys that
+    carry a tombstone; keys without one are left out. A client whose local
+    epoch counter was reset (cloud restore, new installation) raises it to
+    this value before opening a keyed write or sending a forget, so neither
+    falls below a restored tombstone. A tombstone file or row that cannot be
+    read answers 503: an unknown fence must not read as "no fence".
+    """
+    from . import idempotency
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime._config_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if len(subject) > _FORGET_EPOCHS_MAX_SUBJECTS or any(
+        not key or len(key) > 512 or not key.isprintable() for key in subject
+    ):
+        raise HTTPException(status_code=422, detail="invalid subject keys")
+    try:
+        tombstones = await idempotency.read_tombstones(lanlan_name)
+        epochs = {}
+        for key in dict.fromkeys(subject):
+            fence = idempotency.tombstone_epoch(tombstones, [key])
+            if fence is not None:
+                epochs[key] = fence
+    except idempotency.IdempotencyStateError as exc:
+        raise HTTPException(status_code=503, detail="forget epochs unreadable; retry later") from exc
+    return {"epochs": epochs}
 
 
 @app.get("/internal/memory/{lanlan_name}/scoped_subjects")
