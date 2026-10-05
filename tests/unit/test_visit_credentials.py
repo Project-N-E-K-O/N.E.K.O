@@ -870,15 +870,16 @@ async def test_pubkey_ttl_overflow_falls_back_to_default_ttl(servers, monkeypatc
 
     def _handler(request):
         if request.url.path == "/api/visit/pubkeys":
-            return httpx.Response(200, content=('{"keys":[],"revoked":[],"ttl_s":' + "9" * 400 + "}").encode(),
+            return httpx.Response(200, content=('{"keys":[],"revoked":["k-revoked"],"ttl_s":' + "9" * 400 + "}").encode(),
                                   headers={"content-type": "application/json"})
         return original(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     keys = await cr.fetch_pubkeys(force_refresh=True)
-    # 只有 ttl_s 坏：整次刷新照常生效，TTL 回落默认值
+    # 只有 ttl_s 坏：整次刷新照常生效（吊销名单生效），TTL 回落默认值
     assert not keys.stale
+    assert "k-revoked" in keys.revoked
     assert cr._pubkeys_fetched.ttl_s == float(vs.VISIT_PUBKEYS_CACHE_S)
 
 
