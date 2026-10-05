@@ -234,6 +234,54 @@ async def test_shutdown_step_without_deadline_waits_for_the_step() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_caller_cancel_ends_the_wait_on_a_step_without_deadline() -> None:
+    """Without a deadline the caller's cancel is the only way out of a stuck step.
+
+    The step (a worker thread in production) cannot be stopped, but shutdown
+    must stop waiting on it and run the remaining steps.
+    """
+    from app.main_server import _SHUTDOWN_STEP_TASKS, _run_shutdown_step
+
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    ran: list[str] = []
+
+    async def stuck_step() -> None:
+        entered.set()
+        await never.wait()
+
+    async def later_step() -> None:
+        ran.append("later")
+
+    async def shutdown_like() -> asyncio.CancelledError | None:
+        pending = await _run_shutdown_step(
+            stuck_step, what="stuck", deadline_monotonic=None
+        )
+        return await _run_shutdown_step(
+            later_step,
+            what="later",
+            deadline_monotonic=time.monotonic() + 1.0,
+            pending_cancellation=pending,
+        )
+
+    task = asyncio.create_task(shutdown_like())
+    await entered.wait()
+    task.cancel()
+    # asyncio.wait, not wait_for: wait_for would cancel again and then block on
+    # the very wait this test is checking for.
+    done, _ = await asyncio.wait({task}, timeout=2.0)
+    stuck = [t for t in _SHUTDOWN_STEP_TASKS if t.get_name() == "shutdown:stuck"]
+    stuck_was_running = bool(stuck) and not stuck[0].done()
+    never.set()
+    await asyncio.gather(task, *stuck, return_exceptions=True)
+    assert done, "cancelling the caller must end the wait on a step without deadline"
+    assert isinstance(task.result(), asyncio.CancelledError)
+    assert ran == ["later"]
+    assert stuck_was_running, "the stuck step is left running, not lost"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_shutdown_step_skips_a_step_whose_deadline_already_passed() -> None:
     from app.main_server import _run_shutdown_step
 

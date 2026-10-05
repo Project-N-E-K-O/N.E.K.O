@@ -555,6 +555,47 @@ async def test_main_server_shutdown_defers_cancellation_until_every_cleanup_ran(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_shutdown_cancel_gets_past_a_stuck_cloudsave_upload():
+    """A stuck Steam call has no deadline; cancelling shutdown must still get out.
+
+    main let the cancel escape (skipping the HTTP pool cleanup); this keeps the
+    escape hatch and still runs every later cleanup before re-raising.
+    """
+    from app import main_server
+
+    cleanup_order: list[str] = []
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            cleanup_order.append(name)
+            if name == "cloudsave":
+                entered.set()
+                await never.wait()
+
+        return _step
+
+    with _patched_shutdown_steps(cleanup_order, _record):
+        shutdown_task = asyncio.create_task(main_server.on_shutdown())
+        await entered.wait()
+        shutdown_task.cancel()
+        done, _ = await asyncio.wait({shutdown_task}, timeout=5.0)
+        never.set()
+        await asyncio.gather(
+            shutdown_task,
+            *list(main_server._SHUTDOWN_STEP_TASKS),
+            return_exceptions=True,
+        )
+        assert done, "cancelling shutdown must get past a stuck Cloud Save upload"
+        with pytest.raises(asyncio.CancelledError):
+            shutdown_task.result()
+
+    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_main_server_shutdown_step_failure_does_not_skip_later_cleanups():
     from app import main_server
 

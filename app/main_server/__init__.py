@@ -822,7 +822,8 @@ async def _run_shutdown_step(
     step that fails is logged. Neither is raised, because raising would drop a
     cancellation this helper already absorbed. ``deadline_monotonic=None`` waits
     for the step's own terminal state, for work that cancelling the await
-    cannot stop (a worker thread).
+    cannot stop (a worker thread); a caller cancellation then ends the wait
+    instead, since nothing else bounds it.
     """
     if deadline_monotonic is not None and deadline_monotonic - time.monotonic() <= 0:
         logger.warning("%s skipped: shutdown deadline already passed", what)
@@ -835,6 +836,7 @@ async def _run_shutdown_step(
     _SHUTDOWN_STEP_TASKS.add(task)
     task.add_done_callback(_forget_shutdown_step)
     timed_out = False
+    released_on_cancel = False
     while not task.done():
         remaining = None
         if deadline_monotonic is not None:
@@ -863,6 +865,12 @@ async def _run_shutdown_step(
                 current.uncancel()
                 if pending_cancellation is None:
                     pending_cancellation = exc
+                if deadline_monotonic is None:
+                    # No deadline bounds this wait, so the caller's cancel is
+                    # the only way out: stop waiting (the step keeps running,
+                    # strongly referenced) and let the remaining steps run.
+                    released_on_cancel = True
+                    break
                 logger.debug(
                     "%s observed caller cancellation; waiting for it to finish",
                     what,
@@ -872,7 +880,12 @@ async def _run_shutdown_step(
         except Exception:
             # The step itself failed; the task is done and is reported below.
             pass
-    if not task.done():
+    if released_on_cancel and not task.done():
+        logger.warning(
+            "%s still running when shutdown was cancelled; no longer waiting for it",
+            what,
+        )
+    elif not task.done():
         logger.warning(
             "%s did not stop within %.1fs after cancellation; moving on",
             what,
@@ -1599,6 +1612,7 @@ async def on_shutdown():
 
             # 不设截止时间：上传在 to_thread 里同步写 Steam，5s 预算由线程内部自己检查；
             # 取消 await 停不了线程，只会让关闭在远端快照写到一半时就往下走。
+            # 调用方取消时停止等待（Steam 调用卡死时的唯一出口），后续清理照跑。
             shutdown_cancellation = await _run_shutdown_step(
                 _upload_cloudsave,
                 what="Steam Auto-Cloud shutdown staged snapshot upload",
