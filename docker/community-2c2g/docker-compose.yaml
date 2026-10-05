@@ -4,7 +4,7 @@
 services:
   neko-init:
     network_mode: none
-    # 辅助镜像默认 docker.io/alpine；install_docker.sh --start 会自动测速选最快可用源并写入 NEKO_INIT_IMAGE，也可手动在 .env 指定。
+    # 默认 Docker Hub Alpine；管理员可在 .env 显式指定已核验且信任的辅助镜像。
     image: ${NEKO_INIT_IMAGE:-alpine:3.20}
     restart: "no"
     entrypoint: ["/bin/sh", "-ec"]
@@ -46,7 +46,7 @@ services:
   neko-cron-install:
     network_mode: none
     profiles: [watchdog]
-    # 辅助镜像默认 docker.io/alpine；install_docker.sh --start 会自动测速选最快可用源并写入 NEKO_INIT_IMAGE，也可手动在 .env 指定。
+    # 默认 Docker Hub Alpine；管理员可在 .env 显式指定已核验且信任的辅助镜像。
     image: ${NEKO_INIT_IMAGE:-alpine:3.20}
     restart: "no"
     entrypoint: ["/bin/sh", "/source/install-watchdog.sh"]
