@@ -397,14 +397,15 @@ class HostOriginGuardMiddleware:
             return True
 
         # TLS ended at a declared proxy that forwards no trusted scheme: a
-        # https:// page on this very Host (same explicit port) is not foreign.
-        # Mirrors utils.instance_access._same_origin for HTTP requests.
+        # https:// page on this very Host is not foreign. Ports compare as
+        # effective HTTPS ports (Host ":443" equals none), mirroring
+        # utils.instance_access._same_origin for HTTP requests.
         if (
             websocket_scheme == "ws"
             and origin.scheme == "https"
             and is_behind_proxy()
             and origin.authority.hostname == host.hostname
-            and origin.authority.port == host.port
+            and _effective_port(origin.authority, "https") == _effective_port(host, "https")
         ):
             return True
 

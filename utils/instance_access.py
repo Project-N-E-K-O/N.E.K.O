@@ -263,7 +263,15 @@ def _same_origin(request: Request) -> bool:
         return True
     # TLS ended at an outer gateway that forwards no trusted X-Forwarded-Proto:
     # the page is https:// on this very Host, which is not a foreign origin.
-    return is_behind_proxy() and own.startswith("http://") and origin == "https://" + own[len("http://"):]
+    # Ports compare as effective HTTPS ports, so Host ":443" equals no port.
+    if not (is_behind_proxy() and own.startswith("http://") and origin.startswith("https://")):
+        return False
+    try:
+        page, entry = urlsplit(origin), urlsplit(own)
+        return (page.username is None and not page.path and not entry.path
+                and page.hostname == entry.hostname and (page.port or 443) == (entry.port or 443))
+    except ValueError:
+        return False
 
 
 @lru_cache(maxsize=8)

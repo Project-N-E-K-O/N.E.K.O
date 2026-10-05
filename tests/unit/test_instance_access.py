@@ -902,6 +902,18 @@ def test_outer_tls_gateway_without_forwarded_proto_can_pair(remote_app, monkeypa
     assert remote_app.post("http://neko.example/instance-access/login", **login).status_code == 303
 
 
+def test_outer_tls_fallback_treats_explicit_443_as_default_port(remote_app):
+    """A proxy may forward Host ":443" while the browser omits the default port."""
+    page = remote_app.get("http://neko.example:443/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post("http://neko.example:443/instance-access/login",
+                               data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "https://neko.example"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert remote_app.post("http://neko.example:443/private", headers={"Origin": "https://neko.example"}).status_code == 200
+    assert remote_app.post("http://neko.example:443/private", headers={"Origin": "https://neko.example:8443"}).status_code == 403
+
+
 @pytest.mark.parametrize("send_origin", [True, False])
 def test_oauth_state_returns_to_the_entry_the_browser_paired_on(remote_app, monkeypatch, send_origin):
     import base64
