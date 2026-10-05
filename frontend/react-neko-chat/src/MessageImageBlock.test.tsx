@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MessageBlockView from './MessageBlockView';
 import { parseChatMessage, type MessageBlock } from './message-schema';
@@ -145,6 +146,47 @@ describe('saving chat images', () => {
     await act(async () => { finish(imageResponse()); });
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(downloads).toHaveLength(0);
+  });
+
+  it('aborts the previous download before the replacement image layout effects', async () => {
+    let finish!: (response: ReturnType<typeof imageResponse>) => void;
+    fetchImage.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const replacementAbortStates: boolean[] = [];
+    let oldSignal: AbortSignal;
+    function UpdatingImage({ url }: { url: string }) {
+      useLayoutEffect(() => {
+        if (url === '/media/new-selfie') replacementAbortStates.push(oldSignal.aborted);
+      }, [url]);
+      return <MessageBlockView block={{ type: 'image', url }} message={message} />;
+    }
+    const { rerender } = render(<UpdatingImage url="/media/selfie-id" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save image' }));
+    oldSignal = fetchImage.mock.calls[0][1].signal;
+    rerender(<UpdatingImage url="/media/new-selfie" />);
+    expect(replacementAbortStates).toEqual([true]);
+    expect(screen.getByRole('button', { name: 'Save image' })).toBeEnabled();
+    await act(async () => { finish(imageResponse()); });
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(downloads).toHaveLength(0);
+    fetchImage.mockResolvedValue(imageResponse());
+    fireEvent.click(screen.getByRole('button', { name: 'Save image' }));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(fetchImage).toHaveBeenLastCalledWith('/media/new-selfie', expect.anything());
+  });
+
+  it('keeps ordinary image saving retryable after a preview load error', async () => {
+    showImage();
+    fireEvent.error(screen.getByRole('img', { name: 'Selfie' }));
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/media/selfie-id');
+    expect(screen.getByRole('button', { name: 'Save image' })).toBeEnabled();
+    fetchImage.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save image' }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(downloads).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Save image' }));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(fetchImage).toHaveBeenLastCalledWith('/media/selfie-id', expect.anything());
   });
 
   it('releases the temporary download URL after the browser can consume it', async () => {

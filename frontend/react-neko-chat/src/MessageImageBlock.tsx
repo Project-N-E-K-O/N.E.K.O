@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { i18n } from './i18n';
 import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import type { MessageBlock } from './message-schema';
@@ -31,16 +31,16 @@ export default function MessageImageBlock({
 }) {
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [showingFallback, setShowingFallback] = useState(false);
   const download = useRef<AbortController | null>(null);
 
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
     download.current?.abort();
     download.current = null;
   }, []);
 
   async function saveImage() {
-    if (download.current || loadFailed) return;
+    if (download.current || showingFallback) return;
     const controller = new AbortController();
     download.current = controller;
     setSaving(true);
@@ -106,8 +106,9 @@ export default function MessageImageBlock({
             alt={block.alt || ''}
             {...imageLoadingProps}
             onError={(event) => {
-              setLoadFailed(true);
-              swapImageToMemeLoadFailedSticker(event.currentTarget, block.url);
+              if (swapImageToMemeLoadFailedSticker(event.currentTarget, block.url)) {
+                setShowingFallback(true);
+              }
             }}
           />
         </div>
@@ -117,7 +118,7 @@ export default function MessageImageBlock({
             type="button"
             aria-label={saveLabel}
             title={saveLabel}
-            disabled={saving || loadFailed}
+            disabled={saving || showingFallback}
             aria-busy={saving}
             onClick={(event) => {
               event.stopPropagation();
